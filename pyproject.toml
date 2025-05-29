@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [
   { name="Advanced Micro Devices", email="mad.support@amd.com" },
 ]
-description = "MAD Engine is a set of interfaces to run various AI models from internal MAD (DLM) and public MAD."
+description = "MAD Engine is a set of interfaces to run various AI models from public MAD."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
