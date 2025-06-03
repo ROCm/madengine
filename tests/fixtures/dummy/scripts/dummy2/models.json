@@ -1,0 +1,28 @@
+[
+    {
+      "name": "model1",
+      "dockerfile": "../../docker/dummy",
+      "scripts": "run.sh",
+      "n_gpus": "1",
+      "owner": "mad.support@amd.com",
+      "training_precision": "",
+      "tags": [
+        "dummies",
+        "dummy_test_group_2"
+      ],
+      "args": ""
+    },
+    {
+        "name": "model2",
+        "dockerfile": "../../docker/dummy",
+        "scripts": "run.sh",
+        "n_gpus": "1",
+        "owner": "mad.support@amd.com",
+        "training_precision": "",
+        "tags": [
+          "dummies",
+          "dummy_test_group_2"
+        ],
+        "args": ""
+      }
+]

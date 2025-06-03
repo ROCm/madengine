@@ -1,0 +1,113 @@
+{
+  "tools": {
+    "rpd": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "rpd"
+        }
+      ],
+      "cmd": "runTracer.sh",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rpd"
+        }
+      ]
+    },
+    "rocprof": {
+      "pre_scripts": [],
+      "cmd": "rocprof",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
+    "rocblas_trace": {
+      "env_vars": {"ROCBLAS_TRACE": "1"},
+      "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
+    },
+    "hipblaslt_trace": {
+      "env_vars": {"HIPBLASLT_TRACE": "1"},
+      "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
+    },    
+    "miopen_trace": {
+      "env_vars": {"MIOPEN_TRACE": "1"},
+      "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
+    },
+    "tensile_trace": {
+      "env_vars": {"TENSILE_TRACE": "1"},
+      "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
+    },
+    "rccl_trace": {
+      "env_vars": {"RCCL_TRACE": "1"},
+      "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
+    },
+    "test_tools_A": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/test_echo.sh",
+          "args": "pre_script A"
+        }
+      ],
+      "cmd": "echo cmd_A && ",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/test_echo.sh",
+          "args": "post_script A"
+        }
+      ]
+    },
+    "test_tools_B": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/test_echo.sh",
+          "args": "pre_script B"
+        }
+      ],
+      "cmd": "echo cmd_B && ",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/test_echo.sh",
+          "args": "post_script B"
+        }
+      ]
+    },
+    "gpu_info_power_profiler": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/gpu_info_pre.sh"
+        }
+      ],
+      "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
+      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"power", "DUAL-GCD":"false"},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/gpu_info_post.sh",
+          "args": "gpu_info_power_profiler"
+        }
+      ]
+    },
+    "gpu_info_vram_profiler": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/gpu_info_pre.sh"
+        }
+      ],
+      "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
+      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"vram", "DUAL-GCD":"false"},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/gpu_info_post.sh",
+          "args": "gpu_info_vram_profiler"
+        }
+      ]
+    }
+  }
+}

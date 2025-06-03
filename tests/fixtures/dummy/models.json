@@ -1,0 +1,198 @@
+[
+  {
+    "name": "dummy",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_test_group_1",
+      "dummy_group_1"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy2",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_group_1",
+      "dummy_group_2"
+    ],
+    "args": "",
+    "timeout": 360
+  },
+  {
+    "name": "dummy3",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_group_2"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_timeout",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "",
+    "timeout": 360
+  },
+  {
+    "name": "dummy_sleep",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_sleep.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "300",
+    "timeout": 120
+  },
+  {
+    "name": "dummy_ctxtest",
+    "dockerfile": "docker/dummy_ctxtest",
+    "scripts": "scripts/dummy/run_ctxtest.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_mountpath",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_local.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_gpubind",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_gpu_bind.sh",
+    "n_gpus": "6",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "",
+    "multiple_results": "results_dummy_gpubind.csv"
+  },
+  {
+    "name": "dummy_cpubind",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_cpu_bind.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "",
+    "multiple_results": "results_dummy_cpubind.csv"
+  },
+  {
+    "name": "dummy_skip_gpu_arch",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "",
+    "skip_gpu_arch": "gfx908, gfx90a, gfx1100, gfx940, gfx941, gfx942, A100, H100"
+  },
+  {
+    "name": "dummy_data_local",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_local.sh",
+    "data": "dummy_data_local",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_data_local_fail",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_local.sh",
+    "data": "dummy_data_local_fail",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_prof",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_prof.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_prof_rccl",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_nccl_trace.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_multi",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_multi.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies"
+    ],
+    "args": "",
+    "multiple_results": "perf_dummy.csv"
+  }
+]

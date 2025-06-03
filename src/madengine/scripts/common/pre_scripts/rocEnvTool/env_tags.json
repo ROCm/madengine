@@ -1,0 +1,32 @@
+{
+    "env_tags": [
+        "os_information",
+        "cpu_information",
+        "gpu_information",
+        "rocm_smi_gpudeviceid",
+        "memory_information",
+        "rocm_information",
+        "rocm_repo_setup",
+        "rocm_packages_installed",
+        "rocm_env_variables",
+        "rocm_smi",
+        "ifwi_version",
+        "rocm_smi_showhw",
+        "rocm_smi_pcie",
+        "rocm_smi_pids",
+        "rocm_smi_topology",
+        "rocm_smi_showserial",
+        "rocm_smi_showperflevel",
+        "rocm_smi_showrasinfo",
+        "rocm_smi_showxgmierr",
+        "rocm_smi_clocks",
+        "rocm_smi_showcompute_partition",
+        "rocm_smi_nodesbwi",
+        "rocm_info",
+        "cuda_information",
+        "cuda_env_variables",
+        "cuda_packages_installed",
+        "pip_list",
+        "numa_balancing"
+    ]
+}

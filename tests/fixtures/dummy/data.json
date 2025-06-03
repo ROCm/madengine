@@ -1,0 +1,12 @@
+{
+    "dummy_data_local": {
+        "local": {
+            "path": "/tmp"
+        }
+    },
+    "dummy_data_local_fail": {
+        "local": {
+            "path": "/tmp/nonexistent"
+        }
+    }
+}
