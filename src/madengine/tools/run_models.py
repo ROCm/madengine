@@ -1006,7 +1006,7 @@ class RunModels:
                             run_details.performance = multiple_results
 
                             self.console.sh("pwd")
-                            self.console.sh("ls -l /myworkspace")
+                            self.console.sh("ls -l")
                             self.console.sh(f"cat {multiple_results}")
 
                             # check the file of multiple results, check the columns of 'model,performance,metric'
