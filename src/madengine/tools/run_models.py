@@ -258,16 +258,16 @@ class RunModels:
         return build_args
 
     def apply_tools(
-            self, 
-            pre_encapsulate_post_scripts: typing.Dict, 
+            self,
+            pre_encapsulate_post_scripts: typing.Dict,
             run_env: typing.Dict
         ) -> None:
         """Apply tools to the model.
-        
+
         Args:
             pre_encapsulate_post_scripts: The pre, encapsulate and post scripts.
             run_env: The run environment.
-            
+
         Raises:
             Exception: An error occurred while applying tools to the model.
         """
@@ -311,22 +311,22 @@ class RunModels:
                 )
 
     def gather_system_env_details(
-            self, 
-            pre_encapsulate_post_scripts: typing.Dict, 
+            self,
+            pre_encapsulate_post_scripts: typing.Dict,
             model_name: str
         ) -> None:
         """Gather system environment details.
-        
+
         Args:
             pre_encapsulate_post_scripts: The pre, encapsulate and post scripts.
             model_name: The model name.
 
         Returns:
             None
-        
+
         Raises:
             Exception: An error occurred while gathering system environment details.
-        
+
         Note:
             This function is used to gather system environment details.
         """
@@ -334,7 +334,7 @@ class RunModels:
         pre_env_details = {}
         pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
         pre_env_details["args"] = model_name.replace("/", "_") + "_env"
-        pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)        
+        pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
     def copy_scripts(self) -> None:
@@ -367,18 +367,18 @@ class RunModels:
                 self.console.sh("rm -rf scripts/common/post_scripts")
             if os.path.exists("scripts/common/tools"):
                 # remove the scripts/common/tools directory
-                self.console.sh("rm -rf scripts/common/tools")                
-            print(f"scripts/common directory has been cleaned up.")    
+                self.console.sh("rm -rf scripts/common/tools")
+            print(f"scripts/common directory has been cleaned up.")
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
         """Get the GPU arguments.
-        
+
         Args:
             requested_gpus: The requested GPUs.
-        
+
         Returns:
             str: The GPU arguments.
-        
+
         Raises:
             RuntimeError: An error occurred while getting the GPU arguments.
         """
@@ -438,10 +438,10 @@ class RunModels:
 
     def get_cpu_arg(self) -> str:
         """Get the CPU arguments.
-        
+
         Returns:
             str: The CPU arguments.
-        
+
         Raises:
             RuntimeError: An error occurred while getting the CPU arguments.
         """
@@ -455,13 +455,13 @@ class RunModels:
 
     def get_env_arg(self, run_env: typing.Dict) -> str:
         """Get the environment arguments.
-        
+
         Args:
             run_env: The run environment.
-        
+
         Returns:
             str: The environment arguments.
-        
+
         Raises:
             RuntimeError: An error occurred while getting the environment arguments.
         """
@@ -483,13 +483,13 @@ class RunModels:
 
     def get_mount_arg(self, mount_datapaths: typing.List) -> str:
         """Get the mount arguments.
-        
+
         Args:
             mount_datapaths: The mount data paths.
-        
+
         Returns:
             str: The mount arguments.
-            
+
         Raises:
             RuntimeError: An error occurred while getting the mount arguments.
         """
@@ -571,7 +571,7 @@ class RunModels:
 
             use_cache_str = ""
             if self.args.clean_docker_cache:
-                use_cache_str = "--no-cache"       
+                use_cache_str = "--no-cache"
 
             # build docker container
             print(f"Building Docker image...")
@@ -617,7 +617,7 @@ class RunModels:
 
             # print base docker image digest
             run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " -v | jq '.Descriptor.digest' | sed 's/\"//g' ")
-            print(f"BASE DOCKER SHA is {run_details.docker_sha}")     
+            print(f"BASE DOCKER SHA is {run_details.docker_sha}")
 
         else:
             container_name = "container_" + self.context.ctx["MAD_CONTAINER_IMAGE"].replace("/", "_").replace(":", "_")
@@ -653,7 +653,7 @@ class RunModels:
         # get docker run options
         docker_options += "--env MAD_MODEL_NAME='" + info["name"] + "' "
         # Since we are doing Jenkins level environment collection in the docker container, pass in the jenkins build number.
-        docker_options += f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "         
+        docker_options += f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
 
         # gather data
         # TODO: probably can use context.ctx instead of another dictionary like run_env here
@@ -691,7 +691,7 @@ class RunModels:
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
 
-        print(docker_options)        
+        print(docker_options)
 
         # get machine name
         run_details.machine_name = self.console.sh("hostname")
@@ -720,7 +720,7 @@ class RunModels:
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
             else:
-                raise RuntimeError("Unable to determine gpu vendor.")    
+                raise RuntimeError("Unable to determine gpu vendor.")
 
             # clean up previous model run
             model_dir = "run_directory"
@@ -755,7 +755,7 @@ class RunModels:
                     else:   # http or https
                         model_docker.sh("git clone -c credential.helper='!f() { echo username=" + self.creds[ info["cred"] ]["username"] + \
                                     "; echo password=" + self.creds[ info["cred"] ]["password"] + "; };f' " + \
-                                    info['url'], timeout=240, secret="git clone " + info['url'] )                    
+                                    info['url'], timeout=240, secret="git clone " + info['url'] )
                 else:
                     model_docker.sh("git clone " + info["url"], timeout=240)
 
@@ -795,7 +795,7 @@ class RunModels:
             commit = model_docker.sh("cd "+ dir_path +"; git rev-parse HEAD || true  ")
             print("======================================================")
             print("MODEL REPO COMMIT: ", commit )
-            print("======================================================")            
+            print("======================================================")
 
             # copy scripts to model directory
             model_docker.sh("cp -vLR --preserve=all "+ dir_path +"/. "+ model_dir +"/")
@@ -827,7 +827,7 @@ class RunModels:
             print(f"Build Info::{selected_data_provider}")
 
             # keep model_dir as universally rw
-            model_docker.sh("chmod -R a+rw " + model_dir) 
+            model_docker.sh("chmod -R a+rw " + model_dir)
 
             # run model
             test_start_time = time.time()
@@ -875,7 +875,7 @@ class RunModels:
                 print("keep_alive is specified; model_dir(" + model_dir + ") is not removed")
 
         # explicitly delete model docker to stop the container, without waiting for the in-built garbage collector
-        del model_docker                           
+        del model_docker
 
     def run_model(self, model_info: typing.Dict) -> bool:
         """Run model on container.
@@ -1005,6 +1005,10 @@ class RunModels:
                         if multiple_results:
                             run_details.performance = multiple_results
 
+                            self.console.sh("pwd")
+                            self.console.sh("ls -l")
+                            self.console.sh(f"cat {multiple_results}")
+
                             # check the file of multiple results, check the columns of 'model,performance,metric'
                             with open(multiple_results, 'r') as f:
                                 header = f.readline().strip().split(',')
@@ -1017,7 +1021,7 @@ class RunModels:
                                         if col == '':
                                             run_details.performance = None
                                             print("Error: Performance metric is empty in multiple results file.")
-                                            break 
+                                            break
                         else:
                             perf_regex = ".*performance:\\s*\\([+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\)\\s*.*\\s*"
                             run_details.performance = self.console.sh("cat " + log_file_path +
@@ -1049,7 +1053,7 @@ class RunModels:
                                 perf_csv=self.args.output,
                             )
 
-                        self.return_status &= (run_details.status == 'SUCCESS')                    
+                        self.return_status &= (run_details.status == 'SUCCESS')
 
                     except Exception as e:
                         self.return_status = False
@@ -1063,7 +1067,7 @@ class RunModels:
                         update_perf_csv(
                             exception_result="perf_entry.json",
                             perf_csv=self.args.output,
-                        )     
+                        )
 
             except Exception as e:
                 self.return_status = False
@@ -1077,7 +1081,7 @@ class RunModels:
                 update_perf_csv(
                     exception_result="perf_entry.json",
                     perf_csv=self.args.output,
-                )                                     
+                )
 
         return self.return_status
 
@@ -1103,7 +1107,7 @@ class RunModels:
         elif host_os.find("HOST_SLES") != -1:
             print(self.console.sh("zypper info rocm-libs"))
         elif host_os.find("HOST_AZURE") != -1:
-            print(self.console.sh("tdnf info rocm-libs"))            
+            print(self.console.sh("tdnf info rocm-libs"))
         else:
             print("ERROR: Unable to detect host OS.")
             self.return_status = False
@@ -1126,7 +1130,7 @@ class RunModels:
         self.copy_scripts()
 
         discover_models = DiscoverModels(args=self.args)
-        models = discover_models.run()     
+        models = discover_models.run()
 
         # create performance csv
         if not os.path.exists(self.args.output):
