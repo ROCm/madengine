@@ -341,6 +341,7 @@ class RunModels:
         """Copy scripts to the model directory."""
         scripts_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
         print(f"Package path: {scripts_path}")
+        self.console.sh(f"ls -l {scripts_path}")
         # copy the scripts to the model directory
         self.console.sh(f"cp -vLR --preserve=all {scripts_path}/* scripts/")
         print(f"Scripts copied to {os.getcwd()}/scripts")
