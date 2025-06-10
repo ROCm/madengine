@@ -201,6 +201,8 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
+            for i in range(int(self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"])):
+                self.console.sh(f"sudo /opt/rocm/bin/rocm-smi --gpureset -d {i} || true")
             self.console.sh("/opt/rocm/bin/rocm-smi || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
