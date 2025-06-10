@@ -717,6 +717,8 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
+                for i in range(int(info["n_gpus"])):
+                    model_docker.sh(f"sudo /opt/rocm/bin/rocm-smi --gpureset -d {i} || true")
                 smi = model_docker.sh("/opt/rocm/bin/rocm-smi || true")
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
