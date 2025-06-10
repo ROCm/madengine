@@ -616,7 +616,7 @@ class RunModels:
             print(f"BASE DOCKER is {run_details.base_docker}")
 
             # print base docker image digest
-            self.console.sh("apt-get -y update && apt-get install -y jq")
+            self.console.sh("sudo apt-get -y update && sudo apt-get install -y jq")
             run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " -v | jq '.Descriptor.digest' | sed 's/\"//g' ")
             print(f"BASE DOCKER SHA is {run_details.docker_sha}")
 
