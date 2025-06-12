@@ -906,6 +906,15 @@ class RunModels:
         # Environment variable updates for MAD Public CI
         run_details.gpu_architecture = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
 
+        # Check if model is deprecated
+        if model_info.get("is_deprecated", False): 
+            print(f"WARNING: Model {model_info['name']} has been deprecated.") 
+            if self.args.ignore_deprecated_flag:  
+                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")  
+            else:  
+                print(f"WARNING: Skipping execution. No bypass flags mentioned.")  
+                return True  # exit early
+
         # check if model is supported on current gpu architecture, if not skip.
         list_skip_gpu_arch = []
         if (
