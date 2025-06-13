@@ -903,7 +903,7 @@ class RunModels:
         run_details.training_precision = model_info["training_precision"]
         run_details.args = model_info["args"]
         run_details.tags = model_info["tags"]
-        run_details.additional_docker_run_options = model_info["additional_docker_run_options"]
+        run_details.additional_docker_run_options = model_info.get("additional_docker_run_options", "")
         # gets pipeline variable from jenkinsfile, default value is none
         run_details.pipeline = os.environ.get("pipeline")
         # Taking gpu arch from context assumes the host image and container have the same gpu arch.
@@ -911,12 +911,12 @@ class RunModels:
         run_details.gpu_architecture = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
 
         # Check if model is deprecated
-        if model_info.get("is_deprecated", False): 
-            print(f"WARNING: Model {model_info['name']} has been deprecated.") 
-            if self.args.ignore_deprecated_flag:  
-                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")  
-            else:  
-                print(f"WARNING: Skipping execution. No bypass flags mentioned.")  
+        if model_info.get("is_deprecated", False):
+            print(f"WARNING: Model {model_info['name']} has been deprecated.")
+            if self.args.ignore_deprecated_flag:
+                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")
+            else:
+                print(f"WARNING: Skipping execution. No bypass flags mentioned.")
                 return True  # exit early
 
         # check if model is supported on current gpu architecture, if not skip.
