@@ -82,6 +82,7 @@ class RunDetails:
         data_size (str): The size of the data.
         data_download_duration (str): The duration of data download.
         build_number (str): The CI build number.
+        additional_docker_run_options (str): The additional options used for docker run.
     """
 
     # Avoiding @property for ease of code, add if needed.
@@ -110,6 +111,7 @@ class RunDetails:
         self.data_size = ""
         self.data_download_duration = ""
         self.build_number = ""
+        self.additional_docker_run_options = ""
 
     def print_perf(self):
         """Print the performance results of a model.
@@ -691,6 +693,7 @@ class RunModels:
         # Must set env vars and mounts at the end
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
+        docker_options += f" {run_details.additional_docker_run_options}"
 
         print(docker_options)
 
@@ -900,6 +903,7 @@ class RunModels:
         run_details.training_precision = model_info["training_precision"]
         run_details.args = model_info["args"]
         run_details.tags = model_info["tags"]
+        run_details.additional_docker_run_options = model_info["additional_docker_run_options"]
         # gets pipeline variable from jenkinsfile, default value is none
         run_details.pipeline = os.environ.get("pipeline")
         # Taking gpu arch from context assumes the host image and container have the same gpu arch.
