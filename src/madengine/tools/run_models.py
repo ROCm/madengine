@@ -632,10 +632,10 @@ class RunModels:
         docker_options = "--shm-size 8G "
 
         if gpu_vendor.find("AMD") != -1:
-            docker_options = "--network host -u root --group-add video \
+            docker_options += "--network host -u root --group-add video \
             --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined --ipc=host "
         elif gpu_vendor.find("NVIDIA") != -1:
-            docker_options = "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined  --network host -u root --ipc=host "
+            docker_options += "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse --security-opt seccomp=unconfined --security-opt apparmor=unconfined  --network host -u root --ipc=host "
         else:
             raise RuntimeError("Unable to determine gpu vendor.")
 
@@ -714,6 +714,8 @@ class RunModels:
             # check that user is root
             whoami = model_docker.sh("whoami")
             print( "USER is " + whoami )
+            df_h = model_docker.sh("df -h")
+            print("df -h  is " + df_h )
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
