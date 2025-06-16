@@ -16,10 +16,10 @@ import pandas as pd
 
 def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Strip the column names of a DataFrame.
-    
+
     Args:
         df: The DataFrame to strip the column names of.
-    
+
     Returns:
         The DataFrame with stripped column names.
     """
@@ -29,10 +29,10 @@ def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_json(js: str) -> dict:
     """Read a JSON file.
-    
+
     Args:
         js: The path to the JSON file.
-    
+
     Returns:
         The JSON dictionary.
     """
@@ -43,7 +43,7 @@ def read_json(js: str) -> dict:
 
 def flatten_tags(perf_entry: dict):
     """Flatten the tags of a performance entry.
-    
+
     Args:
         perf_entry: The performance entry.
 
@@ -57,7 +57,7 @@ def flatten_tags(perf_entry: dict):
 
 def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
     """Write the performance entry DataFrame to a CSV file.
-    
+
     Args:
         perf_entry: The performance entry DataFrame.
 
@@ -69,7 +69,7 @@ def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
 
 def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
     """Write the performance entry dictionary to a CSV file.
-    
+
     Args:
         perf_entry: The performance entry dictionary.
     """
@@ -79,22 +79,22 @@ def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
 
 
 def handle_multiple_results(
-        perf_csv_df: pd.DataFrame, 
-        multiple_results: str, 
-        common_info: str, 
+        perf_csv_df: pd.DataFrame,
+        multiple_results: str,
+        common_info: str,
         model_name: str
     ) -> pd.DataFrame:
     """Handle multiple results.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         multiple_results: The path to the multiple results CSV file.
         common_info: The path to the common info JSON file.
         model_name: The model name.
-        
+
     Returns:
         The updated performance csv DataFrame.
-    
+
     Raises:
         AssertionError: If the number of columns in the performance csv DataFrame is not equal to the length of the row.
     """
@@ -125,6 +125,7 @@ def handle_multiple_results(
         else:
             row["status"] = "FAILURE"
 
+        print(f"{perf_csv_df.columns=} {row=}")
         assert perf_csv_df.columns.size == len(row)
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
@@ -137,15 +138,15 @@ def handle_multiple_results(
 
 
 def handle_single_result(
-        perf_csv_df: pd.DataFrame, 
+        perf_csv_df: pd.DataFrame,
         single_result: str
     ) -> pd.DataFrame:
     """Handle a single result.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         single_result: The path to the single result JSON file.
-    
+
     Returns:
         The updated performance csv DataFrame.
 
@@ -162,15 +163,15 @@ def handle_single_result(
 
 
 def handle_exception_result(
-        perf_csv_df: pd.DataFrame, 
+        perf_csv_df: pd.DataFrame,
         exception_result: str
     ) -> pd.DataFrame:
     """Handle an exception result.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         exception_result: The path to the exception result JSON file.
-    
+
     Returns:
         The updated performance csv DataFrame.
 
@@ -195,7 +196,7 @@ def update_perf_csv(
         model_name: typing.Optional[str] = None,
     ):
     """Update the performance csv file with the latest performance data."""
-    print(f"Attaching performance metrics of models to perf.csv")
+    print(f"Attaching performance metrics of models to perf.csv {perf_csv=} {multiple_results=} {single_result=} {exception_result=}")
     # read perf.csv
     perf_csv_df = df_strip_columns(pd.read_csv(perf_csv))
 
@@ -218,6 +219,7 @@ def update_perf_csv(
 
     # write new perf.csv
     # Note that this file will also generate a perf_entry.csv regardless of the output file args.
+    print(f"{perf_csv_df=}")
     perf_csv_df.to_csv(perf_csv, index=False)
 
 
