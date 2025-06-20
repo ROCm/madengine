@@ -69,7 +69,7 @@ class TestDiscover:
         with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
             csv_reader = csv.DictReader(csv_file)
             for row in csv_reader:
-                if row["model"] == "dummy2/model2" and row["status"] == "SUCCESS" and "batch-size=32" in row["args"]:
+                if row["model"] == "dummy2/model2" and row["status"] == "SUCCESS" and "--batch-size 32" in row["args"]:
                     success = True
         if not success:
             pytest.fail("dummy2/model2:batch-size=32 did not run successfully.")
