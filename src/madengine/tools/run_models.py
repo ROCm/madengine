@@ -713,6 +713,8 @@ class RunModels:
 
         with Timeout(timeout):
             print(f"")
+            print("this is df -h on the host")
+            os.system('df -h')
             model_docker = Docker(run_details.docker_image, container_name, docker_options, keep_alive=self.args.keep_alive, console=self.console)
             # check that user is root
             df_h = model_docker.sh("df -h")
