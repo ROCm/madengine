@@ -713,8 +713,12 @@ class RunModels:
 
         with Timeout(timeout):
             print(f"")
-            print("this is df -h on the host")
-            os.system('df -h')
+            df_host = os.popen('df -h').read()
+            print(f"this is df -h on the host {df_host=}")
+            daemon_json = os.popen('cat /etc/docker/daemon.json').read()
+            print(f"this is cat daemon {daemon_json=}")
+            alpine = os.popen('docker run -it --rm --shm-size=1g alpine sh -c "df -h /dev/shm"').read()
+            print(f"this is alpine shm {alpine=}")
             model_docker = Docker(run_details.docker_image, container_name, docker_options, keep_alive=self.args.keep_alive, console=self.console)
             # check that user is root
             df_h = model_docker.sh("df -h")
