@@ -719,10 +719,14 @@ class RunModels:
             print(f"this is cat daemon {daemon_json=}")
             alpine = os.popen('docker run --rm --shm-size=1g alpine sh -c "df -h /dev/shm"').read()
             print(f"this is alpine shm {alpine=}")
+            beta = os.popen('docker run --rm --shm-size=510g run_details.docker_image sh -c "df -h /dev/shm"').read()
+            print(f"this is beta shm {beta=}")
             model_docker = Docker(run_details.docker_image, container_name, docker_options, keep_alive=self.args.keep_alive, console=self.console)
             # check that user is root
             df_h = model_docker.sh("df -h")
             print( "df -h is " + df_h )
+            df_h_shm = model_docker.sh("df -h /dev/shm")
+            print( "df -h /dev/shm is " + df_h_shm )
             whoami = model_docker.sh("whoami")
             print( "USER is " + whoami )
 
