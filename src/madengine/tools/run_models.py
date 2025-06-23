@@ -631,7 +631,7 @@ class RunModels:
 
         # prepare docker run options
         gpu_vendor = self.context.ctx["gpu_vendor"]
-        docker_options = ""
+        docker_options = "--shm-size=510g "
 
         if gpu_vendor.find("AMD") != -1:
             docker_options = "--network host -u root --group-add video \
