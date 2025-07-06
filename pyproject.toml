@@ -39,7 +39,7 @@ madengine = "madengine.mad:main"
 Homepage = "https://github.com/ROCm/madengine"
 Issues = "https://github.com/ROCm/madengine/issues"
 
-[project.extras]
+[project.optional-dependencies]
 dev = [
   "pytest",
   "pytest-cov",

@@ -77,6 +77,19 @@ Commands:
     database            CRUD for database
 ```
 
+For distributed execution scenarios, use the distributed CLI:
+
+```shell
+# Distributed CLI for build/run separation
+python -m madengine.tools.distributed_cli --help
+
+# Available commands:
+#   build       - Build Docker images for models
+#   run         - Run models (execution-only or complete workflow)
+#   generate    - Generate Ansible/Kubernetes manifests
+#   export-config - Export execution configuration
+```
+
 ## Run models locally
 
 Command to run LLMs and Deep Learning Models on container.
@@ -175,18 +188,48 @@ Contexts are run-time parameters that change how the model is executed. Some con
 For more details, see [How to provide contexts](docs/how-to-provide-contexts.md)
 
 ### Credentials
-Credentials to clone model git urls are provided in a centralized `credential.json` file. Models that require special credentials for cloning have a special `cred` field in the model definition in `models.json`. This field denotes the specific credential in `credential.json` to use. Public models repositories can skip the `cred` field. 
+Credentials to clone model git urls and access Docker registries are provided in a centralized `credential.json` file. Models that require special credentials for cloning have a special `cred` field in the model definition in `models.json`. This field denotes the specific credential in `credential.json` to use. Public models repositories can skip the `cred` field. 
 
-There are several types of credentials supported. 
+There are several types of credentials supported:
 
-1. For HTTP/HTTPS git urls, `username` and `password` should be provided in the credential. For Source Code Management(SCM) systems that support Access Tokens, the token can be substituted for the `password` field. The `username` and `password` will be passed as a docker build argument and a container environment variable in the docker build and run steps. Fore example, for `"cred":"AMD_GITHUB"` field in `models.json` and entry `"AMD_GITHUB": { "username": "github_username", "password":"pass" }` in `credential.json` the following docker build arguments and container environment variables will be added: `AMD_GITHUB_USERNAME="github_username"` and `AMD_GITHUB_PASSWORD="pass"`. 
+#### Git Repository Credentials
+
+1. For HTTP/HTTPS git urls, `username` and `password` should be provided in the credential. For Source Code Management(SCM) systems that support Access Tokens, the token can be substituted for the `password` field. The `username` and `password` will be passed as a docker build argument and a container environment variable in the docker build and run steps. For example, for `"cred":"AMD_GITHUB"` field in `models.json` and entry `"AMD_GITHUB": { "username": "github_username", "password":"pass" }` in `credential.json` the following docker build arguments and container environment variables will be added: `AMD_GITHUB_USERNAME="github_username"` and `AMD_GITHUB_PASSWORD="pass"`. 
       
-2. For SSH git urls, `username` and `ssh_key_file` should be provided in the credential. The `username` is the SSH username, and `ssh_key_file` is the private ssh key, that has been registed with the SCM system. 
-Due to legal requirements, the Credentials to access all models is not provided by default in DLM. Please contact the model owner if you wish to access and run the model. 
+2. For SSH git urls, `username` and `ssh_key_file` should be provided in the credential. The `username` is the SSH username, and `ssh_key_file` is the private ssh key, that has been registered with the SCM system. 
 
-3. For NAS urls, `HOST`, `PORT`, `USERNAME`, and `PASSWORD` should be provided in the credential. Please check env variables starting with NAS in [Environment Variables] (https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
+#### Data Provider Credentials
 
-3. For AWS S3 urls, `USERNAME`, and `PASSWORD` should be provided in the credential with var name as MAD_AWS_S3 as mentioned in [Environment Variables] (https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
+3. For NAS urls, `HOST`, `PORT`, `USERNAME`, and `PASSWORD` should be provided in the credential. Please check env variables starting with NAS in [Environment Variables](https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
+
+4. For AWS S3 urls, `USERNAME`, and `PASSWORD` should be provided in the credential with var name as MAD_AWS_S3 as mentioned in [Environment Variables](https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
+
+#### Docker Registry Credentials
+
+5. For Docker registries (Docker Hub, private registries), `username` and `password` should be provided. The credential key maps to the registry URL:
+   - `dockerhub` - for Docker Hub (docker.io) 
+   - `localhost:5000` - for local registry
+   - `myregistry.com` - for custom registry
+
+Example `credential.json` with registry credentials:
+```json
+{
+    "dockerhub": {
+        "username": "your-dockerhub-username",
+        "password": "your-dockerhub-password-or-token"
+    },
+    "localhost:5000": {
+        "username": "local-registry-user",
+        "password": "local-registry-pass"
+    },
+    "AMD_GITHUB": {
+        "username": "github_username", 
+        "password": "github_token"
+    }
+}
+```
+
+Due to legal requirements, the Credentials to access all models is not provided by default in DLM. Please contact the model owner if you wish to access and run the model.
 
 
 ### Local data provider
@@ -197,6 +240,127 @@ To use existing data on a local path, add to the data specification, using a `lo
 If no data exists in local path, a local copy of data can be downloaded using by setting the `mirrorlocal` field in data specification in `data.json`. Not all providers support `mirrorlocal`. For the ones that do support this feature, the remote data is mirrored on this host path during the first run. In subsequent runs, the data may be reused through synchronization mechanisms. If the user wishes to skip the remote synchronization, the same location can be set as a `local` data provider in data.json, with higher precedence, or as the only provider for the data, by locally editing `data.json`. 
 
 Alternatively, the command-line argument, `--force-mirror-local` forces local mirroring on *all* workloads, to the provided FORCEMIRRORLOCAL path.
+
+## Distributed Execution
+
+madengine supports distributed execution scenarios where Docker images are built on a central host and then distributed to remote nodes for execution. This is useful for:
+
+- **CI/CD Pipelines**: Build images once in CI, deploy to multiple GPU nodes
+- **Multi-node Setups**: Build on a central host, run on distributed GPU clusters
+- **Resource Optimization**: Separate build and runtime environments
+
+### Distributed CLI Commands
+
+The distributed execution functionality is available through the `madengine.tools.distributed_cli` module:
+
+```bash
+# Build Docker images and create manifest
+python -m madengine.tools.distributed_cli build --tags dummy --registry docker.io
+
+# Run models using manifest (registry auto-detected)
+python -m madengine.tools.distributed_cli run --manifest-file build_manifest.json
+
+# Complete workflow (build + run)
+python -m madengine.tools.distributed_cli run --tags dummy --registry docker.io
+```
+
+### Registry Auto-Detection
+
+The distributed CLI automatically detects registry information from build manifests, eliminating the need to specify `--registry` for run commands:
+
+**Build Phase:**
+```bash
+# Build and push images to Docker Hub
+python -m madengine.tools.distributed_cli build --tags dummy --registry docker.io
+# Creates build_manifest.json with registry information
+```
+
+**Run Phase:**
+```bash
+# Registry is automatically detected from manifest
+python -m madengine.tools.distributed_cli run --manifest-file build_manifest.json
+# No need to specify --registry parameter
+```
+
+### Registry Credentials
+
+To use Docker registries, add credentials to `credential.json`:
+
+```json
+{
+    "dockerhub": {
+        "username": "your-dockerhub-username",
+        "password": "your-dockerhub-password-or-token"
+    },
+    "localhost:5000": {
+        "username": "your-local-registry-username",
+        "password": "your-local-registry-password"
+    }
+}
+```
+
+**Registry Mapping:**
+- `docker.io` or empty → uses `dockerhub` credentials
+- `localhost:5000` → uses `localhost:5000` credentials  
+- Custom registries → uses registry URL as credential key
+
+### Distributed Workflow Examples
+
+**Local Development:**
+```bash
+# Build without registry (local images only)
+python -m madengine.tools.distributed_cli build --tags dummy
+
+# Run locally 
+python -m madengine.tools.distributed_cli run --manifest-file build_manifest.json
+```
+
+**Production Deployment:**
+```bash
+# 1. Build and push to registry (CI server)
+python -m madengine.tools.distributed_cli build --tags dummy --registry docker.io
+
+# 2. Transfer manifest to GPU nodes
+scp build_manifest.json user@gpu-node:/path/to/madengine/
+
+# 3. Run on GPU nodes (registry auto-detected)
+python -m madengine.tools.distributed_cli run --manifest-file build_manifest.json
+```
+
+**Multi-Node with Ansible:**
+```bash
+# Generate Ansible playbook
+python -m madengine.tools.distributed_cli generate ansible \
+    --manifest-file build_manifest.json \
+    --output madengine_playbook.yml
+
+# Deploy to cluster
+ansible-playbook -i gpu_inventory madengine_playbook.yml
+```
+
+### Error Handling
+
+The system provides clear error messages for common issues:
+
+**Missing Registry Credentials:**
+```
+No credentials found for registry: dockerhub
+Please add dockerhub credentials to credential.json:
+{
+  "dockerhub": {
+    "username": "your-dockerhub-username",
+    "password": "your-dockerhub-password-or-token"
+  }
+}
+```
+
+**Registry Pull Fallback:**
+```
+Attempting to pull constructed registry image: username/ci-dummy_dummy.ubuntu.amd
+Failed to pull from registry, falling back to local image: <error details>
+```
+
+For detailed documentation on distributed execution, see [Distributed Execution Solution](docs/distributed-execution-solution.md).
 
 ## Discover models
 
