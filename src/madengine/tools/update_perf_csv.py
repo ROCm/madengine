@@ -115,7 +115,7 @@ def handle_multiple_results(
     final_multiple_results_df = pd.DataFrame()
     # add results to perf.csv
     for r in multiple_results_df.to_dict(orient="records"):
-        row = common_info_json
+        row = common_info_json.copy()
         row["model"] = model_name + "_" + str(r["model"])
         row["performance"] = r["performance"]
         row["metric"] = r["metric"]
@@ -125,7 +125,7 @@ def handle_multiple_results(
         else:
             row["status"] = "FAILURE"
 
-        assert perf_csv_df.columns.size == len(row)
+        assert perf_csv_df.columns.size == len(row), f"Column count mismatch: CSV has {perf_csv_df.columns.size} columns but row has {len(row)} keys. CSV columns: {list(perf_csv_df.columns)}, Row keys: {list(row.keys())}"
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
         )
