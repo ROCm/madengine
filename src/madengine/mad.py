@@ -1,14 +1,15 @@
-#!/usr/bin/env python
-"""Mad Engine CLI tool.
+#!/usr/bin/env python3
+"""MAD Engine CLI tool.
 
 This script provides a command-line interface to run models, generate reports, and tools for profiling and tracing.
 This tool is used to run LLMs and Deep Learning models locally.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-# built-in imports
+
 import argparse
-# MAD Engine imports
+import logging
+
 from madengine import __version__
 from madengine.tools.run_models import RunModels
 from madengine.tools.discover_models import DiscoverModels
@@ -18,7 +19,14 @@ from madengine.tools.upload_mongodb import MongoDBHandler
 from madengine.tools.update_perf_csv import UpdatePerfCsv
 from madengine.tools.csv_to_html import ConvertCsvToHtml
 from madengine.tools.csv_to_email import ConvertCsvToEmail
-from madengine.core.constants import MODEL_DIR # pylint: disable=unused-import
+from madengine.core.constants import MODEL_DIR  # pylint: disable=unused-import
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -31,9 +39,9 @@ def run_models(args: argparse.Namespace):
     Args:
         args: The command-line arguments.
     """
-    print(f"Running models on container")
-    run_models = RunModels(args=args)
-    return run_models.run()
+    logger.info("Running models on container")
+    run_models_instance = RunModels(args=args)
+    return run_models_instance.run()
     
 
 def discover_models(args: argparse.Namespace):
@@ -42,9 +50,9 @@ def discover_models(args: argparse.Namespace):
     Args:
         args: The command-line arguments.
     """
-    print(f"Discovering all models in the project")
-    discover_models = DiscoverModels(args=args)
-    return discover_models.run()
+    logger.info("Discovering all models in the project")
+    discover_models_instance = DiscoverModels(args=args)
+    return discover_models_instance.run()
     
 
 def update_perf_csv(args):
@@ -53,9 +61,9 @@ def update_perf_csv(args):
     Args:
         args: The command-line arguments.
     """
-    print(f"Running update_perf_csv")
-    update_perf_csv = UpdatePerfCsv(args=args)
-    return update_perf_csv.run()
+    logger.info("Running update_perf_csv")
+    update_perf_csv_instance = UpdatePerfCsv(args=args)
+    return update_perf_csv_instance.run()
 
 
 def csv_to_html(args):
@@ -64,7 +72,7 @@ def csv_to_html(args):
     Args:
         args: The command-line arguments.
     """
-    print(f"Running csv_to_html")
+    logger.info("Running csv_to_html")
     convert_csv_to_html = ConvertCsvToHtml(args=args)
     return convert_csv_to_html.run()
 
@@ -75,7 +83,7 @@ def csv_to_email(args):
     Args:
         args: The command-line arguments.
     """
-    print(f"Convert CSV to Email of models")
+    logger.info("Convert CSV to Email of models")
     convert_csv_to_email = ConvertCsvToEmail(args=args)
     return convert_csv_to_email.run()
 
@@ -86,9 +94,9 @@ def create_table(args):
     Args:
         args: The command-line arguments.
     """   
-    print(f"Create table in DB")
-    create_table = CreateTable(args=args)
-    return create_table.run()
+    logger.info("Create table in DB")
+    create_table_instance = CreateTable(args=args)
+    return create_table_instance.run()
 
 
 def update_table(args):
@@ -97,9 +105,10 @@ def update_table(args):
     Args:
         args: The command-line arguments.
     """   
-    print(f"Update table in DB")    
-    update_table = UpdateTable(args=args)
-    return update_table.run()
+    logger.info("Update table in DB")
+    update_table_instance = UpdateTable(args=args)
+    return update_table_instance.run()
+
 
 def upload_mongodb(args):
     """Upload to MongoDB.
@@ -107,9 +116,9 @@ def upload_mongodb(args):
     Args:
         args: The command-line arguments.
     """   
-    print(f"Uploading to MongoDB")    
-    upload_mongodb = MongoDBHandler(args=args)
-    return upload_mongodb.run()
+    logger.info("Uploading to MongoDB")
+    upload_mongodb_instance = MongoDBHandler(args=args)
+    return upload_mongodb_instance.run()
 # -----------------------------------------------------------------------------
 # Main function
 # -----------------------------------------------------------------------------

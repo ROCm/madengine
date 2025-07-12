@@ -115,7 +115,7 @@ def handle_multiple_results(
     final_multiple_results_df = pd.DataFrame()
     # add results to perf.csv
     for r in multiple_results_df.to_dict(orient="records"):
-        row = common_info_json
+        row = common_info_json.copy()
         row["model"] = model_name + "_" + str(r["model"])
         row["performance"] = r["performance"]
         row["metric"] = r["metric"]
@@ -125,7 +125,7 @@ def handle_multiple_results(
         else:
             row["status"] = "FAILURE"
 
-        assert perf_csv_df.columns.size == len(row)
+        assert perf_csv_df.columns.size == len(row), f"Column count mismatch: CSV has {perf_csv_df.columns.size} columns but row has {len(row)} keys. CSV columns: {list(perf_csv_df.columns)}, Row keys: {list(row.keys())}"
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
         )
@@ -195,12 +195,17 @@ def update_perf_csv(
         model_name: typing.Optional[str] = None,
     ):
     """Update the performance csv file with the latest performance data."""
-    print(f"Attaching performance metrics of models to perf.csv")
+    print("\n" + "="*80)
+    print("📈 ATTACHING PERFORMANCE METRICS TO DATABASE")
+    print("="*80)
+    print(f"📂 Target file: {perf_csv}")
+    
     # read perf.csv
     perf_csv_df = df_strip_columns(pd.read_csv(perf_csv))
 
     # handle multiple_results, single_result, and exception_result
     if multiple_results:
+        print("🔄 Processing multiple results...")
         perf_csv_df = handle_multiple_results(
             perf_csv_df,
             multiple_results,
@@ -208,16 +213,21 @@ def update_perf_csv(
             model_name,
         )
     elif single_result:
+        print("🔄 Processing single result...")
         perf_csv_df = handle_single_result(perf_csv_df, single_result)
     elif exception_result:
+        print("⚠️  Processing exception result...")
         perf_csv_df = handle_exception_result(
             perf_csv_df, exception_result
         )
     else:
-        print("No results to update in perf.csv")
+        print("ℹ️  No results to update in perf.csv")
 
     # write new perf.csv
     # Note that this file will also generate a perf_entry.csv regardless of the output file args.
+    perf_csv_df.to_csv(perf_csv, index=False)
+    print(f"✅ Successfully updated: {perf_csv}")
+    print("="*80 + "\n")
     perf_csv_df.to_csv(perf_csv, index=False)
 
 
@@ -238,12 +248,17 @@ class UpdatePerfCsv:
 
     def run(self):
         """Update the performance csv file with the latest performance data."""
-        print(f"Updating performance metrics of models perf.csv to database")
+        print("\n" + "="*80)
+        print("📊 UPDATING PERFORMANCE METRICS DATABASE")
+        print("="*80)
+        print(f"📂 Processing: {self.args.perf_csv}")
+        
         # read perf.csv
         perf_csv_df = df_strip_columns(pd.read_csv(self.args.perf_csv))
 
         # handle multiple_results, single_result, and exception_result
         if self.args.multiple_results:
+            print("🔄 Processing multiple results...")
             perf_csv_df = handle_multiple_results(
                 perf_csv_df,
                 self.args.multiple_results,
@@ -251,17 +266,22 @@ class UpdatePerfCsv:
                 self.args.model_name,
             )
         elif self.args.single_result:
+            print("🔄 Processing single result...")
             perf_csv_df = handle_single_result(perf_csv_df, self.args.single_result)
         elif self.args.exception_result:
+            print("⚠️  Processing exception result...")
             perf_csv_df = handle_exception_result(
                 perf_csv_df, self.args.exception_result
             )
         else:
-            print("No results to update in perf.csv")
+            print("ℹ️  No results to update in perf.csv")
 
         # write new perf.csv
         # Note that this file will also generate a perf_entry.csv regardless of the output file args.
         perf_csv_df.to_csv(self.args.perf_csv, index=False)
+        
+        print(f"✅ Successfully updated: {self.args.perf_csv}")
+        print("="*80 + "\n")
 
         self.return_status = True
         return self.return_status

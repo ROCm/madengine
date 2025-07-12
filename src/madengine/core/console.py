@@ -8,6 +8,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import subprocess
 import typing
+import re
 # third-party modules
 import typing_extensions
 
@@ -32,6 +33,73 @@ class Console:
         """
         self.shellVerbose = shellVerbose
         self.live_output = live_output
+
+    def _highlight_docker_operations(self, command: str) -> str:
+        """Highlight docker push/pull/build/run operations for better visibility.
+        
+        Args:
+            command (str): The command to potentially highlight.
+            
+        Returns:
+            str: The highlighted command if it's a docker operation.
+        """
+        # Check if this is a docker operation
+        docker_push_pattern = r'^docker\s+push\s+'
+        docker_pull_pattern = r'^docker\s+pull\s+'
+        docker_build_pattern = r'^docker\s+build\s+'
+        docker_run_pattern = r'^docker\s+run\s+'
+        
+        if re.match(docker_push_pattern, command, re.IGNORECASE):
+            return f"\n{'='*80}\n🚀 DOCKER PUSH OPERATION: {command}\n{'='*80}"
+        elif re.match(docker_pull_pattern, command, re.IGNORECASE):
+            return f"\n{'='*80}\n📥 DOCKER PULL OPERATION: {command}\n{'='*80}"
+        elif re.match(docker_build_pattern, command, re.IGNORECASE):
+            return f"\n{'='*80}\n🔨 DOCKER BUILD OPERATION: {command}\n{'='*80}"
+        elif re.match(docker_run_pattern, command, re.IGNORECASE):
+            return f"\n{'='*80}\n🏃 DOCKER RUN OPERATION: {command}\n{'='*80}"
+        
+        return command
+
+    def _show_docker_completion(self, command: str, success: bool = True) -> None:
+        """Show completion message for docker operations.
+        
+        Args:
+            command (str): The command that was executed.
+            success (bool): Whether the operation was successful.
+        """
+        docker_push_pattern = r'^docker\s+push\s+'
+        docker_pull_pattern = r'^docker\s+pull\s+'
+        docker_build_pattern = r'^docker\s+build\s+'
+        docker_run_pattern = r'^docker\s+run\s+'
+        
+        if re.match(docker_push_pattern, command, re.IGNORECASE):
+            if success:
+                print(f"✅ DOCKER PUSH COMPLETED SUCCESSFULLY")
+                print(f"{'='*80}\n")
+            else:
+                print(f"❌ DOCKER PUSH FAILED")
+                print(f"{'='*80}\n")
+        elif re.match(docker_pull_pattern, command, re.IGNORECASE):
+            if success:
+                print(f"✅ DOCKER PULL COMPLETED SUCCESSFULLY") 
+                print(f"{'='*80}\n")
+            else:
+                print(f"❌ DOCKER PULL FAILED")
+                print(f"{'='*80}\n")
+        elif re.match(docker_build_pattern, command, re.IGNORECASE):
+            if success:
+                print(f"✅ DOCKER BUILD COMPLETED SUCCESSFULLY")
+                print(f"{'='*80}\n")
+            else:
+                print(f"❌ DOCKER BUILD FAILED")
+                print(f"{'='*80}\n")
+        elif re.match(docker_run_pattern, command, re.IGNORECASE):
+            if success:
+                print(f"✅ DOCKER RUN COMPLETED SUCCESSFULLY")
+                print(f"{'='*80}\n")
+            else:
+                print(f"❌ DOCKER RUN FAILED")
+                print(f"{'='*80}\n")
 
     def sh(
             self, 
@@ -60,7 +128,8 @@ class Console:
         """
         # Print the command if shellVerbose is True
         if self.shellVerbose and not secret:
-            print("> " + command, flush=True)
+            highlighted_command = self._highlight_docker_operations(command)
+            print("> " + highlighted_command, flush=True)
 
         # Run the shell command
         proc = subprocess.Popen(
@@ -91,6 +160,12 @@ class Console:
             raise RuntimeError("Console script timeout") from exc
         
         # Check for failure
+        success = proc.returncode == 0
+        
+        # Show docker operation completion status
+        if not secret:
+            self._show_docker_completion(command, success)
+        
         if proc.returncode != 0:
             if not canFail:
                 if not secret:
