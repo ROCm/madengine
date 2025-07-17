@@ -6,6 +6,22 @@ __pycache__/
 # C extensions
 *.so
 
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
 # Distribution / packaging
 .Python
 build/
@@ -36,7 +52,7 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Testing and coverage
 htmlcov/
 .tox/
 .nox/
@@ -48,6 +64,23 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
+.pytest_cache/
+
+# MADEngine specific
+credential.json
+data.json
+*.log
+*.csv
+*.html
+library_trace.csv
+library_perf.csv
+perf.csv
+perf.html
+
+# Temporary and build files
+temp/
+tmp/
+*.tmp
 .pytest_cache/
 cover/
 

@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ k8s.configmap.name | default('madengine-config') }}
+  namespace: {{ k8s.namespace | default('madengine') }}
+  labels:
+    app.kubernetes.io/name: madengine
+    app.kubernetes.io/component: config
+    app.kubernetes.io/version: {{ generation.version | default('1.0.0') }}
+  annotations:
+    generated-on: "{{ generation.timestamp }}"
+    environment: "{{ environment | default('default') }}"
+data:
+  # Build manifest data
+  manifest.json: |
+    {{ manifest | to_json | indent(4) }}
+  
+  # Execution configuration
+  execution-config.json: |
+    {
+      "timeout": {{ execution.timeout | default(7200) }},
+      "keep_alive": {{ execution.keep_alive | default(false) | lower }},
+      "live_output": {{ execution.live_output | default(true) | lower }},
+      "output_file": "{{ execution.output_file | default('perf.csv') }}",
+      "results_file": "{{ execution.results_file | default('execution_results.json') }}",
+      "generate_sys_env_details": {{ execution.generate_sys_env_details | default(true) | lower }},
+      "registry": "{{ registry | default('') }}",
+      "gpu_vendor": "{{ gpu_vendor | default('') }}"
+    }
+  
+  {% if credentials %}
+  # Credentials configuration
+  credential.json: |
+    {{ credentials | to_json | indent(4) }}
+  {% endif %}
+  
+  {% if data_config %}
+  # Data configuration
+  data.json: |
+    {{ data_config | to_json | indent(4) }}
+  {% endif %}
+  
+  # Execution script
+  execute_models.py: |
+    #!/usr/bin/env python3
+    """
+    MADEngine Kubernetes Execution Script
+    Generated on: {{ generation.timestamp }}
+    Environment: {{ environment | default('default') }}
+    """
+    
+    import os
+    import sys
+    import json
+    import argparse
+    from datetime import datetime
+    
+    try:
+        from madengine.tools.distributed_orchestrator import DistributedOrchestrator
+    except ImportError as e:
+        print(f"Error importing MADEngine: {e}")
+        sys.exit(1)
+    
+    def main():
+        """Main execution function."""
+        print("=" * 80)
+        print("MADEngine Kubernetes Model Execution")
+        print("=" * 80)
+        print(f"Execution started: {datetime.now().isoformat()}")
+        print(f"Environment: {{ environment | default('default') }}")
+        print(f"Registry: {{ registry | default('local') }}")
+        print(f"GPU Vendor: {{ gpu_vendor | default('unknown') }}")
+        print("=" * 80)
+        
+        # Load configuration
+        with open('/config/execution-config.json', 'r') as f:
+            config = json.load(f)
+        
+        # Create args
+        args = argparse.Namespace()
+        args.live_output = config.get('live_output', True)
+        args.additional_context = None
+        args.additional_context_file = None
+        args.data_config_file_name = '/config/data.json' if os.path.exists('/config/data.json') else 'data.json'
+        args.force_mirror_local = False
+        args.output = config.get('output_file', 'perf.csv')
+        args.generate_sys_env_details = config.get('generate_sys_env_details', True)
+        args._separate_phases = True
+        
+        try:
+            # Initialize orchestrator
+            orchestrator = DistributedOrchestrator(args)
+            
+            # Execute run phase
+            execution_summary = orchestrator.run_phase(
+                manifest_file='/config/manifest.json',
+                registry=config.get('registry', ''),
+                timeout=config.get('timeout', 7200),
+                keep_alive=config.get('keep_alive', False)
+            )
+            
+            # Save results
+            results_file = config.get('results_file', 'execution_results.json')
+            with open(results_file, 'w') as f:
+                json.dump(execution_summary, f, indent=2)
+            
+            print(f"Results saved to: {results_file}")
+            
+            # Return appropriate exit code
+            if execution_summary.get('failed_runs'):
+                return 1
+            return 0
+            
+        except Exception as e:
+            print(f"Error during execution: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+    
+    if __name__ == "__main__":
+        sys.exit(main())
+  
+  # Additional configuration files
+  madengine.conf: |
+    # MADEngine Configuration
+    [general]
+    environment = {{ environment | default('default') }}
+    registry = {{ registry | default('') }}
+    gpu_vendor = {{ gpu_vendor | default('') }}
+    
+    [execution]
+    timeout = {{ execution.timeout | default(7200) }}
+    keep_alive = {{ execution.keep_alive | default(false) | lower }}
+    live_output = {{ execution.live_output | default(true) | lower }}
+    
+    [logging]
+    level = {{ logging.level | default('INFO') }}
+    format = {{ logging.format | default('%(asctime)s - %(name)s - %(levelname)s - %(message)s') }}
+    
+    [resources]
+    memory_limit = {{ resources.memory_limit | default('4Gi') }}
+    cpu_limit = {{ resources.cpu_limit | default('2') }}
+    gpu_limit = {{ resources.gpu_limit | default('1') }}

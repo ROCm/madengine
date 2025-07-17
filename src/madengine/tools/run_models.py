@@ -118,7 +118,17 @@ class RunDetails:
 
         Method to print stage perf results of a model.
         """
-        print(f"{self.model} performance is {self.performance} {self.metric}")
+        print("\n" + "="*60)
+        print(f"📊 PERFORMANCE RESULTS")
+        print("="*60)
+        print(f"🏷️  Model: {self.model}")
+        print(f"⚡ Performance: {self.performance} {self.metric}")
+        print(f"📈 Status: {self.status}")
+        if self.machine_name:
+            print(f"🖥️  Machine: {self.machine_name}")
+        if self.gpu_architecture:
+            print(f"🎮 GPU Architecture: {self.gpu_architecture}")
+        print("="*60 + "\n")
 
     # Exports all info in json format to json_name
     # multiple_results excludes the info provided on csv
@@ -155,9 +165,11 @@ class RunModels:
         self.return_status = True
         self.args = args
         self.console = Console(live_output=True)
+        # Initialize context in runtime mode (requires GPU detection)
         self.context = Context(
             additional_context=args.additional_context,
             additional_context_file=args.additional_context_file,
+            build_only_mode=False  # RunModels always needs full runtime context
         )
         # check the data.json file exists
         data_json_file = args.data_config_file_name
@@ -369,7 +381,13 @@ class RunModels:
                 self.console.sh("rm -rf scripts/common/post_scripts")
             if os.path.exists("scripts/common/tools"):
                 # remove the scripts/common/tools directory
-                self.console.sh("rm -rf scripts/common/tools")
+                # Use force removal and handle permission errors gracefully
+                try:
+                    self.console.sh("rm -rf scripts/common/tools")
+                except RuntimeError:
+                    # If normal removal fails due to permissions, try with force
+                    self.console.sh("chmod -R u+w scripts/common/tools 2>/dev/null || true")
+                    self.console.sh("rm -rf scripts/common/tools || true")
             print(f"scripts/common directory has been cleaned up.")
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
@@ -1039,11 +1057,11 @@ class RunModels:
                                             print("Error: Performance metric is empty in multiple results file.")
                                             break
                         else:
-                            perf_regex = ".*performance:\\s*\\([+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\)\\s*.*\\s*"
+                            perf_regex = ".*performance:\\s*\\([+|-]\\?[0-9]*[.]\\?[0-9]*\\(e[+|-]\\?[0-9]\\+\\)\\?\\)\\s*.*\\s*"
                             run_details.performance = self.console.sh("cat " + log_file_path +
                                                         " | sed -n 's/" + perf_regex + "/\\1/p'")
 
-                            metric_regex = ".*performance:\\s*[+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\s*\\(\\w*\\)\\s*"
+                            metric_regex = ".*performance:\\s*[+|-]\\?[0-9]*[.]\\?[0-9]*\\(e[+|-]\\?[0-9]\\+\\)\\?\\s*\\(\\w*\\)\\s*"
                             run_details.metric = self.console.sh("cat " + log_file_path +
                                                     " | sed -n 's/" + metric_regex + "/\\2/p'")
 

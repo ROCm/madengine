@@ -333,7 +333,7 @@ class NASDataProvider(DataProvider):
                 touch ~/.ssh/known_hosts
                 ssh-keyscan -p {port} {ip} >> ~/.ssh/known_hosts
                 echo '#!/bin/bash' > /tmp/ssh.sh
-                echo 'sshpass -p {password} rsync --progress -avz -e \\\"ssh -p {port} \\\" \\\"\$@\\\"' >> /tmp/ssh.sh
+                echo 'sshpass -p {password} rsync --progress -avz -e \\"ssh -p {port} \\" \\"\\$@\\"' >> /tmp/ssh.sh
                 cat /tmp/ssh.sh
                 chmod u+x /tmp/ssh.sh
                 timeout --preserve-status {timeout} /tmp/ssh.sh {username}@{ip}:{datapath}/* {datahome} && rm -f /tmp/ssh.sh
@@ -371,7 +371,7 @@ class NASDataProvider(DataProvider):
                 touch ~/.ssh/known_hosts
                 ssh-keyscan -p {port} {ip} >> ~/.ssh/known_hosts
                 echo '#!/bin/bash' > /tmp/ssh.sh
-                echo 'sshpass -p {password} ssh -v \$*' >> /tmp/ssh.sh
+                echo 'sshpass -p {password} ssh -v \\$*' >> /tmp/ssh.sh
                 chmod u+x /tmp/ssh.sh
                 timeout --preserve-status {timeout} mount -t fuse sshfs#{username}@{ip}:{datapath} {datahome} -o ssh_command=/tmp/ssh.sh,port={port} && rm -f /tmp/ssh.sh
                """

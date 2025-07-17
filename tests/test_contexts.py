@@ -15,6 +15,7 @@ from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import get_gpu_nodeid_map
 from .fixtures.utils import get_num_gpus
 from .fixtures.utils import get_num_cpus
+from .fixtures.utils import requires_gpu
 
 
 class TestContexts:
@@ -229,7 +230,8 @@ class TestContexts:
         if not success:
             pytest.fail("docker_mounts did not mount host paths inside docker container.")
 
-    @pytest.mark.skipif(get_num_gpus() < 8, reason="test requires atleast 8 gpus")
+    @requires_gpu("docker gpus requires GPU hardware")
+    @pytest.mark.skipif(lambda: get_num_gpus() < 8, reason="test requires atleast 8 gpus")
     @pytest.mark.parametrize('clean_test_temp_files', [['perf.csv', 'perf.html','results_dummy_gpubind.csv']], indirect=True)
     def test_docker_gpus(self, global_data, clean_test_temp_files):
         """
@@ -251,7 +253,7 @@ class TestContexts:
         if sorted(list(map(gpu_nodeid_map.get,gpu_node_ids)))!=[0,2,3,4,5,7]:
             pytest.fail("docker_gpus did not bind expected gpus in docker container.")
 
-    @pytest.mark.skipif(get_num_cpus() < 64, reason="test requires atleast 64 cpus")
+    @pytest.mark.skipif(lambda: get_num_cpus() < 64, reason="test requires atleast 64 cpus")
     @pytest.mark.parametrize('clean_test_temp_files', [['perf.csv', 'perf.html','results_dummy_cpubind.csv']], indirect=True)
     def test_docker_cpus(self, global_data, clean_test_temp_files):
         """

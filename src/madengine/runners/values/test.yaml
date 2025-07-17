@@ -1,0 +1,158 @@
+# Test environment configuration
+# Extends default.yaml with test-specific settings
+
+# General configuration
+environment: "test"
+
+# Workspace configuration
+workspace:
+  path: "/tmp/madengine_test"
+  owner: "test"
+  group: "test"
+
+# Execution configuration
+execution:
+  timeout: 1800  # 30 minutes for tests
+  keep_alive: false
+  live_output: true
+  output_file: "test_perf.csv"
+  results_file: "test_execution_results.json"
+  generate_sys_env_details: false  # Skip for faster tests
+  async_timeout: 3600  # 1 hour
+  poll_interval: 5  # Fast polling for tests
+
+# Data configuration
+data_config:
+  file: "test_data.json"
+  force_mirror_local: true
+  required: false
+
+# Credentials configuration
+credentials:
+  file: "test_credential.json"
+  required: false
+
+# Docker registry configuration
+docker_registry:
+  login_required: false
+  username: "test-user"
+  password: ""
+
+# Python configuration
+python_dependencies:
+  - jinja2
+  - pyyaml
+  - requests
+  - pytest
+  - pytest-cov
+  - mock
+
+# Installation configuration
+install_dependencies: true
+
+# Post-execution configuration
+post_execution:
+  cleanup: true  # Clean up after tests
+  collect_logs: true
+
+# Logging configuration
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+logs:
+  local_path: "./test_logs"
+
+# Ansible configuration
+ansible:
+  target_hosts: "test_nodes"
+  become: false
+
+# Kubernetes configuration
+k8s:
+  namespace: "madengine-test"
+  
+  # ConfigMap configuration
+  configmap:
+    name: "madengine-test-config"
+  
+  # Job configuration
+  job:
+    name: "madengine-test-execution"
+    parallelism: 1
+    completions: 1
+    backoff_limit: 0  # No retries in test
+    active_deadline_seconds: 3600  # 1 hour
+    restart_policy: "Never"
+  
+  # Container configuration
+  container:
+    image: "madengine/distributed-runner:test"
+    image_pull_policy: "Always"
+    security_context:
+      run_as_user: 1000
+      run_as_group: 1000
+      privileged: false
+    health_checks:
+      liveness:
+        initial_delay: 5
+        period: 10
+        timeout: 3
+        failure_threshold: 1
+      readiness:
+        initial_delay: 2
+        period: 5
+        timeout: 2
+  
+  # Service configuration
+  service:
+    name: "madengine-test-service"
+    type: "ClusterIP"
+    ports:
+      - name: "http"
+        port: 8080
+        target_port: 8080
+        protocol: "TCP"
+      - name: "test-metrics"
+        port: 9091
+        target_port: 9091
+        protocol: "TCP"
+  
+  # Volume configuration
+  volumes:
+    shared_storage:
+      type: "hostPath"
+      path: "/tmp/madengine-test-results"
+      hostPath_type: "DirectoryOrCreate"
+  
+  # Node selector
+  node_selector:
+    environment: "test"
+    accelerator: "gpu"
+  
+  # Tolerations for GPU nodes
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "test-environment"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+
+# Resource configuration
+resources:
+  memory_limit: "1Gi"  # Minimal resources for tests
+  memory_request: "512Mi"
+  cpu_limit: "0.5"
+  cpu_request: "0.25"
+  gpu_limit: "1"
+
+# GPU vendor specific configuration
+nvidia:
+  visible_devices: "0"  # Only use first GPU for tests
+  driver_capabilities: "compute,utility"
+
+amd:
+  visible_devices: "0"
+  enable_pre_vega: "1"

@@ -59,6 +59,50 @@ class DiscoverModels:
         self.model_list: typing.List[str] = []
         # list of selected models parsed using --tags argument
         self.selected_models: typing.List[dict] = []
+        
+        # Setup MODEL_DIR if environment variable is set
+        self._setup_model_dir_if_needed()
+
+    def _setup_model_dir_if_needed(self) -> None:
+        """Setup model directory if MODEL_DIR environment variable is set.
+        
+        This copies the contents of MODEL_DIR to the current working directory
+        to support the model discovery process. This operation is safe for 
+        build-only (CPU) nodes as it only involves file operations.
+        """
+        model_dir_env = os.environ.get("MODEL_DIR")
+        if model_dir_env:
+            import subprocess
+            
+            cwd_path = os.getcwd()
+            print(f"MODEL_DIR environment variable detected: {model_dir_env}")
+            print(f"Copying contents to current working directory: {cwd_path}")
+            
+            try:
+                # Check if source directory exists
+                if not os.path.exists(model_dir_env):
+                    print(f"Warning: MODEL_DIR path does not exist: {model_dir_env}")
+                    return
+                
+                # Use cp command similar to the original implementation
+                # cp -vLR --preserve=all source/* destination/
+                cmd = f"cp -vLR --preserve=all {model_dir_env}/* {cwd_path}"
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
+                print(f"Successfully copied MODEL_DIR contents")
+                # Only show verbose output if there are not too many files
+                if result.stdout and len(result.stdout.splitlines()) < 20:
+                    print(result.stdout)
+                elif result.stdout:
+                    print(f"Copied {len(result.stdout.splitlines())} files/directories")
+                print(f"Model dir: {model_dir_env} → current dir: {cwd_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"Warning: Failed to copy MODEL_DIR contents: {e}")
+                if e.stderr:
+                    print(f"Error details: {e.stderr}")
+                # Continue execution even if copy fails
+            except Exception as e:
+                print(f"Warning: Unexpected error copying MODEL_DIR: {e}")
+                # Continue execution even if copy fails
 
     def discover_models(self) -> None:
         """Discover models in models.json and models.json in model_dir under scripts directory.
