@@ -39,15 +39,11 @@ class DistributedOrchestrator:
         )
         
         # Initialize data provider if data config exists
-        data_json_file = getattr(args, 'data_config_file_name', 'data.json')
-        if os.path.exists(data_json_file):
-            self.data = Data(
-                self.context,
-                filename=data_json_file,
-                force_mirrorlocal=getattr(args, 'force_mirror_local', False),
-            )
+        # No longer support top-level registry; use per-image registry if present
+        if registry:
+            print(f"Using registry from CLI: {registry}")
         else:
-            self.data = None
+            print("No registry specified via CLI; will use per-image registry from built_images if present.")
         
         # Load credentials
         self.credentials = None
