@@ -314,7 +314,7 @@ class DockerBuilder:
             print(f"Failed to push image {docker_image} to registry {registry}: {e}")
             raise
     
-    def export_build_manifest(self, output_file: str = "build_manifest.json", registry: str = None) -> None:
+    def export_build_manifest(self, output_file: str = "build_manifest.json", registry: typing.Optional[str] = None) -> None:
         """Export enhanced build information to a manifest file.
         
         This creates a comprehensive build manifest that includes all necessary
@@ -333,10 +333,11 @@ class DockerBuilder:
 
         # Move registry field to each built_images entry
         built_images_with_registry = {}
+        reg = registry if 'registry' in locals() else None
         for image_name, build_info in self.built_images.items():
             build_info_with_registry = dict(build_info)
-            if registry:
-                build_info_with_registry["registry"] = registry
+            if reg:
+                build_info_with_registry["registry"] = reg
             built_images_with_registry[image_name] = build_info_with_registry
 
         manifest = {
