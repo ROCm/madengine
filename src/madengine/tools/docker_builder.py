@@ -330,8 +330,17 @@ class DockerBuilder:
             if model.get("cred", "") != ""
         ]))
         
+
+        # Move registry field to each built_images entry
+        built_images_with_registry = {}
+        for image_name, build_info in self.built_images.items():
+            build_info_with_registry = dict(build_info)
+            if registry:
+                build_info_with_registry["registry"] = registry
+            built_images_with_registry[image_name] = build_info_with_registry
+
         manifest = {
-            "built_images": self.built_images,
+            "built_images": built_images_with_registry,
             "built_models": self.built_models,
             "context": {
                 "docker_env_vars": self.context.ctx.get("docker_env_vars", {}),
@@ -342,14 +351,10 @@ class DockerBuilder:
             },
             "credentials_required": credentials_required
         }
-        
+
         # Add multi-node args to context if present
         if "build_multi_node_args" in self.context.ctx:
             manifest["context"]["multi_node_args"] = self.context.ctx["build_multi_node_args"]
-        
-        # Add registry information to manifest metadata if provided
-        if registry:
-            manifest["registry"] = registry
             
         # Add push failure summary if any pushes failed
         push_failures = []
