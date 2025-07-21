@@ -329,16 +329,9 @@ class DockerBuilder:
             model.get("cred", "") for model in self.built_models.values() 
             if model.get("cred", "") != ""
         ]))
-        
 
-        # Move registry field to each built_images entry
-        built_images_with_registry = {}
-        reg = registry if 'registry' in locals() else None
-        for image_name, build_info in self.built_images.items():
-            build_info_with_registry = dict(build_info)
-            if reg:
-                build_info_with_registry["registry"] = reg
-            built_images_with_registry[image_name] = build_info_with_registry
+        # Do not override per-image registry here; just export as is
+        built_images_with_registry = self.built_images
 
         manifest = {
             "built_images": built_images_with_registry,
@@ -356,7 +349,7 @@ class DockerBuilder:
         # Add multi-node args to context if present
         if "build_multi_node_args" in self.context.ctx:
             manifest["context"]["multi_node_args"] = self.context.ctx["build_multi_node_args"]
-            
+
         # Add push failure summary if any pushes failed
         push_failures = []
         for image_name, build_info in self.built_images.items():
@@ -366,13 +359,13 @@ class DockerBuilder:
                     "intended_registry_image": build_info.get("registry_image"),
                     "error": build_info.get("push_error")
                 })
-        
+
         if push_failures:
             manifest["push_failures"] = push_failures
-        
+
         with open(output_file, 'w') as f:
             json.dump(manifest, f, indent=2)
-        
+
         print(f"Build manifest exported to: {output_file}")
         if push_failures:
             print(f"Warning: {len(push_failures)} image(s) failed to push to registry")
