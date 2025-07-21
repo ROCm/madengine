@@ -40,10 +40,7 @@ class DistributedOrchestrator:
         
         # Initialize data provider if data config exists
         # No longer support top-level registry; use per-image registry if present
-        if registry:
-            print(f"Using registry from CLI: {registry}")
-        else:
-            print("No registry specified via CLI; will use per-image registry from built_images if present.")
+        # (Registry info is handled in build_phase, not here)
         
         # Load credentials
         self.credentials = None
