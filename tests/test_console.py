@@ -52,3 +52,7 @@ class TestConsole:
     def test_sh_verbose(self):
         obj = console.Console(shellVerbose=False)
         assert obj.sh("echo MAD Engine") == "MAD Engine"
+
+    def test_sh_ignore_stderr(self):
+        obj = console.Console(shellVerbose=False)
+        assert obj.sh("echo fail 1>&2 | xargs echo success", ignore_stderr=True) == "success"
