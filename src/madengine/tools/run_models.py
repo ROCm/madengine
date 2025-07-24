@@ -518,7 +518,7 @@ class RunModels:
 
         return mount_args
 
-    def run_pre_post_script(self, model_docker, model_dir, pre_post):
+    def run_pre_post_script(self, model_docker, model_dir, pre_post, model_name=None):
         for script in pre_post:
             script_path = script["path"].strip()
             model_docker.sh("cp -vLR --preserve=all " + script_path + " " + model_dir, timeout=600)
@@ -527,6 +527,13 @@ class RunModels:
             if "args" in script:
                 script_args = script["args"]
                 script_args.strip()
+            
+            # Add model name as an additional argument if provided
+            if model_name:
+                # Clean model name for safe file naming (replace / with _)
+                safe_model_name = model_name.replace("/", "_")
+                script_args += f" {safe_model_name}"
+            
             model_docker.sh("cd " + model_dir + " && bash " + script_name + " " + script_args , timeout=600)
 
     def run_model_impl(
@@ -783,7 +790,7 @@ class RunModels:
                 self.gather_system_env_details(pre_encapsulate_post_scripts, info['name'])
             # run pre_scripts
             if pre_encapsulate_post_scripts["pre_scripts"]:
-                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["pre_scripts"])
+                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["pre_scripts"], info['name'])
 
             scripts_arg = info['scripts']
             dir_path = None
@@ -872,7 +879,7 @@ class RunModels:
 
             # run post_scripts
             if pre_encapsulate_post_scripts["post_scripts"]:
-                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["post_scripts"])
+                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["post_scripts"], info['name'])
 
             # remove model directory
             if not self.args.keep_alive and not self.args.keep_model_dir:
