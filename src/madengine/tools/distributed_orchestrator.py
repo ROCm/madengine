@@ -19,6 +19,11 @@ from madengine.core.errors import (
     handle_error, create_error_context, ConfigurationError, 
     BuildError, DiscoveryError, RuntimeError as MADRuntimeError
 )
+from madengine.core.registry import (
+    RegistryClient, RegistryConfig, ImageInfo, 
+    create_registry_config, create_image_info, RegistryError
+)
+from madengine.core.monitoring import get_monitoring_manager
 from madengine.tools.discover_models import DiscoverModels
 from madengine.tools.docker_builder import DockerBuilder
 from madengine.tools.container_runner import ContainerRunner
@@ -55,6 +60,16 @@ class DistributedOrchestrator:
         else:
             self.data = None
 
+        # Initialize monitoring
+        self.monitoring = get_monitoring_manager()
+        self.monitoring.logger.set_context(
+            component="DistributedOrchestrator",
+            build_only_mode=build_only_mode
+        )
+
+        # Initialize registry client
+        self.registry_client = RegistryClient(self.console, self.monitoring.logger.logger)
+
         # Load credentials
         self.credentials = None
         try:
@@ -62,7 +77,10 @@ class DistributedOrchestrator:
             if os.path.exists(credential_file):
                 with open(credential_file) as f:
                     self.credentials = json.load(f)
-                print(f"Credentials: {list(self.credentials.keys())}")
+                self.monitoring.logger.info(
+                    "Loaded credentials",
+                    available_registries=list(self.credentials.get("registries", {}).keys())
+                )
         except Exception as e:
             context = create_error_context(
                 operation="load_credentials", 
@@ -320,69 +338,10 @@ class DistributedOrchestrator:
                         print(
                             f"\nRunning model {model_info['name']} with image {image_name}"
                         )
-                        # Use per-image registry if present, else CLI registry
-                        effective_registry = build_info.get("registry", registry)
-                        registry_image = build_info.get("registry_image")
-                        docker_image = build_info.get("docker_image")
-                        if registry_image:
-                            if effective_registry:
-                                print(f"Pulling image from registry: {registry_image}")
-                                try:
-                                    registry_image_str = (
-                                        str(registry_image) if registry_image else ""
-                                    )
-                                    docker_image_str = (
-                                        str(docker_image) if docker_image else ""
-                                    )
-                                    effective_registry_str = (
-                                        str(effective_registry)
-                                        if effective_registry
-                                        else ""
-                                    )
-                                    runner.pull_image(
-                                        registry_image_str,
-                                        docker_image_str,
-                                        effective_registry_str,
-                                        self.credentials,
-                                    )
-                                    actual_image = docker_image_str
-                                    print(
-                                        f"Successfully pulled and tagged as: {docker_image_str}"
-                                    )
-                                except Exception as e:
-                                    print(
-                                        f"Failed to pull from registry, falling back to local image: {e}"
-                                    )
-                                    actual_image = docker_image
-                            else:
-                                print(
-                                    f"Attempting to pull registry image as-is: {registry_image}"
-                                )
-                                try:
-                                    registry_image_str = (
-                                        str(registry_image) if registry_image else ""
-                                    )
-                                    docker_image_str = (
-                                        str(docker_image) if docker_image else ""
-                                    )
-                                    runner.pull_image(
-                                        registry_image_str, docker_image_str
-                                    )
-                                    actual_image = docker_image_str
-                                    print(
-                                        f"Successfully pulled and tagged as: {docker_image_str}"
-                                    )
-                                except Exception as e:
-                                    print(
-                                        f"Failed to pull from registry, falling back to local image: {e}"
-                                    )
-                                    actual_image = docker_image
-                        else:
-                            # No registry_image key - run container directly using docker_image
-                            actual_image = build_info["docker_image"]
-                            print(
-                                f"No registry image specified, using local image: {actual_image}"
-                            )
+                        # Use the new registry client for simplified image handling
+                        actual_image = self._handle_image_pull(
+                            build_info, registry, model_info['name']
+                        )
 
                         # Run the container
                         run_results = runner.run_container(
@@ -647,6 +606,78 @@ class DistributedOrchestrator:
         # copy the scripts to the model directory
         self.console.sh(f"cp -vLR --preserve=all {scripts_path} .")
         print(f"Scripts copied to {os.getcwd()}/scripts")
+
+    def _handle_image_pull(self, build_info: dict, registry: str, model_name: str) -> str:
+        """
+        Handle image pulling using the new registry client.
+        
+        Args:
+            build_info: Build information from manifest
+            registry: Registry URL from CLI args
+            model_name: Model name for logging
+            
+        Returns:
+            Actual image name to use for container execution
+        """
+        with self.monitoring.performance_tracker.time_operation(
+            "image_pull", 
+            {"model": model_name}
+        ):
+            registry_image = build_info.get("registry_image")
+            docker_image = build_info.get("docker_image")
+            effective_registry = build_info.get("registry", registry)
+            
+            # If no registry image specified, use local image
+            if not registry_image:
+                self.monitoring.logger.info(
+                    "No registry image specified, using local image",
+                    model=model_name,
+                    local_image=docker_image
+                )
+                return docker_image
+            
+            try:
+                # Create image info
+                image_info = create_image_info(
+                    registry_image=registry_image,
+                    local_image=docker_image,
+                    registry=effective_registry
+                )
+                
+                # Create registry config if needed
+                registry_config = None
+                if effective_registry:
+                    registry_config = create_registry_config(
+                        url=effective_registry,
+                        timeout=300,
+                        retry_count=3
+                    )
+                
+                # Attempt to pull image
+                if self.registry_client.pull_image(
+                    image_info, 
+                    registry_config, 
+                    self.credentials
+                ):
+                    self.monitoring.logger.info(
+                        "Successfully pulled image from registry",
+                        model=model_name,
+                        registry_image=registry_image,
+                        local_image=docker_image
+                    )
+                    return docker_image
+                else:
+                    raise RegistryError("Pull operation returned False")
+                    
+            except RegistryError as e:
+                self.monitoring.logger.warning(
+                    "Failed to pull from registry, falling back to local image",
+                    model=model_name,
+                    registry_image=registry_image,
+                    local_image=docker_image,
+                    error=str(e)
+                )
+                return docker_image
 
     def cleanup(self) -> None:
         """Cleanup the scripts/common directory."""
