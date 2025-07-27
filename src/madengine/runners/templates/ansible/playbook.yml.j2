@@ -1,0 +1,189 @@
+---
+# MADEngine Distributed Execution Playbook
+# Generated on: {{ generation.timestamp }}
+# Environment: {{ environment | default('default') }}
+# Manifest: {{ manifest_file | default('build_manifest.json') }}
+
+- name: MADEngine Distributed Model Execution
+  hosts: {{ ansible.target_hosts | default('gpu_nodes') }}
+  become: {{ ansible.become | default(true) }}
+  vars:
+    madengine_workspace: "{{ workspace.path | default('/tmp/madengine_distributed') }}"
+    manifest_file: "{{ manifest_file | default('build_manifest.json') }}"
+    registry: "{{ registry | default('') }}"
+    gpu_vendor: "{{ gpu_vendor | default('') }}"
+    timeout: {{ execution.timeout | default(7200) }}
+    
+  tasks:
+    - name: Create MADEngine workspace
+      file:
+        path: "{{ madengine_workspace }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ workspace.owner | default('root') }}"
+        group: "{{ workspace.group | default('root') }}"
+    
+    - name: Copy build manifest to nodes
+      copy:
+        src: "{{ manifest_file }}"
+        dest: "{{ madengine_workspace }}/{{ manifest_file }}"
+        mode: '0644'
+    
+    {% if credentials %}
+    - name: Copy credentials to nodes
+      copy:
+        src: "{{ credentials.file | default('credential.json') }}"
+        dest: "{{ madengine_workspace }}/credential.json"
+        mode: '0600'
+      when: credentials.required | default(false)
+    {% endif %}
+    
+    {% if data_config %}
+    - name: Copy data configuration to nodes
+      copy:
+        src: "{{ data_config.file | default('data.json') }}"
+        dest: "{{ madengine_workspace }}/data.json"
+        mode: '0644'
+      when: data_config.required | default(false)
+    {% endif %}
+    
+    {% if registry %}
+    - name: Login to Docker registry
+      docker_login:
+        registry: "{{ registry }}"
+        username: "{{ docker_registry.username | default('') }}"
+        password: "{{ docker_registry.password | default('') }}"
+      when: docker_registry.login_required | default(false)
+    {% endif %}
+    
+    - name: Pull Docker images from registry
+      shell: |
+        cd {{ madengine_workspace }}
+        python3 -c "
+        import json
+        import subprocess
+        import sys
+        
+        try:
+            with open('{{ manifest_file }}', 'r') as f:
+                manifest = json.load(f)
+                
+            pulled_images = []
+            for image_name, build_info in manifest.get('built_images', {}).items():
+                if 'registry_image' in build_info:
+                    registry_image = build_info['registry_image']
+                    docker_image = build_info['docker_image']
+                    
+                    print(f'Pulling {registry_image}')
+                    result = subprocess.run(['docker', 'pull', registry_image], 
+                                          capture_output=True, text=True)
+                    if result.returncode == 0:
+                        print(f'Successfully pulled {registry_image}')
+                        
+                        # Tag the image
+                        subprocess.run(['docker', 'tag', registry_image, docker_image], 
+                                     check=True)
+                        print(f'Tagged as {docker_image}')
+                        pulled_images.append(image_name)
+                    else:
+                        print(f'Failed to pull {registry_image}: {result.stderr}')
+                        
+            print(f'Successfully pulled {len(pulled_images)} images')
+            
+        except Exception as e:
+            print(f'Error pulling images: {e}')
+            sys.exit(1)
+        "
+      register: pull_result
+      when: registry != ""
+    
+    - name: Display image pull results
+      debug:
+        var: pull_result.stdout_lines
+      when: pull_result is defined
+    
+    - name: Install MADEngine dependencies
+      pip:
+        name: "{{ item }}"
+        state: present
+      loop: {{ python_dependencies | default(['jinja2', 'pyyaml']) | to_yaml }}
+      when: install_dependencies | default(false)
+    
+    - name: Create execution script
+      template:
+        src: execution_script.py.j2
+        dest: "{{ madengine_workspace }}/execute_models.py"
+        mode: '0755'
+    
+    - name: Run MADEngine model execution
+      shell: |
+        cd {{ madengine_workspace }}
+        python3 execute_models.py
+      register: execution_results
+      async: {{ execution.async_timeout | default(14400) }}
+      poll: {{ execution.poll_interval | default(30) }}
+      environment:
+        PYTHONPATH: "{{ python_path | default('/usr/local/lib/python3.8/site-packages') }}"
+        {% for key, value in docker_env_vars.items() %}
+        {{ key }}: "{{ value }}"
+        {% endfor %}
+    
+    - name: Create execution results summary
+      copy:
+        content: |
+          # MADEngine Execution Results
+          ## Execution Summary
+          
+          **Timestamp:** {{ generation.timestamp }}
+          **Node:** {{ '{{ inventory_hostname }}' }}
+          **Environment:** {{ environment | default('default') }}
+          **Registry:** {{ registry | default('local') }}
+          **GPU Vendor:** {{ gpu_vendor | default('unknown') }}
+          
+          ## Models Executed
+          {% for model_name, model_info in models.items() %}
+          - **{{ model_name }}**: {{ model_info.get('status', 'unknown') }}
+          {% endfor %}
+          
+          ## Execution Output
+          ```
+          {{ '{{ execution_results.stdout | default("No output captured") }}' }}
+          ```
+          
+          ## Execution Errors
+          ```
+          {{ '{{ execution_results.stderr | default("No errors") }}' }}
+          ```
+        dest: "{{ '{{ madengine_workspace }}' }}/execution_summary.md"
+        mode: '0644'
+    
+    - name: Display execution results
+      debug:
+        var: execution_results.stdout_lines
+      when: execution_results is defined
+    
+    - name: Handle execution failures
+      fail:
+        msg: "MADEngine execution failed: {{ '{{ execution_results.stderr }}' }}"
+      when: execution_results is defined and execution_results.rc != 0
+    
+    {% if post_execution.cleanup | default(false) %}
+    - name: Cleanup workspace
+      file:
+        path: "{{ madengine_workspace }}"
+        state: absent
+      when: post_execution.cleanup | default(false)
+    {% endif %}
+    
+    {% if post_execution.collect_logs | default(true) %}
+    - name: Collect execution logs
+      fetch:
+        src: "{{ madengine_workspace }}/{{ item }}"
+        dest: "{{ logs.local_path | default('./logs') }}/{{ inventory_hostname }}_{{ item }}"
+        flat: yes
+      loop:
+        - "execution_summary.md"
+        - "perf.csv"
+        - "madengine.log"
+      ignore_errors: yes
+    {% endif %}

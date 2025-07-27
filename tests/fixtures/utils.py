@@ -6,25 +6,75 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import sys
+import json
 import subprocess
 import shutil
 import re
 import pytest
+from unittest.mock import MagicMock
 import re
-
-# project modules
-from madengine.core.console import Console
-from madengine.core.context import Context
+import json
 
 
 MODEL_DIR = "tests/fixtures/dummy"
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 sys.path.insert(1, BASE_DIR)
-print(f'BASE DIR:: {BASE_DIR}')
+
+# GPU detection cache to avoid multiple expensive calls
+_has_gpu_cache = None
+
+def has_gpu() -> bool:
+    """Simple function to check if GPU is available for testing.
+    
+    This is the primary function for test skipping decisions.
+    Uses caching to avoid repeated expensive detection calls.
+    
+    Returns:
+        bool: True if GPU is available, False if CPU-only machine
+    """
+    global _has_gpu_cache
+    
+    if _has_gpu_cache is not None:
+        return _has_gpu_cache
+    
+    try:
+        # Ultra-simple file existence check (no subprocess calls)
+        # This is safe for pytest collection and avoids hanging
+        nvidia_exists = os.path.exists('/usr/bin/nvidia-smi')
+        amd_rocm_exists = (os.path.exists('/opt/rocm/bin/rocm-smi') or 
+                          os.path.exists('/usr/local/bin/rocm-smi'))
+        
+        _has_gpu_cache = nvidia_exists or amd_rocm_exists
+            
+    except Exception:
+        # If file checks fail, assume no GPU (safe default for tests)
+        _has_gpu_cache = False
+    
+    return _has_gpu_cache
+
+
+def requires_gpu(reason: str = "test requires GPU functionality"):
+    """Simple decorator to skip tests that require GPU.
+    
+    This is the only decorator needed for GPU-dependent tests.
+    
+    Args:
+        reason: Custom reason for skipping
+    
+    Returns:
+        pytest.mark.skipif decorator
+    """
+    return pytest.mark.skipif(
+        not has_gpu(),
+        reason=reason
+    )
 
 
 @pytest.fixture
 def global_data():
+    # Lazy import to avoid collection issues
+    if "Console" not in globals():   
+        from madengine.core.console import Console
     return {"console": Console(live_output=True)}
 
 
@@ -42,16 +92,79 @@ def clean_test_temp_files(request):
                 os.remove(file_path)
 
 
-def is_nvidia() -> bool:
-    """Check if the GPU is NVIDIA or not.
-
+def generate_additional_context_for_machine() -> dict:
+    """Generate appropriate additional context based on detected machine capabilities.
+    
     Returns:
-        bool: True if NVIDIA GPU is present, False otherwise.
+        dict: Additional context with gpu_vendor and guest_os suitable for current machine
     """
-    context = Context()
-    if context.ctx["gpu_vendor"] == "NVIDIA":
-        return True
+    if has_gpu():
+        # Simple vendor detection for GPU machines
+        vendor = "NVIDIA" if os.path.exists('/usr/bin/nvidia-smi') else "AMD"
+        return {
+            "gpu_vendor": vendor,
+            "guest_os": "UBUNTU"
+        }
     else:
+        # On CPU-only machines, use defaults suitable for build-only operations
+        return {
+            "gpu_vendor": "AMD",  # Default for build-only nodes
+            "guest_os": "UBUNTU"  # Default OS
+        }
+
+
+def generate_additional_context_json() -> str:
+    """Generate JSON string of additional context for current machine.
+    
+    Returns:
+        str: JSON string representation of additional context
+    """
+    return json.dumps(generate_additional_context_for_machine())
+
+
+def create_mock_args_with_auto_context(**kwargs) -> MagicMock:
+    """Create mock args with automatically generated additional context.
+    
+    Args:
+        **kwargs: Additional attributes to set on the mock args
+        
+    Returns:
+        MagicMock: Mock args object with auto-generated additional context
+    """
+    mock_args = MagicMock()
+    
+    # Set auto-generated context
+    mock_args.additional_context = generate_additional_context_json()
+    mock_args.additional_context_file = None
+    
+    # Set any additional attributes
+    for key, value in kwargs.items():
+        setattr(mock_args, key, value)
+    
+    return mock_args
+
+
+def is_nvidia() -> bool:
+    """Simple function to check if NVIDIA GPU tools are available.
+    
+    Returns:
+        bool: True if NVIDIA GPU tools are detected
+    """
+    try:
+        return os.path.exists('/usr/bin/nvidia-smi')
+    except Exception:
+        return False
+
+def is_amd() -> bool:
+    """Simple function to check if AMD GPU tools are available.
+    
+    Returns:
+        bool: True if AMD GPU tools are detected
+    """
+    try:
+        return (os.path.exists('/opt/rocm/bin/rocm-smi') or 
+                os.path.exists('/usr/bin/rocm-smi'))
+    except Exception:
         return False
 
 
@@ -61,6 +174,9 @@ def get_gpu_nodeid_map() -> dict:
     Returns:
         dict: GPU node id map.
     """
+    # Lazy import to avoid collection issues
+    if "Console" not in globals():
+        from madengine.core.console import Console
     gpu_map = {}
     nvidia = is_nvidia()
     console = Console(live_output=True)
@@ -109,5 +225,8 @@ def get_num_cpus() -> int:
     Returns:
         int: Number of CPUs present.
     """
+    # Lazy import to avoid collection issues
+    if "Console" not in globals():
+        from madengine.core.console import Console
     console = Console(live_output=True)
     return int(console.sh("lscpu | grep \"^CPU(s):\" | awk '{print $2}'"))
