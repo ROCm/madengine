@@ -40,7 +40,8 @@ class Console:
             timeout: int=60, 
             secret: bool=False, 
             prefix: str="", 
-            env: typing.Optional[typing.Dict[str, str]]=None
+            env: typing.Optional[typing.Dict[str, str]]=None,
+            ignore_stderr: bool=False
         ) -> str:
         """Run shell command.
         
@@ -51,6 +52,7 @@ class Console:
             secret (bool): The flag to hide the command.
             prefix (str): The prefix of the output.
             env (typing_extensions.TypedDict): The environment variables.
+            ignore_stderr (bool): Don't include stderr in command's output.
         
         Returns:
             str: The output of the shell command.
@@ -67,7 +69,7 @@ class Console:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=None if ignore_stderr else subprocess.STDOUT,
             shell=True,
             universal_newlines=True,
             bufsize=1,

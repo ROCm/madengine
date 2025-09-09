@@ -178,7 +178,11 @@ class Context:
         """
         # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
         return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/rocm-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/rocm-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
+            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA";'
+            + ' elif [[ -f /opt/rocm/bin/rocm-smi ]]; then echo "AMD";'
+            + ' elif [[ -f /usr/local/bin/rocm-smi ]]; then echo "AMD";'
+            + ' else echo "Unable to detect GPU vendor"; fi || true\'',
+            ignore_stderr=True
         )
 
     def get_host_os(self) -> str:
@@ -240,7 +244,7 @@ class Context:
         """
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            number_gpus = int(self.console.sh("rocm-smi --showid --csv | grep card | wc -l"))
+            number_gpus = int(self.console.sh("rocm-smi --showid --csv | grep card | wc -l", ignore_stderr=True))
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
@@ -353,7 +357,7 @@ class Context:
                 uniqueid_renderD_map = {unique_id:renderD for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)}
 
                 # get gpu id unique id map from rocm-smi
-                rsmi = self.console.sh("rocm-smi --showuniqueid | grep Unique.*:").split("\n")
+                rsmi = self.console.sh("rocm-smi --showuniqueid | grep Unique.*:", ignore_stderr=True).split("\n")
 
                 # sort gpu_renderDs based on gpu ids
                 gpu_renderDs = [uniqueid_renderD_map[line.split()[-1]] for line in rsmi]
@@ -364,7 +368,7 @@ class Context:
                 nodeid_renderD_map = {nodeid: renderD for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)}
 
                 # get gpu id node id map from rocm-smi
-                rsmi = re.findall(r"\n\d+\s+\d+",self.console.sh("rocm-smi --showhw"))
+                rsmi = re.findall(r"\n\d+\s+\d+",self.console.sh("rocm-smi --showhw", ignore_stderr=True))
                 rsmi_gpuids = [int(s.split()[0]) for s in rsmi]
                 rsmi_nodeids = [int(s.split()[1]) for s in rsmi]
                 gpuid_nodeid_map = {gpuid: nodeid for gpuid, nodeid in zip(rsmi_gpuids, rsmi_nodeids)}
