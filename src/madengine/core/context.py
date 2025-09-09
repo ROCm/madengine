@@ -276,7 +276,7 @@ class Context:
         """Get system GPU product name.
         
         Returns:
-            str: The GPU product name (e.g., MI300, MI325).
+            str: The GPU product name (e.g., AMD Instinct MI300X, NVIDIA H100 80GB HBM3).
         
         Raises:
             RuntimeError: If the GPU vendor is not detected.
@@ -288,11 +288,9 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("amd-smi static -g 0 | grep PRODUCT_NAME: | cut -d ':' -f 2 | grep -o 'MI[0-9][0-9][0-9][A-Z]*' | head -1")
+            return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
-            return self.console.sh(
-                "nvidia-smi --query-gpu=name --format=csv,noheader,nounits | head -n1 | xargs"
-            )
+            return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
         else:
             raise RuntimeError("Unable to determine gpu product name.")
 
