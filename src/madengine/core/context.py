@@ -100,8 +100,12 @@ class Context:
         self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
         self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
         self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
+        self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"] = self.get_system_gpu_product_name()
         self.ctx['docker_env_vars']['MAD_SYSTEM_HIP_VERSION'] = self.get_system_hip_version()
-        self.ctx["docker_build_arg"] = {"MAD_SYSTEM_GPU_ARCHITECTURE": self.get_system_gpu_architecture()}
+        self.ctx["docker_build_arg"] = {
+            "MAD_SYSTEM_GPU_ARCHITECTURE": self.get_system_gpu_architecture(),
+            "MAD_SYSTEM_GPU_PRODUCT_NAME": self.get_system_gpu_product_name()
+        }
         self.ctx["docker_gpus"] = self.get_docker_gpus()
         self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
 
@@ -267,6 +271,30 @@ class Context:
             )
         else:
             raise RuntimeError("Unable to determine gpu architecture.")
+
+    def get_system_gpu_product_name(self) -> str:
+        """Get system GPU product name.
+        
+        Returns:
+            str: The GPU product name (e.g., MI300, MI325).
+        
+        Raises:
+            RuntimeError: If the GPU vendor is not detected.
+            RuntimeError: If the GPU product name is unable to determine.
+        
+        Note:
+            What types of GPU vendors are supported?
+            - NVIDIA
+            - AMD
+        """
+        if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
+            return self.console.sh("amd-smi static -g 0 | grep PRODUCT_NAME: | cut -d ':' -f 2 | grep -o 'MI[0-9][0-9][0-9][A-Z]*' | head -1")
+        elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
+            return self.console.sh(
+                "nvidia-smi --query-gpu=name --format=csv,noheader,nounits | head -n1 | xargs"
+            )
+        else:
+            raise RuntimeError("Unable to determine gpu product name.")
 
     def get_system_hip_version(self):
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
