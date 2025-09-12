@@ -8,9 +8,14 @@ dynamic = ["version"]
 authors = [
   { name="Advanced Micro Devices", email="mad.support@amd.com" },
 ]
-description = "MAD Engine is a set of interfaces to run various AI models from public MAD."
+maintainers = [
+  { name="Advanced Micro Devices", email="mad.support@amd.com" },
+]
+description = "AI Models automation and dashboarding CLI tool for running LLMs and Deep Learning models"
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.8"
+keywords = ["AI", "machine-learning", "deep-learning", "LLM", "automation", "AMD", "ROCm", "GPU", "performance", "benchmarking"]
 dependencies = [
   "pandas",
   "GitPython",
@@ -28,9 +33,21 @@ dependencies = [
   "pynvml",
 ]
 classifiers = [
-  "Programming Language :: Python :: 3",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Benchmark",
+  "Topic :: System :: Hardware",
 ]
 
 [project.scripts]
@@ -50,10 +67,21 @@ dev = [
   "pytest-asyncio",
 ]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md", 
+    "/LICENSE",
+    "/pyproject.toml",
+]
+
 [tool.hatch.build.targets.wheel]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/madengine/scripts" = "madengine/scripts"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/madengine/scripts" = "src/madengine/scripts"
 
 [tool.hatch.version]
 source = "versioningit"
