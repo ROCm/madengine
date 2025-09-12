@@ -13,10 +13,21 @@ import typing
 # third-party modules
 import pandas as pd
 
-# MAD Engine modules
-from database import ENGINE, create_tables, LOGGER
-from utils import get_avg_perf, load_perf_csv, dataFrame_to_list
-from database_functions import get_all_gpu_archs, get_matching_db_entries
+# MAD Engine modules (dual import: prefer package, fallback to local)
+try:
+    from madengine.db.database import get_engine, create_tables, LOGGER  # type: ignore
+    from madengine.db.utils import get_avg_perf, load_perf_csv, dataFrame_to_list  # type: ignore
+    from madengine.db.database_functions import (  # type: ignore
+        get_all_gpu_archs,
+        get_matching_db_entries,
+    )
+except ImportError:
+    from database import get_engine, create_tables, LOGGER  # type: ignore
+    from utils import get_avg_perf, load_perf_csv, dataFrame_to_list  # type: ignore
+    from database_functions import (  # type: ignore
+        get_all_gpu_archs,
+        get_matching_db_entries,
+    )
 
 
 def get_baseline_configs(
@@ -63,7 +74,7 @@ def relative_perf(
         pd.DataFrame: The data.
     """
     LOGGER.info("Checking relative performance against {}".format(base_line_params))
-    print(data)
+    LOGGER.debug("Data: %s", data)
     # get the most recent entries
     most_recent_entries = dataFrame_to_list(data)
 
@@ -74,15 +85,15 @@ def relative_perf(
         baseline_configs = get_baseline_configs(recent_entry, base_line_params)
         baseline_avg, baseline_perfs = get_avg_perf(baseline_configs, 5)
         if recent_entry["performance"] and baseline_avg:
-            print(
+            LOGGER.info(
                 "Current Performance is {} {}".format(
                     recent_entry["performance"], recent_entry["metric"]
                 )
             )
             relative_perf = (float(recent_entry["performance"]) / baseline_avg) * 100
-            print(
-                "Relative perf {:.2f}% against {}".format(
-                    relative_perf, base_line_params
+            LOGGER.info(
+                "Baseline performance {} for entry {}. Relative performance: {:.2f}%".format(
+                    baseline_avg, recent_entry, relative_perf
                 )
             )
         else:
@@ -106,7 +117,7 @@ def relative_perf(
             }
         data.loc[i, "relative_change"] = str(relative_change)
 
-    print(data)
+    LOGGER.debug("Data after relative performance calculation: %s", data)
     return data
 
 
@@ -122,7 +133,7 @@ def relative_perf_all_configs(data: pd.DataFrame) -> pd.DataFrame:
         pd.DataFrame: The data.
     """
     archs = get_all_gpu_archs()
-    print(archs)
+    LOGGER.info("Processing relative performance for GPU architectures: %s", archs)
     for a in archs:
         data = relative_perf(data, {"gpu_architecture": a})
     return data

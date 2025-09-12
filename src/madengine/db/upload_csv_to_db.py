@@ -15,10 +15,23 @@ from datetime import datetime
 # third-party modules
 from tqdm import tqdm
 from sqlalchemy.orm import sessionmaker
-# MAD Engine modules
-from database import ENGINE, create_tables, DB_TABLE, LOGGER
-from utils import dataFrame_to_list, load_perf_csv, replace_nans_with_None
-from relative_perf import relative_perf_all_configs
+# MAD Engine modules (dual import: prefer package, fallback to local)
+try:
+    from madengine.db.database import get_engine, create_tables, DB_TABLE, LOGGER  # type: ignore
+    from madengine.db.utils import (
+        dataFrame_to_list,
+        load_perf_csv,
+        replace_nans_with_None,
+    )  # type: ignore
+    from madengine.db.relative_perf import relative_perf_all_configs  # type: ignore
+except ImportError:
+    from database import get_engine, create_tables, DB_TABLE, LOGGER  # type: ignore
+    from utils import (
+        dataFrame_to_list,
+        load_perf_csv,
+        replace_nans_with_None,
+    )  # type: ignore
+    from relative_perf import relative_perf_all_configs  # type: ignore
 
 
 def add_csv_to_db(data: pd.DataFrame) -> bool:
@@ -35,7 +48,7 @@ def add_csv_to_db(data: pd.DataFrame) -> bool:
     LOGGER.info("adding csv to Database")
     # Create the session
     session = sessionmaker()
-    session.configure(bind=ENGINE)
+    session.configure(bind=get_engine())
     s = session()
 
     # change nans to None to upload to database

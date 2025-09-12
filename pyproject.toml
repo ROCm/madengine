@@ -21,10 +21,11 @@ dependencies = [
   "mysql-connector-python",
   "pymysql",
   "tqdm",
-  "pytest",
   "typing-extensions",
   "pymongo",
   "toml",
+  "numpy",
+  "pynvml",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
