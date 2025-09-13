@@ -13,6 +13,21 @@ rocm_version = None
 pkgtype = None
 env_map = {}
 
+def get_rocminfo_path():
+    """Get the rocminfo command.
+
+    Returns:
+        str: The absolute path to rocminfo.
+    """
+
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    rocminfo_path = os.path.join(rocm_path, "bin", "rocminfo")
+
+    if os.path.exists(rocminfo_path):
+        return rocminfo_path
+
+    raise Exception("rocminfo command not found...")
+
 class CommandInfo:
     '''
         section_info (str): Name of the section.
@@ -58,7 +73,7 @@ def print_cpu_hardware_information():
 ## GPU Hardware information.
 def print_gpu_hardware_information(gpu_device_type):
     if gpu_device_type == "AMD":
-        cmd = "/opt/rocm/bin/rocminfo"
+        cmd = get_rocminfo_path()
     elif gpu_device_type == "NVIDIA":
         cmd = "nvidia-smi -L"
     else:
@@ -196,7 +211,7 @@ def print_rocm_smi_details(smi_config):
     return cmd_info
 
 def print_rocm_info_details():
-    cmd = "/opt/rocm/bin/rocminfo"
+    cmd = get_rocminfo_path()
     cmd_info = CommandInfo("rocminfo", [cmd])
     return cmd_info
 
