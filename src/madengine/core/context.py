@@ -280,8 +280,8 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            rocminfo_cmd = get_rocminfo_path()
-            return self.console.sh(f"{rocminfo_cmd} | grep -o -m 1 'gfx.*'")
+            rocminfo_path = get_rocminfo_path()
+            return self.console.sh(f"{rocminfo_path} | grep -o -m 1 'gfx.*'")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh(
                 "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
