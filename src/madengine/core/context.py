@@ -24,11 +24,11 @@ from madengine.core.console import Console
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
     """Update dictionary.
-    
+
     Args:
         d: The dictionary.
         u: The update dictionary.
-    
+
     Returns:
         dict: The updated dictionary.
     """
@@ -44,11 +44,11 @@ def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
 
 class Context:
     """Class to determine context.
-    
+
     Attributes:
         console: The console.
         ctx: The context.
-    
+
     Methods:
         get_ctx_test: Get context test.
         get_gpu_vendor: Get GPU vendor.
@@ -62,16 +62,16 @@ class Context:
         filter: Filter.
     """
     def __init__(
-            self, 
-            additional_context: str=None, 
+            self,
+            additional_context: str=None,
             additional_context_file: str=None
         ) -> None:
         """Constructor of the Context class.
-        
+
         Args:
             additional_context: The additional context.
             additional_context_file: The additional context file.
-            
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is not detected.
@@ -118,7 +118,7 @@ class Context:
             'MASTER_ADDR': 'localhost',
             'MASTER_PORT': 6006,
             'HOST_LIST': '',
-            'NCCL_SOCKET_IFNAME': '', 
+            'NCCL_SOCKET_IFNAME': '',
             'GLOO_SOCKET_IFNAME': ''
         }
 
@@ -129,7 +129,7 @@ class Context:
                 mad_secrets[key] = os.environ[key]
         if mad_secrets:
             update_dict(self.ctx['docker_build_arg'], mad_secrets)
-            update_dict(self.ctx['docker_env_vars'], mad_secrets)  
+            update_dict(self.ctx['docker_env_vars'], mad_secrets)
 
         ## ADD MORE CONTEXTS HERE ##
 
@@ -150,7 +150,7 @@ class Context:
 
     def get_ctx_test(self) -> str:
         """Get context test.
-        
+
         Returns:
             str: The output of the shell command.
 
@@ -164,13 +164,13 @@ class Context:
 
     def get_gpu_vendor(self) -> str:
         """Get GPU vendor.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is unable to detect.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -183,10 +183,10 @@ class Context:
 
     def get_host_os(self) -> str:
         """Get host OS.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the host OS is unable to detect.
 
@@ -203,7 +203,7 @@ class Context:
 
     def get_numa_balancing(self) -> bool:
         """Get NUMA balancing.
-        
+
         Returns:
             bool: The output of the shell command.
 
@@ -212,9 +212,9 @@ class Context:
 
         Note:
             NUMA balancing is enabled if the output is '1', and disabled if the output is '0'.
-            
+
             What is NUMA balancing?
-            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing, 
+            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing,
             where the memory access time depends on the memory location relative to the processor.
         """
         # Check if NUMA balancing is enabled or disabled.
@@ -226,13 +226,13 @@ class Context:
 
     def get_system_ngpus(self) -> int:
         """Get system number of GPUs.
-        
+
         Returns:
             int: The number of GPUs.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -250,14 +250,14 @@ class Context:
 
     def get_system_gpu_architecture(self) -> str:
         """Get system GPU architecture.
-        
+
         Returns:
             str: The GPU architecture.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -274,14 +274,14 @@ class Context:
 
     def get_system_gpu_product_name(self) -> str:
         """Get system GPU product name.
-        
+
         Returns:
             str: The GPU product name (e.g., AMD Instinct MI300X, NVIDIA H100 80GB HBM3).
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU product name is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -304,7 +304,7 @@ class Context:
 
     def get_docker_gpus(self) -> typing.Optional[str]:
         """Get Docker GPUs.
-        
+
         Returns:
             str: The range of GPUs.
         """
@@ -316,7 +316,7 @@ class Context:
 
     def get_gpu_renderD_nodes(self) -> typing.Optional[typing.List[int]]:
         """Get GPU renderD nodes from KFD properties.
-        
+
         Returns:
             list: The list of GPU renderD nodes.
 
@@ -337,7 +337,7 @@ class Context:
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
             # get rocm version
             rocm_version = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
-            
+
             # get renderDs from KFD properties
             kfd_properties = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes").split("\n")
             kfd_properties = [line for line in kfd_properties if int(line.split()[-1])!=0] # CPUs are 0, skip them
@@ -413,10 +413,10 @@ class Context:
 
     def filter(self, unfiltered: typing.Dict) -> typing.Dict:
         """Filter the unfiltered dictionary based on the context.
-        
+
         Args:
             unfiltered: The unfiltered dictionary.
-        
+
         Returns:
             dict: The filtered dictionary.
         """
