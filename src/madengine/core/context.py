@@ -42,6 +42,22 @@ def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
     return d
 
 
+def get_rocminfo_path():
+    """Get the rocminfo command.
+
+    Returns:
+        str: The absolute path to rocminfo.
+    """
+
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    rocminfo_path = os.path.join(rocm_path, "bin", "rocminfo")
+
+    if os.path.exists(rocminfo_path):
+        return rocminfo_path
+
+    raise Exception("rocminfo command not found...")
+
+
 class Context:
     """Class to determine context.
 
@@ -264,7 +280,8 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+            rocminfo_cmd = get_rocminfo_path()
+            return self.console.sh(f"{rocminfo_cmd} | grep -o -m 1 'gfx.*'")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh(
                 "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
