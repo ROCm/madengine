@@ -315,13 +315,13 @@ class RunModels:
     def gather_system_env_details(
             self,
             pre_encapsulate_post_scripts: typing.Dict,
-            model_name: str
+            container_identifier: str
         ) -> None:
         """Gather system environment details.
 
         Args:
             pre_encapsulate_post_scripts: The pre, encapsulate and post scripts.
-            model_name: The model name.
+            container_identifier: The container name or image identifier (replaces model_name for container-specific env files).
 
         Returns:
             None
@@ -331,11 +331,13 @@ class RunModels:
 
         Note:
             This function is used to gather system environment details.
+            Uses container_identifier instead of model_name to ensure multiple models
+            running on the same container share the same environment file.
         """
         # initialize pre_env_details
         pre_env_details = {}
         pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
-        pre_env_details["args"] = model_name.replace("/", "_") + "_env"
+        pre_env_details["args"] = container_identifier + "_env"
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
@@ -780,7 +782,7 @@ class RunModels:
 
             # add system environment collection script to pre_scripts
             if self.args.generate_sys_env_details or self.context.ctx.get("gen_sys_env_details"):
-                self.gather_system_env_details(pre_encapsulate_post_scripts, info['name'])
+                self.gather_system_env_details(pre_encapsulate_post_scripts, container_name)
             # run pre_scripts
             if pre_encapsulate_post_scripts["pre_scripts"]:
                 self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["pre_scripts"])
