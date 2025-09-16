@@ -84,7 +84,7 @@ def get_gpu_nodeid_map() -> dict:
             raise ValueError("Failed to retrieve AMD GPU data")
 
         for item in data:
-            node_id = item["uuid"]
+            node_id = item["node_id"]
             gpu_map[node_id] = item["gpu"]
         print(f"AMD GPU data: {gpu_map}")
 
