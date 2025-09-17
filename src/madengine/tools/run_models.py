@@ -929,7 +929,7 @@ class RunModels:
                 # add result to output
                 self.return_status = True
                 run_details.status = "SKIPPED"
-                # generate exception for testing
+                # generate performance entry for CSV update
                 run_details.generate_json("perf_entry.json")
                 update_perf_csv(exception_result="perf_entry.json", perf_csv=self.args.output)
                 return self.return_status  # exit early
