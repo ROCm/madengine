@@ -15,7 +15,7 @@ from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import get_gpu_nodeid_map
 from .fixtures.utils import get_num_gpus
 from .fixtures.utils import get_num_cpus
-
+from madengine.core.context import Context
 
 class TestContexts:
 
@@ -271,3 +271,40 @@ class TestContexts:
                         pytest.fail("model in perf_test.csv did not run successfully.")
         if not success:
             pytest.fail("docker_cpus did not bind expected cpus in docker container.")
+
+    def test_gpu_product_name_matches_arch(self):
+        """
+        Check MAD_SYSTEM_GPU_PRODUCT_NAME is not empty and matches
+        the expected product name for the detected GPU architecture.
+
+        No models run for this test.
+        """
+
+        gpu_arch_product_mapping = {
+            'gfx942': "SOMETHING",
+            'gfx90a': "AMD Instinct MI250X/MI250",
+            'gfx90c': "SOMETHING",
+            '......': "......."
+        }
+
+        context = Context()
+        gpu_arch = context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
+        product_name = context.ctx['docker_env_vars']["MAD_SYSTEM_GPU_PRODUCT_NAME"]
+
+        #skip test if GPU architecture is not detected
+        if not gpu_arch:
+            pytest.skip(f"couldn't find GPU architecture")
+
+        #fail the test if GPU product name is empty
+        if not product_name or product_name.strip() == "":
+            pytest.fail(f"couldn't find product name for the GPU arch={gpu_arch!r}")
+
+        #get the expected product name for the specific arch from the mapping
+        expected_product_name = gpu_arch_product_mapping.get(gpu_arch)
+
+        #missing information for the GPU in the mapping
+        if expected_product_name is None:
+            pytest.skip(f"couldn't find expected product name for GPU arch={gpu_arch!r}")
+
+        if product_name != expected_product_name:
+            pytest.fail(f"incorrect product name={product_name!r}. expected product name={expected_product_name!r}")
