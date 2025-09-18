@@ -195,9 +195,10 @@ class RunModels:
 
     def clean_up_docker_container(self, is_cleaned: bool = False) -> None:
         """Clean up docker container."""
+        container_cmd = Docker.get_container_cmd()
         if is_cleaned:
-            self.console.sh("docker ps -a || true")
-            self.console.sh("docker kill $(docker ps -q) || true")
+            self.console.sh(f"{container_cmd} ps -a || true")
+            self.console.sh(f"{container_cmd} kill $({container_cmd} ps -q) || true")
 
         # get gpu vendor
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
@@ -584,8 +585,9 @@ class RunModels:
             container_name = "container_" + re.sub('.*:','', image_docker_name) # remove docker container hub details
 
             ## Note: --network=host added to fix issue on CentOS+FBK kernel, where iptables is not available
+            container_cmd = Docker.get_container_cmd()
             self.console.sh(
-                "docker build "
+                f"{container_cmd} build "
                 + use_cache_str
                 + " --network=host "
                 + " -t "
@@ -618,7 +620,7 @@ class RunModels:
             print(f"BASE DOCKER is {run_details.base_docker}")
 
             # print base docker image digest
-            run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
+            run_details.docker_sha = self.console.sh(f"{container_cmd} manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
             print(f"BASE DOCKER SHA is {run_details.docker_sha}")
 
         else:
