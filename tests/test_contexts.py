@@ -15,7 +15,7 @@ from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import get_gpu_nodeid_map
 from .fixtures.utils import get_num_gpus
 from .fixtures.utils import get_num_cpus
-
+from madengine.core.context import Context
 
 class TestContexts:
 
@@ -283,3 +283,24 @@ class TestContexts:
                         pytest.fail("model in perf_test.csv did not run successfully.")
         if not success:
             pytest.fail("docker_cpus did not bind expected cpus in docker container.")
+
+    def test_gpu_product_name_matches_arch(self):
+        """
+        Check MAD_SYSTEM_GPU_PRODUCT_NAME is not empty and is valid.
+
+        No models run for this test.
+        """
+
+        context = Context()
+        product_name = context.ctx['docker_env_vars']["MAD_SYSTEM_GPU_PRODUCT_NAME"]
+
+        #fail the test if GPU product name is empty
+        if not product_name or not product_name.strip():
+            pytest.fail("GPU product name is empty or just whitespaces")
+
+        product_name = product_name.upper()
+
+        #if product name has AMD or NVIDIA in it then it's a safe bet
+        #that it was parsed properly
+        if not ("AMD" in product_name or "NVIDIA" in product_name):
+            pytest.fail(f"Incorrect product name={product_name!r}")
