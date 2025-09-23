@@ -884,6 +884,158 @@ class RunModels:
         # explicitly delete model docker to stop the container, without waiting for the in-built garbage collector
         del model_docker
 
+    def run_model_slurm(self, model_info: typing.Dict) -> bool:
+        """Run model on SLURM cluster.
+
+        Args:
+            model_info: The model information.
+
+        Returns:
+            bool: The status of running model on SLURM cluster.
+
+        Raises:
+            Exception: An error occurred while running model on SLURM cluster.
+        """
+        print(f"Running model {model_info['name']} on SLURM cluster")
+
+        # Extract SLURM arguments from context
+        slurm_args = self.context.ctx["slurm_args"]
+        
+        # Validate required SLURM arguments
+        required_args = ["FRAMEWORK", "PREFILL_NODES", "DECODE_NODES", "PARTITION", "TIME"]
+        for arg in required_args:
+            if arg not in slurm_args:
+                raise Exception(f"Missing required SLURM argument: {arg}")
+
+        # Extract model name from model_info args (remove --model prefix)
+        model_name = ""
+        if "args" in model_info and model_info["args"]:
+            args_parts = model_info["args"].split()
+            if "--model" in args_parts:
+                model_index = args_parts.index("--model")
+                if model_index + 1 < len(args_parts):
+                    model_name = args_parts[model_index + 1]
+        
+        if not model_name:
+            raise Exception(f"Could not extract model name from args: {model_info.get('args', '')}")
+
+        print(f"Extracted model name: {model_name}")
+
+        # Set up environment variables for the SLURM script
+        env_vars = {
+            "FRAMEWORK": slurm_args["FRAMEWORK"],
+            "PREFILL_NODES": str(slurm_args["PREFILL_NODES"]),
+            "DECODE_NODES": str(slurm_args["DECODE_NODES"]),
+            "PARTITION": slurm_args["PARTITION"],
+            "TIME": slurm_args["TIME"],
+            "MODEL_NAME": model_name
+        }
+
+        # Add DOCKER_IMAGE if provided and not empty
+        if "DOCKER_IMAGE" in slurm_args and slurm_args["DOCKER_IMAGE"]:
+            env_vars["DOCKER_IMAGE"] = slurm_args["DOCKER_IMAGE"]
+
+        # Set environment variables
+        for key, value in env_vars.items():
+            os.environ[key] = value
+            print(f"Setting {key}={value}")
+
+        # Prepare run details for result tracking
+        run_details = RunDetails()
+        run_details.model = model_info["name"]
+        run_details.n_gpus = model_info["n_gpus"]
+        run_details.training_precision = model_info["training_precision"]
+        run_details.args = model_info["args"]
+        run_details.tags = model_info["tags"]
+        run_details.pipeline = os.environ.get("pipeline")
+        run_details.machine_name = self.console.sh("hostname")
+
+        try:
+            # Execute the SLURM script
+            script_path = model_info.get("scripts", "scripts/sglang_disagg/run.sh")
+            print(f"Executing SLURM script: {script_path}")
+
+            # Make script executable
+            self.console.sh(f"chmod +x {script_path}")
+
+            # Run the script with model argument
+            start_time = time.time()
+            log_file_path = f"{model_info['name'].replace('/', '_')}_slurm.live.log"
+            
+            with open(log_file_path, mode="w", buffering=1) as outlog:
+                with redirect_stdout(PythonicTee(outlog, self.args.live_output)), redirect_stderr(PythonicTee(outlog, self.args.live_output)):
+                    result = self.console.sh(f"bash {script_path} --model {model_name}", timeout=None)
+
+            run_details.test_duration = time.time() - start_time
+            print(f"SLURM execution duration: {run_details.test_duration} seconds")
+
+            # Extract performance metrics from log
+            multiple_results = model_info.get("multiple_results")
+            
+            if multiple_results:
+                run_details.performance = multiple_results
+                # Check if the results file exists and is valid
+                if os.path.exists(multiple_results):
+                    with open(multiple_results, 'r') as f:
+                        header = f.readline().strip().split(',')
+                        for line in f:
+                            row = line.strip().split(',')
+                            for col in row:
+                                if col == '':
+                                    run_details.performance = None
+                                    print("Error: Performance metric is empty in multiple results file.")
+                                    break
+                else:
+                    print(f"Warning: Multiple results file {multiple_results} not found")
+                    run_details.performance = None
+            else:
+                # Extract performance from log using regex
+                perf_regex = r".*performance:\s*\([+|-]?[0-9]*[.]?[0-9]*\(e[+|-]?[0-9]+\)?\)\s*.*\s*"
+                run_details.performance = self.console.sh("cat " + log_file_path +
+                                            " | sed -n 's/" + perf_regex + "/\\1/p'")
+
+                metric_regex = r".*performance:\s*[+|-]?[0-9]*[.]?[0-9]*\(e[+|-]?[0-9]+\)?\s*\(\w*\)\s*"
+                run_details.metric = self.console.sh("cat " + log_file_path +
+                                        " | sed -n 's/" + metric_regex + "/\\2/p'")
+
+            # Determine success/failure
+            run_details.status = 'SUCCESS' if run_details.performance else 'FAILURE'
+            
+            # Print performance results
+            run_details.print_perf()
+
+            # Update CSV results
+            if multiple_results:
+                run_details.generate_json("common_info.json", multiple_results=True)
+                update_perf_csv(
+                    multiple_results=multiple_results,
+                    perf_csv=self.args.output,
+                    model_name=run_details.model,
+                    common_info="common_info.json",
+                )
+            else:
+                run_details.generate_json("perf_entry.json")
+                update_perf_csv(
+                    single_result="perf_entry.json",
+                    perf_csv=self.args.output,
+                )
+
+            return run_details.status == 'SUCCESS'
+
+        except Exception as e:
+            print("===== SLURM EXECUTION EXCEPTION =====")
+            print("Exception: ", e)
+            traceback.print_exc()
+            print("=======================================")
+            
+            run_details.status = "FAILURE"
+            run_details.generate_json("perf_entry.json")
+            update_perf_csv(
+                exception_result="perf_entry.json",
+                perf_csv=self.args.output,
+            )
+            return False
+
     def run_model(self, model_info: typing.Dict) -> bool:
         """Run model on container.
 
@@ -897,6 +1049,10 @@ class RunModels:
             Exception: An error occurred while running model on container.
         """
         print(f"Running model {model_info['name']} with {model_info}")
+
+        # Check if SLURM execution is requested
+        if "slurm_args" in self.context.ctx:
+            return self.run_model_slurm(model_info)
 
         # set default values if model run fails
         run_details = RunDetails()
