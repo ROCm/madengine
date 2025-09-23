@@ -199,6 +199,11 @@ class RunModels:
             self.console.sh("docker ps -a || true")
             self.console.sh("docker kill $(docker ps -q) || true")
 
+        # Skip GPU info display in SLURM mode as control node may not have GPUs
+        if "slurm_args" in self.context.ctx:
+            print("SLURM mode detected - skipping GPU info display on control node")
+            return
+
         # get gpu vendor
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info

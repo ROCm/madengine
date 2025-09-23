@@ -92,22 +92,43 @@ class Context:
         else:
             print("Warning: unknown numa balancing setup ...")
 
-        # Keeping gpu_vendor for filterning purposes, if we filter using file names we can get rid of this attribute.
-        self.ctx["gpu_vendor"] = self.get_gpu_vendor()
+        # Check if SLURM mode is requested before GPU detection
+        is_slurm_mode = self._is_slurm_mode(additional_context, additional_context_file)
+        
+        if is_slurm_mode:
+            # For SLURM mode, set minimal GPU context to avoid detection on control node
+            print("SLURM mode detected - skipping GPU detection on control node")
+            self.ctx["gpu_vendor"] = "AMD"  # Default to AMD for SLURM environments
+            self.ctx["docker_env_vars"] = {}
+            self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = "8"  # Default value for SLURM
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = "gfx90a"  # Default for SLURM
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"] = "AMD_GPU"  # Default value
+            self.ctx['docker_env_vars']['MAD_SYSTEM_HIP_VERSION'] = "5.0.0"  # Default value
+            self.ctx["docker_build_arg"] = {
+                "MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a",
+                "MAD_SYSTEM_GPU_PRODUCT_NAME": "AMD_GPU"
+            }
+            self.ctx["docker_gpus"] = "0,1,2,3,4,5,6,7"  # Default GPU list
+            self.ctx["gpu_renderDs"] = [128, 129, 130, 131, 132, 133, 134, 135]  # Default renderD nodes
+        else:
+            # Normal mode - detect GPUs
+            # Keeping gpu_vendor for filterning purposes, if we filter using file names we can get rid of this attribute.
+            self.ctx["gpu_vendor"] = self.get_gpu_vendor()
 
-        # Initialize the docker context
-        self.ctx["docker_env_vars"] = {}
-        self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"] = self.get_system_gpu_product_name()
-        self.ctx['docker_env_vars']['MAD_SYSTEM_HIP_VERSION'] = self.get_system_hip_version()
-        self.ctx["docker_build_arg"] = {
-            "MAD_SYSTEM_GPU_ARCHITECTURE": self.get_system_gpu_architecture(),
-            "MAD_SYSTEM_GPU_PRODUCT_NAME": self.get_system_gpu_product_name()
-        }
-        self.ctx["docker_gpus"] = self.get_docker_gpus()
-        self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
+            # Initialize the docker context
+            self.ctx["docker_env_vars"] = {}
+            self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
+            self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"] = self.get_system_gpu_product_name()
+            self.ctx['docker_env_vars']['MAD_SYSTEM_HIP_VERSION'] = self.get_system_hip_version()
+            self.ctx["docker_build_arg"] = {
+                "MAD_SYSTEM_GPU_ARCHITECTURE": self.get_system_gpu_architecture(),
+                "MAD_SYSTEM_GPU_PRODUCT_NAME": self.get_system_gpu_product_name()
+            }
+            self.ctx["docker_gpus"] = self.get_docker_gpus()
+            self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
 
         # Default multi-node configuration
         self.ctx['multi_node_args'] = {
@@ -147,6 +168,40 @@ class Context:
 
         # Set multi-node runner after context update
         self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER'] = self.set_multi_node_runner()
+
+    def _is_slurm_mode(self, additional_context: str = None, additional_context_file: str = None) -> bool:
+        """Check if SLURM mode is requested.
+        
+        Args:
+            additional_context: The additional context string.
+            additional_context_file: The additional context file.
+            
+        Returns:
+            bool: True if SLURM mode is detected, False otherwise.
+        """
+        import ast
+        import json
+        
+        # Check additional_context_file first
+        if additional_context_file:
+            try:
+                with open(additional_context_file) as f:
+                    context_data = json.load(f)
+                    if 'slurm_args' in context_data:
+                        return True
+            except Exception:
+                pass
+        
+        # Check additional_context string
+        if additional_context:
+            try:
+                dict_additional_context = ast.literal_eval(additional_context)
+                if 'slurm_args' in dict_additional_context:
+                    return True
+            except Exception:
+                pass
+        
+        return False
 
     def get_ctx_test(self) -> str:
         """Get context test.
