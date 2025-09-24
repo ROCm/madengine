@@ -963,13 +963,13 @@ class RunModels:
             # Make script executable
             self.console.sh(f"chmod +x {script_path}")
 
-            # Run the script with model argument
+            # Run the script without arguments (all parameters loaded from environment)
             start_time = time.time()
             log_file_path = f"{model_info['name'].replace('/', '_')}_slurm.live.log"
             
             with open(log_file_path, mode="w", buffering=1) as outlog:
                 with redirect_stdout(PythonicTee(outlog, self.args.live_output)), redirect_stderr(PythonicTee(outlog, self.args.live_output)):
-                    result = self.console.sh(f"bash {script_path} --model {model_name}", timeout=None)
+                    result = self.console.sh(f"bash {script_path}", timeout=None)
 
             run_details.test_duration = time.time() - start_time
             print(f"SLURM execution duration: {run_details.test_duration} seconds")
