@@ -417,7 +417,7 @@ def generate_env_info(gpu_device_type):
         env_map["rocm_smi_showxgmierr"] = print_rocm_smi_details("rocm_smi_showxgmierr")
         env_map["rocm_smi_clocks"] = print_rocm_smi_details("rocm_smi_clocks")
         env_map["rocm_smi_showcompute_partition"] = print_rocm_smi_details("rocm_smi_showcompute_partition")
-        env_map["rocm_smi_nodesbwi"] = print_rocm_smi_details("rocm_smi_nodesbwi")
+        env_map["rocm_smi_nodesbw"] = print_rocm_smi_details("rocm_smi_nodesbw")
         env_map["rocm_smi_gpudeviceid"] = print_rocm_smi_details("rocm_smi_gpudeviceid")
         env_map["rocm_info"] = print_rocm_info_details()
     elif gpu_device_type == "NVIDIA":
