@@ -8,6 +8,7 @@ import argparse
 from console import Console
 from csv_parser import CSVParser
 import json
+import shutil
 
 rocm_version = None
 pkgtype = None
@@ -22,6 +23,33 @@ class CommandInfo:
         self.section_info = section_info
         self.cmds = cmds
 
+def get_cmd(cmd, known_paths):
+    '''
+        A function to get the full path to the command.
+
+        Args:
+            cmd (str): command name.
+            known_paths (list): list of known paths to search for the command.
+
+        Returns:
+            full path to the command if found, else throws an exception.
+    '''
+
+    cmd_path = shutil.which(cmd)
+    if cmd_path is not None:
+        return cmd_path
+
+    for path in known_paths:
+        if not os.path.isdir(path):
+            continue
+
+        cmd_path = os.path.join(path, cmd)
+        if os.path.isfile(cmd_path) and os.access(cmd_path, os.X_OK):
+            return cmd_path
+
+    # throw exception if command not found.
+    raise FileNotFoundError(f'{cmd} not found.')
+
 ## utility functions.
 def parse_env_tags_json(json_file):
     env_tags = None
@@ -32,21 +60,13 @@ def parse_env_tags_json(json_file):
 
 ## Hardware information.
 def print_hardware_information():
-    cmd = None
-    if os.path.isfile("/usr/bin/lshw"):
-        cmd = "/usr/bin/lshw"
-    elif os.path.isfile("/usr/sbin/lshw"):
-        cmd = "/usr/sbin/lshw"
-    elif os.path.isfile("/sbin/lshw"):
-        cmd = "/sbin/lshw"
-    else:
-        print ("WARNING: Install lshw to get lshw hardware information")
-        print ("                Ex: sudo apt install lshw")
-
-    if cmd is not None:
+    cmd = "lshw"
+    try:
+        cmd = get_cmd(cmd, ["/usr/bin", "/usr/sbin", "/sbin"])
         cmd_info = CommandInfo("HardwareInformation", [cmd])
         return cmd_info
-    else:
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
         return None
 
 ## CPU Hardware Information
@@ -57,10 +77,22 @@ def print_cpu_hardware_information():
 
 ## GPU Hardware information.
 def print_gpu_hardware_information(gpu_device_type):
+    cmd = None
     if gpu_device_type == "AMD":
-        cmd = "/opt/rocm/bin/rocminfo"
+        try:
+            cmd = "rocminfo"
+            cmd = get_cmd(cmd, ["/opt/rocm/bin"])
+        except FileNotFoundError as e:
+            print(f"WARNING: {e}")
+            return None
     elif gpu_device_type == "NVIDIA":
-        cmd = "nvidia-smi -L"
+        try:
+            cmd = "nvidia-smi"
+            cmd = get_cmd(cmd, ["/usr/bin", "/usr/local/cuda/bin"])
+            cmd = f'{cmd} -L'
+        except FileNotFoundError as e:
+            print(f"WARNING: {e}")
+            return None
     else:
         print ("WARNING: Unknown GPU device detected")
     cmd_info = CommandInfo("GPU Information", [cmd])
@@ -68,9 +100,14 @@ def print_gpu_hardware_information(gpu_device_type):
 
 ## BIOS Information.
 def print_bios_settings():
-    cmd = "/usr/sbin/dmidecode"
-    cmd_info = CommandInfo("dmidecode Information", [cmd])
-    return cmd_info
+    cmd = "dmidecode"
+    try:
+        cmd = get_cmd(cmd, ["/usr/sbin", "/sbin"])
+        cmd_info = CommandInfo("dmidecode Information", [cmd])
+        return cmd_info
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
 
 ## OS information.
 def print_os_information():
@@ -81,9 +118,14 @@ def print_os_information():
 
 ## Memory Information.
 def print_memory_information():
-    cmd = "/usr/bin/lsmem"
-    cmd_info = CommandInfo("Memory Information", [cmd])
-    return cmd_info
+    cmd = "lsmem"
+    try:
+        cmd = get_cmd(cmd, ["/usr/bin", "/bin"])
+        cmd_info = CommandInfo("Memory Information", [cmd])
+        return cmd_info
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
 
 ## ROCm version data
 def print_rocm_version_information():
@@ -148,7 +190,12 @@ def print_rocm_environment_variables():
 
 def print_rocm_smi_details(smi_config):
     cmd_info = None
-    cmd = "/opt/rocm/bin/rocm-smi"
+    cmd = "rocm-smi"
+    try:
+        cmd = get_cmd(cmd, ["/opt/rocm/bin"])
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
     if (smi_config == "rocm_smi"):
         cmd_info = CommandInfo("ROCm SMI", [cmd])
     elif (smi_config == "ifwi_version"):
@@ -196,9 +243,14 @@ def print_rocm_smi_details(smi_config):
     return cmd_info
 
 def print_rocm_info_details():
-    cmd = "/opt/rocm/bin/rocminfo"
-    cmd_info = CommandInfo("rocminfo", [cmd])
-    return cmd_info
+    cmd = "rocminfo"
+    try:
+        cmd = get_cmd(cmd, ["/opt/rocm/bin"])
+        cmd_info = CommandInfo("rocminfo", [cmd])
+        return cmd_info
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
 
 ## dmesg boot logs - GPU/ATOM/DRM/BIOS
 def print_dmesg_logs(ignore_prev_boot_logs=True):
@@ -239,9 +291,15 @@ def print_dmesg_logs(ignore_prev_boot_logs=True):
 
 ## print amdgpu modinfo
 def print_amdgpu_modinfo():
-    cmd = "/sbin/modinfo amdgpu"
-    cmd_info = CommandInfo("amdgpu modinfo", [cmd])
-    return cmd_info
+    cmd = "modinfo"
+    try:
+        cmd = get_cmd(cmd, ["/sbin", "/usr/sbin"])
+        cmd = f"{cmd} amdgpu"
+        cmd_info = CommandInfo("amdgpu modinfo", [cmd])
+        return cmd_info
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
 
 ## print pip list
 def print_pip_list_details():
@@ -256,9 +314,15 @@ def print_check_numa_balancing():
 
 ## print cuda version information.
 def print_cuda_version_information():
-    cmd = "nvcc --version"
-    cmd_info = CommandInfo("CUDA information", [cmd])
-    return cmd_info
+    cmd = "nvcc"
+    try:
+        cmd = get_cmd(cmd, ["/usr/local/cuda/bin", "/usr/bin"])
+        cmd = f"{cmd} --version"
+        cmd_info = CommandInfo("CUDA information", [cmd])
+        return cmd_info
+    except FileNotFoundError as e:
+        print(f"WARNING: {e}")
+        return None
 
 def print_cuda_env_variables():
     cmd = "env | /bin/grep -i -E 'cuda|nvidia|pytorch|mpi|openmp|ucx|cu'"
