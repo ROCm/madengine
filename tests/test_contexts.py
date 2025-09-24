@@ -245,7 +245,7 @@ class TestContexts:
             for row in csv_reader:
                 if 'dummy_gpubind' in row['model']:
                     if row['status'] == 'SUCCESS':
-                        gpu_node_ids.append(row['performance'])
+                        gpu_node_ids.append(int(row['performance']))
                     else:
                         pytest.fail("model in perf_test.csv did not run successfully.")
         if sorted(list(map(gpu_nodeid_map.get,gpu_node_ids)))!=[0,2,3,4,5,7]:

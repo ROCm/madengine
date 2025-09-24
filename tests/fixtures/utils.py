@@ -11,6 +11,7 @@ import shutil
 import re
 import pytest
 import re
+import json
 
 # project modules
 from madengine.core.console import Console
