@@ -42,7 +42,7 @@ import typing
 
 # MADEngine modules
 from madengine.core.console import Console
-from madengine.core.context import Context
+from madengine.core.context import Context, get_amdsmi_path, get_nvidiasmi_path
 from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
 from madengine.utils.ops import PythonicTee, file_print, substring_found, find_and_replace_pattern
@@ -204,7 +204,8 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            self.console.sh("/opt/rocm/bin/amd-smi || true")
+            amdsmi_path = get_amdsmi_path()
+            self.console.sh(f"{amdsmi_path} || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -725,9 +726,11 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                smi = model_docker.sh("/opt/rocm/bin/amd-smi || true")
+                amdsmi_path = get_amdsmi_path()
+                smi = model_docker.sh(f"{amdsmi_path} || true")
             elif gpu_vendor.find("NVIDIA") != -1:
-                smi = model_docker.sh("/usr/bin/nvidia-smi || true")
+                nvidiasmi_path = get_nvidiasmi_path()
+                smi = model_docker.sh(f"{nvidiasmi_path} || true")
             else:
                 raise RuntimeError("Unable to determine gpu vendor.")
 

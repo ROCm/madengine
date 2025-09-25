@@ -18,6 +18,7 @@ import collections.abc
 import os
 import re
 import typing
+import shutil
 # third-party modules
 from madengine.core.console import Console
 
@@ -41,6 +42,33 @@ def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
             d[k] = v
     return d
 
+def get_cmd(cmd, known_paths):
+    '''
+        A function to get the full path to the command.
+
+        Args:
+            cmd (str): command name.
+            known_paths (list): list of known paths to search for the command.
+
+        Returns:
+            full path to the command if found, else throws an exception.
+    '''
+
+    cmd_path = shutil.which(cmd)
+    if cmd_path is not None:
+        return cmd_path
+
+    for path in known_paths:
+        if not os.path.isdir(path):
+            continue
+
+        cmd_path = os.path.join(path, cmd)
+        if os.path.isfile(cmd_path) and os.access(cmd_path, os.X_OK):
+            return cmd_path
+
+    # throw exception if command not found.
+    raise FileNotFoundError(f'{cmd} not found.')
+
 
 def get_rocminfo_path():
     """Get the rocminfo command.
@@ -48,14 +76,50 @@ def get_rocminfo_path():
     Returns:
         str: The absolute path to rocminfo.
     """
-
     rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-    rocminfo_path = os.path.join(rocm_path, "bin", "rocminfo")
+    known_paths = [os.path.join(rocm_path, "bin")]
 
-    if os.path.exists(rocminfo_path):
-        return rocminfo_path
+    return get_cmd("rocminfo", known_paths)
 
-    raise Exception("rocminfo command not found...")
+
+def get_rocmsmi_path():
+    """Get the rocm-smi command.
+
+    Returns:
+        str: The absolute path to rocm-smi.
+    """
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    known_paths = [os.path.join(rocm_path, "bin")]
+
+    return get_cmd("rocm-smi", known_paths)
+
+
+def get_amdsmi_path():
+    """Get the amd-smi command.
+
+    Returns:
+        str: The absolute path to amd-smi.
+    """
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    known_paths = [os.path.join(rocm_path, "bin")]
+
+    return get_cmd("amd-smi", known_paths)
+
+
+def get_nvidiasmi_path():
+    """Get the nvidia-smi command.
+
+    Returns:
+        str: The absolute path to nvidia-smi.
+    """
+    cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
+    known_paths = [
+        "/usr/bin",
+        "/usr/local/bin",
+        os.path.join(cuda_path, "bin")
+    ]
+
+    return get_cmd("nvidia-smi", known_paths)
 
 
 class Context:
@@ -192,10 +256,21 @@ class Context:
             - NVIDIA
             - AMD
         """
-        # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
-        return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
-        )
+        # Try to detect NVIDIA GPU first
+        try:
+            _ = get_nvidiasmi_path()
+            return "NVIDIA"
+        except FileNotFoundError:
+            pass
+
+        # Try to detect AMD GPU
+        try:
+            _ = get_amdsmi_path()
+            return "AMD"
+        except FileNotFoundError:
+            pass
+
+        return "Unable to detect GPU vendor"
 
     def get_host_os(self) -> str:
         """Get host OS.
@@ -256,7 +331,8 @@ class Context:
         """
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+            amdsmi_path = get_amdsmi_path()
+            number_gpus = int(self.console.sh(f"{amdsmi_path} list --csv | tail -n +3 | wc -l"))
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
@@ -353,7 +429,8 @@ class Context:
         # Check if the GPU vendor is AMD.
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
             # get rocm version
-            rocm_version = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+            rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+            rocm_version = self.console.sh(f"cat {rocm_path}/.info/version | cut -d'-' -f1")
 
             # get renderDs from KFD properties
             kfd_properties = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes").split("\n")
@@ -365,7 +442,7 @@ class Context:
             if output:
                 data = json.loads(output)
             else:
-                raise ValueError("Failed to retrieve AMD GPU data")            
+                raise ValueError("Failed to retrieve AMD GPU data")
 
             # get gpu id - renderD mapping using unique id if ROCm < 6.1.2 and node id otherwise
             # node id is more robust but is only available from 6.1.2
