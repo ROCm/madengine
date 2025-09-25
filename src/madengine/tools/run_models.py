@@ -42,7 +42,7 @@ import typing
 
 # MADEngine modules
 from madengine.core.console import Console
-from madengine.core.context import Context
+from madengine.core.context import Context, get_amdsmi_path, get_nvidiasmi_path
 from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
 from madengine.utils.ops import PythonicTee, file_print, substring_found, find_and_replace_pattern
@@ -195,15 +195,17 @@ class RunModels:
 
     def clean_up_docker_container(self, is_cleaned: bool = False) -> None:
         """Clean up docker container."""
+        container_cmd = Docker.get_container_cmd()
         if is_cleaned:
-            self.console.sh("docker ps -a || true")
-            self.console.sh("docker kill $(docker ps -q) || true")
+            self.console.sh(f"{container_cmd} ps -a || true")
+            self.console.sh(f"{container_cmd} kill $({container_cmd} ps -q) || true")
 
         # get gpu vendor
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            self.console.sh("/opt/rocm/bin/amd-smi || true")
+            amdsmi_path = get_amdsmi_path()
+            self.console.sh(f"{amdsmi_path} || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -584,8 +586,9 @@ class RunModels:
             container_name = "container_" + re.sub('.*:','', image_docker_name) # remove docker container hub details
 
             ## Note: --network=host added to fix issue on CentOS+FBK kernel, where iptables is not available
+            container_cmd = Docker.get_container_cmd()
             self.console.sh(
-                "docker build "
+                f"{container_cmd} build "
                 + use_cache_str
                 + " --network=host "
                 + " -t "
@@ -618,7 +621,7 @@ class RunModels:
             print(f"BASE DOCKER is {run_details.base_docker}")
 
             # print base docker image digest
-            run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
+            run_details.docker_sha = self.console.sh(f"{container_cmd} manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
             print(f"BASE DOCKER SHA is {run_details.docker_sha}")
 
         else:
@@ -723,9 +726,11 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                smi = model_docker.sh("/opt/rocm/bin/amd-smi || true")
+                amdsmi_path = get_amdsmi_path()
+                smi = model_docker.sh(f"{amdsmi_path} || true")
             elif gpu_vendor.find("NVIDIA") != -1:
-                smi = model_docker.sh("/usr/bin/nvidia-smi || true")
+                nvidiasmi_path = get_nvidiasmi_path()
+                smi = model_docker.sh(f"{nvidiasmi_path} || true")
             else:
                 raise RuntimeError("Unable to determine gpu vendor.")
 

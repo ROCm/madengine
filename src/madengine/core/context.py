@@ -18,17 +18,18 @@ import collections.abc
 import os
 import re
 import typing
+import shutil
 # third-party modules
 from madengine.core.console import Console
 
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
     """Update dictionary.
-    
+
     Args:
         d: The dictionary.
         u: The update dictionary.
-    
+
     Returns:
         dict: The updated dictionary.
     """
@@ -41,14 +42,93 @@ def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
             d[k] = v
     return d
 
+def get_cmd(cmd, known_paths):
+    '''
+        A function to get the full path to the command.
+
+        Args:
+            cmd (str): command name.
+            known_paths (list): list of known paths to search for the command.
+
+        Returns:
+            full path to the command if found, else throws an exception.
+    '''
+
+    cmd_path = shutil.which(cmd)
+    if cmd_path is not None:
+        return cmd_path
+
+    for path in known_paths:
+        if not os.path.isdir(path):
+            continue
+
+        cmd_path = os.path.join(path, cmd)
+        if os.path.isfile(cmd_path) and os.access(cmd_path, os.X_OK):
+            return cmd_path
+
+    # throw exception if command not found.
+    raise FileNotFoundError(f'{cmd} not found.')
+
+
+def get_rocminfo_path():
+    """Get the rocminfo command.
+
+    Returns:
+        str: The absolute path to rocminfo.
+    """
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    known_paths = [os.path.join(rocm_path, "bin")]
+
+    return get_cmd("rocminfo", known_paths)
+
+
+def get_rocmsmi_path():
+    """Get the rocm-smi command.
+
+    Returns:
+        str: The absolute path to rocm-smi.
+    """
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    known_paths = [os.path.join(rocm_path, "bin")]
+
+    return get_cmd("rocm-smi", known_paths)
+
+
+def get_amdsmi_path():
+    """Get the amd-smi command.
+
+    Returns:
+        str: The absolute path to amd-smi.
+    """
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+    known_paths = [os.path.join(rocm_path, "bin")]
+
+    return get_cmd("amd-smi", known_paths)
+
+
+def get_nvidiasmi_path():
+    """Get the nvidia-smi command.
+
+    Returns:
+        str: The absolute path to nvidia-smi.
+    """
+    cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
+    known_paths = [
+        "/usr/bin",
+        "/usr/local/bin",
+        os.path.join(cuda_path, "bin")
+    ]
+
+    return get_cmd("nvidia-smi", known_paths)
+
 
 class Context:
     """Class to determine context.
-    
+
     Attributes:
         console: The console.
         ctx: The context.
-    
+
     Methods:
         get_ctx_test: Get context test.
         get_gpu_vendor: Get GPU vendor.
@@ -62,16 +142,16 @@ class Context:
         filter: Filter.
     """
     def __init__(
-            self, 
-            additional_context: str=None, 
+            self,
+            additional_context: str=None,
             additional_context_file: str=None
         ) -> None:
         """Constructor of the Context class.
-        
+
         Args:
             additional_context: The additional context.
             additional_context_file: The additional context file.
-            
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is not detected.
@@ -118,7 +198,7 @@ class Context:
             'MASTER_ADDR': 'localhost',
             'MASTER_PORT': 6006,
             'HOST_LIST': '',
-            'NCCL_SOCKET_IFNAME': '', 
+            'NCCL_SOCKET_IFNAME': '',
             'GLOO_SOCKET_IFNAME': ''
         }
 
@@ -129,7 +209,7 @@ class Context:
                 mad_secrets[key] = os.environ[key]
         if mad_secrets:
             update_dict(self.ctx['docker_build_arg'], mad_secrets)
-            update_dict(self.ctx['docker_env_vars'], mad_secrets)  
+            update_dict(self.ctx['docker_env_vars'], mad_secrets)
 
         ## ADD MORE CONTEXTS HERE ##
 
@@ -150,7 +230,7 @@ class Context:
 
     def get_ctx_test(self) -> str:
         """Get context test.
-        
+
         Returns:
             str: The output of the shell command.
 
@@ -164,29 +244,40 @@ class Context:
 
     def get_gpu_vendor(self) -> str:
         """Get GPU vendor.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is unable to detect.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
         """
-        # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
-        return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
-        )
+        # Try to detect NVIDIA GPU first
+        try:
+            _ = get_nvidiasmi_path()
+            return "NVIDIA"
+        except FileNotFoundError:
+            pass
+
+        # Try to detect AMD GPU
+        try:
+            _ = get_amdsmi_path()
+            return "AMD"
+        except FileNotFoundError:
+            pass
+
+        return "Unable to detect GPU vendor"
 
     def get_host_os(self) -> str:
         """Get host OS.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the host OS is unable to detect.
 
@@ -203,7 +294,7 @@ class Context:
 
     def get_numa_balancing(self) -> bool:
         """Get NUMA balancing.
-        
+
         Returns:
             bool: The output of the shell command.
 
@@ -212,9 +303,9 @@ class Context:
 
         Note:
             NUMA balancing is enabled if the output is '1', and disabled if the output is '0'.
-            
+
             What is NUMA balancing?
-            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing, 
+            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing,
             where the memory access time depends on the memory location relative to the processor.
         """
         # Check if NUMA balancing is enabled or disabled.
@@ -226,13 +317,13 @@ class Context:
 
     def get_system_ngpus(self) -> int:
         """Get system number of GPUs.
-        
+
         Returns:
             int: The number of GPUs.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -240,7 +331,8 @@ class Context:
         """
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+            amdsmi_path = get_amdsmi_path()
+            number_gpus = int(self.console.sh(f"{amdsmi_path} list --csv | tail -n +3 | wc -l"))
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
@@ -250,21 +342,22 @@ class Context:
 
     def get_system_gpu_architecture(self) -> str:
         """Get system GPU architecture.
-        
+
         Returns:
             str: The GPU architecture.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+            rocminfo_cmd = get_rocminfo_path()
+            return self.console.sh(f"{rocminfo_cmd} | grep -o -m 1 'gfx.*'")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh(
                 "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
@@ -274,14 +367,14 @@ class Context:
 
     def get_system_gpu_product_name(self) -> str:
         """Get system GPU product name.
-        
+
         Returns:
             str: The GPU product name (e.g., AMD Instinct MI300X, NVIDIA H100 80GB HBM3).
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU product name is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -304,7 +397,7 @@ class Context:
 
     def get_docker_gpus(self) -> typing.Optional[str]:
         """Get Docker GPUs.
-        
+
         Returns:
             str: The range of GPUs.
         """
@@ -316,7 +409,7 @@ class Context:
 
     def get_gpu_renderD_nodes(self) -> typing.Optional[typing.List[int]]:
         """Get GPU renderD nodes from KFD properties.
-        
+
         Returns:
             list: The list of GPU renderD nodes.
 
@@ -336,8 +429,9 @@ class Context:
         # Check if the GPU vendor is AMD.
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
             # get rocm version
-            rocm_version = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
-            
+            rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+            rocm_version = self.console.sh(f"cat {rocm_path}/.info/version | cut -d'-' -f1")
+
             # get renderDs from KFD properties
             kfd_properties = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes").split("\n")
             kfd_properties = [line for line in kfd_properties if int(line.split()[-1])!=0] # CPUs are 0, skip them
@@ -348,7 +442,7 @@ class Context:
             if output:
                 data = json.loads(output)
             else:
-                raise ValueError("Failed to retrieve AMD GPU data")            
+                raise ValueError("Failed to retrieve AMD GPU data")
 
             # get gpu id - renderD mapping using unique id if ROCm < 6.1.2 and node id otherwise
             # node id is more robust but is only available from 6.1.2
@@ -421,10 +515,10 @@ class Context:
 
     def filter(self, unfiltered: typing.Dict) -> typing.Dict:
         """Filter the unfiltered dictionary based on the context.
-        
+
         Args:
             unfiltered: The unfiltered dictionary.
-        
+
         Returns:
             dict: The filtered dictionary.
         """

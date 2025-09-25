@@ -14,18 +14,18 @@ import typing_extensions
 
 class Console:
     """Class to run console commands.
-    
+
     Attributes:
         shellVerbose (bool): The shell verbose flag.
         live_output (bool): The live output flag.
     """
     def __init__(
-            self, 
-            shellVerbose: bool=True, 
+            self,
+            shellVerbose: bool=True,
             live_output: bool=False
         ) -> None:
         """Constructor of the Console class.
-        
+
         Args:
             shellVerbose (bool): The shell verbose flag.
             live_output (bool): The live output flag.
@@ -34,16 +34,16 @@ class Console:
         self.live_output = live_output
 
     def sh(
-            self, 
-            command: str, 
-            canFail: bool=False, 
-            timeout: int=60, 
-            secret: bool=False, 
-            prefix: str="", 
+            self,
+            command: str,
+            canFail: bool=False,
+            timeout: int=60,
+            secret: bool=False,
+            prefix: str="",
             env: typing.Optional[typing.Dict[str, str]]=None
         ) -> str:
         """Run shell command.
-        
+
         Args:
             command (str): The shell command.
             canFail (bool): The flag to allow failure.
@@ -51,7 +51,7 @@ class Console:
             secret (bool): The flag to hide the command.
             prefix (str): The prefix of the output.
             env (typing_extensions.TypedDict): The environment variables.
-        
+
         Returns:
             str: The output of the shell command.
 
@@ -89,7 +89,7 @@ class Console:
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             raise RuntimeError("Console script timeout") from exc
-        
+
         # Check for failure
         if proc.returncode != 0:
             if not canFail:
@@ -107,6 +107,6 @@ class Console:
                         + "' failed with exit code "
                         + str(proc.returncode)
                     )
-                
+
         # Return the output
         return outs.strip()
