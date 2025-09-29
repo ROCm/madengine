@@ -10,11 +10,15 @@ import subprocess
 import shutil
 import re
 import pytest
+<<<<<<< Updated upstream
 import re
 
 # project modules
 from madengine.core.console import Console
 from madengine.core.context import Context
+=======
+from unittest.mock import MagicMock
+>>>>>>> Stashed changes
 
 
 MODEL_DIR = "tests/fixtures/dummy"
@@ -59,16 +63,22 @@ def get_gpu_nodeid_map() -> dict:
     """Get the GPU node id map using amd-smi
 
     Returns:
-        dict: GPU node id map.
+        dict: GPU node id map mapping node_id strings to GPU indices.
     """
     gpu_map = {}
     console = Console(live_output=True)
+<<<<<<< Updated upstream
 
     if is_nvidia():
+=======
+    
+    if nvidia:
+>>>>>>> Stashed changes
         command = "nvidia-smi --list-gpus"
         output = console.sh(command)
         lines = output.split("\n")
         for line in lines:
+<<<<<<< Updated upstream
             gpu_id = int(line.split(":")[0].split()[1])
             unique_id = line.split(":")[2].split(")")[0].strip()
             gpu_map[unique_id] = gpu_id
@@ -101,6 +111,47 @@ def get_gpu_nodeid_map() -> dict:
                 
         print(f"AMD GPU data: {gpu_map}")
 
+=======
+            if line.strip():
+                gpu_id = int(line.split(":")[0].split()[1])
+                unique_id = line.split(":")[2].split(")")[0].strip()
+                gpu_map[unique_id] = gpu_id
+    else:
+        try:
+            # Try the new amd-smi tool first (ROCm 6.1+)
+            output = console.sh("amd-smi list --json")
+            gpu_data = json.loads(output)
+            for gpu_info in gpu_data:
+                node_id = str(gpu_info["node_id"])
+                gpu_id = gpu_info["gpu"]
+                gpu_map[node_id] = gpu_id
+        except:
+            # Fall back to older rocm-smi tools
+            try:
+                rocm_version = console.sh("hipconfig --version")
+                rocm_version = float(".".join(rocm_version.split(".")[:2]))
+                command = (
+                    "rocm-smi --showuniqueid" if rocm_version < 6.1 else "rocm-smi --showhw"
+                )
+                output = console.sh(command)
+                lines = output.split("\n")
+
+                for line in lines:
+                    if rocm_version < 6.1:
+                        if "Unique ID:" in line:
+                            gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
+                            unique_id = line.split(":")[2].strip()
+                            gpu_map[unique_id] = gpu_id
+                    else:
+                        if re.match(r"\d+\s+\d+", line):
+                            gpu_id = int(line.split()[0])
+                            node_id = line.split()[1]
+                            gpu_map[node_id] = gpu_id
+            except:
+                # If all else fails, return empty map
+                pass
+    
+>>>>>>> Stashed changes
     return gpu_map
 
 
