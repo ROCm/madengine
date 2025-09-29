@@ -10,15 +10,7 @@ import subprocess
 import shutil
 import re
 import pytest
-<<<<<<< Updated upstream
-import re
-
-# project modules
-from madengine.core.console import Console
-from madengine.core.context import Context
-=======
 from unittest.mock import MagicMock
->>>>>>> Stashed changes
 
 
 MODEL_DIR = "tests/fixtures/dummy"
@@ -67,51 +59,12 @@ def get_gpu_nodeid_map() -> dict:
     """
     gpu_map = {}
     console = Console(live_output=True)
-<<<<<<< Updated upstream
-
-    if is_nvidia():
-=======
     
     if nvidia:
->>>>>>> Stashed changes
         command = "nvidia-smi --list-gpus"
         output = console.sh(command)
         lines = output.split("\n")
         for line in lines:
-<<<<<<< Updated upstream
-            gpu_id = int(line.split(":")[0].split()[1])
-            unique_id = line.split(":")[2].split(")")[0].strip()
-            gpu_map[unique_id] = gpu_id
-        print(f"NVIDIA GPU data: {gpu_map}")
-    else:
-        # example output of hipconfig --version: 6.1.40092-038397aaa
-        rocm_version = console.sh("hipconfig --version")  
-        rocm_version = float(".".join(rocm_version.split(".")[:2]))
-
-        if rocm_version < 6.1:
-            command = "rocm-smi --showuniqueid"
-            output = console.sh(command)
-            lines = output.split("\n")
-            for line in lines:
-                if "Unique ID:" in line:
-                    gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
-                    unique_id = line.split(":")[2].strip()
-                    gpu_map[unique_id] = gpu_id
-        else:        
-            command = "amd-smi list --json"
-            output = console.sh(command)
-            if output:
-                data = json.loads(output)
-            else:
-                raise ValueError("Failed to retrieve AMD GPU data")
-
-            for item in data:
-                node_id = item["node_id"]
-                gpu_map[node_id] = item["gpu"]
-                
-        print(f"AMD GPU data: {gpu_map}")
-
-=======
             if line.strip():
                 gpu_id = int(line.split(":")[0].split()[1])
                 unique_id = line.split(":")[2].split(")")[0].strip()
@@ -151,7 +104,6 @@ def get_gpu_nodeid_map() -> dict:
                 # If all else fails, return empty map
                 pass
     
->>>>>>> Stashed changes
     return gpu_map
 
 

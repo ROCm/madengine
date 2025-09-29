@@ -248,10 +248,6 @@ class TestContexts:
                         gpu_node_ids.append(row['performance'])
                     else:
                         pytest.fail("model in perf_test.csv did not run successfully.")
-<<<<<<< Updated upstream
-        if sorted(list(map(gpu_nodeid_map.get,gpu_node_ids)))!=[0,2,3,4,5,7]:
-            pytest.fail("docker_gpus did not bind expected gpus in docker container.")
-=======
         
         # Debug information
         print(f"GPU node IDs from performance: {gpu_node_ids}")
@@ -266,7 +262,6 @@ class TestContexts:
         
         if sorted_gpus != [0, 2, 3, 4, 5, 7]:
             pytest.fail(f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}")
->>>>>>> Stashed changes
 
     @pytest.mark.skipif(get_num_cpus() < 64, reason="test requires atleast 64 cpus")
     @pytest.mark.parametrize('clean_test_temp_files', [['perf.csv', 'perf.html','results_dummy_cpubind.csv']], indirect=True)
