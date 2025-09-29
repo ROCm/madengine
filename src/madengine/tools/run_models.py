@@ -362,13 +362,16 @@ class RunModels:
             # check folder pre_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/pre_scripts"):
                 # remove the scripts/common/pre_scripts directory
+                self.console.sh("chmod -R +w scripts/common/pre_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/pre_scripts")
             # check folder post_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/post_scripts"):
                 # remove the scripts/common/post_scripts directory
+                self.console.sh("chmod -R +w scripts/common/post_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/post_scripts")
             if os.path.exists("scripts/common/tools"):
-                # remove the scripts/common/tools directory
+                # remove the scripts/common/tools directory with permission fixes
+                self.console.sh("chmod -R +w scripts/common/tools 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/tools")
             print(f"scripts/common directory has been cleaned up.")
 
