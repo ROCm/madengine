@@ -6,6 +6,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import sys
+import json
 import subprocess
 import shutil
 import re
@@ -21,6 +22,8 @@ print(f'BASE DIR:: {BASE_DIR}')
 
 @pytest.fixture
 def global_data():
+    # Lazy import to avoid collection issues
+    from madengine.core.console import Console
     return {"console": Console(live_output=True)}
 
 
@@ -44,6 +47,8 @@ def is_nvidia() -> bool:
     Returns:
         bool: True if NVIDIA GPU is present, False otherwise.
     """
+    # Lazy import to avoid collection issues
+    from madengine.core.context import Context
     context = Context()
     if context.ctx["gpu_vendor"] == "NVIDIA":
         return True
@@ -57,8 +62,11 @@ def get_gpu_nodeid_map() -> dict:
     Returns:
         dict: GPU node id map mapping node_id strings to GPU indices.
     """
+    # Lazy import to avoid collection issues
+    from madengine.core.console import Console
     gpu_map = {}
     console = Console(live_output=True)
+    nvidia = is_nvidia()
     
     if nvidia:
         command = "nvidia-smi --list-gpus"
@@ -123,5 +131,7 @@ def get_num_cpus() -> int:
     Returns:
         int: Number of CPUs present.
     """
+    # Lazy import to avoid collection issues
+    from madengine.core.console import Console
     console = Console(live_output=True)
     return int(console.sh("lscpu | grep \"^CPU(s):\" | awk '{print $2}'"))
