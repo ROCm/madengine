@@ -75,17 +75,128 @@ You can see at the end of these commands, we are pointing DLM/MAD to the shared-
 
 **NOTE: The above commands assumes the shared-file system is mounted at `/nfs` in the commands above. If this is not the case and a user simply copies/pastes the above commands on two nodes, DLM/MAD will create a folder called `nfs` on each node and copy the data there, which is not desired behavior.**
 
+## SLURM Cluster Integration
+
+MADEngine now supports running workloads on SLURM clusters, allowing you to leverage job scheduling and resource management for multi-node training and inference.
+
+### Overview
+
+When `slurm_args` is provided in the `additional-context`, MADEngine will:
+1. Parse the SLURM configuration parameters
+2. Submit the job directly to the SLURM cluster using `sbatch`
+3. Skip the standard Docker container build and run workflow
+4. Execute the model-specific script (e.g., `scripts/sglang_disagg/run.sh`) which handles SLURM job submission
+
+### SLURM Arguments
+
+The following arguments can be specified in the `slurm_args` dictionary:
+
+| Argument | Description | Required | Example |
+|----------|-------------|----------|---------|
+| `FRAMEWORK` | Framework to use for the job | Yes | `'sglang_disagg'` |
+| `PREFILL_NODES` | Number of nodes for prefill phase | Yes | `'2'` |
+| `DECODE_NODES` | Number of nodes for decode phase | Yes | `'2'` |
+| `PARTITION` | SLURM partition/queue name | Yes | `'amd-rccl'` |
+| `TIME` | Maximum job runtime (HH:MM:SS) | Yes | `'12:00:00'` |
+| `DOCKER_IMAGE` | Docker image to use (optional) | No | `''` (uses default from run.sh) |
+
+### Usage Examples
+
+#### Basic SLURM Job Submission
+
+To run a model on SLURM with default settings:
+
+```bash
+madengine run --tags sglang_disagg_pd_qwen3-32B \
+  --additional-context "{'slurm_args': {
+    'FRAMEWORK': 'sglang_disagg',
+    'PREFILL_NODES': '2',
+    'DECODE_NODES': '2',
+    'PARTITION': 'amd-rccl',
+    'TIME': '12:00:00',
+    'DOCKER_IMAGE': ''
+  }}"
+```
+
+#### Custom Docker Image
+
+To specify a custom Docker image for the SLURM job:
+
+```bash
+madengine run --tags sglang_disagg_pd_qwen3-32B \
+  --additional-context "{'slurm_args': {
+    'FRAMEWORK': 'sglang_disagg',
+    'PREFILL_NODES': '4',
+    'DECODE_NODES': '4',
+    'PARTITION': 'gpu-high-priority',
+    'TIME': '24:00:00',
+    'DOCKER_IMAGE': 'myregistry/custom-image:latest'
+  }}"
+```
+
+#### Running Different Model Configurations
+
+For DeepSeek-V2 model:
+
+```bash
+madengine run --tags sglang_disagg_pd_deepseek_v2 \
+  --additional-context "{'slurm_args': {
+    'FRAMEWORK': 'sglang_disagg',
+    'PREFILL_NODES': '8',
+    'DECODE_NODES': '8',
+    'PARTITION': 'amd-mi300x',
+    'TIME': '48:00:00',
+    'DOCKER_IMAGE': ''
+  }}"
+```
+
+### Model Configuration
+
+Models configured for SLURM should include the model name in the `args` attribute of `models.json`. For example:
+
+```json
+{
+  "name": "sglang_disagg_pd_qwen3-32B",
+  "args": "--model Qwen/Qwen2.5-32B-Instruct",
+  "tags": ["sglang_disagg"]
+}
+```
+
+The model name (e.g., `Qwen/Qwen2.5-32B-Instruct`) will be extracted and set as the `MODEL_NAME` environment variable for the SLURM job.
+
+### Requirements
+
+To use SLURM integration, ensure the following are available:
+
+1. **SLURM Cluster Access**: Access to a SLURM cluster with proper credentials
+2. **Python Dependencies**: `paramiko` and `scp` for SSH connections (if needed)
+   ```bash
+   pip install paramiko scp
+   ```
+3. **Model Scripts**: Framework-specific scripts (e.g., `scripts/sglang_disagg/run.sh`) that handle SLURM job submission
+
+### How It Works
+
+1. **Context Parsing**: MADEngine detects `slurm_args` in the additional context
+2. **Model Selection**: Extracts model information from `models.json` based on the provided tags
+3. **Environment Setup**: Prepares environment variables including `MODEL_NAME`, node counts, partition, etc.
+4. **Job Submission**: Executes the framework-specific run script which submits the SLURM job using `sbatch`
+5. **Job Monitoring**: The SLURM cluster manages job execution, resource allocation, and scheduling
+
 ## TODO
 
 ### RUNNER
 
+- [x] torchrun
 - [ ] mpirun (requires ansible integration)
 
-### Job Schedulare
+### Job Scheduler
 
-- [ ] SLURM
+- [x] SLURM (via slurm_args integration)
 - [ ] Kubernetes
 
 ### Design Consideration
 
-- [ ] Having the python model script launched by individual bash scripts can be limiting for multi-node. Perhaps we can explore a full python workflow for multi-node and only the job scheduler uses a bash script like SLURM using sbatch script.
+- [x] SLURM integration using sbatch scripts for job submission
+- [ ] Full Python workflow for multi-node (without bash script intermediaries)
+- [ ] Kubernetes-native job scheduling integration
