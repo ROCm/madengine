@@ -77,11 +77,11 @@ You can see at the end of these commands, we are pointing DLM/MAD to the shared-
 
 ## SLURM Cluster Integration
 
-MADEngine now supports running workloads on SLURM clusters, allowing you to leverage job scheduling and resource management for multi-node training and inference.
+madengine now supports running workloads on SLURM clusters, allowing you to leverage job scheduling and resource management for multi-node training and inference.
 
 ### Overview
 
-When `slurm_args` is provided in the `additional-context`, MADEngine will:
+When `slurm_args` is provided in the `additional-context`, madengine will:
 1. Parse the SLURM configuration parameters
 2. Submit the job directly to the SLURM cluster using `sbatch`
 3. Skip the standard Docker container build and run workflow
@@ -157,27 +157,23 @@ Models configured for SLURM should include the model name in the `args` attribut
 ```json
 {
   "name": "sglang_disagg_pd_qwen3-32B",
-  "args": "--model Qwen/Qwen2.5-32B-Instruct",
+  "args": "--model Qwen3-32B",
   "tags": ["sglang_disagg"]
 }
 ```
 
-The model name (e.g., `Qwen/Qwen2.5-32B-Instruct`) will be extracted and set as the `MODEL_NAME` environment variable for the SLURM job.
+The model name (e.g., `Qwen/Qwen3-32B`) will be extracted and set as the `MODEL_NAME` environment variable for the SLURM job.
 
 ### Requirements
 
 To use SLURM integration, ensure the following are available:
 
 1. **SLURM Cluster Access**: Access to a SLURM cluster with proper credentials
-2. **Python Dependencies**: `paramiko` and `scp` for SSH connections (if needed)
-   ```bash
-   pip install paramiko scp
-   ```
-3. **Model Scripts**: Framework-specific scripts (e.g., `scripts/sglang_disagg/run.sh`) that handle SLURM job submission
+2. **Model Scripts**: Framework-specific scripts (e.g., `scripts/sglang_disagg/run.sh`) that handle SLURM job submission
 
 ### How It Works
 
-1. **Context Parsing**: MADEngine detects `slurm_args` in the additional context
+1. **Context Parsing**: madengine detects `slurm_args` in the additional context
 2. **Model Selection**: Extracts model information from `models.json` based on the provided tags
 3. **Environment Setup**: Prepares environment variables including `MODEL_NAME`, node counts, partition, etc.
 4. **Job Submission**: Executes the framework-specific run script which submits the SLURM job using `sbatch`
