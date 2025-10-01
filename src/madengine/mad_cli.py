@@ -14,6 +14,8 @@ import sys
 import glob
 from pathlib import Path
 from typing import Dict, List, Optional, Union
+from madengine.tools.upload_mongodb import MongoDBHandler, load_csv_to_dataframe
+
 
 try:
     from typing import Annotated  # Python 3.9+
@@ -71,6 +73,16 @@ runner_app = typer.Typer(
     rich_markup_mode="rich",
 )
 app.add_typer(runner_app, name="runner")
+
+# Create database sub-application
+database_app = typer.Typer(
+    name="database",
+    help="⚡ Database operations (upload, update, etc.)",
+    rich_markup_mode="rich",
+)
+
+# Attach to main app
+app.add_typer(database_app, name="database")
 
 # Constants
 DEFAULT_MANIFEST_FILE = "build_manifest.json"
@@ -2265,3 +2277,24 @@ def _display_runner_results(result, runner_type: str):
             )
 
         console.print(results_table)
+
+@database_app.command("upload_mongodb")
+def upload_mongodb(
+    csv_file_path: str = typer.Option(..., "--csv-file-path", help="Path to the csv file"),
+    database_name: str = typer.Option(..., "--database-name", help="Name of the MongoDB database"),
+    collection_name: str = typer.Option(..., "--collection-name", help="Name of the MongoDB collection"),
+):
+    """
+    Update a table in a DB with a csv file.
+    """
+    typer.echo(f"Uploading {csv_file_path} to {database_name}.{collection_name}")
+
+    #Using mongodb.pys runner to upload to the selected db.collection
+    args = create_args_namespace(
+        database_name=database_name,
+        collection_name=collection_name,
+        csv_file_path=csv_file_path,
+    )
+    handler = MongoDBHandler(args)
+    handler.run()
+
