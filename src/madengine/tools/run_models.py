@@ -362,14 +362,18 @@ class RunModels:
             # check folder pre_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/pre_scripts"):
                 # remove the scripts/common/pre_scripts directory
+                self.console.sh("chmod -R +w scripts/common/pre_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/pre_scripts")
             # check folder post_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/post_scripts"):
                 # remove the scripts/common/post_scripts directory
+                self.console.sh("chmod -R +w scripts/common/post_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/post_scripts")
             if os.path.exists("scripts/common/tools"):
-                # remove the scripts/common/tools directory
-                self.console.sh("rm -rf scripts/common/tools")
+                # remove the scripts/common/tools directory with robust permission fixes
+                self.console.sh("find scripts/common/tools -type f -exec chmod +w {} \\; 2>/dev/null || true")
+                self.console.sh("find scripts/common/tools -type d -exec chmod +wx {} \\; 2>/dev/null || true")
+                self.console.sh("rm -rf scripts/common/tools 2>/dev/null || sudo rm -rf scripts/common/tools", canFail=True)
             print(f"scripts/common directory has been cleaned up.")
 
     def get_gpu_arg(self, requested_gpus: str) -> str:

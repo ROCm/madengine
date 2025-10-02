@@ -19,22 +19,82 @@ import typing
 # import pandas
 
 
+def check_amd_smi_available():
+    """Check if amd-smi command is available"""
+    import subprocess
+    try:
+        result = subprocess.run(['amd-smi', '--version'], 
+                              capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        return False
+
+def get_rocm_version():
+    """Get ROCm version from system"""
+    import subprocess
+    try:
+        # Try hipconfig --version first (more reliable)
+        result = subprocess.run(['hipconfig', '--version'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            # example output: 6.1.40092-038397aaa
+            version_str = result.stdout.strip()
+            version_parts = version_str.split('.')[:2]  # Get major.minor
+            return float('.'.join(version_parts))
+    except:
+        pass
+    
+    try:
+        # Fallback to /opt/rocm/.info/version
+        if os.path.exists("/opt/rocm/.info/version"):
+            result = subprocess.run(['cat', '/opt/rocm/.info/version'], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                version_str = result.stdout.strip().split('-')[0]  # Remove build suffix
+                version_parts = version_str.split('.')[:2]  # Get major.minor
+                return float('.'.join(version_parts))
+    except:
+        pass
+    
+    return None
+
+# Detect GPU vendor: NVIDIA vs ROCm
 if os.path.exists("/usr/bin/nvidia-smi"):
     is_nvidia = True
     is_rocm = False
-elif os.path.exists("/opt/rocm/bin/rocm-smi"):
+elif os.path.exists("/opt/rocm/bin/rocm-smi") or check_amd_smi_available():
     is_nvidia = False
     is_rocm = True
 else:
     raise ValueError("Unable to detect GPU vendor")
 
+# For ROCm systems, choose between rocm-smi and amd-smi based on version
 if is_nvidia:
     from pynvml_utils import prof_utils
-else:
-    try:
-        from rocm_smi_utils import prof_utils
-    except ImportError:
-        raise ImportError("Could not import rocm_smi_utils.py")
+else:  # is_rocm
+    rocm_version = get_rocm_version()
+    use_amd_smi = False
+    
+    if rocm_version is not None and rocm_version >= 6.1:
+        # ROCm >= 6.1: prefer amd-smi if available
+        if check_amd_smi_available():
+            use_amd_smi = True
+    
+    if use_amd_smi:
+        try:
+            from amd_smi_utils import prof_utils
+        except ImportError:
+            # Fallback to rocm-smi if amd-smi import fails
+            try:
+                from rocm_smi_utils import prof_utils
+            except ImportError:
+                raise ImportError("Could not import amd_smi_utils.py or rocm_smi_utils.py")
+    else:
+        # ROCm < 6.1 or amd-smi not available: use rocm-smi
+        try:
+            from rocm_smi_utils import prof_utils
+        except ImportError:
+            raise ImportError("Could not import rocm_smi_utils.py")
 
 logging.basicConfig(level=logging.INFO)
 
