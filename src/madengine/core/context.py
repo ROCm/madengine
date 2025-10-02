@@ -20,6 +20,7 @@ import re
 import typing
 # third-party modules
 from madengine.core.console import Console
+from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError
 
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
@@ -94,6 +95,18 @@ class Context:
 
         # Keeping gpu_vendor for filterning purposes, if we filter using file names we can get rid of this attribute.
         self.ctx["gpu_vendor"] = self.get_gpu_vendor()
+        
+        # Validate ROCm installation if AMD GPU is detected
+        if self.ctx["gpu_vendor"] == "AMD":
+            try:
+                validate_rocm_installation(verbose=False, raise_on_error=True)
+            except GPUInstallationError as e:
+                print("\n" + "="*70)
+                print("ERROR: ROCm Installation Validation Failed")
+                print("="*70)
+                print(str(e))
+                print("="*70)
+                raise
 
         # Initialize the docker context
         self.ctx["docker_env_vars"] = {}
@@ -231,7 +244,7 @@ class Context:
             int: The number of GPUs.
         
         Raises:
-            RuntimeError: If the GPU vendor is not detected.
+            RuntimeError: If the GPU vendor is not detected or GPU count cannot be determined.
         
         Note:
             What types of GPU vendors are supported?
@@ -240,7 +253,18 @@ class Context:
         """
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+            try:
+                number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+            except Exception as e:
+                # Try fallback to rocm-smi
+                try:
+                    number_gpus = int(self.console.sh("rocm-smi --showid --csv | tail -n +2 | wc -l"))
+                except Exception:
+                    raise RuntimeError(
+                        f"Unable to determine number of AMD GPUs. "
+                        f"Ensure amd-smi or rocm-smi is installed and GPUs are accessible. "
+                        f"Original error: {e}"
+                    )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
@@ -264,7 +288,17 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+            try:
+                arch = self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+                if not arch or arch.strip() == "":
+                    raise RuntimeError("rocminfo returned empty architecture")
+                return arch
+            except Exception as e:
+                raise RuntimeError(
+                    f"Unable to determine AMD GPU architecture. "
+                    f"Ensure ROCm is installed and rocminfo is accessible at /opt/rocm/bin/rocminfo. "
+                    f"Error: {e}"
+                )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh(
                 "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
@@ -296,7 +330,17 @@ class Context:
 
     def get_system_hip_version(self):
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
-            return self.console.sh("hipconfig --version | cut -d'.' -f1,2")
+            try:
+                version = self.console.sh("hipconfig --version | cut -d'.' -f1,2")
+                if not version or version.strip() == "":
+                    raise RuntimeError("hipconfig returned empty version")
+                return version
+            except Exception as e:
+                raise RuntimeError(
+                    f"Unable to determine HIP version. "
+                    f"Ensure ROCm is installed and hipconfig is accessible. "
+                    f"Error: {e}"
+                )
         elif self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='NVIDIA':
             return self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
         else:
