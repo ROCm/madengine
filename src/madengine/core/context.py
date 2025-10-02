@@ -348,7 +348,18 @@ class Context:
             if output:
                 data = json.loads(output)
             else:
-                raise ValueError("Failed to retrieve AMD GPU data")            
+                raise ValueError("Failed to retrieve AMD GPU data")
+        
+            # validate that data is a list and contains expected structure
+            if not isinstance(data, list):
+                raise TypeError(f"Expected AMD GPU data to be a list, got {type(data).__name__}. Data: {data}")
+            
+            if not data:
+                raise ValueError("AMD GPU data list is empty")
+            
+            # validate first item to catch type errors
+            if not isinstance(data[0], dict):
+                raise TypeError(f"Expected GPU items to be dictionaries, got {type(data[0]).__name__}. First item: {data[0]}")
 
             # get gpu id - renderD mapping using unique id if ROCm < 6.1.2 and node id otherwise
             # node id is more robust but is only available from 6.1.2
