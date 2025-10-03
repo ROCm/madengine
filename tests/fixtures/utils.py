@@ -42,9 +42,7 @@ def has_gpu() -> bool:
         # Ultra-simple file existence check (no subprocess calls)
         # This is safe for pytest collection and avoids hanging
         nvidia_exists = os.path.exists("/usr/bin/nvidia-smi")
-        amd_rocm_exists = os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists(
-            "/usr/local/bin/rocm-smi"
-        )
+        amd_rocm_exists = os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists("/usr/local/bin/rocm-smi")
 
         _has_gpu_cache = nvidia_exists or amd_rocm_exists
 
@@ -159,15 +157,13 @@ def is_amd() -> bool:
         bool: True if AMD GPU tools are detected
     """
     try:
-        return os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists(
-            "/usr/bin/rocm-smi"
-        )
+        return os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists("/usr/bin/rocm-smi")
     except Exception:
         return False
 
 
 def get_gpu_nodeid_map() -> dict:
-    """Get the GPU node id map.
+    """Get the GPU node id map using amd-smi.
 
     Returns:
         dict: GPU node id map.
@@ -176,34 +172,43 @@ def get_gpu_nodeid_map() -> dict:
     if "Console" not in globals():
         from madengine.core.console import Console
     gpu_map = {}
-    nvidia = is_nvidia()
     console = Console(live_output=True)
-    command = "nvidia-smi --list-gpus"
-    if not nvidia:
-        rocm_version = console.sh("hipconfig --version")
-        rocm_version = float(".".join(rocm_version.split(".")[:2]))
-        command = (
-            "rocm-smi --showuniqueid" if rocm_version < 6.1 else "rocm-smi --showhw"
-        )
-    output = console.sh(command)
-    lines = output.split("\n")
-
-    for line in lines:
-        if nvidia:
+    if is_nvidia():
+        command = "nvidia-smi --list-gpus"
+        output = console.sh(command)
+        lines = output.split("\n")
+        for line in lines:
             gpu_id = int(line.split(":")[0].split()[1])
             unique_id = line.split(":")[2].split(")")[0].strip()
             gpu_map[unique_id] = gpu_id
-        else:
-            if rocm_version < 6.1:
+        print(f"NVIDIA GPU data: {gpu_map}")
+    else:
+        # example output of hipconfig --version: 6.1.40092-038397aaa
+        rocm_version = console.sh("hipconfig --version")
+        rocm_version = float(".".join(rocm_version.split(".")[:2]))
+
+        if rocm_version < 6.1:
+            command = "rocm-smi --showuniqueid"
+            output = console.sh(command)
+            lines = output.split("\n")
+            for line in lines:
                 if "Unique ID:" in line:
                     gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
                     unique_id = line.split(":")[2].strip()
                     gpu_map[unique_id] = gpu_id
+        else:
+            command = "amd-smi list --json"
+            output = console.sh(command)
+            if output:
+                data = json.loads(output)
             else:
-                if re.match(r"\d+\s+\d+", line):
-                    gpu_id = int(line.split()[0])
-                    node_id = line.split()[1]
-                    gpu_map[node_id] = gpu_id
+                raise ValueError("Failed to retrieve AMD GPU data")
+
+            for item in data:
+                node_id = item["node_id"]
+                gpu_map[node_id] = item["gpu"]
+
+        print(f"AMD GPU data: {gpu_map}")
     return gpu_map
 
 
