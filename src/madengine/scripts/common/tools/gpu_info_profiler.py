@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mad Engine CLI tool for profiling GPU usage of running LLMs and Deep Learning models.
+"""madengine CLI tool for profiling GPU usage of running LLMs and Deep Learning models.
 
 This script provides a command-line interface to profile GPU usage of running LLMs and Deep Learning models.
 
@@ -108,15 +108,15 @@ def initialize_profiler_utils(is_nvidia: bool, is_rocm: bool) -> Any:
         is_rocm: Whether AMD ROCm GPU is detected.
         
     Returns:
-        Any: The prof_utils class for the detected GPU vendor.
+        Any: The ProfUtils class for the detected GPU vendor.
         
     Raises:
         ImportError: If the required profiler utility cannot be imported.
     """
     if is_nvidia:
         try:
-            from pynvml_utils import prof_utils
-            return prof_utils
+            from pynvml_utils import ProfUtils
+            return ProfUtils
         except ImportError as e:
             raise ImportError(f"Could not import pynvml_utils.py: {e}")
     
@@ -132,21 +132,21 @@ def initialize_profiler_utils(is_nvidia: bool, is_rocm: bool) -> Any:
     
     if use_amd_smi:
         try:
-            from amd_smi_utils import prof_utils
-            return prof_utils
+            from amd_smi_utils import ProfUtils
+            return ProfUtils
         except ImportError:
             # Fallback to rocm-smi if amd-smi import fails
             logging.warning("amd-smi import failed, falling back to rocm-smi")
             try:
-                from rocm_smi_utils import prof_utils
-                return prof_utils
+                from rocm_smi_utils import ProfUtils
+                return ProfUtils
             except ImportError as e:
                 raise ImportError(f"Could not import amd_smi_utils.py or rocm_smi_utils.py: {e}")
     else:
         # ROCm < 6.1 or amd-smi not available: use rocm-smi
         try:
-            from rocm_smi_utils import prof_utils
-            return prof_utils
+            from rocm_smi_utils import ProfUtils
+            return ProfUtils
         except ImportError as e:
             raise ImportError(f"Could not import rocm_smi_utils.py: {e}")
 
@@ -244,7 +244,7 @@ class EventController(threading.Thread):
         self.event.set()
         time.sleep(1)  # Allow profiler to initialize
 
-        n_devices = len(self.profiler.listDevices())
+        n_devices = len(self.profiler.list_devices())
         
         # Dual GCD mode (AMD-specific)
         if IS_ROCM and n_devices == 2 and self.dual_gcd == "true":
@@ -350,12 +350,12 @@ class PowerProfiler(ProfilerThread):
         # AMD-specific: Filter out secondary dies
         if IS_ROCM and device_filter != "all":
             for device_id in self.devices:
-                if profiler.checkIfSecondaryDie(device_id):
+                if profiler.check_if_secondary_die(device_id):
                     raise ValueError(f"Device {device_id} is a secondary die")
         elif IS_ROCM and device_filter == "all":
-            self.devices = [d for d in self.devices if not profiler.checkIfSecondaryDie(d)]
+            self.devices = [d for d in self.devices if not profiler.check_if_secondary_die(d)]
 
-        self.prof_fun = profiler.getPower
+        self.prof_fun = profiler.get_power
         self.header_string = "Power(Watt) GPU"
 
     def run(self) -> None:
@@ -381,7 +381,7 @@ class VRAMProfiler(ProfilerThread):
             profiler: GPU profiler utility instance.
         """
         super().__init__(devices, sampling_rate, event)
-        self.prof_fun = profiler.getMemInfo
+        self.prof_fun = profiler.get_mem_info
         self.header_string = "vram(%) GPU"
 
     def run(self) -> None:
@@ -445,7 +445,7 @@ def main() -> None:
     device_list = device.split(",")
     
     if len(device_list) == 1 and device_list[0] == "all":
-        device_list = profiler.listDevices()
+        device_list = profiler.list_devices()
     elif len(device_list) == 1 and device_list[0].isdigit():
         device_list = [int(device_list[0])]
     else:

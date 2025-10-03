@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Module to get GPU information using amd-smi
 
-This module contains the class prof_utils to get GPU information using amd-smi.
-This script should keep the API of pynvml_utils with amd_smi_utils
+This module contains the class ProfUtils to get GPU information using amd-smi.
+This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 import subprocess
 import json
 import re
-from typing import List, Union, Optional
+import logging
+from typing import List, Union, Optional, Dict, Any
 
 
-class prof_utils:
-    """Class to get GPU information using amd-smi"""
+class ProfUtils:
+    """Class to get GPU information using AMD amd-smi utility.
+    
+    Attributes:
+        amd_smi_available: Whether amd-smi command is available.
+    """
     
     def __init__(self, mode) -> None:
         """Initialize the amd-smi utils class
@@ -69,11 +74,14 @@ class prof_utils:
         except Exception as e:
             raise RuntimeError(f"Failed to run amd-smi command: {e}")
 
-    def getPower(self, device: int) -> str:
-        """Return the current socket power of a given device
+    def get_power(self, device: int) -> str:
+        """Get current socket power of a given device.
         
-        @param device: GPU device index
-        @return: Power consumption in watts as string, or 'N/A' if unavailable
+        Args:
+            device: GPU device index.
+            
+        Returns:
+            Power consumption in watts as string, or 'N/A' if unavailable.
         """
         try:
             # Get power information for specific device
@@ -101,10 +109,11 @@ class prof_utils:
         except Exception:
             return 'N/A'
 
-    def listDevices(self) -> List[int]:
-        """Returns a list of GPU device indices
+    def list_devices(self) -> List[int]:
+        """Get list of GPU device indices.
         
-        @return: List of device indices
+        Returns:
+            List of device indices.
         """
         try:
             result = self._run_amd_smi_command(['list'])
@@ -135,11 +144,14 @@ class prof_utils:
             # Return empty list if we can't get devices
             return []
 
-    def getMemInfo(self, device: int) -> float:
-        """Get memory usage percentage for a device
+    def get_mem_info(self, device: int) -> float:
+        """Get memory usage percentage for a device.
         
-        @param device: GPU device index
-        @return: Memory usage percentage as float
+        Args:
+            device: GPU device index.
+            
+        Returns:
+            Memory usage percentage as float.
         """
         try:
             # Get memory information for specific device
@@ -179,14 +191,17 @@ class prof_utils:
         except Exception:
             return 0.0
 
-    def checkIfSecondaryDie(self, device: int) -> bool:
-        """Checks if GPU device is the secondary die in a MCM
+    def check_if_secondary_die(self, device: int) -> bool:
+        """Check if GPU device is the secondary die in a MCM.
         
         MI200 device specific feature check.
         The secondary dies lack power management features.
         
-        @param device: The device to check
-        @return: True if secondary die, False otherwise
+        Args:
+            device: The device to check.
+            
+        Returns:
+            True if secondary die, False otherwise.
         """
         try:
             # Get energy/power information to check if it's a secondary die
@@ -225,11 +240,14 @@ class prof_utils:
             # Default to False if we can't determine
             return False
 
-    def getDeviceInfo(self, device: int) -> dict:
-        """Get comprehensive device information
+    def get_device_info(self, device: int) -> Dict[str, Any]:
+        """Get comprehensive device information.
         
-        @param device: GPU device index
-        @return: Dictionary with device information
+        Args:
+            device: GPU device index.
+            
+        Returns:
+            Dictionary with device information.
         """
         try:
             result = self._run_amd_smi_command(['metric', '-d', str(device)])
@@ -244,11 +262,14 @@ class prof_utils:
         except Exception:
             return {}
 
-    def getTemperature(self, device: int) -> Optional[float]:
-        """Get GPU temperature
+    def get_temperature(self, device: int) -> Optional[float]:
+        """Get GPU temperature.
         
-        @param device: GPU device index
-        @return: Temperature in Celsius, or None if unavailable
+        Args:
+            device: GPU device index.
+            
+        Returns:
+            Temperature in Celsius, or None if unavailable.
         """
         try:
             result = self._run_amd_smi_command(['metric', '-d', str(device), '-t'])
@@ -268,11 +289,14 @@ class prof_utils:
         except Exception:
             return None
 
-    def getClockFrequencies(self, device: int) -> dict:
-        """Get clock frequencies for GPU and memory
+    def get_clock_frequencies(self, device: int) -> Dict[str, Any]:
+        """Get clock frequencies for GPU and memory.
         
-        @param device: GPU device index
-        @return: Dictionary with clock frequencies
+        Args:
+            device: GPU device index.
+            
+        Returns:
+            Dictionary with clock frequencies.
         """
         try:
             result = self._run_amd_smi_command(['metric', '-d', str(device), '-c'])
