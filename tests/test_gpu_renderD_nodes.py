@@ -9,6 +9,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import os
 import re
+import stat
 # third-party modules
 import pytest
 # project modules
@@ -148,7 +149,7 @@ class TestGetGpuRenderDNodesIntegration:
             dev_path = f"/dev/dri/renderD{renderD}"
             assert os.path.exists(dev_path), f"Device {dev_path} does not exist"
             # Should be a character device
-            assert os.path.stat(dev_path).st_mode & 0o060000, f"{dev_path} is not a character device"
+            assert stat.S_ISCHR(os.stat(dev_path).st_mode), f"{dev_path} is not a character device"
     
     @pytest.mark.skipif(not is_amd_gpu(), reason="Test requires AMD GPU")
     def test_no_cpu_entries_in_renderDs(self):
