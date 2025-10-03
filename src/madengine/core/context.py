@@ -149,7 +149,9 @@ class Context:
                 print(f"Detected host OS: {self.ctx['host_os']}")
             except Exception as e:
                 print(f"Warning: Could not detect host OS on build node: {e}")
-                print("Consider providing host_os via --additional-context if needed for build")
+                print(
+                    "Consider providing host_os via --additional-context if needed for build"
+                )
 
         # Don't detect GPU-specific contexts in build-only mode
         # These should be provided via additional_context if needed for build args
@@ -217,7 +219,9 @@ class Context:
         except Exception as e:
             print(f"Warning: System context detection failed: {e}")
             if not self._build_only_mode:
-                raise RuntimeError(f"System context detection failed on runtime node: {e}")
+                raise RuntimeError(
+                    f"System context detection failed on runtime node: {e}"
+                )
 
     def init_gpu_context(self) -> None:
         """Initialize GPU-specific context for runtime.
@@ -247,19 +251,25 @@ class Context:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
-                self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_NGPUS"
+                ] = self.get_system_ngpus()
 
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_env_vars"]:
-                self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_GPU_ARCHITECTURE"
+                ] = self.get_system_gpu_architecture()
 
             if "MAD_SYSTEM_HIP_VERSION" not in self.ctx["docker_env_vars"]:
-                self.ctx["docker_env_vars"]["MAD_SYSTEM_HIP_VERSION"] = self.get_system_hip_version()
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_HIP_VERSION"
+                ] = self.get_system_hip_version()
 
             # Also add to build args (for runtime builds) - only if not already set
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_build_arg"]:
-                self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.ctx["docker_env_vars"][
-                    "MAD_SYSTEM_GPU_ARCHITECTURE"
-                ]
+                self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.ctx[
+                    "docker_env_vars"
+                ]["MAD_SYSTEM_GPU_ARCHITECTURE"]
 
             # Docker GPU configuration - only if not already set
             if "docker_gpus" not in self.ctx:
@@ -272,7 +282,9 @@ class Context:
             if "multi_node_args" not in self.ctx:
                 self.ctx["multi_node_args"] = {
                     "RUNNER": "torchrun",
-                    "MAD_RUNTIME_NGPUS": self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"],  # Use system's GPU count
+                    "MAD_RUNTIME_NGPUS": self.ctx["docker_env_vars"][
+                        "MAD_SYSTEM_NGPUS"
+                    ],  # Use system's GPU count
                     "NNODES": 1,
                     "NODE_RANK": 0,
                     "MASTER_ADDR": "localhost",
@@ -286,7 +298,9 @@ class Context:
 
         except Exception as e:
             if self._build_only_mode:
-                print(f"Warning: GPU detection failed in build-only mode (expected): {e}")
+                print(
+                    f"Warning: GPU detection failed in build-only mode (expected): {e}"
+                )
             else:
                 raise RuntimeError(f"GPU detection failed: {e}")
 
@@ -320,7 +334,9 @@ class Context:
             RuntimeError: If the file 'ctx_test' is not found
         """
         # Check if the file 'ctx_test' exists, and if it does, print the contents of the file, otherwise print 'None'.
-        return self.console.sh("if [ -f 'ctx_test' ]; then cat ctx_test; else echo 'None'; fi || true")
+        return self.console.sh(
+            "if [ -f 'ctx_test' ]; then cat ctx_test; else echo 'None'; fi || true"
+        )
 
     def get_gpu_vendor(self) -> str:
         """Get GPU vendor.
@@ -338,7 +354,7 @@ class Context:
         """
         # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
         return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
+            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/rocm-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/rocm-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
         )
 
     def get_host_os(self) -> str:
@@ -400,7 +416,9 @@ class Context:
         """
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+            number_gpus = int(
+                self.console.sh("rocm-smi --showid --csv | grep card | wc -l")
+            )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
@@ -426,7 +444,9 @@ class Context:
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             return self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
-            return self.console.sh("nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'")
+            return self.console.sh(
+                "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
+            )
         else:
             raise RuntimeError("Unable to determine gpu architecture.")
 
@@ -434,7 +454,9 @@ class Context:
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             return self.console.sh("hipconfig --version | cut -d'.' -f1,2")
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
-            return self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
+            return self.console.sh(
+                "nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'"
+            )
         else:
             raise RuntimeError("Unable to determine hip version.")
 
@@ -445,7 +467,9 @@ class Context:
             str: The range of GPUs.
         """
         if int(self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]) > 0:
-            return "0-{}".format(int(self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]) - 1)
+            return "0-{}".format(
+                int(self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]) - 1
+            )
         return None
 
     def get_gpu_renderD_nodes(self) -> typing.Optional[typing.List[int]]:
@@ -470,49 +494,67 @@ class Context:
         # Check if the GPU vendor is AMD.
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             # get rocm version
-            rocm_version = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+            rocm_version = self.console.sh(
+                "cat /opt/rocm/.info/version | cut -d'-' -f1"
+            )
 
             # get renderDs from KFD properties
-            kfd_properties = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes").split("\n")
-            kfd_properties = [line for line in kfd_properties if int(line.split()[-1]) != 0]  # CPUs are 0, skip them
+            kfd_properties = self.console.sh(
+                "grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes"
+            ).split("\n")
+            kfd_properties = [
+                line for line in kfd_properties if int(line.split()[-1]) != 0
+            ]  # CPUs are 0, skip them
             kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
-
-            # get list of GPUs
-            output = self.console.sh("amd-smi list -e --json")
-            if output:
-                data = json.loads(output)
-            else:
-                raise ValueError("Failed to retrieve AMD GPU data")
 
             # get gpu id - renderD mapping using unique id if ROCm < 6.1.2 and node id otherwise
             # node id is more robust but is only available from 6.1.2
             if tuple(map(int, rocm_version.split("."))) < (6, 1, 2):
-                kfd_unique_ids = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes").split("\n")
-                kfd_unique_ids = [hex(int(item.split()[-1])) for item in kfd_unique_ids]  # get unique_id and convert it to hex
+                kfd_unique_ids = self.console.sh(
+                    "grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes"
+                ).split("\n")
+                kfd_unique_ids = [
+                    hex(int(item.split()[-1])) for item in kfd_unique_ids
+                ]  # get unique_id and convert it to hex
 
                 # map unique ids to renderDs
-                uniqueid_renderD_map = {unique_id: renderD for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)}
+                uniqueid_renderD_map = {
+                    unique_id: renderD
+                    for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)
+                }
 
-                # get gpu id unique id map from amd-smi
-                gpuid_uuid_map = {}
-                for item in data:
-                    gpuid_uuid_map[item["gpu"]] = hex(int(item["hip_uuid"].split("-")[1], 16))
+                # get gpu id unique id map from rocm-smi
+                rsmi = self.console.sh(
+                    "rocm-smi --showuniqueid | grep Unique.*:"
+                ).split("\n")
 
                 # sort gpu_renderDs based on gpu ids
-                gpu_renderDs = [uniqueid_renderD_map[gpuid_uuid_map[gpuid]] for gpuid in sorted(gpuid_uuid_map.keys())]
+                gpu_renderDs = [uniqueid_renderD_map[line.split()[-1]] for line in rsmi]
             else:
-                kfd_nodeids = [int(re.search(r"\d+", line.split()[0]).group()) for line in kfd_properties]
+                kfd_nodeids = [
+                    int(re.search(r"\d+", line.split()[0]).group())
+                    for line in kfd_properties
+                ]
 
                 # map node ids to renderDs
-                nodeid_renderD_map = {nodeid: renderD for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)}
+                nodeid_renderD_map = {
+                    nodeid: renderD
+                    for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
+                }
 
-                # get gpu id node id map from amd-smi
-                gpuid_nodeid_map = {}
-                for item in data:
-                    gpuid_nodeid_map[item["gpu"]] = item["node_id"]
+                # get gpu id node id map from rocm-smi
+                rsmi = re.findall(r"\n\d+\s+\d+", self.console.sh("rocm-smi --showhw"))
+                rsmi_gpuids = [int(s.split()[0]) for s in rsmi]
+                rsmi_nodeids = [int(s.split()[1]) for s in rsmi]
+                gpuid_nodeid_map = {
+                    gpuid: nodeid for gpuid, nodeid in zip(rsmi_gpuids, rsmi_nodeids)
+                }
 
                 # sort gpu_renderDs based on gpu ids
-                gpu_renderDs = [nodeid_renderD_map[gpuid_nodeid_map[gpuid]] for gpuid in sorted(gpuid_nodeid_map.keys())]
+                gpu_renderDs = [
+                    nodeid_renderD_map[gpuid_nodeid_map[gpuid]]
+                    for gpuid in sorted(gpuid_nodeid_map.keys())
+                ]
 
         return gpu_renderDs
 
@@ -529,7 +571,9 @@ class Context:
         # NOTE: mpirun is untested
         if self.ctx["multi_node_args"]["RUNNER"] == "mpirun":
             if not self.ctx["multi_node_args"]["HOST_LIST"]:
-                self.ctx["multi_node_args"]["HOST_LIST"] = f"localhost:{self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']}"
+                self.ctx["multi_node_args"][
+                    "HOST_LIST"
+                ] = f"localhost:{self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']}"
             multi_node_runner = (
                 f"mpirun -np {self.ctx['multi_node_args']['NNODES'] * self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']} "
                 f"--host {self.ctx['multi_node_args']['HOST_LIST']}"
@@ -580,14 +624,21 @@ class Context:
             # Only structured multi_node_args should be stored in the manifest
             env_vars_to_remove = []
             for env_var in self.ctx.get("docker_env_vars", {}):
-                if env_var.startswith("MAD_MULTI_NODE_") and env_var != "MAD_MULTI_NODE_RUNNER":
+                if (
+                    env_var.startswith("MAD_MULTI_NODE_")
+                    and env_var != "MAD_MULTI_NODE_RUNNER"
+                ):
                     env_vars_to_remove.append(env_var)
 
             for env_var in env_vars_to_remove:
                 del self.ctx["docker_env_vars"][env_var]
-                print(f"Removed {env_var} from docker_env_vars - will be reconstructed at runtime")
+                print(
+                    f"Removed {env_var} from docker_env_vars - will be reconstructed at runtime"
+                )
 
-            print(f"Multi-node configuration stored for runtime: {list(build_multi_node_args.keys())}")
+            print(
+                f"Multi-node configuration stored for runtime: {list(build_multi_node_args.keys())}"
+            )
             print("MAD_RUNTIME_NGPUS will be resolved at runtime phase")
 
     def _create_build_multi_node_runner_template(self) -> str:
@@ -611,7 +662,10 @@ class Context:
                     "--host ${MAD_MULTI_NODE_HOST_LIST:-localhost:${MAD_RUNTIME_NGPUS:-1}}"
                 )
             else:
-                multi_node_runner = "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) " f"--host {host_list}"
+                multi_node_runner = (
+                    "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) "
+                    f"--host {host_list}"
+                )
         else:
             # For torchrun, use environment variable substitution
             distributed_args = (
@@ -647,13 +701,17 @@ class Context:
         if "multi_node_args" in self.ctx:
             # Add MAD_RUNTIME_NGPUS to multi_node_args if not already present
             if "MAD_RUNTIME_NGPUS" not in self.ctx["multi_node_args"]:
-                self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"]
+                self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
+                    "docker_env_vars"
+                ]["MAD_RUNTIME_NGPUS"]
 
         # If we have build_multi_node_args from manifest, reconstruct full multi_node_args
         elif "build_multi_node_args" in self.ctx:
             print("Reconstructing multi_node_args from build manifest...")
             self.ctx["multi_node_args"] = self.ctx["build_multi_node_args"].copy()
-            self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"]
+            self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
+                "docker_env_vars"
+            ]["MAD_RUNTIME_NGPUS"]
 
         # Generate MAD_MULTI_NODE_RUNNER if we have multi_node_args
         if "multi_node_args" in self.ctx:
@@ -673,12 +731,20 @@ class Context:
 
             for multi_node_key, env_var_name in multi_node_mapping.items():
                 if multi_node_key in self.ctx["multi_node_args"]:
-                    self.ctx["docker_env_vars"][env_var_name] = str(self.ctx["multi_node_args"][multi_node_key])
-                    print(f"Set {env_var_name} to {self.ctx['multi_node_args'][multi_node_key]} for runtime")
+                    self.ctx["docker_env_vars"][env_var_name] = str(
+                        self.ctx["multi_node_args"][multi_node_key]
+                    )
+                    print(
+                        f"Set {env_var_name} to {self.ctx['multi_node_args'][multi_node_key]} for runtime"
+                    )
 
             # Generate the MAD_MULTI_NODE_RUNNER command
-            self.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] = self.set_multi_node_runner()
-            print(f"MAD_MULTI_NODE_RUNNER: {self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER']}")
+            self.ctx["docker_env_vars"][
+                "MAD_MULTI_NODE_RUNNER"
+            ] = self.set_multi_node_runner()
+            print(
+                f"MAD_MULTI_NODE_RUNNER: {self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER']}"
+            )
 
     def filter(self, unfiltered: typing.Dict) -> typing.Dict:
         """Filter the unfiltered dictionary based on the context.
@@ -700,7 +766,10 @@ class Context:
             match = True
             # Iterate over the docker context and check if the context matches the current context.
             for dockerctx_key in dockerctx.keys():
-                if dockerctx_key in self.ctx and dockerctx[dockerctx_key] != self.ctx[dockerctx_key]:
+                if (
+                    dockerctx_key in self.ctx
+                    and dockerctx[dockerctx_key] != self.ctx[dockerctx_key]
+                ):
                     match = False
                     continue
             # If the context matches, add it to the filtered dictionary.
