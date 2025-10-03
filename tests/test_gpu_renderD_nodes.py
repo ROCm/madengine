@@ -4,7 +4,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import json
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 # third-party modules
 import pytest
 # project modules
@@ -13,6 +13,19 @@ from madengine.core.context import Context
 
 class TestGetGpuRenderDNodes:
     """Test suite for the get_gpu_renderD_nodes method."""
+    
+    def _setup_base_amd_mocks(self):
+        """Return base mock responses for AMD GPU Context initialization."""
+        return [
+            'None',  # ctx_test
+            'HOST_UBUNTU',  # host_os
+            '0',  # numa_balancing
+            'AMD',  # gpu_vendor
+            '8',  # system_ngpus
+            'gfx90a',  # gpu_architecture
+            'AMD Instinct MI210',  # gpu_product_name
+            '6.2',  # hip_version
+        ]
 
     @patch('madengine.core.context.Console')
     def test_returns_none_for_nvidia_gpu(self, mock_console_class):
@@ -26,6 +39,10 @@ class TestGetGpuRenderDNodes:
             'HOST_UBUNTU',  # host_os
             '0',  # numa_balancing
             'NVIDIA',  # gpu_vendor
+            '8',  # system_ngpus
+            'NVIDIA A100-SXM4-80GB',  # gpu_architecture
+            'NVIDIA A100-SXM4-80GB',  # gpu_product_name
+            '12.0',  # hip_version (nvcc)
         ]
         
         with patch('madengine.core.context.validate_rocm_installation'):
@@ -52,15 +69,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/drm_render_minor 129"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version for get_gpu_renderD_nodes
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi list -e --json
@@ -94,15 +103,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/unique_id 2271560481"   # hex: 0x87654321
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '5.7',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.0.0',  # rocm_version for get_gpu_renderD_nodes
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi list -e --json
@@ -121,15 +122,7 @@ class TestGetGpuRenderDNodes:
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '',  # empty rocm_version - should raise error
         ]
         
@@ -143,15 +136,7 @@ class TestGetGpuRenderDNodes:
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             'invalid.version.format.extra',  # invalid rocm_version
         ]
         
@@ -165,15 +150,7 @@ class TestGetGpuRenderDNodes:
         mock_console = MagicMock()
         mock_console_class.return_value = mock_console
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             '',  # empty kfd_properties - should raise error
         ]
@@ -202,15 +179,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/3/drm_render_minor 129"   # GPU
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi list -e --json
@@ -233,15 +202,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/drm_render_minor 129"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep
             '',  # empty amd-smi output
@@ -262,15 +223,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/drm_render_minor 129"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep
             'invalid json output',  # invalid JSON
@@ -297,15 +250,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/1/drm_render_minor 128"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep (only 1 GPU)
             amd_smi_output,  # amd-smi list -e --json (2 GPUs)
@@ -332,15 +277,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/drm_render_minor 129"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi with missing node_id
@@ -372,15 +309,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/2/unique_id 2271560481"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '5.7',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.0.0',  # rocm_version (< 6.1.2)
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi with missing hip_uuid
@@ -412,15 +341,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/5/drm_render_minor 131"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep
             amd_smi_output,  # amd-smi list -e --json
@@ -451,15 +372,7 @@ class TestGetGpuRenderDNodes:
             "\n"  # Another empty line
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep with empty lines
             amd_smi_output,  # amd-smi list -e --json
@@ -483,15 +396,7 @@ class TestGetGpuRenderDNodes:
             "/sys/devices/virtual/kfd/kfd/topology/nodes/1/drm_render_minor 0"
         )
         
-        mock_console.sh.side_effect = [
-            'None',  # ctx_test
-            'HOST_UBUNTU',  # host_os
-            '0',  # numa_balancing
-            'AMD',  # gpu_vendor
-            '8',  # system_ngpus
-            'gfx90a',  # gpu_architecture
-            'AMD Instinct MI210',  # gpu_product_name
-            '6.2',  # hip_version
+        mock_console.sh.side_effect = self._setup_base_amd_mocks() + [
             '6.2.0',  # rocm_version
             kfd_drm_output,  # drm_render_minor grep (only CPUs)
         ]
