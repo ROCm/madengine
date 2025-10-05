@@ -1125,7 +1125,7 @@ class RunModels:
         host_os = self.context.ctx["host_os"]
 
         if host_os.find("HOST_UBUNTU") != -1:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            pass
         elif host_os.find("HOST_CENTOS") != -1:
             print(self.console.sh("yum info rocm-libs"))
         elif host_os.find("HOST_SLES") != -1:
