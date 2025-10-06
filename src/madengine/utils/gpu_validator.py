@@ -150,29 +150,30 @@ class ROCmValidator:
         
         return False, "No GPU management tool could detect GPUs"
     
-    def _check_kfd_driver(self) -> Tuple[bool, List[str]]:
+    def _check_kfd_driver(self) -> Tuple[bool, List[str], List[str]]:
         """Check if KFD driver is loaded
         
         Returns:
-            Tuple of (loaded, issues)
+            Tuple of (loaded, critical_issues, warnings)
         """
-        issues = []
+        critical_issues = []
+        warnings = []
         
-        # Check /dev/kfd
+        # Check /dev/kfd - this is critical
         if not self._check_path_exists('/dev/kfd'):
-            issues.append("/dev/kfd device not found - KFD driver may not be loaded")
+            critical_issues.append("/dev/kfd device not found - KFD driver may not be loaded")
         
-        # Check KFD topology
+        # Check KFD topology - this is critical
         if not self._check_path_exists('/sys/devices/virtual/kfd/kfd/topology/nodes'):
-            issues.append("KFD topology not found - GPU topology may not be available")
+            critical_issues.append("KFD topology not found - GPU topology may not be available")
         
-        # Check dmesg for amdgpu module
+        # Check dmesg for amdgpu module - this is just a warning if other checks pass
         success, stdout, _ = self._run_command(['dmesg'], timeout=5)
         if success:
             if 'amdgpu' not in stdout.lower():
-                issues.append("amdgpu driver messages not found in dmesg")
+                warnings.append("amdgpu driver messages not found in dmesg")
         
-        return len(issues) == 0, issues
+        return len(critical_issues) == 0, critical_issues, warnings
     
     def validate(self) -> GPUValidationResult:
         """Perform comprehensive ROCm validation
@@ -238,16 +239,7 @@ class ROCmValidator:
         if self.verbose:
             print("\n[4/6] Checking KFD driver...")
         
-        kfd_ok, kfd_issues = self._check_kfd_driver()
-        if not kfd_ok:
-            result.is_valid = False
-            result.issues.extend(kfd_issues)
-            if self.verbose:
-                for issue in kfd_issues:
-                    print(f"  ✗ {issue}")
-        else:
-            if self.verbose:
-                print(f"  ✓ KFD driver loaded")
+        kfd_ok, kfd_critical_issues, kfd_warnings = self._check_kfd_driver()
         
         # 5. Check GPU accessibility
         if self.verbose:
@@ -262,6 +254,36 @@ class ROCmValidator:
             result.issues.append(gpu_msg)
             if self.verbose:
                 print(f"  ✗ {gpu_msg}")
+        
+        # Now decide how to handle KFD issues based on GPU accessibility
+        # If GPUs are accessible, treat KFD dmesg warnings as non-critical
+        if not kfd_ok:
+            if gpu_accessible:
+                # GPUs work despite KFD warnings - downgrade to warnings
+                result.warnings.extend(kfd_critical_issues)
+                result.warnings.extend(kfd_warnings)
+                if self.verbose:
+                    for issue in kfd_critical_issues:
+                        print(f"  ⚠ {issue}")
+                    for warning in kfd_warnings:
+                        print(f"  ⚠ {warning}")
+            else:
+                # GPUs not accessible and KFD has issues - critical
+                result.is_valid = False
+                result.issues.extend(kfd_critical_issues)
+                result.warnings.extend(kfd_warnings)
+                if self.verbose:
+                    for issue in kfd_critical_issues:
+                        print(f"  ✗ {issue}")
+                    for warning in kfd_warnings:
+                        print(f"  ⚠ {warning}")
+        else:
+            # KFD is OK, but check for warnings
+            result.warnings.extend(kfd_warnings)
+            if self.verbose:
+                print(f"  ✓ KFD driver loaded")
+                for warning in kfd_warnings:
+                    print(f"  ⚠ {warning}")
         
         # 6. Check permissions
         if self.verbose:
