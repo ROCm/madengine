@@ -99,7 +99,7 @@ def get_gpu_nodeid_map() -> dict:
                     gpu_map[unique_id] = gpu_id
         else:
             try:
-                # Try the new amd-smi tool first (ROCm 6.1+)
+                # Try the new amd-smi tool first (ROCm 6.4+)
                 output = console.sh("amd-smi list --json")
                 gpu_data = json.loads(output)
                 for gpu_info in gpu_data:
@@ -112,13 +112,13 @@ def get_gpu_nodeid_map() -> dict:
                     rocm_version = console.sh("hipconfig --version")
                     rocm_version = float(".".join(rocm_version.split(".")[:2]))
                     command = (
-                        "rocm-smi --showuniqueid" if rocm_version < 6.1 else "rocm-smi --showhw"
+                        "rocm-smi --showuniqueid" if rocm_version < 6.4 else "rocm-smi --showhw"
                     )
                     output = console.sh(command)
                     lines = output.split("\n")
 
                     for line in lines:
-                        if rocm_version < 6.1:
+                        if rocm_version < 6.4:
                             if "Unique ID:" in line:
                                 gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
                                 unique_id = line.split(":")[2].strip()
