@@ -414,22 +414,9 @@ class Context:
             
             kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
 
-            # Get list of GPUs from amd-smi
-            output = self.console.sh("amd-smi list -e --json")
-            if not output or output.strip() == "":
-                raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
-            
-            try:
-                data = json.loads(output)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Failed to parse amd-smi JSON output: {e}")
-            
-            if not data or not isinstance(data, list):
-                raise ValueError("amd-smi returned empty or invalid data")
-
-            # Get gpu id - renderD mapping using unique id if ROCm < 6.1.2 and node id otherwise
-            # node id is more robust but is only available from 6.1.2
-            if rocm_version < (6, 1, 2):
+            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.0 and node id otherwise
+            # node id is more robust but is only available from 6.4.0
+            if rocm_version < (6, 4, 0):
                 # Legacy method using unique_id
                 kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
                 if not kfd_unique_output:
@@ -459,29 +446,25 @@ class Context:
                     for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)
                 }
 
-                # Get gpu id to unique id map from amd-smi
-                gpuid_uuid_map = {}
-                for item in data:
+                # Get GPU ID to unique ID mapping from rocm-smi
+                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'")
+                if not rsmi_output or rsmi_output.strip() == "":
+                    raise RuntimeError("Failed to retrieve unique IDs from rocm-smi")
+                
+                rsmi_lines = [line.strip() for line in rsmi_output.split("\n") if line.strip()]
+                
+                # Sort gpu_renderDs based on GPU IDs
+                gpu_renderDs = []
+                for line in rsmi_lines:
                     try:
-                        gpu_id = item["gpu"]
-                        hip_uuid = item["hip_uuid"]
-                        # Extract and convert the second part of hip_uuid
-                        uuid_hex = hex(int(hip_uuid.split("-")[1], 16))
-                        gpuid_uuid_map[gpu_id] = uuid_hex
-                    except (KeyError, IndexError, ValueError) as e:
-                        raise KeyError(f"Failed to parse GPU data from amd-smi: {e}. Item: {item}")
-
-                # Sort gpu_renderDs based on gpu ids
-                try:
-                    gpu_renderDs = [
-                        uniqueid_renderD_map[gpuid_uuid_map[gpuid]] 
-                        for gpuid in sorted(gpuid_uuid_map.keys())
-                    ]
-                except KeyError as e:
-                    raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
-                    
+                        unique_id = line.split()[-1]
+                        if unique_id not in uniqueid_renderD_map:
+                            raise KeyError(f"Unique ID '{unique_id}' from rocm-smi not found in KFD mapping")
+                        gpu_renderDs.append(uniqueid_renderD_map[unique_id])
+                    except (IndexError, KeyError) as e:
+                        raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
             else:
-                # Modern method using node_id (ROCm >= 6.1.2)
+                # Modern method using node_id (ROCm >= 6.4.0)
                 kfd_nodeids = []
                 for line in kfd_properties:
                     try:
@@ -505,6 +488,19 @@ class Context:
                     nodeid: renderD 
                     for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
                 }
+
+                # Get list of GPUs from amd-smi
+                output = self.console.sh("amd-smi list -e --json")
+                if not output or output.strip() == "":
+                    raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
+                
+                try:
+                    data = json.loads(output)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}")
+                
+                if not data or not isinstance(data, list):
+                    raise ValueError("amd-smi returned empty or invalid data")
 
                 # Get gpu id to node id map from amd-smi
                 gpuid_nodeid_map = {}

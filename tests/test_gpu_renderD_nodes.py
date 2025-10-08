@@ -67,16 +67,15 @@ class TestGetGpuRenderDNodesIntegration:
     @pytest.mark.skipif(not is_amd_gpu(), reason="Test requires AMD GPU")
     def test_renderD_count_matches_gpu_count(self):
         """Test that the number of renderD nodes matches the number of GPUs."""
-        console = Console()
         context = Context()
         
-        # Get GPU count from amd-smi
-        try:
-            amd_smi_output = console.sh("amd-smi list -e --json")
-            gpu_data = json.loads(amd_smi_output)
-            expected_gpu_count = len(gpu_data)
-        except Exception:
-            pytest.skip("Unable to query amd-smi for GPU count")
+        # Get GPU count from context (which uses amd-smi list --csv or rocm-smi as fallback)
+        # This is more reliable than amd-smi list -e --json which only works on ROCm 6.4+
+        expected_gpu_count = context.ctx['docker_env_vars']['MAD_SYSTEM_NGPUS']
+        
+        # Skip test if no GPUs detected
+        if expected_gpu_count == 0:
+            pytest.skip("No GPUs detected on system")
         
         # The number of renderD nodes should match the number of GPUs
         assert len(context.ctx['gpu_renderDs']) == expected_gpu_count
