@@ -124,8 +124,8 @@ def initialize_profiler_utils(is_nvidia: bool, is_rocm: bool) -> Any:
     rocm_version = get_rocm_version()
     use_amd_smi = False
     
-    if rocm_version is not None and rocm_version >= 6.1:
-        # ROCm >= 6.1: prefer amd-smi if available
+    if rocm_version is not None and rocm_version >= 6.4:
+        # ROCm >= 6.4: prefer amd-smi if available
         if check_amd_smi_available():
             use_amd_smi = True
             logging.info(f"Using amd-smi for ROCm {rocm_version}")
@@ -143,7 +143,7 @@ def initialize_profiler_utils(is_nvidia: bool, is_rocm: bool) -> Any:
             except ImportError as e:
                 raise ImportError(f"Could not import amd_smi_utils.py or rocm_smi_utils.py: {e}")
     else:
-        # ROCm < 6.1 or amd-smi not available: use rocm-smi
+        # ROCm < 6.4 or amd-smi not available: use rocm-smi
         try:
             from rocm_smi_utils import ProfUtils
             return ProfUtils
