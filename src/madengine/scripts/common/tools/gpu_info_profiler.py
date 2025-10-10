@@ -20,11 +20,21 @@ from typing import Optional, List, Dict, Any
 
 
 def check_amd_smi_available() -> bool:
-    """Check if amd-smi command is available.
+    """Check if amd-smi command or Python bindings are available.
     
     Returns:
         bool: True if amd-smi is available, False otherwise.
     """
+    # First check for Python bindings (more reliable for programmatic access)
+    try:
+        sys.path.append("/opt/rocm/libexec/amdsmi_cli/")
+        from amdsmi_init import amdsmi_interface
+        logging.debug("amd-smi Python bindings found at /opt/rocm/libexec/amdsmi_cli/")
+        return True
+    except ImportError:
+        logging.debug("amd-smi Python bindings not found")
+    
+    # Fallback to checking command-line tool
     try:
         result = subprocess.run(
             ['amd-smi', '--version'],
@@ -32,10 +42,13 @@ def check_amd_smi_available() -> bool:
             text=True,
             timeout=10
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            logging.debug("amd-smi command-line tool found")
+            return True
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
-        logging.debug(f"amd-smi not available: {e}")
-        return False
+        logging.debug(f"amd-smi command not available: {e}")
+    
+    return False
 
 def get_rocm_version() -> Optional[float]:
     """Get ROCm version from system.
