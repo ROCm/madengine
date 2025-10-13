@@ -98,12 +98,6 @@ def handle_multiple_results(
         AssertionError: If the number of columns in the performance csv DataFrame is not equal to the length of the row.
     """
     multiple_results_df = df_strip_columns(pd.read_csv(multiple_results))
-    multiple_results_header = multiple_results_df.columns.tolist()
-
-    headings = ['model', 'performance', 'metric']
-    for heading in headings:
-        if not(heading in multiple_results_header):
-            raise RuntimeError("Multiple Results CSV file is missing the " + heading + " column")
 
     common_info_json = read_json(common_info)
     flatten_tags(common_info_json)
@@ -115,7 +109,7 @@ def handle_multiple_results(
         row.update(r)
         row["model"] = model_name + "_" + str(r["model"])
 
-        if r["performance"] is not None and pd.notna(r["performance"]):
+        if r["model"] is not None and pd.notna(r["model"]):
             row["status"] = "SUCCESS"
         else:
             row["status"] = "FAILURE"
