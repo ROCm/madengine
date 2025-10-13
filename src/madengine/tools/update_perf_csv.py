@@ -125,7 +125,11 @@ def handle_multiple_results(
         )
 
     perf_entry_df_to_csv(final_multiple_results_df)
-    perf_csv_df = pd.concat([perf_csv_df, final_multiple_results_df])
+    if perf_csv_df.empty:
+        perf_csv_df = final_multiple_results_df
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, final_multiple_results_df])
+
     return perf_csv_df
 
 
@@ -147,9 +151,11 @@ def handle_single_result(
     """
     single_result_json = read_json(single_result)
     perf_entry_dict_to_csv(single_result_json)
-    perf_csv_df = pd.concat(
-        [perf_csv_df, pd.DataFrame(single_result_json, index=[0])], ignore_index=True
-    )
+    single_result_df = pd.DataFrame(single_result_json, index=[0])
+    if perf_csv_df.empty:
+        perf_csv_df = single_result_df[perf_csv_df.columns]
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, single_result_df], ignore_index=True)
 
     return perf_csv_df
 
@@ -172,9 +178,11 @@ def handle_exception_result(
     """
     exception_result_json = read_json(exception_result)
     perf_entry_dict_to_csv(exception_result_json)
-    perf_csv_df = pd.concat(
-        [perf_csv_df, pd.DataFrame(exception_result_json, index=[0])], ignore_index=True
-    )
+    exception_result_df = pd.DataFrame(exception_result_json, index=[0])
+    if perf_csv_df.empty:
+        perf_csv_df = exception_result_df[perf_csv_df.columns]
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, exception_result_df], ignore_index=True)
 
     return perf_csv_df
 
