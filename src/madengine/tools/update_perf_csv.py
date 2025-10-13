@@ -105,9 +105,11 @@ def handle_multiple_results(
     final_multiple_results_df = pd.DataFrame()
     # add results to perf.csv
     for r in multiple_results_df.to_dict(orient="records"):
-        row = common_info_json.copy()
+        row = {}
+        model = r.pop("model")
+        row["model"] = model_name + "_" + str(model)
+        row.update(common_info_json)
         row.update(r)
-        row["model"] = model_name + "_" + str(r["model"])
 
         if r["model"] is not None and pd.notna(r["model"]):
             row["status"] = "SUCCESS"
