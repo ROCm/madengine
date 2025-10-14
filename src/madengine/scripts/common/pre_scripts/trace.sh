@@ -51,7 +51,7 @@ rpd)
 	
 	# Install rocpd Python module locally
 	cd rocpd_python
-	python3 setup.py install --user
+	python3 setup.py install
 	if [ $? -ne 0 ]; then
 		echo "Error: Failed to install rocpd Python module"
 		exit 1
