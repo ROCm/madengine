@@ -1041,6 +1041,94 @@ class RunModels:
             )
             return False
 
+    def _is_slurm_required_model(self, model_info: typing.Dict) -> bool:
+        """Check if model requires SLURM cluster execution.
+        
+        A model requires SLURM if it has the 'slurm' tag in its tags list.
+        This indicates the model is designed for distributed multi-node 
+        inference and cannot run on single-node environments.
+        
+        Args:
+            model_info: The model information dictionary containing tags.
+        
+        Returns:
+            bool: True if model has 'slurm' tag, False otherwise.
+        """
+        tags = model_info.get("tags", [])
+        return "slurm" in tags
+
+    def _is_slurm_environment(self) -> bool:
+        """Check if current environment is a SLURM cluster.
+        
+        This method detects if the code is running on a SLURM cluster by checking
+        for standard SLURM environment variables that are set by the SLURM workload
+        manager. This follows SLURM best practices for environment detection.
+        
+        SLURM sets various environment variables when jobs are submitted:
+        - SLURM_JOB_ID: The job ID assigned by SLURM
+        - SLURM_CLUSTER_NAME: The name of the cluster
+        - SLURM_JOBID: Alternative job ID variable
+        - SLURMD_NODENAME: The name of the node running the job
+        
+        Returns:
+            bool: True if running on a SLURM cluster, False otherwise.
+        """
+        # Check for SLURM environment variables that indicate we're on a SLURM cluster
+        slurm_indicators = [
+            'SLURM_JOB_ID',      # Primary indicator - set when job is running
+            'SLURM_JOBID',       # Alternative job ID variable
+            'SLURM_CLUSTER_NAME', # Cluster name
+            'SLURMD_NODENAME'    # Node name in SLURM
+        ]
+        
+        # If any SLURM environment variable is present, we're on a SLURM cluster
+        for indicator in slurm_indicators:
+            if indicator in os.environ:
+                print(f"SLURM environment detected: {indicator}={os.environ[indicator]}")
+                return True
+        
+        # Also check if slurm_args was explicitly provided in context
+        # This allows manual override for testing or special configurations
+        if "slurm_args" in self.context.ctx:
+            print("SLURM environment detected via slurm_args in context")
+            return True
+        
+        return False
+
+    def _write_skipped_model_result(self, model_info: typing.Dict, status: str) -> None:
+        """Write a skipped model entry to the performance CSV.
+        
+        This method creates a CSV entry for models that were skipped during
+        execution, allowing for complete tracking and reporting of all models
+        in the run, including those that couldn't be executed.
+        
+        Args:
+            model_info: The model information dictionary.
+            status: The skip status (e.g., "SKIPPED_SLURM_REQUIRED").
+        """
+        run_details = RunDetails()
+        run_details.model = model_info["name"]
+        run_details.n_gpus = model_info.get("n_gpus", "-1")
+        run_details.training_precision = model_info.get("training_precision", "")
+        run_details.args = model_info.get("args", "")
+        run_details.tags = model_info.get("tags", [])
+        run_details.status = status
+        run_details.pipeline = os.environ.get("pipeline", "")
+        run_details.machine_name = self.console.sh("hostname")
+        
+        # Get GPU architecture from context if available
+        if "docker_env_vars" in self.context.ctx and "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_env_vars"]:
+            run_details.gpu_architecture = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
+        else:
+            run_details.gpu_architecture = "N/A"
+        
+        # Generate JSON and update CSV
+        run_details.generate_json("perf_entry.json")
+        update_perf_csv(
+            single_result="perf_entry.json",
+            perf_csv=self.args.output,
+        )
+
     def run_model(self, model_info: typing.Dict) -> bool:
         """Run model on container.
 
@@ -1054,6 +1142,46 @@ class RunModels:
             Exception: An error occurred while running model on container.
         """
         print(f"Running model {model_info['name']} with {model_info}")
+
+        # Check if model requires SLURM but SLURM is not configured
+        if self._is_slurm_required_model(model_info):
+            if not self._is_slurm_environment():
+                print(f"")
+                print(f"=" * 80)
+                print(f"⚠️  WARNING: Model '{model_info['name']}' requires SLURM cluster execution")
+                print(f"=" * 80)
+                print(f"")
+                print(f"This model is tagged with 'slurm' and is designed for distributed")
+                print(f"multi-node inference. It cannot run on typical single-node environments.")
+                print(f"")
+                print(f"Current environment: Single-node execution (no slurm_args detected)")
+                print(f"Required environment: SLURM cluster with multi-node configuration")
+                print(f"")
+                print(f"⚠️  SKIPPING model execution")
+                print(f"")
+                print(f"To run this model on a SLURM cluster, use:")
+                print(f"")
+                print(f"  madengine run --tags {model_info['name']} \\")
+                print(f"    --additional-context \"{{")
+                print(f"      'slurm_args': {{")
+                print(f"        'FRAMEWORK': 'sglang_disagg',")
+                print(f"        'PREFILL_NODES': '2',")
+                print(f"        'DECODE_NODES': '2',")
+                print(f"        'PARTITION': 'gpu-partition',")
+                print(f"        'TIME': '12:00:00',")
+                print(f"        'DOCKER_IMAGE': ''")
+                print(f"      }}")
+                print(f"    }}\"")
+                print(f"")
+                print(f"For more information, see: docs/how-to-run-multi-node.md")
+                print(f"=" * 80)
+                print(f"")
+                
+                # Write skip status to CSV for reporting
+                self._write_skipped_model_result(model_info, "SKIPPED_SLURM_REQUIRED")
+                
+                # Return True to not fail the entire run (this is a skip, not a failure)
+                return True
 
         # Check if SLURM execution is requested
         if "slurm_args" in self.context.ctx:
