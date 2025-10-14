@@ -111,7 +111,7 @@ def handle_multiple_results(
         row.update(common_info_json)
         row.update(r)
 
-        if r["model"] is not None and pd.notna(r["model"]):
+        if row["model"] is not None and pd.notna(row["model"]):
             row["status"] = "SUCCESS"
         else:
             row["status"] = "FAILURE"
