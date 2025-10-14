@@ -20,11 +20,21 @@ from typing import Optional, List, Dict, Any
 
 
 def check_amd_smi_available() -> bool:
-    """Check if amd-smi command is available.
+    """Check if amd-smi command or Python bindings are available.
     
     Returns:
         bool: True if amd-smi is available, False otherwise.
     """
+    # First check for Python bindings (more reliable for programmatic access)
+    try:
+        sys.path.append("/opt/rocm/libexec/amdsmi_cli/")
+        from amdsmi_init import amdsmi_interface
+        logging.debug("amd-smi Python bindings found at /opt/rocm/libexec/amdsmi_cli/")
+        return True
+    except ImportError:
+        logging.debug("amd-smi Python bindings not found")
+    
+    # Fallback to checking command-line tool
     try:
         result = subprocess.run(
             ['amd-smi', '--version'],
@@ -32,10 +42,13 @@ def check_amd_smi_available() -> bool:
             text=True,
             timeout=10
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            logging.debug("amd-smi command-line tool found")
+            return True
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
-        logging.debug(f"amd-smi not available: {e}")
-        return False
+        logging.debug(f"amd-smi command not available: {e}")
+    
+    return False
 
 def get_rocm_version() -> Optional[float]:
     """Get ROCm version from system.
@@ -124,26 +137,42 @@ def initialize_profiler_utils(is_nvidia: bool, is_rocm: bool) -> Any:
     rocm_version = get_rocm_version()
     use_amd_smi = False
     
-    if rocm_version is not None and rocm_version >= 6.1:
-        # ROCm >= 6.1: prefer amd-smi if available
+    logging.info(f"Detected ROCm version: {rocm_version}")
+    logging.info(f"amd-smi available: {check_amd_smi_available()}")
+    
+    if rocm_version is not None and rocm_version >= 6.4:
+        # ROCm >= 6.4: prefer amd-smi if available
         if check_amd_smi_available():
             use_amd_smi = True
             logging.info(f"Using amd-smi for ROCm {rocm_version}")
+        else:
+            logging.warning(f"ROCm {rocm_version} detected but amd-smi not available, using rocm-smi")
+    else:
+        logging.info(f"ROCm {rocm_version} < 6.4, using rocm-smi")
     
     if use_amd_smi:
         try:
             from amd_smi_utils import ProfUtils
+            logging.info("Successfully imported amd_smi_utils")
             return ProfUtils
-        except ImportError:
+        except ImportError as import_err:
             # Fallback to rocm-smi if amd-smi import fails
-            logging.warning("amd-smi import failed, falling back to rocm-smi")
+            logging.warning(f"amd-smi import failed: {import_err}, falling back to rocm-smi")
             try:
                 from rocm_smi_utils import ProfUtils
                 return ProfUtils
             except ImportError as e:
                 raise ImportError(f"Could not import amd_smi_utils.py or rocm_smi_utils.py: {e}")
+        except Exception as init_err:
+            # Catch initialization errors from amd_smi_utils.__init__
+            logging.warning(f"amd-smi initialization failed: {init_err}, falling back to rocm-smi")
+            try:
+                from rocm_smi_utils import ProfUtils
+                return ProfUtils
+            except ImportError as e:
+                raise ImportError(f"Could not import rocm_smi_utils.py after amd-smi init failed: {e}")
     else:
-        # ROCm < 6.1 or amd-smi not available: use rocm-smi
+        # ROCm < 6.4 or amd-smi not available: use rocm-smi
         try:
             from rocm_smi_utils import ProfUtils
             return ProfUtils
@@ -436,7 +465,21 @@ def main() -> None:
     
     # Initialize profiler utility
     prof_utils_class = initialize_profiler_utils(IS_NVIDIA, IS_ROCM)
-    profiler = prof_utils_class(mode)
+    try:
+        profiler = prof_utils_class(mode)
+    except ImportError as e:
+        # If amd-smi initialization fails, try falling back to rocm-smi
+        logging.error(f"Failed to initialize profiler: {e}")
+        if IS_ROCM:
+            logging.warning("Attempting fallback to rocm-smi")
+            try:
+                from rocm_smi_utils import ProfUtils as RocmSmiProfUtils
+                profiler = RocmSmiProfUtils(mode)
+                logging.info("Successfully fell back to rocm-smi")
+            except Exception as fallback_err:
+                raise RuntimeError(f"Failed to initialize both amd-smi and rocm-smi: {e}, {fallback_err}")
+        else:
+            raise
     
     # Create synchronization event
     event = threading.Event()
