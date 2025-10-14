@@ -91,14 +91,15 @@ When `slurm_args` is provided in the `additional-context`, madengine will:
 
 The following arguments can be specified in the `slurm_args` dictionary:
 
-| Argument | Description | Required | Example |
-|----------|-------------|----------|---------|
-| `FRAMEWORK` | Framework to use for the job | Yes | `'sglang_disagg'` |
-| `PREFILL_NODES` | Number of nodes for prefill phase | Yes | `'2'` |
-| `DECODE_NODES` | Number of nodes for decode phase | Yes | `'2'` |
-| `PARTITION` | SLURM partition/queue name | Yes | `'amd-rccl'` |
-| `TIME` | Maximum job runtime (HH:MM:SS) | Yes | `'12:00:00'` |
-| `DOCKER_IMAGE` | Docker image to use (optional) | No | `''` (uses default from run.sh) |
+| Argument | Description | Required | Default | Example |
+|----------|-------------|----------|---------|---------|
+| `FRAMEWORK` | Framework to use for the job | Yes | - | `'sglang_disagg'` |
+| `PREFILL_NODES` | Number of nodes for prefill phase | Yes | - | `'2'` |
+| `DECODE_NODES` | Number of nodes for decode phase | Yes | - | `'2'` |
+| `PARTITION` | SLURM partition/queue name | Yes | - | `'amd-rccl'` |
+| `TIME` | Maximum job runtime (HH:MM:SS) | Yes | - | `'12:00:00'` |
+| `DOCKER_IMAGE` | Docker image to use | No | `''` | `'myregistry/image:tag'` |
+| `EXCLUSIVE_MODE` | Request exclusive node access | No | `True` | `True` or `False` |
 
 ### Usage Examples
 
@@ -149,6 +150,25 @@ madengine run --tags sglang_disagg_pd_deepseek_v2 \
     'DOCKER_IMAGE': ''
   }}"
 ```
+
+#### Using Exclusive Mode
+
+By default, `EXCLUSIVE_MODE` is `True`, which requests exclusive access to nodes (recommended for distributed inference). To share nodes with other jobs:
+
+```bash
+madengine run --tags sglang_disagg_pd_qwen3-32B \
+  --additional-context "{'slurm_args': {
+    'FRAMEWORK': 'sglang_disagg',
+    'PREFILL_NODES': '2',
+    'DECODE_NODES': '2',
+    'PARTITION': 'amd-rccl',
+    'TIME': '12:00:00',
+    'DOCKER_IMAGE': '',
+    'EXCLUSIVE_MODE': False
+  }}"
+```
+
+**Note:** Exclusive mode (`--exclusive` in SLURM) is typically recommended for distributed multi-node workloads to ensure consistent performance and avoid interference from other jobs running on the same nodes.
 
 ### Model Configuration
 

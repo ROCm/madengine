@@ -939,6 +939,19 @@ class RunModels:
         # Add DOCKER_IMAGE if provided and not empty
         if "DOCKER_IMAGE" in slurm_args and slurm_args["DOCKER_IMAGE"]:
             env_vars["DOCKER_IMAGE"] = slurm_args["DOCKER_IMAGE"]
+        
+        # Add EXCLUSIVE_MODE if provided (default to true for multi-node jobs)
+        exclusive_mode = slurm_args.get("EXCLUSIVE_MODE", True)
+        if isinstance(exclusive_mode, bool):
+            env_vars["EXCLUSIVE_MODE"] = "true" if exclusive_mode else "false"
+        elif isinstance(exclusive_mode, str):
+            # Handle string values like "true", "false", "True", "False"
+            env_vars["EXCLUSIVE_MODE"] = exclusive_mode.lower()
+        else:
+            # Default to true for safety in multi-node distributed jobs
+            env_vars["EXCLUSIVE_MODE"] = "true"
+        
+        print(f"SLURM exclusive mode: {env_vars['EXCLUSIVE_MODE']}")
 
         # Set environment variables
         for key, value in env_vars.items():
