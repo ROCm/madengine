@@ -1060,39 +1060,26 @@ class RunModels:
     def _is_slurm_environment(self) -> bool:
         """Check if current environment is a SLURM cluster.
         
-        This method detects if the code is running on a SLURM cluster by checking
-        for standard SLURM environment variables that are set by the SLURM workload
-        manager. This follows SLURM best practices for environment detection.
-        
-        SLURM sets various environment variables when jobs are submitted:
-        - SLURM_JOB_ID: The job ID assigned by SLURM
-        - SLURM_CLUSTER_NAME: The name of the cluster
-        - SLURM_JOBID: Alternative job ID variable
-        - SLURMD_NODENAME: The name of the node running the job
+        This method detects if the code is running on a SLURM cluster by attempting
+        to execute the 'scontrol show config' command, which is a standard SLURM
+        command available on all SLURM nodes.
         
         Returns:
             bool: True if running on a SLURM cluster, False otherwise.
         """
-        # Check for SLURM environment variables that indicate we're on a SLURM cluster
-        slurm_indicators = [
-            'SLURM_JOB_ID',      # Primary indicator - set when job is running
-            'SLURM_JOBID',       # Alternative job ID variable
-            'SLURM_CLUSTER_NAME', # Cluster name
-            'SLURMD_NODENAME'    # Node name in SLURM
-        ]
-        
-        # If any SLURM environment variable is present, we're on a SLURM cluster
-        for indicator in slurm_indicators:
-            if indicator in os.environ:
-                print(f"SLURM environment detected: {indicator}={os.environ[indicator]}")
+        # Try to execute scontrol command to check if SLURM is available
+        try:
+            result = self.console.sh("scontrol show config 2>/dev/null | head -n 1", canFail=True)
+            # If the command succeeds and returns output, we're on a SLURM cluster
+            if result and len(result.strip()) > 0:
+                print(f"SLURM environment detected via 'scontrol show config'")
+                print(f"SLURM config: {result.strip()}")
                 return True
+        except Exception as e:
+            # Command failed or not found - not a SLURM environment
+            pass
         
-        # Also check if slurm_args was explicitly provided in context
-        # This allows manual override for testing or special configurations
-        if "slurm_args" in self.context.ctx:
-            print("SLURM environment detected via slurm_args in context")
-            return True
-        
+        print("Not running on a SLURM cluster - single-node environment detected")
         return False
 
     def _write_skipped_model_result(self, model_info: typing.Dict, status: str) -> None:
