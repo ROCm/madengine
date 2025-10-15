@@ -98,6 +98,14 @@ def handle_multiple_results(
         AssertionError: If the number of columns in the performance csv DataFrame is not equal to the length of the row.
     """
     multiple_results_df = df_strip_columns(pd.read_csv(multiple_results))
+    multiple_results_header = multiple_results_df.columns.tolist()
+
+    # Check that the multiple results CSV has the following required columns:
+    # model, performance, metric
+    headings = ['model', 'performance', 'metric']
+    for heading in headings:
+        if not(heading in multiple_results_header):
+            raise RuntimeError(multiple_results + " file is missing the " + heading + " column")
 
     common_info_json = read_json(common_info)
     flatten_tags(common_info_json)
@@ -105,13 +113,12 @@ def handle_multiple_results(
     final_multiple_results_df = pd.DataFrame()
     # add results to perf.csv
     for r in multiple_results_df.to_dict(orient="records"):
-        row = {}
+        row = common_info_json.copy()
         model = r.pop("model")
         row["model"] = model_name + "_" + str(model)
-        row.update(common_info_json)
         row.update(r)
 
-        if row["model"] is not None and pd.notna(row["model"]):
+        if row["performance"] is not None and pd.notna(row["performance"]):
             row["status"] = "SUCCESS"
         else:
             row["status"] = "FAILURE"
@@ -119,6 +126,11 @@ def handle_multiple_results(
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
         )
+        # Reorder columns according to existing perf csv
+        columns = perf_csv_df.columns.tolist()
+        # Add any additional columns to the end
+        columns = columns + [col for col in final_multiple_results_df.columns if col not in columns]
+        final_multiple_results_df = final_multiple_results_df[columns]
 
     perf_entry_df_to_csv(final_multiple_results_df)
     if perf_csv_df.empty:

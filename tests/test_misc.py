@@ -65,8 +65,8 @@ class TestMiscFunctionality:
         success = False
         # Read the csv file to a dataframe using pandas
         multi_df = pd.read_csv(os.path.join(BASE_DIR, 'perf_dummy.csv'))
-        # Check the number of rows in the dataframe is 4, and columns is 5
-        if multi_df.shape == (4, 5):
+        # Check the number of rows in the dataframe is 4, and columns is 4
+        if multi_df.shape == (4, 4):
             success = True
         if not success:
             pytest.fail("The generated multi results is not correct.")
@@ -75,7 +75,8 @@ class TestMiscFunctionality:
         # Get the corresponding rows and columns from perf.csv
         perf_df = perf_df[multi_df.columns]
         perf_df = perf_df.iloc[-4:, :]
-        # Drop model columns from both dataframes
+        # Drop model columns from both dataframes; these will not match
+        # if multiple results csv has {model}, then perf csv has {tag_name}_{model}
         multi_df = multi_df.drop('model', axis=1)
         perf_df = perf_df.drop('model', axis=1)
         if all(perf_df.columns == multi_df.columns):
