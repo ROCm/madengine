@@ -121,9 +121,8 @@ class RunDetails:
         print(f"{self.model} performance is {self.performance} {self.metric}")
 
     # Exports all info in json format to json_name
-    # multiple_results excludes the info provided on csv
-    # "model,performance,metric" additionally status
-    # to handle results more generically regardless of what is passed in
+    # multiple_results excludes the "model,performance,metric,status" keys
+    # to handle results more generically regardless of the multiple_results csv being passed in
     def generate_json(self, json_name: str, multiple_results: bool = False) -> None:
         """Generate JSON file for performance results of a model.
 
@@ -1033,19 +1032,6 @@ class RunModels:
                         if multiple_results:
                             run_details.performance = multiple_results
 
-                            # check the file of multiple results, check the columns of 'model,performance,metric'
-                            with open(multiple_results, 'r') as f:
-                                header = f.readline().strip().split(',')
-                                # if len(header) != 3:
-                                #     raise Exception("Header of multiple results file is not valid.")
-                                for line in f:
-                                    row = line.strip().split(',')
-                                    # iterate through each column of row to check if it is empty or not
-                                    for col in row:
-                                        if col == '':
-                                            run_details.performance = None
-                                            print("Error: Performance metric is empty in multiple results file.")
-                                            break
                         else:
                             perf_regex = ".*performance:\\s*\\([+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\)\\s*.*\\s*"
                             run_details.performance = self.console.sh("cat " + log_file_path +
