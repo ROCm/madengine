@@ -1,0 +1,63 @@
+# Include essential project files
+include README.md
+include LICENSE
+include pyproject.toml
+
+# Include all Python source files
+recursive-include src/madengine *.py
+
+# Include all script files
+recursive-include src/madengine/scripts *
+
+# Include database schema files
+include src/madengine/db/*.sql
+
+# Include documentation files
+recursive-include src/madengine *.md
+
+# Include any configuration or data files
+recursive-include src/madengine *.yml
+recursive-include src/madengine *.yaml
+recursive-include src/madengine *.json
+recursive-include src/madengine *.toml
+recursive-include src/madengine *.cfg
+recursive-include src/madengine *.ini
+
+# Include shell scripts and executables
+recursive-include src/madengine *.sh
+recursive-include src/madengine *.bash
+
+# Include any template or configuration files
+recursive-include src/madengine *.template
+recursive-include src/madengine *.conf
+
+# Exclude compiled Python files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+
+# Exclude version control
+global-exclude .git*
+global-exclude .svn*
+
+# Exclude IDE and editor files
+global-exclude .vscode*
+global-exclude .idea*
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~
+
+# Exclude build and distribution artifacts
+global-exclude build
+global-exclude dist
+global-exclude *.egg-info
+
+# Exclude test artifacts
+global-exclude .pytest_cache
+global-exclude .coverage
+global-exclude htmlcov
+
+# Exclude temporary and log files
+global-exclude *.log
+global-exclude *.tmp
+global-exclude temp*
