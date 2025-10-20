@@ -133,3 +133,5 @@ scripts/
 *.json
 .*_env/
 .vscode/
+
+tmp/

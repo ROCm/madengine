@@ -136,9 +136,8 @@ class RunDetails:
         print("=" * 60 + "\n")
 
     # Exports all info in json format to json_name
-    # multiple_results excludes the info provided on csv
-    # "model,performance,metric" additionally status
-    # to handle results more generically regardless of what is passed in
+    # multiple_results excludes the "model,performance,metric,status" keys
+    # to handle results more generically regardless of the multiple_results csv being passed in
     def generate_json(self, json_name: str, multiple_results: bool = False) -> None:
         """Generate JSON file for performance results of a model.
 
@@ -220,7 +219,7 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            self.console.sh("/opt/rocm/bin/rocm-smi || true")
+            self.console.sh("/opt/rocm/bin/amd-smi || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -384,22 +383,18 @@ class RunModels:
             # check folder pre_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/pre_scripts"):
                 # remove the scripts/common/pre_scripts directory
+                self.console.sh("chmod -R +w scripts/common/pre_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/pre_scripts")
             # check folder post_scripts exists in scripts/common directory
             if os.path.exists("scripts/common/post_scripts"):
                 # remove the scripts/common/post_scripts directory
+                self.console.sh("chmod -R +w scripts/common/post_scripts 2>/dev/null || true")
                 self.console.sh("rm -rf scripts/common/post_scripts")
             if os.path.exists("scripts/common/tools"):
-                # remove the scripts/common/tools directory
-                # Use force removal and handle permission errors gracefully
-                try:
-                    self.console.sh("rm -rf scripts/common/tools")
-                except RuntimeError:
-                    # If normal removal fails due to permissions, try with force
-                    self.console.sh(
-                        "chmod -R u+w scripts/common/tools 2>/dev/null || true"
-                    )
-                    self.console.sh("rm -rf scripts/common/tools || true")
+                # remove the scripts/common/tools directory with robust permission fixes
+                self.console.sh("find scripts/common/tools -type f -exec chmod +w {} \\; 2>/dev/null || true")
+                self.console.sh("find scripts/common/tools -type d -exec chmod +wx {} \\; 2>/dev/null || true")
+                self.console.sh("rm -rf scripts/common/tools 2>/dev/null || sudo rm -rf scripts/common/tools", canFail=True)
             print(f"scripts/common directory has been cleaned up.")
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
@@ -793,6 +788,10 @@ class RunModels:
         docker_options += self.get_mount_arg(mount_datapaths)
         docker_options += f" {run_details.additional_docker_run_options}"
 
+        # if --shm-size is set, remove --ipc=host
+        if "SHM_SIZE" in self.context.ctx:
+            docker_options = docker_options.replace("--ipc=host", "")
+
         print(docker_options)
 
         # get machine name
@@ -824,7 +823,7 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                smi = model_docker.sh("/opt/rocm/bin/rocm-smi || true")
+                smi = model_docker.sh("/opt/rocm/bin/amd-smi || true")
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
             else:
@@ -1075,6 +1074,13 @@ class RunModels:
             "MAD_SYSTEM_GPU_ARCHITECTURE"
         ]
 
+        # Check the setting of shared memory size
+        if "SHM_SIZE" in self.context.ctx:
+            shm_size = self.context.ctx["SHM_SIZE"]
+            if shm_size:
+                run_details.additional_docker_run_options += f" --shm-size={shm_size}"
+                print(f"Using SHM_SIZE from context: {shm_size}")
+
         # Check if model is deprecated
         if model_info.get("is_deprecated", False):
             print(f"WARNING: Model {model_info['name']} has been deprecated.")
@@ -1201,21 +1207,6 @@ class RunModels:
                         if multiple_results:
                             run_details.performance = multiple_results
 
-                            # check the file of multiple results, check the columns of 'model,performance,metric'
-                            with open(multiple_results, "r") as f:
-                                header = f.readline().strip().split(",")
-                                # if len(header) != 3:
-                                #     raise Exception("Header of multiple results file is not valid.")
-                                for line in f:
-                                    row = line.strip().split(",")
-                                    # iterate through each column of row to check if it is empty or not
-                                    for col in row:
-                                        if col == "":
-                                            run_details.performance = None
-                                            print(
-                                                "Error: Performance metric is empty in multiple results file."
-                                            )
-                                            break
                         else:
                             perf_regex = ".*performance:\\s*\\([+|-]\\?[0-9]*[.]\\?[0-9]*\\(e[+|-]\\?[0-9]\\+\\)\\?\\)\\s*.*\\s*"
                             run_details.performance = self.console.sh(

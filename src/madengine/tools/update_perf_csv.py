@@ -6,7 +6,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # build-in imports
-import os
 import json
 import argparse
 import typing
@@ -96,18 +95,15 @@ def handle_multiple_results(
     Raises:
         AssertionError: If the number of columns in the performance csv DataFrame is not equal to the length of the row.
     """
-    # Check that the multiple results CSV has three columns and has the following format:
-    # model, performance, metric
     multiple_results_df = df_strip_columns(pd.read_csv(multiple_results))
     multiple_results_header = multiple_results_df.columns.tolist()
-    # if (len(multiple_results_header) != 3):
-    #     raise RuntimeError("Multiple Results CSV file must have three columns: model, performance, metric")
-    headings = ["model", "performance", "metric"]
+
+    # Check that the multiple results CSV has the following required columns:
+    # model, performance, metric
+    headings = ['model', 'performance', 'metric']
     for heading in headings:
-        if not (heading in multiple_results_header):
-            raise RuntimeError(
-                "Multiple Results CSV file is missing the " + heading + " column"
-            )
+        if not(heading in multiple_results_header):
+            raise RuntimeError(multiple_results + " file is missing the " + heading + " column")
 
     common_info_json = read_json(common_info)
     flatten_tags(common_info_json)
@@ -116,25 +112,30 @@ def handle_multiple_results(
     # add results to perf.csv
     for r in multiple_results_df.to_dict(orient="records"):
         row = common_info_json.copy()
-        row["model"] = model_name + "_" + str(r["model"])
-        row["performance"] = r["performance"]
-        row["metric"] = r["metric"]
+        model = r.pop("model")
+        row["model"] = model_name + "_" + str(model)
+        row.update(r)
 
-        if r["performance"] is not None and pd.notna(r["performance"]):
+        if row["performance"] is not None and pd.notna(row["performance"]):
             row["status"] = "SUCCESS"
         else:
             row["status"] = "FAILURE"
 
-        assert perf_csv_df.columns.size == len(
-            row
-        ), f"Column count mismatch: CSV has {perf_csv_df.columns.size} columns but row has {len(row)} keys. CSV columns: {list(perf_csv_df.columns)}, Row keys: {list(row.keys())}"
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
         )
+        # Reorder columns according to existing perf csv
+        columns = perf_csv_df.columns.tolist()
+        # Add any additional columns to the end
+        columns = columns + [col for col in final_multiple_results_df.columns if col not in columns]
+        final_multiple_results_df = final_multiple_results_df[columns]
 
-    final_multiple_results_df = final_multiple_results_df[perf_csv_df.columns]
     perf_entry_df_to_csv(final_multiple_results_df)
-    perf_csv_df = pd.concat([perf_csv_df, final_multiple_results_df])
+    if perf_csv_df.empty:
+        perf_csv_df = final_multiple_results_df
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, final_multiple_results_df])
+
     return perf_csv_df
 
 
@@ -153,9 +154,11 @@ def handle_single_result(perf_csv_df: pd.DataFrame, single_result: str) -> pd.Da
     """
     single_result_json = read_json(single_result)
     perf_entry_dict_to_csv(single_result_json)
-    perf_csv_df = pd.concat(
-        [perf_csv_df, pd.DataFrame(single_result_json, index=[0])], ignore_index=True
-    )
+    single_result_df = pd.DataFrame(single_result_json, index=[0])
+    if perf_csv_df.empty:
+        perf_csv_df = single_result_df[perf_csv_df.columns]
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, single_result_df], ignore_index=True)
 
     return perf_csv_df
 
@@ -177,9 +180,11 @@ def handle_exception_result(
     """
     exception_result_json = read_json(exception_result)
     perf_entry_dict_to_csv(exception_result_json)
-    perf_csv_df = pd.concat(
-        [perf_csv_df, pd.DataFrame(exception_result_json, index=[0])], ignore_index=True
-    )
+    exception_result_df = pd.DataFrame(exception_result_json, index=[0])
+    if perf_csv_df.empty:
+        perf_csv_df = exception_result_df[perf_csv_df.columns]
+    else:
+        perf_csv_df = pd.concat([perf_csv_df, exception_result_df], ignore_index=True)
 
     return perf_csv_df
 

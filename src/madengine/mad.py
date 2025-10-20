@@ -10,6 +10,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import argparse
 import logging
 
+import sys
+# MAD Engine imports
 from madengine import __version__
 from madengine.tools.run_models import RunModels
 from madengine.tools.discover_models import DiscoverModels
@@ -20,6 +22,7 @@ from madengine.tools.update_perf_csv import UpdatePerfCsv
 from madengine.tools.csv_to_html import ConvertCsvToHtml
 from madengine.tools.csv_to_email import ConvertCsvToEmail
 from madengine.core.constants import MODEL_DIR  # pylint: disable=unused-import
+from madengine.utils.gpu_validator import validate_gpu_installation, GPUInstallationError, detect_gpu_vendor, GPUVendor
 
 # Setup logging
 logging.basicConfig(
@@ -114,10 +117,85 @@ def upload_mongodb(args):
 
     Args:
         args: The command-line arguments.
+    """   
+    print(f"Uploading to MongoDB")    
+    upload_mongodb = MongoDBHandler(args=args)
+    return upload_mongodb.run()
+
+
+def validate_gpu(args):
+    """Validate GPU installation (ROCm for AMD, CUDA for NVIDIA).
+    
+    Args:
+        args: The command-line arguments.
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
     """
-    logger.info("Uploading to MongoDB")
-    upload_mongodb_instance = MongoDBHandler(args=args)
-    return upload_mongodb_instance.run()
+    verbose = args.verbose if hasattr(args, 'verbose') else False
+    
+    try:
+        # Detect GPU vendor and run appropriate validation
+        result = validate_gpu_installation(vendor=None, verbose=verbose, raise_on_error=False)
+        
+        # Print summary based on validation result
+        if result.is_valid:
+            print()
+            print("=" * 70)
+            print(f"✓ {result.vendor.value} GPU Installation is VALID")
+            print("=" * 70)
+            if result.version:
+                version_label = "ROCm Version" if result.vendor == GPUVendor.AMD else "Driver/CUDA Version"
+                print(f"{version_label}: {result.version}")
+            print()
+            print("You can proceed with running madengine workloads:")
+            print("  madengine run --tags <your_tags>")
+            print()
+            return 0
+        else:
+            print()
+            print("=" * 70)
+            print(f"✗ {result.vendor.value} GPU Installation Validation FAILED")
+            print("=" * 70)
+            print()
+            
+            if result.issues:
+                print("Critical Issues:")
+                for issue in result.issues:
+                    print(f"  - {issue}")
+                print()
+            
+            if result.warnings:
+                print("Warnings:")
+                for warning in result.warnings:
+                    print(f"  - {warning}")
+                print()
+            
+            if result.suggestions:
+                print("Suggested Actions:")
+                for suggestion in result.suggestions:
+                    print(f"  • {suggestion}")
+                print()
+            
+            print("Please fix the issues above before running madengine workloads.")
+            print()
+            return 1
+            
+    except GPUInstallationError as e:
+        print()
+        print("=" * 70)
+        print("GPU Installation Validation FAILED")
+        print("=" * 70)
+        print()
+        print(str(e))
+        print()
+        return 1
+    except Exception as e:
+        print(f"✗ Unexpected error during validation: {e}")
+        import traceback
+        if verbose:
+            traceback.print_exc()
+        return 1
 
 
 # -----------------------------------------------------------------------------
@@ -336,11 +414,18 @@ def main():
         help="Name of the MongoDB collection",
     )
     parser_database_upload_mongodb.set_defaults(func=upload_mongodb)
-
+    
+    # Validate GPU command
+    parser_validate = subparsers.add_parser('validate', description="Validate GPU installation (ROCm for AMD, CUDA for NVIDIA)", help='Validate GPU installation')
+    parser_validate.add_argument('-v', '--verbose', action='store_true', help='Show detailed validation output')
+    parser_validate.set_defaults(func=validate_gpu)
+    
     args = parser.parse_args()
 
     if args.command:
-        args.func(args)
+        result = args.func(args)
+        if args.command == 'validate' and result is not None:
+            sys.exit(result)
     else:
         parser.print_help()
 

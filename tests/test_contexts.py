@@ -20,6 +20,7 @@ from .fixtures.utils import get_num_gpus
 from .fixtures.utils import get_num_cpus
 from .fixtures.utils import requires_gpu
 
+from madengine.core.context import Context
 
 class TestContexts:
 
@@ -398,8 +399,20 @@ class TestContexts:
                         gpu_node_ids.append(row["performance"])
                     else:
                         pytest.fail("model in perf_test.csv did not run successfully.")
-        if sorted(list(map(gpu_nodeid_map.get, gpu_node_ids))) != [0, 2, 3, 4, 5, 7]:
-            pytest.fail("docker_gpus did not bind expected gpus in docker container.")
+        
+        # Debug information
+        print(f"GPU node IDs from performance: {gpu_node_ids}")
+        print(f"GPU nodeid map: {gpu_nodeid_map}")
+        mapped_gpus = [gpu_nodeid_map.get(node_id) for node_id in gpu_node_ids]
+        print(f"Mapped GPUs: {mapped_gpus}")
+        
+        # Filter out None values and sort
+        valid_mapped_gpus = [gpu for gpu in mapped_gpus if gpu is not None]
+        sorted_gpus = sorted(valid_mapped_gpus)
+        print(f"Sorted valid GPUs: {sorted_gpus}")
+        
+        if sorted_gpus != [0, 2, 3, 4, 5, 7]:
+            pytest.fail(f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}")
 
     @pytest.mark.skipif(
         lambda: get_num_cpus() < 64, reason="test requires atleast 64 cpus"
@@ -438,3 +451,24 @@ class TestContexts:
                         pytest.fail("model in perf_test.csv did not run successfully.")
         if not success:
             pytest.fail("docker_cpus did not bind expected cpus in docker container.")
+
+    def test_gpu_product_name_matches_arch(self):
+        """
+        Check MAD_SYSTEM_GPU_PRODUCT_NAME is not empty and is valid.
+
+        No models run for this test.
+        """
+
+        context = Context()
+        product_name = context.ctx['docker_env_vars']["MAD_SYSTEM_GPU_PRODUCT_NAME"]
+
+        #fail the test if GPU product name is empty
+        if not product_name or not product_name.strip():
+            pytest.fail("GPU product name is empty or just whitespaces")
+
+        product_name = product_name.upper()
+
+        #if product name has AMD or NVIDIA in it then it's a safe bet
+        #that it was parsed properly
+        if not ("AMD" in product_name or "NVIDIA" in product_name):
+            pytest.fail(f"Incorrect product name={product_name!r}")
