@@ -476,8 +476,13 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     # Helper function to extract model name from build result
     def extract_model_name(item):
         if isinstance(item, dict):
-            # For build results, prioritize docker_image extraction for model name
-            if "docker_image" in item:
+            # Prioritize direct model name field if available
+            if "model" in item:
+                return item["model"]
+            elif "name" in item:
+                return item["name"]
+            # Fallback to extracting from docker_image for backward compatibility
+            elif "docker_image" in item:
                 # Extract model name from docker image name
                 # e.g., "ci-dummy_dummy.ubuntu.amd" -> "dummy"
                 # e.g., "ci-dummy_dummy.ubuntu.amd_gfx908" -> "dummy"
@@ -492,11 +497,6 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 else:
                     model_name = docker_image
                 return model_name
-            # For run results, use model name or name field
-            elif "model" in item:
-                return item["model"]
-            elif "name" in item:
-                return item["name"]
         return str(item)[:20]  # Fallback
 
     # Helper function to extract GPU architecture

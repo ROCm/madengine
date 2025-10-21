@@ -216,6 +216,7 @@ class DockerBuilder:
                     self.rich_console.print(f"[yellow]Warning: Could not get docker SHA: {e}[/yellow]")
 
         build_info = {
+            "model": model_info["name"],
             "docker_image": docker_image,
             "dockerfile": dockerfile,
             "base_docker": base_docker,
