@@ -400,6 +400,26 @@ class DistributedOrchestrator:
             manifest = json.load(f)
 
         print(f"Loaded manifest with {len(manifest['built_images'])} images")
+        
+        # Restore context from manifest if present (for tools, pre/post scripts, etc.)
+        if "context" in manifest:
+            manifest_context = manifest["context"]
+            
+            # Restore tools configuration if present in manifest
+            if "tools" in manifest_context:
+                self.context.ctx["tools"] = manifest_context["tools"]
+                print(f"Restored tools configuration from manifest: {manifest_context['tools']}")
+            
+            # Restore pre/post scripts if present in manifest
+            if "pre_scripts" in manifest_context:
+                self.context.ctx["pre_scripts"] = manifest_context["pre_scripts"]
+                print(f"Restored pre_scripts from manifest")
+            if "post_scripts" in manifest_context:
+                self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
+                print(f"Restored post_scripts from manifest")
+            if "encapsulate_script" in manifest_context:
+                self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
+                print(f"Restored encapsulate_script from manifest")
 
         # Filter images by GPU architecture compatibility
         try:

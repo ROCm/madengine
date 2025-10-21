@@ -82,7 +82,6 @@ class TestProfilingFunctionality:
             pytest.fail("rpd_output/trace.rpd not generated with rpd profiling run.")
 
     @requires_gpu("gpu_info_power_profiler requires GPU hardware")
-    @pytest.mark.skip(reason="Skipping this test for debugging purposes")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
         [["perf.csv", "perf.html", "gpu_info_power_profiler_output.csv"]],
