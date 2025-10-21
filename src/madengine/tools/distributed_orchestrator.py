@@ -400,6 +400,26 @@ class DistributedOrchestrator:
             manifest = json.load(f)
 
         print(f"Loaded manifest with {len(manifest['built_images'])} images")
+        
+        # Restore context from manifest if present (for tools, pre/post scripts, etc.)
+        if "context" in manifest:
+            manifest_context = manifest["context"]
+            
+            # Restore tools configuration if present in manifest
+            if "tools" in manifest_context:
+                self.context.ctx["tools"] = manifest_context["tools"]
+                print(f"Restored tools configuration from manifest: {manifest_context['tools']}")
+            
+            # Restore pre/post scripts if present in manifest
+            if "pre_scripts" in manifest_context:
+                self.context.ctx["pre_scripts"] = manifest_context["pre_scripts"]
+                print(f"Restored pre_scripts from manifest")
+            if "post_scripts" in manifest_context:
+                self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
+                print(f"Restored post_scripts from manifest")
+            if "encapsulate_script" in manifest_context:
+                self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
+                print(f"Restored encapsulate_script from manifest")
 
         # Filter images by GPU architecture compatibility
         try:
@@ -893,31 +913,40 @@ class DistributedOrchestrator:
         """Cleanup the scripts/common directory."""
         # check the directory exists
         if os.path.exists("scripts/common"):
-            # check tools.json exists in scripts/common directory
-            if os.path.exists("scripts/common/tools.json"):
-                # remove the scripts/common/tools.json file
-                # Use force removal and handle permission errors gracefully
-                try:
-                    self.console.sh("rm -rf scripts/common/tools")
-                except RuntimeError:
-                    # If normal removal fails due to permissions, try with force
-                    self.console.sh(
-                        "chmod -R u+w scripts/common/tools 2>/dev/null || true"
-                    )
-                    self.console.sh("rm -rf scripts/common/tools || true")
-            # check test_echo.sh exists in scripts/common directory
-            if os.path.exists("scripts/common/test_echo.sh"):
-                # remove the scripts/common/test_echo.sh file
-                self.console.sh("rm -rf scripts/common/test_echo.sh")
-            # check folder pre_scripts exists in scripts/common directory
-            if os.path.exists("scripts/common/pre_scripts"):
-                # remove the scripts/common/pre_scripts directory
-                self.console.sh("rm -rf scripts/common/pre_scripts")
-            # check folder post_scripts exists in scripts/common directory
-            if os.path.exists("scripts/common/post_scripts"):
-                # remove the scripts/common/post_scripts directory
-                self.console.sh("rm -rf scripts/common/post_scripts")
-            if os.path.exists("scripts/common/tools"):
-                # remove the scripts/common/tools directory
-                self.console.sh("rm -rf scripts/common/tools")
-            print(f"scripts/common directory has been cleaned up.")
+            # List of directories/files to clean up
+            cleanup_targets = [
+                "scripts/common/tools",
+                "scripts/common/test_echo.sh",
+                "scripts/common/pre_scripts",
+                "scripts/common/post_scripts",
+            ]
+            
+            for target in cleanup_targets:
+                if os.path.exists(target):
+                    try:
+                        # Try normal removal first
+                        self.console.sh(f"rm -rf {target}", canFail=True)
+                    except Exception:
+                        # If that fails, try to fix permissions and remove
+                        try:
+                            # Fix permissions recursively (ignore errors)
+                            self.console.sh(f"chmod -R u+w {target} 2>/dev/null || true", canFail=True)
+                            # Try removal again (allow failure)
+                            self.console.sh(f"rm -rf {target} 2>/dev/null || true", canFail=True)
+                            
+                            # If directory still exists (e.g., __pycache__ with root-owned files),
+                            # just warn the user instead of failing
+                            if os.path.exists(target):
+                                self.rich_console.print(
+                                    f"[yellow]⚠️  Warning: Could not fully remove {target} (permission denied for some files)[/yellow]"
+                                )
+                                self.rich_console.print(
+                                    f"[dim]You may need to manually remove it with: sudo rm -rf {target}[/dim]"
+                                )
+                        except Exception as e:
+                            # Even permission fixing failed, just warn
+                            self.rich_console.print(
+                                f"[yellow]⚠️  Warning: Could not clean up {target}: {e}[/yellow]"
+                            )
+            
+            print(f"scripts/common directory cleanup attempted.")

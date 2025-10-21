@@ -423,6 +423,18 @@ class DockerBuilder:
             },
             "credentials_required": credentials_required,
         }
+        
+        # Preserve tools configuration if present in context
+        if "tools" in self.context.ctx:
+            manifest["context"]["tools"] = self.context.ctx["tools"]
+        
+        # Preserve pre/post scripts if present in context
+        if "pre_scripts" in self.context.ctx:
+            manifest["context"]["pre_scripts"] = self.context.ctx["pre_scripts"]
+        if "post_scripts" in self.context.ctx:
+            manifest["context"]["post_scripts"] = self.context.ctx["post_scripts"]
+        if "encapsulate_script" in self.context.ctx:
+            manifest["context"]["encapsulate_script"] = self.context.ctx["encapsulate_script"]
 
         # Add multi-node args to context if present
         if "build_multi_node_args" in self.context.ctx:
