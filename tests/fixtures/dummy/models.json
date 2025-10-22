@@ -194,5 +194,17 @@
     ],
     "args": "",
     "multiple_results": "perf_dummy.csv"
+  },
+    {
+    "name": "therock",
+    "dockerfile": "docker/therock",
+    "scripts": "scripts/therock/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "therock"
+    ],
+    "args": ""
   }
 ]
