@@ -195,7 +195,7 @@
     "args": "",
     "multiple_results": "perf_dummy.csv"
   },
-    {
+  {
     "name": "therock",
     "dockerfile": "docker/therock",
     "scripts": "scripts/therock/run.sh",

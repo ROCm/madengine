@@ -56,14 +56,16 @@ RUN . .venv/bin/activate && \
 # Configure build with CMake
 # Default to gfx942 (MI300 series), can be overridden with build arg
 ARG MAD_SYSTEM_GPU_ARCHITECTURE=gfx942
-ARG THEROCK_ENABLE_ALL=ON
-ARG THEROCK_ENABLE_PYTORCH=OFF
 
-# Create build directory and configure
+# Only enable core runtime and HIP runtime for minimal build
+# This is sufficient for checking amd-smi and ROCm version
+# Builds much faster than full component build
 RUN . .venv/bin/activate && \
     cmake -B build -GNinja . \
     -DTHEROCK_AMDGPU_TARGETS=${MAD_SYSTEM_GPU_ARCHITECTURE} \
-    -DTHEROCK_ENABLE_ALL=${THEROCK_ENABLE_ALL} \
+    -DTHEROCK_ENABLE_ALL=OFF \
+    -DTHEROCK_ENABLE_CORE_RUNTIME=ON \
+    -DTHEROCK_ENABLE_HIP_RUNTIME=ON \
     -DBUILD_TESTING=ON
 
 # Build TheRock components
@@ -92,6 +94,7 @@ CMD ["/bin/bash"]
 
 # Labels
 LABEL maintainer="AMD ROCm"
-LABEL description="TheRock - The HIP Environment and ROCm Kit"
+LABEL description="TheRock - The HIP Environment and ROCm Kit (Minimal: Core Runtime + HIP Runtime)"
 LABEL version="nightly"
 LABEL gpu_architecture="${MAD_SYSTEM_GPU_ARCHITECTURE}"
+LABEL components="core_runtime,hip_runtime"
