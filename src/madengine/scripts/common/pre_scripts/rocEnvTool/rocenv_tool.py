@@ -440,6 +440,8 @@ def print_rocm_packages_installed(path_resolver):
     cmds = []
     
     if path_resolver.installation_type == 'therock':
+        # Add Pkg type line for CSV parser compatibility
+        cmds.append("echo ' Pkg type: therock'")
         cmds.append("echo 'Installation Type: TheRock (no system packages)'")
         cmds.append("echo ''")
         
