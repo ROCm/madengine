@@ -474,7 +474,9 @@ def print_rocm_packages_installed(path_resolver):
             d = {'ID_LIKE': 'unknown'}
         
         pkgtype = d.get('ID_LIKE', d.get('ID', 'unknown'))
-        cmds.append(f"echo 'Package type: {pkgtype}'")
+        # Note: Format must match csv_parser.py expectations (space before "Pkg")
+        cmd1 = "echo ' Pkg type: '" + pkgtype
+        cmds.append(cmd1)
         
         if 'debian' in pkgtype.lower():
             cmd = "/usr/bin/dpkg -l 2>/dev/null | /bin/grep -i -E 'ocl-icd|kfdtest|llvm-amd|miopen|half|^ii  hip|hcc|hsa|rocm|atmi|^ii  comgr|composa|amd-smi|aomp|amdgpu|rock|mivision|migraph|rocprofiler|roctracer|rocbl|hipify|rocsol|rocthr|rocff|rocalu|rocprim|rocrand|rccl|rocspar|rdc|rocwmma|rpp|openmp|amdfwflash|ocl |opencl' | /usr/bin/sort || echo 'No packages found'"
@@ -630,7 +632,8 @@ def print_cuda_packages_installed():
                     d[k] = v.strip('"')
         
         pkgtype = d.get('ID_LIKE', d.get('ID', 'unknown'))
-        cmd1 = f"echo 'Pkg type: {pkgtype}'"
+        # Note: Format must match csv_parser.py expectations (space before "Pkg")
+        cmd1 = "echo ' Pkg type: '" + pkgtype
         cmd2 = None
         
         if 'debian' in pkgtype.lower():
