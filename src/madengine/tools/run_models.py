@@ -603,6 +603,11 @@ class RunModels:
             )
             run_details.build_duration = time.time() - build_start_time
             print(f"Build Duration: {run_details.build_duration} seconds")
+            
+            # Create Docker volume for models cache
+            self.console.sh(
+                "docker volume create models_cache_volume"
+            )
 
             print(f"MAD_CONTAINER_IMAGE is {run_details.docker_image}")
 
@@ -695,13 +700,15 @@ class RunModels:
         # Must set env vars and mounts at the end
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
+        docker_options += f" -v models_cache_volume:/models_cache/ "
+
         docker_options += f" {run_details.additional_docker_run_options}"
 
         # if --shm-size is set, remove --ipc=host
         if "SHM_SIZE" in self.context.ctx:
             docker_options = docker_options.replace("--ipc=host", "")
 
-        print(docker_options)
+        print(f"Docker options: {docker_options}")
 
         # get machine name
         run_details.machine_name = self.console.sh("hostname")
@@ -745,6 +752,9 @@ class RunModels:
                     warnings.warn("Model url contains special character. Fix url.")
 
             model_docker.sh("rm -rf " + model_dir, timeout=240)
+
+            print("Checking models cache directory:")
+            model_docker.sh(f"ls -la /models_cache/")
 
             # set safe.directory for workspace
             model_docker.sh("git config --global --add safe.directory /myworkspace")
