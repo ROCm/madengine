@@ -416,7 +416,7 @@ class Context:
 
             # Get gpu id - renderD mapping using unique id if ROCm < 6.4.0 and node id otherwise
             # node id is more robust but is only available from 6.4.0
-            if rocm_version < (6, 4, 0):
+            if rocm_version < (6, 4, 1):
                 # Legacy method using unique_id
                 kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
                 if not kfd_unique_output:
