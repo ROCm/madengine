@@ -55,7 +55,7 @@ rpd)
 
 rocprof)
 	mv results* "$OUTPUT"
-	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE"
+	sudo cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE"
 	;;
 
 esac
