@@ -21,7 +21,7 @@ if MODEL_DIR:
     print(f"Current working directory: {cwd_path}")
     console = Console(live_output=True)
     # copy the MODEL_DIR to the current working directory
-    console.sh(f"cp -vLR --preserve=all {MODEL_DIR}/* {cwd_path}")
+    console.sh(f"sudo cp -vLR --preserve=all {MODEL_DIR}/* {cwd_path}")
     print(f"Model dir: {MODEL_DIR} copied to current dir: {cwd_path}")
 
 # MADEngine update
