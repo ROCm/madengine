@@ -414,9 +414,9 @@ class Context:
             
             kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
 
-            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.0 and node id otherwise
-            # node id is more robust but is only available from 6.4.0
-            if rocm_version < (6, 4, 0):
+            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
+            # node id is more robust but is only available from 6.4.1
+            if rocm_version < (6, 4, 1):
                 # Legacy method using unique_id
                 kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
                 if not kfd_unique_output:
@@ -464,7 +464,7 @@ class Context:
                     except (IndexError, KeyError) as e:
                         raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
             else:
-                # Modern method using node_id (ROCm >= 6.4.0)
+                # Modern method using node_id (ROCm >= 6.4.1)
                 kfd_nodeids = []
                 for line in kfd_properties:
                     try:
