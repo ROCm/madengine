@@ -624,6 +624,9 @@ class RunModels:
                     + " | sed -E 's/ARG BASE_DOCKER=//g'"
                 )
             print(f"BASE DOCKER is {run_details.base_docker}")
+            print(f"BASE DOCKER is {run_details.base_docker}")
+            print(f"BASE DOCKER is {run_details.base_docker}")
+            print(f"BASE DOCKER is {run_details.base_docker}")
 
             # print base docker image digest
             run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
