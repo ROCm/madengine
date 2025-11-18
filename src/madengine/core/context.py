@@ -322,7 +322,28 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
+            try:
+                return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
+            except Exception as e:
+                # Try fallback to rocm-smi
+                try:
+                    output = self.console.sh("rocm-smi -i")
+                    # Parse output to extract product name from brackets
+                    # Example: "GPU[0]          : Device Name:          Arcturus GL-XL [Instinct MI100]"
+                    # Extract: "Instinct MI100"
+                    for line in output.split('\n'):
+                        if 'Device Name:' in line and 'GPU[0]' in line:
+                            # Use regex to find text within brackets
+                            match = re.search(r'\[(.*?)\]', line)
+                            if match:
+                                return match.group(1).strip()
+                    raise RuntimeError("Could not parse GPU product name from rocm-smi output")
+                except Exception as rocm_error:
+                    raise RuntimeError(
+                        f"Unable to determine AMD GPU product name. "
+                        f"Ensure amd-smi or rocm-smi is installed and GPUs are accessible. "
+                        f"amd-smi error: {e}, rocm-smi error: {rocm_error}"
+                    )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
         else:
