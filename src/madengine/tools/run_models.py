@@ -603,11 +603,6 @@ class RunModels:
             )
             run_details.build_duration = time.time() - build_start_time
             print(f"Build Duration: {run_details.build_duration} seconds")
-            
-            # Create Docker volume for models cache
-            self.console.sh(
-                "docker volume create models_cache_volume"
-            )
 
             print(f"MAD_CONTAINER_IMAGE is {run_details.docker_image}")
 
@@ -638,6 +633,12 @@ class RunModels:
 
             print(f"MAD_CONTAINER_IMAGE is {run_details.docker_image}")
             print(f"Warning: User override MAD_CONTAINER_IMAGE. Model support on image not guaranteed.")
+
+        persistent_hf_cache_dir = self.context.ctx.get("persistent_hf_cache_dir", None)
+
+        # Create Docker volume for models cache
+        if persistent_hf_cache_dir:
+            self.console.sh("docker volume create hf_models_cache_volume")
 
         # prepare docker run options
         gpu_vendor = self.context.ctx["gpu_vendor"]
@@ -703,7 +704,9 @@ class RunModels:
         # Must set env vars and mounts at the end
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
-        docker_options += f" -v models_cache_volume:/models_cache/ "
+
+        if persistent_hf_cache_dir:
+            docker_options += f" -v hf_models_cache_volume:{persistent_hf_cache_dir} "
 
         docker_options += f" {run_details.additional_docker_run_options}"
 
@@ -756,8 +759,9 @@ class RunModels:
 
             model_docker.sh("rm -rf " + model_dir, timeout=240)
 
-            print("Checking models cache directory:")
-            model_docker.sh(f"ls -la /models_cache/")
+            if persistent_hf_cache_dir:
+                print("Checking models cache directory:")
+                model_docker.sh(f"ls -la {persistent_hf_cache_dir}")
 
             # set safe.directory for workspace
             model_docker.sh("git config --global --add safe.directory /myworkspace")
@@ -854,34 +858,19 @@ class RunModels:
 
             # run model
             test_start_time = time.time()
+            model_args = self.context.ctx.get("model_args", info["args"])
+
+            if persistent_hf_cache_dir:
+                model_args += f" --hf_cache_dir {persistent_hf_cache_dir} "
+
+            run_command = f"cd {model_dir} && {script_name} {model_args}"
+
             if not self.args.skip_model_run:
                 print("Running model...")
-                if "model_args" in self.context.ctx:
-                    model_docker.sh(
-                        "cd "
-                        + model_dir
-                        + " && "
-                        + script_name
-                        + " "
-                        + self.context.ctx["model_args"],
-                        timeout=None,
-                    )
-                else:
-                    model_docker.sh(
-                        "cd " + model_dir + " && " + script_name + " " + info["args"],
-                        timeout=None,
-                    )
+                model_docker.sh(run_command, timeout=None)
             else:
                 print("Skipping model run")
-                print(
-                    "To run model: "
-                    + "cd "
-                    + model_dir
-                    + " && "
-                    + script_name
-                    + " "
-                    + info["args"]
-                )
+                print(f"To run model: {run_command}")
 
             run_details.test_duration = time.time() - test_start_time
             print("Test Duration: {} seconds".format(run_details.test_duration))
