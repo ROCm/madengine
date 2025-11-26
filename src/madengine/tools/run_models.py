@@ -536,7 +536,7 @@ class RunModels:
     def run_pre_post_script(self, model_docker, model_dir, pre_post):
         for script in pre_post:
             script_path = script["path"].strip()
-            model_docker.sh("sudo cp -vLR --preserve=all " + script_path + " " + model_dir + " 2>/dev/null || true", timeout=600)
+            model_docker.sh("cp -vLR --preserve=all " + script_path + " " + model_dir + " 2>/dev/null || true", timeout=600)
             script_name = os.path.basename(script_path)
             script_args = ""
             if "args" in script:
@@ -819,8 +819,13 @@ class RunModels:
             print("MODEL REPO COMMIT: ", commit )
             print("======================================================")
 
+            # Debug: List source directory to verify script exists
+            print(f"Listing source directory: {dir_path}")
+            source_listing = model_docker.sh("ls -la " + dir_path + " | head -20 || echo 'LISTING_FAILED'")
+            print(source_listing)
+
             # copy scripts to model directory
-            model_docker.sh("sudo cp -vLR --preserve=all "+ dir_path +"/. "+ model_dir +"/ 2>/dev/null || true")
+            model_docker.sh("cp -vLR --preserve=all "+ dir_path +"/. "+ model_dir +"/ 2>/dev/null || true")
 
             # prepare data inside container
             if 'data' in info and info['data'] != "":
