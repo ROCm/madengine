@@ -332,8 +332,20 @@ class RunModels:
             This function is used to gather system environment details.
         """
         # initialize pre_env_details
+        gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         pre_env_details = {}
-        pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
+
+        if gpu_vendor.find("AMD") != -1:
+            pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
+        elif gpu_vendor.find("NVIDIA") != -1:
+            # Either skip or use an NVIDIA-specific script
+            print(f"Skipping system env details gathering on NVIDIA GPU")
+            return
+            # Or: pre_env_details["path"] = "scripts/common/pre_scripts/run_nvenv_tool.sh"
+        else:
+            print(f"Unknown GPU vendor: {gpu_vendor}, skipping env details")
+            return
+
         pre_env_details["args"] = model_name.replace("/", "_") + "_env"
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
