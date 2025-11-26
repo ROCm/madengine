@@ -355,7 +355,7 @@ class RunModels:
         scripts_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
         print(f"Package path: {scripts_path}")
         # copy the scripts to the model directory
-        self.console.sh(f"sudo cp -vLR --preserve=all {scripts_path} . 2>/dev/null || true")
+        self.console.sh(f"cp -vLR --preserve=all {scripts_path} . 2>/dev/null || true")
         print(f"Scripts copied to {os.getcwd()}/scripts")
 
     def cleanup(self) -> None:
