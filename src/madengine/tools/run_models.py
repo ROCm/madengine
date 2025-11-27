@@ -751,8 +751,9 @@ class RunModels:
             f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
         )
 
-        # gather data
-        # TODO: probably can use context.ctx instead of another dictionary like run_env here
+        # Gather data environment variables
+        # NOTE: run_env is a separate dictionary for model-specific environment variables.
+        # Consider refactoring to use context.ctx for better consistency across the codebase.
         run_env = {}
         mount_datapaths = None
 

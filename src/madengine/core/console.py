@@ -180,9 +180,7 @@ class Console:
                     )
                 else:
                     raise RuntimeError(
-                        "Subprocess '"
-                        + secret
-                        + "' failed with exit code "
+                        "Subprocess '***HIDDEN COMMAND***' failed with exit code "
                         + str(proc.returncode)
                     )
 

@@ -50,8 +50,8 @@ def add_csv_to_db(data: pd.DataFrame) -> bool:
         try:
             max_id_query = s.query(DB_TABLE.id).order_by(DB_TABLE.id.desc()).first()
             start_id = 1 if max_id_query is None else max_id_query[0] + 1
-        except:
-            LOGGER.warning("Failed to query max ID, starting from 1")
+        except Exception as e:
+            LOGGER.warning("Failed to query max ID, starting from 1: %s", str(e))
             start_id = 1
 
         # Add sequential unique IDs

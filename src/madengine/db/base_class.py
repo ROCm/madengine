@@ -29,8 +29,6 @@ class BaseMixin:
         for elem in obj:
             # extra elem at top of dict
             elem.__dict__.pop("_sa_instance_state", None)
-            # print(elem.__dict__)
-            # print(row.__table__.columns)
             dict_list.append(elem.__dict__)
         return dict_list
 

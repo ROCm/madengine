@@ -97,7 +97,8 @@ class Docker:
         command += "--name " + container_name + " "
         command += image + " "
 
-        # hack to keep docker open
+        # Use 'cat' command to keep the container running in interactive mode
+        # This allows subsequent exec commands while maintaining the container state
         command += "cat "
         self.console.sh(command)
 

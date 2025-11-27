@@ -1,4 +1,9 @@
-"""Test the misc modules.
+"""Test various CLI features and command-line arguments.
+
+This module tests various command-line argument behaviors including:
+- Output file path specification (-o flag)
+- GPU architecture checking and skip flags
+- Multiple results output handling
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -18,7 +23,8 @@ from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
 
 
-class TestMiscFunctionality:
+class TestCLIFeatures:
+    """Test various CLI features and command-line argument behaviors."""
 
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
@@ -27,7 +33,7 @@ class TestMiscFunctionality:
         self, global_data, clean_test_temp_files
     ):
         """
-        output command-line argument writes csv file to specified output path
+        Test that -o/--output command-line argument writes CSV file to specified path.
         """
         output = global_data["console"].sh(
             "cd "
@@ -58,7 +64,7 @@ class TestMiscFunctionality:
         self, global_data, clean_test_temp_files
     ):
         """
-        skip_gpu_arch command-line argument skips GPU architecture check
+        Test that skip_gpu_arch command-line argument skips GPU architecture check.
         """
         output = global_data["console"].sh(
             "cd "
@@ -79,7 +85,7 @@ class TestMiscFunctionality:
         self, global_data, clean_test_temp_files
     ):
         """
-        skip_gpu_arch command-line argument fails GPU architecture check
+        Test that --disable-skip-gpu-arch fails GPU architecture check as expected.
         """
         output = global_data["console"].sh(
             "cd "
@@ -99,7 +105,7 @@ class TestMiscFunctionality:
     )
     def test_output_multi_results(self, global_data, clean_test_temp_files):
         """
-        test output multiple results
+        Test that multiple results are correctly written and merged into output CSV.
         """
         output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_multi") 
         # Check if multiple results are written to perf_dummy.csv
