@@ -763,12 +763,13 @@ class TestDockerBuilder:
         import tempfile
         import os
 
+        # Mock successful operations BEFORE creating Context
+        # to avoid MagicMock objects being stored during initialization
+        mock_sh.return_value = "Success"
+
         context = Context()
         console = Console()
         builder = DockerBuilder(context, console)
-
-        # Mock successful operations
-        mock_sh.return_value = "Success"
 
         model_info = {"name": "test_model"}
         dockerfile = "./docker/Dockerfile"
