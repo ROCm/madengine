@@ -1,0 +1,122 @@
+# SLURM Configuration Values for MADEngine
+# This file provides default configuration values for SLURM cluster execution
+
+# SLURM cluster configuration
+slurm:
+  # Login/head node configuration
+  login_node:
+    hostname: "slurm-login"
+    address: "slurm-login.example.com"
+    port: 22
+    username: "madengine"
+    ssh_key_path: "~/.ssh/id_rsa"
+
+  # Cluster identification
+  cluster_name: "madengine-cluster"
+
+  # Available partitions
+  partitions:
+    - name: "gpu"
+      max_time: "24:00:00"
+      max_nodes: 32
+      default_gpu_count: 1
+      gpu_types: ["MI250X", "A100"]
+      memory_per_node: "256G"
+      gpu_vendor: "AMD"
+      qos: "normal"
+      account: "madengine_proj"
+
+    - name: "cpu"
+      max_time: "72:00:00"
+      max_nodes: 128
+      default_gpu_count: 0
+      gpu_types: []
+      memory_per_node: "128G"
+      gpu_vendor: ""
+
+    - name: "debug"
+      max_time: "02:00:00"
+      max_nodes: 4
+      default_gpu_count: 1
+      gpu_types: ["MI250X"]
+      memory_per_node: "64G"
+      gpu_vendor: "AMD"
+      qos: "debug"
+
+  # Module system modules to load
+  modules:
+    - "rocm/5.7.0"
+    - "python/3.9"
+    - "gcc/11.2.0"
+    - "cmake/3.25.0"
+
+  # Environment variables
+  environment:
+    ROCM_PATH: "/opt/rocm"
+    HCC_AMDGPU_TARGET: "gfx90a"
+    CUDA_VISIBLE_DEVICES: "0"
+    OMP_NUM_THREADS: "1"
+    PYTORCH_ROCM_ARCH: "gfx90a"
+
+  # GPU vendor specific configuration
+  gpu_mapping:
+    AMD:
+      gres_name: "gpu"
+      constraint: "mi250x"
+      memory_per_gpu: "64G"
+    NVIDIA:
+      gres_name: "gpu"
+      constraint: "a100"
+      memory_per_gpu: "80G"
+    INTEL:
+      gres_name: "gpu"
+      constraint: "pvc"
+      memory_per_gpu: "48G"
+
+  # Job execution settings
+  execution:
+    max_concurrent_jobs: 8
+    job_array_strategy: true
+    default_timeout: 3600
+    retry_failed_jobs: true
+    max_retries: 3
+
+# Workspace configuration
+workspace:
+  shared_filesystem: "/shared/madengine"
+  results_dir: "/shared/results"
+  logs_dir: "logs"
+  venv_path: "venv"
+  mad_repo_url: "https://github.com/ROCm/MAD.git"
+
+# Job script default settings
+job_defaults:
+  partition: "gpu"
+  nodes: 1
+  tasks_per_node: 1
+  gpu_count: 1
+  time_limit: "24:00:00"
+  memory: "32G"
+  exclusive: false
+  output_dir: "logs"
+  omp_num_threads: 1
+
+# Model-specific overrides (example)
+model_overrides:
+  "llama2:7b":
+    memory: "64G"
+    gpu_count: 2
+    time_limit: "12:00:00"
+    partition: "gpu"
+  
+  "stable_diffusion:xl":
+    memory: "32G"
+    gpu_count: 1
+    time_limit: "06:00:00"
+    partition: "gpu"
+
+# Generation metadata (filled automatically)
+generation:
+  timestamp: ""
+  generator: "MADEngine Template Generator"
+  version: "1.0.0"

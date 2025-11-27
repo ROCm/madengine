@@ -8,6 +8,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import typing
+
 # user-defined modules
 from madengine.core.console import Console
 
@@ -83,7 +84,7 @@ class Docker:
         if mounts is not None:
             for mount in mounts:
                 command += "-v " + mount + ":" + mount + " "
-        
+
         # add current working directory
         command += "-v " + cwd + ":/myworkspace/ "
 
@@ -91,12 +92,13 @@ class Docker:
         if envVars is not None:
             for evar in envVars.keys():
                 command += "-e " + evar + "=" + envVars[evar] + " "
-        
+
         command += "--workdir /myworkspace/ "
         command += "--name " + container_name + " "
         command += image + " "
 
-        # hack to keep docker open
+        # Use 'cat' command to keep the container running in interactive mode
+        # This allows subsequent exec commands while maintaining the container state
         command += "cat "
         self.console.sh(command)
 
@@ -105,19 +107,14 @@ class Docker:
             "docker ps -aqf 'name=" + container_name + "' "
         )
 
-    def sh(
-            self, 
-            command: str, 
-            timeout: int=60, 
-            secret: bool=False
-        ) -> str:
+    def sh(self, command: str, timeout: int = 60, secret: bool = False) -> str:
         """Run shell command inside docker.
-        
+
         Args:
             command (str): The shell command.
             timeout (int): The timeout in seconds.
             secret (bool): The flag to hide the command.
-        
+
         Returns:
             str: The output of the shell command.
         """

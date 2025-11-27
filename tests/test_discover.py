@@ -27,7 +27,15 @@ class TestDiscover:
         """
         test a tag from a models.json file
         """
-        global_data["console"].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy2/model2 ")
+        global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + "python3 src/madengine/mad.py run --tags dummy2/model2 "
+        )
 
         success = False
         with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
@@ -45,7 +53,15 @@ class TestDiscover:
         """
         test a tag from a get_models_json.py file
         """
-        global_data["console"].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy3/model4 ")
+        global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + "python3 src/madengine/mad.py run --tags dummy3/model4 "
+        )
 
         success = False
         with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
@@ -63,13 +79,25 @@ class TestDiscover:
         """
         passes additional args specified in the command line to the model
         """
-        global_data["console"].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy2/model2:batch-size=32 ")
+        global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + "python3 src/madengine/mad.py run --tags dummy2/model2:batch-size=32 "
+        )
 
         success = False
         with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
             csv_reader = csv.DictReader(csv_file)
             for row in csv_reader:
-                if row["model"] == "dummy2/model2" and row["status"] == "SUCCESS" and "--batch-size 32" in row["args"]:
+                if (
+                    row["model"] == "dummy2/model2"
+                    and row["status"] == "SUCCESS"
+                    and "--batch-size 32" in row["args"]
+                ):
                     success = True
         if not success:
             pytest.fail("dummy2/model2:batch-size=32 did not run successfully.")
@@ -81,7 +109,15 @@ class TestDiscover:
         """
         test multiple tags from top-level models.json, models.json in a script subdir, and get_models_json.py
         """
-        global_data["console"].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_test_group_1 dummy_test_group_2 dummy_test_group_3 ")
+        global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + "python3 src/madengine/mad.py run --tags dummy_test_group_1 dummy_test_group_2 dummy_test_group_3 "
+        )
 
         success = False
         with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:

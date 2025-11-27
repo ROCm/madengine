@@ -10,9 +10,11 @@ import os
 import argparse
 import subprocess
 import typing
+
 # third-party modules
 import paramiko
 import socket
+
 # mad-engine modules
 from madengine.utils.ssh_to_db import SFTPClient, print_ssh_out
 from madengine.db.logger import setup_logger
@@ -26,9 +28,10 @@ ENV_VARS = get_env_vars()
 
 class CreateTable:
     """Class to create tables in the database.
-    
+
     This class provides the functions to create tables in the database.
     """
+
     def __init__(self, args: argparse.Namespace):
         """Initialize the CreateTable class.
 
@@ -48,10 +51,10 @@ class CreateTable:
 
         # get the db folder
         self.db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../db")
-        LOGGER.info(f"DB path: {self.db_path}")    
-        self.status = False     
+        LOGGER.info(f"DB path: {self.db_path}")
+        self.status = False
 
-    def run(self, table_name: str='dlm_table') -> None:
+    def run(self, table_name: str = "dlm_table") -> None:
         """Create an empty table in the database.
 
         Args:
@@ -65,7 +68,7 @@ class CreateTable:
         """
         print(f"Creating table {table_name} in the database")
 
-        if 'localhost' in self.ssh_hostname or '127.0.0.1' in self.ssh_hostname:
+        if "localhost" in self.ssh_hostname or "127.0.0.1" in self.ssh_hostname:
             try:
                 self.local_db()
                 self.status = True
@@ -81,10 +84,10 @@ class CreateTable:
             except Exception as error:
                 LOGGER.error(f"Error creating table in remote database: {error}")
                 return self.status
-        
+
     def local_db(self) -> None:
         """Create a table in the local database.
-        
+
         Returns:
             None
 
@@ -97,15 +100,17 @@ class CreateTable:
         cmd_list = ["cp", "-r", self.db_path, "."]
 
         try:
-            ret = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ret = subprocess.Popen(
+                cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             out, err = ret.communicate()
             if ret.returncode == 0:
                 if out:
-                    LOGGER.info(out.decode('utf-8'))
+                    LOGGER.info(out.decode("utf-8"))
                 print("Copied scripts to current work path")
             else:
                 if err:
-                    LOGGER.error(err.decode('utf-8'))
+                    LOGGER.error(err.decode("utf-8"))
         except Exception as e:
             LOGGER.error(f"An error occurred: {e}")
 
@@ -117,16 +122,20 @@ class CreateTable:
         print(f"ENV_VARS: {env_vars}")
 
         try:
-            ret = subprocess.Popen(cmd_list, env=env_vars, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ret = subprocess.Popen(
+                cmd_list, env=env_vars, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             out, err = ret.communicate()
 
             if ret.returncode == 0:
                 if out:
-                    LOGGER.info(out.decode('utf-8'))
+                    LOGGER.info(out.decode("utf-8"))
             else:
                 if err:
-                    LOGGER.error(err.decode('utf-8'))
-                raise Exception(f"Error updating table in the local database: {err.decode('utf-8')}")
+                    LOGGER.error(err.decode("utf-8"))
+                raise Exception(
+                    f"Error updating table in the local database: {err.decode('utf-8')}"
+                )
         except Exception as e:
             LOGGER.error(f"An error occurred: {e}")
 
@@ -134,10 +143,10 @@ class CreateTable:
 
     def remote_db(self) -> None:
         """Create a table in the remote database.
-        
+
         Returns:
             None
-            
+
         Raises:
             socket.error: An error occurred connecting to the database.
         """
@@ -166,7 +175,7 @@ class CreateTable:
         except socket.error as error:
             print(f"Socket error: {error}")
             return
-        
+
         print("SSH client created, connected to the host of database")
 
         # print remote dir layout
@@ -178,8 +187,10 @@ class CreateTable:
         print(upload_script_path_remote)
 
         # clean up previous uploads
-        print_ssh_out(ssh_client.exec_command("rm -rf {}".format(upload_script_path_remote)))
-        print_ssh_out(ssh_client.exec_command("ls -l"))       
+        print_ssh_out(
+            ssh_client.exec_command("rm -rf {}".format(upload_script_path_remote))
+        )
+        print_ssh_out(ssh_client.exec_command("ls -l"))
 
         # upload file
         sftp_client = SFTPClient.from_transport(ssh_client.get_transport())

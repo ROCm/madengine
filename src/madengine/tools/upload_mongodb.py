@@ -22,9 +22,10 @@ from madengine.db.logger import setup_logger
 # Create the logger
 LOGGER = setup_logger()
 
+
 class MongoDBHandler:
     """Class to handle MongoDB operations."""
-    
+
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize the MongoDBHandler.
 
@@ -56,7 +57,7 @@ class MongoDBHandler:
 
     def collection_exists(self) -> bool:
         """Check if a collection exists in the database.
-        
+
         Returns:
             bool: True if the collection exists, False otherwise.
         """
@@ -69,7 +70,9 @@ class MongoDBHandler:
             data (pd.DataFrame): DataFrame containing the data to update.
         """
         if not self.collection_exists():
-            LOGGER.info(f"Collection '{self.collection_name}' does not exist. Creating it.")
+            LOGGER.info(
+                f"Collection '{self.collection_name}' does not exist. Creating it."
+            )
             self.db.create_collection(self.collection_name)
 
         collection = self.db[self.collection_name]
@@ -77,11 +80,12 @@ class MongoDBHandler:
         for record in records:
             # Use an appropriate unique identifier for upsert (e.g., "_id" or another field)
             collection.update_one(record, {"$set": record}, upsert=True)
-        LOGGER.info(f"Updated collection '{self.collection_name}' with {len(records)} records.")
+        LOGGER.info(
+            f"Updated collection '{self.collection_name}' with {len(records)} records."
+        )
 
     def run(self) -> None:
-        """Run the process of updating a MongoDB collection with data from a CSV file.
-        """
+        """Run the process of updating a MongoDB collection with data from a CSV file."""
         self.connect()
         data = load_csv_to_dataframe(self.csv_file_path)
 
@@ -97,7 +101,7 @@ class MongoDBHandler:
 
         # Remove any leading or trailing whitespace from column names
         data.columns = data.columns.str.strip()
-       
+
         self.update_collection(data)
 
 

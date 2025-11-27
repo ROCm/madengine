@@ -15,7 +15,7 @@ import pandas as pd
 
 def convert_csv_to_html(file_path: str):
     """Convert the CSV file to an HTML file.
-    
+
     Args:
         file_path: The path to the CSV file.
     """
@@ -30,7 +30,18 @@ def convert_csv_to_html(file_path: str):
     output_name += file_name + ".html"
     # read csv
     df = pd.read_csv(file_path)
-    print(df)
+
+    # Use beautiful formatting for dataframe display
+    try:
+        from madengine.utils.log_formatting import print_dataframe_beautiful
+
+        print_dataframe_beautiful(df, f"Converting CSV: {file_name}")
+    except ImportError:
+        # Fallback to basic formatting if utils not available
+        print(f"\n📊 Converting CSV: {file_name}")
+        print("=" * 80)
+        print(df.to_string(max_rows=20, max_cols=10))
+        print("=" * 80)
 
     # Use the .to_html() to get your table in html
     df_html = df.to_html(index=False)
@@ -67,7 +78,18 @@ class ConvertCsvToHtml:
 
         # read csv
         df = pd.read_csv(file_path)
-        print(df)
+
+        # Use beautiful formatting for dataframe display
+        try:
+            from madengine.utils.log_formatting import print_dataframe_beautiful
+
+            print_dataframe_beautiful(df, f"CSV Data from {file_name}")
+        except ImportError:
+            # Fallback to basic formatting if utils not available
+            print(f"\n📊 CSV Data from {file_name}")
+            print("=" * 80)
+            print(df.to_string(max_rows=20, max_cols=10))
+            print("=" * 80)
 
         # Use the .to_html() to get your table in html
         df_html = df.to_html(index=False)

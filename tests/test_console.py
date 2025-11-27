@@ -4,25 +4,29 @@ This module tests the console module.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import subprocess
 import typing
+
 # third-party modules
 import pytest
 import typing_extensions
+
 # project modules
 from madengine.core import console
 
 
 class TestConsole:
     """Test the console module.
-    
+
     test_sh: Test the console.sh function with echo command.
     """
+
     def test_sh(self):
         obj = console.Console()
         assert obj.sh("echo MAD Engine") == "MAD Engine"
-    
+
     def test_sh_fail(self):
         obj = console.Console()
         try:
@@ -47,7 +51,9 @@ class TestConsole:
 
     def test_sh_env(self):
         obj = console.Console()
-        assert obj.sh("echo $MAD_ENGINE", env={"MAD_ENGINE": "MAD Engine"}) == "MAD Engine"
+        assert (
+            obj.sh("echo $MAD_ENGINE", env={"MAD_ENGINE": "MAD Engine"}) == "MAD Engine"
+        )
 
     def test_sh_verbose(self):
         obj = console.Console(shellVerbose=False)

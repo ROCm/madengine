@@ -9,16 +9,17 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import argparse
 import typing
+
 # third-party imports
 import pandas as pd
 
 
 def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Strip the column names of a DataFrame.
-    
+
     Args:
         df: The DataFrame to strip the column names of.
-    
+
     Returns:
         The DataFrame with stripped column names.
     """
@@ -28,10 +29,10 @@ def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_json(js: str) -> dict:
     """Read a JSON file.
-    
+
     Args:
         js: The path to the JSON file.
-    
+
     Returns:
         The JSON dictionary.
     """
@@ -42,7 +43,7 @@ def read_json(js: str) -> dict:
 
 def flatten_tags(perf_entry: dict):
     """Flatten the tags of a performance entry.
-    
+
     Args:
         perf_entry: The performance entry.
 
@@ -56,7 +57,7 @@ def flatten_tags(perf_entry: dict):
 
 def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
     """Write the performance entry DataFrame to a CSV file.
-    
+
     Args:
         perf_entry: The performance entry DataFrame.
 
@@ -68,7 +69,7 @@ def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
 
 def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
     """Write the performance entry dictionary to a CSV file.
-    
+
     Args:
         perf_entry: The performance entry dictionary.
     """
@@ -78,22 +79,19 @@ def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
 
 
 def handle_multiple_results(
-        perf_csv_df: pd.DataFrame, 
-        multiple_results: str, 
-        common_info: str, 
-        model_name: str
-    ) -> pd.DataFrame:
+    perf_csv_df: pd.DataFrame, multiple_results: str, common_info: str, model_name: str
+) -> pd.DataFrame:
     """Handle multiple results.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         multiple_results: The path to the multiple results CSV file.
         common_info: The path to the common info JSON file.
         model_name: The model name.
-        
+
     Returns:
         The updated performance csv DataFrame.
-    
+
     Raises:
         AssertionError: If the number of columns in the performance csv DataFrame is not equal to the length of the row.
     """
@@ -141,16 +139,13 @@ def handle_multiple_results(
     return perf_csv_df
 
 
-def handle_single_result(
-        perf_csv_df: pd.DataFrame, 
-        single_result: str
-    ) -> pd.DataFrame:
+def handle_single_result(perf_csv_df: pd.DataFrame, single_result: str) -> pd.DataFrame:
     """Handle a single result.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         single_result: The path to the single result JSON file.
-    
+
     Returns:
         The updated performance csv DataFrame.
 
@@ -169,15 +164,14 @@ def handle_single_result(
 
 
 def handle_exception_result(
-        perf_csv_df: pd.DataFrame, 
-        exception_result: str
-    ) -> pd.DataFrame:
+    perf_csv_df: pd.DataFrame, exception_result: str
+) -> pd.DataFrame:
     """Handle an exception result.
-    
+
     Args:
         perf_csv_df: The performance csv DataFrame.
         exception_result: The path to the exception result JSON file.
-    
+
     Returns:
         The updated performance csv DataFrame.
 
@@ -196,20 +190,25 @@ def handle_exception_result(
 
 
 def update_perf_csv(
-        perf_csv: str,
-        multiple_results: typing.Optional[str] = None,
-        single_result: typing.Optional[str] = None,
-        exception_result: typing.Optional[str] = None,
-        common_info: typing.Optional[str] = None,
-        model_name: typing.Optional[str] = None,
-    ):
+    perf_csv: str,
+    multiple_results: typing.Optional[str] = None,
+    single_result: typing.Optional[str] = None,
+    exception_result: typing.Optional[str] = None,
+    common_info: typing.Optional[str] = None,
+    model_name: typing.Optional[str] = None,
+):
     """Update the performance csv file with the latest performance data."""
-    print(f"Attaching performance metrics of models to perf.csv")
+    print("\n" + "=" * 80)
+    print("📈 ATTACHING PERFORMANCE METRICS TO DATABASE")
+    print("=" * 80)
+    print(f"📂 Target file: {perf_csv}")
+
     # read perf.csv
     perf_csv_df = df_strip_columns(pd.read_csv(perf_csv))
 
     # handle multiple_results, single_result, and exception_result
     if multiple_results:
+        print("🔄 Processing multiple results...")
         perf_csv_df = handle_multiple_results(
             perf_csv_df,
             multiple_results,
@@ -217,16 +216,19 @@ def update_perf_csv(
             model_name,
         )
     elif single_result:
+        print("🔄 Processing single result...")
         perf_csv_df = handle_single_result(perf_csv_df, single_result)
     elif exception_result:
-        perf_csv_df = handle_exception_result(
-            perf_csv_df, exception_result
-        )
+        print("⚠️  Processing exception result...")
+        perf_csv_df = handle_exception_result(perf_csv_df, exception_result)
     else:
-        print("No results to update in perf.csv")
+        print("ℹ️  No results to update in perf.csv")
 
     # write new perf.csv
     # Note that this file will also generate a perf_entry.csv regardless of the output file args.
+    perf_csv_df.to_csv(perf_csv, index=False)
+    print(f"✅ Successfully updated: {perf_csv}")
+    print("=" * 80 + "\n")
     perf_csv_df.to_csv(perf_csv, index=False)
 
 
@@ -247,12 +249,17 @@ class UpdatePerfCsv:
 
     def run(self):
         """Update the performance csv file with the latest performance data."""
-        print(f"Updating performance metrics of models perf.csv to database")
+        print("\n" + "=" * 80)
+        print("📊 UPDATING PERFORMANCE METRICS DATABASE")
+        print("=" * 80)
+        print(f"📂 Processing: {self.args.perf_csv}")
+
         # read perf.csv
         perf_csv_df = df_strip_columns(pd.read_csv(self.args.perf_csv))
 
         # handle multiple_results, single_result, and exception_result
         if self.args.multiple_results:
+            print("🔄 Processing multiple results...")
             perf_csv_df = handle_multiple_results(
                 perf_csv_df,
                 self.args.multiple_results,
@@ -260,17 +267,22 @@ class UpdatePerfCsv:
                 self.args.model_name,
             )
         elif self.args.single_result:
+            print("🔄 Processing single result...")
             perf_csv_df = handle_single_result(perf_csv_df, self.args.single_result)
         elif self.args.exception_result:
+            print("⚠️  Processing exception result...")
             perf_csv_df = handle_exception_result(
                 perf_csv_df, self.args.exception_result
             )
         else:
-            print("No results to update in perf.csv")
+            print("ℹ️  No results to update in perf.csv")
 
         # write new perf.csv
         # Note that this file will also generate a perf_entry.csv regardless of the output file args.
         perf_csv_df.to_csv(self.args.perf_csv, index=False)
+
+        print(f"✅ Successfully updated: {self.args.perf_csv}")
+        print("=" * 80 + "\n")
 
         self.return_status = True
         return self.return_status

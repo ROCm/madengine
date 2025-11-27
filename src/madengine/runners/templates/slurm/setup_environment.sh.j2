@@ -1,0 +1,96 @@
+#!/bin/bash
+#SBATCH --job-name=madengine-setup
+#SBATCH --partition={{ setup_partition | default("cpu") }}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time={{ setup_time_limit | default("01:00:00") }}
+#SBATCH --mem={{ setup_memory | default("8G") }}
+{% if account %}
+#SBATCH --account={{ account }}
+{% endif %}
+#SBATCH --output={{ output_dir | default("logs") }}/madengine_setup_%j.out
+#SBATCH --error={{ output_dir | default("logs") }}/madengine_setup_%j.err
+
+# Environment setup job for MADEngine SLURM execution
+echo "=== MADEngine Environment Setup ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURMD_NODENAME"
+echo "Workspace: {{ mad_workspace_path | default('/shared/madengine') }}"
+echo "=================================="
+
+# Load required modules
+{% for module in modules %}
+module load {{ module }}
+{% endfor %}
+
+# Create workspace directory on shared filesystem
+WORKSPACE="{{ mad_workspace_path | default('/shared/madengine') }}"
+mkdir -p "$WORKSPACE"
+mkdir -p "{{ results_dir | default('results') }}"
+mkdir -p "{{ output_dir | default('logs') }}"
+
+cd "$WORKSPACE"
+
+# Clone or update MAD repository
+if [ -d "MAD" ]; then
+    echo "Updating existing MAD repository..."
+    cd MAD
+    git pull origin main
+    cd ..
+else
+    echo "Cloning MAD repository..."
+    git clone {{ mad_repo_url | default("https://github.com/ROCm/MAD.git") }} MAD
+fi
+
+cd MAD
+
+# Create Python virtual environment
+echo "Setting up Python virtual environment..."
+python3 -m venv {{ venv_path | default("venv") }}
+source {{ venv_path | default("venv") }}/bin/activate
+
+# Install dependencies
+echo "Installing Python dependencies..."
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Install madengine with SLURM dependencies
+pip install -e .
+
+# Copy manifest and configuration files to workspace
+{% if manifest_file %}
+cp {{ manifest_file }} build_manifest.json
+{% endif %}
+
+{% for config_file in config_files %}
+if [ -f "{{ config_file }}" ]; then
+    cp "{{ config_file }}" .
+    echo "Copied {{ config_file }}"
+fi
+{% endfor %}
+
+# Verify madengine installation
+echo "Verifying madengine-cli installation..."
+madengine-cli --version
+madengine-cli --help > /dev/null
+
+if [ $? -eq 0 ]; then
+    echo "✅ MADEngine environment setup completed successfully"
+    
+    # Create setup completion marker
+    cat > setup_complete.json << EOF
+{
+    "setup_job_id": "$SLURM_JOB_ID",
+    "setup_node": "$SLURMD_NODENAME",
+    "setup_time": "$(date -Iseconds)",
+    "workspace_path": "$WORKSPACE",
+    "venv_path": "{{ venv_path | default('venv') }}",
+    "status": "completed"
+}
+EOF
+    
+    exit 0
+else
+    echo "❌ MADEngine environment setup failed"
+    exit 1
+fi

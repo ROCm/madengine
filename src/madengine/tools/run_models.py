@@ -45,7 +45,12 @@ from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
-from madengine.utils.ops import PythonicTee, file_print, substring_found, find_and_replace_pattern
+from madengine.utils.ops import (
+    PythonicTee,
+    file_print,
+    substring_found,
+    find_and_replace_pattern,
+)
 from madengine.core.constants import MAD_MINIO, MAD_AWS_S3
 from madengine.core.constants import MODEL_DIR, PUBLIC_GITHUB_ROCM_KEY
 from madengine.core.timeout import Timeout
@@ -118,7 +123,17 @@ class RunDetails:
 
         Method to print stage perf results of a model.
         """
-        print(f"{self.model} performance is {self.performance} {self.metric}")
+        print("\n" + "=" * 60)
+        print(f"📊 PERFORMANCE RESULTS")
+        print("=" * 60)
+        print(f"🏷️  Model: {self.model}")
+        print(f"⚡ Performance: {self.performance} {self.metric}")
+        print(f"📈 Status: {self.status}")
+        if self.machine_name:
+            print(f"🖥️  Machine: {self.machine_name}")
+        if self.gpu_architecture:
+            print(f"🎮 GPU Architecture: {self.gpu_architecture}")
+        print("=" * 60 + "\n")
 
     # Exports all info in json format to json_name
     # multiple_results excludes the "model,performance,metric,status" keys
@@ -154,9 +169,11 @@ class RunModels:
         self.return_status = True
         self.args = args
         self.console = Console(live_output=True)
+        # Initialize context in runtime mode (requires GPU detection)
         self.context = Context(
             additional_context=args.additional_context,
             additional_context_file=args.additional_context_file,
+            build_only_mode=False,  # RunModels always needs full runtime context
         )
         # check the data.json file exists
         data_json_file = args.data_config_file_name
@@ -259,10 +276,8 @@ class RunModels:
         return build_args
 
     def apply_tools(
-            self,
-            pre_encapsulate_post_scripts: typing.Dict,
-            run_env: typing.Dict
-        ) -> None:
+        self, pre_encapsulate_post_scripts: typing.Dict, run_env: typing.Dict
+    ) -> None:
         """Apply tools to the model.
 
         Args:
@@ -290,32 +305,37 @@ class RunModels:
 
             if "env_vars" in ctx_tool_config:
                 for env_var in ctx_tool_config["env_vars"]:
-                    tool_config["env_vars"].update({env_var: ctx_tool_config["env_vars"][env_var]})
+                    tool_config["env_vars"].update(
+                        {env_var: ctx_tool_config["env_vars"][env_var]}
+                    )
 
             print(f"Selected Tool, {tool_name}. Configuration : {str(tool_config)}.")
 
             # setup tool before other existing scripts
             if "pre_scripts" in tool_config:
                 pre_encapsulate_post_scripts["pre_scripts"] = (
-                    tool_config["pre_scripts"] + pre_encapsulate_post_scripts["pre_scripts"]
+                    tool_config["pre_scripts"]
+                    + pre_encapsulate_post_scripts["pre_scripts"]
                 )
             # cleanup tool after other existing scripts
             if "post_scripts" in tool_config:
-                pre_encapsulate_post_scripts["post_scripts"] += tool_config["post_scripts"]
+                pre_encapsulate_post_scripts["post_scripts"] += tool_config[
+                    "post_scripts"
+                ]
             # warning: this will update existing keys from env or other tools
             if "env_vars" in tool_config:
                 run_env.update(tool_config["env_vars"])
             if "cmd" in tool_config:
                 # prepend encapsulate cmd
                 pre_encapsulate_post_scripts["encapsulate_script"] = (
-                    tool_config["cmd"] + " " + pre_encapsulate_post_scripts["encapsulate_script"]
+                    tool_config["cmd"]
+                    + " "
+                    + pre_encapsulate_post_scripts["encapsulate_script"]
                 )
 
     def gather_system_env_details(
-            self,
-            pre_encapsulate_post_scripts: typing.Dict,
-            model_name: str
-        ) -> None:
+        self, pre_encapsulate_post_scripts: typing.Dict, model_name: str
+    ) -> None:
         """Gather system environment details.
 
         Args:
@@ -340,7 +360,9 @@ class RunModels:
 
     def copy_scripts(self) -> None:
         """Copy scripts to the model directory."""
-        scripts_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
+        scripts_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "scripts"
+        )
         print(f"Package path: {scripts_path}")
         # copy the scripts to the model directory
         self.console.sh(f"cp -vLR --preserve=all {scripts_path} .")
@@ -391,7 +413,7 @@ class RunModels:
         gpu_arg = ""
         # get gpu vendor from context, if not raise exception.
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
-        n_system_gpus = self.context.ctx['docker_env_vars']['MAD_SYSTEM_NGPUS']
+        n_system_gpus = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]
         gpu_strings = self.context.ctx["docker_gpus"].split(",")
 
         # parsing gpu string, example: '{0-4}' -> [0,1,2,3,4]
@@ -399,9 +421,11 @@ class RunModels:
         # iterate over the list of gpu strings, split range and append to docker_gpus.
         for gpu_string in gpu_strings:
             # check if gpu string has range, if so split and append to docker_gpus.
-            if '-' in gpu_string:
-                gpu_range = gpu_string.split('-')
-                docker_gpus += [item for item in range(int(gpu_range[0]),int(gpu_range[1])+1)]
+            if "-" in gpu_string:
+                gpu_range = gpu_string.split("-")
+                docker_gpus += [
+                    item for item in range(int(gpu_range[0]), int(gpu_range[1]) + 1)
+                ]
             else:
                 docker_gpus.append(int(gpu_string))
         # sort docker_gpus
@@ -409,30 +433,49 @@ class RunModels:
 
         # Check GPU range is valid for system
         if requested_gpus == "-1":
-            print("NGPUS requested is ALL (" + ','.join(map(str, docker_gpus)) + ")." )
+            print("NGPUS requested is ALL (" + ",".join(map(str, docker_gpus)) + ").")
             requested_gpus = len(docker_gpus)
 
-        print("NGPUS requested is " + str(requested_gpus) + " out of " + str(n_system_gpus) )
+        print(
+            "NGPUS requested is "
+            + str(requested_gpus)
+            + " out of "
+            + str(n_system_gpus)
+        )
 
-        if int(requested_gpus) > int(n_system_gpus) or int(requested_gpus) > len(docker_gpus):
-            raise RuntimeError("Too many gpus requested(" + str(requested_gpus) + "). System has " + str(n_system_gpus) + " gpus. Context has " + str(len(docker_gpus)) + " gpus." )
+        if int(requested_gpus) > int(n_system_gpus) or int(requested_gpus) > len(
+            docker_gpus
+        ):
+            raise RuntimeError(
+                "Too many gpus requested("
+                + str(requested_gpus)
+                + "). System has "
+                + str(n_system_gpus)
+                + " gpus. Context has "
+                + str(len(docker_gpus))
+                + " gpus."
+            )
 
         # Exposing number of requested gpus
-        self.context.ctx['docker_env_vars']['MAD_RUNTIME_NGPUS'] = str(requested_gpus)
+        self.context.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"] = str(requested_gpus)
 
         # Create docker arg to assign requested GPUs
         if gpu_vendor.find("AMD") != -1:
-            gpu_arg = '--device=/dev/kfd '
+            gpu_arg = "--device=/dev/kfd "
 
-            gpu_renderDs = self.context.ctx['gpu_renderDs']
+            gpu_renderDs = self.context.ctx["gpu_renderDs"]
             if gpu_renderDs is not None:
                 for idx in range(0, int(requested_gpus)):
-                    gpu_arg += "--device=/dev/dri/renderD" + str(gpu_renderDs[docker_gpus[idx]]) + " "
+                    gpu_arg += (
+                        "--device=/dev/dri/renderD"
+                        + str(gpu_renderDs[docker_gpus[idx]])
+                        + " "
+                    )
 
         elif gpu_vendor.find("NVIDIA") != -1:
             gpu_str = ""
             for idx in range(0, int(requested_gpus)):
-                gpu_str += str( docker_gpus[idx] ) + ","
+                gpu_str += str(docker_gpus[idx]) + ","
             gpu_arg += "--gpus '\"device=" + gpu_str + "\"' "
         else:
             raise RuntimeError("Unable to determine gpu vendor.")
@@ -455,7 +498,7 @@ class RunModels:
             return ""
         # get docker_cpus from context, remove spaces and return cpu arguments.
         cpus = self.context.ctx["docker_cpus"]
-        cpus = cpus.replace(" ","")
+        cpus = cpus.replace(" ", "")
         return "--cpuset-cpus " + cpus + " "
 
     def get_env_arg(self, run_env: typing.Dict) -> str:
@@ -481,7 +524,13 @@ class RunModels:
         # get docker_env_vars from context, if not return env_args.
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                env_args += "--env " + env_arg + "='" + str(self.context.ctx["docker_env_vars"][env_arg]) + "' "
+                env_args += (
+                    "--env "
+                    + env_arg
+                    + "='"
+                    + str(self.context.ctx["docker_env_vars"][env_arg])
+                    + "' "
+                )
 
         print(f"Env arguments: {env_args}")
         return env_args
@@ -506,8 +555,13 @@ class RunModels:
             for mount_datapath in mount_datapaths:
                 if mount_datapath:
                     # uses --mount to enforce existence of parent directory; data is mounted readonly by default
-                    mount_args += "-v " + mount_datapath["path"] + ":" +  mount_datapath["home"]
-                    if "readwrite" in mount_datapath and mount_datapath["readwrite"] == 'true':
+                    mount_args += (
+                        "-v " + mount_datapath["path"] + ":" + mount_datapath["home"]
+                    )
+                    if (
+                        "readwrite" in mount_datapath
+                        and mount_datapath["readwrite"] == "true"
+                    ):
                         mount_args += " "
                     else:
                         mount_args += ":ro "
@@ -517,20 +571,31 @@ class RunModels:
 
         # get docker_mounts from context, if not return mount_args.
         for mount_arg in self.context.ctx["docker_mounts"].keys():
-            mount_args += "-v " + self.context.ctx["docker_mounts"][mount_arg] + ":" + mount_arg + " "
+            mount_args += (
+                "-v "
+                + self.context.ctx["docker_mounts"][mount_arg]
+                + ":"
+                + mount_arg
+                + " "
+            )
 
         return mount_args
 
     def run_pre_post_script(self, model_docker, model_dir, pre_post):
         for script in pre_post:
             script_path = script["path"].strip()
-            model_docker.sh("cp -vLR --preserve=all " + script_path + " " + model_dir, timeout=600)
+            model_docker.sh(
+                "cp -vLR --preserve=all " + script_path + " " + model_dir, timeout=600
+            )
             script_name = os.path.basename(script_path)
             script_args = ""
             if "args" in script:
                 script_args = script["args"]
                 script_args.strip()
-            model_docker.sh("cd " + model_dir + " && bash " + script_name + " " + script_args , timeout=600)
+            model_docker.sh(
+                "cd " + model_dir + " && bash " + script_name + " " + script_args,
+                timeout=600,
+            )
 
     def run_model_impl(
         self, info: typing.Dict, dockerfile: str, run_details: RunDetails
@@ -548,7 +613,9 @@ class RunModels:
         if "MAD_CONTAINER_IMAGE" not in self.context.ctx:
             # build docker image
             image_docker_name = (
-                info["name"].replace("/", "_").lower() # replace / with _ for models in scripts/somedir/ from madengine discover
+                info["name"]
+                .replace("/", "_")
+                .lower()  # replace / with _ for models in scripts/somedir/ from madengine discover
                 + "_"
                 + os.path.basename(dockerfile).replace(".Dockerfile", "")
             )
@@ -584,7 +651,9 @@ class RunModels:
             # get docker image name
             run_details.docker_image = "ci-" + image_docker_name
             # get container name
-            container_name = "container_" + re.sub('.*:','', image_docker_name) # remove docker container hub details
+            container_name = "container_" + re.sub(
+                ".*:", "", image_docker_name
+            )  # remove docker container hub details
 
             ## Note: --network=host added to fix issue on CentOS+FBK kernel, where iptables is not available
             self.console.sh(
@@ -611,7 +680,9 @@ class RunModels:
                 "docker_build_arg" in self.context.ctx
                 and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
             ):
-                run_details.base_docker = self.context.ctx["docker_build_arg"]["BASE_DOCKER"]
+                run_details.base_docker = self.context.ctx["docker_build_arg"][
+                    "BASE_DOCKER"
+                ]
             else:
                 run_details.base_docker = self.console.sh(
                     "grep '^ARG BASE_DOCKER=' "
@@ -621,15 +692,23 @@ class RunModels:
             print(f"BASE DOCKER is {run_details.base_docker}")
 
             # print base docker image digest
-            run_details.docker_sha = self.console.sh("docker manifest inspect " + run_details.base_docker + " | grep digest | head -n 1 | cut -d \\\" -f 4")
+            run_details.docker_sha = self.console.sh(
+                "docker manifest inspect "
+                + run_details.base_docker
+                + ' | grep digest | head -n 1 | cut -d \\" -f 4'
+            )
             print(f"BASE DOCKER SHA is {run_details.docker_sha}")
 
         else:
-            container_name = "container_" + self.context.ctx["MAD_CONTAINER_IMAGE"].replace("/", "_").replace(":", "_")
+            container_name = "container_" + self.context.ctx[
+                "MAD_CONTAINER_IMAGE"
+            ].replace("/", "_").replace(":", "_")
             run_details.docker_image = self.context.ctx["MAD_CONTAINER_IMAGE"]
 
             print(f"MAD_CONTAINER_IMAGE is {run_details.docker_image}")
-            print(f"Warning: User override MAD_CONTAINER_IMAGE. Model support on image not guaranteed.")
+            print(
+                f"Warning: User override MAD_CONTAINER_IMAGE. Model support on image not guaranteed."
+            )
 
         # prepare docker run options
         gpu_vendor = self.context.ctx["gpu_vendor"]
@@ -644,24 +723,37 @@ class RunModels:
             raise RuntimeError("Unable to determine gpu vendor.")
 
         # initialize pre, encapsulate and post scripts
-        pre_encapsulate_post_scripts = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        pre_encapsulate_post_scripts = {
+            "pre_scripts": [],
+            "encapsulate_script": "",
+            "post_scripts": [],
+        }
 
         if "pre_scripts" in self.context.ctx:
-            pre_encapsulate_post_scripts["pre_scripts"] = self.context.ctx["pre_scripts"]
+            pre_encapsulate_post_scripts["pre_scripts"] = self.context.ctx[
+                "pre_scripts"
+            ]
 
         if "post_scripts" in self.context.ctx:
-            pre_encapsulate_post_scripts["post_scripts"] = self.context.ctx["post_scripts"]
+            pre_encapsulate_post_scripts["post_scripts"] = self.context.ctx[
+                "post_scripts"
+            ]
 
         if "encapsulate_script" in self.context.ctx:
-            pre_encapsulate_post_scripts["encapsulate_script"] = self.context.ctx["encapsulate_script"]
+            pre_encapsulate_post_scripts["encapsulate_script"] = self.context.ctx[
+                "encapsulate_script"
+            ]
 
         # get docker run options
         docker_options += "--env MAD_MODEL_NAME='" + info["name"] + "' "
         # Since we are doing Jenkins level environment collection in the docker container, pass in the jenkins build number.
-        docker_options += f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
+        docker_options += (
+            f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
+        )
 
-        # gather data
-        # TODO: probably can use context.ctx instead of another dictionary like run_env here
+        # Gather data environment variables
+        # NOTE: run_env is a separate dictionary for model-specific environment variables.
+        # Consider refactoring to use context.ctx for better consistency across the codebase.
         run_env = {}
         mount_datapaths = None
 
@@ -719,10 +811,16 @@ class RunModels:
 
         with Timeout(timeout):
             print(f"")
-            model_docker = Docker(run_details.docker_image, container_name, docker_options, keep_alive=self.args.keep_alive, console=self.console)
+            model_docker = Docker(
+                run_details.docker_image,
+                container_name,
+                docker_options,
+                keep_alive=self.args.keep_alive,
+                console=self.console,
+            )
             # check that user is root
             whoami = model_docker.sh("whoami")
-            print( "USER is " + whoami )
+            print("USER is " + whoami)
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
@@ -737,10 +835,10 @@ class RunModels:
             if "url" in info and info["url"] != "":
                 # model_dir is set to string after the last forwardslash in url field
                 # adding for url field with and without trailing forwardslash (/)
-                model_dir = info['url'].rstrip('/').split('/')[-1]
+                model_dir = info["url"].rstrip("/").split("/")[-1]
 
                 # Validate model_dir to make sure there are no special characters
-                special_char = r'[^a-zA-Z0-9\-\_]'  # allow hyphen and underscore
+                special_char = r"[^a-zA-Z0-9\-\_]"  # allow hyphen and underscore
                 if re.search(special_char, model_dir) is not None:
                     warnings.warn("Model url contains special character. Fix url.")
 
@@ -755,84 +853,133 @@ class RunModels:
                     print(f"Using cred for {info['cred']}")
 
                     if info["cred"] not in self.creds:
-                        raise RuntimeError("Credentials(" + info["cred"] + ") to run model not found in credential.json; Please contact the model owner, " + info["owner"] + ".")
+                        raise RuntimeError(
+                            "Credentials("
+                            + info["cred"]
+                            + ") to run model not found in credential.json; Please contact the model owner, "
+                            + info["owner"]
+                            + "."
+                        )
 
-                    if info['url'].startswith('ssh://'):
-                        model_docker.sh("git -c core.sshCommand='ssh -l  " + self.creds[ info["cred"] ]["username"] +
-                                    " -i " + self.creds[ info["cred"] ]["ssh_key_file"] + " -o IdentitiesOnly=yes " +
-                                    " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no' " +
-                                    " clone " + info['url'], timeout=240 )
-                    else:   # http or https
-                        model_docker.sh("git clone -c credential.helper='!f() { echo username=" + self.creds[ info["cred"] ]["username"] + \
-                                    "; echo password=" + self.creds[ info["cred"] ]["password"] + "; };f' " + \
-                                    info['url'], timeout=240, secret="git clone " + info['url'] )
+                    if info["url"].startswith("ssh://"):
+                        model_docker.sh(
+                            "git -c core.sshCommand='ssh -l  "
+                            + self.creds[info["cred"]]["username"]
+                            + " -i "
+                            + self.creds[info["cred"]]["ssh_key_file"]
+                            + " -o IdentitiesOnly=yes "
+                            + " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no' "
+                            + " clone "
+                            + info["url"],
+                            timeout=240,
+                        )
+                    else:  # http or https
+                        model_docker.sh(
+                            "git clone -c credential.helper='!f() { echo username="
+                            + self.creds[info["cred"]]["username"]
+                            + "; echo password="
+                            + self.creds[info["cred"]]["password"]
+                            + "; };f' "
+                            + info["url"],
+                            timeout=240,
+                            secret="git clone " + info["url"],
+                        )
                 else:
                     model_docker.sh("git clone " + info["url"], timeout=240)
 
                 # set safe.directory for model directory
-                model_docker.sh("git config --global --add safe.directory /myworkspace/" + model_dir )
+                model_docker.sh(
+                    "git config --global --add safe.directory /myworkspace/" + model_dir
+                )
 
                 # echo git commit
-                run_details.git_commit = model_docker.sh("cd "+ model_dir + " && git rev-parse HEAD")
+                run_details.git_commit = model_docker.sh(
+                    "cd " + model_dir + " && git rev-parse HEAD"
+                )
                 print(f"MODEL GIT COMMIT is {run_details.git_commit}")
 
                 # update submodule
-                model_docker.sh("cd "+ model_dir + "; git submodule update --init --recursive")
+                model_docker.sh(
+                    "cd " + model_dir + "; git submodule update --init --recursive"
+                )
             else:
                 model_docker.sh("mkdir -p " + model_dir)
 
             # add system environment collection script to pre_scripts
-            if self.args.generate_sys_env_details or self.context.ctx.get("gen_sys_env_details"):
-                self.gather_system_env_details(pre_encapsulate_post_scripts, info['name'])
+            if self.args.generate_sys_env_details or self.context.ctx.get(
+                "gen_sys_env_details"
+            ):
+                self.gather_system_env_details(
+                    pre_encapsulate_post_scripts, info["name"]
+                )
             # run pre_scripts
             if pre_encapsulate_post_scripts["pre_scripts"]:
-                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["pre_scripts"])
+                self.run_pre_post_script(
+                    model_docker, model_dir, pre_encapsulate_post_scripts["pre_scripts"]
+                )
 
-            scripts_arg = info['scripts']
+            scripts_arg = info["scripts"]
             dir_path = None
             script_name = None
             if scripts_arg.endswith(".sh"):
                 dir_path = os.path.dirname(scripts_arg)
                 script_name = "bash " + os.path.basename(scripts_arg)
             else:
-                dir_path = info['scripts']
+                dir_path = info["scripts"]
                 script_name = "bash run.sh"
 
             # add script_prepend_cmd
-            script_name = pre_encapsulate_post_scripts["encapsulate_script"] + " " + script_name
+            script_name = (
+                pre_encapsulate_post_scripts["encapsulate_script"] + " " + script_name
+            )
 
             # print repo hash
-            commit = model_docker.sh("cd "+ dir_path +"; git rev-parse HEAD || true  ")
+            commit = model_docker.sh(
+                "cd " + dir_path + "; git rev-parse HEAD || true  "
+            )
             print("======================================================")
-            print("MODEL REPO COMMIT: ", commit )
+            print("MODEL REPO COMMIT: ", commit)
             print("======================================================")
 
             # copy scripts to model directory
-            model_docker.sh("cp -vLR --preserve=all "+ dir_path +"/. "+ model_dir +"/")
+            model_docker.sh(
+                "cp -vLR --preserve=all " + dir_path + "/. " + model_dir + "/"
+            )
 
             # prepare data inside container
-            if 'data' in info and info['data'] != "":
-                self.data.prepare_data( info['data'], model_docker )
+            if "data" in info and info["data"] != "":
+                self.data.prepare_data(info["data"], model_docker)
                 # Capture data provider information from selected_data_provider
-                if hasattr(self.data, 'selected_data_provider') and self.data.selected_data_provider:
-                    if 'dataname' in self.data.selected_data_provider:
-                        run_details.dataname = self.data.selected_data_provider['dataname']
-                    if 'data_provider_type' in self.data.selected_data_provider:
-                        run_details.data_provider_type = self.data.selected_data_provider['data_provider_type']
-                    if 'duration' in self.data.selected_data_provider:
-                        run_details.data_download_duration = self.data.selected_data_provider['duration']
-                    if 'size' in self.data.selected_data_provider:
-                        run_details.data_size = self.data.selected_data_provider['size']
-                    print(f"Data Provider Details: {run_details.dataname}, {run_details.data_provider_type}, {run_details.data_size}, {run_details.data_download_duration}s")
+                if (
+                    hasattr(self.data, "selected_data_provider")
+                    and self.data.selected_data_provider
+                ):
+                    if "dataname" in self.data.selected_data_provider:
+                        run_details.dataname = self.data.selected_data_provider[
+                            "dataname"
+                        ]
+                    if "data_provider_type" in self.data.selected_data_provider:
+                        run_details.data_provider_type = (
+                            self.data.selected_data_provider["data_provider_type"]
+                        )
+                    if "duration" in self.data.selected_data_provider:
+                        run_details.data_download_duration = (
+                            self.data.selected_data_provider["duration"]
+                        )
+                    if "size" in self.data.selected_data_provider:
+                        run_details.data_size = self.data.selected_data_provider["size"]
+                    print(
+                        f"Data Provider Details: {run_details.dataname}, {run_details.data_provider_type}, {run_details.data_size}, {run_details.data_download_duration}s"
+                    )
 
             selected_data_provider = {
                 "node_name": run_details.machine_name,
-                "build_number": os.environ.get('BUILD_NUMBER','0'),
-                "model_name": info["name"] if "name" in info else ""
+                "build_number": os.environ.get("BUILD_NUMBER", "0"),
+                "model_name": info["name"] if "name" in info else "",
             }
 
             # Set build number in run_details
-            run_details.build_number = os.environ.get('BUILD_NUMBER','0')
+            run_details.build_number = os.environ.get("BUILD_NUMBER", "0")
 
             print(f"Build Info::{selected_data_provider}")
 
@@ -875,14 +1022,22 @@ class RunModels:
 
             # run post_scripts
             if pre_encapsulate_post_scripts["post_scripts"]:
-                self.run_pre_post_script(model_docker, model_dir, pre_encapsulate_post_scripts["post_scripts"])
+                self.run_pre_post_script(
+                    model_docker,
+                    model_dir,
+                    pre_encapsulate_post_scripts["post_scripts"],
+                )
 
             # remove model directory
             if not self.args.keep_alive and not self.args.keep_model_dir:
                 model_docker.sh("rm -rf " + model_dir, timeout=240)
             else:
                 model_docker.sh("chmod -R a+rw " + model_dir)
-                print("keep_alive is specified; model_dir(" + model_dir + ") is not removed")
+                print(
+                    "keep_alive is specified; model_dir("
+                    + model_dir
+                    + ") is not removed"
+                )
 
         # explicitly delete model docker to stop the container, without waiting for the in-built garbage collector
         del model_docker
@@ -909,12 +1064,16 @@ class RunModels:
         run_details.training_precision = model_info["training_precision"]
         run_details.args = model_info["args"]
         run_details.tags = model_info["tags"]
-        run_details.additional_docker_run_options = model_info.get("additional_docker_run_options", "")
+        run_details.additional_docker_run_options = model_info.get(
+            "additional_docker_run_options", ""
+        )
         # gets pipeline variable from jenkinsfile, default value is none
         run_details.pipeline = os.environ.get("pipeline")
         # Taking gpu arch from context assumes the host image and container have the same gpu arch.
         # Environment variable updates for MAD Public CI
-        run_details.gpu_architecture = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
+        run_details.gpu_architecture = self.context.ctx["docker_env_vars"][
+            "MAD_SYSTEM_GPU_ARCHITECTURE"
+        ]
 
         # Check the setting of shared memory size
         if "SHM_SIZE" in self.context.ctx:
@@ -927,7 +1086,9 @@ class RunModels:
         if model_info.get("is_deprecated", False):
             print(f"WARNING: Model {model_info['name']} has been deprecated.")
             if self.args.ignore_deprecated_flag:
-                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")
+                print(
+                    f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag."
+                )
             else:
                 print(f"WARNING: Skipping execution. No bypass flags mentioned.")
                 return True  # exit early
@@ -954,7 +1115,9 @@ class RunModels:
             run_details.status = "SKIPPED"
             # generate exception for testing
             run_details.generate_json("perf_entry.json")
-            update_perf_csv(exception_result="perf_entry.json", perf_csv=self.args.output)
+            update_perf_csv(
+                exception_result="perf_entry.json", perf_csv=self.args.output
+            )
         else:
             print(
                 f"Running model {run_details.model} on {run_details.gpu_architecture} architecture."
@@ -984,7 +1147,10 @@ class RunModels:
 
                 # check if dockerfiles are found, if not raise exception.
                 if not dockerfiles:
-                    raise Exception("No dockerfiles matching context found for model " + run_details.model)
+                    raise Exception(
+                        "No dockerfiles matching context found for model "
+                        + run_details.model
+                    )
 
                 # run dockerfiles
                 for cur_docker_file in dockerfiles.keys():
@@ -1001,7 +1167,7 @@ class RunModels:
 
                     try:
                         # generate exception for testing
-                        if model_info['args'] == "--exception":
+                        if model_info["args"] == "--exception":
                             raise Exception("Exception test!")
 
                         print(f"Processing Dockerfile: {cur_docker_file}")
@@ -1018,40 +1184,64 @@ class RunModels:
                         log_file_path = log_file_path.replace("/", "_")
 
                         with open(log_file_path, mode="w", buffering=1) as outlog:
-                            with redirect_stdout(PythonicTee(outlog, self.args.live_output)), redirect_stderr(PythonicTee(outlog, self.args.live_output)):
-                                self.run_model_impl(model_info, cur_docker_file, run_details)
+                            with redirect_stdout(
+                                PythonicTee(outlog, self.args.live_output)
+                            ), redirect_stderr(
+                                PythonicTee(outlog, self.args.live_output)
+                            ):
+                                self.run_model_impl(
+                                    model_info, cur_docker_file, run_details
+                                )
 
                         if self.args.skip_model_run:
                             # move to next dockerfile
                             continue
 
                         # Check if we are looking for a single result or multiple.
-                        multiple_results = (None if "multiple_results" not in model_info else model_info["multiple_results"])
+                        multiple_results = (
+                            None
+                            if "multiple_results" not in model_info
+                            else model_info["multiple_results"]
+                        )
 
                         # get performance metric from log
                         if multiple_results:
                             run_details.performance = multiple_results
 
                         else:
-                            perf_regex = ".*performance:\\s*\\([+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\)\\s*.*\\s*"
-                            run_details.performance = self.console.sh("cat " + log_file_path +
-                                                        " | sed -n 's/" + perf_regex + "/\\1/p'")
+                            perf_regex = ".*performance:\\s*\\([+|-]\\?[0-9]*[.]\\?[0-9]*\\(e[+|-]\\?[0-9]\\+\\)\\?\\)\\s*.*\\s*"
+                            run_details.performance = self.console.sh(
+                                "cat "
+                                + log_file_path
+                                + " | sed -n 's/"
+                                + perf_regex
+                                + "/\\1/p'"
+                            )
 
-                            metric_regex = ".*performance:\\s*[+|-]\?[0-9]*[.]\\?[0-9]*\(e[+|-]\?[0-9]\+\)\?\\s*\\(\\w*\\)\\s*"
-                            run_details.metric = self.console.sh("cat " + log_file_path +
-                                                    " | sed -n 's/" + metric_regex + "/\\2/p'")
+                            metric_regex = ".*performance:\\s*[+|-]\\?[0-9]*[.]\\?[0-9]*\\(e[+|-]\\?[0-9]\\+\\)\\?\\s*\\(\\w*\\)\\s*"
+                            run_details.metric = self.console.sh(
+                                "cat "
+                                + log_file_path
+                                + " | sed -n 's/"
+                                + metric_regex
+                                + "/\\2/p'"
+                            )
 
                         # check if model passed or failed
-                        run_details.status = 'SUCCESS' if run_details.performance else 'FAILURE'
+                        run_details.status = (
+                            "SUCCESS" if run_details.performance else "FAILURE"
+                        )
 
                         # print stage perf results
                         run_details.print_perf()
 
                         # add result to output
                         if multiple_results:
-                            run_details.generate_json("common_info.json", multiple_results=True)
+                            run_details.generate_json(
+                                "common_info.json", multiple_results=True
+                            )
                             update_perf_csv(
-                                multiple_results=model_info['multiple_results'],
+                                multiple_results=model_info["multiple_results"],
                                 perf_csv=self.args.output,
                                 model_name=run_details.model,
                                 common_info="common_info.json",
@@ -1063,15 +1253,15 @@ class RunModels:
                                 perf_csv=self.args.output,
                             )
 
-                        self.return_status &= (run_details.status == 'SUCCESS')
+                        self.return_status &= run_details.status == "SUCCESS"
 
                     except Exception as e:
                         self.return_status = False
 
-                        print( "===== EXCEPTION =====")
-                        print( "Exception: ", e )
+                        print("===== EXCEPTION =====")
+                        print("Exception: ", e)
                         traceback.print_exc()
-                        print( "=============== =====")
+                        print("=============== =====")
                         run_details.status = "FAILURE"
                         run_details.generate_json("perf_entry.json")
                         update_perf_csv(
@@ -1082,10 +1272,10 @@ class RunModels:
             except Exception as e:
                 self.return_status = False
 
-                print( "===== EXCEPTION =====")
-                print( "Exception: ", e )
+                print("===== EXCEPTION =====")
+                print("Exception: ", e)
                 traceback.print_exc()
-                print( "=============== =====")
+                print("=============== =====")
                 run_details.status = "FAILURE"
                 run_details.generate_json("perf_entry.json")
                 update_perf_csv(
@@ -1163,7 +1353,7 @@ class RunModels:
         if self.return_status:
             print("All models ran successfully.")
         else:
-            print( "===== EXCEPTION =====")
+            print("===== EXCEPTION =====")
             print("Some models failed to run.")
 
         return self.return_status

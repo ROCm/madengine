@@ -8,6 +8,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 from datetime import datetime, timezone
+
 # third-party modules
 from sqlalchemy import Column, Integer, String, DateTime, TEXT, MetaData, Table
 from sqlalchemy.exc import OperationalError
@@ -47,31 +48,34 @@ ENGINE = create_engine(
 )
 
 # Define the path to the SQL file
-SQL_FILE_PATH = os.path.join(os.path.dirname(__file__), 'db_table_def.sql')
+SQL_FILE_PATH = os.path.join(os.path.dirname(__file__), "db_table_def.sql")
 # Update TABLE_SCHEMA and TABLE_NAME variables
 TABLE_SCHEMA = ENV_VARS["db_name"]
 TABLE_NAME = None
 # get table name from SQL file
-with open(SQL_FILE_PATH, 'r') as file:
+with open(SQL_FILE_PATH, "r") as file:
     for line in file:
-        if 'CREATE TABLE' in line:
-            TABLE_NAME = line.split(' ')[2].split('(')[0]
-            TABLE_NAME = TABLE_NAME.replace('`', '')
+        if "CREATE TABLE" in line:
+            TABLE_NAME = line.split(" ")[2].split("(")[0]
+            TABLE_NAME = TABLE_NAME.replace("`", "")
             break
 
 if TABLE_NAME is None:
     raise ValueError("Table name not found in SQL file")
 
+
 def read_sql_file(file_path: str) -> str:
     """Read the SQL file and return its content."""
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         return file.read()
+
 
 def parse_table_definition(sql_content: str) -> Table:
     """Parse the SQL content and return the table definition."""
     metadata = MetaData()
     table = Table(TABLE_NAME, metadata, autoload_with=ENGINE, autoload_replace=True)
     return table
+
 
 # Read and parse the SQL file
 sql_content = read_sql_file(SQL_FILE_PATH)
@@ -80,9 +84,11 @@ db_table_definition = parse_table_definition(sql_content)
 # Clear any existing mappers
 clear_mappers()
 
+
 # Define the DB_TABLE class dynamically
 class DB_TABLE(BaseMixin, BASE):
     """Represents db job table"""
+
     __tablename__ = db_table_definition.name
     __table__ = db_table_definition
 
@@ -146,7 +152,9 @@ def show_db() -> None:
         result = ENGINE.execute(
             "SELECT * FROM {} \
                 WHERE {}.created_date= \
-                    (SELECT MAX(created_date) FROM {}) ;".format(DB_TABLE.__tablename__)
+                    (SELECT MAX(created_date) FROM {}) ;".format(
+                DB_TABLE.__tablename__
+            )
         )
         for row in result:
             print(row)
@@ -222,7 +230,9 @@ def get_column_names() -> list:
         "SELECT `COLUMN_NAME` \
             FROM `INFORMATION_SCHEMA`.`COLUMNS` \
                 WHERE `TABLE_SCHEMA`='{}' \
-                AND `TABLE_NAME`='{}'".format(db_name, DB_TABLE.__tablename__)
+                AND `TABLE_NAME`='{}'".format(
+            db_name, DB_TABLE.__tablename__
+        )
     )
     ret = []
     for row in result:

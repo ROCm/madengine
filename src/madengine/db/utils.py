@@ -29,7 +29,7 @@ def get_env_vars() -> dict:
     - SLURM_CPUS_ON_NODE
     - LOG_LEVEL
     - MODEL_DIR
-    
+
     Returns:
         dict: Dictionary of DLM specific env_vars
     """
@@ -76,20 +76,19 @@ def get_env_vars() -> dict:
         env_vars["ssh_port"] = str(os.environ["TUNA_SSH_PORT"])
     else:
         env_vars["ssh_port"] = "22"
-    
+
     return env_vars
 
 
 def get_avg_perf(
-        entry_list: typing.List[dict], 
-        n: int=5
-    ) -> typing.Tuple[float, typing.List[float]]:
+    entry_list: typing.List[dict], n: int = 5
+) -> typing.Tuple[float, typing.List[float]]:
     """Get average performance from the last n entries
-    
+
     Args:
         entry_list (list): List of entries
         n (int): Number of entries to consider
-    
+
     Returns:
         tuple: Tuple of average performance and list of performances
     """
@@ -109,10 +108,10 @@ def get_avg_perf(
 
 def replace_nans_with_None(data: pd.DataFrame) -> pd.DataFrame:
     """Replace NaNs with None in the dataframe
-    
+
     Args:
         data (pd.DataFrame): Dataframe to replace NaNs with None
-    
+
     Returns:
         pd.DataFrame: Dataframe with NaNs replaced with None
     """
@@ -124,15 +123,24 @@ def replace_nans_with_None(data: pd.DataFrame) -> pd.DataFrame:
 
 def load_perf_csv(csv: str) -> pd.DataFrame:
     """Load performance csv file
-    
+
     Args:
         csv (str): Path to the performance csv file
-    
+
     Returns:
         pd.DataFrame: Dataframe of the performance csv file
     """
     df = pd.read_csv(csv)
-    df = df.drop(columns=["dataname", "data_provider_type", "data_size", "data_download_duration", "build_number"], errors="ignore")
+    df = df.drop(
+        columns=[
+            "dataname",
+            "data_provider_type",
+            "data_size",
+            "data_download_duration",
+            "build_number",
+        ],
+        errors="ignore",
+    )
     df.rename(columns=lambda x: x.strip(), inplace=True)
     df = df.rename(columns=lambda x: x.strip())
     df = df.where((pd.notnull(df)), None)
@@ -147,10 +155,10 @@ def load_perf_csv(csv: str) -> pd.DataFrame:
 
 def dataFrame_to_list(df: pd.DataFrame) -> typing.List[dict]:
     """Convert dataframe to list of dictionaries
-    
+
     Args:
         df (pd.DataFrame): Dataframe to convert
-    
+
     Returns:
         list: List of dictionaries
     """

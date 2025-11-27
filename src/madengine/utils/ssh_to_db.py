@@ -4,9 +4,11 @@ This module provides the functions to SSH into the database.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import os
 import socket
+
 # third-party modules
 import paramiko
 
@@ -65,10 +67,10 @@ class SFTPClient(paramiko.SFTPClient):
 
 def print_ssh_out(client_output: tuple) -> None:
     """Print the output from the SSH client.
-    
+
     Args:
         client_output (tuple): The output from the SSH client.
-    
+
     Returns:
         None
     """

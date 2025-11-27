@@ -18,6 +18,7 @@ import collections.abc
 import os
 import re
 import typing
+
 # third-party modules
 from madengine.core.console import Console
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError
@@ -25,11 +26,11 @@ from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstall
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
     """Update dictionary.
-    
+
     Args:
         d: The dictionary.
         u: The update dictionary.
-    
+
     Returns:
         dict: The updated dictionary.
     """
@@ -45,11 +46,14 @@ def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
 
 class Context:
     """Class to determine context.
-    
+
     Attributes:
         console: The console.
         ctx: The context.
-    
+        _gpu_context_initialized: Flag to track if GPU context is initialized.
+        _system_context_initialized: Flag to track if system context is initialized.
+        _build_only_mode: Flag to indicate if running in build-only mode.
+
     Methods:
         get_ctx_test: Get context test.
         get_gpu_vendor: Get GPU vendor.
@@ -60,110 +64,275 @@ class Context:
         get_docker_gpus: Get Docker GPUs.
         get_gpu_renderD_nodes: Get GPU renderD nodes.
         set_multi_node_runner: Sets multi-node runner context.
+        init_system_context: Initialize system-specific context.
+        init_gpu_context: Initialize GPU-specific context for runtime.
+        init_build_context: Initialize build-specific context.
+        init_runtime_context: Initialize runtime-specific context.
+        ensure_system_context: Ensure system context is initialized.
+        ensure_runtime_context: Ensure runtime context is initialized.
         filter: Filter.
     """
+
     def __init__(
-            self, 
-            additional_context: str=None, 
-            additional_context_file: str=None
-        ) -> None:
+        self,
+        additional_context: str = None,
+        additional_context_file: str = None,
+        build_only_mode: bool = False,
+    ) -> None:
         """Constructor of the Context class.
-        
+
         Args:
             additional_context: The additional context.
             additional_context_file: The additional context file.
-            
+            build_only_mode: Whether running in build-only mode (no GPU detection).
+
         Raises:
-            RuntimeError: If the GPU vendor is not detected.
-            RuntimeError: If the GPU architecture is not detected.
+            RuntimeError: If GPU detection fails and not in build-only mode.
         """
         # Initialize the console
         self.console = Console()
+        self._gpu_context_initialized = False
+        self._build_only_mode = build_only_mode
+        self._system_context_initialized = False
 
-        # Initialize the context
+        # Initialize base context
         self.ctx = {}
-        self.ctx["ctx_test"] = self.get_ctx_test()
-        self.ctx["host_os"] = self.get_host_os()
-        self.ctx["numa_balancing"] = self.get_numa_balancing()
-        # Check if NUMA balancing is enabled or disabled.
-        if self.ctx["numa_balancing"] == "1":
-            print("Warning: numa balancing is ON ...")
-        elif self.ctx["numa_balancing"] == "0":
-            print("Warning: numa balancing is OFF ...")
-        else:
-            print("Warning: unknown numa balancing setup ...")
 
-        # Keeping gpu_vendor for filterning purposes, if we filter using file names we can get rid of this attribute.
-        self.ctx["gpu_vendor"] = self.get_gpu_vendor()
-        
-        # Validate ROCm installation if AMD GPU is detected
-        if self.ctx["gpu_vendor"] == "AMD":
-            try:
-                validate_rocm_installation(verbose=False, raise_on_error=True)
-            except GPUInstallationError as e:
-                print("\n" + "="*70)
-                print("ERROR: ROCm Installation Validation Failed")
-                print("="*70)
-                print(str(e))
-                print("="*70)
-                raise
-
-        # Initialize the docker context
+        # Initialize docker contexts as empty - will be populated based on mode
+        self.ctx["docker_build_arg"] = {}
         self.ctx["docker_env_vars"] = {}
-        self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
-        self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"] = self.get_system_gpu_product_name()
-        self.ctx['docker_env_vars']['MAD_SYSTEM_HIP_VERSION'] = self.get_system_hip_version()
-        self.ctx["docker_build_arg"] = {
-            "MAD_SYSTEM_GPU_ARCHITECTURE": self.get_system_gpu_architecture(),
-            "MAD_SYSTEM_GPU_PRODUCT_NAME": self.get_system_gpu_product_name()
-        }
-        self.ctx["docker_gpus"] = self.get_docker_gpus()
-        self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
 
-        # Default multi-node configuration
-        self.ctx['multi_node_args'] = {
-            'RUNNER': 'torchrun',
-            'MAD_RUNTIME_NGPUS': self.ctx['docker_env_vars']['MAD_SYSTEM_NGPUS'],  # Use system's GPU count
-            'NNODES': 1,
-            'NODE_RANK': 0,
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': 6006,
-            'HOST_LIST': '',
-            'NCCL_SOCKET_IFNAME': '', 
-            'GLOO_SOCKET_IFNAME': ''
-        }
-
-        # Read and update MAD SECRETS env variable
+        # Read and update MAD SECRETS env variable (can be used for both build and run)
         mad_secrets = {}
         for key in os.environ:
             if "MAD_SECRETS" in key:
                 mad_secrets[key] = os.environ[key]
         if mad_secrets:
-            update_dict(self.ctx['docker_build_arg'], mad_secrets)
-            update_dict(self.ctx['docker_env_vars'], mad_secrets)  
+            update_dict(self.ctx["docker_build_arg"], mad_secrets)
+            update_dict(self.ctx["docker_env_vars"], mad_secrets)
 
-        ## ADD MORE CONTEXTS HERE ##
-
-        # additional contexts provided in file override detected contexts
+        # Additional contexts provided in file override detected contexts
         if additional_context_file:
             with open(additional_context_file) as f:
                 update_dict(self.ctx, json.load(f))
 
-        # additional contexts provided in command-line override detected contexts and contexts in file
+        # Additional contexts provided in command-line override detected contexts and contexts in file
         if additional_context:
             # Convert the string representation of python dictionary to a dictionary.
             dict_additional_context = ast.literal_eval(additional_context)
-
             update_dict(self.ctx, dict_additional_context)
 
-        # Set multi-node runner after context update
-        self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER'] = self.set_multi_node_runner()
+        # Initialize context based on mode
+        # User-provided contexts will not be overridden by detection
+        if not build_only_mode:
+            # For full workflow mode, initialize everything (legacy behavior preserved)
+            self.init_runtime_context()
+        else:
+            # For build-only mode, only initialize what's needed for building
+            self.init_build_context()
+
+        ## ADD MORE CONTEXTS HERE ##
+
+    def init_build_context(self) -> None:
+        """Initialize build-specific context.
+
+        This method sets up only the context needed for Docker builds,
+        avoiding GPU detection that would fail on build-only nodes.
+        System-specific contexts (host_os, numa_balancing, etc.) should be
+        provided via --additional-context for build-only nodes if needed.
+        """
+        print("Initializing build-only context...")
+
+        # Initialize only essential system contexts if not provided via additional_context
+        if "host_os" not in self.ctx:
+            try:
+                self.ctx["host_os"] = self.get_host_os()
+                print(f"Detected host OS: {self.ctx['host_os']}")
+            except Exception as e:
+                print(f"Warning: Could not detect host OS on build node: {e}")
+                print(
+                    "Consider providing host_os via --additional-context if needed for build"
+                )
+
+        # Don't detect GPU-specific contexts in build-only mode
+        # These should be provided via additional_context if needed for build args
+        if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get("docker_build_arg", {}):
+            print(
+                "Info: MAD_SYSTEM_GPU_ARCHITECTURE not provided - should be set via --additional-context for GPU-specific builds"
+            )
+
+        # Handle multi-node configuration for build phase
+        self._setup_build_multi_node_context()
+
+        # Don't initialize NUMA balancing check for build-only nodes
+        # This is runtime-specific and should be handled on execution nodes
+
+    def init_runtime_context(self) -> None:
+        """Initialize runtime-specific context.
+
+        This method sets up the full context including system and GPU detection
+        for nodes that will run containers.
+        """
+        print("Initializing runtime context with system and GPU detection...")
+
+        # Initialize system context first
+        self.init_system_context()
+
+        # Initialize GPU context
+        self.init_gpu_context()
+
+        # Setup runtime multi-node runner
+        self._setup_runtime_multi_node_context()
+
+    def init_system_context(self) -> None:
+        """Initialize system-specific context.
+
+        This method detects system configuration like OS, NUMA balancing, etc.
+        Should be called on runtime nodes to get actual execution environment context.
+        """
+        if self._system_context_initialized:
+            return
+
+        print("Detecting system configuration...")
+
+        try:
+            # Initialize system contexts if not already provided via additional_context
+            if "ctx_test" not in self.ctx:
+                self.ctx["ctx_test"] = self.get_ctx_test()
+
+            if "host_os" not in self.ctx:
+                self.ctx["host_os"] = self.get_host_os()
+                print(f"Detected host OS: {self.ctx['host_os']}")
+
+            if "numa_balancing" not in self.ctx:
+                self.ctx["numa_balancing"] = self.get_numa_balancing()
+
+                # Check if NUMA balancing is enabled or disabled.
+                if self.ctx["numa_balancing"] == "1":
+                    print("Warning: numa balancing is ON ...")
+                elif self.ctx["numa_balancing"] == "0":
+                    print("Warning: numa balancing is OFF ...")
+                else:
+                    print("Warning: unknown numa balancing setup ...")
+
+            self._system_context_initialized = True
+
+        except Exception as e:
+            print(f"Warning: System context detection failed: {e}")
+            if not self._build_only_mode:
+                raise RuntimeError(
+                    f"System context detection failed on runtime node: {e}"
+                )
+
+    def init_gpu_context(self) -> None:
+        """Initialize GPU-specific context for runtime.
+
+        This method detects GPU configuration and sets up environment variables
+        needed for container execution. Should only be called on GPU nodes.
+        User-provided GPU contexts will not be overridden.
+
+        Raises:
+            RuntimeError: If GPU detection fails.
+        """
+        if self._gpu_context_initialized:
+            return
+
+        print("Detecting GPU configuration...")
+
+        try:
+            # GPU vendor detection - only if not provided by user
+            if "gpu_vendor" not in self.ctx:
+                self.ctx["gpu_vendor"] = self.get_gpu_vendor()
+                print(f"Detected GPU vendor: {self.ctx['gpu_vendor']}")
+            else:
+                print(f"Using provided GPU vendor: {self.ctx['gpu_vendor']}")
+
+            # Initialize docker env vars for runtime - only if not already set
+            if "MAD_GPU_VENDOR" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
+
+            if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_NGPUS"
+                ] = self.get_system_ngpus()
+
+            if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_GPU_ARCHITECTURE"
+                ] = self.get_system_gpu_architecture()
+
+            if "MAD_SYSTEM_HIP_VERSION" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_HIP_VERSION"
+                ] = self.get_system_hip_version()
+
+            if "MAD_SYSTEM_GPU_PRODUCT_NAME" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_GPU_PRODUCT_NAME"
+                ] = self.get_system_gpu_product_name()
+
+            # Also add to build args (for runtime builds) - only if not already set
+            if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_build_arg"]:
+                self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.ctx[
+                    "docker_env_vars"
+                ]["MAD_SYSTEM_GPU_ARCHITECTURE"]
+
+            # Docker GPU configuration - only if not already set
+            if "docker_gpus" not in self.ctx:
+                self.ctx["docker_gpus"] = self.get_docker_gpus()
+
+            if "gpu_renderDs" not in self.ctx:
+                self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
+
+            # Default multi-node configuration - only if not already set
+            if "multi_node_args" not in self.ctx:
+                self.ctx["multi_node_args"] = {
+                    "RUNNER": "torchrun",
+                    "MAD_RUNTIME_NGPUS": self.ctx["docker_env_vars"][
+                        "MAD_SYSTEM_NGPUS"
+                    ],  # Use system's GPU count
+                    "NNODES": 1,
+                    "NODE_RANK": 0,
+                    "MASTER_ADDR": "localhost",
+                    "MASTER_PORT": 6006,
+                    "HOST_LIST": "",
+                    "NCCL_SOCKET_IFNAME": "",
+                    "GLOO_SOCKET_IFNAME": "",
+                }
+
+            self._gpu_context_initialized = True
+
+        except Exception as e:
+            if self._build_only_mode:
+                print(
+                    f"Warning: GPU detection failed in build-only mode (expected): {e}"
+                )
+            else:
+                raise RuntimeError(f"GPU detection failed: {e}")
+
+    def ensure_runtime_context(self) -> None:
+        """Ensure runtime context is initialized.
+
+        This method should be called before any runtime operations
+        that require system and GPU context.
+        """
+        if not self._system_context_initialized and not self._build_only_mode:
+            self.init_system_context()
+        if not self._gpu_context_initialized and not self._build_only_mode:
+            self.init_gpu_context()
+
+    def ensure_system_context(self) -> None:
+        """Ensure system context is initialized.
+
+        This method should be called when system context is needed
+        but may not be initialized (e.g., in build-only mode).
+        """
+        if not self._system_context_initialized:
+            self.init_system_context()
 
     def get_ctx_test(self) -> str:
         """Get context test.
-        
+
         Returns:
             str: The output of the shell command.
 
@@ -177,13 +346,13 @@ class Context:
 
     def get_gpu_vendor(self) -> str:
         """Get GPU vendor.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is unable to detect.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -196,10 +365,10 @@ class Context:
 
     def get_host_os(self) -> str:
         """Get host OS.
-        
+
         Returns:
             str: The output of the shell command.
-        
+
         Raises:
             RuntimeError: If the host OS is unable to detect.
 
@@ -216,7 +385,7 @@ class Context:
 
     def get_numa_balancing(self) -> bool:
         """Get NUMA balancing.
-        
+
         Returns:
             bool: The output of the shell command.
 
@@ -225,9 +394,9 @@ class Context:
 
         Note:
             NUMA balancing is enabled if the output is '1', and disabled if the output is '0'.
-            
+
             What is NUMA balancing?
-            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing, 
+            Non-Uniform Memory Access (NUMA) is a computer memory design used in multiprocessing,
             where the memory access time depends on the memory location relative to the processor.
         """
         # Check if NUMA balancing is enabled or disabled.
@@ -239,13 +408,13 @@ class Context:
 
     def get_system_ngpus(self) -> int:
         """Get system number of GPUs.
-        
+
         Returns:
             int: The number of GPUs.
-        
+
         Raises:
-            RuntimeError: If the GPU vendor is not detected or GPU count cannot be determined.
-        
+            RuntimeError: If the GPU vendor is not detected.
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -274,14 +443,14 @@ class Context:
 
     def get_system_gpu_architecture(self) -> str:
         """Get system GPU architecture.
-        
+
         Returns:
             str: The GPU architecture.
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
@@ -348,7 +517,7 @@ class Context:
 
     def get_docker_gpus(self) -> typing.Optional[str]:
         """Get Docker GPUs.
-        
+
         Returns:
             str: The range of GPUs.
         """
@@ -360,7 +529,7 @@ class Context:
 
     def get_gpu_renderD_nodes(self) -> typing.Optional[typing.List[int]]:
         """Get GPU renderD nodes from KFD properties.
-        
+
         Returns:
             list: The list of GPU renderD nodes, or None if not AMD GPU.
 
@@ -539,9 +708,11 @@ class Context:
             environment variable settings.
         """
         # NOTE: mpirun is untested
-        if self.ctx["multi_node_args"]["RUNNER"] == 'mpirun':
+        if self.ctx["multi_node_args"]["RUNNER"] == "mpirun":
             if not self.ctx["multi_node_args"]["HOST_LIST"]:
-                self.ctx["multi_node_args"]["HOST_LIST"] = f"localhost:{self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']}"
+                self.ctx["multi_node_args"][
+                    "HOST_LIST"
+                ] = f"localhost:{self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']}"
             multi_node_runner = (
                 f"mpirun -np {self.ctx['multi_node_args']['NNODES'] * self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']} "
                 f"--host {self.ctx['multi_node_args']['HOST_LIST']}"
@@ -565,12 +736,161 @@ class Context:
 
         return multi_node_runner
 
+    def _setup_build_multi_node_context(self) -> None:
+        """Setup multi-node context for build phase.
+
+        This method handles multi-node configuration during build phase,
+        storing the configuration for inclusion in the manifest without requiring
+        runtime GPU detection. The multi_node_args will be preserved as-is and
+        MAD_MULTI_NODE_RUNNER will be generated at runtime.
+        """
+        if "multi_node_args" in self.ctx:
+            print("Setting up multi-node context for build phase...")
+
+            # Store the complete multi_node_args structure (excluding MAD_RUNTIME_NGPUS)
+            # This will be included in build_manifest.json and used at runtime
+            build_multi_node_args = {}
+            for key, value in self.ctx["multi_node_args"].items():
+                # Skip MAD_RUNTIME_NGPUS as it's runtime-specific - will be set at runtime
+                if key != "MAD_RUNTIME_NGPUS":
+                    build_multi_node_args[key] = value
+
+            # Store the multi_node_args for inclusion in the manifest
+            # This will be accessible in build_manifest.json under context
+            self.ctx["build_multi_node_args"] = build_multi_node_args
+
+            # Remove any individual MAD_MULTI_NODE_* env vars from docker_env_vars
+            # Only structured multi_node_args should be stored in the manifest
+            env_vars_to_remove = []
+            for env_var in self.ctx.get("docker_env_vars", {}):
+                if (
+                    env_var.startswith("MAD_MULTI_NODE_")
+                    and env_var != "MAD_MULTI_NODE_RUNNER"
+                ):
+                    env_vars_to_remove.append(env_var)
+
+            for env_var in env_vars_to_remove:
+                del self.ctx["docker_env_vars"][env_var]
+                print(
+                    f"Removed {env_var} from docker_env_vars - will be reconstructed at runtime"
+                )
+
+            print(
+                f"Multi-node configuration stored for runtime: {list(build_multi_node_args.keys())}"
+            )
+            print("MAD_RUNTIME_NGPUS will be resolved at runtime phase")
+
+    def _create_build_multi_node_runner_template(self) -> str:
+        """Create a build-time multi-node runner command template.
+
+        This creates a command template that uses environment variable substitution
+        for runtime-specific values like MAD_RUNTIME_NGPUS.
+
+        Returns:
+            str: Command template string with environment variable placeholders
+        """
+        runner = self.ctx["multi_node_args"].get("RUNNER", "torchrun")
+
+        if runner == "mpirun":
+            # For mpirun, construct command with runtime substitution
+            host_list = self.ctx["multi_node_args"].get("HOST_LIST", "")
+            if not host_list:
+                # Use runtime GPU count substitution
+                multi_node_runner = (
+                    "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) "
+                    "--host ${MAD_MULTI_NODE_HOST_LIST:-localhost:${MAD_RUNTIME_NGPUS:-1}}"
+                )
+            else:
+                multi_node_runner = (
+                    "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) "
+                    f"--host {host_list}"
+                )
+        else:
+            # For torchrun, use environment variable substitution
+            distributed_args = (
+                "--nproc_per_node ${MAD_RUNTIME_NGPUS:-1} "
+                "--nnodes ${MAD_MULTI_NODE_NNODES:-1} "
+                "--node_rank ${MAD_MULTI_NODE_NODE_RANK:-0} "
+                "--master_addr ${MAD_MULTI_NODE_MASTER_ADDR:-localhost} "
+                "--master_port ${MAD_MULTI_NODE_MASTER_PORT:-6006}"
+            )
+            multi_node_runner = f"torchrun {distributed_args}"
+
+        # Add NCCL and GLOO interface environment variables with conditional setting
+        nccl_var = "${MAD_MULTI_NODE_NCCL_SOCKET_IFNAME:+NCCL_SOCKET_IFNAME=$MAD_MULTI_NODE_NCCL_SOCKET_IFNAME}"
+        gloo_var = "${MAD_MULTI_NODE_GLOO_SOCKET_IFNAME:+GLOO_SOCKET_IFNAME=$MAD_MULTI_NODE_GLOO_SOCKET_IFNAME}"
+
+        multi_node_runner = f"{nccl_var} {gloo_var} {multi_node_runner}"
+
+        return multi_node_runner
+
+    def _setup_runtime_multi_node_context(self) -> None:
+        """Setup runtime multi-node context.
+
+        This method handles multi-node configuration during runtime phase,
+        setting MAD_RUNTIME_NGPUS and creating the final MAD_MULTI_NODE_RUNNER.
+        """
+        # Set MAD_RUNTIME_NGPUS for runtime based on detected GPU count
+        if "MAD_RUNTIME_NGPUS" not in self.ctx["docker_env_vars"]:
+            runtime_ngpus = self.ctx["docker_env_vars"].get("MAD_SYSTEM_NGPUS", 1)
+            self.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"] = runtime_ngpus
+            print(f"Set MAD_RUNTIME_NGPUS to {runtime_ngpus} for runtime")
+
+        # If we have multi_node_args from build phase or runtime, ensure MAD_RUNTIME_NGPUS is set
+        if "multi_node_args" in self.ctx:
+            # Add MAD_RUNTIME_NGPUS to multi_node_args if not already present
+            if "MAD_RUNTIME_NGPUS" not in self.ctx["multi_node_args"]:
+                self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
+                    "docker_env_vars"
+                ]["MAD_RUNTIME_NGPUS"]
+
+        # If we have build_multi_node_args from manifest, reconstruct full multi_node_args
+        elif "build_multi_node_args" in self.ctx:
+            print("Reconstructing multi_node_args from build manifest...")
+            self.ctx["multi_node_args"] = self.ctx["build_multi_node_args"].copy()
+            self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
+                "docker_env_vars"
+            ]["MAD_RUNTIME_NGPUS"]
+
+        # Generate MAD_MULTI_NODE_RUNNER if we have multi_node_args
+        if "multi_node_args" in self.ctx:
+            print("Creating MAD_MULTI_NODE_RUNNER with runtime values...")
+
+            # Set individual MAD_MULTI_NODE_* environment variables for runtime execution
+            # These are needed by the bash scripts that use the template runner command
+            multi_node_mapping = {
+                "NNODES": "MAD_MULTI_NODE_NNODES",
+                "NODE_RANK": "MAD_MULTI_NODE_NODE_RANK",
+                "MASTER_ADDR": "MAD_MULTI_NODE_MASTER_ADDR",
+                "MASTER_PORT": "MAD_MULTI_NODE_MASTER_PORT",
+                "NCCL_SOCKET_IFNAME": "MAD_MULTI_NODE_NCCL_SOCKET_IFNAME",
+                "GLOO_SOCKET_IFNAME": "MAD_MULTI_NODE_GLOO_SOCKET_IFNAME",
+                "HOST_LIST": "MAD_MULTI_NODE_HOST_LIST",
+            }
+
+            for multi_node_key, env_var_name in multi_node_mapping.items():
+                if multi_node_key in self.ctx["multi_node_args"]:
+                    self.ctx["docker_env_vars"][env_var_name] = str(
+                        self.ctx["multi_node_args"][multi_node_key]
+                    )
+                    print(
+                        f"Set {env_var_name} to {self.ctx['multi_node_args'][multi_node_key]} for runtime"
+                    )
+
+            # Generate the MAD_MULTI_NODE_RUNNER command
+            self.ctx["docker_env_vars"][
+                "MAD_MULTI_NODE_RUNNER"
+            ] = self.set_multi_node_runner()
+            print(
+                f"MAD_MULTI_NODE_RUNNER: {self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER']}"
+            )
+
     def filter(self, unfiltered: typing.Dict) -> typing.Dict:
         """Filter the unfiltered dictionary based on the context.
-        
+
         Args:
             unfiltered: The unfiltered dictionary.
-        
+
         Returns:
             dict: The filtered dictionary.
         """

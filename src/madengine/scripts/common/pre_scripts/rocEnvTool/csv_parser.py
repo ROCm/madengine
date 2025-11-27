@@ -284,11 +284,23 @@ class CSVParser:
             fs.write(sys_config_info[j])
             fs.write("\n")
         fs.close()
-        print ("OK: Dumped into {} file.".format(self.filename))
+        print("\n" + "="*60)
+        print(f"✅ SUCCESS: System config data dumped to {self.filename}")
+        print("="*60 + "\n")
 
     def print_csv_output(self):
-        print ("Printing the sys config info env variables...")
+        print("\n" + "="*80)
+        print("📋 SYSTEM CONFIG INFO - ENVIRONMENT VARIABLES")
+        print("="*80)
         if self.sys_config_info_list:
             for j in range(len(self.sys_config_info_list)):
                 line = self.sys_config_info_list[j]
-                print (line)
+                # Add some formatting for key-value pairs
+                if "|" in line and not line.startswith("Tag"):
+                    key, value = line.split("|", 1)
+                    print(f"🔹 {key:<30}: {value}")
+                else:
+                    print(f"📌 {line}")
+        else:
+            print("❌ No system config information available")
+        print("="*80 + "\n")

@@ -1,10 +1,11 @@
-"""Script to upload csv files to the database, 
+"""Script to upload csv files to the database,
 and create or update tables in the database.
 
 This script uploads csv files to the database, and creates or updates tables in the database.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import os
 import sys
@@ -12,9 +13,11 @@ import argparse
 import pandas as pd
 import typing
 from datetime import datetime
+
 # third-party modules
 from tqdm import tqdm
 from sqlalchemy.orm import sessionmaker
+
 # MAD Engine modules
 from database import ENGINE, create_tables, DB_TABLE, LOGGER
 from utils import dataFrame_to_list, load_perf_csv, replace_nans_with_None
@@ -42,21 +45,21 @@ def add_csv_to_db(data: pd.DataFrame) -> bool:
     data = replace_nans_with_None(data)
 
     # Add unique ID column if it doesn't exist
-    if 'id' not in data.columns:
+    if "id" not in data.columns:
         # Get the max ID from the existing table to ensure uniqueness
         try:
             max_id_query = s.query(DB_TABLE.id).order_by(DB_TABLE.id.desc()).first()
             start_id = 1 if max_id_query is None else max_id_query[0] + 1
-        except:
-            LOGGER.warning('Failed to query max ID, starting from 1')
+        except Exception as e:
+            LOGGER.warning("Failed to query max ID, starting from 1: %s", str(e))
             start_id = 1
 
         # Add sequential unique IDs
-        data['id'] = range(start_id, start_id + len(data))
+        data["id"] = range(start_id, start_id + len(data))
 
     # Explicitly set created_date to current timestamp if not provided
-    if 'created_date' not in data.columns:
-        data['created_date'] = datetime.now()
+    if "created_date" not in data.columns:
+        data["created_date"] = datetime.now()
 
     LOGGER.info("Data:")
     LOGGER.info(data)
@@ -68,26 +71,31 @@ def add_csv_to_db(data: pd.DataFrame) -> bool:
     for model_perf_info in tqdm(data_as_list):
         try:
             # Ensure created_date is set for each record if not present
-            if 'created_date' not in model_perf_info or model_perf_info['created_date'] is None:
-                model_perf_info['created_date'] = datetime.now()
+            if (
+                "created_date" not in model_perf_info
+                or model_perf_info["created_date"] is None
+            ):
+                model_perf_info["created_date"] = datetime.now()
 
             record = DB_TABLE(**model_perf_info)
             s.add(record)
             success_count += 1
         except Exception as e:
-            LOGGER.warning(
-                'Failed to add record to table due to %s \n', str(e))
+            LOGGER.warning("Failed to add record to table due to %s \n", str(e))
             LOGGER.info(model_perf_info)
             s.rollback()
 
     # commit changes and close sesstion
     try:
         s.commit()
-        LOGGER.info('Successfully added %d out of %d records to the database', 
-                   success_count, total_records)
+        LOGGER.info(
+            "Successfully added %d out of %d records to the database",
+            success_count,
+            total_records,
+        )
         success = success_count > 0
     except Exception as e:
-        LOGGER.error('Failed to commit changes: %s', str(e))
+        LOGGER.error("Failed to commit changes: %s", str(e))
         s.rollback()
         success = False
     finally:
@@ -99,12 +107,12 @@ def add_csv_to_db(data: pd.DataFrame) -> bool:
 def main() -> None:
     """Main script function to upload csv files to the database."""
     # parse arg
-    parser = argparse.ArgumentParser(description='Upload perf.csv to database')
+    parser = argparse.ArgumentParser(description="Upload perf.csv to database")
     parser.add_argument("--csv-file-path", type=str)
     args = parser.parse_args()
 
     ret = create_tables()
-    LOGGER.info('DB creation successful: %s', ret)
+    LOGGER.info("DB creation successful: %s", ret)
 
     if args.csv_file_path is None:
         LOGGER.info("Only creating tables in the database")
@@ -116,5 +124,6 @@ def main() -> None:
         data = relative_perf_all_configs(data)
         add_csv_to_db(data)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

@@ -4,6 +4,7 @@ This module provides the functions to setup the logger for the MAD Engine.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import logging
 import os

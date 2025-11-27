@@ -45,9 +45,7 @@ def get_matching_db_entries(
     """
     print(
         "Looking for entries with {}, {} and {}".format(
-            recent_entry["model"], 
-            recent_entry["gpu_architecture"], 
-            filters
+            recent_entry["model"], recent_entry["gpu_architecture"], filters
         )
     )
 
@@ -57,8 +55,7 @@ def get_matching_db_entries(
         WHERE model='{}' \
         AND gpu_architecture='{}' \
         ".format(
-            recent_entry["model"], 
-            recent_entry["gpu_architecture"]
+            recent_entry["model"], recent_entry["gpu_architecture"]
         )
     )
     matching_entries = matching_entries.mappings().all()
@@ -76,8 +73,7 @@ def get_matching_db_entries(
 
     print(
         "Found {} similar entries in database filtered down to {} entries".format(
-            len(matching_entries), 
-            len(filtered_matching_entries)
+            len(matching_entries), len(filtered_matching_entries)
         )
     )
     return filtered_matching_entries

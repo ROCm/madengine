@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" Module for creating DB tables interfaces
+"""Module for creating DB tables interfaces
 
 This module provides the base class for our own common functionalities among tables
 
@@ -29,8 +29,6 @@ class BaseMixin:
         for elem in obj:
             # extra elem at top of dict
             elem.__dict__.pop("_sa_instance_state", None)
-            # print(elem.__dict__)
-            # print(row.__table__.columns)
             dict_list.append(elem.__dict__)
         return dict_list
 

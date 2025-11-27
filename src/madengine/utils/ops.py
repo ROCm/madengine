@@ -54,17 +54,15 @@ class PythonicTee(object):
 
 
 def find_and_replace_pattern(
-        dictionary: typing.Dict, 
-        substring: str, 
-        replacement: str
-    ) -> typing.Dict:
+    dictionary: typing.Dict, substring: str, replacement: str
+) -> typing.Dict:
     """Find and replace a substring in a dictionary.
-    
+
     Args:
         dictionary: The dictionary.
         substring: The substring to find.
         replacement: The replacement string.
-    
+
     Returns:
         The updated dictionary.
     """
@@ -78,16 +76,13 @@ def find_and_replace_pattern(
     return updated_dict
 
 
-def substring_found(
-        dictionary: typing.Dict, 
-        substring: str
-    ) -> bool:
+def substring_found(dictionary: typing.Dict, substring: str) -> bool:
     """Check if a substring is found in the dictionary.
-    
+
     Args:
         dictionary: The dictionary.
         substring: The substring to find.
-    
+
     Returns:
         True if the substring is found, False otherwise.
     """

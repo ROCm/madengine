@@ -118,7 +118,7 @@ class DataProvider:
 
         Args:
             model_docker: The model docker object
-        
+
         Returns:
             bool: The status of preparing the data
         """
@@ -135,23 +135,19 @@ class CustomDataProvider(DataProvider):
 
     provider_type = "custom"
 
-    def __init__(
-            self, 
-            dataname: str, 
-            config: typing.Dict
-        ) -> None:
+    def __init__(self, dataname: str, config: typing.Dict) -> None:
         """Constructor of the CustomDataProvider class."""
         super().__init__(dataname, config)
 
     def check_source(self, config: typing.Dict) -> bool:
         """Check if the data source is valid
-        
+
         Args:
             config (dict): Configuration of the data provider
-        
+
         Returns:
             bool: The status of the data source
-        
+
         Raises:
             RuntimeError: Raised when the mirrorlocal path is a non-existent path
         """
@@ -165,7 +161,7 @@ class CustomDataProvider(DataProvider):
                 os.makedirs(
                     self.config["mirrorlocal"] + "/" + self.dataname, exist_ok=True
                 )
-        
+
         # get the base directory of the current file.
         BASE_DIR = os.path.dirname(os.path.realpath(__file__))
         print("DEBUG - BASE_DIR::", BASE_DIR)
@@ -269,7 +265,7 @@ class NASDataProvider(DataProvider):
                 return True
             else:
                 print(f"Failed to connect to NAS {self.name} at {self.ip}:{self.port}")
-        
+
         print("Failed to connect to all available NAS nodes.")
         return False
 
@@ -333,7 +329,7 @@ class NASDataProvider(DataProvider):
                 touch ~/.ssh/known_hosts
                 ssh-keyscan -p {port} {ip} >> ~/.ssh/known_hosts
                 echo '#!/bin/bash' > /tmp/ssh.sh
-                echo 'sshpass -p {password} rsync --progress -avz -e \\\"ssh -p {port} \\\" \\\"\$@\\\"' >> /tmp/ssh.sh
+                echo 'sshpass -p {password} rsync --progress -avz -e \\"ssh -p {port} \\" \\"\\$@\\"' >> /tmp/ssh.sh
                 cat /tmp/ssh.sh
                 chmod u+x /tmp/ssh.sh
                 timeout --preserve-status {timeout} /tmp/ssh.sh {username}@{ip}:{datapath}/* {datahome} && rm -f /tmp/ssh.sh
@@ -371,7 +367,7 @@ class NASDataProvider(DataProvider):
                 touch ~/.ssh/known_hosts
                 ssh-keyscan -p {port} {ip} >> ~/.ssh/known_hosts
                 echo '#!/bin/bash' > /tmp/ssh.sh
-                echo 'sshpass -p {password} ssh -v \$*' >> /tmp/ssh.sh
+                echo 'sshpass -p {password} ssh -v \\$*' >> /tmp/ssh.sh
                 chmod u+x /tmp/ssh.sh
                 timeout --preserve-status {timeout} mount -t fuse sshfs#{username}@{ip}:{datapath} {datahome} -o ssh_command=/tmp/ssh.sh,port={port} && rm -f /tmp/ssh.sh
                """
@@ -507,7 +503,7 @@ class MinioDataProvider(DataProvider):
         except Exception as e:
             print(f"Failed to connect to Minio endpoint ({self.minio_endpoint}): {e}")
             return False
-    
+
         return True
 
     def get_mountpath(self):
@@ -545,7 +541,7 @@ class MinioDataProvider(DataProvider):
             datahome=datahome,
             dataname=self.dataname,
         )
-        
+
         # Measure time taken to copy data from MinIO to local
         start = time.time()
         model_docker.sh(cmd, timeout=3600)  # 60 min timeout
@@ -553,13 +549,13 @@ class MinioDataProvider(DataProvider):
         self.duration = end - start
         print("Copy data from MinIO to local")
         print("Data Download Duration: {} seconds".format(self.duration))
-        
+
         # Get the size of the data of dataname in the path of datahome and store it in the config
         cmd = f"du -sh {datahome} | cut -f1"
         data_size = model_docker.sh(cmd)
         self.size = data_size
         print("Data Size: ", self.size)
-        
+
         return True
 
 
@@ -721,9 +717,11 @@ class Data:
                 self.selected_data_provider = {
                     "dataname": dataname,
                     "data_provider_type": data_provider_type,
-                    "data_provider_config": self.data_provider_config[dataname][data_provider_type],
+                    "data_provider_config": self.data_provider_config[dataname][
+                        data_provider_type
+                    ],
                     "duration": data_provider.duration,
-                    "size": data_provider.size
+                    "size": data_provider.size,
                 }
                 break
 

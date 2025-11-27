@@ -4,6 +4,7 @@ This module contains functions to get the relative performance of the models.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import argparse
 import ast
@@ -112,12 +113,12 @@ def relative_perf(
 
 def relative_perf_all_configs(data: pd.DataFrame) -> pd.DataFrame:
     """Get the relative performance of all configurations.
-    
+
     This function gets the relative performance of all configurations.
-    
+
     Args:
         data (pd.DataFrame): The data.
-    
+
     Returns:
         pd.DataFrame: The data.
     """

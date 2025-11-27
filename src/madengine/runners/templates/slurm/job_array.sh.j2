@@ -1,0 +1,101 @@
+#!/bin/bash
+#SBATCH --job-name=madengine-array-{{ job_name | default("madengine") }}
+#SBATCH --partition={{ partition | default("gpu") }}
+#SBATCH --nodes={{ nodes_per_task | default(1) }}
+#SBATCH --ntasks-per-node={{ tasks_per_node | default(1) }}
+#SBATCH --gres=gpu:{{ gpu_count | default(1) }}
+#SBATCH --time={{ time_limit | default("24:00:00") }}
+#SBATCH --mem={{ memory | default("32G") }}
+{% if account %}
+#SBATCH --account={{ account }}
+{% endif %}
+{% if qos %}
+#SBATCH --qos={{ qos }}
+{% endif %}
+{% if constraint %}
+#SBATCH --constraint={{ constraint }}
+{% endif %}
+{% if exclusive %}
+#SBATCH --exclusive
+{% endif %}
+#SBATCH --array=0-{{ (model_tags | length) - 1 }}%{{ max_concurrent_jobs | default(8) }}
+#SBATCH --output={{ output_dir | default("logs") }}/madengine_array_%A_%a.out
+#SBATCH --error={{ output_dir | default("logs") }}/madengine_array_%A_%a.err
+
+# Job configuration
+echo "=== SLURM Job Array Information ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Node: $SLURMD_NODENAME"
+echo "Partition: {{ partition | default('gpu') }}"
+echo "GPUs: {{ gpu_count | default(1) }}"
+echo "=================================="
+
+# Load required modules
+{% for module in modules %}
+module load {{ module }}
+{% endfor %}
+
+# Set environment variables
+export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
+export OMP_NUM_THREADS={{ omp_num_threads | default(1) }}
+{% for key, value in environment.items() %}
+export {{ key }}="{{ value }}"
+{% endfor %}
+
+# Change to MAD workspace directory
+cd {{ mad_workspace_path | default("/shared/madengine") }}
+
+# Activate Python virtual environment
+source {{ venv_path | default("venv") }}/bin/activate
+
+# Create array of model tags
+MODEL_TAGS=(
+{% for tag in model_tags %}
+  "{{ tag }}"
+{% endfor %}
+)
+
+# Get the model tag for this array task
+MODEL_TAG=${MODEL_TAGS[$SLURM_ARRAY_TASK_ID]}
+
+echo "Processing model tag: $MODEL_TAG"
+
+# Create output directory for this specific model
+MODEL_OUTPUT_DIR="{{ results_dir | default('results') }}/${MODEL_TAG}_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$MODEL_OUTPUT_DIR"
+
+# Execute madengine-cli with the specific model tag
+echo "Starting madengine execution for $MODEL_TAG at $(date)"
+
+madengine-cli run \
+    --manifest-file {{ manifest_file | default("build_manifest.json") }} \
+    --tags "$MODEL_TAG" \
+    --timeout {{ timeout | default(3600) }} \
+    {% if registry %}--registry {{ registry }}{% endif %} \
+    --live-output \
+    --output-dir "$MODEL_OUTPUT_DIR" \
+    {% if additional_args %}{{ additional_args }}{% endif %}
+
+# Capture exit code
+EXIT_CODE=$?
+
+echo "Finished madengine execution for $MODEL_TAG at $(date) with exit code: $EXIT_CODE"
+
+# Create result summary
+cat > "$MODEL_OUTPUT_DIR/job_summary.json" << EOF
+{
+  "job_id": "$SLURM_JOB_ID",
+  "array_task_id": "$SLURM_ARRAY_TASK_ID",
+  "model_tag": "$MODEL_TAG",
+  "node": "$SLURMD_NODENAME",
+  "start_time": "$(date -Iseconds)",
+  "exit_code": $EXIT_CODE,
+  "gpu_count": {{ gpu_count | default(1) }},
+  "partition": "{{ partition | default('gpu') }}",
+  "output_dir": "$MODEL_OUTPUT_DIR"
+}
+EOF
+
+# Exit with the madengine exit code
+exit $EXIT_CODE
