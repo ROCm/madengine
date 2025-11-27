@@ -25,7 +25,7 @@ dependencies = [
   "typing-extensions",
   "pymongo",
   "toml",
-  "typer[all]>=0.9.0",
+  "typer>=0.9.0",
   "rich>=13.0.0",
   "click>=8.0.0",
   "jinja2>=3.0.0",

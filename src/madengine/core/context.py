@@ -266,6 +266,11 @@ class Context:
                     "MAD_SYSTEM_HIP_VERSION"
                 ] = self.get_system_hip_version()
 
+            if "MAD_SYSTEM_GPU_PRODUCT_NAME" not in self.ctx["docker_env_vars"]:
+                self.ctx["docker_env_vars"][
+                    "MAD_SYSTEM_GPU_PRODUCT_NAME"
+                ] = self.get_system_gpu_product_name()
+
             # Also add to build args (for runtime builds) - only if not already set
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_build_arg"]:
                 self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.ctx[
