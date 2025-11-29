@@ -369,38 +369,64 @@ class RunOrchestrator:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
     def _copy_scripts(self):
-        """Copy common scripts to model directories."""
+        """Copy common scripts to model directories.
+        
+        Handles two scenarios:
+        1. MAD Project: scripts/common already exists with pre/post scripts
+        2. madengine Testing: Need to copy from src/madengine/scripts/common
+        """
         import shutil
 
-        # Check if MODEL_DIR is set (for run-only mode after build cleanup)
+        # Step 1: Check if MODEL_DIR is set and copy if needed
         model_dir_env = os.environ.get("MODEL_DIR")
-        if model_dir_env and os.path.exists(model_dir_env):
+        if model_dir_env and os.path.exists(model_dir_env) and model_dir_env != ".":
             self.rich_console.print(f"[yellow]📁 MODEL_DIR detected: {model_dir_env}[/yellow]")
             self.rich_console.print("[yellow]Copying MODEL_DIR contents for run phase...[/yellow]")
             
-            # Copy the entire MODEL_DIR structure
-            try:
-                subprocess.run(
-                    ["rsync", "-av", "--exclude=.git", f"{model_dir_env}/", "./"],
-                    check=True,
-                    capture_output=True
-                )
-                self.rich_console.print("[green]✓ MODEL_DIR contents copied successfully[/green]")
-            except subprocess.CalledProcessError as e:
-                self.rich_console.print(f"[yellow]Warning: rsync failed, trying cp: {e}[/yellow]")
-                # Fallback to cp if rsync not available
-                subprocess.run(
-                    ["cp", "-r", f"{model_dir_env}/.", "./"],
-                    check=True
-                )
-                self.rich_console.print("[green]✓ MODEL_DIR contents copied successfully (using cp)[/green]")
+            # Copy docker/ and scripts/ from MODEL_DIR
+            for subdir in ["docker", "scripts"]:
+                src_path = Path(model_dir_env) / subdir
+                if src_path.exists():
+                    dest_path = Path(subdir)
+                    if dest_path.exists():
+                        shutil.rmtree(dest_path)
+                    shutil.copytree(src_path, dest_path)
+            
+            self.rich_console.print("[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]")
 
+        # Step 2: Copy madengine's common scripts (pre_scripts, post_scripts, tools)
+        # This provides the execution framework scripts
+        madengine_common = Path("src/madengine/scripts/common")
+        if madengine_common.exists():
+            print(f"Copying madengine common scripts from {madengine_common} to scripts/common")
+            
+            dest_common = Path("scripts/common")
+            
+            # Copy pre_scripts, post_scripts, tools if they exist
+            for item in ["pre_scripts", "post_scripts", "tools", "tools.json", "test_echo.sh"]:
+                src_item = madengine_common / item
+                if src_item.exists():
+                    dest_item = dest_common / item
+                    if dest_item.exists():
+                        if dest_item.is_dir():
+                            shutil.rmtree(dest_item)
+                        else:
+                            dest_item.unlink()
+                    
+                    if src_item.is_dir():
+                        shutil.copytree(src_item, dest_item)
+                    else:
+                        dest_common.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_item, dest_item)
+                    print(f"  Copied {item}")
+
+        # Step 3: Distribute scripts/common to each model directory
         common_scripts = Path("scripts/common")
         if not common_scripts.exists():
-            self.rich_console.print("[yellow]⚠️  No scripts/common directory found, skipping script copy[/yellow]")
+            self.rich_console.print("[yellow]⚠️  No scripts/common directory found after copy, skipping distribution[/yellow]")
             return
 
-        print(f"Copying common scripts from {common_scripts}")
+        print(f"Distributing common scripts to model directories")
 
         for model_script_dir in Path("scripts").iterdir():
             if model_script_dir.is_dir() and model_script_dir.name != "common":
@@ -408,6 +434,7 @@ class RunOrchestrator:
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.copytree(common_scripts, dest)
+                print(f"  Copied to {dest}")
 
     def _load_credentials(self) -> Optional[Dict]:
         """Load credentials from credential.json and environment."""
