@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""
+Build Orchestrator - Coordinates Docker image building workflow.
+
+Extracted from distributed_orchestrator.py build_phase() method.
+Manages the discovery, building, and manifest generation for Docker images.
+
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+"""
+
+import json
+import os
+import shutil
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from rich.console import Console as RichConsole
+
+from madengine.core.console import Console
+from madengine.core.context import Context
+from madengine.core.errors import (
+    BuildError,
+    ConfigurationError,
+    DiscoveryError,
+    create_error_context,
+    handle_error,
+)
+from madengine.tools.discover_models import DiscoverModels
+from madengine.tools.docker_builder import DockerBuilder
+
+
+class BuildOrchestrator:
+    """
+    Orchestrates the build workflow.
+
+    Responsibilities:
+    - Discover models by tags
+    - Build Docker images
+    - Push to registry (optional)
+    - Generate build_manifest.json
+    - Save deployment_config from --additional-context
+    """
+
+    def __init__(self, args, additional_context: Optional[Dict] = None):
+        """
+        Initialize build orchestrator.
+
+        Args:
+            args: CLI arguments namespace
+            additional_context: Dict from --additional-context (merged with args if present)
+        """
+        self.args = args
+        self.console = Console(live_output=getattr(args, "live_output", True))
+        self.rich_console = RichConsole()
+
+        # Merge additional_context from args and parameter
+        merged_context = {}
+        if hasattr(args, "additional_context") and args.additional_context:
+            try:
+                if isinstance(args.additional_context, str):
+                    merged_context = json.loads(args.additional_context)
+                elif isinstance(args.additional_context, dict):
+                    merged_context = args.additional_context
+            except json.JSONDecodeError:
+                pass
+
+        if additional_context:
+            merged_context.update(additional_context)
+
+        self.additional_context = merged_context
+
+        # Initialize context in build-only mode (no GPU detection)
+        # Context expects additional_context as a string, not dict
+        context_string = json.dumps(merged_context) if merged_context else None
+        self.context = Context(
+            additional_context=context_string,
+            build_only_mode=True,
+        )
+
+        # Load credentials if available
+        self.credentials = self._load_credentials()
+
+    def _load_credentials(self) -> Optional[Dict]:
+        """Load credentials from credential.json and environment variables."""
+        credentials = None
+
+        # Try loading from file
+        credential_file = "credential.json"
+        if os.path.exists(credential_file):
+            try:
+                with open(credential_file) as f:
+                    credentials = json.load(f)
+                print(f"Loaded credentials from {credential_file}: {list(credentials.keys())}")
+            except Exception as e:
+                context = create_error_context(
+                    operation="load_credentials",
+                    component="BuildOrchestrator",
+                    file_path=credential_file,
+                )
+                handle_error(
+                    ConfigurationError(
+                        f"Could not load credentials: {e}",
+                        context=context,
+                        suggestions=[
+                            "Check if credential.json exists and has valid JSON format"
+                        ],
+                    )
+                )
+
+        # Override with environment variables if present
+        docker_hub_user = os.environ.get("MAD_DOCKERHUB_USER")
+        docker_hub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD")
+        docker_hub_repo = os.environ.get("MAD_DOCKERHUB_REPO")
+
+        if docker_hub_user and docker_hub_password:
+            print("Found Docker Hub credentials in environment variables")
+            if credentials is None:
+                credentials = {}
+
+            credentials["dockerhub"] = {
+                "username": docker_hub_user,
+                "password": docker_hub_password,
+            }
+            if docker_hub_repo:
+                credentials["dockerhub"]["repository"] = docker_hub_repo
+
+        return credentials
+
+    def _copy_scripts(self):
+        """Copy common scripts to model directories."""
+        common_scripts = Path("scripts/common")
+        if not common_scripts.exists():
+            return
+
+        print(f"Copying common scripts from {common_scripts}")
+
+        for model_script_dir in Path("scripts").iterdir():
+            if model_script_dir.is_dir() and model_script_dir.name != "common":
+                dest = model_script_dir / "common"
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(common_scripts, dest)
+                print(f"  Copied to {dest}")
+
+    def execute(
+        self,
+        registry: Optional[str] = None,
+        clean_cache: bool = False,
+        manifest_output: str = "build_manifest.json",
+        batch_build_metadata: Optional[Dict] = None,
+    ) -> str:
+        """
+        Execute build workflow.
+
+        Args:
+            registry: Optional registry to push images to
+            clean_cache: Whether to use --no-cache for Docker builds
+            manifest_output: Output file for build manifest
+            batch_build_metadata: Optional batch build metadata
+
+        Returns:
+            Path to generated build_manifest.json
+
+        Raises:
+            DiscoveryError: If model discovery fails
+            BuildError: If Docker build fails
+        """
+        self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
+        self.rich_console.print("[bold blue]🔨 BUILD PHASE[/bold blue]")
+        self.rich_console.print("[yellow](Build-only mode - no GPU detection)[/yellow]")
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+        try:
+            # Step 1: Discover models
+            self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
+            discover_models = DiscoverModels(args=self.args)
+            models = discover_models.run()
+
+            if not models:
+                raise DiscoveryError(
+                    "No models discovered",
+                    context=create_error_context(
+                        operation="discover_models",
+                        component="BuildOrchestrator",
+                    ),
+                    suggestions=[
+                        "Check if models.json exists",
+                        "Verify --tags parameter is correct",
+                        "Ensure model definitions have matching tags",
+                    ],
+                )
+
+            self.rich_console.print(f"[green]✓ Found {len(models)} models[/green]\n")
+
+            # Step 2: Copy common scripts
+            self.rich_console.print("[bold cyan]📋 Copying scripts...[/bold cyan]")
+            self._copy_scripts()
+            self.rich_console.print("[green]✓ Scripts copied[/green]\n")
+
+            # Step 3: Validate build context
+            if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.context.ctx["docker_build_arg"]:
+                self.rich_console.print(
+                    "[yellow]⚠️  Warning: MAD_SYSTEM_GPU_ARCHITECTURE not provided[/yellow]"
+                )
+                self.rich_console.print(
+                    "[dim]  Provide GPU architecture via --additional-context:[/dim]"
+                )
+                self.rich_console.print(
+                    '[dim]  --additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}\'[/dim]\n'
+                )
+
+            # Step 4: Build Docker images
+            self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
+            builder = DockerBuilder(
+                self.context,
+                self.console,
+                live_output=getattr(self.args, "live_output", False),
+            )
+
+            # Determine phase suffix for log files
+            phase_suffix = (
+                ".build"
+                if hasattr(self.args, "_separate_phases") and self.args._separate_phases
+                else ""
+            )
+
+            # Get target architectures from args if provided
+            target_archs = getattr(self.args, "target_archs", [])
+            if target_archs:
+                processed_archs = []
+                for arch_arg in target_archs:
+                    # Split comma-separated values
+                    processed_archs.extend(
+                        [arch.strip() for arch in arch_arg.split(",") if arch.strip()]
+                    )
+                target_archs = processed_archs
+
+            # Build all models
+            build_summary = builder.build_all_models(
+                models,
+                self.credentials,
+                clean_cache,
+                registry,
+                phase_suffix,
+                batch_build_metadata=batch_build_metadata,
+                target_archs=target_archs,
+            )
+
+            # Check for build failures (failed_builds is a list)
+            failed_builds = build_summary.get("failed_builds", [])
+            if len(failed_builds) > 0:
+                raise BuildError(
+                    f"Failed to build {len(failed_builds)} models",
+                    context=create_error_context(
+                        operation="build_images",
+                        component="BuildOrchestrator",
+                    ),
+                    suggestions=[
+                        "Check Docker build logs in the output directory",
+                        "Verify Dockerfile syntax",
+                        "Ensure all build dependencies are available",
+                    ],
+                )
+
+            # Report successful builds (successful_builds is a list)
+            successful_builds = build_summary.get("successful_builds", [])
+            self.rich_console.print(f"\n[green]✓ Built {len(successful_builds)} images[/green]\n")
+
+            # Step 5: Generate build manifest
+            self.rich_console.print("[bold cyan]📄 Generating build manifest...[/bold cyan]")
+            builder.export_build_manifest(manifest_output, registry, batch_build_metadata)
+
+            # Step 6: Save build summary to manifest
+            self._save_build_summary(manifest_output, build_summary)
+
+            # Step 7: Save deployment_config to manifest
+            self._save_deployment_config(manifest_output)
+
+            self.rich_console.print(f"[green]✓ Build complete: {manifest_output}[/green]")
+            self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+            return manifest_output
+
+        except (DiscoveryError, BuildError):
+            raise
+        except Exception as e:
+            context = create_error_context(
+                operation="build_phase",
+                component="BuildOrchestrator",
+            )
+            raise BuildError(
+                f"Build phase failed: {e}",
+                context=context,
+                suggestions=[
+                    "Check Docker daemon is running",
+                    "Verify network connectivity for image pulls",
+                    "Check disk space for Docker builds",
+                ],
+            ) from e
+
+    def _save_build_summary(self, manifest_file: str, build_summary: Dict):
+        """Save build summary to manifest for display purposes."""
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+
+            # Add summary to manifest
+            manifest["summary"] = build_summary
+
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+        except Exception as e:
+            self.rich_console.print(f"[yellow]Warning: Could not save build summary: {e}[/yellow]")
+
+    def _save_deployment_config(self, manifest_file: str):
+        """Save deployment_config from --additional-context to manifest."""
+        if not self.additional_context:
+            return
+
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+
+            # Extract deployment configuration
+            deployment_config = {
+                "target": self.additional_context.get("deploy", "local"),
+                "slurm": self.additional_context.get("slurm"),
+                "k8s": self.additional_context.get("k8s"),
+                "kubernetes": self.additional_context.get("kubernetes"),
+                "distributed": self.additional_context.get("distributed"),
+                "vllm": self.additional_context.get("vllm"),
+                "env_vars": self.additional_context.get("env_vars", {}),
+            }
+
+            # Remove None values
+            deployment_config = {
+                k: v for k, v in deployment_config.items() if v is not None
+            }
+
+            if deployment_config and deployment_config != {"target": "local", "env_vars": {}}:
+                manifest["deployment_config"] = deployment_config
+
+                with open(manifest_file, "w") as f:
+                    json.dump(manifest, f, indent=2)
+
+                print(f"Saved deployment config to {manifest_file}")
+
+        except Exception as e:
+            # Non-fatal - just warn
+            print(f"Warning: Could not save deployment config: {e}")
+

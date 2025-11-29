@@ -1,0 +1,39 @@
+# DEPRECATED TEST FILE
+
+**Original File**: test_runners_base.py  
+**Status**: DEPRECATED - Phase 5 cleanup  
+**Date**: November 29, 2025
+
+## Reason for Deprecation
+
+This test file tests the OLD `runners/` architecture which has been replaced by the new `deployment/` architecture.
+
+## Tests Replaced By
+
+The functionality tested in this file has been replaced by:
+- `tests/test_orchestration.py` - Tests BuildOrchestrator and RunOrchestrator
+- Future: `tests/test_deployment.py` - Will test SlurmDeployment and KubernetesDeployment
+
+## Action Required
+
+This test file should be:
+1. Reviewed for any unique test cases not covered by new tests
+2. Deleted after verification
+3. Replaced with deployment layer tests
+
+## Old Tests Coverage
+
+- NodeConfig dataclass
+- WorkloadSpec dataclass  
+- ExecutionResult dataclass
+- DistributedResult dataclass
+- BaseDistributedRunner abstract class
+- RunnerFactory pattern
+
+These concepts are replaced by:
+- DeploymentConfig dataclass
+- DeploymentResult dataclass
+- DeploymentStatus enum
+- BaseDeployment abstract class
+- DeploymentFactory pattern
+

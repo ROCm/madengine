@@ -59,37 +59,14 @@ dev = [
   "isort",
   "pre-commit",
 ]
-# Optional dependencies for distributed runners
-ssh = [
-  "paramiko>=2.7.0",
-  "scp>=0.14.0",
-]
-ansible = [
-  "ansible>=4.0.0",
-  "ansible-runner>=2.0.0",
-  "PyYAML>=6.0",
-]
+# Optional dependencies for distributed deployments
+# Note: SLURM requires no additional dependencies (uses CLI commands)
 kubernetes = [
-  "kubernetes>=20.0.0",
-  "PyYAML>=6.0",
+  "kubernetes>=28.0.0",
 ]
-# All runner dependencies
-runners = [
-  "paramiko>=2.7.0",
-  "scp>=0.14.0",
-  "ansible>=4.0.0",
-  "ansible-runner>=2.0.0",
-  "kubernetes>=20.0.0",
-  "PyYAML>=6.0",
-]
-# Complete development environment
+# Complete development environment (dev + kubernetes deployment)
 all = [
-  "paramiko>=2.7.0",
-  "scp>=0.14.0",
-  "ansible>=4.0.0",
-  "ansible-runner>=2.0.0",
-  "kubernetes>=20.0.0",
-  "PyYAML>=6.0",
+  "kubernetes>=28.0.0",
   "pytest",
   "pytest-cov",
   "pytest-xdist",
@@ -173,6 +150,7 @@ module = [
     "toml.*",
     "jsondiff.*",
     "git.*",
+    "kubernetes.*",
 ]
 ignore_missing_imports = true
 
