@@ -108,6 +108,31 @@ def setup_logging(verbose: bool = False) -> None:
     set_error_handler(error_handler)
 
 
+def split_comma_separated_tags(tags: List[str]) -> List[str]:
+    """Split comma-separated tags into individual tags.
+    
+    Handles both formats:
+    - Multiple flags: --tags dummy --tags multi → ['dummy', 'multi']
+    - Comma-separated: --tags dummy,multi → ['dummy', 'multi']
+    
+    Args:
+        tags: List of tag strings (may contain comma-separated values)
+        
+    Returns:
+        List of individual tag strings
+    """
+    if not tags:
+        return []
+    
+    processed_tags = []
+    for tag in tags:
+        # Split by comma and strip whitespace
+        split_tags = [t.strip() for t in tag.split(',') if t.strip()]
+        processed_tags.extend(split_tags)
+    
+    return processed_tags
+
+
 def create_args_namespace(**kwargs) -> object:
     """Create an argparse.Namespace-like object from keyword arguments."""
 
@@ -528,6 +553,121 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     console.print(table)
 
 
+def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
+    """Display performance metrics from perf.csv file.
+    
+    Args:
+        perf_csv_path: Path to the performance CSV file
+    """
+    if not os.path.exists(perf_csv_path):
+        console.print(f"[yellow]⚠️  Performance CSV not found: {perf_csv_path}[/yellow]")
+        return
+    
+    try:
+        import pandas as pd
+        
+        # Read CSV file
+        df = pd.read_csv(perf_csv_path)
+        
+        if df.empty:
+            console.print("[yellow]⚠️  Performance CSV is empty[/yellow]")
+            return
+        
+        # Create performance table
+        perf_table = Table(
+            title="📊 Performance Results",
+            show_header=True,
+            header_style="bold magenta"
+        )
+        
+        # Add columns
+        perf_table.add_column("Index", justify="right", style="dim")
+        perf_table.add_column("Model", style="cyan")
+        perf_table.add_column("GPUs", justify="center", style="blue")
+        perf_table.add_column("GPU Arch", style="yellow")
+        perf_table.add_column("Performance", justify="right", style="green")
+        perf_table.add_column("Metric", style="green")
+        perf_table.add_column("Status", style="bold")
+        perf_table.add_column("Duration", justify="right", style="blue")
+        
+        # Helper function to format duration
+        def format_duration(duration):
+            if pd.isna(duration) or duration == "":
+                return "N/A"
+            try:
+                dur = float(duration)
+                if dur < 1:
+                    return f"{dur*1000:.0f}ms"
+                elif dur < 60:
+                    return f"{dur:.2f}s"
+                else:
+                    return f"{dur/60:.1f}m"
+            except (ValueError, TypeError):
+                return "N/A"
+        
+        # Helper function to format performance
+        def format_performance(perf):
+            if pd.isna(perf) or perf == "":
+                return "N/A"
+            try:
+                val = float(perf)
+                if val >= 1000:
+                    return f"{val:,.0f}"
+                elif val >= 10:
+                    return f"{val:.1f}"
+                else:
+                    return f"{val:.2f}"
+            except (ValueError, TypeError):
+                return str(perf)
+        
+        # Add rows from dataframe
+        for idx, row in df.iterrows():
+            model = str(row.get("model", "Unknown"))
+            n_gpus = str(row.get("n_gpus", "N/A"))
+            gpu_arch = str(row.get("gpu_architecture", "N/A"))
+            performance = format_performance(row.get("performance", ""))
+            metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
+            status = str(row.get("status", "UNKNOWN"))
+            duration = format_duration(row.get("test_duration", ""))
+            
+            # Color-code status
+            if status == "SUCCESS":
+                status_display = "✅ Success"
+            elif status == "FAILURE":
+                status_display = "❌ Failed"
+            else:
+                status_display = f"⚠️  {status}"
+            
+            perf_table.add_row(
+                str(idx),
+                model,
+                n_gpus,
+                gpu_arch,
+                performance,
+                metric,
+                status_display,
+                duration
+            )
+        
+        console.print()  # Add blank line
+        console.print(perf_table)
+        
+        # Print summary statistics
+        total_runs = len(df)
+        successful_runs = len(df[df["status"] == "SUCCESS"])
+        failed_runs = len(df[df["status"] == "FAILURE"])
+        
+        console.print()
+        console.print(f"[bold]Summary:[/bold] {total_runs} total runs, "
+                     f"[green]{successful_runs} successful[/green], "
+                     f"[red]{failed_runs} failed[/red]")
+        
+    except ImportError:
+        console.print("[yellow]⚠️  pandas not installed. Install with: pip install pandas[/yellow]")
+    except Exception as e:
+        console.print(f"[red]❌ Error reading performance CSV: {e}[/red]")
+
+
 @app.command()
 def build(
     tags: Annotated[
@@ -623,8 +763,12 @@ def build(
     """
     setup_logging(verbose)
 
+    # Process tags to handle comma-separated values
+    # Supports both: --tags dummy --tags multi AND --tags dummy,multi
+    processed_tags = split_comma_separated_tags(tags)
+    
     # Validate mutually exclusive options
-    if batch_manifest and tags:
+    if batch_manifest and processed_tags:
         console.print(
             "❌ [bold red]Error: Cannot specify both --batch-manifest and --tags options[/bold red]"
         )
@@ -632,7 +776,7 @@ def build(
 
     # Process batch manifest if provided
     batch_data = None
-    effective_tags = tags
+    effective_tags = processed_tags
     batch_build_metadata = None
 
     # There are 2 scenarios for batch builds and single builds
@@ -679,7 +823,7 @@ def build(
         console.print(
             Panel(
                 f"�🔨 [bold cyan]Building Models[/bold cyan]\n"
-                f"Tags: [yellow]{', '.join(tags) if tags else 'All models'}[/yellow]\n"
+                f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                 f"Registry: [yellow]{registry or 'Local only'}[/yellow]",
                 title="Build Configuration",
                 border_style="blue",
@@ -892,6 +1036,9 @@ def run(
     """
     setup_logging(verbose)
 
+    # Process tags to handle comma-separated values
+    processed_tags = split_comma_separated_tags(tags)
+
     # Input validation
     if timeout < -1:
         console.print(
@@ -917,7 +1064,7 @@ def run(
 
             # Create arguments object for execution only
             args = create_args_namespace(
-                tags=tags,
+                tags=processed_tags,
                 manifest_file=manifest_file,
                 registry=registry,
                 timeout=timeout,
@@ -957,8 +1104,12 @@ def run(
                 )
                 progress.update(task, description="Execution completed!")
 
-            # Display results
+            # Display results summary
             display_results_table(execution_summary, "Execution Results")
+            
+            # Display detailed performance metrics from CSV
+            display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
+            
             save_summary_with_feedback(execution_summary, summary_output, "Execution")
 
             failed_runs = len(execution_summary.get("failed_runs", []))
@@ -1010,7 +1161,7 @@ def run(
                     Panel(
                         f"🏠📦 [bold cyan]Local Image Mode (Skip Build + Run)[/bold cyan]\n"
                         f"Container Image: [yellow]{mad_container_image}[/yellow]\n"
-                        f"Tags: [yellow]{', '.join(tags) if tags else 'All models'}[/yellow]\n"
+                        f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                         f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s\n"
                         f"[dim]Note: Build phase will be skipped, using local image[/dim]",
                         title="Local Image Configuration",
@@ -1020,7 +1171,7 @@ def run(
 
                 # Create arguments object for local image mode
                 args = create_args_namespace(
-                    tags=tags,
+                    tags=processed_tags,
                     registry=registry,
                     timeout=timeout,
                     additional_context=additional_context,
@@ -1078,8 +1229,12 @@ def run(
                     "overall_success": len(execution_summary.get("failed_runs", [])) == 0,
                 }
 
-                # Display results
+                # Display results summary
                 display_results_table(execution_summary, "Local Image Execution Results")
+                
+                # Display detailed performance metrics from CSV
+                display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
+                
                 save_summary_with_feedback(workflow_summary, summary_output, "Local Image Workflow")
 
                 if workflow_summary["overall_success"]:
@@ -1104,7 +1259,7 @@ def run(
                 console.print(
                     Panel(
                         f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
-                        f"Tags: [yellow]{', '.join(tags) if tags else 'All models'}[/yellow]\n"
+                        f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                         f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
                         f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
                         title="Workflow Configuration",
@@ -1114,7 +1269,7 @@ def run(
 
                 # Create arguments object for full workflow
                 args = create_args_namespace(
-                tags=tags,
+                tags=processed_tags,
                 registry=registry,
                 timeout=timeout,
                 additional_context=additional_context,
@@ -1175,6 +1330,10 @@ def run(
             # Display results
             display_results_table(build_summary, "Build Results")
             display_results_table(execution_summary, "Execution Results")
+            
+            # Display detailed performance metrics from CSV
+            display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
+            
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
             if workflow_summary["overall_success"]:
@@ -1222,10 +1381,13 @@ def discover(
     """
     setup_logging(verbose)
 
+    # Process tags to handle comma-separated values
+    processed_tags = split_comma_separated_tags(tags)
+
     console.print(
         Panel(
             f"🔍 [bold cyan]Discovering Models[/bold cyan]\n"
-            f"Tags: [yellow]{tags if tags else 'All models'}[/yellow]",
+            f"Tags: [yellow]{processed_tags if processed_tags else 'All models'}[/yellow]",
             title="Model Discovery",
             border_style="blue",
         )
@@ -1233,7 +1395,7 @@ def discover(
 
     try:
         # Create args namespace similar to mad.py
-        args = create_args_namespace(tags=tags)
+        args = create_args_namespace(tags=processed_tags)
         
         # Use DiscoverModels class
         # Note: DiscoverModels prints output directly and returns None
