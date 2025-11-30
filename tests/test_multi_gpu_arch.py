@@ -12,7 +12,7 @@ All tests are logic/unit tests and do not require GPU hardware.
 """
 import pytest
 from unittest.mock import MagicMock, patch
-from madengine.tools.docker_builder import DockerBuilder
+from madengine.execution.docker_builder import DockerBuilder
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 

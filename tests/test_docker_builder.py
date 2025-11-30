@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, mock_open
 import pytest
 
 # project modules
-from madengine.tools.docker_builder import DockerBuilder
+from madengine.execution.docker_builder import DockerBuilder
 from madengine.core.context import Context
 from madengine.core.console import Console
 from .fixtures.utils import BASE_DIR, MODEL_DIR

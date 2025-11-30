@@ -54,9 +54,9 @@ from madengine.utils.ops import (
 from madengine.core.constants import MAD_MINIO, MAD_AWS_S3
 from madengine.core.constants import MODEL_DIR, PUBLIC_GITHUB_ROCM_KEY
 from madengine.core.timeout import Timeout
-from madengine.tools.update_perf_csv import update_perf_csv
+from madengine.reporting.update_perf_csv import update_perf_csv
 from madengine.tools.csv_to_html import convert_csv_to_html
-from madengine.tools.discover_models import DiscoverModels
+from madengine.utils.discover_models import DiscoverModels
 
 
 class RunDetails:

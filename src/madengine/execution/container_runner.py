@@ -21,7 +21,7 @@ from madengine.core.docker import Docker
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
-from madengine.tools.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
 
 
 class ContainerRunner:

@@ -39,7 +39,7 @@ console = Console()
 # Import madengine components
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.tools.discover_models import DiscoverModels
+from madengine.utils.discover_models import DiscoverModels
 # Legacy runner imports removed (Phase 5 cleanup) - replaced by deployment/ architecture
 from madengine.core.errors import (
     ErrorHandler,

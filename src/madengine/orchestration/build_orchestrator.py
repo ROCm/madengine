@@ -25,8 +25,8 @@ from madengine.core.errors import (
     create_error_context,
     handle_error,
 )
-from madengine.tools.discover_models import DiscoverModels
-from madengine.tools.docker_builder import DockerBuilder
+from madengine.utils.discover_models import DiscoverModels
+from madengine.execution.docker_builder import DockerBuilder
 
 
 class BuildOrchestrator:
