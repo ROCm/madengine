@@ -1,9 +1,9 @@
-"""DEPRECATED: Test the distributed orchestrator module.
+"""Test the distributed orchestrator module.
 
-⚠️ DEPRECATED - DistributedOrchestrator has been removed ⚠️
+NOTE: DistributedOrchestrator source code (src/madengine/tools/distributed_orchestrator.py)
+has been removed from the codebase and replaced by BuildOrchestrator + RunOrchestrator.
 
-This test file is DEPRECATED because DistributedOrchestrator class has been removed
-from the codebase and replaced by BuildOrchestrator + RunOrchestrator.
+These tests are kept for reference but skipped since the code they test no longer exists.
 
 See test_distributed_orchestrator.DEPRECATED.txt for migration guide.
 
@@ -24,8 +24,8 @@ from unittest.mock import patch, MagicMock, mock_open
 # third-party modules
 import pytest
 
-# Skip all tests in this file - DistributedOrchestrator has been removed
-pytestmark = pytest.mark.skip(reason="DEPRECATED: DistributedOrchestrator removed, use test_orchestration.py instead")
+# Skip all tests in this file - DistributedOrchestrator source code has been removed
+pytestmark = pytest.mark.skip(reason="DistributedOrchestrator source code removed from codebase")
 
 # Import would fail since distributed_orchestrator.py has been deleted
 # from madengine.tools.distributed_orchestrator import DistributedOrchestrator

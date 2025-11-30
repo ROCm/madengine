@@ -48,32 +48,37 @@ Comprehensive unit tests for the new GPU tool manager architecture:
 - rocm-smi used for < 6.4.1
 - GPU product name has fallback
 
-## Deprecated Test Files
+## Deleted Test Files (Cleaned Up November 30, 2025)
 
-### ⛔ test_distributed_orchestrator.py (DEPRECATED)
+The following deprecated test files have been **DELETED** along with the deprecated `runners/` directory:
 
-**Status:** Tests skipped via pytest.mark.skip
+### ⛔ test_distributed_orchestrator.py (DELETED)
+- **Reason:** DistributedOrchestrator class removed from codebase
+- **Replacement:** `test_orchestration.py` - Tests for BuildOrchestrator + RunOrchestrator
+- **Documentation:** `test_distributed_orchestrator.DEPRECATED.txt` (kept for reference)
 
-**Reason:** DistributedOrchestrator class removed from codebase
+### ⛔ test_mad.py (DELETED)
+- **Reason:** Superseded by comprehensive test_mad_cli.py
+- **Note:** Legacy mad.py itself remains functional for backward compatibility
+- **Replacement:** `test_mad_cli.py` - 1100+ lines of comprehensive CLI tests
+- **Documentation:** `test_mad.DEPRECATED.txt` (kept for reference)
 
-**Replacement:**
-- `test_orchestration.py` - Tests for BuildOrchestrator + RunOrchestrator
-- `test_mad_cli.py` - Integration tests with new architecture
+### ⛔ test_runners_base.py (DELETED)
+- **Reason:** Tests deprecated `runners/` base classes which have been deleted
+- **Replacement:** Future `test_deployment.py` for new deployment architecture
+- **Documentation:** `test_runners_base.DEPRECATED.txt` (kept for reference)
 
-**Migration Path:** See `test_distributed_orchestrator.DEPRECATED.txt`
+### ⛔ test_templates.py (DELETED)
+- **Reason:** Tests deprecated `runners/template_generator.py` which has been deleted
+- **Replacement:** Templates integrated into `deployment/slurm.py` and `deployment/kubernetes.py`
+- **Documentation:** `test_templates.DEPRECATED.txt` (kept for reference)
 
-### ⛔ test_mad.py (DEPRECATED)
+### ⛔ test_runner_errors.py (DELETED)
+- **Reason:** Tests error handling for deprecated runners which have been deleted
+- **Replacement:** `test_error_handling.py` and `test_error_system_integration.py`
+- **Documentation:** `test_runner_errors.DEPRECATED.txt` (kept for reference)
 
-**Status:** Tests skipped via pytest.mark.skip
-
-**Reason:** Superseded by comprehensive test_mad_cli.py
-
-**Note:** Legacy mad.py itself remains functional for backward compatibility
-
-**Replacement:**
-- `test_mad_cli.py` - 1100+ lines of comprehensive CLI tests
-
-**Migration Path:** See `test_mad.DEPRECATED.txt`
+**Note:** All `.DEPRECATED.txt` files are kept for historical reference and migration guidance.
 
 ## Existing Test Files (Enhanced/Unchanged)
 

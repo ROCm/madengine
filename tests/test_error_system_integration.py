@@ -72,27 +72,14 @@ class TestUnifiedErrorSystem:
         assert isinstance(handler, ErrorHandler)
         assert handler.verbose is True
     
+    @pytest.mark.skip(reason="DistributedOrchestrator removed - tested in test_orchestration.py instead")
     def test_distributed_orchestrator_error_imports(self):
-        """Test that distributed_orchestrator can import error handling."""
-        try:
-            from madengine.tools.distributed_orchestrator import (
-                handle_error, create_error_context, ConfigurationError
-            )
-            
-            # Test that we can create and handle errors
-            context = create_error_context(
-                operation="test_import",
-                component="DistributedOrchestrator"
-            )
-            
-            error = ConfigurationError("Test config error", context=context)
-            
-            # This should not raise an exception
-            assert error.context.operation == "test_import"
-            assert error.context.component == "DistributedOrchestrator"
-            
-        except ImportError as e:
-            pytest.fail(f"Error handling imports failed: {e}")
+        """DEPRECATED: Test that distributed_orchestrator can import error handling.
+        
+        DistributedOrchestrator has been removed and replaced by BuildOrchestrator
+        and RunOrchestrator. Error handling for these is tested in test_orchestration.py.
+        """
+        pass
     
     def test_runner_error_base_class(self):
         """Test that RunnerError base class works properly."""

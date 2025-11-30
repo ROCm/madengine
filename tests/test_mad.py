@@ -1,25 +1,18 @@
-"""DEPRECATED: Test the legacy mad.py module (argparse-based CLI).
+"""Test the legacy mad.py module (argparse-based CLI).
 
-⚠️ DEPRECATED - Tests superseded by test_mad_cli.py ⚠️
-
-This test file is DEPRECATED in favor of comprehensive test_mad_cli.py.
-While mad.py itself remains functional for backward compatibility, 
-testing focus has shifted to the modern mad_cli.py interface.
-
-See test_mad.DEPRECATED.txt for details.
-
-Replacement: Use test_mad_cli.py for comprehensive CLI testing.
+This test file tests the LEGACY mad.py CLI which remains functional for backward
+compatibility while the new madengine-cli is being finalized.
 
 NOTE: 
-- mad.py (legacy) - Still works, tests deprecated
+- mad.py (legacy) - Still works and tested here
 - mad_cli.py (modern) - Recommended, comprehensive tests in test_mad_cli.py
+
+See test_mad.DEPRECATED.txt for migration information.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-# Skip all tests in this file - superseded by test_mad_cli.py
 import pytest
-pytestmark = pytest.mark.skip(reason="DEPRECATED: Use test_mad_cli.py for CLI tests")
 
 # built-in modules
 import os
