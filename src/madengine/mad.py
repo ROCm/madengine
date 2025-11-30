@@ -42,6 +42,17 @@ def run_models(args: argparse.Namespace):
         args: The command-line arguments.
     """
     logger.info("Running models on container")
+    
+    # Process comma-separated tags to support both formats:
+    # --tags dummy dummy2 AND --tags dummy,dummy2
+    if args.tags:
+        processed_tags = []
+        for tag in args.tags:
+            # Split by comma and strip whitespace
+            split_tags = [t.strip() for t in tag.split(',') if t.strip()]
+            processed_tags.extend(split_tags)
+        args.tags = processed_tags
+    
     run_models_instance = RunModels(args=args)
     return run_models_instance.run()
 
@@ -53,6 +64,17 @@ def discover_models(args: argparse.Namespace):
         args: The command-line arguments.
     """
     logger.info("Discovering all models in the project")
+    
+    # Process comma-separated tags to support both formats:
+    # --tags dummy dummy2 AND --tags dummy,dummy2
+    if args.tags:
+        processed_tags = []
+        for tag in args.tags:
+            # Split by comma and strip whitespace
+            split_tags = [t.strip() for t in tag.split(',') if t.strip()]
+            processed_tags.extend(split_tags)
+        args.tags = processed_tags
+    
     discover_models_instance = DiscoverModels(args=args)
     return discover_models_instance.run()
 

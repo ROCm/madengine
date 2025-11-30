@@ -596,6 +596,8 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
         perf_table.add_column("Metric", style="green")
         perf_table.add_column("Status", style="bold")
         perf_table.add_column("Duration", justify="right", style="blue")
+        perf_table.add_column("Data Name", style="magenta")
+        perf_table.add_column("Data Provider", style="magenta")        
         
         # Helper function to format duration
         def format_duration(duration):
@@ -630,6 +632,8 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
         # Add rows from dataframe
         for idx, row in df.iterrows():
             model = str(row.get("model", "Unknown"))
+            dataname = str(row.get("dataname", "")) if not pd.isna(row.get("dataname")) and row.get("dataname") != "" else "N/A"
+            data_provider_type = str(row.get("data_provider_type", "")) if not pd.isna(row.get("data_provider_type")) and row.get("data_provider_type") != "" else "N/A"
             n_gpus = str(row.get("n_gpus", "N/A"))
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
@@ -653,7 +657,9 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
                 performance,
                 metric,
                 status_display,
-                duration
+                duration,
+                dataname,
+                data_provider_type
             )
         
         console.print()  # Add blank line
@@ -1369,7 +1375,7 @@ def run(
                 progress.update(task, description="Building and running models...")
                 execution_summary = orchestrator.execute(
                     manifest_file=None,  # Triggers build phase
-                    tags=tags,
+                    tags=processed_tags,
                     registry=registry,
                     timeout=timeout,
                 )

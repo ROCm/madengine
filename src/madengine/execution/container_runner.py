@@ -779,6 +779,26 @@ class ContainerRunner:
                             and self.data
                         ):
                             self.data.prepare_data(model_info["data"], model_docker)
+                            
+                            # Capture data provider information from selected_data_provider
+                            if (
+                                hasattr(self.data, "selected_data_provider")
+                                and self.data.selected_data_provider
+                            ):
+                                if "dataname" in self.data.selected_data_provider:
+                                    run_results["dataname"] = self.data.selected_data_provider["dataname"]
+                                if "data_provider_type" in self.data.selected_data_provider:
+                                    run_results["data_provider_type"] = self.data.selected_data_provider["data_provider_type"]
+                                if "duration" in self.data.selected_data_provider:
+                                    run_results["data_download_duration"] = self.data.selected_data_provider["duration"]
+                                if "size" in self.data.selected_data_provider:
+                                    run_results["data_size"] = self.data.selected_data_provider["size"]
+                                print(
+                                    f"Data Provider Details: {run_results.get('dataname', '')}, "
+                                    f"{run_results.get('data_provider_type', '')}, "
+                                    f"{run_results.get('data_size', '')}, "
+                                    f"{run_results.get('data_download_duration', '')}s"
+                                )
 
                         # Set permissions
                         model_docker.sh(f"chmod -R a+rw {model_dir}")
