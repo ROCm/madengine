@@ -2,6 +2,9 @@
 
 This module tests the Docker container execution functionality for distributed execution.
 
+UPDATED: Now uses execution/container_runner.py (madengine-cli architecture).
+Previous: Used deprecated tools/container_runner.py (removed).
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
@@ -16,7 +19,7 @@ from unittest.mock import patch, MagicMock, mock_open
 import pytest
 
 # project modules
-from madengine.tools.container_runner import ContainerRunner
+from madengine.execution.container_runner import ContainerRunner
 from madengine.core.context import Context
 from madengine.core.console import Console
 from madengine.core.dataprovider import Data
@@ -153,7 +156,7 @@ class TestContainerRunner:
 
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
-    @patch("madengine.tools.container_runner.Docker")
+    @patch("madengine.execution.container_runner.Docker")
     def test_run_container_success(
         self, mock_docker_class, mock_sh, mock_context_class
     ):
@@ -196,7 +199,7 @@ class TestContainerRunner:
 
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
-    @patch("madengine.tools.container_runner.Docker")
+    @patch("madengine.execution.container_runner.Docker")
     def test_run_container_timeout(
         self, mock_docker_class, mock_sh, mock_context_class
     ):
@@ -237,7 +240,7 @@ class TestContainerRunner:
 
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
-    @patch("madengine.tools.container_runner.Docker")
+    @patch("madengine.execution.container_runner.Docker")
     def test_run_container_failure(
         self, mock_docker_class, mock_sh, mock_context_class
     ):

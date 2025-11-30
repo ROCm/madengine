@@ -667,10 +667,21 @@ class ContainerRunner:
                         whoami = model_docker.sh("whoami")
                         print(f"👤 Running as user: {whoami}")
 
-                        # Show GPU info
+                        # Show GPU info with version-aware tool selection (PR #54)
                         if gpu_vendor.find("AMD") != -1:
                             print(f"🎮 Checking AMD GPU status...")
-                            model_docker.sh("/opt/rocm/bin/rocm-smi || true")
+                            # Use version-aware SMI tool selection
+                            # Note: Use amd-smi without arguments to show full status table (same as legacy madengine)
+                            try:
+                                tool_manager = self.context._get_tool_manager()
+                                preferred_tool = tool_manager.get_preferred_smi_tool()
+                                if preferred_tool == "amd-smi":
+                                    model_docker.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
+                                else:
+                                    model_docker.sh("/opt/rocm/bin/rocm-smi || /opt/rocm/bin/amd-smi || true")
+                            except Exception:
+                                # Fallback: try both tools
+                                model_docker.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
                         elif gpu_vendor.find("NVIDIA") != -1:
                             print(f"🎮 Checking NVIDIA GPU status...")
                             model_docker.sh("/usr/bin/nvidia-smi || true")

@@ -195,7 +195,7 @@ def get_gpu_nodeid_map() -> dict:
                     gpu_map[unique_id] = gpu_id
         else:
             try:
-                # Try the new amd-smi tool first (ROCm 6.4+)
+                # Try the new amd-smi tool first (ROCm 6.4.1+, PR #54)
                 output = console.sh("amd-smi list --json")
                 gpu_data = json.loads(output)
                 for gpu_info in gpu_data:
@@ -205,16 +205,24 @@ def get_gpu_nodeid_map() -> dict:
             except:
                 # Fall back to older rocm-smi tools
                 try:
-                    rocm_version = console.sh("hipconfig --version")
-                    rocm_version = float(".".join(rocm_version.split(".")[:2]))
+                    rocm_version_str = console.sh("hipconfig --version")
+                    # Parse version as tuple for proper comparison (6.4.1 vs 6.4.0)
+                    version_parts = rocm_version_str.split(".")
+                    if len(version_parts) >= 3:
+                        rocm_version = tuple(int(p.split('-')[0]) for p in version_parts[:3])
+                    else:
+                        # Fallback to float comparison for versions without patch
+                        rocm_version = (int(version_parts[0]), int(version_parts[1]), 0)
+                    
+                    # Use appropriate rocm-smi command based on version (PR #54: threshold is 6.4.1)
                     command = (
-                        "rocm-smi --showuniqueid" if rocm_version < 6.4 else "rocm-smi --showhw"
+                        "rocm-smi --showuniqueid" if rocm_version < (6, 4, 1) else "rocm-smi --showhw"
                     )
                     output = console.sh(command)
                     lines = output.split("\n")
 
                     for line in lines:
-                        if rocm_version < 6.4:
+                        if rocm_version < (6, 4, 1):
                             if "Unique ID:" in line:
                                 gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
                                 unique_id = line.split(":")[2].strip()

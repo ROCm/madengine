@@ -37,7 +37,6 @@ install(show_locals=True)
 console = Console()
 
 # Import madengine components
-from madengine.tools.distributed_orchestrator import DistributedOrchestrator  # Legacy - deprecated
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.tools.discover_models import DiscoverModels
@@ -1262,32 +1261,25 @@ def run(
                     _separate_phases=True,
                 )
 
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=console,
-                ) as progress:
-                    task = progress.add_task(
-                        "Initializing local image orchestrator...", total=None
-                    )
-                    orchestrator = DistributedOrchestrator(args)
-
-                    # Generate manifest for local image (skip build phase)
-                    progress.update(task, description="Generating manifest for local image...")
-                    build_summary = orchestrator.generate_local_image_manifest(
-                        container_image=mad_container_image,
-                        manifest_output=manifest_output,
-                    )
-
-                    # Run phase with local image
-                    progress.update(task, description="Running models with local image...")
-                    execution_summary = orchestrator.run_phase(
-                        manifest_file=manifest_output,
-                        registry=registry,
-                        timeout=timeout,
-                        keep_alive=keep_alive,
-                    )
-                    progress.update(task, description="Local image workflow completed!")
+                # Local image mode is deprecated after removing DistributedOrchestrator
+                # TODO: Reimplement using new BuildOrchestrator + RunOrchestrator architecture
+                console.print(
+                    "[bold red]❌ Local image mode (MAD_CONTAINER_IMAGE) is temporarily unavailable[/bold red]"
+                )
+                console.print(
+                    "\n[yellow]This feature is being refactored to use the new orchestration architecture.[/yellow]"
+                )
+                console.print(
+                    "\n[cyan]Alternative workflows:[/cyan]\n"
+                    "1. Use --manifest-file with a pre-built manifest\n"
+                    "2. Let madengine-cli build images normally (remove MAD_CONTAINER_IMAGE)\n"
+                    "3. Use the legacy 'mad.py run' command if you need local image support"
+                )
+                raise typer.Exit(ExitCode.FAILURE)
+                
+                # Placeholder for future reimplementation
+                build_summary = {"successful_builds": [], "failed_builds": []}
+                execution_summary = {"successful_runs": [], "failed_runs": []}
 
                 # Combine summaries for local image mode
                 workflow_summary = {

@@ -21,7 +21,9 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError
+from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
+from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
@@ -94,6 +96,7 @@ class Context:
         self._gpu_context_initialized = False
         self._build_only_mode = build_only_mode
         self._system_context_initialized = False
+        self._gpu_tool_manager = None  # Lazy initialization
 
         # Initialize base context
         self.ctx = {}
@@ -330,6 +333,32 @@ class Context:
         if not self._system_context_initialized:
             self.init_system_context()
 
+    def _get_tool_manager(self) -> BaseGPUToolManager:
+        """Get GPU tool manager for the current vendor (lazy initialization).
+        
+        Returns:
+            GPU tool manager instance
+            
+        Raises:
+            ValueError: If GPU vendor cannot be determined or is unsupported
+        """
+        if self._gpu_tool_manager is None:
+            # Determine vendor from context or detect automatically
+            if "MAD_GPU_VENDOR" in self.ctx.get("docker_env_vars", {}):
+                vendor_str = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
+                if vendor_str == "AMD":
+                    vendor = GPUVendor.AMD
+                elif vendor_str == "NVIDIA":
+                    vendor = GPUVendor.NVIDIA
+                else:
+                    vendor = None  # Auto-detect
+            else:
+                vendor = None  # Auto-detect
+            
+            self._gpu_tool_manager = get_gpu_tool_manager(vendor)
+        
+        return self._gpu_tool_manager
+
     def get_ctx_test(self) -> str:
         """Get context test.
 
@@ -345,10 +374,10 @@ class Context:
         )
 
     def get_gpu_vendor(self) -> str:
-        """Get GPU vendor.
+        """Get GPU vendor with fallback support (PR #54).
 
         Returns:
-            str: The output of the shell command.
+            str: The GPU vendor ("NVIDIA", "AMD", or error message).
 
         Raises:
             RuntimeError: If the GPU vendor is unable to detect.
@@ -357,11 +386,41 @@ class Context:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
+            
+        PR #54 Enhancement:
+            Added fallback to rocm-smi if amd-smi is missing.
         """
-        # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
-        return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
-        )
+        # Check NVIDIA first (simplest check)
+        if os.path.exists("/usr/bin/nvidia-smi"):
+            try:
+                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''")
+                if result and result.strip() == "NVIDIA":
+                    return "NVIDIA"
+            except Exception:
+                pass
+        
+        # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
+        amd_smi_paths = ["/opt/rocm/bin/amd-smi", "/usr/local/bin/amd-smi"]
+        for amd_smi_path in amd_smi_paths:
+            if os.path.exists(amd_smi_path):
+                try:
+                    # Verify amd-smi actually works
+                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                    if result and result.strip() == "AMD":
+                        return "AMD"
+                except Exception:
+                    pass
+        
+        # Fallback to rocm-smi (PR #54)
+        if os.path.exists("/opt/rocm/bin/rocm-smi"):
+            try:
+                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                if result and result.strip() == "AMD":
+                    return "AMD"
+            except Exception:
+                pass
+        
+        return "Unable to detect GPU vendor"
 
     def get_host_os(self) -> str:
         """Get host OS.
@@ -407,39 +466,49 @@ class Context:
             return False
 
     def get_system_ngpus(self) -> int:
-        """Get system number of GPUs.
+        """Get system number of GPUs using tool manager.
 
         Returns:
             int: The number of GPUs.
 
         Raises:
-            RuntimeError: If the GPU vendor is not detected.
+            RuntimeError: If the GPU vendor is not detected or GPU count cannot be determined.
 
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
+            
+        Enhancement:
+            Uses version-aware tool manager with automatic fallback (PR #54).
         """
-        number_gpus = 0
-        if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
+        vendor = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
+        
+        if vendor == "AMD":
             try:
-                number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+                tool_manager = self._get_tool_manager()
+                return tool_manager.get_gpu_count()
             except Exception as e:
-                # Try fallback to rocm-smi
+                raise RuntimeError(
+                    f"Unable to determine number of AMD GPUs. "
+                    f"Error: {e}"
+                )
+        elif vendor == "NVIDIA":
+            try:
+                tool_manager = self._get_tool_manager()
+                return tool_manager.get_gpu_count()
+            except Exception as e:
+                # Fallback to direct command for NVIDIA
                 try:
-                    number_gpus = int(self.console.sh("rocm-smi --showid --csv | tail -n +2 | wc -l"))
+                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
+                    return number_gpus
                 except Exception:
                     raise RuntimeError(
-                        f"Unable to determine number of AMD GPUs. "
-                        f"Ensure amd-smi or rocm-smi is installed and GPUs are accessible. "
-                        f"Original error: {e}"
+                        f"Unable to determine number of NVIDIA GPUs. "
+                        f"Error: {e}"
                     )
-        elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
-            number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
         else:
-            raise RuntimeError("Unable to determine gpu vendor.")
-
-        return number_gpus
+            raise RuntimeError(f"Unable to determine gpu vendor: {vendor}")
 
     def get_system_gpu_architecture(self) -> str:
         """Get system GPU architecture.
@@ -476,7 +545,7 @@ class Context:
             raise RuntimeError("Unable to determine gpu architecture.")
 
     def get_system_gpu_product_name(self) -> str:
-        """Get system GPU product name.
+        """Get system GPU product name with fallback (PR #54).
         
         Returns:
             str: The GPU product name (e.g., AMD Instinct MI300X, NVIDIA H100 80GB HBM3).
@@ -489,31 +558,82 @@ class Context:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
+            
+        PR #54 Enhancement:
+            Added rocm-smi fallback for AMD GPUs when amd-smi unavailable.
         """
-        if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
-        elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
-            return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
+        vendor = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
+        
+        if vendor == "AMD":
+            try:
+                tool_manager = self._get_tool_manager()
+                return tool_manager.get_gpu_product_name(gpu_id=0)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Unable to determine AMD GPU product name. "
+                    f"Error: {e}"
+                )
+        elif vendor == "NVIDIA":
+            try:
+                tool_manager = self._get_tool_manager()
+                return tool_manager.get_gpu_product_name(gpu_id=0)
+            except Exception as e:
+                # Fallback to direct command for NVIDIA
+                try:
+                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
+                except Exception:
+                    raise RuntimeError(
+                        f"Unable to determine NVIDIA GPU product name. "
+                        f"Error: {e}"
+                    )
         else:
-            raise RuntimeError("Unable to determine gpu product name.")
+            raise RuntimeError(f"Unable to determine gpu product name for vendor: {vendor}")
 
     def get_system_hip_version(self):
-        if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
+        """Get HIP/CUDA version using tool manager.
+        
+        Returns:
+            str: Version string (e.g., "6.4" for ROCm, "12.0" for CUDA)
+            
+        Raises:
+            RuntimeError: If version cannot be determined
+            
+        Enhancement:
+            Uses tool manager for robust version detection with multiple fallbacks.
+        """
+        vendor = self.ctx['docker_env_vars']['MAD_GPU_VENDOR']
+        
+        if vendor == 'AMD':
             try:
+                tool_manager = self._get_tool_manager()
+                version_str = tool_manager.get_version()
+                if version_str:
+                    # Return major.minor only (e.g., "6.4.1" -> "6.4")
+                    parts = version_str.split('.')
+                    if len(parts) >= 2:
+                        return f"{parts[0]}.{parts[1]}"
+                    return version_str
+                
+                # Fallback to hipconfig if tool manager fails
                 version = self.console.sh("hipconfig --version | cut -d'.' -f1,2")
                 if not version or version.strip() == "":
                     raise RuntimeError("hipconfig returned empty version")
                 return version
+                
             except Exception as e:
                 raise RuntimeError(
                     f"Unable to determine HIP version. "
                     f"Ensure ROCm is installed and hipconfig is accessible. "
                     f"Error: {e}"
                 )
-        elif self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='NVIDIA':
-            return self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
+        elif vendor == 'NVIDIA':
+            try:
+                tool_manager = self._get_tool_manager()
+                return tool_manager.get_version() or self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
+            except Exception:
+                return self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
         else:
-            raise RuntimeError("Unable to determine hip version.")
+            raise RuntimeError(f"Unable to determine hip version for vendor: {vendor}")
 
     def get_docker_gpus(self) -> typing.Optional[str]:
         """Get Docker GPUs.
@@ -555,16 +675,23 @@ class Context:
             return gpu_renderDs
             
         try:
-            # Get ROCm version
-            rocm_version_str = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
-            if not rocm_version_str or rocm_version_str.strip() == "":
-                raise RuntimeError("Failed to retrieve ROCm version from /opt/rocm/.info/version")
-            
-            # Parse version safely
+            # Get ROCm version using tool manager for robust detection (PR #54)
             try:
-                rocm_version = tuple(map(int, rocm_version_str.strip().split(".")))
-            except (ValueError, AttributeError) as e:
-                raise RuntimeError(f"Failed to parse ROCm version '{rocm_version_str}': {e}")
+                tool_manager = self._get_tool_manager()
+                rocm_version = tool_manager.get_rocm_version()
+                if not rocm_version:
+                    raise RuntimeError("Tool manager returned None for ROCm version")
+            except Exception as e:
+                # Fallback to direct file read
+                rocm_version_str = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+                if not rocm_version_str or rocm_version_str.strip() == "":
+                    raise RuntimeError("Failed to retrieve ROCm version from /opt/rocm/.info/version")
+                
+                # Parse version safely
+                try:
+                    rocm_version = tuple(map(int, rocm_version_str.strip().split(".")))
+                except (ValueError, AttributeError) as parse_err:
+                    raise RuntimeError(f"Failed to parse ROCm version '{rocm_version_str}': {parse_err}")
             
             # Get renderDs from KFD properties
             kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
@@ -583,9 +710,9 @@ class Context:
             
             kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
 
-            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.0 and node id otherwise
-            # node id is more robust but is only available from 6.4.0
-            if rocm_version < (6, 4, 0):
+            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
+            # node id is more robust but is only available from 6.4.1 (PR #54)
+            if rocm_version < (6, 4, 1):
                 # Legacy method using unique_id
                 kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
                 if not kfd_unique_output:

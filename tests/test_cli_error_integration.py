@@ -121,8 +121,13 @@ class TestMadCLIErrorIntegration:
         assert handler.console is not None
 
 
+@pytest.mark.skip(reason="DEPRECATED: DistributedOrchestrator removed, use test_orchestration.py instead")
 class TestDistributedOrchestratorErrorIntegration:
-    """Test distributed_orchestrator.py error handling integration."""
+    """Test distributed_orchestrator.py error handling integration.
+    
+    DEPRECATED: distributed_orchestrator.py was removed in favor of 
+    orchestration/build_orchestrator.py and orchestration/run_orchestrator.py.
+    """
     
     def test_orchestrator_imports_error_handling(self):
         """Test that distributed_orchestrator imports unified error handling."""

@@ -42,7 +42,7 @@ class GPUValidationResult:
 
 
 class ROCmValidator:
-    """Validator for AMD ROCm installation"""
+    """Validator for AMD ROCm installation with tool manager integration"""
     
     # Essential ROCm components to check
     ESSENTIAL_PATHS = {
@@ -70,6 +70,7 @@ class ROCmValidator:
             verbose: If True, print detailed validation progress
         """
         self.verbose = verbose
+        self._tool_manager = None  # Lazy initialization
         
     def _run_command(self, cmd: List[str], timeout: int = 10) -> Tuple[bool, str, str]:
         """Run a command and return success status and output
@@ -100,13 +101,40 @@ class ROCmValidator:
         """Check if a path exists"""
         return os.path.exists(path)
     
+    def _get_tool_manager(self):
+        """Get or create ROCm tool manager instance
+        
+        Returns:
+            ROCmToolManager instance
+        """
+        if self._tool_manager is None:
+            try:
+                from madengine.utils.rocm_tool_manager import ROCmToolManager
+                self._tool_manager = ROCmToolManager()
+            except ImportError as e:
+                if self.verbose:
+                    print(f"Warning: Could not import ROCmToolManager: {e}")
+                return None
+        return self._tool_manager
+    
     def _get_rocm_version(self) -> Optional[str]:
-        """Get ROCm version from system
+        """Get ROCm version from system using tool manager
         
         Returns:
             ROCm version string or None if not found
+            
+        Enhancement:
+            Uses ROCmToolManager for robust multi-method version detection.
         """
-        # Try hipconfig first
+        # Try tool manager first (most robust)
+        tool_manager = self._get_tool_manager()
+        if tool_manager:
+            try:
+                return tool_manager.get_version()
+            except Exception:
+                pass  # Fallback to direct methods
+        
+        # Fallback: Try hipconfig first
         success, stdout, _ = self._run_command(['hipconfig', '--version'])
         if success and stdout:
             return stdout.split('-')[0]  # Remove build suffix
@@ -124,12 +152,27 @@ class ROCmValidator:
         return None
     
     def _check_gpu_accessible(self) -> Tuple[bool, str]:
-        """Check if GPUs are accessible
+        """Check if GPUs are accessible using version-aware tool selection
         
         Returns:
             Tuple of (accessible, message)
+            
+        Enhancement:
+            Uses tool manager to prefer correct tool based on ROCm version (PR #54).
         """
-        # Try rocminfo first
+        # Try using tool manager first (version-aware)
+        tool_manager = self._get_tool_manager()
+        if tool_manager:
+            try:
+                count = tool_manager.get_gpu_count()
+                if count > 0:
+                    version = tool_manager.get_rocm_version()
+                    preferred_tool = tool_manager.get_preferred_smi_tool()
+                    return True, f"GPUs accessible via tool manager ({preferred_tool}, ROCm {version})"
+            except Exception:
+                pass  # Fall back to direct checks
+        
+        # Fallback: Try rocminfo first (most reliable for detection)
         success, stdout, stderr = self._run_command(['rocminfo'])
         if success:
             # Check if any GPU agents are listed
