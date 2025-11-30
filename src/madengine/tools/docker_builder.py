@@ -215,6 +215,9 @@ class DockerBuilder:
                 except Exception as e:
                     self.rich_console.print(f"[yellow]Warning: Could not get docker SHA: {e}[/yellow]")
 
+        # Infer GPU vendor from dockerfile path
+        gpu_vendor = self._infer_gpu_vendor_from_dockerfile(dockerfile)
+        
         build_info = {
             "model": model_info["name"],
             "docker_image": docker_image,
@@ -224,6 +227,7 @@ class DockerBuilder:
             "build_duration": build_duration,
             "build_command": build_command,
             "log_file": log_file_path,
+            "gpu_vendor": gpu_vendor,  # Add GPU vendor for filtering
         }
 
         # Store built image info
@@ -847,6 +851,40 @@ class DockerBuilder:
             pass
         
         return None
+
+    def _infer_gpu_vendor_from_dockerfile(self, dockerfile: str) -> str:
+        """Infer GPU vendor from dockerfile path.
+        
+        Args:
+            dockerfile: Path to dockerfile (e.g., "docker/dummy.ubuntu.amd.Dockerfile")
+            
+        Returns:
+            GPU vendor string: "AMD", "NVIDIA", or ""
+        """
+        dockerfile_lower = dockerfile.lower()
+        
+        # Check for explicit vendor indicators in filename
+        if '.amd.' in dockerfile_lower or dockerfile_lower.endswith('.amd'):
+            return "AMD"
+        elif '.nvidia.' in dockerfile_lower or dockerfile_lower.endswith('.nvidia'):
+            return "NVIDIA"
+        
+        # Try to infer from base image in Dockerfile
+        try:
+            with open(dockerfile, 'r') as f:
+                content = f.read()
+            
+            # Look for base image indicators
+            if 'FROM' in content:
+                if 'rocm' in content.lower() or 'amd' in content.lower():
+                    return "AMD"
+                elif 'nvidia' in content.lower() or 'cuda' in content.lower():
+                    return "NVIDIA"
+        except Exception:
+            pass
+        
+        # Default to empty (legacy - will be treated as compatible with all)
+        return ""
 
     def _create_base_image_name(self, model_info: typing.Dict, dockerfile: str) -> str:
         """Create base image name from model info and dockerfile."""

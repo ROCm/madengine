@@ -1129,6 +1129,8 @@ def run(
                 manifest_file=manifest_file,
                 registry=registry,
                 timeout=timeout,
+                additional_context=additional_context,
+                additional_context_file=additional_context_file,
                 keep_alive=keep_alive,
                 keep_model_dir=keep_model_dir,
                 skip_model_run=skip_model_run,

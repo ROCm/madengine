@@ -69,6 +69,9 @@ class RunOrchestrator:
 
         self.additional_context = merged_context
 
+        # Track if we copied MODEL_DIR contents (for cleanup)
+        self._copied_from_model_dir = False
+        
         # Initialize context in runtime mode (with GPU detection for local)
         # This will be lazy-initialized only when needed
         self.context = None
@@ -154,10 +157,25 @@ class RunOrchestrator:
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
             # Step 4: Execute based on target
-            if target == "local":
-                return self._execute_local(manifest_file, timeout)
-            else:
-                return self._execute_distributed(target, manifest_file)
+            try:
+                if target == "local":
+                    results = self._execute_local(manifest_file, timeout)
+                else:
+                    results = self._execute_distributed(target, manifest_file)
+                
+                # Cleanup MODEL_DIR copies after successful execution
+                if self._copied_from_model_dir:
+                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
+                    self._cleanup_model_dir_copies()
+                
+                return results
+                
+            except Exception as e:
+                # Cleanup MODEL_DIR copies even on error
+                if self._copied_from_model_dir:
+                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
+                    self._cleanup_model_dir_copies()
+                raise
 
         except (ConfigurationError, MADRuntimeError):
             raise
@@ -201,22 +219,33 @@ class RunOrchestrator:
 
         print(f"Loaded manifest with {len(manifest.get('built_images', {}))} images")
 
-        # Merge deployment configs (runtime overrides build-time)
-        if "deployment_config" in manifest and self.additional_context:
-            stored_config = manifest["deployment_config"]
-
-            # Runtime --additional-context overrides stored config
-            for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars"]:
+        # Merge deployment configs and context (runtime overrides build-time)
+        if self.additional_context:
+            # Merge deployment_config
+            if "deployment_config" in manifest:
+                stored_config = manifest["deployment_config"]
+                # Runtime --additional-context overrides stored config
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars"]:
+                    if key in self.additional_context:
+                        stored_config[key] = self.additional_context[key]
+                manifest["deployment_config"] = stored_config
+            
+            # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
+            if "context" not in manifest:
+                manifest["context"] = {}
+            
+            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
+            context_updated = False
+            for key in merge_keys:
                 if key in self.additional_context:
-                    stored_config[key] = self.additional_context[key]
-
-            manifest["deployment_config"] = stored_config
-
-            # Write back merged config
-            with open(manifest_file, "w") as f:
-                json.dump(manifest, f, indent=2)
-
-            print("Merged runtime deployment config with manifest")
+                    manifest["context"][key] = self.additional_context[key]
+                    context_updated = True
+            
+            if context_updated or "deployment_config" in manifest:
+                # Write back merged config
+                with open(manifest_file, "w") as f:
+                    json.dump(manifest, f, indent=2)
+                print("Merged runtime context and deployment config with manifest")
 
         return manifest_file
 
@@ -251,24 +280,42 @@ class RunOrchestrator:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
                 self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
+        
+        # Merge runtime additional_context (takes precedence over manifest)
+        # This allows users to override tools/scripts at runtime
+        if self.additional_context:
+            if "tools" in self.additional_context:
+                self.context.ctx["tools"] = self.additional_context["tools"]
+                self.rich_console.print(
+                    f"[dim]  Using tools from runtime --additional-context[/dim]"
+                )
+            if "pre_scripts" in self.additional_context:
+                self.context.ctx["pre_scripts"] = self.additional_context["pre_scripts"]
+            if "post_scripts" in self.additional_context:
+                self.context.ctx["post_scripts"] = self.additional_context["post_scripts"]
+            if "encapsulate_script" in self.additional_context:
+                self.context.ctx["encapsulate_script"] = self.additional_context["encapsulate_script"]
 
-        # Filter images by GPU architecture
+        # Filter images by GPU vendor and architecture
         try:
+            runtime_gpu_vendor = self.context.get_gpu_vendor()
             runtime_gpu_arch = self.context.get_system_gpu_architecture()
+            print(f"Runtime GPU vendor: {runtime_gpu_vendor}")
             print(f"Runtime GPU architecture detected: {runtime_gpu_arch}")
 
-            compatible_images = self._filter_images_by_gpu_architecture(
-                manifest["built_images"], runtime_gpu_arch
+            compatible_images = self._filter_images_by_gpu_compatibility(
+                manifest["built_images"], runtime_gpu_vendor, runtime_gpu_arch
             )
 
             if not compatible_images:
                 raise MADRuntimeError(
-                    f"No compatible images for GPU architecture '{runtime_gpu_arch}'",
+                    f"No compatible images for GPU vendor '{runtime_gpu_vendor}' and architecture '{runtime_gpu_arch}'",
                     context=create_error_context(
                         operation="filter_images",
                         component="RunOrchestrator",
                     ),
                     suggestions=[
+                        f"Build images for {runtime_gpu_vendor} GPU",
                         f"Build images for {runtime_gpu_arch} using --target-archs",
                         "Check manifest contains images for your GPU",
                     ],
@@ -368,6 +415,41 @@ class RunOrchestrator:
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
+    def _cleanup_model_dir_copies(self):
+        """Clean up scripts/ and docker/ directories copied from MODEL_DIR.
+        
+        This cleanup is necessary to:
+        1. Remove stale files from previous runs
+        2. Avoid permission errors from .pyc files
+        3. Keep project root clean
+        """
+        import shutil
+        import subprocess
+        
+        for dirname in ["scripts", "docker"]:
+            dirpath = Path(dirname)
+            if dirpath.exists():
+                try:
+                    # Try normal removal first
+                    shutil.rmtree(dirpath)
+                    self.rich_console.print(f"[dim]  Cleaned up: {dirname}/[/dim]")
+                except PermissionError:
+                    # If permission denied, use sudo (for .pyc files owned by root)
+                    try:
+                        subprocess.run(
+                            ["sudo", "rm", "-rf", str(dirpath)],
+                            check=True,
+                            capture_output=True
+                        )
+                        self.rich_console.print(f"[dim]  Cleaned up: {dirname}/ (with elevated permissions)[/dim]")
+                    except Exception as e:
+                        self.rich_console.print(
+                            f"[yellow]⚠️  Warning: Could not clean up {dirname}/: {e}[/yellow]"
+                        )
+                        self.rich_console.print(
+                            f"[yellow]   Manual cleanup may be required: sudo rm -rf {dirname}/[/yellow]"
+                        )
+
     def _copy_scripts(self):
         """Copy common scripts to model directories.
         
@@ -377,11 +459,22 @@ class RunOrchestrator:
         """
         import shutil
 
+        # Clean up any previous MODEL_DIR copies first
+        self._cleanup_model_dir_copies()
+
+        # Define ignore function for cache files (used for all copy operations)
+        def ignore_cache_files(directory, files):
+            """Ignore Python cache files and directories."""
+            return [f for f in files if f.endswith('.pyc') or f == '__pycache__' or f.endswith('.pyo')]
+        
         # Step 1: Check if MODEL_DIR is set and copy if needed
         model_dir_env = os.environ.get("MODEL_DIR")
         if model_dir_env and os.path.exists(model_dir_env) and model_dir_env != ".":
             self.rich_console.print(f"[yellow]📁 MODEL_DIR detected: {model_dir_env}[/yellow]")
             self.rich_console.print("[yellow]Copying MODEL_DIR contents for run phase...[/yellow]")
+            
+            # Mark that we copied from MODEL_DIR (will need cleanup later)
+            self._copied_from_model_dir = True
             
             # Copy docker/ and scripts/ from MODEL_DIR
             for subdir in ["docker", "scripts"]:
@@ -390,7 +483,7 @@ class RunOrchestrator:
                     dest_path = Path(subdir)
                     if dest_path.exists():
                         shutil.rmtree(dest_path)
-                    shutil.copytree(src_path, dest_path)
+                    shutil.copytree(src_path, dest_path, ignore=ignore_cache_files)
             
             self.rich_console.print("[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]")
 
@@ -414,7 +507,7 @@ class RunOrchestrator:
                             dest_item.unlink()
                     
                     if src_item.is_dir():
-                        shutil.copytree(src_item, dest_item)
+                        shutil.copytree(src_item, dest_item, ignore=ignore_cache_files)
                     else:
                         dest_common.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src_item, dest_item)
@@ -433,7 +526,7 @@ class RunOrchestrator:
                 dest = model_script_dir / "common"
                 if dest.exists():
                     shutil.rmtree(dest)
-                shutil.copytree(common_scripts, dest)
+                shutil.copytree(common_scripts, dest, ignore=ignore_cache_files)
                 print(f"  Copied to {dest}")
 
     def _load_credentials(self) -> Optional[Dict]:
@@ -465,24 +558,64 @@ class RunOrchestrator:
 
         return credentials
 
-    def _filter_images_by_gpu_architecture(
-        self, built_images: Dict, runtime_gpu_arch: str
+    def _filter_images_by_gpu_compatibility(
+        self, built_images: Dict, runtime_gpu_vendor: str, runtime_gpu_arch: str
     ) -> Dict:
-        """Filter images compatible with runtime GPU architecture."""
+        """Filter images compatible with runtime GPU vendor and architecture.
+        
+        Args:
+            built_images: Dictionary of built images from manifest
+            runtime_gpu_vendor: Runtime GPU vendor (AMD, NVIDIA, NONE)
+            runtime_gpu_arch: Runtime GPU architecture (gfx90a, sm_90, etc.)
+            
+        Returns:
+            Dictionary of compatible images
+        """
         compatible_images = {}
 
         for model_name, image_info in built_images.items():
+            image_gpu_vendor = image_info.get("gpu_vendor", "")
             image_arch = image_info.get("gpu_architecture", "")
 
-            # Legacy images without architecture - treat as compatible
-            if not image_arch:
+            # Legacy images without vendor info - treat as compatible for backward compatibility
+            if not image_gpu_vendor:
+                self.rich_console.print(
+                    f"[yellow]  Warning: {model_name} has no gpu_vendor, treating as compatible (legacy)[/yellow]"
+                )
                 compatible_images[model_name] = image_info
                 continue
 
-            # Check if architectures match (exact match only for now)
-            # Future: support compatibility groups (gfx908/gfx90a are NOT compatible)
-            if image_arch == runtime_gpu_arch:
-                compatible_images[model_name] = image_info
+            # Check GPU vendor compatibility first (most important)
+            if runtime_gpu_vendor == "NONE" or image_gpu_vendor == runtime_gpu_vendor:
+                # Vendor matches or CPU-only, check architecture if specified
+                if image_arch:
+                    # Architecture specified, must match
+                    if image_arch == runtime_gpu_arch:
+                        compatible_images[model_name] = image_info
+                    else:
+                        self.rich_console.print(
+                            f"[dim]  Skipping {model_name}: architecture mismatch "
+                            f"({image_arch} != {runtime_gpu_arch})[/dim]"
+                        )
+                else:
+                    # No architecture specified, vendor match is enough
+                    compatible_images[model_name] = image_info
+            else:
+                # Vendor mismatch
+                self.rich_console.print(
+                    f"[dim]  Skipping {model_name}: GPU vendor mismatch "
+                    f"({image_gpu_vendor} != {runtime_gpu_vendor})[/dim]"
+                )
 
         return compatible_images
+    
+    def _filter_images_by_gpu_architecture(
+        self, built_images: Dict, runtime_gpu_arch: str
+    ) -> Dict:
+        """Legacy method for backward compatibility."""
+        # Get runtime GPU vendor
+        runtime_gpu_vendor = self.context.get_gpu_vendor() if self.context else "NONE"
+        return self._filter_images_by_gpu_compatibility(
+            built_images, runtime_gpu_vendor, runtime_gpu_arch
+        )
 
