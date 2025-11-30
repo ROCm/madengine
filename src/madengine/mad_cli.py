@@ -42,7 +42,14 @@ from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.tools.discover_models import DiscoverModels
 # Legacy runner imports removed (Phase 5 cleanup) - replaced by deployment/ architecture
-from madengine.core.errors import ErrorHandler, set_error_handler
+from madengine.core.errors import (
+    ErrorHandler,
+    set_error_handler,
+    BuildError,
+    ConfigurationError,
+    DiscoveryError,
+    RuntimeError as MADRuntimeError,
+)
 
 # Initialize the main Typer app
 app = typer.Typer(
@@ -907,26 +914,80 @@ def build(
         # Save summary
         save_summary_with_feedback(build_summary, summary_output, "Build")
 
-        # Check results and exit
+        # Check results and exit with appropriate code
         failed_builds = len(build_summary.get("failed_builds", []))
+        successful_builds = len(build_summary.get("successful_builds", []))
+        
         if failed_builds == 0:
             console.print(
                 "🎉 [bold green]All builds completed successfully![/bold green]"
             )
             raise typer.Exit(ExitCode.SUCCESS)
-        else:
+        elif successful_builds > 0:
+            # Partial success
             console.print(
-                f"💥 [bold red]Build failed for {failed_builds} models[/bold red]"
+                f"⚠️  [bold yellow]Partial success: "
+                f"{successful_builds} built, {failed_builds} failed[/bold yellow]"
+            )
+            console.print(
+                "💡 [dim]Successful builds are available in build_manifest.json[/dim]"
+            )
+            raise typer.Exit(ExitCode.BUILD_FAILURE)  # Non-zero exit for CI/CD
+        else:
+            # All failed
+            console.print(
+                f"💥 [bold red]All builds failed[/bold red]"
             )
             raise typer.Exit(ExitCode.BUILD_FAILURE)
 
     except typer.Exit:
         raise
+    except BuildError as e:
+        # Specific build error handling
+        console.print(f"💥 [bold red]Build error: {e}[/bold red]")
+        if hasattr(e, 'suggestions') and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.BUILD_FAILURE)
+        
+    except ConfigurationError as e:
+        # Configuration errors
+        console.print(f"⚙️  [bold red]Configuration error: {e}[/bold red]")
+        if hasattr(e, 'suggestions') and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+        
+    except DiscoveryError as e:
+        # Model discovery errors
+        console.print(f"🔍 [bold red]Discovery error: {e}[/bold red]")
+        console.print("💡 Check MODEL_DIR or models.json configuration")
+        raise typer.Exit(ExitCode.FAILURE)
+        
+    except KeyboardInterrupt:
+        console.print("\n🛑 [yellow]Build cancelled by user[/yellow]")
+        raise typer.Exit(ExitCode.FAILURE)
+        
+    except PermissionError as e:
+        console.print(f"🔒 [bold red]Permission denied: {e}[/bold red]")
+        console.print("💡 Check file/directory permissions or run with appropriate privileges")
+        raise typer.Exit(ExitCode.FAILURE)
+        
+    except FileNotFoundError as e:
+        console.print(f"📁 [bold red]File not found: {e}[/bold red]")
+        console.print("💡 Check that all required files exist")
+        raise typer.Exit(ExitCode.FAILURE)
+        
     except Exception as e:
+        console.print(f"💥 [bold red]Unexpected error: {e}[/bold red]")
+        if verbose:
+            console.print_exception()
+        
         from madengine.core.errors import handle_error, create_error_context
-
         context = create_error_context(
-            operation="build", 
+            operation="build",
             phase="build",
             component="build_command"
         )
@@ -1356,10 +1417,45 @@ def run(
 
     except typer.Exit:
         raise
+    except MADRuntimeError as e:
+        # Runtime execution errors
+        console.print(f"💥 [bold red]Runtime error: {e}[/bold red]")
+        if hasattr(e, 'suggestions') and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.RUN_FAILURE)
+        
+    except ConfigurationError as e:
+        # Configuration errors
+        console.print(f"⚙️  [bold red]Configuration error: {e}[/bold red]")
+        if hasattr(e, 'suggestions') and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+        
+    except KeyboardInterrupt:
+        console.print("\n🛑 [yellow]Run cancelled by user[/yellow]")
+        raise typer.Exit(ExitCode.FAILURE)
+        
+    except FileNotFoundError as e:
+        console.print(f"📁 [bold red]File not found: {e}[/bold red]")
+        console.print("💡 Check manifest file path and required files")
+        raise typer.Exit(ExitCode.FAILURE)
+        
     except Exception as e:
         console.print(f"💥 [bold red]Run process failed: {e}[/bold red]")
         if verbose:
             console.print_exception()
+        
+        from madengine.core.errors import handle_error, create_error_context
+        context = create_error_context(
+            operation="run",
+            phase="run",
+            component="run_command"
+        )
+        handle_error(e, context=context)
         raise typer.Exit(ExitCode.FAILURE)
 
 

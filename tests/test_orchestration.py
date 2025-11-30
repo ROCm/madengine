@@ -182,7 +182,7 @@ class TestBuildOrchestrator:
     @patch("madengine.orchestration.build_orchestrator.Context")
     @patch("os.path.exists", return_value=False)
     @patch("pathlib.Path.exists", return_value=False)
-    def test_build_execute_build_failures(
+    def test_build_execute_all_failures(
         self,
         mock_path_exists,
         mock_os_exists,
@@ -190,7 +190,7 @@ class TestBuildOrchestrator:
         mock_docker_builder,
         mock_discover_models,
     ):
-        """Test build execution with build failures."""
+        """Test build execution when ALL builds fail - should raise BuildError."""
         mock_args = MagicMock()
         mock_args.additional_context = None
         mock_args.live_output = False
@@ -206,7 +206,7 @@ class TestBuildOrchestrator:
         mock_discover_models.return_value = mock_discover_instance
 
         mock_builder_instance = MagicMock()
-        # Match actual docker_builder.py return format (lists, not ints)
+        # All builds failed - should raise BuildError
         mock_builder_instance.build_all_models.return_value = {
             "successful_builds": [],
             "failed_builds": [{"model": "model1", "error": "Build failed"}],
@@ -215,8 +215,63 @@ class TestBuildOrchestrator:
 
         orchestrator = BuildOrchestrator(mock_args)
 
-        with pytest.raises(BuildError):
+        # Should raise BuildError when ALL builds fail
+        with pytest.raises(BuildError, match="All builds failed"):
             orchestrator.execute()
+
+    @patch("madengine.orchestration.build_orchestrator.DiscoverModels")
+    @patch("madengine.orchestration.build_orchestrator.DockerBuilder")
+    @patch("madengine.orchestration.build_orchestrator.Context")
+    @patch("os.path.exists", return_value=False)
+    @patch("pathlib.Path.exists", return_value=False)
+    def test_build_execute_partial_failure(
+        self,
+        mock_path_exists,
+        mock_os_exists,
+        mock_context_class,
+        mock_docker_builder,
+        mock_discover_models,
+    ):
+        """Test build execution with PARTIAL failures - should save manifest and not raise."""
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args._separate_phases = True
+        mock_args.target_archs = []
+
+        mock_context = MagicMock()
+        mock_context.ctx = {"docker_build_arg": {}}
+        mock_context_class.return_value = mock_context
+
+        mock_discover_instance = MagicMock()
+        mock_discover_instance.run.return_value = [
+            {"name": "model1", "tags": ["test"]},
+            {"name": "model2", "tags": ["test"]},
+        ]
+        mock_discover_models.return_value = mock_discover_instance
+
+        mock_builder_instance = MagicMock()
+        # Partial failure: 1 success, 1 failure
+        mock_builder_instance.build_all_models.return_value = {
+            "successful_builds": [{"model": "model1", "docker_image": "ci-model1"}],
+            "failed_builds": [{"model": "model2", "error": "Build failed"}],
+        }
+        mock_docker_builder.return_value = mock_builder_instance
+
+        orchestrator = BuildOrchestrator(mock_args)
+
+        # Should NOT raise exception, manifest should be saved
+        manifest_file = orchestrator.execute()
+
+        # Verify manifest was saved
+        assert manifest_file == "build_manifest.json"
+        mock_builder_instance.export_build_manifest.assert_called_once()
+
+        # Verify both successes and failures are in the summary
+        mock_builder_instance.build_all_models.assert_called_once()
+        result = mock_builder_instance.build_all_models.return_value
+        assert len(result["successful_builds"]) == 1
+        assert len(result["failed_builds"]) == 1
 
 
 class TestRunOrchestrator:

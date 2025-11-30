@@ -235,7 +235,7 @@ class BuildOrchestrator:
                     )
                 target_archs = processed_archs
 
-            # Build all models
+            # Build all models (resilient to individual failures)
             build_summary = builder.build_all_models(
                 models,
                 self.credentials,
@@ -246,28 +246,27 @@ class BuildOrchestrator:
                 target_archs=target_archs,
             )
 
-            # Check for build failures (failed_builds is a list)
+            # Extract results
             failed_builds = build_summary.get("failed_builds", [])
-            if len(failed_builds) > 0:
-                raise BuildError(
-                    f"Failed to build {len(failed_builds)} models",
-                    context=create_error_context(
-                        operation="build_images",
-                        component="BuildOrchestrator",
-                    ),
-                    suggestions=[
-                        "Check Docker build logs in the output directory",
-                        "Verify Dockerfile syntax",
-                        "Ensure all build dependencies are available",
-                    ],
+            successful_builds = build_summary.get("successful_builds", [])
+
+            # Report build results
+            if len(successful_builds) > 0:
+                self.rich_console.print(
+                    f"\n[green]✓ Built {len(successful_builds)} images[/green]"
                 )
 
-            # Report successful builds (successful_builds is a list)
-            successful_builds = build_summary.get("successful_builds", [])
-            self.rich_console.print(f"\n[green]✓ Built {len(successful_builds)} images[/green]\n")
+            if len(failed_builds) > 0:
+                self.rich_console.print(
+                    f"[yellow]⚠️  {len(failed_builds)} model(s) failed to build:[/yellow]"
+                )
+                for failed in failed_builds:
+                    model_name = failed.get("model", "unknown")
+                    error_msg = failed.get("error", "unknown error")
+                    self.rich_console.print(f"  [red]• {model_name}: {error_msg}[/red]")
 
-            # Step 5: Generate build manifest
-            self.rich_console.print("[bold cyan]📄 Generating build manifest...[/bold cyan]")
+            # Step 5: ALWAYS generate manifest (even with partial failures)
+            self.rich_console.print("\n[bold cyan]📄 Generating build manifest...[/bold cyan]")
             builder.export_build_manifest(manifest_output, registry, batch_build_metadata)
 
             # Step 6: Save build summary to manifest
@@ -278,6 +277,29 @@ class BuildOrchestrator:
 
             self.rich_console.print(f"[green]✓ Build complete: {manifest_output}[/green]")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+            # Step 8: Check if we should fail (only if ALL builds failed)
+            if len(failed_builds) > 0:
+                if len(successful_builds) == 0:
+                    # All builds failed - this is critical
+                    raise BuildError(
+                        "All builds failed - no images available",
+                        context=create_error_context(
+                            operation="build_images",
+                            component="BuildOrchestrator",
+                        ),
+                        suggestions=[
+                            "Check Docker build logs in *.build.live.log files",
+                            "Verify Dockerfile syntax",
+                            "Ensure base images are accessible",
+                        ],
+                    )
+                else:
+                    # Partial success - log warning but don't raise
+                    self.rich_console.print(
+                        f"[yellow]⚠️  Warning: Partial build - "
+                        f"{len(successful_builds)} succeeded, {len(failed_builds)} failed[/yellow]"
+                    )
 
             return manifest_output
 
