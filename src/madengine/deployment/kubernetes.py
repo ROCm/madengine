@@ -626,13 +626,21 @@ class KubernetesDeployment(BaseDeployment):
                 namespace=self.namespace, label_selector=f"job-name={deployment_id}"
             )
 
-            # Get model info from manifest
+            # Get model info and build info from manifest
             model_keys = list(self.manifest["built_models"].keys())
             if model_keys:
                 model_key = model_keys[0]
                 model_info = self.manifest["built_models"][model_key]
             else:
                 model_info = {}
+            
+            # Get build info from built_images
+            image_keys = list(self.manifest.get("built_images", {}).keys())
+            if image_keys:
+                image_key = image_keys[0]
+                build_info = self.manifest["built_images"][image_key]
+            else:
+                build_info = {}
 
             # Collect logs from each pod
             for pod in pods.items:
@@ -644,7 +652,7 @@ class KubernetesDeployment(BaseDeployment):
                     results["logs"].append({"pod": pod_name, "log": log})
                     
                     # Parse log to extract performance metrics
-                    perf_data = self._parse_performance_from_log(log, model_info, pod_name)
+                    perf_data = self._parse_performance_from_log(log, model_info, build_info, pod_name)
                     if perf_data:
                         results["successful_runs"].append(perf_data)
                         # Write to local perf.csv
@@ -678,14 +686,23 @@ class KubernetesDeployment(BaseDeployment):
 
         return results
     
-    def _parse_performance_from_log(self, log: str, model_info: Dict, pod_name: str) -> Optional[Dict]:
+    def _parse_performance_from_log(self, log: str, model_info: Dict, build_info: Dict, pod_name: str) -> Optional[Dict]:
         """
         Parse pod log to extract performance metrics.
         
-        Looks for pattern: "performance: <value> <metric>"
-        Example: "performance: 26607 samples_per_second"
+        Creates a result dict matching the local execution CSV format for consistency.
+        
+        Args:
+            log: Pod log content
+            model_info: Model information from manifest
+            build_info: Build information from manifest  
+            pod_name: Kubernetes pod name
+            
+        Returns:
+            Dict with all perf.csv fields, or None if parsing failed
         """
         import re
+        import os
         from datetime import datetime
         
         # Look for performance line: "performance: 12345 metric_name"
@@ -698,36 +715,76 @@ class KubernetesDeployment(BaseDeployment):
         performance = match.group(1).replace(',', '')  # Remove commas
         metric = match.group(2)
         
-        # Extract GPU info from log if available
-        gpu_arch = "unknown"
+        # Extract GPU architecture from device ID in log
+        gpu_architecture = ""
         gpu_match = re.search(r'0x([0-9a-fA-F]+)', log)
         if gpu_match:
             device_id = gpu_match.group(1)
-            # Map device IDs to architecture names
+            # Map device IDs to architecture names (same as MAD_SYSTEM_GPU_ARCHITECTURE)
             gpu_map = {
                 '74a1': 'gfx90a',  # MI250X
                 '740c': 'gfx90a',  # MI210
-                '740f': 'gfx90a',  # MI210
+                '740f': 'gfx90a',  # MI210  
                 '7408': 'gfx908',  # MI100
+                '73a1': 'gfx942',  # MI300X
+                '740f': 'gfx940',  # MI300A
             }
-            gpu_arch = gpu_map.get(device_id, f"gfx_{device_id}")
+            gpu_architecture = gpu_map.get(device_id, "")
         
-        # Build performance result dict compatible with madengine format
+        # Extract duration from logs if available
+        test_duration = ""
+        duration_match = re.search(r'duration:\s+([0-9.]+)', log, re.IGNORECASE)
+        if duration_match:
+            test_duration = duration_match.group(1)
+        
+        # Build performance result dict matching local execution format EXACTLY
+        # This ensures compatibility with existing perf.csv analysis tools
         result = {
-            "model": model_info.get("name", "unknown"),
-            "status": "SUCCESS",
+            # Core identification
+            "model": model_info.get("name", ""),
+            "n_gpus": str(model_info.get("n_gpus", "1")),
+            
+            # Model configuration
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": os.environ.get("pipeline", ""),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            
+            # Build information
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            
+            # Runtime information
+            "git_commit": "",  # Not available in K8s pod
+            "machine_name": pod_name,  # Use pod name as machine identifier
+            "gpu_architecture": gpu_architecture,
+            
+            # Performance metrics
             "performance": performance,
             "metric": metric,
-            "gpu_arch": gpu_arch,
-            "n_gpus": model_info.get("n_gpus", "1"),
-            "pod_name": pod_name,
-            "deployment_type": "k8s",
-            "timestamp": datetime.now().isoformat(),
-            # Add other fields for CSV compatibility
-            "data_name": "N/A",
-            "data_provider": "N/A",
-            "duration": "N/A",  # Could parse from logs if needed
+            "relative_change": "",
+            "status": "SUCCESS",
+            
+            # Timing
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": test_duration,
+            
+            # Data information
+            "dataname": "",
+            "data_provider_type": "",
+            "data_size": "",
+            "data_download_duration": "",
+            
+            # Build tracking
+            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        
+        # Flatten tags if they are in list format (same as local execution)
+        if isinstance(result["tags"], list):
+            result["tags"] = ",".join(str(item) for item in result["tags"])
         
         return result
     
@@ -735,7 +792,8 @@ class KubernetesDeployment(BaseDeployment):
         """
         Write performance data to local perf.csv file.
         
-        Creates or appends to perf.csv in madengine format.
+        Uses the same format as local execution for consistency.
+        Matches the schema from container_runner.py's create_run_details_dict().
         """
         import csv
         from pathlib import Path
@@ -745,32 +803,46 @@ class KubernetesDeployment(BaseDeployment):
         # Check if file exists to determine if we need headers
         file_exists = perf_csv_path.exists()
         
-        # CSV headers matching madengine format
+        # CSV headers matching local execution format EXACTLY
+        # This is the same order as in container_runner.py line 69
         headers = [
             "model",
-            "status",
+            "n_gpus",
+            "training_precision",
+            "pipeline",
+            "args",
+            "tags",
+            "docker_file",
+            "base_docker",
+            "docker_sha",
+            "docker_image",
+            "git_commit",
+            "machine_name",
+            "gpu_architecture",
             "performance",
             "metric",
-            "gpu_arch",
-            "n_gpus",
-            "data_name",
-            "data_provider",
-            "duration",
-            "deployment_type",
-            "pod_name",
-            "timestamp",
+            "relative_change",
+            "status",
+            "build_duration",
+            "test_duration",
+            "dataname",
+            "data_provider_type",
+            "data_size",
+            "data_download_duration",
+            "build_number",
+            "additional_docker_run_options",
         ]
         
         # Write to CSV
         with open(perf_csv_path, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
             
             # Write headers if new file
             if not file_exists:
                 writer.writeheader()
             
-            # Write data row
-            writer.writerow({h: perf_data.get(h, "N/A") for h in headers})
+            # Write data row (only fields in headers will be written)
+            writer.writerow(perf_data)
 
     def cleanup(self, deployment_id: str) -> bool:
         """Delete Job, ConfigMap, Service and associated pods."""
