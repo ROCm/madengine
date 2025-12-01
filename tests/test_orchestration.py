@@ -426,9 +426,9 @@ class TestRunOrchestrator:
         orchestrator = RunOrchestrator(mock_args)
 
         built_images = {
-            "model1": {"name": "model1", "gpu_architecture": "gfx90a"},
-            "model2": {"name": "model2", "gpu_architecture": "gfx908"},
-            "model3": {"name": "model3", "gpu_architecture": ""},  # Legacy
+            "model1": {"name": "model1", "gpu_architecture": "gfx90a", "gpu_vendor": "AMD"},
+            "model2": {"name": "model2", "gpu_architecture": "gfx908", "gpu_vendor": "AMD"},
+            "model3": {"name": "model3", "gpu_architecture": ""},  # Legacy - no gpu_vendor
         }
 
         # Filter for gfx90a
@@ -438,5 +438,5 @@ class TestRunOrchestrator:
 
         assert "model1" in compatible
         assert "model2" not in compatible
-        assert "model3" in compatible  # Legacy images pass through
+        assert "model3" in compatible  # Legacy images without gpu_vendor pass through
 

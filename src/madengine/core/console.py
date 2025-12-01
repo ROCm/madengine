@@ -146,20 +146,31 @@ class Console:
             if not self.live_output:
                 outs, errs = proc.communicate(timeout=timeout)
             else:
-                outs = []
-                for stdout_line in iter(
-                    lambda: proc.stdout.readline()
-                    .encode("utf-8", errors="replace")
-                    .decode("utf-8", errors="replace"),
-                    "",
-                ):
-                    print(prefix + stdout_line, end="")
-                    outs.append(stdout_line)
-                outs = "".join(outs)
-                proc.stdout.close()
+                try:
+                    outs = []
+                    for stdout_line in iter(
+                        lambda: proc.stdout.readline()
+                        .encode("utf-8", errors="replace")
+                        .decode("utf-8", errors="replace"),
+                        "",
+                    ):
+                        print(prefix + stdout_line, end="")
+                        outs.append(stdout_line)
+                    outs = "".join(outs)
+                finally:
+                    # Ensure stdout is always closed
+                    if proc.stdout and not proc.stdout.closed:
+                        proc.stdout.close()
                 proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
+            # Wait for process to finish after kill and clean up pipes
+            try:
+                proc.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                # Force terminate if still not dead
+                proc.terminate()
+                proc.communicate()
             raise RuntimeError("Console script timeout") from exc
 
         # Check for failure
