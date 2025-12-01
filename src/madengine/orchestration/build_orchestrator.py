@@ -55,23 +55,36 @@ class BuildOrchestrator:
 
         # Merge additional_context from args and parameter
         merged_context = {}
+        
+        # Load from file first if provided
+        if hasattr(args, "additional_context_file") and args.additional_context_file:
+            try:
+                with open(args.additional_context_file, "r") as f:
+                    merged_context = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print(f"Warning: Could not load additional_context_file: {e}")
+        
+        # Then merge string additional_context (overrides file)
         if hasattr(args, "additional_context") and args.additional_context:
             try:
                 if isinstance(args.additional_context, str):
-                    merged_context = json.loads(args.additional_context)
+                    context_from_string = json.loads(args.additional_context)
+                    merged_context.update(context_from_string)
                 elif isinstance(args.additional_context, dict):
-                    merged_context = args.additional_context
+                    merged_context.update(args.additional_context)
             except json.JSONDecodeError:
                 pass
 
+        # Finally merge parameter additional_context (overrides all)
         if additional_context:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
 
         # Initialize context in build-only mode (no GPU detection)
-        # Context expects additional_context as a string, not dict
-        context_string = json.dumps(merged_context) if merged_context else None
+        # Context expects additional_context as a string representation of Python dict
+        # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
+        context_string = repr(merged_context) if merged_context else None
         self.context = Context(
             additional_context=context_string,
             build_only_mode=True,
@@ -338,6 +351,7 @@ class BuildOrchestrator:
     def _save_deployment_config(self, manifest_file: str):
         """Save deployment_config from --additional-context to manifest."""
         if not self.additional_context:
+            self.rich_console.print("[dim]No additional_context provided, skipping deployment config[/dim]")
             return
 
         try:
@@ -366,9 +380,11 @@ class BuildOrchestrator:
                 with open(manifest_file, "w") as f:
                     json.dump(manifest, f, indent=2)
 
-                print(f"Saved deployment config to {manifest_file}")
+                self.rich_console.print(f"[green]✓ Saved deployment config to {manifest_file}[/green]")
+            else:
+                self.rich_console.print("[dim]No deployment config to save (local execution)[/dim]")
 
         except Exception as e:
             # Non-fatal - just warn
-            print(f"Warning: Could not save deployment config: {e}")
+            self.rich_console.print(f"[yellow]Warning: Could not save deployment config: {e}[/yellow]")
 

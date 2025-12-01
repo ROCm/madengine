@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ configmap_name }}
+  namespace: {{ namespace }}
+  labels:
+    app: madengine
+    model: {{ model_name }}
+data:
+  build_manifest.json: |
+{{ manifest_content | indent(4, first=True) }}
+  credential.json: |
+{{ credential_content | indent(4, first=True) }}
+  {% if run_script_content %}
+  run.sh: |
+{{ run_script_content | indent(4, first=True) }}
+  {% endif %}
+

@@ -84,6 +84,7 @@ all = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/madengine/scripts" = "madengine/scripts"
+"src/madengine/deployment/templates" = "madengine/deployment/templates"
 
 [tool.hatch.version]
 source = "versioningit"

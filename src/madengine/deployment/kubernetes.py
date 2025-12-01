@@ -1,24 +1,37 @@
 #!/usr/bin/env python3
 """
-Kubernetes Deployment - Container orchestration using Python library.
+Kubernetes Deployment - Container orchestration using Jinja2 templates + Python library.
 
-Uses Kubernetes Python client library for type-safe, production-ready deployment.
+Uses Jinja2 templates for manifest generation (industry best practice) and
+Kubernetes Python client library for applying manifests.
 Requires AMD GPU Device Plugin: https://github.com/ROCm/k8s-device-plugin
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
-    from kubernetes import client, config
+    from kubernetes import client
+    from kubernetes import config as k8s_config
     from kubernetes.client.rest import ApiException
 
     KUBERNETES_AVAILABLE = True
 except ImportError:
     KUBERNETES_AVAILABLE = False
+
+try:
+    import yaml
+
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
+from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 
@@ -45,19 +58,25 @@ class KubernetesDeployment(BaseDeployment):
 
     def __init__(self, config: DeploymentConfig):
         """
-        Initialize Kubernetes deployment.
+        Initialize Kubernetes deployment with Jinja2 templates.
 
         Args:
             config: Deployment configuration
 
         Raises:
-            ImportError: If kubernetes Python library not installed
+            ImportError: If kubernetes or yaml Python libraries not installed
         """
         if not KUBERNETES_AVAILABLE:
             raise ImportError(
                 "Kubernetes Python library not installed.\n"
                 "Install with: pip install madengine[kubernetes]\n"
                 "Or: pip install kubernetes"
+            )
+
+        if not YAML_AVAILABLE:
+            raise ImportError(
+                "PyYAML library not installed.\n"
+                "Install with: pip install pyyaml"
             )
 
         super().__init__(config)
@@ -70,17 +89,21 @@ class KubernetesDeployment(BaseDeployment):
         self.namespace = self.k8s_config.get("namespace", "default")
         self.gpu_resource_name = self.k8s_config.get("gpu_resource_name", "amd.com/gpu")
 
+        # Setup Jinja2 template environment
+        template_dir = Path(__file__).parent / "templates" / "kubernetes"
+        self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
+
         # Load Kubernetes configuration
         kubeconfig_path = self.k8s_config.get("kubeconfig")
         try:
             if kubeconfig_path:
-                config.load_kube_config(config_file=kubeconfig_path)
+                k8s_config.load_kube_config(config_file=kubeconfig_path)
             else:
                 # Try in-cluster first, then default kubeconfig
                 try:
-                    config.load_incluster_config()
+                    k8s_config.load_incluster_config()
                 except:
-                    config.load_kube_config()
+                    k8s_config.load_kube_config()
         except Exception as e:
             raise RuntimeError(f"Failed to load Kubernetes config: {e}")
 
@@ -88,9 +111,12 @@ class KubernetesDeployment(BaseDeployment):
         self.batch_v1 = client.BatchV1Api()
         self.core_v1 = client.CoreV1Api()
 
-        # Generated Job name
+        # Generated resources
         self.job_name = None
-        self.job_manifest = None
+        self.configmap_name = None
+        self.configmap_yaml = None
+        self.job_yaml = None
+        self.service_yaml = None
 
     def validate(self) -> bool:
         """Validate Kubernetes cluster access and configuration."""
@@ -139,7 +165,7 @@ class KubernetesDeployment(BaseDeployment):
             return False
 
     def prepare(self) -> bool:
-        """Prepare K8s Job manifest."""
+        """Generate K8s manifests from Jinja2 templates."""
         try:
             # Get model info
             model_keys = list(self.manifest["built_models"].keys())
@@ -150,185 +176,248 @@ class KubernetesDeployment(BaseDeployment):
             model_info = self.manifest["built_models"][model_key]
             image_info = self.manifest["built_images"][model_key]
 
-            # Generate job name (K8s compatible: lowercase, hyphens)
-            self.job_name = f"madengine-{model_info['name'].lower().replace('_', '-')}"
+            # Generate resource names (K8s compatible: lowercase, hyphens)
+            model_name = model_info["name"].lower().replace("_", "-")
+            self.job_name = f"madengine-{model_name}"
+            self.configmap_name = f"{self.job_name}-config"
 
-            # Build Job manifest using Python objects
-            self.job_manifest = self._build_job_manifest(model_info, image_info)
+            # Prepare template context
+            context = self._prepare_template_context(model_info, image_info)
+
+            # Render ConfigMap template
+            configmap_template = self.jinja_env.get_template("configmap.yaml.j2")
+            self.configmap_yaml = configmap_template.render(**context)
+
+            # Render Job template
+            job_template = self.jinja_env.get_template("job.yaml.j2")
+            self.job_yaml = job_template.render(**context)
+
+            # Optionally render Service template (for multi-node torchrun)
+            if context.get("create_headless_service"):
+                service_template = self.jinja_env.get_template("service.yaml.j2")
+                self.service_yaml = service_template.render(**context)
+
+            # Debug mode: save rendered manifests
+            if self.config.additional_context.get("debug", False):
+                self._save_debug_manifests()
 
             self.console.print(
-                f"[green]✓ Prepared Job manifest: {self.job_name}[/green]"
+                f"[green]✓ Prepared K8s manifests: {self.job_name}[/green]"
             )
             return True
 
         except Exception as e:
-            self.console.print(f"[red]✗ Failed to prepare manifest: {e}[/red]")
+            self.console.print(f"[red]✗ Failed to prepare manifests: {e}[/red]")
+            import traceback
+
+            traceback.print_exc()
             return False
 
-    def _build_job_manifest(
+    def _prepare_template_context(
         self, model_info: Dict, image_info: Dict
-    ) -> Any:
-        """Build K8s Job manifest using Python objects (returns client.V1Job)."""
+    ) -> Dict[str, Any]:
+        """
+        Prepare context dictionary for Jinja2 template rendering.
+
+        Args:
+            model_info: Model configuration from build_manifest.json
+            image_info: Image information from build_manifest.json
+
+        Returns:
+            Context dictionary with all template variables
+        """
         gpu_count = int(model_info.get("n_gpus", 1))
+        model_name = model_info["name"]
 
-        # Container specification
-        container = client.V1Container(
-            name=self.job_name,
-            image=image_info["registry_image"],
-            image_pull_policy=self.k8s_config.get("image_pull_policy", "Always"),
-            working_dir="/workspace",
-            command=["/bin/bash", "-c"],
-            args=[self._get_container_script(model_info)],
-            resources=client.V1ResourceRequirements(
-                requests={
-                    self.gpu_resource_name: str(gpu_count),
+        # Load manifest and credential content for ConfigMap
+        with open(self.config.manifest_file, "r") as f:
+            manifest_content = f.read()
+
+        credential_content = "{}"
+        credential_path = Path("credential.json")
+        if credential_path.exists():
+            with open(credential_path, "r") as f:
+                credential_content = f.read()
+
+        # Load model run script content
+        run_script_content = None
+        model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run.sh"
+        if model_script_path:
+            script_file = Path(model_script_path)
+            if script_file.exists():
+                with open(script_file, "r") as f:
+                    run_script_content = f.read()
+                self.console.print(f"[dim]Loaded script: {model_script_path}[/dim]")
+            else:
+                self.console.print(f"[yellow]Warning: Script not found: {model_script_path}[/yellow]")
+
+        # Get launcher configuration if present
+        launcher_config = self.config.additional_context.get("launcher")
+        launcher_type = launcher_config.get("type") if launcher_config else None
+        launcher_command = None
+
+        # Determine if we need multi-node setup
+        nnodes = 1
+        create_headless_service = False
+        subdomain = None
+
+        if launcher_type == "torchrun":
+            nnodes = launcher_config.get("nnodes", 1)
+            if nnodes > 1:
+                create_headless_service = True
+                subdomain = self.job_name
+
+        # Build complete context
+        context = {
+            # Job metadata
+            "job_name": self.job_name,
+            "namespace": self.namespace,
+            "model_name": model_name,
+            # ConfigMap
+            "configmap_name": self.configmap_name,
+            "manifest_content": manifest_content,
+            "credential_content": credential_content,
+            "run_script_content": run_script_content,
+            # Image
+            "image": image_info["registry_image"],
+            "image_pull_policy": self.k8s_config.get("image_pull_policy", "Always"),
+            # Resources
+            "gpu_resource_name": self.gpu_resource_name,
+            "gpu_count": gpu_count,
                     "memory": self.k8s_config.get("memory", "128Gi"),
+            "memory_limit": self.k8s_config.get("memory_limit", "256Gi"),
                     "cpu": self.k8s_config.get("cpu", "32"),
-                },
-                limits={
-                    self.gpu_resource_name: str(gpu_count),
-                    "memory": self.k8s_config.get("memory_limit", "256Gi"),
-                    "cpu": self.k8s_config.get("cpu_limit", "64"),
-                },
+            "cpu_limit": self.k8s_config.get("cpu_limit", "64"),
+            # Job spec
+            "completions": nnodes,
+            "parallelism": nnodes,
+            "completion_mode": "Indexed" if nnodes > 1 else None,
+            "backoff_limit": self.k8s_config.get("backoff_limit", 3),
+            # Pod spec
+            "node_selector": self.k8s_config.get("node_selector", {}),
+            "tolerations": self.k8s_config.get("tolerations", []),
+            "host_ipc": nnodes > 1,  # Enable for multi-node
+            "subdomain": subdomain,
+            # Execution
+            "gpu_visibility": "0",
+            "gpu_architecture": self.manifest.get("context", {}).get(
+                "gpu_architecture", "gfx90a"
             ),
-            volume_mounts=self._build_volume_mounts(),
+            "model_script": model_info.get("scripts", "run.sh"),
+            "launcher_type": launcher_type,
+            "launcher_command": launcher_command,
+            "timeout": self.config.timeout,
+            # Environment
+            "env_vars": self.config.additional_context.get("env_vars", {}),
+            # Volumes
+            "results_pvc": self.k8s_config.get("results_pvc"),
+            "data_pvc": self.k8s_config.get("data_pvc"),
+            # Multi-node
+            "create_headless_service": create_headless_service,
+            "service_name": self.job_name,
+            "ports": [29500] if create_headless_service else [],
+        }
+
+        return context
+
+    def _save_debug_manifests(self):
+        """Save rendered manifests to disk for debugging."""
+        output_dir = Path(self.k8s_config.get("output_dir", "./k8s_manifests"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save ConfigMap
+        (output_dir / "configmap.yaml").write_text(self.configmap_yaml)
+
+        # Save Job
+        (output_dir / "job.yaml").write_text(self.job_yaml)
+
+        # Save Service if exists
+        if self.service_yaml:
+            (output_dir / "service.yaml").write_text(self.service_yaml)
+
+        self.console.print(
+            f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
         )
 
-        # Pod specification
-        pod_spec = client.V1PodSpec(
-            restart_policy="Never",
-            containers=[container],
-            node_selector=self.k8s_config.get("node_selector", {}),
-            tolerations=self._build_tolerations(),
-            volumes=self._build_volumes(),
-        )
-
-        # Job specification
-        job_spec = client.V1JobSpec(
-            template=client.V1PodTemplateSpec(
-                metadata=client.V1ObjectMeta(
-                    labels={"app": "madengine", "model": model_info["name"]}
-                ),
-                spec=pod_spec,
-            ),
-            backoff_limit=self.k8s_config.get("backoff_limit", 3),
-            completions=1,
-            parallelism=1,
-        )
-
-        # Complete Job object
-        job = client.V1Job(
-            api_version="batch/v1",
-            kind="Job",
-            metadata=client.V1ObjectMeta(
+    def _cleanup_existing_resources(self):
+        """Delete existing Job, ConfigMap, and Service if they exist."""
+        # Delete existing Job
+        try:
+            self.batch_v1.delete_namespaced_job(
                 name=self.job_name,
                 namespace=self.namespace,
-                labels={
-                    "app": "madengine",
-                    "model": model_info["name"],
-                    "madengine-job": "true",
-                },
-            ),
-            spec=job_spec,
-        )
-
-        return job
-
-    def _get_container_script(self, model_info: Dict) -> str:
-        """Generate container startup script."""
-        return """
-        set -e
-        echo "MADEngine Kubernetes Job Starting..."
+                propagation_policy="Background"
+            )
+            self.console.print(f"[dim]Deleted existing Job: {self.job_name}[/dim]")
+        except ApiException as e:
+            if e.status != 404:  # Ignore not found
+                pass
         
-        # GPU visibility (AMD GPU Device Plugin handles allocation)
-        export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-0}
+        # Delete existing ConfigMap
+        try:
+            self.core_v1.delete_namespaced_config_map(
+                name=self.configmap_name,
+                namespace=self.namespace
+            )
+            self.console.print(f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]")
+        except ApiException as e:
+            if e.status != 404:
+                pass
         
-        # Run MAD model automation workflow
-        cd /workspace
-        bash run.sh
+        # Delete existing Service
+        if hasattr(self, 'service_yaml') and self.service_yaml:
+            try:
+                self.core_v1.delete_namespaced_service(
+                    name=self.job_name,
+                    namespace=self.namespace
+                )
+                self.console.print(f"[dim]Deleted existing Service: {self.job_name}[/dim]")
+            except ApiException as e:
+                if e.status != 404:
+                    pass
         
-        # Copy results if configured
-        if [ -f "perf.csv" ] && [ -d "/results" ]; then
-            cp perf.csv /results/perf_${HOSTNAME}.csv
-        fi
-        
-        echo "Job completed with exit code $?"
-        """
-
-    def _build_volume_mounts(self) -> List:
-        """Build volume mounts from configuration."""
-        mounts = []
-
-        if self.k8s_config.get("results_pvc"):
-            mounts.append(
-                client.V1VolumeMount(name="results", mount_path="/results")
-            )
-
-        if self.k8s_config.get("data_pvc"):
-            mounts.append(
-                client.V1VolumeMount(
-                    name="data", mount_path="/data", read_only=True
-                )
-            )
-
-        return mounts
-
-    def _build_volumes(self) -> List:
-        """Build volumes from configuration."""
-        volumes = []
-
-        if self.k8s_config.get("results_pvc"):
-            volumes.append(
-                client.V1Volume(
-                    name="results",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                        claim_name=self.k8s_config["results_pvc"]
-                    ),
-                )
-            )
-
-        if self.k8s_config.get("data_pvc"):
-            volumes.append(
-                client.V1Volume(
-                    name="data",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                        claim_name=self.k8s_config["data_pvc"]
-                    ),
-                )
-            )
-
-        return volumes
-
-    def _build_tolerations(self) -> List:
-        """Build tolerations from configuration."""
-        tolerations_config = self.k8s_config.get("tolerations", [])
-        tolerations = []
-
-        for tol in tolerations_config:
-            tolerations.append(
-                client.V1Toleration(
-                    key=tol.get("key"),
-                    operator=tol.get("operator", "Equal"),
-                    value=tol.get("value", ""),
-                    effect=tol.get("effect", "NoSchedule"),
-                )
-            )
-
-        return tolerations
+        # Wait a moment for resources to be deleted
+        import time
+        time.sleep(1)
 
     def deploy(self) -> DeploymentResult:
-        """Submit Job to Kubernetes cluster."""
+        """Apply rendered manifests using kubernetes Python client."""
         try:
-            # Create Job using Python API
-            job = self.batch_v1.create_namespaced_job(
-                namespace=self.namespace, body=self.job_manifest
+            # Clean up any existing resources first
+            self._cleanup_existing_resources()
+            
+            # 1. Create ConfigMap
+            self.console.print("[blue]Creating ConfigMap...[/blue]")
+            configmap_dict = yaml.safe_load(self.configmap_yaml)
+            self.core_v1.create_namespaced_config_map(
+                namespace=self.namespace, body=configmap_dict
             )
+            self.console.print(
+                f"[green]✓ Created ConfigMap: {self.configmap_name}[/green]"
+            )
+
+            # 2. Create Service (if needed for multi-node)
+            if self.service_yaml:
+                self.console.print("[blue]Creating headless Service...[/blue]")
+                service_dict = yaml.safe_load(self.service_yaml)
+                self.core_v1.create_namespaced_service(
+                    namespace=self.namespace, body=service_dict
+                )
+                self.console.print(f"[green]✓ Created Service: {self.job_name}[/green]")
+
+            # 3. Create Job
+            self.console.print("[blue]Creating Job...[/blue]")
+            job_dict = yaml.safe_load(self.job_yaml)
+            job = self.batch_v1.create_namespaced_job(
+                namespace=self.namespace, body=job_dict
+            )
+
+            # Extract image for display
+            image = job_dict["spec"]["template"]["spec"]["containers"][0]["image"]
 
             self.console.print(f"[green]✓ Submitted K8s Job: {self.job_name}[/green]")
             self.console.print(f"  Namespace: {self.namespace}")
-            self.console.print(
-                f"  Image: {self.job_manifest.spec.template.spec.containers[0].image}"
-            )
+            self.console.print(f"  Image: {image}")
 
             return DeploymentResult(
                 status=DeploymentStatus.SUCCESS,
@@ -350,7 +439,22 @@ class KubernetesDeployment(BaseDeployment):
             )
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
-        """Monitor Job status using Python API."""
+        """
+        Monitor Job status using Python API.
+        
+        If live_output is enabled, streams pod logs in real-time.
+        Otherwise, polls status periodically.
+        """
+        # Check if live output is requested
+        live_output = self.config.additional_context.get("live_output", False)
+        
+        if live_output:
+            return self._monitor_with_live_logs(deployment_id)
+        else:
+            return self._monitor_status_only(deployment_id)
+    
+    def _monitor_status_only(self, deployment_id: str) -> DeploymentResult:
+        """Monitor Job status without streaming logs."""
         try:
             job = self.batch_v1.read_namespaced_job_status(
                 name=deployment_id, namespace=self.namespace
@@ -365,6 +469,8 @@ class KubernetesDeployment(BaseDeployment):
                 )
 
             if job.status.failed:
+                # Get pod logs to show error
+                self._print_pod_logs_on_failure(deployment_id)
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
                     deployment_id=deployment_id,
@@ -392,13 +498,126 @@ class KubernetesDeployment(BaseDeployment):
                     message=f"Job {deployment_id} not found",
                 )
             raise
+    
+    def _monitor_with_live_logs(self, deployment_id: str) -> DeploymentResult:
+        """Monitor Job and stream logs in real-time."""
+        import time
+        
+        self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
+        
+        pod_name = None
+        log_position = 0
+        
+        while True:
+            try:
+                # Check job status
+                job = self.batch_v1.read_namespaced_job_status(
+                    name=deployment_id, namespace=self.namespace
+                )
+                
+                # Get pod if we don't have it yet
+                if not pod_name:
+                    pods = self.core_v1.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector=f"job-name={deployment_id}"
+                    )
+                    if pods.items:
+                        pod_name = pods.items[0].metadata.name
+                        self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
+                
+                # Stream logs if we have a pod
+                if pod_name:
+                    try:
+                        # Get logs from current position
+                        logs = self.core_v1.read_namespaced_pod_log(
+                            name=pod_name,
+                            namespace=self.namespace,
+                            tail_lines=100 if log_position == 0 else None
+                        )
+                        
+                        # Print new log lines
+                        if logs:
+                            log_lines = logs.split('\n')
+                            if len(log_lines) > log_position:
+                                for line in log_lines[log_position:]:
+                                    if line.strip():
+                                        print(line)
+                                log_position = len(log_lines)
+                    
+                    except ApiException as e:
+                        if e.status != 400:  # Ignore "container not ready" errors
+                            pass
+                
+                # Check if job completed
+                if job.status.succeeded:
+                    self.console.print(f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n")
+                    return DeploymentResult(
+                        status=DeploymentStatus.SUCCESS,
+                        deployment_id=deployment_id,
+                        message=f"Job {deployment_id} completed successfully",
+                    )
+                
+                if job.status.failed:
+                    self.console.print(f"\n[red]✗ Job {deployment_id} failed[/red]\n")
+                    # Print final logs
+                    if pod_name:
+                        self._print_pod_logs_on_failure(deployment_id)
+                    return DeploymentResult(
+                        status=DeploymentStatus.FAILED,
+                        deployment_id=deployment_id,
+                        message=f"Job {deployment_id} failed",
+                    )
+                
+                time.sleep(2)  # Poll every 2 seconds
+                
+            except ApiException as e:
+                if e.status == 404:
+                    return DeploymentResult(
+                        status=DeploymentStatus.FAILED,
+                        deployment_id=deployment_id,
+                        message=f"Job {deployment_id} not found",
+                    )
+                raise
+    
+    def _print_pod_logs_on_failure(self, deployment_id: str):
+        """Print pod logs when job fails (for debugging)."""
+        try:
+            self.console.print(f"\n[yellow]═══ Pod logs (last 50 lines) ═══[/yellow]\n")
+            
+            pods = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f"job-name={deployment_id}"
+            )
+            
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                try:
+                    logs = self.core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self.namespace,
+                        tail_lines=50
+                    )
+                    self.console.print(f"[dim]Pod: {pod_name}[/dim]")
+                    print(logs)
+                    print()
+                except ApiException:
+                    pass
+        except Exception:
+            pass
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
-        """Collect Job results and logs."""
+        """
+        Collect Job results and logs.
+        
+        Parses pod logs to extract performance metrics and creates
+        local perf.csv entries compatible with madengine format.
+        """
         results = {
             "job_name": deployment_id,
             "namespace": self.namespace,
             "logs": [],
+            "successful_runs": [],
+            "failed_runs": [],
         }
 
         try:
@@ -406,6 +625,14 @@ class KubernetesDeployment(BaseDeployment):
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace, label_selector=f"job-name={deployment_id}"
             )
+
+            # Get model info from manifest
+            model_keys = list(self.manifest["built_models"].keys())
+            if model_keys:
+                model_key = model_keys[0]
+                model_info = self.manifest["built_models"][model_key]
+            else:
+                model_info = {}
 
             # Collect logs from each pod
             for pod in pods.items:
@@ -415,20 +642,140 @@ class KubernetesDeployment(BaseDeployment):
                         name=pod_name, namespace=self.namespace
                     )
                     results["logs"].append({"pod": pod_name, "log": log})
-                except ApiException:
-                    pass
+                    
+                    # Parse log to extract performance metrics
+                    perf_data = self._parse_performance_from_log(log, model_info, pod_name)
+                    if perf_data:
+                        results["successful_runs"].append(perf_data)
+                        # Write to local perf.csv
+                        self._write_to_perf_csv(perf_data)
+                    else:
+                        results["failed_runs"].append({
+                            "pod": pod_name,
+                            "error": "Failed to parse performance metrics from logs"
+                        })
+                        
+                except ApiException as e:
+                    results["failed_runs"].append({
+                        "pod": pod_name,
+                        "error": f"Failed to get logs: {e.reason}"
+                    })
 
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
             )
+            
+            if results["successful_runs"]:
+                self.console.print(
+                    f"[green]✓ Parsed {len(results['successful_runs'])} performance results[/green]"
+                )
+                self.console.print(
+                    f"[green]✓ Updated local perf.csv[/green]"
+                )
 
         except Exception as e:
             self.console.print(f"[yellow]⚠ Results collection incomplete: {e}[/yellow]")
 
         return results
+    
+    def _parse_performance_from_log(self, log: str, model_info: Dict, pod_name: str) -> Optional[Dict]:
+        """
+        Parse pod log to extract performance metrics.
+        
+        Looks for pattern: "performance: <value> <metric>"
+        Example: "performance: 26607 samples_per_second"
+        """
+        import re
+        from datetime import datetime
+        
+        # Look for performance line: "performance: 12345 metric_name"
+        perf_pattern = r'performance:\s+([0-9,.]+)\s+([a-zA-Z_/]+)'
+        match = re.search(perf_pattern, log)
+        
+        if not match:
+            return None
+        
+        performance = match.group(1).replace(',', '')  # Remove commas
+        metric = match.group(2)
+        
+        # Extract GPU info from log if available
+        gpu_arch = "unknown"
+        gpu_match = re.search(r'0x([0-9a-fA-F]+)', log)
+        if gpu_match:
+            device_id = gpu_match.group(1)
+            # Map device IDs to architecture names
+            gpu_map = {
+                '74a1': 'gfx90a',  # MI250X
+                '740c': 'gfx90a',  # MI210
+                '740f': 'gfx90a',  # MI210
+                '7408': 'gfx908',  # MI100
+            }
+            gpu_arch = gpu_map.get(device_id, f"gfx_{device_id}")
+        
+        # Build performance result dict compatible with madengine format
+        result = {
+            "model": model_info.get("name", "unknown"),
+            "status": "SUCCESS",
+            "performance": performance,
+            "metric": metric,
+            "gpu_arch": gpu_arch,
+            "n_gpus": model_info.get("n_gpus", "1"),
+            "pod_name": pod_name,
+            "deployment_type": "k8s",
+            "timestamp": datetime.now().isoformat(),
+            # Add other fields for CSV compatibility
+            "data_name": "N/A",
+            "data_provider": "N/A",
+            "duration": "N/A",  # Could parse from logs if needed
+        }
+        
+        return result
+    
+    def _write_to_perf_csv(self, perf_data: Dict):
+        """
+        Write performance data to local perf.csv file.
+        
+        Creates or appends to perf.csv in madengine format.
+        """
+        import csv
+        from pathlib import Path
+        
+        perf_csv_path = Path("perf.csv")
+        
+        # Check if file exists to determine if we need headers
+        file_exists = perf_csv_path.exists()
+        
+        # CSV headers matching madengine format
+        headers = [
+            "model",
+            "status",
+            "performance",
+            "metric",
+            "gpu_arch",
+            "n_gpus",
+            "data_name",
+            "data_provider",
+            "duration",
+            "deployment_type",
+            "pod_name",
+            "timestamp",
+        ]
+        
+        # Write to CSV
+        with open(perf_csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            
+            # Write headers if new file
+            if not file_exists:
+                writer.writeheader()
+            
+            # Write data row
+            writer.writerow({h: perf_data.get(h, "N/A") for h in headers})
 
     def cleanup(self, deployment_id: str) -> bool:
-        """Delete Job and associated pods."""
+        """Delete Job, ConfigMap, Service and associated pods."""
+        success = True
+
         try:
             # Delete Job (propagates to pods)
             self.batch_v1.delete_namespaced_job(
@@ -436,16 +783,43 @@ class KubernetesDeployment(BaseDeployment):
                 namespace=self.namespace,
                 propagation_policy="Background",
             )
-
             self.console.print(f"[yellow]Deleted K8s Job: {deployment_id}[/yellow]")
-            return True
-
         except ApiException as e:
-            if e.status == 404:
-                return True  # Already deleted
-            self.console.print(f"[yellow]⚠ Cleanup warning: {e.reason}[/yellow]")
-            return False
+            if e.status != 404:
+                self.console.print(f"[yellow]⚠ Job cleanup warning: {e.reason}[/yellow]")
+                success = False
         except Exception as e:
-            self.console.print(f"[yellow]⚠ Cleanup error: {e}[/yellow]")
-            return False
+            self.console.print(f"[yellow]⚠ Job cleanup error: {e}[/yellow]")
+            success = False
+
+        # Delete ConfigMap
+        try:
+            configmap_name = f"{deployment_id}-config"
+            self.core_v1.delete_namespaced_config_map(
+                name=configmap_name, namespace=self.namespace
+            )
+            self.console.print(
+                f"[yellow]Deleted ConfigMap: {configmap_name}[/yellow]"
+            )
+        except ApiException as e:
+            if e.status != 404:
+                self.console.print(
+                    f"[yellow]⚠ ConfigMap cleanup warning: {e.reason}[/yellow]"
+                )
+        except Exception:
+            pass
+
+        # Delete Service (if exists)
+        try:
+            self.core_v1.delete_namespaced_service(
+                name=deployment_id, namespace=self.namespace
+            )
+            self.console.print(f"[yellow]Deleted Service: {deployment_id}[/yellow]")
+        except ApiException as e:
+            if e.status != 404:
+                pass  # Service may not exist for single-node jobs
+        except Exception:
+            pass
+
+        return success
 

@@ -1,0 +1,235 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ job_name }}
+  namespace: {{ namespace }}
+  labels:
+    app: madengine
+    model: {{ model_name }}
+    madengine-job: "true"
+spec:
+  completions: {{ completions }}
+  parallelism: {{ parallelism }}
+  {% if completion_mode %}
+  completionMode: {{ completion_mode }}
+  {% endif %}
+  backoffLimit: {{ backoff_limit }}
+  template:
+    metadata:
+      labels:
+        app: madengine
+        job-name: {{ job_name }}
+        model: {{ model_name }}
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 60
+      {% if subdomain %}
+      subdomain: {{ subdomain }}
+      {% endif %}
+      {% if node_selector %}
+      nodeSelector:
+        {% for key, value in node_selector.items() %}
+        {{ key }}: "{{ value }}"
+        {% endfor %}
+      {% endif %}
+      {% if host_ipc %}
+      hostIPC: true
+      {% endif %}
+      
+      # Init container extracts madengine scripts from package
+      initContainers:
+      - name: extract-scripts
+        image: {{ image }}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "=== Extracting madengine scripts ==="
+            
+            # Find madengine installation in container
+            MADENGINE_PATH=$(python3 -c "import madengine; import os; print(os.path.dirname(madengine.__file__))" 2>/dev/null || echo "/usr/local/lib/python3.*/site-packages/madengine")
+            echo "madengine location: $MADENGINE_PATH"
+            
+            # Copy common scripts (pre_scripts, post_scripts, tools)
+            if [ -d "$MADENGINE_PATH/scripts/common" ]; then
+                mkdir -p /workspace/scripts/common
+                cp -r $MADENGINE_PATH/scripts/common/* /workspace/scripts/common/
+                echo "✓ Copied common scripts"
+            fi
+            
+            # Create model script directory structure
+            mkdir -p /workspace/scripts/{{ model_name }}
+            
+            # Copy run script from ConfigMap if it exists
+            if [ -f /config/run.sh ]; then
+                echo "Copying run.sh to /workspace/scripts/{{ model_name }}/run.sh"
+                cp /config/run.sh /workspace/scripts/{{ model_name }}/run.sh
+                chmod +x /workspace/scripts/{{ model_name }}/run.sh
+            else
+                echo "Warning: run.sh not found in ConfigMap"
+            fi
+            
+            echo "Script extraction complete"
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: config
+          mountPath: /config
+          readOnly: true
+      
+      # Main container runs benchmark
+      containers:
+      - name: {{ job_name }}
+        image: {{ image }}
+        imagePullPolicy: {{ image_pull_policy }}
+        workingDir: /workspace
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "==================================================================="
+            echo "MADEngine Kubernetes Benchmark Job"
+            echo "Model: {{ model_name }}"
+            echo "Pod: $HOSTNAME"
+            {% if launcher_type %}
+            echo "Launcher: {{ launcher_type }}"
+            {% endif %}
+            echo "==================================================================="
+            
+            # Copy config files from ConfigMap to workspace
+            cp /config/build_manifest.json /workspace/
+            cp /config/credential.json /workspace/ 2>/dev/null || true
+            
+            # GPU Information
+            if command -v rocm-smi &> /dev/null; then
+                echo ""
+                echo "=== AMD GPU Information ==="
+                rocm-smi || true
+            fi
+            
+            # Set GPU visibility
+            export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-{{ gpu_visibility }}}
+            export MAD_SYSTEM_GPU_ARCHITECTURE={{ gpu_architecture }}
+            
+            # K8s environment
+            export MAD_K8S_POD_NAME=$HOSTNAME
+            export MAD_K8S_NAMESPACE={{ namespace }}
+            export MAD_K8S_JOB=true
+            
+            {% if launcher_command %}
+            # Launcher-based execution
+            echo ""
+            echo "=== Starting benchmark with {{ launcher_type }} ==="
+            {{ launcher_command | indent(12) }}
+            {% else %}
+            # Direct script execution
+            echo ""
+            echo "=== Running model benchmark script ==="
+            cd /workspace
+            
+            # Run the extracted script
+            if [ -f "{{ model_script }}" ]; then
+                bash {{ model_script }}
+            else
+                echo "ERROR: Script not found: {{ model_script }}"
+                echo "Available files in /workspace:"
+                ls -la /workspace/
+                echo ""
+                echo "Available files in /workspace/scripts:"
+                ls -la /workspace/scripts/ 2>/dev/null || echo "scripts/ directory not found"
+                exit 1
+            fi
+            {% endif %}
+            
+            EXIT_CODE=$?
+            
+            # Copy results to shared storage
+            {% if results_pvc %}
+            if [ -f "perf.csv" ]; then
+                cp perf.csv /results/perf_${HOSTNAME}.csv
+                echo "Results saved to /results/perf_${HOSTNAME}.csv"
+            fi
+            {% endif %}
+            
+            echo ""
+            echo "=== Benchmark job completed with exit code $EXIT_CODE ==="
+            exit $EXIT_CODE
+        
+        resources:
+          requests:
+            {{ gpu_resource_name }}: "{{ gpu_count }}"
+            memory: "{{ memory }}"
+            cpu: "{{ cpu }}"
+          limits:
+            {{ gpu_resource_name }}: "{{ gpu_count }}"
+            memory: "{{ memory_limit }}"
+            cpu: "{{ cpu_limit }}"
+        
+        env:
+        {% for key, value in env_vars.items() %}
+        - name: {{ key }}
+          value: "{{ value }}"
+        {% endfor %}
+        
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: shm
+          mountPath: /dev/shm
+        {% if results_pvc %}
+        - name: results
+          mountPath: /results
+        {% endif %}
+        {% if data_pvc %}
+        - name: data
+          mountPath: /data
+          readOnly: true
+        {% endif %}
+        
+        securityContext:
+          capabilities:
+            add:
+            - SYS_PTRACE
+          seccompProfile:
+            type: Unconfined
+      
+      {% if tolerations %}
+      tolerations:
+      {% for toleration in tolerations %}
+      - key: {{ toleration.key }}
+        {% if toleration.operator %}
+        operator: {{ toleration.operator }}
+        {% endif %}
+        {% if toleration.value %}
+        value: "{{ toleration.value }}"
+        {% endif %}
+        {% if toleration.effect %}
+        effect: {{ toleration.effect }}
+        {% endif %}
+      {% endfor %}
+      {% endif %}
+      
+      volumes:
+      - name: workspace
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: {{ configmap_name }}
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi
+      {% if results_pvc %}
+      - name: results
+        persistentVolumeClaim:
+          claimName: {{ results_pvc }}
+      {% endif %}
+      {% if data_pvc %}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ data_pvc }}
+      {% endif %}
+

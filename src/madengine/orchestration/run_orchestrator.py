@@ -151,8 +151,27 @@ class RunOrchestrator:
             # Step 2: Load manifest and merge with runtime context
             manifest_file = self._load_and_merge_manifest(manifest_file)
 
-            # Step 3: Determine execution target
-            target = self.additional_context.get("deploy", "local")
+            # Step 3: Determine execution target from manifest's deployment_config
+            # (with optional runtime override)
+            with open(manifest_file) as f:
+                manifest = json.load(f)
+            
+            deployment_config = manifest.get("deployment_config", {})
+            target = deployment_config.get("target", "local")
+            
+            # Allow runtime --additional-context to override target
+            if self.additional_context and "deploy" in self.additional_context:
+                target = self.additional_context["deploy"]
+                self.rich_console.print(f"[yellow]Runtime override: deploy target = '{target}'[/yellow]\n")
+            
+            # Update additional_context with deployment_config for deployment layer
+            if not self.additional_context:
+                self.additional_context = {}
+            
+            # Merge deployment_config into additional_context (for deployment layer to use)
+            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars"]:
+                if key in deployment_config and key not in self.additional_context:
+                    self.additional_context[key] = deployment_config[key]
 
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
@@ -372,6 +391,10 @@ class RunOrchestrator:
         from madengine.deployment.factory import DeploymentFactory
         from madengine.deployment.base import DeploymentConfig
 
+        # Add runtime flags to additional_context for deployment layer
+        if "live_output" not in self.additional_context:
+            self.additional_context["live_output"] = getattr(self.args, "live_output", False)
+
         # Create deployment configuration
         deployment_config = DeploymentConfig(
             target=target,
@@ -397,7 +420,15 @@ class RunOrchestrator:
 
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
-        return result.metrics or {}
+        # Return metrics in the format expected by display_results_table
+        # Extract successful_runs and failed_runs from metrics if available
+        if result.metrics:
+            return {
+                "successful_runs": result.metrics.get("successful_runs", []),
+                "failed_runs": result.metrics.get("failed_runs", []),
+            }
+        else:
+            return {"successful_runs": [], "failed_runs": []}
 
     def _show_node_info(self):
         """Show node ROCm information."""
