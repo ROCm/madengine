@@ -45,6 +45,7 @@ from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
+from madengine.core.cache import CacheManager, CacheEntry
 from madengine.utils.ops import PythonicTee, file_print, substring_found, find_and_replace_pattern
 from madengine.core.constants import MAD_MINIO, MAD_AWS_S3
 from madengine.core.constants import MODEL_DIR, PUBLIC_GITHUB_ROCM_KEY
@@ -170,6 +171,18 @@ class RunModels:
                 force_mirrorlocal=args.force_mirror_local,
             )
         self.creds = None
+
+        # Initialize cache manager if caching is enabled
+        self.cache_manager = None
+        if hasattr(args, 'enable_cache') and args.enable_cache:
+            self.cache_manager = CacheManager(
+                cache_dir=args.cache_dir if hasattr(args, 'cache_dir') else None,
+                max_entries=args.cache_max_entries if hasattr(args, 'cache_max_entries') else 5,
+                max_size_gb=args.cache_max_size_gb if hasattr(args, 'cache_max_size_gb') else 100.0,
+                console=self.console
+            )
+            print(f"Cache enabled: {self.cache_manager.cache_base_dir}")
+
         print(f"Context is {self.context.ctx}")
 
     def get_base_prefix_compat(self):
@@ -590,31 +603,116 @@ class RunModels:
             if self.args.clean_docker_cache:
                 use_cache_str = "--no-cache"
 
-            # build docker container
-            print(f"Building Docker image...")
-            build_start_time = time.time()
             # get docker image name
             run_details.docker_image = "ci-" + image_docker_name
             # get container name
             container_name = "container_" + re.sub('.*:','', image_docker_name) # remove docker container hub details
 
-            ## Note: --network=host added to fix issue on CentOS+FBK kernel, where iptables is not available
-            self.console.sh(
-                "docker build "
-                + use_cache_str
-                + " --network=host "
-                + " -t "
-                + run_details.docker_image
-                + " --pull -f "
-                + dockerfile
-                + " "
-                + build_args
-                + " "
-                + docker_context,
-                timeout=None,
-            )
-            run_details.build_duration = time.time() - build_start_time
-            print(f"Build Duration: {run_details.build_duration} seconds")
+            # Check if we should use cache
+            cache_entry = None
+            use_cached_image = False
+
+            if self.cache_manager and not (hasattr(self.args, 'force_rebuild') and self.args.force_rebuild):
+                # Generate cache key
+                run_config = {
+                    'model_name': info['name'],
+                    'dockerfile': dockerfile,
+                    'docker_context': docker_context,
+                    'build_args': run_build_arg,
+                    'additional_context': self.context.ctx.get('docker_build_arg', {}),
+                }
+
+                cache_key = self.cache_manager.generate_cache_key(
+                    docker_image=run_details.docker_image,
+                    model_tags=self.args.tags,
+                    additional_context=self.context.ctx,
+                    dockerfile=dockerfile
+                )
+
+                # Check if cache entry exists
+                cache_entry = self.cache_manager.get_cache_entry(cache_key)
+
+                if cache_entry:
+                    print(f"Cache hit! Loading Docker image from cache: {cache_entry.cache_id}")
+                    # Load docker image from tar
+                    loaded_image = Docker.load_image_from_tar(cache_entry.docker_tar_path, self.console)
+
+                    if loaded_image:
+                        run_details.docker_image = loaded_image
+                        use_cached_image = True
+                        run_details.build_duration = 0
+                        print(f"Docker image loaded from cache successfully")
+                    else:
+                        print(f"Warning: Failed to load cached image, will rebuild")
+                        cache_entry = None
+                else:
+                    print(f"Cache miss. Will build Docker image and save to cache.")
+
+            # Build docker container if not using cached image
+            if not use_cached_image:
+                print(f"Building Docker image...")
+                build_start_time = time.time()
+
+                ## Note: --network=host added to fix issue on CentOS+FBK kernel, where iptables is not available
+                self.console.sh(
+                    "docker build "
+                    + use_cache_str
+                    + " --network=host "
+                    + " -t "
+                    + run_details.docker_image
+                    + " --pull -f "
+                    + dockerfile
+                    + " "
+                    + build_args
+                    + " "
+                    + docker_context,
+                    timeout=None,
+                )
+                run_details.build_duration = time.time() - build_start_time
+                print(f"Build Duration: {run_details.build_duration} seconds")
+
+                # Save to cache if caching is enabled
+                if self.cache_manager:
+                    try:
+                        print(f"Saving Docker image to cache...")
+                        # Create temporary tar file
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.tar', delete=False) as tmp_tar:
+                            tar_path = tmp_tar.name
+
+                        # Save docker image to tar
+                        if Docker.save_image_to_tar(run_details.docker_image, tar_path, self.console):
+                            # Save cache entry
+                            run_config = {
+                                'model_name': info['name'],
+                                'dockerfile': dockerfile,
+                                'docker_context': docker_context,
+                                'build_args': run_build_arg,
+                                'additional_context': self.context.ctx,
+                                'base_docker': build_args,
+                            }
+
+                            # Determine node count (multi-node support)
+                            node_count = 1
+                            if 'n_nodes' in info:
+                                node_count = int(info['n_nodes'])
+
+                            cache_entry = self.cache_manager.save_cache_entry(
+                                docker_image=run_details.docker_image,
+                                docker_tar_path=tar_path,
+                                run_config=run_config,
+                                model_tags=self.args.tags,
+                                node_count=node_count
+                            )
+                            print(f"Docker image saved to cache: {cache_entry.cache_id}")
+
+                            # Remove temporary tar file
+                            if os.path.exists(tar_path):
+                                os.remove(tar_path)
+                        else:
+                            print(f"Warning: Failed to save Docker image to cache")
+                    except Exception as e:
+                        print(f"Warning: Error saving to cache: {e}")
 
             print(f"MAD_CONTAINER_IMAGE is {run_details.docker_image}")
 
@@ -1112,6 +1210,133 @@ class RunModels:
 
         return self.return_status
 
+    def run_from_cache(self) -> bool:
+        """Run model directly from cached entry.
+
+        Returns:
+            bool: The status of running model from cache.
+
+        Raises:
+            Exception: An error occurred while running model from cache.
+        """
+        cache_id = self.args.from_cache
+
+        print(f"Running from cache: {cache_id}")
+        print("=" * 80)
+
+        # Initialize cache manager if not already initialized
+        if self.cache_manager is None:
+            self.cache_manager = CacheManager(
+                cache_dir=self.args.cache_dir if hasattr(self.args, 'cache_dir') else None,
+                max_entries=self.args.cache_max_entries if hasattr(self.args, 'cache_max_entries') else 5,
+                max_size_gb=self.args.cache_max_size_gb if hasattr(self.args, 'cache_max_size_gb') else 100.0,
+                console=self.console
+            )
+
+        # Get cache entry
+        cache_entry = self.cache_manager.get_cache_entry_by_id(cache_id)
+
+        if not cache_entry:
+            print(f"Error: Cache entry '{cache_id}' not found")
+            print("\nAvailable cache entries:")
+            entries = self.cache_manager.list_cache_entries()
+            if entries:
+                for entry in entries:
+                    print(f"  - {entry.cache_id}: {entry.docker_image} (tags: {', '.join(entry.model_tags)})")
+            else:
+                print("  (no cache entries found)")
+            print("\nTip: Use 'madengine cache list' to see all available cache entries")
+            return False
+
+        print(f"Cache Entry: {cache_entry.cache_id}")
+        print(f"Docker Image: {cache_entry.docker_image}")
+        print(f"Model Tags: {', '.join(cache_entry.model_tags)}")
+        print(f"Nodes: {cache_entry.node_count}")
+        print(f"Created: {cache_entry.created_at}")
+        print(f"Last Used: {cache_entry.last_used}")
+        print("=" * 80)
+
+        # Check if docker image already exists
+        if Docker.image_exists(cache_entry.docker_image, self.console):
+            print(f"Docker image '{cache_entry.docker_image}' already exists locally")
+        else:
+            # Load docker image from tar
+            print(f"\nLoading Docker image from cache...")
+            print(f"Tar file: {cache_entry.docker_tar_path}")
+
+            loaded_image = Docker.load_image_from_tar(cache_entry.docker_tar_path, self.console)
+
+            if not loaded_image:
+                print(f"Error: Failed to load Docker image from cache")
+                print(f"Tar path: {cache_entry.docker_tar_path}")
+                return False
+
+            print(f"Docker image loaded successfully: {loaded_image}")
+
+        # Override context with cached image
+        self.context.ctx["MAD_CONTAINER_IMAGE"] = cache_entry.docker_image
+
+        # Override tags if not specified
+        if not self.args.tags:
+            self.args.tags = cache_entry.model_tags
+            print(f"\nUsing cached tags: {', '.join(self.args.tags)}")
+
+        print("\n" + "=" * 80)
+        print("Running model with cached Docker image...")
+        print("=" * 80 + "\n")
+
+        # Get credentials
+        try:
+            credential_file = "credential.json"
+            with open(credential_file) as f:
+                self.creds = json.load(f)
+            print(f"Credentials: {self.creds}")
+        except Exception as e:
+            print(f"Exception encountered reading credential.json. {e}, ignoring ...")
+
+        # Copy scripts to model directory
+        self.copy_scripts()
+
+        # Discover models (will use the tags we set)
+        discover_models = DiscoverModels(args=self.args)
+        models = discover_models.run()
+
+        if not models:
+            print(f"Error: No models found with tags: {self.args.tags}")
+            print("\nThe cached entry was for these tags, but no models were discovered.")
+            print("Make sure you're running from the correct directory (MAD repository).")
+            return False
+
+        # Create performance csv
+        if not os.path.exists(self.args.output):
+            file_print(
+                "model, n_gpus, training_precision, pipeline, args, tags, docker_file, base_docker, docker_sha, docker_image, git_commit, machine_name, gpu_architecture, performance, metric, relative_change, status, build_duration, test_duration, dataname, data_provider_type, data_size, data_download_duration, build_number, additional_docker_run_options",
+                filename=self.args.output,
+                mode="w",
+            )
+
+        # Run models
+        for model_info in models:
+            self.return_status &= self.run_model(model_info)
+
+        # Cleanup the model directory
+        self.cleanup()
+
+        # Convert output csv to html
+        print("Converting output csv to html...")
+        convert_csv_to_html(file_path=self.args.output)
+
+        if self.return_status:
+            print("\n" + "=" * 80)
+            print("Model ran successfully from cache!")
+            print("=" * 80)
+        else:
+            print("\n" + "=" * 80)
+            print("Model run from cache failed.")
+            print("=" * 80)
+
+        return self.return_status
+
     def run(self) -> bool:
         """Main flow of running model.
 
@@ -1122,6 +1347,10 @@ class RunModels:
             Exception: An error occurred while running models on container.
         """
         print(f"Running models with args {self.args}")
+
+        # Check if running from cache
+        if hasattr(self.args, 'from_cache') and self.args.from_cache:
+            return self.run_from_cache()
 
         self.console.sh("echo 'MAD Run Models'")
         # show node rocm info

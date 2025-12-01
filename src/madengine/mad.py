@@ -114,21 +114,141 @@ def upload_mongodb(args):
     return upload_mongodb.run()
 
 
-def validate_gpu(args):
-    """Validate GPU installation (ROCm for AMD, CUDA for NVIDIA).
-    
+def list_cache(args):
+    """List all cache entries.
+
     Args:
         args: The command-line arguments.
-        
+    """
+    from madengine.core.cache import CacheManager
+
+    cache_manager = CacheManager(cache_dir=args.cache_dir)
+    entries = cache_manager.list_cache_entries()
+
+    if not entries:
+        print("No cache entries found.")
+        return
+
+    print(f"\n{len(entries)} cache entries:")
+    print("=" * 100)
+    for entry in entries:
+        print(f"ID: {entry.cache_id}")
+        print(f"  Image: {entry.docker_image}")
+        print(f"  Tags: {', '.join(entry.model_tags)}")
+        print(f"  Created: {entry.created_at}")
+        print(f"  Last Used: {entry.last_used}")
+        print(f"  Size: {entry.size_bytes / (1024**3):.2f} GB")
+        print(f"  Nodes: {entry.node_count}")
+        print("-" * 100)
+
+
+def cache_info(args):
+    """Show cache entry details.
+
+    Args:
+        args: The command-line arguments.
+    """
+    from madengine.core.cache import CacheManager
+    import json
+
+    cache_manager = CacheManager(cache_dir=args.cache_dir)
+    entry = cache_manager.get_cache_entry_by_id(args.cache_id)
+
+    if not entry:
+        print(f"Cache entry '{args.cache_id}' not found.")
+        return
+
+    print(f"\nCache Entry: {entry.cache_id}")
+    print("=" * 80)
+    print(f"Cache Key: {entry.cache_key}")
+    print(f"Docker Image: {entry.docker_image}")
+    print(f"Docker Tar: {entry.docker_tar_path}")
+    print(f"Model Tags: {', '.join(entry.model_tags)}")
+    print(f"Created: {entry.created_at}")
+    print(f"Last Used: {entry.last_used}")
+    print(f"Size: {entry.size_bytes / (1024**3):.2f} GB")
+    print(f"Nodes: {entry.node_count}")
+    print(f"Cache Directory: {entry.cache_dir}")
+    print("\nRun Configuration:")
+    print(json.dumps(entry.run_config, indent=2))
+
+
+def clear_cache(args):
+    """Clear all cache entries.
+
+    Args:
+        args: The command-line arguments.
+    """
+    from madengine.core.cache import CacheManager
+
+    cache_manager = CacheManager(cache_dir=args.cache_dir)
+    entries = cache_manager.list_cache_entries()
+
+    if not entries:
+        print("No cache entries to clear.")
+        return
+
+    if not args.yes:
+        response = input(f"Are you sure you want to clear {len(entries)} cache entries? [y/N]: ")
+        if response.lower() != 'y':
+            print("Aborted.")
+            return
+
+    count = cache_manager.clear_cache()
+    print(f"Cleared {count} cache entries.")
+
+
+def evict_cache(args):
+    """Evict specific cache entry.
+
+    Args:
+        args: The command-line arguments.
+    """
+    from madengine.core.cache import CacheManager
+
+    cache_manager = CacheManager(cache_dir=args.cache_dir)
+
+    if cache_manager.evict_cache_entry(args.cache_id):
+        print(f"Evicted cache entry: {args.cache_id}")
+    else:
+        print(f"Cache entry '{args.cache_id}' not found.")
+
+
+def cache_stats(args):
+    """Show cache statistics.
+
+    Args:
+        args: The command-line arguments.
+    """
+    from madengine.core.cache import CacheManager
+
+    cache_manager = CacheManager(cache_dir=args.cache_dir)
+    stats = cache_manager.get_cache_stats()
+
+    print("\nCache Statistics:")
+    print("=" * 60)
+    print(f"Cache Directory: {stats['cache_directory']}")
+    print(f"Total Entries: {stats['total_entries']} / {stats['max_entries']}")
+    print(f"Total Size: {stats['total_size_gb']:.2f} GB / {stats['max_size_gb']:.2f} GB")
+    print(f"Usage: {stats['usage_percent']:.1f}%")
+    print("=" * 60)
+
+
+def validate_gpu(args):
+    """Validate GPU installation (ROCm for AMD, CUDA for NVIDIA).
+
+    Args:
+        args: The command-line arguments.
+
     Returns:
         int: Exit code (0 for success, 1 for failure)
     """
     verbose = args.verbose if hasattr(args, 'verbose') else False
-    
+
     try:
         # Detect GPU vendor and run appropriate validation
         result = validate_gpu_installation(vendor=None, verbose=verbose, raise_on_error=False)
-        
+
         # Print summary based on validation result
         if result.is_valid:
             print()
@@ -149,29 +269,29 @@ def validate_gpu(args):
             print(f"✗ {result.vendor.value} GPU Installation Validation FAILED")
             print("=" * 70)
             print()
-            
+
             if result.issues:
                 print("Critical Issues:")
                 for issue in result.issues:
                     print(f"  - {issue}")
                 print()
-            
+
             if result.warnings:
                 print("Warnings:")
                 for warning in result.warnings:
                     print(f"  - {warning}")
                 print()
-            
+
             if result.suggestions:
                 print("Suggested Actions:")
                 for suggestion in result.suggestions:
                     print(f"  • {suggestion}")
                 print()
-            
+
             print("Please fix the issues above before running madengine workloads.")
             print()
             return 1
-            
+
     except GPUInstallationError as e:
         print()
         print("=" * 70)
@@ -224,6 +344,13 @@ def main():
     parser_run.add_argument('--skip-model-run', action='store_true', help="skips running the model; will not keep model directory after run unless specified through keep-alive or keep-model-dir")
     parser_run.add_argument('--disable-skip-gpu-arch', action='store_true', help="disables skipping model based on gpu architecture")
     parser_run.add_argument('-o', '--output', default='perf.csv', help='output file')
+    # Cache options
+    parser_run.add_argument('--enable-cache', action='store_true', help="enable caching of docker images and run configurations")
+    parser_run.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_run.add_argument('--cache-max-entries', type=int, default=5, help="maximum number of cache entries to keep (default: 5)")
+    parser_run.add_argument('--cache-max-size-gb', type=float, default=100.0, help="maximum total cache size in GB (default: 100)")
+    parser_run.add_argument('--force-rebuild', action='store_true', help="force rebuild ignoring cache")
+    parser_run.add_argument('--from-cache', metavar='CACHE_ID', default=None, help="run directly from cached entry (cache ID from 'madengine cache list')")
     parser_run.set_defaults(func=run_models)
 
     # Discover models command
@@ -271,7 +398,34 @@ def main():
     parser_database_upload_mongodb.add_argument("--database-name", type=str, required=True, help="Name of the MongoDB database")
     parser_database_upload_mongodb.add_argument("--collection-name", type=str, required=True, help="Name of the MongoDB collection")
     parser_database_upload_mongodb.set_defaults(func=upload_mongodb)
-    
+
+    # Cache command
+    parser_cache = subparsers.add_parser('cache', help='Manage run cache')
+    subparsers_cache = parser_cache.add_subparsers(title="Cache Commands", description="Available commands for managing cache.", dest="cache_command")
+    # Cache subcommand list
+    parser_cache_list = subparsers_cache.add_parser('list', description="List all cache entries.", help='List all cache entries')
+    parser_cache_list.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_cache_list.set_defaults(func=list_cache)
+    # Cache subcommand info
+    parser_cache_info = subparsers_cache.add_parser('info', description="Show cache entry details.", help='Show cache entry details')
+    parser_cache_info.add_argument('cache_id', type=str, help='Cache ID to show')
+    parser_cache_info.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_cache_info.set_defaults(func=cache_info)
+    # Cache subcommand clear
+    parser_cache_clear = subparsers_cache.add_parser('clear', description="Clear all cache entries.", help='Clear all cache entries')
+    parser_cache_clear.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_cache_clear.add_argument('-y', '--yes', action='store_true', help='Skip confirmation prompt')
+    parser_cache_clear.set_defaults(func=clear_cache)
+    # Cache subcommand evict
+    parser_cache_evict = subparsers_cache.add_parser('evict', description="Evict specific cache entry.", help='Evict specific cache entry')
+    parser_cache_evict.add_argument('cache_id', type=str, help='Cache ID to evict')
+    parser_cache_evict.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_cache_evict.set_defaults(func=evict_cache)
+    # Cache subcommand stats
+    parser_cache_stats = subparsers_cache.add_parser('stats', description="Show cache statistics.", help='Show cache statistics')
+    parser_cache_stats.add_argument('--cache-dir', default=None, help="cache directory (default: ~/.madengine/cache)")
+    parser_cache_stats.set_defaults(func=cache_stats)
+
     # Validate GPU command
     parser_validate = subparsers.add_parser('validate', description="Validate GPU installation (ROCm for AMD, CUDA for NVIDIA)", help='Validate GPU installation')
     parser_validate.add_argument('-v', '--verbose', action='store_true', help='Show detailed validation output')

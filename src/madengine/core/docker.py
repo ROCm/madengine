@@ -128,6 +128,107 @@ class Docker:
             secret=secret,
         )
 
+    @staticmethod
+    def save_image_to_tar(image_name: str, tar_path: str, console: Console = None) -> bool:
+        """Save Docker image to tar file.
+
+        Args:
+            image_name: Name of the docker image to save
+            tar_path: Output path for tar file
+            console: Console object for shell operations (optional)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if console is None:
+            console = Console()
+
+        try:
+            # Ensure parent directory exists
+            tar_dir = os.path.dirname(tar_path)
+            if tar_dir and not os.path.exists(tar_dir):
+                os.makedirs(tar_dir, exist_ok=True)
+
+            # Save image to tar
+            print(f"Saving Docker image {image_name} to {tar_path}...")
+            console.sh(f'docker save "{image_name}" -o "{tar_path}"', timeout=600)
+
+            # Verify tar file was created
+            if not os.path.exists(tar_path):
+                print(f"Error: Failed to create tar file at {tar_path}")
+                return False
+
+            file_size = os.path.getsize(tar_path)
+            print(f"Docker image saved successfully ({file_size / (1024**2):.2f} MB)")
+            return True
+
+        except Exception as e:
+            print(f"Error saving Docker image to tar: {e}")
+            return False
+
+    @staticmethod
+    def load_image_from_tar(tar_path: str, console: Console = None) -> typing.Optional[str]:
+        """Load Docker image from tar file.
+
+        Args:
+            tar_path: Path to tar file
+            console: Console object for shell operations (optional)
+
+        Returns:
+            str: Loaded image name if successful, None otherwise
+        """
+        if console is None:
+            console = Console()
+
+        try:
+            # Verify tar file exists
+            if not os.path.exists(tar_path):
+                print(f"Error: Tar file not found at {tar_path}")
+                return None
+
+            # Load image from tar
+            print(f"Loading Docker image from {tar_path}...")
+            output = console.sh(f'docker load -i "{tar_path}"', timeout=600)
+
+            # Parse output to get image name
+            # Output format: "Loaded image: <image_name>"
+            image_name = None
+            for line in output.split('\n'):
+                if 'Loaded image:' in line:
+                    image_name = line.split('Loaded image:')[-1].strip()
+                    break
+
+            if image_name:
+                print(f"Docker image loaded successfully: {image_name}")
+                return image_name
+            else:
+                print("Warning: Could not parse image name from docker load output")
+                return None
+
+        except Exception as e:
+            print(f"Error loading Docker image from tar: {e}")
+            return None
+
+    @staticmethod
+    def image_exists(image_name: str, console: Console = None) -> bool:
+        """Check if Docker image exists locally.
+
+        Args:
+            image_name: Name of the docker image to check
+            console: Console object for shell operations (optional)
+
+        Returns:
+            bool: True if image exists, False otherwise
+        """
+        if console is None:
+            console = Console()
+
+        try:
+            output = console.sh(f'docker images -q "{image_name}"')
+            return bool(output.strip())
+        except Exception:
+            return False
+
     def __del__(self):
         """Destructor of the Docker class."""
         # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
