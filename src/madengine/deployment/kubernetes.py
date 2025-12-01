@@ -759,6 +759,7 @@ class KubernetesDeployment(BaseDeployment):
             # Runtime information
             "git_commit": "",  # Not available in K8s pod
             "machine_name": pod_name,  # Use pod name as machine identifier
+            "deployment_type": "kubernetes",  # Deployment environment
             "gpu_architecture": gpu_architecture,
             
             # Performance metrics
@@ -818,6 +819,7 @@ class KubernetesDeployment(BaseDeployment):
             "docker_image",
             "git_commit",
             "machine_name",
+            "deployment_type",
             "gpu_architecture",
             "performance",
             "metric",

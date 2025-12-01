@@ -63,6 +63,7 @@ export {{ key }}="{{ value }}"
 {% endfor %}
 
 # madengine environment
+export MAD_DEPLOYMENT_TYPE=slurm
 export MAD_SLURM_JOB_ID=$SLURM_JOB_ID
 export MAD_NODE_RANK=$SLURM_NODEID
 export MAD_TOTAL_NODES={{ nodes }}

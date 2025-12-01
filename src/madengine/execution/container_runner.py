@@ -66,7 +66,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                "model,n_gpus,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -101,6 +101,7 @@ class ContainerRunner:
             "docker_image": build_info.get("docker_image", ""),
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
+            "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
             "gpu_architecture": (
                 self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
                 if self.context
