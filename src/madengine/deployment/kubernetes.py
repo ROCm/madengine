@@ -34,6 +34,8 @@ except ImportError:
 from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
+from madengine.core.dataprovider import Data
+from madengine.core.context import Context
 
 
 class KubernetesDeployment(BaseDeployment):
@@ -92,6 +94,10 @@ class KubernetesDeployment(BaseDeployment):
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
         self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
+        
+        # Initialize data provider (will be used if models need data)
+        self.data = None
+        self.context_for_data = None
 
         # Load Kubernetes configuration
         kubeconfig_path = self.k8s_config.get("kubeconfig")
@@ -238,19 +244,57 @@ class KubernetesDeployment(BaseDeployment):
         if credential_path.exists():
             with open(credential_path, "r") as f:
                 credential_content = f.read()
+        
+        # Load data.json content if exists
+        data_json_content = None
+        data_path = Path("data.json")
+        if data_path.exists():
+            with open(data_path, "r") as f:
+                data_json_content = f.read()
+            self.console.print(f"[dim]Loaded data.json[/dim]")
 
         # Load model run script content
         run_script_content = None
-        model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run.sh"
+        model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run_data_minio.sh"
+        model_script_dir = None
+        model_script_filename = None
+        
         if model_script_path:
             script_file = Path(model_script_path)
+            # Extract directory and filename
+            model_script_dir = str(script_file.parent)  # e.g., "scripts/dummy"
+            model_script_filename = script_file.name     # e.g., "run_data_minio.sh"
+            
             if script_file.exists():
                 with open(script_file, "r") as f:
                     run_script_content = f.read()
                 self.console.print(f"[dim]Loaded script: {model_script_path}[/dim]")
             else:
                 self.console.print(f"[yellow]Warning: Script not found: {model_script_path}[/yellow]")
-
+        
+        # Load K8s tools configuration
+        k8s_tools_config = self._load_k8s_tools()
+        
+        # Prepare data configuration first
+        data_config = self._prepare_data_config(model_info)
+        
+        # Determine data provider script if model needs data
+        data_provider_script = None
+        data_provider_script_content = None
+        if data_config:
+            provider_type = data_config.get("provider_type", "local")
+            if provider_type in k8s_tools_config.get("data_providers", {}):
+                data_provider_script = k8s_tools_config["data_providers"][provider_type]
+                
+                # Load K8s data provider script content
+                k8s_script_path = Path(__file__).parent.parent / data_provider_script["script"]
+                if k8s_script_path.exists():
+                    with open(k8s_script_path, "r") as f:
+                        data_provider_script_content = f.read()
+                    self.console.print(f"[dim]Loaded K8s data provider: {data_provider_script['script']}[/dim]")
+                else:
+                    self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
+        
         # Get launcher configuration if present
         launcher_config = self.config.additional_context.get("launcher")
         launcher_type = launcher_config.get("type") if launcher_config else None
@@ -277,7 +321,14 @@ class KubernetesDeployment(BaseDeployment):
             "configmap_name": self.configmap_name,
             "manifest_content": manifest_content,
             "credential_content": credential_content,
+            "data_json_content": data_json_content,
             "run_script_content": run_script_content,
+            "model_script_path": model_script_path,
+            "model_script_dir": model_script_dir,
+            "model_script_filename": model_script_filename,
+            # K8s tools
+            "data_provider_script": data_provider_script,
+            "data_provider_script_content": data_provider_script_content,
             # Image
             "image": image_info["registry_image"],
             "image_pull_policy": self.k8s_config.get("image_pull_policy", "Always"),
@@ -307,8 +358,8 @@ class KubernetesDeployment(BaseDeployment):
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
             "timeout": self.config.timeout,
-            # Environment
-            "env_vars": self.config.additional_context.get("env_vars", {}),
+            # Environment - Merge base env vars with data/tools env vars
+            "env_vars": self._prepare_env_vars(model_info),
             # Volumes
             "results_pvc": self.k8s_config.get("results_pvc"),
             "data_pvc": self.k8s_config.get("data_pvc"),
@@ -316,9 +367,153 @@ class KubernetesDeployment(BaseDeployment):
             "create_headless_service": create_headless_service,
             "service_name": self.job_name,
             "ports": [29500] if create_headless_service else [],
+            # Data provider configuration (already prepared above)
+            "data_config": data_config,
+            # Tools configuration - from manifest.context or additional_context
+            "tools_config": self._get_tools_config(),
         }
 
         return context
+    
+    def _get_tools_config(self) -> List[Dict]:
+        """
+        Get tools configuration from manifest.context or additional_context.
+        
+        Prioritizes runtime additional_context, falls back to manifest.context.
+        
+        Returns:
+            List of tool configurations
+        """
+        # Check runtime additional_context first (allows runtime override)
+        tools = self.config.additional_context.get("tools", [])
+        
+        # Fall back to manifest.context if no runtime tools
+        if not tools and "context" in self.manifest:
+            tools = self.manifest["context"].get("tools", [])
+        
+        return tools
+    
+    def _load_k8s_tools(self) -> Dict:
+        """
+        Load K8s-specific tools configuration.
+        
+        Returns:
+            Dict with K8s tools configuration
+        """
+        k8s_tools_file = Path(__file__).parent.parent / "scripts" / "k8s" / "tools.json"
+        
+        if k8s_tools_file.exists():
+            try:
+                with open(k8s_tools_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                self.console.print(f"[yellow]Warning: Failed to load K8s tools config: {e}[/yellow]")
+                return {}
+        else:
+            self.console.print(f"[yellow]Warning: K8s tools.json not found at {k8s_tools_file}[/yellow]")
+            return {}
+    
+    def _prepare_env_vars(self, model_info: Dict) -> Dict[str, str]:
+        """
+        Prepare environment variables from multiple sources.
+        
+        Merges env vars from:
+        1. Base additional_context
+        2. Data provider
+        3. Tools configuration
+        
+        Args:
+            model_info: Model configuration
+            
+        Returns:
+            Merged environment variables dict
+        """
+        env_vars = {}
+        
+        # 1. Base environment variables from additional_context
+        base_env = self.config.additional_context.get("env_vars", {})
+        env_vars.update(base_env)
+        
+        # 2. Data provider environment variables
+        data_config = self._prepare_data_config(model_info)
+        if data_config and "env_vars" in data_config:
+            env_vars.update(data_config["env_vars"])
+        
+        # 3. Tools configuration environment variables
+        # Check both additional_context and manifest.context for tools
+        tools_config = self.config.additional_context.get("tools", [])
+        if not tools_config and "context" in self.manifest:
+            tools_config = self.manifest["context"].get("tools", [])
+        
+        for tool in tools_config:
+            if "env_vars" in tool:
+                env_vars.update(tool["env_vars"])
+        
+        return env_vars
+    
+    def _prepare_data_config(self, model_info: Dict) -> Optional[Dict]:
+        """
+        Prepare data provider configuration for K8s pod.
+        
+        Args:
+            model_info: Model configuration
+            
+        Returns:
+            Data configuration dict or None
+        """
+        if "data" not in model_info or not model_info["data"]:
+            return None
+        
+        # Initialize data provider if needed
+        if not self.data:
+            try:
+                # Create minimal context for data provider
+                # We only need the data.json file to be present
+                import os
+                data_json_file = "data.json"
+                if os.path.exists(data_json_file):
+                    # Import Context and create minimal instance
+                    # Data provider needs this to function
+                    self.context_for_data = type('obj', (object,), {
+                        'ctx': {},
+                        'sh': lambda cmd: os.popen(cmd).read().strip()
+                    })()
+                    self.data = Data(
+                        self.context_for_data,
+                        filename=data_json_file,
+                        force_mirrorlocal=False
+                    )
+                else:
+                    self.console.print("[yellow]Warning: data.json not found, data provider unavailable[/yellow]")
+                    return None
+            except Exception as e:
+                self.console.print(f"[yellow]Warning: Could not initialize data provider: {e}[/yellow]")
+                return None
+        
+        try:
+            # Get data environment variables
+            data_env = self.data.get_env(model_info["data"])
+            
+            # Find data provider for this data
+            dp = self.data.find_dataprovider(model_info["data"])
+            if not dp:
+                self.console.print(f"[yellow]Warning: Data provider not found for {model_info['data']}[/yellow]")
+                return None
+            
+            # Get provider type and source path
+            provider_type = dp.provider_type if hasattr(dp, 'provider_type') else "local"
+            source_url = dp.config.get("path", "") if hasattr(dp, 'config') else ""
+            
+            return {
+                "data_name": model_info["data"],
+                "env_vars": data_env or {},
+                "provider_type": provider_type,
+                "source_url": source_url,
+                "datahome": data_env.get("MAD_DATAHOME", "/data_dlm_0") if data_env else "/data_dlm_0",
+            }
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Could not prepare data config: {e}[/yellow]")
+            return None
 
     def _save_debug_manifests(self):
         """Save rendered manifests to disk for debugging."""
@@ -737,6 +932,35 @@ class KubernetesDeployment(BaseDeployment):
         if duration_match:
             test_duration = duration_match.group(1)
         
+        # Extract data provider metrics from logs if available
+        # These are printed by the data provider scripts via "✓ Data metrics: ..."
+        dataname = model_info.get("data", "")  # Get from model info
+        data_provider_type = ""
+        data_size = ""
+        data_download_duration = ""
+        
+        # Look for "=== Data Provider: <type> ===" line
+        provider_match = re.search(r'===\s+Data Provider:\s+(\w+)\s+===', log)
+        if provider_match:
+            data_provider_type = provider_match.group(1)
+        
+        # Look for data metrics line: "✓ Data metrics: Duration=18s, Size=1.3G"
+        metrics_match = re.search(r'Duration=([0-9]+)s,\s+Size=([0-9.]+[KMGT]?)', log)
+        if metrics_match:
+            data_download_duration = metrics_match.group(1)
+            data_size = metrics_match.group(2)
+        
+        # Alternative: Look for individual Duration and Size lines
+        if not data_download_duration:
+            duration_data_match = re.search(r'Duration:\s+([0-9]+)s', log)
+            if duration_data_match:
+                data_download_duration = duration_data_match.group(1)
+        
+        if not data_size:
+            size_match = re.search(r'Size:\s+([0-9.]+[KMGT]?)', log)
+            if size_match:
+                data_size = size_match.group(1)
+        
         # Build performance result dict matching local execution format EXACTLY
         # This ensures compatibility with existing perf.csv analysis tools
         result = {
@@ -773,10 +997,10 @@ class KubernetesDeployment(BaseDeployment):
             "test_duration": test_duration,
             
             # Data information
-            "dataname": "",
-            "data_provider_type": "",
-            "data_size": "",
-            "data_download_duration": "",
+            "dataname": dataname,
+            "data_provider_type": data_provider_type,
+            "data_size": data_size,
+            "data_download_duration": data_download_duration,
             
             # Build tracking
             "build_number": os.environ.get("BUILD_NUMBER", "0"),

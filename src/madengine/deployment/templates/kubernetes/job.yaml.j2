@@ -50,26 +50,38 @@ spec:
             MADENGINE_PATH=$(python3 -c "import madengine; import os; print(os.path.dirname(madengine.__file__))" 2>/dev/null || echo "/usr/local/lib/python3.*/site-packages/madengine")
             echo "madengine location: $MADENGINE_PATH"
             
-            # Copy common scripts (pre_scripts, post_scripts, tools)
+            # Copy common scripts (pre_scripts, post_scripts, tools) - works in both local and K8s
             if [ -d "$MADENGINE_PATH/scripts/common" ]; then
                 mkdir -p /workspace/scripts/common
                 cp -r $MADENGINE_PATH/scripts/common/* /workspace/scripts/common/
                 echo "✓ Copied common scripts"
             fi
             
+            # Copy K8s data provider script from ConfigMap if it exists
+            if [ -f /config/data_provider.sh ]; then
+                echo "Copying data_provider.sh to /workspace/data_provider.sh"
+                cp /config/data_provider.sh /workspace/data_provider.sh
+                chmod +x /workspace/data_provider.sh
+                echo "✓ Copied K8s data provider script"
+            fi
+            
             # Create model script directory structure
-            mkdir -p /workspace/scripts/{{ model_name }}
+            {% if model_script_dir %}
+            mkdir -p /workspace/{{ model_script_dir }}
             
             # Copy run script from ConfigMap if it exists
             if [ -f /config/run.sh ]; then
-                echo "Copying run.sh to /workspace/scripts/{{ model_name }}/run.sh"
-                cp /config/run.sh /workspace/scripts/{{ model_name }}/run.sh
-                chmod +x /workspace/scripts/{{ model_name }}/run.sh
+                echo "Copying run.sh to /workspace/{{ model_script_path }}"
+                cp /config/run.sh /workspace/{{ model_script_path }}
+                chmod +x /workspace/{{ model_script_path }}
             else
                 echo "Warning: run.sh not found in ConfigMap"
             fi
+            {% else %}
+            echo "Warning: No model script path configured"
+            {% endif %}
             
-            echo "Script extraction complete"
+            echo "✓ Script extraction complete"
         volumeMounts:
         - name: workspace
           mountPath: /workspace
@@ -99,6 +111,7 @@ spec:
             # Copy config files from ConfigMap to workspace
             cp /config/build_manifest.json /workspace/
             cp /config/credential.json /workspace/ 2>/dev/null || true
+            cp /config/data.json /workspace/ 2>/dev/null || true
             
             # GPU Information
             if command -v rocm-smi &> /dev/null; then
@@ -115,6 +128,33 @@ spec:
             export MAD_K8S_POD_NAME=$HOSTNAME
             export MAD_K8S_NAMESPACE={{ namespace }}
             export MAD_K8S_JOB=true
+            export MAD_DEPLOYMENT_TYPE=kubernetes
+            
+            # Data provider environment variables
+            {% if data_config %}
+            echo ""
+            echo "=== Setting up data environment ==="
+            export MAD_DATANAME="{{ data_config.data_name }}"
+            {% for key, value in data_config.env_vars.items() %}
+            export {{ key }}="{{ value }}"
+            {% endfor %}
+            echo "✓ Data environment configured for: {{ data_config.data_name }}"
+            {% endif %}
+            
+            # Tools configuration environment variables
+            {% if tools_config %}
+            echo ""
+            echo "=== Applying tools configuration ==="
+            {% for tool in tools_config %}
+            echo "Tool: {{ tool.name }}"
+            {% if tool.env_vars %}
+            {% for key, value in tool.env_vars.items() %}
+            export {{ key }}="{{ value }}"
+            {% endfor %}
+            {% endif %}
+            {% endfor %}
+            echo "✓ Tools configuration applied"
+            {% endif %}
             
             {% if launcher_command %}
             # Launcher-based execution
@@ -123,13 +163,53 @@ spec:
             {{ launcher_command | indent(12) }}
             {% else %}
             # Direct script execution
-            echo ""
-            echo "=== Running model benchmark script ==="
             cd /workspace
             
-            # Run the extracted script
+            # Download data if data provider is configured
+            {% if data_provider_script and data_config %}
+            echo ""
+            echo "=== Data Provider: {{ data_config.provider_type }} ==="
+            echo "Data name: {{ data_config.data_name }}"
+            echo "Source: {{ data_config.source_url }}"
+            echo "Target: {{ data_config.datahome }}"
+            
+            # Use K8s data provider script (loaded from ConfigMap)
+            if [ -f /workspace/data_provider.sh ]; then
+                bash /workspace/data_provider.sh \
+                  "{{ data_config.data_name }}" \
+                  "{{ data_config.source_url }}" \
+                  "{{ data_config.datahome }}"
+                
+                # Source metrics if available
+                if [ -f /tmp/mad_metrics.env ]; then
+                    source /tmp/mad_metrics.env
+                    echo "✓ Data metrics: Duration=${MAD_DATA_DOWNLOAD_DURATION}s, Size=${MAD_DATA_SIZE}"
+                fi
+            else
+                echo "Error: Data provider script not found at /workspace/data_provider.sh"
+                exit 1
+            fi
+            {% endif %}
+            
+            # Run pre-scripts (like local execution)
+            if [ -d "scripts/common/pre_scripts" ]; then
+                echo ""
+                echo "=== Running pre-scripts ==="
+                for script in scripts/common/pre_scripts/*.sh; do
+                    if [ -f "$script" ]; then
+                        echo "Executing: $(basename $script)"
+                        bash "$script" || echo "Warning: $(basename $script) failed with exit code $?"
+                    fi
+                done
+                echo "✓ Pre-scripts completed"
+            fi
+            
+            # Run main model script
+            echo ""
+            echo "=== Running model benchmark script ==="
             if [ -f "{{ model_script }}" ]; then
                 bash {{ model_script }}
+                MODEL_EXIT_CODE=$?
             else
                 echo "ERROR: Script not found: {{ model_script }}"
                 echo "Available files in /workspace:"
@@ -139,9 +219,23 @@ spec:
                 ls -la /workspace/scripts/ 2>/dev/null || echo "scripts/ directory not found"
                 exit 1
             fi
-            {% endif %}
             
-            EXIT_CODE=$?
+            # Run post-scripts (like local execution)
+            if [ -d "scripts/common/post_scripts" ]; then
+                echo ""
+                echo "=== Running post-scripts ==="
+                for script in scripts/common/post_scripts/*.sh; do
+                    if [ -f "$script" ]; then
+                        echo "Executing: $(basename $script)"
+                        bash "$script" || echo "Warning: $(basename $script) failed with exit code $?"
+                    fi
+                done
+                echo "✓ Post-scripts completed"
+            fi
+            
+            # Exit with model script exit code
+            exit ${MODEL_EXIT_CODE:-1}
+            {% endif %}
             
             # Copy results to shared storage
             {% if results_pvc %}
@@ -152,8 +246,8 @@ spec:
             {% endif %}
             
             echo ""
-            echo "=== Benchmark job completed with exit code $EXIT_CODE ==="
-            exit $EXIT_CODE
+            echo "=== Benchmark job completed with exit code ${MODEL_EXIT_CODE:-0} ==="
+            exit ${MODEL_EXIT_CODE:-0}
         
         resources:
           requests:

@@ -135,3 +135,4 @@ scripts/
 .vscode/
 
 tmp/
+k8s_manifests/

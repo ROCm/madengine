@@ -11,8 +11,16 @@ data:
 {{ manifest_content | indent(4, first=True) }}
   credential.json: |
 {{ credential_content | indent(4, first=True) }}
+  {% if data_json_content %}
+  data.json: |
+{{ data_json_content | indent(4, first=True) }}
+  {% endif %}
   {% if run_script_content %}
   run.sh: |
 {{ run_script_content | indent(4, first=True) }}
+  {% endif %}
+  {% if data_provider_script_content %}
+  data_provider.sh: |
+{{ data_provider_script_content | indent(4, first=True) }}
   {% endif %}
 

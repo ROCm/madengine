@@ -367,6 +367,7 @@ class BuildOrchestrator:
                 "distributed": self.additional_context.get("distributed"),
                 "vllm": self.additional_context.get("vllm"),
                 "env_vars": self.additional_context.get("env_vars", {}),
+                "debug": self.additional_context.get("debug", False),
             }
 
             # Remove None values

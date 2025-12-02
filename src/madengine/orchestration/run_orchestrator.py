@@ -82,8 +82,9 @@ class RunOrchestrator:
         if self.context is not None:
             return
 
-        # Context expects additional_context as a string, not dict
-        context_string = json.dumps(self.additional_context) if self.additional_context else None
+        # Context expects additional_context as a string representation of Python dict
+        # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
+        context_string = repr(self.additional_context) if self.additional_context else None
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
@@ -169,7 +170,7 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars"]:
+            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
 
@@ -244,7 +245,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config
