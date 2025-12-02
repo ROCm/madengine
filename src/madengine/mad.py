@@ -217,7 +217,7 @@ def main():
                             " Overrides detected contexts and additional-context-file.")
     parser_run.add_argument('--data-config-file-name', default="data.json", help="custom data configuration file.")
     parser_run.add_argument('--tools-json-file-name', default="./scripts/common/tools.json", help="custom tools json configuration file.")
-    parser_run.add_argument('--generate-sys-env-details', default=True, help='generate system config env details by default')
+    parser_run.add_argument('--generate-sys-env-details', type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=True, help='generate system config env details by default (accepts: true/false, yes/no, 1/0)')
     parser_run.add_argument('--force-mirror-local', default=None, help="Path to force all relevant dataproviders to mirror data locally on.")
     parser_run.add_argument('--keep-alive', action='store_true', help="keep Docker container alive after run; will keep model directory after run")
     parser_run.add_argument('--keep-model-dir', action='store_true', help="keep model directory after run")
