@@ -95,6 +95,9 @@ class KubernetesDeployment(BaseDeployment):
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
         self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
         
+        # Register custom Jinja2 filters
+        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
+        
         # Initialize data provider (will be used if models need data)
         self.data = None
         self.context_for_data = None
@@ -219,6 +222,78 @@ class KubernetesDeployment(BaseDeployment):
             traceback.print_exc()
             return False
 
+    def gather_system_env_details(
+        self, pre_scripts: List[Dict], model_name: str
+    ) -> None:
+        """
+        Gather system environment details by adding rocEnvTool to pre-scripts.
+        
+        This ensures K8s deployment collects the same system info as local execution.
+        
+        Args:
+            pre_scripts: List of pre-script configurations
+            model_name: The model name (used for output file naming)
+        """
+        # Add rocEnvTool pre-script with model-specific output name
+        pre_env_details = {
+            "path": "scripts/common/pre_scripts/run_rocenv_tool.sh",
+            "args": model_name.replace("/", "_") + "_env"
+        }
+        pre_scripts.append(pre_env_details)
+        self.console.print(f"[dim]Added rocEnvTool to pre-scripts with args: {pre_env_details['args']}[/dim]")
+    
+    def _load_common_scripts(self, script_list: List[Dict]) -> Dict[str, str]:
+        """
+        Load common script contents from madengine package for embedding in ConfigMap.
+        
+        Since madengine is not installed in model Docker images, we need to embed
+        the common scripts (pre_scripts, post_scripts) in the ConfigMap.
+        
+        Args:
+            script_list: List of script configurations with 'path' field
+            
+        Returns:
+            Dict mapping relative script paths to their contents
+        """
+        import os
+        script_contents = {}
+        madengine_root = Path(__file__).parent.parent  # Go up to madengine/ directory
+        
+        for script_config in script_list:
+            script_path = script_config.get("path", "")
+            if not script_path:
+                continue
+            
+            # Convert to absolute path from madengine root
+            abs_script_path = madengine_root / script_path
+            
+            if abs_script_path.exists() and abs_script_path.is_file():
+                with open(abs_script_path, "r") as f:
+                    script_contents[script_path] = f.read()
+                self.console.print(f"[dim]Loaded common script: {script_path}[/dim]")
+                
+                # If it's run_rocenv_tool.sh, also load the entire rocEnvTool directory
+                if "run_rocenv_tool.sh" in script_path:
+                    rocenv_dir = abs_script_path.parent / "rocEnvTool"
+                    if rocenv_dir.exists() and rocenv_dir.is_dir():
+                        # Load all Python files
+                        for py_file in rocenv_dir.glob("*.py"):
+                            rel_path = f"scripts/common/pre_scripts/rocEnvTool/{py_file.name}"
+                            with open(py_file, "r") as f:
+                                script_contents[rel_path] = f.read()
+                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
+                        
+                        # Load all JSON files (e.g., env_tags.json)
+                        for json_file in rocenv_dir.glob("*.json"):
+                            rel_path = f"scripts/common/pre_scripts/rocEnvTool/{json_file.name}"
+                            with open(json_file, "r") as f:
+                                script_contents[rel_path] = f.read()
+                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
+            else:
+                self.console.print(f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]")
+        
+        return script_contents
+
     def _prepare_template_context(
         self, model_info: Dict, image_info: Dict
     ) -> Dict[str, Any]:
@@ -311,6 +386,26 @@ class KubernetesDeployment(BaseDeployment):
                 create_headless_service = True
                 subdomain = self.job_name
 
+        # Prepare pre/post scripts (similar to local execution)
+        pre_scripts = []
+        post_scripts = []
+        
+        # Get pre/post scripts from manifest context if available
+        if "context" in self.manifest:
+            if "pre_scripts" in self.manifest["context"]:
+                pre_scripts.extend(self.manifest["context"]["pre_scripts"])
+            if "post_scripts" in self.manifest["context"]:
+                post_scripts.extend(self.manifest["context"]["post_scripts"])
+        
+        # Add system environment collection (rocEnvTool) - same as local execution
+        # This is controlled by generate_sys_env_details flag (default: True)
+        generate_sys_env_details = self.config.additional_context.get("generate_sys_env_details", True)
+        if generate_sys_env_details:
+            self.gather_system_env_details(pre_scripts, model_info["name"])
+        
+        # Load pre/post script contents for ConfigMap (since madengine not installed in container)
+        pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
+
         # Build complete context
         context = {
             # Job metadata
@@ -371,6 +466,11 @@ class KubernetesDeployment(BaseDeployment):
             "data_config": data_config,
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
+            # Pre/Post scripts - includes rocEnvTool and any user-defined scripts
+            "pre_scripts": pre_scripts,
+            "post_scripts": post_scripts,
+            # Common script contents for ConfigMap (embedded since madengine not in container)
+            "common_script_contents": pre_post_script_contents,
         }
 
         return context

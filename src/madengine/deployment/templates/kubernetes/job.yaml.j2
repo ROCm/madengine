@@ -46,16 +46,18 @@ spec:
             set -e
             echo "=== Extracting madengine scripts ==="
             
-            # Find madengine installation in container
-            MADENGINE_PATH=$(python3 -c "import madengine; import os; print(os.path.dirname(madengine.__file__))" 2>/dev/null || echo "/usr/local/lib/python3.*/site-packages/madengine")
-            echo "madengine location: $MADENGINE_PATH"
-            
-            # Copy common scripts (pre_scripts, post_scripts, tools) - works in both local and K8s
-            if [ -d "$MADENGINE_PATH/scripts/common" ]; then
-                mkdir -p /workspace/scripts/common
-                cp -r $MADENGINE_PATH/scripts/common/* /workspace/scripts/common/
-                echo "✓ Copied common scripts"
-            fi
+            # Extract common scripts from ConfigMap (since madengine not installed in container)
+            {% if common_script_contents %}
+            echo "Extracting common scripts from ConfigMap..."
+            {% for script_path, script_content in common_script_contents.items() %}
+            mkdir -p /workspace/{{ script_path | dirname }}
+            cp /config/{{ script_path | replace("/", "-") }} /workspace/{{ script_path }}
+            chmod +x /workspace/{{ script_path }} 2>/dev/null || true
+            {% endfor %}
+            echo "✓ Extracted {{ common_script_contents | length }} common script(s)"
+            {% else %}
+            echo "No common scripts to extract"
+            {% endif %}
             
             # Copy K8s data provider script from ConfigMap if it exists
             if [ -f /config/data_provider.sh ]; then
@@ -192,17 +194,22 @@ spec:
             {% endif %}
             
             # Run pre-scripts (like local execution)
-            if [ -d "scripts/common/pre_scripts" ]; then
-                echo ""
-                echo "=== Running pre-scripts ==="
-                for script in scripts/common/pre_scripts/*.sh; do
-                    if [ -f "$script" ]; then
-                        echo "Executing: $(basename $script)"
-                        bash "$script" || echo "Warning: $(basename $script) failed with exit code $?"
-                    fi
-                done
-                echo "✓ Pre-scripts completed"
+            {% if pre_scripts %}
+            echo ""
+            echo "=== Running pre-scripts ==="
+            {% for script in pre_scripts %}
+            # Execute: {{ script.path }}
+            if [ -f "{{ script.path }}" ]; then
+                echo "Executing: {{ script.path }} {% if script.args %}{{ script.args }}{% endif %}"
+                bash {{ script.path }} {% if script.args %}{{ script.args }}{% endif %} || echo "Warning: {{ script.path }} failed with exit code $?"
+            else
+                echo "Warning: Script not found: {{ script.path }}"
             fi
+            {% endfor %}
+            echo "✓ Pre-scripts completed"
+            {% else %}
+            echo "No pre-scripts configured"
+            {% endif %}
             
             # Run main model script
             echo ""
@@ -221,17 +228,22 @@ spec:
             fi
             
             # Run post-scripts (like local execution)
-            if [ -d "scripts/common/post_scripts" ]; then
-                echo ""
-                echo "=== Running post-scripts ==="
-                for script in scripts/common/post_scripts/*.sh; do
-                    if [ -f "$script" ]; then
-                        echo "Executing: $(basename $script)"
-                        bash "$script" || echo "Warning: $(basename $script) failed with exit code $?"
-                    fi
-                done
-                echo "✓ Post-scripts completed"
+            {% if post_scripts %}
+            echo ""
+            echo "=== Running post-scripts ==="
+            {% for script in post_scripts %}
+            # Execute: {{ script.path }}
+            if [ -f "{{ script.path }}" ]; then
+                echo "Executing: {{ script.path }} {% if script.args %}{{ script.args }}{% endif %}"
+                bash {{ script.path }} {% if script.args %}{{ script.args }}{% endif %} || echo "Warning: {{ script.path }} failed with exit code $?"
+            else
+                echo "Warning: Script not found: {{ script.path }}"
             fi
+            {% endfor %}
+            echo "✓ Post-scripts completed"
+            {% else %}
+            echo "No post-scripts configured"
+            {% endif %}
             
             # Exit with model script exit code
             exit ${MODEL_EXIT_CODE:-1}

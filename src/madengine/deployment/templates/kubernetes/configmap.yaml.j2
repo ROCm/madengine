@@ -23,4 +23,11 @@ data:
   data_provider.sh: |
 {{ data_provider_script_content | indent(4, first=True) }}
   {% endif %}
+  {% if common_script_contents %}
+  # Common scripts (pre_scripts, post_scripts) embedded since madengine not in container
+  {% for script_path, script_content in common_script_contents.items() %}
+  {{ script_path | replace("/", "-") }}: |
+{{ script_content | indent(4, first=True) }}
+  {% endfor %}
+  {% endif %}
 
