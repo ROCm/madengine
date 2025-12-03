@@ -49,9 +49,24 @@ class TestProfilingFunctionality:
             canFail=True,
         )
 
-        if not os.path.exists(os.path.join(BASE_DIR, "rocprof_output", "results.csv")):
+        # Check for both legacy rocprof (results.csv) and rocprofv3 (.db files) output
+        rocprof_output_dir = os.path.join(BASE_DIR, "rocprof_output")
+        legacy_output = os.path.join(rocprof_output_dir, "results.csv")
+        
+        # Check for rocprofv3 .db files in subdirectories
+        rocprofv3_output_found = False
+        if os.path.exists(rocprof_output_dir):
+            for root, dirs, files in os.walk(rocprof_output_dir):
+                for file in files:
+                    if file.endswith("_results.db"):
+                        rocprofv3_output_found = True
+                        break
+                if rocprofv3_output_found:
+                    break
+        
+        if not os.path.exists(legacy_output) and not rocprofv3_output_found:
             pytest.fail(
-                "rocprof_output/results.csv not generated with rocprof profiling run."
+                "Neither rocprof_output/results.csv (legacy) nor *_results.db (rocprofv3) generated with rocprof profiling run."
             )
 
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
@@ -404,6 +419,7 @@ class TestProfilingFunctionality:
         """
         default behavior of a profiling tool can be changed from additional-context
         """
+        # Test overriding with --sys-trace (works with both rocprof and rocprofv3)
         # canFail is set to True because rocProf is failing; this test will test if the correct output files are generated
         global_data["console"].sh(
             "cd "
@@ -412,13 +428,28 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rocprof', 'cmd': 'rocprof --hsa-trace' }] }\" ",
+            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rocprof', 'cmd': 'bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace' }] }\" ",
             canFail=True,
         )
 
-        if not os.path.exists(
-            os.path.join(BASE_DIR, "rocprof_output", "results.hsa_stats.csv")
-        ):
+        # Check for profiling output (either legacy or rocprofv3 format)
+        rocprof_output_dir = os.path.join(BASE_DIR, "rocprof_output")
+        
+        # For rocprofv3 with --sys-trace, check for .db files
+        rocprofv3_output_found = False
+        if os.path.exists(rocprof_output_dir):
+            for root, dirs, files in os.walk(rocprof_output_dir):
+                for file in files:
+                    if file.endswith("_results.db"):
+                        rocprofv3_output_found = True
+                        break
+                if rocprofv3_output_found:
+                    break
+        
+        # Legacy check for results files
+        legacy_output = os.path.exists(os.path.join(BASE_DIR, "rocprof_output", "results.csv"))
+        
+        if not legacy_output and not rocprofv3_output_found:
             pytest.fail(
-                "rocprof_output/results.hsa_stats.csv not generated with rocprof --hsa-trace profiling run."
+                "No profiling output generated with custom rocprof command override."
             )

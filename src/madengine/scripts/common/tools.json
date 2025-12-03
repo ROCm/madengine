@@ -20,7 +20,40 @@
     },
     "rocprof": {
       "pre_scripts": [],
-      "cmd": "rocprof",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
+    "rocprof_hip_only": {
+      "pre_scripts": [],
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
+    "rocprof_sys": {
+      "pre_scripts": [],
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
+    "rocprofv3": {
+      "pre_scripts": [],
+      "cmd": "rocprofv3 --runtime-trace --",
       "env_vars": {},
       "post_scripts": [
         {

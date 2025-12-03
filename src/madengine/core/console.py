@@ -158,9 +158,11 @@ class Console:
                         outs.append(stdout_line)
                     outs = "".join(outs)
                 finally:
-                    # Ensure stdout is always closed
+                    # Ensure all pipes are properly closed
                     if proc.stdout and not proc.stdout.closed:
                         proc.stdout.close()
+                    if proc.stdin and not proc.stdin.closed:
+                        proc.stdin.close()
                 proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
@@ -172,6 +174,19 @@ class Console:
                 proc.terminate()
                 proc.communicate()
             raise RuntimeError("Console script timeout") from exc
+        finally:
+            # Final cleanup: ensure all pipes are closed regardless of success/failure
+            # This prevents ResourceWarning about unclosed files
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            except:
+                pass
+            try:
+                if proc.stdout and not proc.stdout.closed:
+                    proc.stdout.close()
+            except:
+                pass
 
         # Check for failure
         success = proc.returncode == 0

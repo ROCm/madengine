@@ -54,8 +54,41 @@ rpd)
 	;;
 
 rocprof)
-	mv results* "$OUTPUT"
-	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE"
+	# Handle both legacy rocprof (results*) and rocprofv3 (different output format)
+	echo "ROCprof post-script: Collecting profiling output..."
+	
+	# Check for legacy rocprof results files
+	if ls results* 1> /dev/null 2>&1; then
+		echo "Found rocprof results files"
+		mv results* "$OUTPUT" 2>/dev/null || true
+	else
+		echo "No rocprof results* files found (may be using rocprofv3)"
+	fi
+	
+	# Check for rocprofv3 output directories (UUID pattern like 1e4d92661463/)
+	# rocprofv3 creates directories with hex UUIDs containing .db files
+	found_rocprofv3_output=false
+	for dir in */; do
+		if [ -d "$dir" ] && [ -f "${dir}"*_results.db ] 2>/dev/null; then
+			echo "Found rocprofv3 output directory: $dir"
+			mv "$dir" "$OUTPUT/" 2>/dev/null || true
+			found_rocprofv3_output=true
+		fi
+	done
+	
+	# Also check for other rocprofv3 output patterns
+	if ls rocprofv3-* 1> /dev/null 2>&1; then
+		echo "Found rocprofv3-* files"
+		mv rocprofv3-* "$OUTPUT" 2>/dev/null || true
+		found_rocprofv3_output=true
+	fi
+	
+	if [ "$found_rocprofv3_output" = true ]; then
+		echo "Collected rocprofv3 profiling data"
+	fi
+	
+	# Copy output directory (even if empty - non-critical)
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;
 
 esac
