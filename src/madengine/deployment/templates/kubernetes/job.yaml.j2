@@ -21,6 +21,9 @@ spec:
         job-name: {{ job_name }}
         model: {{ model_name }}
     spec:
+      {% if subdomain %}
+      subdomain: {{ subdomain }}  # Required for DNS in headless service
+      {% endif %}
       restartPolicy: Never
       terminationGracePeriodSeconds: 60
       {% if subdomain %}
@@ -67,20 +70,22 @@ spec:
                 echo "✓ Copied K8s data provider script"
             fi
             
-            # Create model script directory structure
-            {% if model_script_dir %}
-            mkdir -p /workspace/{{ model_script_dir }}
-            
-            # Copy run script from ConfigMap if it exists
-            if [ -f /config/run.sh ]; then
-                echo "Copying run.sh to /workspace/{{ model_script_path }}"
-                cp /config/run.sh /workspace/{{ model_script_path }}
-                chmod +x /workspace/{{ model_script_path }}
-            else
-                echo "Warning: run.sh not found in ConfigMap"
+            # Extract model scripts directory (all .sh and .py files)
+            {% if model_scripts_contents %}
+            echo "Extracting model scripts directory..."
+            {% for script_path, _ in model_scripts_contents.items() %}
+            {%   set config_key = script_path | replace("/", "-") %}
+            {%   set script_dir = script_path | dirname %}
+            mkdir -p /workspace/{{ script_dir }}
+            if [ -f /config/{{ config_key }} ]; then
+                cp /config/{{ config_key }} /workspace/{{ script_path }}
+                chmod +x /workspace/{{ script_path }}
+                echo "  ✓ {{ script_path }}"
             fi
+            {% endfor %}
+            echo "✓ Extracted {{ model_scripts_contents | length }} model script(s)"
             {% else %}
-            echo "Warning: No model script path configured"
+            echo "Warning: No model scripts configured"
             {% endif %}
             
             echo "✓ Script extraction complete"
@@ -131,6 +136,18 @@ spec:
             export MAD_K8S_NAMESPACE={{ namespace }}
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
+            
+            {% if launcher_type == "torchrun" %}
+            # Torchrun distributed environment (auto-configured from K8s)
+            {% if nnodes > 1 %}
+            # Multi-node torchrun (Indexed Job)
+            export JOB_COMPLETION_INDEX=${JOB_COMPLETION_INDEX:-0}
+            export POD_INDEX=$JOB_COMPLETION_INDEX
+            {% else %}
+            # Single-node torchrun
+            export JOB_COMPLETION_INDEX=0
+            {% endif %}
+            {% endif %}
             
             # Data provider environment variables
             {% if data_config %}

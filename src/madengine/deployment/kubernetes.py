@@ -466,11 +466,12 @@ class KubernetesDeployment(BaseDeployment):
                 data_json_content = f.read()
             self.console.print(f"[dim]Loaded data.json[/dim]")
 
-        # Load model run script content
-        run_script_content = None
+        # Load model scripts directory content (entire folder, not just one file)
+        # This matches local execution which mounts the entire MODEL_DIR/scripts folder
         model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run_data_minio.sh"
         model_script_dir = None
         model_script_filename = None
+        model_scripts_contents = {}  # Store all scripts in the directory
         
         if model_script_path:
             script_file = Path(model_script_path)
@@ -478,10 +479,35 @@ class KubernetesDeployment(BaseDeployment):
             model_script_dir = str(script_file.parent)  # e.g., "scripts/dummy"
             model_script_filename = script_file.name     # e.g., "run_data_minio.sh"
             
-            if script_file.exists():
+            # Load ALL scripts from the model's scripts directory
+            # This is critical for models that have multiple helper scripts
+            scripts_dir_path = Path(model_script_dir)
+            if scripts_dir_path.exists() and scripts_dir_path.is_dir():
+                for script in scripts_dir_path.glob("*.sh"):
+                    with open(script, "r") as f:
+                        # Use the path directly if relative, otherwise convert to relative
+                        if script.is_absolute():
+                            relative_path = str(script.relative_to(Path.cwd()))
+                        else:
+                            relative_path = str(script)
+                        model_scripts_contents[relative_path] = f.read()
+                
+                # Also check for Python scripts
+                for script in scripts_dir_path.glob("*.py"):
+                    with open(script, "r") as f:
+                        # Use the path directly if relative, otherwise convert to relative
+                        if script.is_absolute():
+                            relative_path = str(script.relative_to(Path.cwd()))
+                        else:
+                            relative_path = str(script)
+                        model_scripts_contents[relative_path] = f.read()
+                
+                self.console.print(f"[dim]Loaded {len(model_scripts_contents)} script(s) from {model_script_dir}[/dim]")
+            elif script_file.exists():
+                # Fallback: load single file if directory doesn't exist
                 with open(script_file, "r") as f:
-                    run_script_content = f.read()
-                self.console.print(f"[dim]Loaded script: {model_script_path}[/dim]")
+                    model_scripts_contents[model_script_path] = f.read()
+                self.console.print(f"[dim]Loaded single script: {model_script_path}[/dim]")
             else:
                 self.console.print(f"[yellow]Warning: Script not found: {model_script_path}[/yellow]")
         
@@ -508,21 +534,60 @@ class KubernetesDeployment(BaseDeployment):
                 else:
                     self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
         
-        # Get launcher configuration if present
-        launcher_config = self.config.additional_context.get("launcher")
-        launcher_type = launcher_config.get("type") if launcher_config else None
-        launcher_command = None
+        # Get launcher configuration from manifest's deployment_config or additional_context
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        launcher_config = self.config.additional_context.get("launcher", {})
+
+        # Merge manifest and runtime launcher config (runtime overrides)
+        # Use explicit None checking to handle 0 values correctly
+        launcher_type = (
+            launcher_config.get("type") 
+            if launcher_config.get("type") is not None 
+            else distributed_config.get("launcher")
+        )
+        
+        nnodes = (
+            launcher_config.get("nnodes")
+            if launcher_config.get("nnodes") is not None
+            else distributed_config.get("nnodes", 1)
+        )
+        
+        nproc_per_node = (
+            launcher_config.get("nproc_per_node")
+            if launcher_config.get("nproc_per_node") is not None
+            else distributed_config.get("nproc_per_node")
+            if distributed_config.get("nproc_per_node") is not None
+            else int(model_info.get("n_gpus", 1))
+        )
+        
+        master_port = launcher_config.get("master_port", 29500)
+
+        # Validate configuration
+        if launcher_type == "torchrun":
+            if not isinstance(nnodes, int) or nnodes < 1:
+                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+            if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+            
+            self.console.print(f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
         # Determine if we need multi-node setup
-        nnodes = 1
         create_headless_service = False
-        subdomain = None
+        launcher_command = None
 
         if launcher_type == "torchrun":
-            nnodes = launcher_config.get("nnodes", 1)
             if nnodes > 1:
                 create_headless_service = True
-                subdomain = self.job_name
+                self.console.print(f"[dim]Multi-node detected: Creating headless service for pod discovery[/dim]")
+            
+            # Generate torchrun launcher command
+            launcher_command = self._generate_torchrun_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh")
+            )
 
         # Prepare pre/post scripts (similar to local execution)
         pre_scripts = []
@@ -558,7 +623,7 @@ class KubernetesDeployment(BaseDeployment):
             "manifest_content": manifest_content,
             "credential_content": credential_content,
             "data_json_content": data_json_content,
-            "run_script_content": run_script_content,
+            "model_scripts_contents": model_scripts_contents,  # All scripts in directory
             "model_script_path": model_script_path,
             "model_script_dir": model_script_dir,
             "model_script_filename": model_script_filename,
@@ -584,7 +649,7 @@ class KubernetesDeployment(BaseDeployment):
             "node_selector": self.k8s_config.get("node_selector", {}),
             "tolerations": self.k8s_config.get("tolerations", []),
             "host_ipc": nnodes > 1,  # Enable for multi-node
-            "subdomain": subdomain,
+            "subdomain": self.job_name if (launcher_type == "torchrun" and nnodes > 1) else None,
             # Execution
             "gpu_visibility": "0",
             "gpu_architecture": self.manifest.get("context", {}).get(
@@ -593,6 +658,9 @@ class KubernetesDeployment(BaseDeployment):
             "model_script": model_info.get("scripts", "run.sh"),
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
+            "nnodes": nnodes,
+            "nproc_per_node": nproc_per_node,
+            "master_port": master_port,
             "timeout": self.config.timeout,
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
@@ -687,6 +755,77 @@ class KubernetesDeployment(BaseDeployment):
             enriched_tools.append(enriched_tool)
         
         return enriched_tools
+    
+    def _generate_torchrun_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate torchrun launcher command for K8s Indexed Jobs.
+        
+        For single-node (nnodes=1), generates standalone torchrun command.
+        For multi-node (nnodes>1), generates distributed torchrun with headless
+        service DNS for coordination.
+        
+        Uses K8s environment variables for distributed coordination:
+        - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
+        - Headless service DNS for MASTER_ADDR
+        
+        Args:
+            nnodes: Number of nodes (pods). Must be >= 1.
+            nproc_per_node: GPUs per node. Must be >= 1.
+            master_port: Master communication port. Must be 1-65535.
+            model_script: Path to model's run script. Cannot be empty.
+        
+        Returns:
+            Complete torchrun command string
+        
+        Raises:
+            ValueError: If any parameter is invalid
+        """
+        # Validate inputs (defensive programming)
+        if not isinstance(nnodes, int) or nnodes < 1:
+            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
+        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
+            raise ValueError(f"master_port must be 1-65535, got {master_port}")
+        if not model_script or not isinstance(model_script, str):
+            raise ValueError(f"model_script must be non-empty string, got {model_script}")
+        
+        # For single-node, simpler standalone command
+        if nnodes == 1:
+            return f"""torchrun \\
+    --standalone \\
+    --nnodes=1 \\
+    --nproc_per_node={nproc_per_node} \\
+    {model_script}"""
+        
+        # Multi-node: Use headless service DNS and JOB_COMPLETION_INDEX
+        return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
+export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_PORT={master_port}
+export RANK=${{JOB_COMPLETION_INDEX}}
+export WORLD_SIZE={nnodes}
+export LOCAL_RANK=0
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+
+echo "Torchrun Configuration:"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  RANK: $RANK"
+echo "  WORLD_SIZE: $WORLD_SIZE"
+echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
+
+torchrun \\
+    --nnodes={nnodes} \\
+    --nproc_per_node={nproc_per_node} \\
+    --rdzv_backend=c10d \\
+    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \\
+    --rdzv_id={self.job_name} \\
+    --role=worker \\
+    --tee=3 \\
+    {model_script}"""
     
     def _load_k8s_tools(self) -> Dict:
         """

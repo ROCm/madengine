@@ -15,9 +15,12 @@ data:
   data.json: |
 {{ data_json_content | indent(4, first=True) }}
   {% endif %}
-  {% if run_script_content %}
-  run.sh: |
-{{ run_script_content | indent(4, first=True) }}
+  {% if model_scripts_contents %}
+  # Model scripts directory (all .sh and .py files from scripts folder)
+  {% for script_path, script_content in model_scripts_contents.items() %}
+  {{ script_path | replace("/", "-") }}: |
+{{ script_content | indent(4, first=True) }}
+  {% endfor %}
   {% endif %}
   {% if data_provider_script_content %}
   data_provider.sh: |
