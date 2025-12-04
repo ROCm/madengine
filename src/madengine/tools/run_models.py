@@ -1335,7 +1335,7 @@ class RunModels:
         # create performance csv
         if not os.path.exists(self.args.output):
             file_print(
-                "model, n_gpus, training_precision, pipeline, args, tags, docker_file, base_docker, docker_sha, docker_image, git_commit, machine_name, gpu_architecture, performance, metric, relative_change, status, build_duration, test_duration, dataname, data_provider_type, data_size, data_download_duration, build_number, additional_docker_run_options",
+                "model,n_gpus,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.args.output,
                 mode="w",
             )

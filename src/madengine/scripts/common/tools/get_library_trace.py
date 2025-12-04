@@ -318,7 +318,7 @@ def main():
     date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Write the library trace information to the CSV file
-    filename = "/myworkspace/library_trace.csv"
+    filename = os.environ.get("OUTPUT_FILE", "library_trace.csv")
     fields = ["jobid", "created_date", "model", "library", "config", "calls"]
     with open(filename, "w") as csvfile:
         csvwriter = csv.writer(csvfile)

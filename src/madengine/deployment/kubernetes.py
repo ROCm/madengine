@@ -11,7 +11,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +33,7 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, Template
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 from madengine.core.dataprovider import Data
@@ -242,12 +244,51 @@ class KubernetesDeployment(BaseDeployment):
         pre_scripts.append(pre_env_details)
         self.console.print(f"[dim]Added rocEnvTool to pre-scripts with args: {pre_env_details['args']}[/dim]")
     
+    def _add_tool_scripts(self, pre_scripts: List[Dict], post_scripts: List[Dict]) -> None:
+        """
+        Add tool pre/post scripts to execution lists (similar to local execution).
+        
+        Extracts pre_scripts and post_scripts from tools.json definitions and adds them
+        to the pre_scripts and post_scripts lists for execution in K8s pods.
+        
+        Args:
+            pre_scripts: List to append tool pre-scripts to
+            post_scripts: List to append tool post-scripts to
+        """
+        tools_config = self._get_tools_config()
+        if not tools_config:
+            return
+        
+        # Load tools.json to get pre/post script definitions
+        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        if not tools_json_path.exists():
+            return
+        
+        with open(tools_json_path, "r") as f:
+            tools_definitions = json.load(f)
+        
+        # Add pre/post scripts from each configured tool
+        for tool in tools_config:
+            tool_name = tool.get("name")
+            if not tool_name or tool_name not in tools_definitions.get("tools", {}):
+                continue
+            
+            tool_def = tools_definitions["tools"][tool_name]
+            
+            # Add pre-scripts (at beginning, like local execution)
+            if "pre_scripts" in tool_def:
+                pre_scripts[:0] = tool_def["pre_scripts"]
+            
+            # Add post-scripts (at end, like local execution)
+            if "post_scripts" in tool_def:
+                post_scripts.extend(tool_def["post_scripts"])
+    
     def _load_common_scripts(self, script_list: List[Dict]) -> Dict[str, str]:
         """
         Load common script contents from madengine package for embedding in ConfigMap.
         
         Since madengine is not installed in model Docker images, we need to embed
-        the common scripts (pre_scripts, post_scripts) in the ConfigMap.
+        the common scripts (pre_scripts, post_scripts, and tool wrapper scripts) in the ConfigMap.
         
         Args:
             script_list: List of script configurations with 'path' field
@@ -292,7 +333,104 @@ class KubernetesDeployment(BaseDeployment):
             else:
                 self.console.print(f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]")
         
+        # Load tool wrapper scripts if tools are configured
+        tools_config = self._get_tools_config()
+        if tools_config:
+            self._load_tool_wrapper_scripts(script_contents, tools_config, madengine_root)
+        
         return script_contents
+    
+    def _load_tool_wrapper_scripts(self, script_contents: Dict[str, str], 
+                                   tools_config: List[Dict], madengine_root: Path) -> None:
+        """
+        Load tool wrapper scripts and tools.json for K8s ConfigMap.
+        
+        This enables profiling tools like rocprof to work in K8s deployments.
+        
+        Args:
+            script_contents: Dict to populate with script contents
+            tools_config: List of tool configurations from manifest
+            madengine_root: Path to madengine package root
+        """
+        # Load tools.json first
+        tools_json_path = madengine_root / "scripts" / "common" / "tools.json"
+        if tools_json_path.exists():
+            with open(tools_json_path, "r") as f:
+                tools_definitions = json.load(f)
+                script_contents["scripts/common/tools.json"] = json.dumps(tools_definitions, indent=2)
+            self.console.print(f"[dim]Loaded tools.json[/dim]")
+        else:
+            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            return
+        
+        # Extract and load wrapper scripts referenced in tool commands
+        for tool in tools_config:
+            tool_name = tool.get("name")
+            if not tool_name:
+                continue
+            
+            # Get tool definition from tools.json
+            if tool_name not in tools_definitions.get("tools", {}):
+                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                continue
+            
+            tool_def = tools_definitions["tools"][tool_name]
+            
+            # Extract cmd - could be from tool config override or tool definition
+            cmd = tool.get("cmd", tool_def.get("cmd", ""))
+            
+            # Check if cmd references a script in scripts/common/tools/
+            if "scripts/common/tools/" in cmd:
+                # Parse script path from command (e.g., "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace")
+                # or "python3 ../scripts/common/tools/gpu_info_profiler.py"
+                # Extract the path portion
+                parts = cmd.split()
+                for part in parts:
+                    if "scripts/common/tools/" in part:
+                        # Remove ../ prefix if present
+                        script_rel_path = part.replace("../", "")
+                        abs_script_path = madengine_root / script_rel_path
+                        
+                        if abs_script_path.exists() and abs_script_path.is_file():
+                            with open(abs_script_path, "r") as f:
+                                script_contents[script_rel_path] = f.read()
+                            self.console.print(f"[dim]Loaded tool script: {script_rel_path}[/dim]")
+                            
+                            # If it's a Python script, also load utility modules it might depend on
+                            if script_rel_path.endswith('.py'):
+                                tools_dir = abs_script_path.parent
+                                # Load common utility modules that profiling tools depend on
+                                utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                for util_file in utility_modules:
+                                    util_path = tools_dir / util_file
+                                    if util_path.exists():
+                                        util_rel_path = f"scripts/common/tools/{util_file}"
+                                        if util_rel_path not in script_contents:
+                                            with open(util_path, "r") as f:
+                                                script_contents[util_rel_path] = f.read()
+                                            self.console.print(f"[dim]Loaded tool utility module: {util_rel_path}[/dim]")
+                        else:
+                            self.console.print(f"[yellow]Warning: Tool script not found: {script_rel_path} (at {abs_script_path})[/yellow]")
+                        break
+            
+            # Also load any tool-specific pre_scripts and post_scripts
+            for script_config in tool_def.get("pre_scripts", []):
+                script_path = script_config.get("path", "")
+                if script_path and script_path not in script_contents:
+                    abs_script_path = madengine_root / script_path
+                    if abs_script_path.exists():
+                        with open(abs_script_path, "r") as f:
+                            script_contents[script_path] = f.read()
+                        self.console.print(f"[dim]Loaded tool pre-script: {script_path}[/dim]")
+            
+            for script_config in tool_def.get("post_scripts", []):
+                script_path = script_config.get("path", "")
+                if script_path and script_path not in script_contents:
+                    abs_script_path = madengine_root / script_path
+                    if abs_script_path.exists():
+                        with open(abs_script_path, "r") as f:
+                            script_contents[script_path] = f.read()
+                        self.console.print(f"[dim]Loaded tool post-script: {script_path}[/dim]")
 
     def _prepare_template_context(
         self, model_info: Dict, image_info: Dict
@@ -403,6 +541,9 @@ class KubernetesDeployment(BaseDeployment):
         if generate_sys_env_details:
             self.gather_system_env_details(pre_scripts, model_info["name"])
         
+        # Add tool pre/post scripts to the execution lists (like local execution)
+        self._add_tool_scripts(pre_scripts, post_scripts)
+        
         # Load pre/post script contents for ConfigMap (since madengine not installed in container)
         pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
 
@@ -456,7 +597,8 @@ class KubernetesDeployment(BaseDeployment):
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
             # Volumes
-            "results_pvc": self.k8s_config.get("results_pvc"),
+            "results_pvc": f"{self.job_name}-results",  # Always create a PVC for results
+            "pvc_name": f"{self.job_name}-results",      # PVC name for template
             "data_pvc": self.k8s_config.get("data_pvc"),
             # Multi-node
             "create_headless_service": create_headless_service,
@@ -482,7 +624,7 @@ class KubernetesDeployment(BaseDeployment):
         Prioritizes runtime additional_context, falls back to manifest.context.
         
         Returns:
-            List of tool configurations
+            List of tool configurations (enriched with cmd from tools.json)
         """
         # Check runtime additional_context first (allows runtime override)
         tools = self.config.additional_context.get("tools", [])
@@ -491,7 +633,60 @@ class KubernetesDeployment(BaseDeployment):
         if not tools and "context" in self.manifest:
             tools = self.manifest["context"].get("tools", [])
         
-        return tools
+        # Enrich tools with cmd from tools.json for K8s template usage
+        return self._enrich_tools_with_cmd(tools)
+    
+    def _enrich_tools_with_cmd(self, tools: List[Dict]) -> List[Dict]:
+        """
+        Enrich tools configuration with cmd field from tools.json.
+        
+        This is needed for K8s template to generate the correct encapsulation command.
+        
+        Args:
+            tools: List of tool configurations (may only have 'name' field)
+            
+        Returns:
+            Enriched list with 'cmd' field added from tools.json
+        """
+        if not tools:
+            return tools
+        
+        # Load tools.json
+        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        if not tools_json_path.exists():
+            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            return tools
+        
+        with open(tools_json_path, "r") as f:
+            tools_definitions = json.load(f)
+        
+        enriched_tools = []
+        for tool in tools:
+            tool_name = tool.get("name")
+            if not tool_name:
+                enriched_tools.append(tool)
+                continue
+            
+            # Get tool definition from tools.json
+            if tool_name not in tools_definitions.get("tools", {}):
+                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                enriched_tools.append(tool)
+                continue
+            
+            tool_def = tools_definitions["tools"][tool_name]
+            
+            # Create enriched tool config with cmd
+            enriched_tool = tool.copy()
+            if "cmd" not in enriched_tool and "cmd" in tool_def:
+                enriched_tool["cmd"] = tool_def["cmd"]
+            
+            # Also copy env_vars if present
+            if "env_vars" not in enriched_tool and "env_vars" in tool_def:
+                enriched_tool["env_vars"] = tool_def["env_vars"]
+            
+            enriched_tools.append(enriched_tool)
+        
+        return enriched_tools
     
     def _load_k8s_tools(self) -> Dict:
         """
@@ -634,6 +829,38 @@ class KubernetesDeployment(BaseDeployment):
             f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
         )
 
+    def _create_results_pvc(self) -> str:
+        """
+        Create a PersistentVolumeClaim for results storage.
+        
+        Returns:
+            Name of the created PVC
+        """
+        pvc_name = f"{self.job_name}-results"
+        
+        # Render PVC template
+        template_dir = Path(__file__).parent / "templates" / "kubernetes"
+        pvc_template = template_dir / "pvc.yaml.j2"
+        
+        with open(pvc_template, "r") as f:
+            pvc_template_str = f.read()
+        
+        template = Template(pvc_template_str)
+        pvc_yaml = template.render(
+            pvc_name=pvc_name,
+            namespace=self.namespace,
+            storage_size=self.k8s_config.get("results_storage_size", "10Gi"),
+            storage_class=self.k8s_config.get("storage_class")
+        )
+        
+        # Create PVC
+        pvc_dict = yaml.safe_load(pvc_yaml)
+        self.core_v1.create_namespaced_persistent_volume_claim(
+            namespace=self.namespace, body=pvc_dict
+        )
+        
+        return pvc_name
+    
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
         # Delete existing Job
@@ -671,9 +898,21 @@ class KubernetesDeployment(BaseDeployment):
                 if e.status != 404:
                     pass
         
+        # Delete existing PVC
+        pvc_name = f"{self.job_name}-results"
+        try:
+            self.core_v1.delete_namespaced_persistent_volume_claim(
+                name=pvc_name,
+                namespace=self.namespace
+            )
+            self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
+        except ApiException as e:
+            if e.status != 404:
+                pass
+        
         # Wait a moment for resources to be deleted
         import time
-        time.sleep(1)
+        time.sleep(2)  # Increased to allow PVC deletion
 
     def deploy(self) -> DeploymentResult:
         """Apply rendered manifests using kubernetes Python client."""
@@ -681,7 +920,12 @@ class KubernetesDeployment(BaseDeployment):
             # Clean up any existing resources first
             self._cleanup_existing_resources()
             
-            # 1. Create ConfigMap
+            # 1. Create PVC for results storage
+            self.console.print("[blue]Creating PVC for results storage...[/blue]")
+            pvc_name = self._create_results_pvc()
+            self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
+            
+            # 2. Create ConfigMap
             self.console.print("[blue]Creating ConfigMap...[/blue]")
             configmap_dict = yaml.safe_load(self.configmap_yaml)
             self.core_v1.create_namespaced_config_map(
@@ -691,7 +935,7 @@ class KubernetesDeployment(BaseDeployment):
                 f"[green]✓ Created ConfigMap: {self.configmap_name}[/green]"
             )
 
-            # 2. Create Service (if needed for multi-node)
+            # 3. Create Service (if needed for multi-node)
             if self.service_yaml:
                 self.console.print("[blue]Creating headless Service...[/blue]")
                 service_dict = yaml.safe_load(self.service_yaml)
@@ -700,7 +944,7 @@ class KubernetesDeployment(BaseDeployment):
                 )
                 self.console.print(f"[green]✓ Created Service: {self.job_name}[/green]")
 
-            # 3. Create Job
+            # 4. Create Job
             self.console.print("[blue]Creating Job...[/blue]")
             job_dict = yaml.safe_load(self.job_yaml)
             job = self.batch_v1.create_namespaced_job(
@@ -830,7 +1074,7 @@ class KubernetesDeployment(BaseDeployment):
                             tail_lines=100 if log_position == 0 else None
                         )
                         
-                        # Print new log lines
+                        # Print new log lines and trigger artifact collection
                         if logs:
                             log_lines = logs.split('\n')
                             if len(log_lines) > log_position:
@@ -902,18 +1146,30 @@ class KubernetesDeployment(BaseDeployment):
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
-        Collect Job results and logs.
+        Enhanced results collection from K8s pods.
         
-        Parses pod logs to extract performance metrics and creates
-        local perf.csv entries compatible with madengine format.
+        Collects:
+        1. Pod logs
+        2. File artifacts via kubectl cp (profiling, tracing, env details)
+        3. Results from shared PVC (if configured)
+        
+        Returns:
+            Dict with logs, artifacts, and performance results
         """
         results = {
             "job_name": deployment_id,
             "namespace": self.namespace,
             "logs": [],
+            "artifacts": [],
             "successful_runs": [],
             "failed_runs": [],
         }
+
+        # Create results directory for this deployment
+        results_dir = Path(f"./k8s_results/{deployment_id}")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.console.print(f"[cyan]📦 Collecting results from K8s job: {deployment_id}[/cyan]")
 
         try:
             # Get pods for this job
@@ -937,17 +1193,31 @@ class KubernetesDeployment(BaseDeployment):
             else:
                 build_info = {}
 
-            # Collect logs from each pod
+            # Collect from each pod
             for pod in pods.items:
                 pod_name = pod.metadata.name
+                pod_dir = results_dir / pod_name
+                pod_dir.mkdir(exist_ok=True)
+                
+                self.console.print(f"[dim]  Collecting from pod: {pod_name}[/dim]")
+                
                 try:
+                    # 1. Collect pod logs
                     log = self.core_v1.read_namespaced_pod_log(
                         name=pod_name, namespace=self.namespace
                     )
-                    results["logs"].append({"pod": pod_name, "log": log})
+                    log_file = pod_dir / f"{pod_name}.log"
+                    log_file.write_text(log)
+                    results["logs"].append({
+                        "pod": pod_name,
+                        "log": log,
+                        "file": str(log_file)
+                    })
                     
-                    # Parse log to extract performance metrics
-                    perf_data = self._parse_performance_from_log(log, model_info, build_info, pod_name)
+                    # 2. Parse performance from log
+                    perf_data = self._parse_performance_from_log(
+                        log, model_info, build_info, pod_name
+                    )
                     if perf_data:
                         results["successful_runs"].append(perf_data)
                         # Write to local perf.csv
@@ -963,6 +1233,11 @@ class KubernetesDeployment(BaseDeployment):
                         "pod": pod_name,
                         "error": f"Failed to get logs: {e.reason}"
                     })
+                except Exception as e:
+                    results["failed_runs"].append({
+                        "pod": pod_name,
+                        "error": str(e)
+                    })
 
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
@@ -975,11 +1250,337 @@ class KubernetesDeployment(BaseDeployment):
                 self.console.print(
                     f"[green]✓ Updated local perf.csv[/green]"
                 )
+            
+            # 4. Collect all artifacts from PVC
+            self._collect_from_pvc(deployment_id, results_dir, results)
+            
+            # 5. Generate summary
+            self._generate_results_summary(results, results_dir)
 
         except Exception as e:
             self.console.print(f"[yellow]⚠ Results collection incomplete: {e}[/yellow]")
 
         return results
+    
+    def _collect_artifacts_immediately(self, deployment_id: str, pod_name: str) -> None:
+        """
+        Collect artifacts immediately from a running pod during the sleep period.
+        This is called when we detect the "Keeping pod alive" message in logs.
+        """
+        try:
+            # Create results directory
+            results_dir = Path("k8s_results") / deployment_id
+            results_dir.mkdir(parents=True, exist_ok=True)
+            
+            pod_dir = results_dir / pod_name
+            pod_dir.mkdir(exist_ok=True)
+            
+            # Collect artifacts
+            artifacts = self._collect_pod_artifacts(pod_name, pod_dir)
+            
+            if artifacts:
+                self.console.print(f"[green]✓ Collected {len(artifacts)} artifacts from {pod_name}[/green]")
+            else:
+                self.console.print(f"[yellow]⚠ No artifacts collected from {pod_name}[/yellow]")
+                
+        except Exception as e:
+            self.console.print(f"[yellow]⚠ Error collecting artifacts: {e}[/yellow]")
+    
+    def _collect_pod_artifacts(self, pod_name: str, dest_dir: Path) -> List[Dict]:
+        """
+        Collect file artifacts from pod using kubectl cp.
+        
+        Collects:
+        - perf.csv (performance results)
+        - *_env.csv (environment details from rocEnvTool)
+        - profiling outputs (rocprof*, results*, *.db)
+        - tracing outputs (*_output/ directories)
+        - tool-specific outputs
+        
+        Args:
+            pod_name: Name of the Kubernetes pod
+            dest_dir: Local directory to save artifacts
+            
+        Returns:
+            List of collected artifact metadata
+        """
+        artifacts = []
+        
+        # Define artifact patterns to collect
+        artifact_patterns = [
+            {"pattern": "perf.csv", "type": "performance"},
+            {"pattern": "*_env.csv", "type": "environment"},
+            {"pattern": "results*", "type": "profiling"},
+            {"pattern": "*.db", "type": "profiling"},
+            {"pattern": "trace.*", "type": "tracing"},
+            {"pattern": "prof.csv", "type": "profiling"},  # Raw profiler output before post-script renames it
+            {"pattern": "gpu_info_*.csv", "type": "profiling"},
+            {"pattern": "library_trace.csv", "type": "tracing"},
+        ]
+        
+        for artifact_def in artifact_patterns:
+            pattern = artifact_def["pattern"]
+            artifact_type = artifact_def["type"]
+            
+            try:
+                # Try direct kubectl cp without exec (works during the sleep period)
+                # For patterns with wildcards, try common specific filenames
+                if '*' in pattern:
+                    # Expand pattern to specific known files
+                    if pattern == "*_env.csv":
+                        specific_files = ["dummy_prof_env.csv", "dummy_data_minio_env.csv"]
+                    elif pattern == "gpu_info_*.csv":
+                        specific_files = ["gpu_info_power_profiler_output.csv", "gpu_info_vram_profiler_output.csv"]
+                    elif pattern == "results*":
+                        specific_files = ["results.csv", "results.txt", "results.json"]
+                    elif pattern == "trace.*":
+                        specific_files = ["trace.txt", "trace.csv", "trace.json"]
+                    else:
+                        specific_files = []
+                    
+                    for filename in specific_files:
+                        local_path = dest_dir / filename
+                        cp_cmd = [
+                            "kubectl", "cp",
+                            f"{self.namespace}/{pod_name}:/workspace/{filename}",
+                            str(local_path)
+                        ]
+                        
+                        cp_result = subprocess.run(
+                            cp_cmd, capture_output=True, text=True, timeout=30
+                        )
+                        
+                        if cp_result.returncode == 0 and local_path.exists():
+                            artifacts.append({
+                                "pod": pod_name,
+                                "type": artifact_type,
+                                "source": f"/workspace/{filename}",
+                                "local_path": str(local_path),
+                                "size": local_path.stat().st_size
+                            })
+                            self.console.print(
+                                f"[dim]    ✓ Collected {artifact_type}: {filename}[/dim]"
+                            )
+                        elif cp_result.stderr and "No such file" not in cp_result.stderr:
+                            # Log unexpected errors (but not "file not found")
+                            self.console.print(
+                                f"[yellow]    ⚠ Failed to collect {filename}: {cp_result.stderr.strip()}[/yellow]"
+                            )
+                else:
+                    # Direct file - try to copy it
+                    local_path = dest_dir / pattern
+                    cp_cmd = [
+                        "kubectl", "cp",
+                        f"{self.namespace}/{pod_name}:/workspace/{pattern}",
+                        str(local_path)
+                    ]
+                    
+                    cp_result = subprocess.run(
+                        cp_cmd, capture_output=True, text=True, timeout=30
+                    )
+                    
+                    if cp_result.returncode == 0 and local_path.exists():
+                        artifacts.append({
+                            "pod": pod_name,
+                            "type": artifact_type,
+                            "source": f"/workspace/{pattern}",
+                            "local_path": str(local_path),
+                            "size": local_path.stat().st_size
+                        })
+                        self.console.print(
+                            f"[dim]    ✓ Collected {artifact_type}: {pattern}[/dim]"
+                        )
+                    elif cp_result.stderr and "No such file" not in cp_result.stderr:
+                        # Log unexpected errors (but not "file not found")
+                        self.console.print(
+                            f"[yellow]    ⚠ Failed to collect {pattern}: {cp_result.stderr.strip()}[/yellow]"
+                        )
+                        
+            except subprocess.TimeoutExpired:
+                pass  # Timeout - skip this file
+            except Exception:
+                pass  # File not found or not accessible - this is expected
+        
+        # Try to collect known output directories using kubectl cp directly (during sleep period)
+        output_directories = ["rocprof_output", "rpd_output", "trace_output"]
+        for dir_name in output_directories:
+            try:
+                local_dir = dest_dir / dir_name
+                cp_cmd = [
+                    "kubectl", "cp",
+                    f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
+                    str(local_dir)
+                ]
+                
+                cp_result = subprocess.run(
+                    cp_cmd, capture_output=True, text=True, timeout=60
+                )
+                
+                if cp_result.returncode == 0 and local_dir.exists():
+                    # Count files in directory
+                    file_count = sum(1 for _ in local_dir.rglob('*') if _.is_file())
+                    if file_count > 0:
+                        total_size = sum(f.stat().st_size for f in local_dir.rglob('*') if f.is_file())
+                        artifacts.append({
+                            "pod": pod_name,
+                            "type": "tool_output_directory",
+                            "source": f"/workspace/{dir_name}",
+                            "local_path": str(local_dir),
+                            "file_count": file_count,
+                            "size": total_size
+                        })
+                        self.console.print(
+                            f"[dim]    ✓ Collected directory: {dir_name} ({file_count} files, {total_size} bytes)[/dim]"
+                        )
+            except Exception:
+                pass  # Directory not found - this is expected
+        
+        return artifacts
+    
+    def _collect_from_pvc(self, deployment_id: str, results_dir: Path, results: Dict):
+        """
+        Collect all artifacts from the PVC using a temporary busybox pod.
+        
+        This is the best practice for collecting results from completed K8s jobs.
+        kubectl cp doesn't work on completed pods, so we use a helper pod.
+        
+        Args:
+            deployment_id: Job deployment ID
+            results_dir: Local directory to save results
+            results: Results dict to update
+        """
+        pvc_name = f"{deployment_id}-results"
+        
+        try:
+            # Create a temporary pod to access PVC
+            collector_pod_name = f"collector-{deployment_id[:15]}"
+            
+            self.console.print(f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]")
+            
+            collector_pod_spec = {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": collector_pod_name, "namespace": self.namespace},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [{
+                        "name": "collector",
+                        "image": "busybox:latest",
+                        "command": ["sh", "-c", "sleep 600"],
+                        "volumeMounts": [{"name": "results", "mountPath": "/results"}]
+                    }],
+                    "volumes": [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
+                }
+            }
+            
+            # Create collector pod
+            self.core_v1.create_namespaced_pod(self.namespace, collector_pod_spec)
+            
+            # Wait for pod to be ready
+            for _ in range(30):  # Wait up to 30 seconds
+                try:
+                    pod_status = self.core_v1.read_namespaced_pod_status(
+                        collector_pod_name, self.namespace
+                    )
+                    if pod_status.status.phase == "Running":
+                        break
+                except:
+                    pass
+                time.sleep(1)
+            else:
+                raise Exception("Collector pod did not start in time")
+            
+            # List pod result directories in PVC
+            list_cmd = [
+                "kubectl", "exec", collector_pod_name, "-n", self.namespace, "--",
+                "ls", "-1", "/results/"
+            ]
+            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=10)
+            
+            if list_result.returncode == 0 and list_result.stdout.strip():
+                pod_dirs = list_result.stdout.strip().split('\n')
+                
+                for pod_dir_name in pod_dirs:
+                    if not pod_dir_name:
+                        continue
+                    
+                    # Copy entire pod directory
+                    local_pod_dir = results_dir / pod_dir_name
+                    local_pod_dir.mkdir(exist_ok=True)
+                    
+                    cp_cmd = [
+                        "kubectl", "cp",
+                        f"{self.namespace}/{collector_pod_name}:/results/{pod_dir_name}",
+                        str(local_pod_dir)
+                    ]
+                    
+                    cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
+                    
+                    if cp_result.returncode == 0:
+                        # Count collected files
+                        file_count = sum(1 for _ in local_pod_dir.rglob('*') if _.is_file())
+                        if file_count > 0:
+                            results["artifacts"].append({
+                                "source": f"PVC:{pvc_name}/{pod_dir_name}",
+                                "local_path": str(local_pod_dir),
+                                "file_count": file_count,
+                                "type": "pvc_collection"
+                            })
+                            self.console.print(f"[dim]    ✓ Collected {file_count} files from {pod_dir_name}[/dim]")
+                
+                self.console.print(f"[green]✓ Collected artifacts from PVC[/green]")
+            else:
+                self.console.print(f"[yellow]⚠ No results found in PVC[/yellow]")
+            
+            # Cleanup collector pod
+            self.core_v1.delete_namespaced_pod(
+                collector_pod_name, self.namespace, grace_period_seconds=0
+            )
+            
+        except Exception as e:
+            self.console.print(f"[yellow]⚠ Could not collect from PVC: {e}[/yellow]")
+    
+    def _generate_results_summary(self, results: Dict, results_dir: Path):
+        """
+        Generate a summary JSON of all collected artifacts.
+        
+        Args:
+            results: Results dict with logs and artifacts
+            results_dir: Directory where results are saved
+        """
+        summary = {
+            "job_name": results["job_name"],
+            "namespace": results["namespace"],
+            "collected_at": datetime.now().isoformat(),
+            "pods": len(results["logs"]),
+            "total_artifacts": len(results["artifacts"]),
+            "artifacts_by_type": {},
+            "artifacts": results["artifacts"],
+            "successful_runs": len(results["successful_runs"]),
+            "failed_runs": len(results["failed_runs"]),
+        }
+        
+        # Group artifacts by type
+        for artifact in results["artifacts"]:
+            artifact_type = artifact.get("type", "unknown")
+            summary["artifacts_by_type"][artifact_type] = summary["artifacts_by_type"].get(artifact_type, 0) + 1
+        
+        summary_file = results_dir / "results_summary.json"
+        summary_file.write_text(json.dumps(summary, indent=2))
+        
+        self.console.print(f"[green]✓ Results summary: {summary_file}[/green]")
+        
+        # Print summary table if artifacts were collected
+        if summary["artifacts_by_type"]:
+            from rich.table import Table
+            table = Table(title="Collected Artifacts")
+            table.add_column("Type", style="cyan")
+            table.add_column("Count", justify="right", style="green")
+            
+            for artifact_type, count in sorted(summary["artifacts_by_type"].items()):
+                table.add_row(artifact_type, str(count))
+            
+            self.console.print(table)
     
     def _parse_performance_from_log(self, log: str, model_info: Dict, build_info: Dict, pod_name: str) -> Optional[Dict]:
         """

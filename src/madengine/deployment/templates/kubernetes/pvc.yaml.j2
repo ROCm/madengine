@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ pvc_name }}
+  namespace: {{ namespace }}
+  labels:
+    app: madengine
+    madengine-pvc: "true"
+spec:
+  accessModes:
+    - ReadWriteOnce  # Single-node access is sufficient for per-job results collection
+  resources:
+    requests:
+      storage: {{ storage_size | default("10Gi") }}
+  {% if storage_class %}
+  storageClassName: {{ storage_class }}
+  {% endif %}
+

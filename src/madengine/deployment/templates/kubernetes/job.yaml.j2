@@ -215,7 +215,20 @@ spec:
             echo ""
             echo "=== Running model benchmark script ==="
             if [ -f "{{ model_script }}" ]; then
+                {% if tools_config and tools_config|length > 0 %}
+                # Tool encapsulation: wrap model script with profiler
+                {%   set tool = tools_config[0] %}
+                {%   if tool.cmd %}
+                {%     set tool_cmd = tool.cmd | replace("../scripts/common/", "scripts/common/") %}
+                echo "Using profiling tool: {{ tool.name }}"
+                echo "Tool command: {{ tool_cmd.strip() }}"
+                {{ tool_cmd }} bash {{ model_script }}
+                {%   else %}
                 bash {{ model_script }}
+                {%   endif %}
+                {% else %}
+                bash {{ model_script }}
+                {% endif %}
                 MODEL_EXIT_CODE=$?
             else
                 echo "ERROR: Script not found: {{ model_script }}"
@@ -245,21 +258,70 @@ spec:
             echo "No post-scripts configured"
             {% endif %}
             
-            # Exit with model script exit code
-            exit ${MODEL_EXIT_CODE:-1}
-            {% endif %}
+            # Copy artifacts to PVC shared storage (always enabled)
+            echo ""
+            echo "=== Copying artifacts to PVC storage ==="
+            mkdir -p /results/${HOSTNAME}
             
-            # Copy results to shared storage
-            {% if results_pvc %}
+            # Copy performance results
             if [ -f "perf.csv" ]; then
-                cp perf.csv /results/perf_${HOSTNAME}.csv
-                echo "Results saved to /results/perf_${HOSTNAME}.csv"
+                cp perf.csv /results/${HOSTNAME}/perf.csv
+                echo "✓ Copied perf.csv"
             fi
-            {% endif %}
+            
+            # Copy environment details
+            if ls *_env.csv 1> /dev/null 2>&1; then
+                cp *_env.csv /results/${HOSTNAME}/
+                echo "✓ Copied environment CSV files"
+            fi
+            
+            # Copy profiling outputs (rocprof, rocprofv3)
+            if ls results* 1> /dev/null 2>&1; then
+                cp -r results* /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied profiling results"
+            fi
+            if ls *.db 1> /dev/null 2>&1; then
+                cp *.db /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied profiling database files"
+            fi
+            # Copy rocprofv3 UUID directories
+            for dir in */; do
+                if [ -d "$dir" ] && [ -f "${dir}"*_results.db ] 2>/dev/null; then
+                    cp -r "$dir" /results/${HOSTNAME}/
+                    echo "✓ Copied rocprofv3 directory: $dir"
+                fi
+            done
+            
+            # Copy tool-specific outputs
+            if ls -d *_output 1> /dev/null 2>&1; then
+                cp -r *_output /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied tool output directories"
+            fi
+            
+            # Copy GPU profiler outputs
+            if ls gpu_info_*.csv 1> /dev/null 2>&1; then
+                cp gpu_info_*.csv /results/${HOSTNAME}/
+                echo "✓ Copied GPU profiler outputs"
+            fi
+            
+            # Copy library trace outputs
+            if [ -f "library_trace.csv" ]; then
+                cp library_trace.csv /results/${HOSTNAME}/library_trace.csv
+                echo "✓ Copied library trace"
+            fi
+            
+            # Copy tracing outputs
+            if ls trace.* 1> /dev/null 2>&1; then
+                cp trace.* /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied tracing files"
+            fi
+            
+            echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
             
             echo ""
             echo "=== Benchmark job completed with exit code ${MODEL_EXIT_CODE:-0} ==="
             exit ${MODEL_EXIT_CODE:-0}
+            {% endif %}
         
         resources:
           requests:
@@ -285,10 +347,8 @@ spec:
           readOnly: true
         - name: shm
           mountPath: /dev/shm
-        {% if results_pvc %}
         - name: results
           mountPath: /results
-        {% endif %}
         {% if data_pvc %}
         - name: data
           mountPath: /data
@@ -328,11 +388,9 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: 8Gi
-      {% if results_pvc %}
       - name: results
         persistentVolumeClaim:
           claimName: {{ results_pvc }}
-      {% endif %}
       {% if data_pvc %}
       - name: data
         persistentVolumeClaim:

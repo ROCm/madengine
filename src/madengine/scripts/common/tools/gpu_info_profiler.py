@@ -425,7 +425,7 @@ def main() -> None:
         MODE: "power" or "vram"
         DEVICE: Comma-separated device IDs or "all"
         SAMPLING_RATE: Sampling interval in seconds
-        DUAL-GCD: "true" to enable dual GCD mode (AMD-specific)
+        DUAL_GCD: "true" to enable dual GCD mode (AMD-specific)
     
     Raises:
         ValueError: If MODE is invalid or required env vars are missing.
@@ -445,7 +445,7 @@ def main() -> None:
     mode = os.environ.get("MODE")
     device = os.environ.get("DEVICE")
     sampling_rate_str = os.environ.get("SAMPLING_RATE")
-    dual_gcd = os.environ.get("DUAL-GCD", "false")
+    dual_gcd = os.environ.get("DUAL_GCD", "false")
     
     # Validate environment variables
     if not mode:
@@ -527,7 +527,7 @@ def main() -> None:
     profiler_thread.join()
 
     # Write results to CSV
-    output_file = os.environ.get("OUTPUT_FILE", "/myworkspace/prof.csv")
+    output_file = os.environ.get("OUTPUT_FILE", "prof.csv")
     
     if not profiler_thread.data:
         logging.error("No profiling data collected")

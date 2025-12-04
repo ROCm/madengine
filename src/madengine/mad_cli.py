@@ -590,6 +590,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("GPUs", justify="center", style="blue")
+        perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
@@ -634,6 +635,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
             dataname = str(row.get("dataname", "")) if not pd.isna(row.get("dataname")) and row.get("dataname") != "" else "N/A"
             data_provider_type = str(row.get("data_provider_type", "")) if not pd.isna(row.get("data_provider_type")) and row.get("data_provider_type") != "" else "N/A"
             n_gpus = str(row.get("n_gpus", "N/A"))
+            deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
@@ -652,6 +654,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
                 str(idx),
                 model,
                 n_gpus,
+                deployment_type,
                 gpu_arch,
                 performance,
                 metric,
