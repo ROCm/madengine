@@ -676,6 +676,13 @@ class KubernetesDeployment(BaseDeployment):
             "data_config": data_config,
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
+            # Tool command chains (pre-built for template)
+            "launcher_tool_chain": self._build_tool_command_chain(
+                self._get_tools_config(), "bash /tmp/run_launcher.sh"
+            ) if launcher_command else None,
+            "direct_script_tool_chain": self._build_tool_command_chain(
+                self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
+            ),
             # Pre/Post scripts - includes rocEnvTool and any user-defined scripts
             "pre_scripts": pre_scripts,
             "post_scripts": post_scripts,
@@ -703,6 +710,47 @@ class KubernetesDeployment(BaseDeployment):
         
         # Enrich tools with cmd from tools.json for K8s template usage
         return self._enrich_tools_with_cmd(tools)
+    
+    def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
+        """
+        Build a command chain from multiple tools, wrapping the base command.
+        
+        Tools are chained from outermost to innermost:
+        tool_n wraps tool_2 wraps tool_1 wraps base_command
+        
+        Each tool's OUTPUT_FILE env var is set inline to avoid conflicts.
+        
+        Args:
+            tools_config: List of enriched tool configurations
+            base_command: The base command to wrap (e.g., "bash /tmp/run_launcher.sh")
+            
+        Returns:
+            Complete command chain string
+        """
+        if not tools_config:
+            return base_command
+        
+        # Filter tools that have a cmd field
+        tools_with_cmd = [t for t in tools_config if t.get("cmd")]
+        
+        if not tools_with_cmd:
+            return base_command
+        
+        # Build command chain from inside out (reverse order)
+        cmd_chain = base_command
+        for tool in reversed(tools_with_cmd):
+            tool_cmd = tool["cmd"].replace("../scripts/common/", "scripts/common/")
+            
+            # Set OUTPUT_FILE inline for this specific tool (if defined in tool's env_vars)
+            tool_env_vars = tool.get("env_vars", {})
+            if "OUTPUT_FILE" in tool_env_vars:
+                output_file = tool_env_vars["OUTPUT_FILE"]
+                # Prepend OUTPUT_FILE=value to this tool's command only
+                cmd_chain = f"OUTPUT_FILE={output_file} {tool_cmd} {cmd_chain}"
+            else:
+                cmd_chain = f"{tool_cmd} {cmd_chain}"
+        
+        return cmd_chain
     
     def _enrich_tools_with_cmd(self, tools: List[Dict]) -> List[Dict]:
         """
@@ -881,7 +929,9 @@ torchrun \\
         
         for tool in tools_config:
             if "env_vars" in tool:
-                env_vars.update(tool["env_vars"])
+                # Skip OUTPUT_FILE as it's set inline in command chain to avoid conflicts
+                tool_env_vars = {k: v for k, v in tool["env_vars"].items() if k != "OUTPUT_FILE"}
+                env_vars.update(tool_env_vars)
         
         return env_vars
     

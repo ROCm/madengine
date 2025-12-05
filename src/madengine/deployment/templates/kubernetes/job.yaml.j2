@@ -210,18 +210,18 @@ spec:
             chmod +x /tmp/run_launcher.sh
             
             {% if tools_config and tools_config|length > 0 %}
-            # Run with profiling tool wrapper
-            {%   set tool = tools_config[0] %}
-            {%   if tool.cmd %}
-            {%     set tool_cmd = tool.cmd | replace("../scripts/common/", "scripts/common/") %}
+            # Run with profiling tools
+            {%   for tool in tools_config %}
+            {%     if tool.cmd %}
             echo "Using profiling tool: {{ tool.name }}"
-            {{ tool_cmd }} bash /tmp/run_launcher.sh
-            {%   else %}
-            # No tool command, run launcher directly
-            bash /tmp/run_launcher.sh
-            {%   endif %}
+            {%     endif %}
+            {%   endfor %}
+            {% endif %}
+            
+            # Execute launcher with tool chain
+            {% if launcher_tool_chain and launcher_tool_chain != "bash /tmp/run_launcher.sh" %}
+            {{ launcher_tool_chain }}
             {% else %}
-            # No tools, run launcher directly
             bash /tmp/run_launcher.sh
             {% endif %}
             MODEL_EXIT_CODE=$?
@@ -282,6 +282,10 @@ spec:
             if ls gpu_info_*.csv 1> /dev/null 2>&1; then
                 cp gpu_info_*.csv /results/${HOSTNAME}/
                 echo "✓ Copied GPU profiler outputs"
+            fi
+            if ls *_trace_output.csv 1> /dev/null 2>&1; then
+                cp *_trace_output.csv /results/${HOSTNAME}/
+                echo "✓ Copied library trace outputs"
             fi
             if ls prof.csv 1> /dev/null 2>&1; then
                 cp prof.csv /results/${HOSTNAME}/
@@ -345,16 +349,17 @@ spec:
             echo "=== Running model benchmark script ==="
             if [ -f "{{ model_script }}" ]; then
                 {% if tools_config and tools_config|length > 0 %}
-                # Tool encapsulation: wrap model script with profiler
-                {%   set tool = tools_config[0] %}
-                {%   if tool.cmd %}
-                {%     set tool_cmd = tool.cmd | replace("../scripts/common/", "scripts/common/") %}
+                # Run with profiling tools
+                {%   for tool in tools_config %}
+                {%     if tool.cmd %}
                 echo "Using profiling tool: {{ tool.name }}"
-                echo "Tool command: {{ tool_cmd.strip() }}"
-                {{ tool_cmd }} bash {{ model_script }}
-                {%   else %}
-                bash {{ model_script }}
-                {%   endif %}
+                {%     endif %}
+                {%   endfor %}
+                {% endif %}
+                
+                # Execute script with tool chain
+                {% if direct_script_tool_chain and direct_script_tool_chain != "bash " ~ model_script %}
+                {{ direct_script_tool_chain }}
                 {% else %}
                 bash {{ model_script }}
                 {% endif %}
@@ -434,9 +439,13 @@ spec:
             fi
             
             # Copy library trace outputs
+            if ls *_trace_output.csv 1> /dev/null 2>&1; then
+                cp *_trace_output.csv /results/${HOSTNAME}/
+                echo "✓ Copied library trace outputs"
+            fi
             if [ -f "library_trace.csv" ]; then
                 cp library_trace.csv /results/${HOSTNAME}/library_trace.csv
-                echo "✓ Copied library trace"
+                echo "✓ Copied library_trace.csv"
             fi
             
             # Copy tracing outputs

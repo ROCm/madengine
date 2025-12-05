@@ -71,7 +71,7 @@
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },    
     "miopen_trace": {
-      "env_vars": {"MIOPEN_TRACE": "1"},
+      "env_vars": {"MIOPEN_TRACE": "1", "OUTPUT_FILE": "miopen_trace_output.csv"},
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },
     "tensile_trace": {
