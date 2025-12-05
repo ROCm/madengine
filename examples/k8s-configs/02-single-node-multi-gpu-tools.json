@@ -1,0 +1,63 @@
+{
+  "_comment": "Single Node, Multiple GPUs (2 GPUs) with Tools",
+  "_description": "2 GPU configuration with torchrun and GPU profiling tools",
+  "_use_case": "Multi-GPU training with performance monitoring on busy clusters",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "deploy": "k8s",
+  
+  "tools": [{
+    "name": "gpu_info_vram_profiler"
+  },
+  {
+    "name": "miopen_trace"
+  }],
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 2,
+    
+    "memory": "64Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    
+    "image_pull_policy": "Always",
+    "backoff_limit": 3
+  },
+  
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "2",
+    "HSA_ENABLE_SDMA": "0",
+    "OMP_NUM_THREADS": "8",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  },
+  
+  "_env_var_notes": {
+    "NCCL_DEBUG": "Changed from INFO to WARN to reduce log verbosity",
+    "MIOPEN_FIND_MODE": "1 = Use compiled kernels, avoid find-db warnings",
+    "MIOPEN_USER_DB_PATH": "Writable location for MIOpen cache",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "Helps with IOMMU-related warnings in containers",
+    "RCCL_ENABLE_HIPGRAPH": "Disable for compatibility (experimental feature)"
+  },
+  
+  "debug": false
+}

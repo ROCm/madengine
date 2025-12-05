@@ -1,0 +1,48 @@
+{
+  "_comment": "NVIDIA GPU - Single Node, 4 GPUs",
+  "_description": "Configuration for running models on NVIDIA GPUs (A100, H100, etc.) with distributed training",
+  "_use_case": "NVIDIA-based Kubernetes clusters, multi-GPU training",
+  
+  "gpu_vendor": "NVIDIA",
+  "guest_os": "UBUNTU",
+  "deploy": "k8s",
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 4,
+    "gpu_resource_name": "nvidia.com/gpu",
+    
+    "memory": "128Gi",
+    "memory_limit": "256Gi",
+    "cpu": "48",
+    "cpu_limit": "96",
+    
+    "image_pull_policy": "Always",
+    "backoff_limit": 3,
+    
+    "node_selector": {
+      "accelerator": "nvidia-tesla-a100"
+    }
+  },
+  
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 4,
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "NCCL_P2P_DISABLE": "0",
+    "NCCL_P2P_LEVEL": "NVL",
+    "OMP_NUM_THREADS": "12"
+  },
+  
+  "debug": false
+}
