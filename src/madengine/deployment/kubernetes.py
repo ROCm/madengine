@@ -1362,21 +1362,46 @@ torchrun \\
                         # Write to local perf.csv
                         self._write_to_perf_csv(perf_data)
                     else:
+                        # Create failure record and write to perf.csv
+                        error_msg = "Failed to parse performance metrics from logs"
+                        failure_record = self._create_failure_record(
+                            model_info, build_info, pod_name, error_msg
+                        )
                         results["failed_runs"].append({
                             "pod": pod_name,
-                            "error": "Failed to parse performance metrics from logs"
+                            "error": error_msg,
+                            "perf_data": failure_record
                         })
+                        # Write failure to perf.csv
+                        self._write_to_perf_csv(failure_record)
+                        self.console.print(f"[yellow]⚠ No performance metrics found for pod {pod_name}, recorded as FAILED[/yellow]")
                         
                 except ApiException as e:
+                    error_msg = f"Failed to get logs: {e.reason}"
+                    failure_record = self._create_failure_record(
+                        model_info, build_info, pod_name, error_msg
+                    )
                     results["failed_runs"].append({
                         "pod": pod_name,
-                        "error": f"Failed to get logs: {e.reason}"
+                        "error": error_msg,
+                        "perf_data": failure_record
                     })
+                    # Write failure to perf.csv
+                    self._write_to_perf_csv(failure_record)
+                    self.console.print(f"[red]✗ Failed to get logs for pod {pod_name}: {e.reason}[/red]")
                 except Exception as e:
+                    error_msg = str(e)
+                    failure_record = self._create_failure_record(
+                        model_info, build_info, pod_name, error_msg
+                    )
                     results["failed_runs"].append({
                         "pod": pod_name,
-                        "error": str(e)
+                        "error": error_msg,
+                        "perf_data": failure_record
                     })
+                    # Write failure to perf.csv
+                    self._write_to_perf_csv(failure_record)
+                    self.console.print(f"[red]✗ Error collecting results from pod {pod_name}: {e}[/red]")
 
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
@@ -1848,6 +1873,73 @@ torchrun \\
         }
         
         # Flatten tags if they are in list format (same as local execution)
+        if isinstance(result["tags"], list):
+            result["tags"] = ",".join(str(item) for item in result["tags"])
+        
+        return result
+    
+    def _create_failure_record(self, model_info: Dict, build_info: Dict, pod_name: str, error_msg: str) -> Dict:
+        """
+        Create a failure record for perf.csv when performance metrics are missing.
+        
+        Args:
+            model_info: Model information from manifest
+            build_info: Build information from manifest
+            pod_name: Kubernetes pod name
+            error_msg: Error message describing the failure
+            
+        Returns:
+            Dict with all perf.csv fields marked as FAILED
+        """
+        import os
+        
+        # Create a record with the same structure as successful runs
+        # but with performance=0, metric="", and status="FAILED"
+        result = {
+            # Core identification
+            "model": model_info.get("name", ""),
+            "n_gpus": str(model_info.get("n_gpus", "1")),
+            
+            # Model configuration
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": os.environ.get("pipeline", ""),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            
+            # Build information
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            
+            # Runtime information
+            "git_commit": "",
+            "machine_name": pod_name,
+            "deployment_type": "kubernetes",
+            "gpu_architecture": "",
+            
+            # Performance metrics - FAILED
+            "performance": "0",
+            "metric": error_msg,  # Store error message in metric field
+            "relative_change": "",
+            "status": "FAILED",
+            
+            # Timing
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": "",
+            
+            # Data information
+            "dataname": model_info.get("data", ""),
+            "data_provider_type": "",
+            "data_size": "",
+            "data_download_duration": "",
+            
+            # Build tracking
+            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        
+        # Flatten tags if they are in list format
         if isinstance(result["tags"], list):
             result["tags"] = ",".join(str(item) for item in result["tags"])
         
