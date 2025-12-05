@@ -1382,13 +1382,28 @@ torchrun \\
             else:
                 build_info = {}
 
+            # Check if this is a multi-node distributed job
+            deployment_config = self.manifest.get("deployment_config", {})
+            distributed_config = deployment_config.get("distributed", {})
+            is_distributed = distributed_config.get("enabled", False)
+            nnodes = distributed_config.get("nnodes", 1)
+            is_multinode = is_distributed and nnodes > 1
+            
+            # Sort pods by name to ensure consistent ordering (pod-0 is master)
+            sorted_pods = sorted(pods.items, key=lambda p: p.metadata.name)
+
             # Collect from each pod
-            for pod in pods.items:
+            for pod_index, pod in enumerate(sorted_pods):
                 pod_name = pod.metadata.name
                 pod_dir = results_dir / pod_name
                 pod_dir.mkdir(exist_ok=True)
                 
                 self.console.print(f"[dim]  Collecting from pod: {pod_name}[/dim]")
+                
+                # Determine if this pod should have performance metrics
+                # In multi-node jobs, only the master pod (pod-0) outputs performance
+                is_master_pod = pod_index == 0
+                should_have_metrics = not is_multinode or is_master_pod
                 
                 try:
                     # 1. Collect pod logs
@@ -1411,8 +1426,9 @@ torchrun \\
                         results["successful_runs"].append(perf_data)
                         # Write to local perf.csv
                         self._write_to_perf_csv(perf_data)
-                    else:
-                        # Create failure record and write to perf.csv
+                    elif should_have_metrics:
+                        # Only mark as FAILED if this pod should have metrics
+                        # In multi-node jobs, worker pods don't output metrics
                         error_msg = "Failed to parse performance metrics from logs"
                         failure_record = self._create_failure_record(
                             model_info, build_info, pod_name, error_msg
@@ -1425,6 +1441,9 @@ torchrun \\
                         # Write failure to perf.csv
                         self._write_to_perf_csv(failure_record)
                         self.console.print(f"[yellow]⚠ No performance metrics found for pod {pod_name}, recorded as FAILED[/yellow]")
+                    else:
+                        # Worker pod in multi-node job - no metrics expected
+                        self.console.print(f"[dim]  Worker pod {pod_name}: metrics not expected (multi-node job)[/dim]")
                         
                 except ApiException as e:
                     error_msg = f"Failed to get logs: {e.reason}"
