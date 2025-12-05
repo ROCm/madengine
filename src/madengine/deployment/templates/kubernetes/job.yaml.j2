@@ -176,10 +176,122 @@ spec:
             {% endif %}
             
             {% if launcher_command %}
-            # Launcher-based execution
+            # Launcher-based execution with tools
             echo ""
             echo "=== Starting benchmark with {{ launcher_type }} ==="
-            {{ launcher_command | indent(12) }}
+            
+            cd /workspace
+            
+            # Run pre-scripts (like local execution)
+            {% if pre_scripts %}
+            echo ""
+            echo "=== Running pre-scripts ==="
+            {% for script in pre_scripts %}
+            # Execute: {{ script.path }}
+            if [ -f "{{ script.path }}" ]; then
+                echo "Executing: {{ script.path }} {% if script.args %}{{ script.args }}{% endif %}"
+                bash {{ script.path }} {% if script.args %}{{ script.args }}{% endif %} || echo "Warning: {{ script.path }} failed with exit code $?"
+            else
+                echo "Warning: Script not found: {{ script.path }}"
+            fi
+            {% endfor %}
+            echo "✓ Pre-scripts completed"
+            {% else %}
+            echo "No pre-scripts configured"
+            {% endif %}
+            
+            # Create wrapper script for launcher
+            echo ""
+            echo "=== Running model benchmark with launcher ==="
+            cat > /tmp/run_launcher.sh << 'LAUNCHER_EOF'
+            #!/bin/bash
+            {{ launcher_command | indent(12, first=False) }}
+            LAUNCHER_EOF
+            chmod +x /tmp/run_launcher.sh
+            
+            {% if tools_config and tools_config|length > 0 %}
+            # Run with profiling tool wrapper
+            {%   set tool = tools_config[0] %}
+            {%   if tool.cmd %}
+            {%     set tool_cmd = tool.cmd | replace("../scripts/common/", "scripts/common/") %}
+            echo "Using profiling tool: {{ tool.name }}"
+            {{ tool_cmd }} bash /tmp/run_launcher.sh
+            {%   else %}
+            # No tool command, run launcher directly
+            bash /tmp/run_launcher.sh
+            {%   endif %}
+            {% else %}
+            # No tools, run launcher directly
+            bash /tmp/run_launcher.sh
+            {% endif %}
+            MODEL_EXIT_CODE=$?
+            
+            # Run post-scripts (like local execution)
+            {% if post_scripts %}
+            echo ""
+            echo "=== Running post-scripts ==="
+            {% for script in post_scripts %}
+            # Execute: {{ script.path }}
+            if [ -f "{{ script.path }}" ]; then
+                echo "Executing: {{ script.path }} {% if script.args %}{{ script.args }}{% endif %}"
+                bash {{ script.path }} {% if script.args %}{{ script.args }}{% endif %} || echo "Warning: {{ script.path }} failed with exit code $?"
+            else
+                echo "Warning: Script not found: {{ script.path }}"
+            fi
+            {% endfor %}
+            echo "✓ Post-scripts completed"
+            {% else %}
+            echo "No post-scripts configured"
+            {% endif %}
+            
+            # Copy artifacts to PVC shared storage (always enabled)
+            echo ""
+            echo "=== Copying artifacts to PVC storage ==="
+            mkdir -p /results/${HOSTNAME}
+            
+            # Copy performance results
+            if [ -f "perf.csv" ]; then
+                cp perf.csv /results/${HOSTNAME}/perf.csv
+                echo "✓ Copied perf.csv"
+            fi
+            
+            # Copy environment details
+            if ls *_env.csv 1> /dev/null 2>&1; then
+                cp *_env.csv /results/${HOSTNAME}/
+                echo "✓ Copied environment CSV files"
+            fi
+            
+            # Copy profiling outputs (rocprof, rocprofv3)
+            if ls results* 1> /dev/null 2>&1; then
+                cp -r results* /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied profiling results"
+            fi
+            if ls *.db 1> /dev/null 2>&1; then
+                cp *.db /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied profiling database files"
+            fi
+            # Copy rocprofv3 UUID directories
+            for dir in */; do
+                if [ -d "$dir" ] && [ -f "${dir}"*_results.db ] 2>/dev/null; then
+                    cp -r "$dir" /results/${HOSTNAME}/
+                    echo "✓ Copied rocprofv3 directory: $dir"
+                fi
+            done
+            
+            # Copy tool-specific outputs
+            if ls gpu_info_*.csv 1> /dev/null 2>&1; then
+                cp gpu_info_*.csv /results/${HOSTNAME}/
+                echo "✓ Copied GPU profiler outputs"
+            fi
+            if ls prof.csv 1> /dev/null 2>&1; then
+                cp prof.csv /results/${HOSTNAME}/
+                echo "✓ Copied prof.csv"
+            fi
+            
+            echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
+            
+            echo "=== Benchmark job completed with exit code $MODEL_EXIT_CODE ==="
+            exit $MODEL_EXIT_CODE
             {% else %}
             # Direct script execution
             cd /workspace

@@ -651,7 +651,7 @@ class KubernetesDeployment(BaseDeployment):
             "host_ipc": nnodes > 1,  # Enable for multi-node
             "subdomain": self.job_name if (launcher_type == "torchrun" and nnodes > 1) else None,
             # Execution
-            "gpu_visibility": "0",
+            "gpu_visibility": ",".join(str(i) for i in range(gpu_count)),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),

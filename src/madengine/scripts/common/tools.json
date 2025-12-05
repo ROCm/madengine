@@ -121,7 +121,7 @@
         }
       ],
       "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
-      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"power", "DUAL_GCD":"false"},
+      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"power", "DUAL_GCD":"false", "OUTPUT_FILE":"gpu_info_power_profiler_output.csv"},
       "post_scripts": [
         {
           "path": "scripts/common/post_scripts/gpu_info_post.sh",
@@ -136,7 +136,7 @@
         }
       ],
       "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
-      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"vram", "DUAL_GCD":"false"},
+      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"vram", "DUAL_GCD":"false", "OUTPUT_FILE":"gpu_info_vram_profiler_output.csv"},
       "post_scripts": [
         {
           "path": "scripts/common/post_scripts/gpu_info_post.sh",

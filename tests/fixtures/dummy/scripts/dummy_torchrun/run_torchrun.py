@@ -151,7 +151,13 @@ def main():
     # Initialize distributed training
     if world_size > 1:
         print(f"\n[Rank {rank}] Initializing distributed process group...")
-        dist.init_process_group(backend="nccl")
+        # Best practice: Specify device_ids to avoid PyTorch warnings
+        dist.init_process_group(
+            backend="nccl",
+            init_method=f"env://",  # Use environment variables (set by torchrun)
+            world_size=world_size,
+            rank=rank
+        )
         print(f"[Rank {rank}] ✓ Process group initialized")
         print(f"[Rank {rank}]   Backend: {dist.get_backend()}")
         print(f"[Rank {rank}]   World Size: {dist.get_world_size()}")
@@ -160,7 +166,17 @@ def main():
     
     # Set device
     if torch.cuda.is_available():
-        device = torch.device(f"cuda:{local_rank}")
+        num_gpus = torch.cuda.device_count()
+        print(f"[Rank {rank}] PyTorch sees {num_gpus} GPU(s)")
+        print(f"[Rank {rank}] LOCAL_RANK={local_rank}, attempting to use cuda:{local_rank}")
+        
+        if local_rank >= num_gpus:
+            print(f"[Rank {rank}] ERROR: LOCAL_RANK {local_rank} >= available GPUs {num_gpus}")
+            print(f"[Rank {rank}] Using cuda:0 instead")
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device(f"cuda:{local_rank}")
+        
         torch.cuda.set_device(device)
         print(f"[Rank {rank}] Using GPU: {torch.cuda.get_device_name(device)}")
     else:
@@ -173,7 +189,14 @@ def main():
     
     # Wrap model with DDP for distributed training
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        # Best practice: Explicitly specify device_ids for DDP
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            broadcast_buffers=True,  # Ensure buffers (like BatchNorm stats) are synced
+            find_unused_parameters=False  # Set True only if needed (performance impact)
+        )
         print(f"[Rank {rank}] ✓ Model wrapped with DistributedDataParallel")
     
     # Create optimizer and loss function
@@ -182,7 +205,8 @@ def main():
     
     # Synchronize before training
     if world_size > 1:
-        dist.barrier()
+        # Best practice: Specify device to avoid warnings
+        dist.barrier(device_ids=[local_rank])
     
     if rank == 0:
         print(f"\n{'='*70}")
@@ -208,7 +232,7 @@ def main():
     
     # Synchronize before final output
     if world_size > 1:
-        dist.barrier()
+        dist.barrier(device_ids=[local_rank])
     
     if rank == 0:
         print(f"\n{'='*70}")
