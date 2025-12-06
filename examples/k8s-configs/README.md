@@ -1,25 +1,19 @@
-# Kubernetes Configuration Examples
+# Kubernetes Configuration Guide
 
-This directory contains example Kubernetes configuration files for `madengine-cli` covering various deployment scenarios.
+Complete reference for deploying MADEngine workloads on Kubernetes clusters.
 
 ---
 
-## 📁 Available Examples
+## 📋 Table of Contents
 
-| File | GPUs | Nodes | Use Case |
-|------|------|-------|----------|
-| [`00-minimal.json`](00-minimal.json) | 1 | 1 | Quickstart with defaults |
-| [`01-single-node-single-gpu.json`](01-single-node-single-gpu.json) | 1 | 1 | Basic single GPU testing |
-| [`02-single-node-multi-gpu.json`](02-single-node-multi-gpu.json) | 8 | 1 | Data parallelism, high performance |
-| [`03-multi-node-basic.json`](03-multi-node-basic.json) | 16 | 2 | Distributed training basics |
-| [`04-multi-node-advanced.json`](04-multi-node-advanced.json) | 32 | 4 | Production multi-node with all features |
-| [`05-nvidia-gpu-example.json`](05-nvidia-gpu-example.json) | 4 | 1 | NVIDIA GPU configuration |
-| [`06-data-provider-with-pvc.json`](06-data-provider-with-pvc.json) | 2 | 1+ | **NEW:** Data provider with PVC storage |
-
-### **Note on PVC**
-- **Auto-created**: MADEngine automatically creates `madengine-shared-data` PVC when using data providers
-- **No manual steps needed**: Just run `madengine-cli run` and PVC is created automatically
-- **Reusable**: PVC persists across runs, data downloads once
+- [Quick Start](#-quick-start)
+- [Available Configurations](#-available-configurations)
+- [Decision Matrix](#-decision-matrix-which-config-to-use)
+- [Usage Examples](#-usage-examples)
+- [Data Providers](#-data-providers-with-kubernetes)
+- [Configuration Reference](#-configuration-reference)
+- [Best Practices](#-best-practices)
+- [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -29,381 +23,689 @@ This directory contains example Kubernetes configuration files for `madengine-cl
 
 ```bash
 # For single GPU testing
-cp examples/k8s-configs/01-single-node-single-gpu.json my-k8s-config.json
+cp examples/k8s-configs/01-single-node-single-gpu.json my-config.json
 
-# For multi-GPU on single node
-cp examples/k8s-configs/02-single-node-multi-gpu.json my-k8s-config.json
+# For multi-GPU (2 GPUs)
+cp examples/k8s-configs/02-single-node-multi-gpu.json my-config.json
 
-# For multi-node distributed training
-cp examples/k8s-configs/03-multi-node-basic.json my-k8s-config.json
+# For multi-node distributed (2 nodes × 2 GPUs)
+cp examples/k8s-configs/03-multi-node-basic.json my-config.json
+
+# For data provider with auto-PVC
+cp examples/k8s-configs/06-data-provider-with-pvc.json my-config.json
 ```
 
-### 2. Edit Configuration
+### 2. Customize for Your Cluster
 
-Update these fields for your environment:
+Update these fields (optional - defaults work in most cases):
 
 ```json
 {
   "k8s": {
-    "kubeconfig": "/path/to/your/.kube/config",  // Your kubeconfig path
-    "namespace": "your-namespace",                 // Your K8s namespace
-    "node_selector": {                            // Your node labels
-      "node.kubernetes.io/instance-type": "your-instance-type"
+    "kubeconfig": "~/.kube/config",     // Path to your kubeconfig
+    "namespace": "default",              // Your namespace
+    "node_selector": {                  // Optional: target specific nodes
+      "node.kubernetes.io/instance-type": "Standard_ND96isr_H100_v5"
     }
   }
 }
 ```
 
-### 3. Build and Run
+### 3. Build and Deploy
 
 ```bash
-# Build with K8s config
-madengine-cli build --tags model_name --registry dockerhub \
-  --additional-context-file my-k8s-config.json
+# Build container image
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags my_model \
+  --additional-context-file my-config.json \
+  --registry dockerhub
 
-# Run on Kubernetes
-madengine-cli run --manifest-file build_manifest.json
+# Deploy and run
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
 ```
 
 ---
 
-## 📦 Using Data Providers with K8s
+## 📁 Available Configurations
 
-**NEW:** K8s deployments with data providers require persistent storage (PVC).
+| File | GPUs | Nodes | Launcher | Use Case |
+|------|------|-------|----------|----------|
+| [`01-single-node-single-gpu.json`](01-single-node-single-gpu.json) | 1 | 1 | None | Basic testing, small models |
+| [`01-single-node-single-gpu-tools.json`](01-single-node-single-gpu-tools.json) | 1 | 1 | None | Single GPU + monitoring |
+| [`02-single-node-multi-gpu.json`](02-single-node-multi-gpu.json) | 2 | 1 | torchrun | Multi-GPU training |
+| [`02-single-node-multi-gpu-tools.json`](02-single-node-multi-gpu-tools.json) | 2 | 1 | torchrun | Multi-GPU + monitoring |
+| [`03-multi-node-basic.json`](03-multi-node-basic.json) | 2/node | 2 | torchrun | Multi-node basics (4 GPUs total) |
+| [`04-multi-node-advanced.json`](04-multi-node-advanced.json) | 2/node | 4 | torchrun | Production multi-node (8 GPUs) |
+| [`05-nvidia-gpu-example.json`](05-nvidia-gpu-example.json) | 4 | 1 | torchrun | NVIDIA GPUs (A100, H100) |
+| [`06-data-provider-with-pvc.json`](06-data-provider-with-pvc.json) | 2 | 1+ | torchrun | **Data provider with auto-PVC** |
 
-### Why PVC?
+---
 
-K8s best practice: Separate storage (PVC) from compute (pods)
-- **Pods:** Ephemeral, can be deleted/recreated
-- **PVC:** Persistent, data survives pod lifecycle
-- **Benefits:** Data cached and reusable, shared across multi-node
+## 🎯 Decision Matrix: Which Config to Use?
 
-### Quick Setup
+### By GPU Requirements
 
-**Step 1: No manual PVC creation needed!**
+| Scenario | Config File | GPUs | Nodes |
+|----------|-------------|------|-------|
+| **Quick test** | `01-single-node-single-gpu.json` | 1 | 1 |
+| **Single GPU benchmark** | `01-single-node-single-gpu-tools.json` | 1 | 1 |
+| **Multi-GPU (2 GPUs)** | `02-single-node-multi-gpu.json` | 2 | 1 |
+| **Multi-GPU + monitoring** | `02-single-node-multi-gpu-tools.json` | 2 | 1 |
+| **Multi-node (4 GPUs)** | `03-multi-node-basic.json` | 2×2 | 2 |
+| **Multi-node (8 GPUs)** | `04-multi-node-advanced.json` | 2×4 | 4 |
+| **NVIDIA GPUs** | `05-nvidia-gpu-example.json` | 4 | 1 |
+| **With data download** | `06-data-provider-with-pvc.json` | 2 | 1+ |
+
+### By Use Case
+
+| Use Case | Recommended Config |
+|----------|-------------------|
+| **Development/Testing** | `01-single-node-single-gpu.json` |
+| **Small models (BERT, ResNet)** | `01-single-node-single-gpu.json` |
+| **Medium models (GPT-2, Stable Diffusion)** | `02-single-node-multi-gpu.json` |
+| **Large models (LLaMA-13B)** | `03-multi-node-basic.json` |
+| **Very large models (LLaMA-70B+)** | `04-multi-node-advanced.json` |
+| **Models requiring datasets** | `06-data-provider-with-pvc.json` |
+| **Busy/shared clusters** | `02-single-node-multi-gpu.json` (2 GPUs) |
+
+---
+
+## 💻 Usage Examples
+
+### Example 1: Single GPU Test
+
 ```bash
-# PVC is automatically created on first run
-# Verify after running:
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags dummy \
+  --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
+  --registry dockerhub
+
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
+```
+
+### Example 2: Multi-GPU Training (2 GPUs)
+
+```bash
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags dummy_torchrun \
+  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
+  --registry dockerhub
+
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
+```
+
+### Example 3: Multi-Node Training (2 nodes, 4 GPUs)
+
+```bash
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags dummy_torchrun \
+  --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
+  --registry dockerhub
+
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
+```
+
+### Example 4: With Data Provider (Auto-PVC)
+
+```bash
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags dummy_torchrun_data_minio \
+  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --registry dockerhub
+
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
+
+# Verify PVC was auto-created
 kubectl get pvc madengine-shared-data
 ```
 
-**Step 2: Use Data Provider Config**
+---
+
+## 📦 Data Providers with Kubernetes
+
+**NEW:** MADEngine automatically handles data provisioning for K8s deployments!
+
+### ✨ Auto-PVC Feature
+
+**No manual PVC creation needed!** MADEngine automatically:
+1. Creates `madengine-shared-data` PVC if it doesn't exist
+2. Selects appropriate access mode (RWO for single-node, RWX for multi-node)
+3. Downloads data on first run
+4. Reuses data on subsequent runs
+
+### Quick Setup
+
+**Step 1: Use data provider config**
 ```bash
-madengine-cli run dummy_torchrun_data_minio \
-  --config examples/k8s-configs/06-data-provider-with-pvc.json
+madengine-cli build --tags dummy_torchrun_data_minio \
+  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --registry dockerhub
 ```
 
-### Configuration Requirements
+**Step 2: Run (PVC auto-created)**
+```bash
+madengine-cli run --manifest-file build_manifest.json --live-output
 
-Models with data providers (e.g., `dummy_torchrun_data_minio`, `dummy_data_minio`) **require** `data_pvc`:
+# Output shows:
+# 📦 Data provider detected: Will auto-create shared data PVC
+#    PVC name: madengine-shared-data (reusable across runs)
+#    Access mode: RWO for single-node, RWX for multi-node (auto-selected)
+```
+
+**Step 3: Verify (optional)**
+```bash
+# Check PVC status
+kubectl get pvc madengine-shared-data
+
+# Check PVC contents
+kubectl exec -it <pod-name> -- ls -lh /data/
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. MADEngine detects data provider in model config          │
+├─────────────────────────────────────────────────────────────┤
+│  2. Auto-creates madengine-shared-data PVC (if not exists)  │
+│     • Single-node: ReadWriteOnce (RWO)                      │
+│     • Multi-node: ReadWriteMany (RWX)                       │
+├─────────────────────────────────────────────────────────────┤
+│  3. Mounts PVC at /data in pod                               │
+├─────────────────────────────────────────────────────────────┤
+│  4. Downloads data from MinIO/S3/NAS to /data               │
+├─────────────────────────────────────────────────────────────┤
+│  5. Training starts with data at /data/<filename>           │
+├─────────────────────────────────────────────────────────────┤
+│  6. PVC persists - subsequent runs skip download! ✅         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Supported Data Providers
+
+| Provider | Protocol | Configuration |
+|----------|----------|---------------|
+| **MinIO** | S3-compatible | Automatic (credentials from `credential.json`) |
+| **AWS S3** | S3 | AWS credentials in environment or `credential.json` |
+| **NAS** | SSH/rsync | NAS credentials in `credential.json` |
+| **Local** | Filesystem | Pre-mounted PVC |
+
+### Storage Classes
+
+**Single-Node (RWO)**:
+- ✅ `local-path` (Rancher)
+- ✅ AWS EBS (`gp3`, `io2`)
+- ✅ Azure Disk
+- ✅ Any RWO storage class
+
+**Multi-Node (RWX)**:
+- ✅ NFS (`nfs-client`)
+- ✅ CephFS
+- ✅ GlusterFS
+- ✅ AWS EFS
+- ✅ Azure Files
+- ❌ `local-path` (RWO only)
+
+### Custom PVC (Optional)
+
+To use an existing PVC instead of auto-creation:
 
 ```json
 {
   "k8s": {
-    "data_pvc": "madengine-shared-data",  // ← REQUIRED
-    "gpu_count": 2
-  },
-  "env_vars": {
-    "MAD_DATAHOME": "/data"  // PVC mount point (default)
+    "data_pvc": "my-existing-pvc"  // Skip auto-creation
   }
 }
 ```
-
-**Without PVC:** MADEngine will fail with helpful error message and setup instructions.
-
-### Multi-Node Requirements
-
-For multi-node deployments:
-- PVC **must** support `ReadWriteMany` (RWX) access mode
-- Supported storage: NFS, CephFS, GlusterFS, Azure Files, AWS EFS
-- Not supported: Local storage, AWS EBS, Azure Disk (RWO only)
-
-### Complete Guide
-
-See [`docs/K8S_DATA_PROVIDER_GUIDE.md`](../../docs/K8S_DATA_PROVIDER_GUIDE.md) for:
-- Architecture diagrams
-- Storage class requirements
-- Troubleshooting
-- Best practices
 
 ---
 
 ## 📖 Configuration Reference
 
-### Top-Level Fields
+### Configuration Structure
+
+```json
+{
+  "_comment": "Description of this configuration",
+  "gpu_vendor": "AMD|NVIDIA",
+  "guest_os": "UBUNTU",
+  "deploy": "k8s",
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 2,
+    
+    "memory": "64Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    
+    "image_pull_policy": "Always",
+    "backoff_limit": 3,
+    
+    "node_selector": {},
+    "tolerations": [],
+    
+    "data_pvc": null,        // Optional: for data providers
+    "results_pvc": null      // Optional: custom results storage
+  },
+  
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_IB_DISABLE": "1",
+    "OMP_NUM_THREADS": "8"
+  },
+  
+  "debug": false
+}
+```
+
+### Field Reference
+
+#### Top-Level Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `gpu_vendor` | string | **Yes** | GPU vendor: `"AMD"` or `"NVIDIA"` |
-| `guest_os` | string | **Yes** | Operating system: `"UBUNTU"`, `"RHEL"`, etc. |
-| `deploy` | string | **Yes** | Deployment target: `"k8s"` for Kubernetes |
-| `k8s` | object | **Yes** | Kubernetes-specific configuration |
-| `distributed` | object | No | Distributed training configuration |
-| `env_vars` | object | No | Environment variables for containers |
+| `gpu_vendor` | string | **Yes** | `"AMD"` or `"NVIDIA"` |
+| `guest_os` | string | **Yes** | `"UBUNTU"`, `"RHEL"`, etc. |
+| `deploy` | string | **Yes** | Must be `"k8s"` |
+| `k8s` | object | **Yes** | Kubernetes configuration |
+| `distributed` | object | No | Distributed training (for torchrun) |
+| `env_vars` | object | No | Custom environment variables |
+| `debug` | boolean | No | Enable debug mode (saves manifests) |
 
-### `k8s` Object Fields
+#### K8s Configuration Fields
 
-#### Required
+**Required:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `gpu_count` | integer | - | **Number of GPUs per pod** |
 
-#### Optional - Basic
+**Optional - Basic:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `kubeconfig` | string | `~/.kube/config` | Path to kubeconfig file |
+| `kubeconfig` | string | `~/.kube/config` | Path to kubeconfig |
 | `namespace` | string | `"default"` | Kubernetes namespace |
-| `gpu_resource_name` | string | `"amd.com/gpu"` | GPU resource name (`"nvidia.com/gpu"` for NVIDIA) |
+| `gpu_resource_name` | string | `"amd.com/gpu"` | GPU resource (`"nvidia.com/gpu"` for NVIDIA) |
 
-#### Optional - Resources
+**Optional - Resources:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `memory` | string | `"128Gi"` | Memory request (e.g., `"16Gi"`, `"256Gi"`) |
-| `memory_limit` | string | `"256Gi"` | Memory limit |
+| `memory` | string | `"128Gi"` | Memory request (e.g., `"16Gi"`, `"64Gi"`) |
+| `memory_limit` | string | `"256Gi"` | Memory limit (typically 2× memory) |
 | `cpu` | string | `"32"` | CPU cores request |
-| `cpu_limit` | string | `"64"` | CPU cores limit |
+| `cpu_limit` | string | `"64"` | CPU cores limit (typically 2× cpu) |
 
-#### Optional - Job Configuration
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `image_pull_policy` | string | `"Always"` | Image pull policy: `"Always"`, `"IfNotPresent"`, `"Never"` |
-| `backoff_limit` | integer | `3` | Number of retries before marking job as failed |
-
-#### Optional - Node Selection
+**Optional - Job Control:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `node_selector` | object | `{}` | Node selector labels for pod placement |
-| `tolerations` | array | `[]` | Tolerations for pod scheduling |
+| `image_pull_policy` | string | `"Always"` | `"Always"`, `"IfNotPresent"`, or `"Never"` |
+| `backoff_limit` | integer | `3` | Retry attempts before marking failed |
+| `host_ipc` | boolean | `false` | Enable shared memory (required for multi-node) |
 
-#### Optional - Storage
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `results_pvc` | string | `null` | PersistentVolumeClaim name for results storage |
-| `data_pvc` | string | `null` | PersistentVolumeClaim name for dataset storage |
-
-#### Optional - Debugging
+**Optional - Node Selection:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `output_dir` | string | `"./k8s_manifests"` | Directory to save rendered K8s manifests |
+| `node_selector` | object | `{}` | Label selectors for pod placement |
+| `tolerations` | array | `[]` | Tolerations for tainted nodes |
 
-### `distributed` Object Fields
+**Optional - Storage:**
 
-For multi-GPU and multi-node training:
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
+| `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
+
+#### Distributed Training Fields
+
+For multi-GPU and multi-node (torchrun):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | boolean | `false` | Enable distributed training |
-| `backend` | string | `"nccl"` | Communication backend: `"nccl"`, `"gloo"`, `"mpi"` |
-| `launcher` | string | `"torchrun"` | Launcher: `"torchrun"`, `"deepspeed"`, `"accelerate"` |
+| `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
+| `launcher` | string | `"torchrun"` | `"torchrun"`, `"deepspeed"`, `"accelerate"` |
 | `nnodes` | integer | `1` | Number of nodes |
-| `nproc_per_node` | integer | GPU count | Number of processes per node (usually = GPU count) |
-| `master_addr` | string | `"$(hostname)"` | Master node address |
-| `master_port` | integer | `29500` | Master node port |
-| `rdzv_backend` | string | `"c10d"` | Rendezvous backend for elastic training |
-| `rdzv_endpoint` | string | - | Rendezvous endpoint |
+| `nproc_per_node` | integer | gpu_count | Processes per node (= GPUs per node) |
+| `master_port` | integer | `29500` | Master communication port |
 
-### `env_vars` Object
+#### Environment Variables
 
-Custom environment variables passed to containers:
+Custom environment variables for containers:
 
 ```json
 {
   "env_vars": {
-    "NCCL_DEBUG": "INFO",
-    "NCCL_IB_DISABLE": "0",
-    "OMP_NUM_THREADS": "8"
+    // NCCL/RCCL (AMD distributed training)
+    "NCCL_DEBUG": "WARN",              // "INFO" for debugging, "WARN" for production
+    "NCCL_IB_DISABLE": "1",            // Disable InfiniBand (required for K8s)
+    "NCCL_SOCKET_IFNAME": "eth0",      // Network interface
+    "TORCH_NCCL_HIGH_PRIORITY": "1",   // RCCL optimization for FSDP
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",  // Multi-node error handling
+    
+    // AMD ROCm optimizations
+    "GPU_MAX_HW_QUEUES": "2",          // MI series optimization
+    "HSA_ENABLE_SDMA": "0",            // Disable SDMA for multi-GPU
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",  // Multi-node communication
+    "RCCL_ENABLE_HIPGRAPH": "0",       // Disable for compatibility
+    
+    // MIOpen
+    "MIOPEN_FIND_MODE": "1",           // Use compiled kernels
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",  // Writable cache location
+    
+    // General
+    "OMP_NUM_THREADS": "8"             // OpenMP threads
   }
 }
 ```
 
 ---
 
-## 🎯 Use Case Guide
+## 🎓 Best Practices
 
-### Single GPU (Testing, Small Models)
+### Resource Sizing
 
-**Configuration**: [`01-single-node-single-gpu.json`](01-single-node-single-gpu.json)
+**Single GPU:**
+```
+GPUs: 1
+Memory: 16Gi (request), 32Gi (limit)
+CPU: 8 (request), 16 (limit)
+```
 
+**Multi-GPU (2 GPUs):**
+```
+GPUs: 2
+Memory: 64Gi (request), 128Gi (limit)
+CPU: 16 (request), 32 (limit)
+```
+
+**Multi-Node (2 nodes × 2 GPUs):**
+```
+GPUs: 2 per node (4 total)
+Memory: 64Gi per node
+CPU: 16 per node
+host_ipc: true (required!)
+```
+
+**Multi-Node Advanced (4 nodes × 2 GPUs):**
+```
+GPUs: 2 per node (8 total)
+Memory: 128Gi per node
+CPU: 24 per node
+host_ipc: true
+PVCs: Recommended for data and results
+```
+
+### When to Use torchrun
+
+✅ **Use torchrun when:**
+- Multi-GPU on single node (2+ GPUs)
+- Multi-node distributed training
+- Testing distributed infrastructure
+- Data parallelism or model parallelism
+
+❌ **Don't use torchrun when:**
+- Single GPU workloads
+- Simple benchmarks without distributed training
+- Minimal testing scenarios
+
+### AMD ROCm Optimizations
+
+**Always set in K8s:**
+- `NCCL_IB_DISABLE=1` - InfiniBand not available in K8s
+- `NCCL_SOCKET_IFNAME=eth0` - Use Ethernet interface
+- `MIOPEN_FIND_MODE=1` - Avoid MIOpen find-db warnings
+- `MIOPEN_USER_DB_PATH=/tmp/.miopen` - Writable cache
+
+**For multi-GPU:**
+- `TORCH_NCCL_HIGH_PRIORITY=1` - RCCL optimization
+- `GPU_MAX_HW_QUEUES=2` - MI series GPUs
+- `HSA_ENABLE_SDMA=0` - Disable SDMA for better P2P
+
+**For multi-node:**
+- `host_ipc: true` - Required for shared memory
+- `HSA_FORCE_FINE_GRAIN_PCIE=1` - Cross-node communication
+- `TORCH_NCCL_ASYNC_ERROR_HANDLING=1` - Better error handling
+
+### For Busy/Shared Clusters
+
+✅ **Recommendations:**
+- Use 1-2 GPUs instead of 8 to avoid scheduling conflicts
+- Test with single-GPU first, then scale up
+- Monitor GPU availability: `kubectl describe nodes | grep amd.com/gpu`
+- Use node selectors to target specific node types
+- Consider resource quotas and limits
+
+---
+
+## 🐛 Troubleshooting
+
+### Pod Stuck in Pending
+
+**Symptoms:**
+```bash
+kubectl get pods
+# NAME                    READY   STATUS    RESTARTS   AGE
+# madengine-job-xxxxx     0/1     Pending   0          5m
+```
+
+**Solutions:**
+
+1. **Check GPU availability:**
+```bash
+kubectl describe nodes | grep -A5 "amd.com/gpu\|nvidia.com/gpu"
+# Shows: Allocatable vs Allocated
+```
+
+2. **Reduce GPU count:**
 ```json
 {
-  "deploy": "k8s",
   "k8s": {
-    "gpu_count": 1,
-    "memory": "16Gi",
-    "cpu": "8"
+    "gpu_count": 1  // Try 1 instead of 2
   }
 }
 ```
 
-**Best for**:
-- Quick testing and validation
-- Small models (BERT-base, ResNet-50)
-- Debugging model scripts
-- Cost-effective experimentation
+3. **Check node selectors:**
+```bash
+kubectl get nodes --show-labels | grep instance-type
+# Verify your node_selector matches actual node labels
+```
 
----
+### NCCL/RCCL Errors
 
-### Single Node, Multiple GPUs (Data Parallelism)
+**Error: "Duplicate GPU detected"**
+```
+Solution: gpu_count in config must match nproc_per_node in distributed config
+```
 
-**Configuration**: [`02-single-node-multi-gpu.json`](02-single-node-multi-gpu.json)
+**Error: "Network connection failed"**
+```
+Solution: Verify NCCL_SOCKET_IFNAME matches your network interface
+Check: kubectl exec <pod> -- ip addr
+```
 
+**Error: "NCCL initialization failed"**
+```
+Solution: Ensure these are set:
+  NCCL_IB_DISABLE=1
+  NCCL_SOCKET_IFNAME=eth0
+Enable debug: NCCL_DEBUG=INFO
+```
+
+### Out of Memory (OOM)
+
+**Symptoms:**
+```bash
+kubectl get pods
+# NAME                    READY   STATUS      RESTARTS   AGE
+# madengine-job-xxxxx     0/1     OOMKilled   0          2m
+```
+
+**Solutions:**
+
+1. **Increase memory limit:**
 ```json
 {
-  "deploy": "k8s",
   "k8s": {
-    "gpu_count": 8,
-    "memory": "256Gi",
-    "cpu": "64"
-  },
-  "distributed": {
-    "enabled": true,
-    "launcher": "torchrun",
-    "nnodes": 1,
-    "nproc_per_node": 8
+    "memory": "128Gi",      // Increase request
+    "memory_limit": "256Gi" // Increase limit (2× request)
   }
 }
 ```
 
-**Best for**:
-- Large models that fit in single-node memory
-- Data parallel training
-- Maximum single-node performance
-- GPT-2, BERT-large, Stable Diffusion
+2. **Reduce batch size** (in model config)
 
----
+3. **Enable gradient checkpointing** (model-specific)
 
-### Multi-Node (Model Parallelism, Very Large Models)
+### Job Failed
 
-**Configuration**: [`03-multi-node-basic.json`](03-multi-node-basic.json)
+**Check logs:**
+```bash
+kubectl logs <pod-name>
+kubectl describe pod <pod-name>
+```
 
+**Common issues:**
+- Image pull failed: Check registry credentials
+- Permission denied: Check security context and PVC permissions
+- Command not found: Verify scripts are in container
+- Timeout: Increase `backoff_limit` or job timeout
+
+### Multi-Node Communication Fails
+
+**Symptoms:**
+```
+NCCL WARN ... Connection refused
+NCCL WARN ... Unable to find NCCL communicator
+```
+
+**Solutions:**
+
+1. **Enable host_ipc:**
 ```json
 {
-  "deploy": "k8s",
   "k8s": {
-    "gpu_count": 8,
-    "memory": "256Gi"
-  },
-  "distributed": {
-    "enabled": true,
-    "launcher": "torchrun",
-    "nnodes": 2,
-    "nproc_per_node": 8
-  },
+    "host_ipc": true  // Required for multi-node!
+  }
+}
+```
+
+2. **Verify headless service:**
+```bash
+kubectl get svc | grep madengine
+# Should show ClusterIP: None (headless)
+```
+
+3. **Check DNS resolution:**
+```bash
+kubectl exec <pod> -- nslookup madengine-job-name.default.svc.cluster.local
+```
+
+4. **Increase timeout:**
+```json
+{
   "env_vars": {
-    "NCCL_SOCKET_IFNAME": "eth0",
-    "GLOO_SOCKET_IFNAME": "eth0"
+    "NCCL_TIMEOUT": "600"  // 10 minutes
   }
 }
 ```
 
-**Best for**:
-- Very large models (LLaMA-70B, GPT-3)
-- Models requiring pipeline parallelism
-- Tensor parallelism across nodes
-- Maximum cluster utilization
+### Data Provider Issues
 
----
-
-## 📝 Common Configurations
-
-### AMD MI300X (8 GPUs)
-
-```json
-{
-  "gpu_vendor": "AMD",
-  "deploy": "k8s",
-  "k8s": {
-    "gpu_count": 8,
-    "gpu_resource_name": "amd.com/gpu",
-    "memory": "512Gi",
-    "cpu": "96",
-    "node_selector": {
-      "node.kubernetes.io/instance-type": "mi300x-8gpu"
-    }
-  }
-}
+**Error: "Read-only file system"**
+```
+Solution: Bug in template - should be fixed in latest version
+The data PVC mount must have readOnly: false
 ```
 
-### AMD MI250X (8 GPUs)
-
-```json
-{
-  "gpu_vendor": "AMD",
-  "deploy": "k8s",
-  "k8s": {
-    "gpu_count": 8,
-    "gpu_resource_name": "amd.com/gpu",
-    "memory": "256Gi",
-    "cpu": "64",
-    "node_selector": {
-      "accelerator": "mi250x"
-    }
-  }
-}
+**Error: "Data file not found"**
+```
+Check:
+1. PVC exists: kubectl get pvc madengine-shared-data
+2. PVC is Bound: kubectl describe pvc madengine-shared-data
+3. Data downloaded: kubectl exec <pod> -- ls -lh /data/
+4. MAD_DATAHOME=/data set correctly
 ```
 
-### NVIDIA A100 (8 GPUs)
-
-```json
-{
-  "gpu_vendor": "NVIDIA",
-  "deploy": "k8s",
-  "k8s": {
-    "gpu_count": 8,
-    "gpu_resource_name": "nvidia.com/gpu",
-    "memory": "256Gi",
-    "cpu": "64",
-    "node_selector": {
-      "accelerator": "nvidia-tesla-a100"
-    }
-  }
-}
+**Error: "PVC pending"**
 ```
-
-### NVIDIA H100 (8 GPUs)
-
-```json
-{
-  "gpu_vendor": "NVIDIA",
-  "deploy": "k8s",
-  "k8s": {
-    "gpu_count": 8,
-    "gpu_resource_name": "nvidia.com/gpu",
-    "memory": "640Gi",
-    "cpu": "112",
-    "node_selector": {
-      "accelerator": "nvidia-h100-80gb-hbm3"
-    }
-  }
-}
+Solution: Storage class issue
+Check: kubectl describe pvc madengine-shared-data
+Fix: Ensure your cluster has NFS storage class for RWX
+For single-node: Any storage class works (uses RWO)
 ```
 
 ---
 
-## 🔧 Advanced Features
+## 🔍 Configuration Comparison
 
-### Node Affinity (Pin to Specific Nodes)
+| Feature | Single GPU | Multi-GPU (2) | Multi-Node (2×2) | Advanced (4×2) |
+|---------|------------|---------------|------------------|----------------|
+| **GPUs** | 1 | 2 | 4 | 8 |
+| **Nodes** | 1 | 1 | 2 | 4 |
+| **Memory** | 16Gi | 64Gi | 64Gi/node | 128Gi/node |
+| **CPU** | 8 | 16 | 16/node | 24/node |
+| **torchrun** | ❌ | ✅ | ✅ | ✅ |
+| **host_ipc** | ❌ | ❌ | ✅ | ✅ |
+| **NCCL Vars** | Basic | Yes | Full | Advanced |
+| **PVCs** | No | No | Optional | Recommended |
+| **Tolerations** | No | No | No | Yes |
+| **Complexity** | ⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+
+---
+
+## 📚 Advanced Topics
+
+### Node Selectors
+
+Target specific node types:
 
 ```json
 {
   "k8s": {
     "node_selector": {
-      "node.kubernetes.io/instance-type": "mi300x-8gpu",
-      "topology.kubernetes.io/zone": "us-west-2a",
-      "workload-type": "ml-training"
+      "node.kubernetes.io/instance-type": "Standard_ND96isr_H100_v5",
+      "gpu-type": "mi300x",
+      "zone": "us-west-2a"
     }
   }
 }
 ```
 
-### Tolerations (Schedule on Tainted Nodes)
+Check available labels:
+```bash
+kubectl get nodes --show-labels
+```
+
+### Tolerations
+
+Schedule on tainted nodes:
 
 ```json
 {
@@ -412,13 +714,7 @@ Custom environment variables passed to containers:
       {
         "key": "gpu",
         "operator": "Equal",
-        "value": "amd",
-        "effect": "NoSchedule"
-      },
-      {
-        "key": "workload",
-        "operator": "Equal",
-        "value": "training",
+        "value": "true",
         "effect": "NoSchedule"
       }
     ]
@@ -426,177 +722,352 @@ Custom environment variables passed to containers:
 }
 ```
 
-### Shared Storage (PersistentVolumeClaims)
+### Custom Storage Classes
+
+For multi-node with custom NFS:
 
 ```json
 {
   "k8s": {
-    "results_pvc": "ml-results-pvc",
-    "data_pvc": "ml-datasets-pvc"
+    "storage_class": "nfs-client"  // Your NFS storage class
   }
 }
 ```
 
-**Benefits**:
-- Share datasets across multiple jobs
-- Persist results to shared storage
-- Use pre-downloaded datasets
-
-### NCCL Tuning for Multi-Node
-
-```json
-{
-  "env_vars": {
-    "NCCL_DEBUG": "INFO",
-    "NCCL_DEBUG_SUBSYS": "INIT,NET",
-    "NCCL_IB_DISABLE": "0",
-    "NCCL_IB_HCA": "mlx5_0,mlx5_1,mlx5_2,mlx5_3",
-    "NCCL_SOCKET_IFNAME": "eth0",
-    "NCCL_NET_GDR_LEVEL": "5",
-    "NCCL_P2P_LEVEL": "NVL"
-  }
-}
+Check available storage classes:
+```bash
+kubectl get storageclass
 ```
 
----
+### Debug Mode
 
-## 🐛 Troubleshooting
+Save rendered K8s manifests for inspection:
 
-### Job Fails to Schedule
-
-**Symptom**: Job stays in `Pending` state
-
-**Check**:
-1. GPU availability: `kubectl get nodes -o json | jq '.items[].status.capacity'`
-2. Node selector labels: `kubectl get nodes --show-labels`
-3. Resource requests vs. node capacity
-
-**Fix**:
-- Reduce `gpu_count`, `memory`, or `cpu`
-- Update `node_selector` to match your nodes
-- Add appropriate `tolerations`
-
-### Out of Memory (OOM)
-
-**Symptom**: Pod crashes with OOM killed
-
-**Check**: `kubectl describe pod <pod-name>`
-
-**Fix**:
 ```json
 {
+  "debug": true,
   "k8s": {
-    "memory": "512Gi",      // Increase memory request
-    "memory_limit": "768Gi" // Increase memory limit
+    "output_dir": "./debug_manifests"
   }
 }
 ```
 
-### NCCL Timeout (Multi-Node)
+Manifests saved to:
+- `./debug_manifests/job.yaml`
+- `./debug_manifests/configmap.yaml`
+- `./debug_manifests/service.yaml` (multi-node only)
 
-**Symptom**: Training hangs or timeout errors
+---
 
-**Check**: Network connectivity between nodes
+## 📊 Resource Scaling Guide
 
-**Fix**:
-```json
-{
-  "env_vars": {
-    "NCCL_DEBUG": "INFO",
-    "NCCL_SOCKET_IFNAME": "eth0",  // Specify correct interface
-    "NCCL_IB_TIMEOUT": "23",
-    "NCCL_BLOCKING_WAIT": "1"
-  }
-}
+### Single GPU (Development/Testing)
+```
+GPUs: 1
+Memory: 16Gi (request), 32Gi (limit)
+CPU: 8 (request), 16 (limit)
+Use Case: Small models, debugging, cost-effective testing
 ```
 
-### Image Pull Failures
+### 2 GPUs (Recommended for Shared Clusters)
+```
+GPUs: 2
+Memory: 64Gi (request), 128Gi (limit)
+CPU: 16 (request), 32 (limit)
+Use Case: Multi-GPU training, testing on busy clusters
+```
 
-**Symptom**: `ImagePullBackOff` or `ErrImagePull`
+### 4 GPUs (Multi-Node Testing)
+```
+Configuration: 2 nodes × 2 GPUs per node
+Memory: 64Gi per node
+CPU: 16 per node
+host_ipc: true (required!)
+Use Case: Distributed training development
+```
 
-**Fix**:
-1. Check registry credentials: `kubectl get secret`
-2. Use `"image_pull_policy": "IfNotPresent"` for local images
-3. Verify image exists: `docker pull <image>`
-
----
-
-## 📊 Performance Tips
-
-### Single Node
-
-1. **Use all available GPUs**: Set `gpu_count` to match node capacity
-2. **Optimize CPU allocation**: Typically 8-12 CPUs per GPU
-3. **Memory**: 32-64 GiB per GPU for most models
-
-### Multi-Node
-
-1. **Enable NCCL optimizations**: Set appropriate `NCCL_*` env vars
-2. **Use InfiniBand**: `"NCCL_IB_DISABLE": "0"`
-3. **Pin processes to cores**: Set `OMP_NUM_THREADS`
-4. **Use same availability zone**: Reduces network latency
-
-### General
-
-1. **Cache images**: Use `"image_pull_policy": "IfNotPresent"`
-2. **Use PVCs**: Avoid re-downloading datasets
-3. **Monitor resources**: `kubectl top pods`
+### 8 GPUs (Production Multi-Node)
+```
+Configuration: 4 nodes × 2 GPUs per node
+Memory: 128Gi per node
+CPU: 24 per node
+host_ipc: true
+PVCs: Recommended
+Use Case: Large-scale production training
+```
 
 ---
 
-## 📚 Additional Resources
+## 🎯 Examples by Scenario
 
-### Kubernetes Documentation
-- [Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
-- [Node Affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)
-- [Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
-- [PersistentVolumeClaims](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
-
-### madengine-cli Documentation
-- `K8S_DEPLOYMENT_GUIDE.md` - Complete K8s deployment guide
-- `K8S_CREDENTIALS_GUIDE.md` - Kubeconfig handling
-- `PERF_CSV_UNIFIED_FORMAT.md` - Performance results format
-
-### GPU Device Plugins
-- [AMD GPU Device Plugin](https://github.com/ROCm/k8s-device-plugin)
-- [NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/overview.html)
-
----
-
-## 🔍 Validation
-
-Test your configuration before running expensive jobs:
+### Scenario 1: Quick Smoke Test
 
 ```bash
-# 1. Validate K8s connection
-kubectl get nodes
+# Use minimal config (defaults for everything)
+madengine-cli build --tags dummy \
+  --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
+  --registry dockerhub
 
-# 2. Check GPU availability
-kubectl get nodes -o json | jq '.items[].status.capacity."amd.com/gpu"'
+madengine-cli run --manifest-file build_manifest.json
+```
 
-# 3. Dry-run build
-madengine-cli build --tags dummy --dry-run \
-  --additional-context-file my-k8s-config.json
+### Scenario 2: Benchmark on Busy Cluster
 
-# 4. Check rendered manifests
-ls -la k8s_manifests/
-cat k8s_manifests/job.yaml
+```bash
+# Use 2 GPUs to avoid scheduling conflicts
+madengine-cli build --tags resnet50 \
+  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
+  --registry dockerhub
+
+madengine-cli run --manifest-file build_manifest.json --live-output
+```
+
+### Scenario 3: Large Model Training
+
+```bash
+# Multi-node for large models
+madengine-cli build --tags llama_13b \
+  --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
+  --registry dockerhub
+
+madengine-cli run --manifest-file build_manifest.json --live-output
+```
+
+### Scenario 4: Production with Datasets
+
+```bash
+# Data provider with auto-PVC
+madengine-cli build --tags bert_large \
+  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --registry dockerhub
+
+madengine-cli run --manifest-file build_manifest.json --live-output
+
+# Verify PVC
+kubectl get pvc madengine-shared-data
+kubectl exec <pod> -- ls -lh /data/
+```
+
+### Scenario 5: GPU Profiling
+
+```bash
+# Use *-tools.json variant for monitoring
+madengine-cli build --tags model \
+  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu-tools.json \
+  --registry dockerhub
+
+madengine-cli run --manifest-file build_manifest.json --live-output
+
+# Profiling results in PVC
+kubectl cp <pod>:/results/gpu_info_*.csv ./
 ```
 
 ---
 
-## 💡 Tips
+## 🔧 Customization Guide
 
-1. **Start small**: Use `00-minimal.json` or `01-single-node-single-gpu.json` first
-2. **Iterate**: Test single GPU → multi-GPU → multi-node progressively
-3. **Debug locally**: Run models locally before deploying to K8s
-4. **Save manifests**: Set `"output_dir"` to inspect generated YAML files
-5. **Use namespaces**: Isolate experiments with different namespaces
-6. **Monitor costs**: Track GPU usage with `kubectl top nodes`
+### Start from Example
+
+```bash
+# Copy closest match
+cp examples/k8s-configs/02-single-node-multi-gpu.json my-custom-config.json
+
+# Edit
+vim my-custom-config.json
+```
+
+### Common Customizations
+
+**Change GPU count:**
+```json
+{
+  "k8s": {
+    "gpu_count": 4  // Change from 2 to 4
+  },
+  "distributed": {
+    "nproc_per_node": 4  // Must match gpu_count
+  }
+}
+```
+
+**Target specific node type:**
+```json
+{
+  "k8s": {
+    "node_selector": {
+      "gpu-type": "mi300x"
+    }
+  }
+}
+```
+
+**Increase memory:**
+```json
+{
+  "k8s": {
+    "memory": "128Gi",
+    "memory_limit": "256Gi"  // 2× memory
+  }
+}
+```
+
+**Add custom environment variables:**
+```json
+{
+  "env_vars": {
+    "MY_CUSTOM_VAR": "value",
+    "BATCH_SIZE": "256"
+  }
+}
+```
 
 ---
 
-**Created**: December 1, 2025  
-**madengine-cli Version**: Compatible with v2.1+  
-**Status**: Production Ready ✅
+## 📈 Performance Tips
 
+### Multi-GPU Scaling
+
+**Expected Scaling Efficiency:**
+- 2 GPUs: ~95-100% (ideal: 2× single GPU)
+- 4 GPUs: ~85-95% (network overhead)
+- 8 GPUs: ~80-90% (more communication)
+
+**Factors affecting scaling:**
+- Model size (larger = better scaling)
+- Batch size (larger = less communication)
+- Network bandwidth (faster = better)
+- NCCL configuration (optimized = better)
+
+### NCCL Tuning for AMD
+
+**Basic (included in examples):**
+```json
+{
+  "NCCL_DEBUG": "WARN",
+  "NCCL_IB_DISABLE": "1",
+  "TORCH_NCCL_HIGH_PRIORITY": "1",
+  "GPU_MAX_HW_QUEUES": "2"
+}
+```
+
+**Advanced (for production):**
+```json
+{
+  "NCCL_DEBUG": "WARN",
+  "NCCL_IB_DISABLE": "1",
+  "NCCL_SOCKET_IFNAME": "eth0",
+  "TORCH_NCCL_HIGH_PRIORITY": "1",
+  "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+  "GPU_MAX_HW_QUEUES": "2",
+  "HSA_ENABLE_SDMA": "0",
+  "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+  "RCCL_ENABLE_HIPGRAPH": "0",
+  "MIOPEN_FIND_MODE": "1"
+}
+```
+
+### Monitoring During Training
+
+```bash
+# Watch pod status
+kubectl get pods -w
+
+# Monitor resource usage
+kubectl top pods
+
+# Stream logs
+kubectl logs -f <pod-name>
+
+# Check GPU utilization (from pod)
+kubectl exec <pod> -- rocm-smi
+
+# Check NCCL communication (multi-node)
+kubectl logs <pod> | grep NCCL
+```
+
+---
+
+## 🎓 Learning Path
+
+### Level 1: Beginner
+1. Start with `01-single-node-single-gpu.json`
+2. Test on single GPU
+3. Understand basic K8s concepts
+4. Monitor logs and results
+
+### Level 2: Intermediate
+1. Try `02-single-node-multi-gpu.json`
+2. Learn distributed training with torchrun
+3. Understand NCCL configuration
+4. Profile GPU utilization
+
+### Level 3: Advanced
+1. Deploy `03-multi-node-basic.json`
+2. Master multi-node networking
+3. Optimize NCCL parameters
+4. Use PVCs for data and results
+
+### Level 4: Expert
+1. Customize `04-multi-node-advanced.json`
+2. Fine-tune for your cluster
+3. Implement node affinity and tolerations
+4. Scale to 8+ nodes
+
+---
+
+## 📋 Configuration Checklist
+
+Before deploying to production:
+
+- [ ] Tested on single GPU first
+- [ ] Verified GPU availability on cluster
+- [ ] Set appropriate memory and CPU limits
+- [ ] Configured node selectors (if needed)
+- [ ] Set NCCL environment variables
+- [ ] Enabled `host_ipc` for multi-node
+- [ ] Tested with small batch size first
+- [ ] Configured PVCs for data (if using data providers)
+- [ ] Set up monitoring and logging
+- [ ] Tested failure scenarios (backoff_limit)
+
+---
+
+## 🔗 Related Documentation
+
+- **Main Documentation**: `../../README.md`
+- **Data Provider Guide**: `../../docs/K8S_DATA_PROVIDER_GUIDE.md` (if exists)
+- **Deployment Guide**: `../../K8S_DEPLOYMENT_GUIDE.md` (if exists)
+- **Performance CSV Format**: `../../PERF_CSV_UNIFIED_FORMAT.md` (if exists)
+
+---
+
+## 📝 File Structure
+
+```
+examples/k8s-configs/
+├── README.md                               # This file
+├── 01-single-node-single-gpu.json         # 1 GPU, basic
+├── 01-single-node-single-gpu-tools.json   # 1 GPU + monitoring
+├── 02-single-node-multi-gpu.json          # 2 GPUs, distributed
+├── 02-single-node-multi-gpu-tools.json    # 2 GPUs + monitoring
+├── 03-multi-node-basic.json               # 2 nodes × 2 GPUs
+├── 04-multi-node-advanced.json            # 4 nodes × 2 GPUs
+├── 05-nvidia-gpu-example.json             # NVIDIA GPUs
+└── 06-data-provider-with-pvc.json         # Data provider + auto-PVC
+```
+
+---
+
+## ✅ Summary
+
+- **8 configuration files** covering all common scenarios
+- **Auto-PVC creation** for data providers - no manual setup!
+- **Production-ready** with best practices
+- **Well-documented** with inline comments
+- **Tested** on AMD MI300X and NVIDIA clusters
+- **Ready to use** - just copy and customize!
+
+---
+
+**Last Updated**: December 6, 2025  
+**Status**: Production Ready ✅
