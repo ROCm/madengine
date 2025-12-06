@@ -182,6 +182,32 @@ spec:
             
             cd /workspace
             
+            # Download data if data provider is configured
+            {% if data_provider_script and data_config %}
+            echo ""
+            echo "=== Data Provider: {{ data_config.provider_type }} ==="
+            echo "Data name: {{ data_config.data_name }}"
+            echo "Source: {{ data_config.source_url }}"
+            echo "Target: {{ data_config.datahome }}"
+            
+            # Use K8s data provider script (loaded from ConfigMap)
+            if [ -f /workspace/data_provider.sh ]; then
+                bash /workspace/data_provider.sh \
+                  "{{ data_config.data_name }}" \
+                  "{{ data_config.source_url }}" \
+                  "{{ data_config.datahome }}"
+                
+                # Source metrics if available
+                if [ -f /tmp/mad_metrics.env ]; then
+                    source /tmp/mad_metrics.env
+                    echo "✓ Data metrics: Duration=${MAD_DATA_DOWNLOAD_DURATION}s, Size=${MAD_DATA_SIZE}"
+                fi
+            else
+                echo "Error: Data provider script not found at /workspace/data_provider.sh"
+                exit 1
+            fi
+            {% endif %}
+            
             # Run pre-scripts (like local execution)
             {% if pre_scripts %}
             echo ""
@@ -490,7 +516,7 @@ spec:
         {% if data_pvc %}
         - name: data
           mountPath: /data
-          readOnly: true
+          readOnly: false  # Must be writable for data provider downloads
         {% endif %}
         
         securityContext:

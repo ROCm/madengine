@@ -167,10 +167,15 @@ class BaseDeployment(ABC):
             if self.config.monitor:
                 result = self._monitor_until_complete(result.deployment_id)
 
-            # Step 5: Collect Results
-            if result.is_success:
-                metrics = self.collect_results(result.deployment_id)
-                result.metrics = metrics
+            # Step 5: Collect Results (always collect, even on failure to record failed runs)
+            if result.deployment_id:
+                try:
+                    metrics = self.collect_results(result.deployment_id)
+                    result.metrics = metrics
+                except Exception as e:
+                    self.console.print(f"[yellow]Warning: Could not collect results for {result.deployment_id}: {e}[/yellow]")
+                    # Ensure empty metrics dict exists even if collection fails
+                    result.metrics = {"successful_runs": [], "failed_runs": []}
 
             return result
 

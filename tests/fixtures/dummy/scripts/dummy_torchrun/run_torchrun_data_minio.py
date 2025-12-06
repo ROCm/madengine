@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-PyTorch Distributed Training Benchmark for MADEngine
+PyTorch Distributed Training with Data Provider for madengine
 
-This benchmark demonstrates typical PyTorch distributed training patterns:
-- DistributedDataParallel (DDP) for multi-GPU/multi-node training
-- Synthetic data generation for reproducible benchmarks
-- Proper GPU device assignment using LOCAL_RANK
-- Gradient synchronization across processes
-- Throughput measurement (samples/sec, images/sec)
-- Compatible with torchrun launcher
+This benchmark demonstrates distributed training with data provider integration:
+- Multi-node/multi-GPU distributed training with DDP
+- Data provider support (MinIO, AWS S3, NAS, etc.)
+- K8s-optimized data handling (single download, shared across nodes via PVC)
+- Proper synchronization and validation
+- Accurate performance measurement with all_reduce
+
+K8s Best Practices:
+- Only rank 0 validates data initially (avoid race conditions)
+- All ranks validate data exists before training
+- Use distributed barriers for synchronization
+- Graceful error handling and reporting
+- PVC-shared data across all pods/nodes
 
 Usage:
-  # Single GPU
-  torchrun --standalone --nproc_per_node=1 run_torchrun.py
-  
-  # Multi-GPU (single node)
-  torchrun --standalone --nproc_per_node=8 run_torchrun.py
-  
-  # Multi-node (via K8s with torchrun)
-  torchrun --nnodes=4 --nproc_per_node=8 --master_addr=... run_torchrun.py
+  # K8s Multi-node with data provider
+  torchrun --nnodes=2 --nproc_per_node=2 --master_addr=... run_torchrun_data_minio.py
 """
 
 import os
 import sys
 import time
 import socket
+import pathlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -38,6 +39,9 @@ NUM_BATCHES = 100  # Number of synthetic batches per epoch
 IMAGE_SIZE = 224
 NUM_CLASSES = 1000
 
+# Data configuration (from run_data_minio.sh)
+DATA_FILE = "bert-large-uncased_L_24_H_1024_A_16_V_30528_S_512_Dp_0.1_optimized_layer_norm_opset12.onnx"
+
 # Get distributed environment variables (set by torchrun)
 rank = int(os.environ.get("RANK", 0))
 local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -49,7 +53,7 @@ master_port = os.environ.get("MASTER_PORT", "29500")
 def print_header():
     """Print benchmark header"""
     print("=" * 70)
-    print("MADEngine PyTorch Distributed Training Benchmark")
+    print("madengine PyTorch Distributed Training with Data Provider")
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
     print(f"Rank: {rank}/{world_size}")
@@ -64,6 +68,63 @@ def print_header():
     print(f"  Image Size: {IMAGE_SIZE}x{IMAGE_SIZE}")
     print(f"  Num Classes: {NUM_CLASSES}")
     print("=" * 70)
+
+
+def validate_data_availability():
+    """
+    Validate that required data is available (K8s best practice).
+    
+    Strategy:
+    1. Rank 0 checks data first and reports status
+    2. All ranks independently validate data (no barrier needed before init_process_group)
+    3. Exit gracefully if data missing
+    
+    Note: For K8s deployments, MAD_DATAHOME points to PVC mount point (/data).
+    This ensures data is shared across all pods (single-node and multi-node).
+    PVC must be configured with ReadWriteMany for multi-node deployments.
+    
+    Returns:
+        bool: True if data is available, False otherwise
+    """
+    # K8s best practice: Data stored in PVC at /data (separate from compute pods)
+    data_home = os.environ.get("MAD_DATAHOME", "/data")
+    data_path = pathlib.Path(data_home) / DATA_FILE
+    
+    if rank == 0:
+        print(f"\n{'='*70}")
+        print("Data Provider Validation")
+        print(f"{'='*70}")
+        print(f"Data Home: {data_home}")
+        print(f"Expected File: {DATA_FILE}")
+        print(f"Full Path: {data_path}")
+        
+        if data_path.exists():
+            file_size = data_path.stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            print(f"✅ Data file found!")
+            print(f"   Size: {file_size_mb:.2f} MB ({file_size:,} bytes)")
+            print(f"   Path: {data_path}")
+        else:
+            print(f"❌ Data file NOT found!")
+            print(f"   Expected at: {data_path}")
+            print(f"   MAD_DATAHOME: {data_home}")
+            print(f"\n⚠️  Data provider should have downloaded this file.")
+            print(f"   Check data provider configuration and logs.")
+        print(f"{'='*70}\n")
+    
+    # Note: Cannot use dist.barrier() here - process group not initialized yet
+    # Data validation happens before distributed initialization
+    # All ranks will independently validate data availability without synchronization
+    
+    # All ranks independently validate data exists
+    data_available = data_path.exists()
+    
+    if not data_available:
+        print(f"[Rank {rank}] ❌ ERROR: Data file not found at {data_path}")
+    else:
+        print(f"[Rank {rank}] ✅ Data file validated: {data_path}")
+    
+    return data_available
 
 
 class SimpleCNN(nn.Module):
@@ -197,8 +258,38 @@ def main():
     """Main training function"""
     print_header()
     
-    # Initialize distributed training
+    # ========================================================================
+    # K8s Best Practice: Validate Data Before Initializing Training
+    # ========================================================================
+    if rank == 0:
+        print(f"\n{'='*70}")
+        print("Step 1: Data Provider Validation")
+        print(f"{'='*70}")
+    
+    # Validate data availability (all ranks)
+    data_available = validate_data_availability()
+    
+    if not data_available:
+        # Exit gracefully if data is not available
+        if rank == 0:
+            print(f"\n{'='*70}")
+            print("❌ FAILED: Required data not available")
+            print(f"{'='*70}")
+            print("Exiting...")
+        sys.exit(1)
+    
+    if rank == 0:
+        print(f"\n✅ Data validation complete - proceeding with training\n")
+    
+    # ========================================================================
+    # Initialize Distributed Training
+    # ========================================================================
     if world_size > 1:
+        if rank == 0:
+            print(f"{'='*70}")
+            print("Step 2: Initialize Distributed Training")
+            print(f"{'='*70}")
+        
         print(f"\n[Rank {rank}] Initializing distributed process group...")
         # Best practice: Specify device_ids to avoid PyTorch warnings
         dist.init_process_group(
@@ -275,7 +366,7 @@ def main():
             print(f"  Average Loss: {metrics['avg_loss']:.4f}")
             print(f"  Global Throughput: {metrics['global_throughput']:.2f} samples/sec")
             print(f"  Images/sec: {metrics['global_throughput']:.2f}")
-    
+            
             # Show load imbalance warning if significant
             if metrics['time_imbalance'] > 5.0:
                 print(f"  ⚠️  Load Imbalance: {metrics['time_imbalance']:.1f}%")
@@ -329,9 +420,10 @@ def main():
         
         # Save results with topology information
         with open("training_results.txt", "w") as f:
-            f.write(f"Training Results\n")
-            f.write(f"================\n")
+            f.write(f"Training Results with Data Provider\n")
+            f.write(f"====================================\n")
             f.write(f"Hostname: {socket.gethostname()}\n")
+            f.write(f"Data File: {DATA_FILE}\n")
             f.write(f"Topology: {num_nodes} nodes × {nproc_per_node} GPUs/node\n")
             f.write(f"World Size: {world_size}\n")
             f.write(f"Global Batch Size: {BATCH_SIZE * world_size}\n")
@@ -339,14 +431,13 @@ def main():
             f.write(f"Global Throughput: {avg_global_throughput:.2f} samples/sec\n")
             f.write(f"Scaling Efficiency: {scaling_efficiency:.1f}%\n")
         
-        # Output performance metric for MADEngine (REQUIRED FORMAT)
+        # Output performance metric for madengine (REQUIRED FORMAT)
         # Use GLOBAL throughput (sum of all nodes - accurate measurement)
         print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second")
         
         # Output topology metadata for parsing
         print(f"topology: {num_nodes} nodes {nproc_per_node} gpus_per_node {world_size} total_gpus")
         print(f"scaling_efficiency: {scaling_efficiency:.2f}")
-
     
     # Cleanup
     if world_size > 1:
@@ -365,3 +456,4 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+

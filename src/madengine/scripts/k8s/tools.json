@@ -1,0 +1,100 @@
+{
+  "_comment": "MADEngine K8s Tools Configuration",
+  "_description": "Configuration for K8s-specific tools and data providers",
+  
+  "data_providers": {
+    "minio": {
+      "script": "scripts/k8s/data/download_minio.sh",
+      "description": "MinIO S3-compatible object storage",
+      "env_vars": {
+        "MINIO_ENDPOINT": "https://minio-frameworks.amd.com"
+      }
+    },
+    "aws": {
+      "script": "scripts/k8s/data/download_aws.sh",
+      "description": "AWS S3 object storage",
+      "env_vars": {
+        "AWS_REGION": "us-east-2"
+      }
+    },
+    "nas": {
+      "script": "scripts/k8s/data/download_nas.sh",
+      "description": "NAS via SSH/rsync",
+      "env_vars": {
+        "NAS_HOST": "mlse-nas.amd.com",
+        "NAS_PORT": "22"
+      }
+    },
+    "local": {
+      "script": "scripts/k8s/data/download_local.sh",
+      "description": "Local filesystem (pre-mounted volume)",
+      "env_vars": {}
+    }
+  },
+  
+  "wrappers": {
+    "gpu_profiler": {
+      "script": "scripts/k8s/wrappers/run_profiler.sh",
+      "description": "GPU profiling (power, VRAM)",
+      "args": ["power", "vram"],
+      "env_vars": {
+        "DEVICE": "all",
+        "SAMPLING_RATE": "0.1"
+      }
+    },
+    "rocenv": {
+      "script": "scripts/k8s/wrappers/run_rocenv.sh",
+      "description": "ROCm environment collection",
+      "env_vars": {}
+    }
+  },
+  
+  "shared_tools": {
+    "_note": "These tools from scripts/common/ work directly in K8s without wrappers",
+    "tools": [
+      {
+        "name": "gpu_info_profiler",
+        "path": "scripts/common/tools/gpu_info_profiler.py",
+        "type": "python",
+        "description": "GPU utilization profiler"
+      },
+      {
+        "name": "rocenv_tool",
+        "path": "scripts/common/pre_scripts/rocEnvTool/rocenv_tool.py",
+        "type": "python",
+        "description": "ROCm environment analyzer"
+      },
+      {
+        "name": "trace_tools",
+        "path": "scripts/common/post_scripts/trace.sh",
+        "type": "bash",
+        "description": "RPD and rocprof trace collection"
+      },
+      {
+        "name": "get_library_trace",
+        "path": "scripts/common/tools/get_library_trace.py",
+        "type": "python",
+        "description": "Library call tracing (ROCBLAS, MIOpen, etc.)"
+      }
+    ]
+  },
+  
+  "pre_scripts": [
+    {
+      "name": "gpu_info_pre",
+      "path": "scripts/common/pre_scripts/gpu_info_pre.sh",
+      "enabled": true,
+      "description": "Pre-execution GPU status check"
+    }
+  ],
+  
+  "post_scripts": [
+    {
+      "name": "gpu_info_post",
+      "path": "scripts/common/post_scripts/gpu_info_post.sh",
+      "enabled": true,
+      "description": "Post-execution GPU status and metrics collection"
+    }
+  ]
+}
+

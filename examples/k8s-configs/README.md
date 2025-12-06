@@ -14,6 +14,12 @@ This directory contains example Kubernetes configuration files for `madengine-cl
 | [`03-multi-node-basic.json`](03-multi-node-basic.json) | 16 | 2 | Distributed training basics |
 | [`04-multi-node-advanced.json`](04-multi-node-advanced.json) | 32 | 4 | Production multi-node with all features |
 | [`05-nvidia-gpu-example.json`](05-nvidia-gpu-example.json) | 4 | 1 | NVIDIA GPU configuration |
+| [`06-data-provider-with-pvc.json`](06-data-provider-with-pvc.json) | 2 | 1+ | **NEW:** Data provider with PVC storage |
+
+### **Note on PVC**
+- **Auto-created**: MADEngine automatically creates `madengine-shared-data` PVC when using data providers
+- **No manual steps needed**: Just run `madengine-cli run` and PVC is created automatically
+- **Reusable**: PVC persists across runs, data downloads once
 
 ---
 
@@ -58,6 +64,67 @@ madengine-cli build --tags model_name --registry dockerhub \
 # Run on Kubernetes
 madengine-cli run --manifest-file build_manifest.json
 ```
+
+---
+
+## 📦 Using Data Providers with K8s
+
+**NEW:** K8s deployments with data providers require persistent storage (PVC).
+
+### Why PVC?
+
+K8s best practice: Separate storage (PVC) from compute (pods)
+- **Pods:** Ephemeral, can be deleted/recreated
+- **PVC:** Persistent, data survives pod lifecycle
+- **Benefits:** Data cached and reusable, shared across multi-node
+
+### Quick Setup
+
+**Step 1: No manual PVC creation needed!**
+```bash
+# PVC is automatically created on first run
+# Verify after running:
+kubectl get pvc madengine-shared-data
+```
+
+**Step 2: Use Data Provider Config**
+```bash
+madengine-cli run dummy_torchrun_data_minio \
+  --config examples/k8s-configs/06-data-provider-with-pvc.json
+```
+
+### Configuration Requirements
+
+Models with data providers (e.g., `dummy_torchrun_data_minio`, `dummy_data_minio`) **require** `data_pvc`:
+
+```json
+{
+  "k8s": {
+    "data_pvc": "madengine-shared-data",  // ← REQUIRED
+    "gpu_count": 2
+  },
+  "env_vars": {
+    "MAD_DATAHOME": "/data"  // PVC mount point (default)
+  }
+}
+```
+
+**Without PVC:** MADEngine will fail with helpful error message and setup instructions.
+
+### Multi-Node Requirements
+
+For multi-node deployments:
+- PVC **must** support `ReadWriteMany` (RWX) access mode
+- Supported storage: NFS, CephFS, GlusterFS, Azure Files, AWS EFS
+- Not supported: Local storage, AWS EBS, Azure Disk (RWO only)
+
+### Complete Guide
+
+See [`docs/K8S_DATA_PROVIDER_GUIDE.md`](../../docs/K8S_DATA_PROVIDER_GUIDE.md) for:
+- Architecture diagrams
+- Storage class requirements
+- Troubleshooting
+- Best practices
 
 ---
 

@@ -589,11 +589,12 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
         # Add columns
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
-        perf_table.add_column("GPUs", justify="center", style="blue")
+        perf_table.add_column("Topology", justify="center", style="blue")  # Changed from "GPUs"
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
+        perf_table.add_column("Efficiency", justify="right", style="yellow")  # NEW
         perf_table.add_column("Status", style="bold")
         perf_table.add_column("Duration", justify="right", style="blue")
         perf_table.add_column("Data Name", style="magenta")
@@ -634,11 +635,40 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
             model = str(row.get("model", "Unknown"))
             dataname = str(row.get("dataname", "")) if not pd.isna(row.get("dataname")) and row.get("dataname") != "" else "N/A"
             data_provider_type = str(row.get("data_provider_type", "")) if not pd.isna(row.get("data_provider_type")) and row.get("data_provider_type") != "" else "N/A"
-            n_gpus = str(row.get("n_gpus", "N/A"))
+            
+            # Format topology: Always show "NxG" format for consistency
+            # Examples: "1N×1G" (single node, single GPU), "1N×4G" (single node, 4 GPUs), "2N×2G" (2 nodes, 2 GPUs each)
+            n_gpus = row.get("n_gpus", 1)
+            nnodes = row.get("nnodes", 1)
+            gpus_per_node = row.get("gpus_per_node", n_gpus)
+            
+            # Determine topology display format
+            try:
+                nnodes_int = int(nnodes) if not pd.isna(nnodes) and str(nnodes) != "" else 1
+                gpus_per_node_int = int(gpus_per_node) if not pd.isna(gpus_per_node) and str(gpus_per_node) != "" else int(n_gpus) if not pd.isna(n_gpus) else 1
+                
+                # Always show NxG format for consistency
+                topology = f"{nnodes_int}N×{gpus_per_node_int}G"
+            except (ValueError, TypeError):
+                # Fallback if parsing fails
+                topology = "N/A"
+            
             deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
+            
+            # Format scaling efficiency
+            scaling_efficiency = row.get("scaling_efficiency", "")
+            if not pd.isna(scaling_efficiency) and scaling_efficiency != "":
+                try:
+                    efficiency_val = float(scaling_efficiency)
+                    efficiency_display = f"{efficiency_val:.1f}%"
+                except (ValueError, TypeError):
+                    efficiency_display = "N/A"
+            else:
+                efficiency_display = "N/A"
+            
             status = str(row.get("status", "UNKNOWN"))
             duration = format_duration(row.get("test_duration", ""))
             
@@ -653,11 +683,12 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
             perf_table.add_row(
                 str(idx),
                 model,
-                n_gpus,
+                topology,           # Changed from n_gpus
                 deployment_type,
                 gpu_arch,
                 performance,
                 metric,
+                efficiency_display, # NEW
                 status_display,
                 duration,
                 dataname,

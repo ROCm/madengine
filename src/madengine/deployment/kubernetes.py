@@ -38,6 +38,7 @@ from jinja2 import Environment, FileSystemLoader, Template
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
+from madengine.core.errors import ConfigurationError, create_error_context
 
 
 class KubernetesDeployment(BaseDeployment):
@@ -445,7 +446,8 @@ class KubernetesDeployment(BaseDeployment):
         Returns:
             Context dictionary with all template variables
         """
-        gpu_count = int(model_info.get("n_gpus", 1))
+        # K8s config gpu_count overrides model n_gpus
+        gpu_count = int(self.k8s_config.get("gpu_count", model_info.get("n_gpus", 1)))
         model_name = model_info["name"]
 
         # Load manifest and credential content for ConfigMap
@@ -517,6 +519,29 @@ class KubernetesDeployment(BaseDeployment):
         # Prepare data configuration first
         data_config = self._prepare_data_config(model_info)
         
+        # Store for use in deploy() method
+        self._data_config = data_config
+        
+        # K8s best practice: Auto-create shared data PVC if needed
+        # K8s philosophy: Separate compute (pods) from storage (PVC)
+        if data_config and not self.k8s_config.get("data_pvc"):
+            # PVC will be auto-created during deployment
+            # Use consistent name for reusability across training runs
+            self.console.print(
+                f"[cyan]📦 Data provider detected: Will auto-create shared data PVC[/cyan]"
+            )
+            self.console.print(
+                f"[dim]   PVC name: madengine-shared-data (reusable across runs)[/dim]"
+            )
+            self.console.print(
+                f"[dim]   Access mode: RWO for single-node, RWX for multi-node (auto-selected)[/dim]"
+            )
+            self.console.print(
+                f"[dim]   To use existing PVC, add 'data_pvc' to your K8s config[/dim]"
+            )
+            # Set PVC name now so templates are rendered with correct value
+            self.k8s_config["data_pvc"] = "madengine-shared-data"
+        
         # Determine data provider script if model needs data
         data_provider_script = None
         data_provider_script_content = None
@@ -552,6 +577,9 @@ class KubernetesDeployment(BaseDeployment):
             if launcher_config.get("nnodes") is not None
             else distributed_config.get("nnodes", 1)
         )
+        
+        # Store for use in deploy() method
+        self._nnodes = nnodes
         
         nproc_per_node = (
             launcher_config.get("nproc_per_node")
@@ -676,6 +704,7 @@ class KubernetesDeployment(BaseDeployment):
             "data_config": data_config,
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
+            # Tool command chains (pre-built for template)
             # Tool command chains (pre-built for template)
             "launcher_tool_chain": self._build_tool_command_chain(
                 self._get_tools_config(), "bash /tmp/run_launcher.sh"
@@ -918,8 +947,14 @@ torchrun \\
         
         # 2. Data provider environment variables
         data_config = self._prepare_data_config(model_info)
-        if data_config and "env_vars" in data_config:
-            env_vars.update(data_config["env_vars"])
+        if data_config:
+            if "env_vars" in data_config:
+                # Exclude MAD_DATAHOME from data provider's env vars (we set it explicitly below for K8s)
+                data_provider_env = {k: v for k, v in data_config["env_vars"].items() if k != "MAD_DATAHOME"}
+                env_vars.update(data_provider_env)
+            # Always set MAD_DATAHOME for K8s (PVC mount point /data, not /data_dlm_0)
+            if "datahome" in data_config:
+                env_vars["MAD_DATAHOME"] = data_config["datahome"]
         
         # 3. Tools configuration environment variables
         # Check both additional_context and manifest.context for tools
@@ -988,12 +1023,22 @@ torchrun \\
             provider_type = dp.provider_type if hasattr(dp, 'provider_type') else "local"
             source_url = dp.config.get("path", "") if hasattr(dp, 'config') else ""
             
+            # K8s best practice: Always use /data (PVC mount point)
+            # PVC provides persistent, shared storage across all pods/nodes
+            # Separation of storage (PVC) from compute (pods) is K8s standard
+            # FORCE datahome to /data for K8s (override data provider's default /data_dlm_0)
+            
+            # Filter out MAD_DATAHOME from data provider env vars (will be set explicitly below)
+            filtered_data_env = {k: v for k, v in (data_env or {}).items() if k != "MAD_DATAHOME"}
+            # Add MAD_DATAHOME with correct K8s value
+            filtered_data_env["MAD_DATAHOME"] = "/data"
+            
             return {
                 "data_name": model_info["data"],
-                "env_vars": data_env or {},
+                "env_vars": filtered_data_env,
                 "provider_type": provider_type,
                 "source_url": source_url,
-                "datahome": data_env.get("MAD_DATAHOME", "/data_dlm_0") if data_env else "/data_dlm_0",
+                "datahome": "/data",  # Always use PVC mount point for K8s
             }
         except Exception as e:
             self.console.print(f"[yellow]Warning: Could not prepare data config: {e}[/yellow]")
@@ -1049,6 +1094,99 @@ torchrun \\
         )
         
         return pvc_name
+    
+    def _create_or_get_data_pvc(self, nnodes: int = 1) -> str:
+        """
+        Create or reuse a shared PersistentVolumeClaim for data storage.
+        
+        K8s best practice: Use shared PVC for data (separate from compute pods).
+        This PVC is reusable across multiple training runs.
+        
+        Args:
+            nnodes: Number of nodes (determines access mode requirements)
+        
+        Returns:
+            Name of the PVC (existing or newly created)
+        """
+        # Use a consistent name for reusability (not job-specific)
+        pvc_name = "madengine-shared-data"
+        
+        # Check if PVC already exists (idempotent)
+        try:
+            existing_pvc = self.core_v1.read_namespaced_persistent_volume_claim(
+                name=pvc_name,
+                namespace=self.namespace
+            )
+            self.console.print(f"[dim]✓ Using existing data PVC: {pvc_name}[/dim]")
+            
+            # Verify access mode for multi-node
+            if nnodes > 1:
+                access_modes = existing_pvc.spec.access_modes
+                if "ReadWriteMany" not in access_modes:
+                    self.console.print(
+                        f"[yellow]⚠️  Warning: PVC {pvc_name} doesn't support ReadWriteMany[/yellow]"
+                    )
+                    self.console.print(
+                        f"[yellow]   Multi-node deployment may fail. Current modes: {access_modes}[/yellow]"
+                    )
+            
+            return pvc_name
+            
+        except ApiException as e:
+            if e.status != 404:
+                raise  # Unexpected error
+            
+            # PVC doesn't exist, create it
+            # Determine access mode based on deployment topology
+            # RWO (ReadWriteOnce): Single-node - works with most storage classes (local-path, EBS, etc.)
+            # RWX (ReadWriteMany): Multi-node - requires shared storage (NFS, CephFS, etc.)
+            access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
+            
+            self.console.print(f"[blue]Creating shared data PVC: {pvc_name}...[/blue]")
+            self.console.print(f"[dim]  Access mode: {access_mode} ({'multi-node' if nnodes > 1 else 'single-node'})[/dim]")
+            
+            # Render data PVC template
+            template_dir = Path(__file__).parent / "templates" / "kubernetes"
+            pvc_template = template_dir / "pvc-data.yaml.j2"
+            
+            with open(pvc_template, "r") as f:
+                pvc_template_str = f.read()
+            
+            template = Template(pvc_template_str)
+            pvc_yaml = template.render(
+                pvc_name=pvc_name,
+                namespace=self.namespace,
+                access_mode=access_mode,
+                storage_size=self.k8s_config.get("data_storage_size", "100Gi"),
+                storage_class=self.k8s_config.get("storage_class")
+            )
+            
+            # Create PVC
+            pvc_dict = yaml.safe_load(pvc_yaml)
+            self.core_v1.create_namespaced_persistent_volume_claim(
+                namespace=self.namespace, body=pvc_dict
+            )
+            
+            # Wait for PVC to be bound (important!)
+            self.console.print(f"[dim]Waiting for PVC to be bound...[/dim]")
+            for _ in range(30):  # Wait up to 30 seconds
+                try:
+                    pvc = self.core_v1.read_namespaced_persistent_volume_claim(
+                        name=pvc_name, namespace=self.namespace
+                    )
+                    if pvc.status.phase == "Bound":
+                        self.console.print(f"[green]✓ PVC bound successfully[/green]")
+                        break
+                except ApiException:
+                    pass
+                time.sleep(1)
+            else:
+                self.console.print(
+                    f"[yellow]⚠️  Warning: PVC created but not bound yet. "
+                    f"Check: kubectl describe pvc {pvc_name}[/yellow]"
+                )
+            
+            return pvc_name
     
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
@@ -1113,6 +1251,15 @@ torchrun \\
             self.console.print("[blue]Creating PVC for results storage...[/blue]")
             pvc_name = self._create_results_pvc()
             self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
+            
+            # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
+            if hasattr(self, '_data_config') and self._data_config:
+                # Check if we set the PVC name during prepare (auto-creation case)
+                data_pvc_name = self.k8s_config.get("data_pvc")
+                if data_pvc_name == "madengine-shared-data":
+                    # Auto-creation mode: create/reuse the PVC
+                    nnodes = getattr(self, '_nnodes', 1)
+                    self._create_or_get_data_pvc(nnodes=nnodes)
             
             # 2. Create ConfigMap
             self.console.print("[blue]Creating ConfigMap...[/blue]")
@@ -1434,6 +1581,7 @@ torchrun \\
                             model_info, build_info, pod_name, error_msg
                         )
                         results["failed_runs"].append({
+                            "model": model_info.get("name", "Unknown"),
                             "pod": pod_name,
                             "error": error_msg,
                             "perf_data": failure_record
@@ -1451,6 +1599,7 @@ torchrun \\
                         model_info, build_info, pod_name, error_msg
                     )
                     results["failed_runs"].append({
+                        "model": model_info.get("name", "Unknown"),
                         "pod": pod_name,
                         "error": error_msg,
                         "perf_data": failure_record
@@ -1464,6 +1613,7 @@ torchrun \\
                         model_info, build_info, pod_name, error_msg
                     )
                     results["failed_runs"].append({
+                        "model": model_info.get("name", "Unknown"),
                         "pod": pod_name,
                         "error": error_msg,
                         "perf_data": failure_record
@@ -1844,6 +1994,30 @@ torchrun \\
         performance = match.group(1).replace(',', '')  # Remove commas
         metric = match.group(2)
         
+        # NEW: Extract topology information from log
+        # Format: "topology: 2 nodes 2 gpus_per_node 4 total_gpus"
+        topology_pattern = r'topology:\s+(\d+)\s+nodes\s+(\d+)\s+gpus_per_node\s+(\d+)\s+total_gpus'
+        topology_match = re.search(topology_pattern, log)
+        
+        if topology_match:
+            nnodes = topology_match.group(1)
+            gpus_per_node = topology_match.group(2)
+            total_gpus = topology_match.group(3)
+        else:
+            # Fallback: Try to get from manifest distributed config
+            distributed_config = self.manifest.get("deployment_config", {}).get("distributed", {})
+            nnodes = str(distributed_config.get("nnodes", 1))
+            gpus_per_node = str(distributed_config.get("nproc_per_node", 1))
+            total_gpus = str(model_info.get("n_gpus", 1))
+        
+        # NEW: Extract scaling efficiency
+        # Format: "scaling_efficiency: 98.5"
+        scaling_efficiency = ""
+        scaling_pattern = r'scaling_efficiency:\s+([0-9.]+)'
+        scaling_match = re.search(scaling_pattern, log)
+        if scaling_match:
+            scaling_efficiency = scaling_match.group(1)
+        
         # Extract GPU architecture from device ID in log
         gpu_architecture = ""
         gpu_match = re.search(r'0x([0-9a-fA-F]+)', log)
@@ -1900,7 +2074,9 @@ torchrun \\
         result = {
             # Core identification
             "model": model_info.get("name", ""),
-            "n_gpus": str(model_info.get("n_gpus", "1")),
+            "n_gpus": total_gpus,  # Use parsed total_gpus
+            "nnodes": nnodes,  # NEW: Number of nodes
+            "gpus_per_node": gpus_per_node,  # NEW: GPUs per node
             
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
@@ -1923,6 +2099,7 @@ torchrun \\
             # Performance metrics
             "performance": performance,
             "metric": metric,
+            "scaling_efficiency": scaling_efficiency,  # NEW: Scaling efficiency %
             "relative_change": "",
             "status": "SUCCESS",
             
@@ -1962,12 +2139,22 @@ torchrun \\
         """
         import os
         
+        # Get topology information for failure record
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        nnodes = distributed_config.get("nnodes", 1)
+        nproc_per_node = distributed_config.get("nproc_per_node")
+        if nproc_per_node is None:
+            nproc_per_node = int(model_info.get("n_gpus", 1))
+        
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
         result = {
             # Core identification
             "model": model_info.get("name", ""),
-            "n_gpus": str(model_info.get("n_gpus", "1")),
+            "n_gpus": str(nnodes * nproc_per_node),
+            "nnodes": str(nnodes),
+            "gpus_per_node": str(nproc_per_node),
             
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
@@ -1990,8 +2177,9 @@ torchrun \\
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
+            "scaling_efficiency": "",
             "relative_change": "",
-            "status": "FAILED",
+            "status": "FAILURE",  # Use "FAILURE" to match CSV schema
             
             # Timing
             "build_duration": build_info.get("build_duration", ""),
@@ -2031,9 +2219,12 @@ torchrun \\
         
         # CSV headers matching local execution format EXACTLY
         # This is the same order as in container_runner.py line 69
+        # Enhanced with topology fields for multi-node tracking
         headers = [
             "model",
             "n_gpus",
+            "nnodes",              # NEW: Number of nodes
+            "gpus_per_node",       # NEW: GPUs per node
             "training_precision",
             "pipeline",
             "args",
@@ -2048,6 +2239,7 @@ torchrun \\
             "gpu_architecture",
             "performance",
             "metric",
+            "scaling_efficiency",  # NEW: Scaling efficiency %
             "relative_change",
             "status",
             "build_duration",

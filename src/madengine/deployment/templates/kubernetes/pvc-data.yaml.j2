@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ pvc_name }}
+  namespace: {{ namespace }}
+  labels:
+    app: madengine
+    purpose: shared-data
+    madengine-pvc: "true"
+  annotations:
+    description: "Shared data storage for MADEngine (auto-created)"
+spec:
+  accessModes:
+    # RWO for single-node (broader storage class support)
+    # RWX for multi-node (requires NFS or similar)
+    - {{ access_mode | default("ReadWriteOnce") }}
+  resources:
+    requests:
+      storage: {{ storage_size | default("100Gi") }}
+  {% if storage_class %}
+  storageClassName: {{ storage_class }}
+  {% endif %}
+

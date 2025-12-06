@@ -66,7 +66,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,scaling_efficiency,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -91,6 +91,8 @@ class ContainerRunner:
         run_details = {
             "model": model_info["name"],
             "n_gpus": model_info.get("n_gpus", ""),
+            "nnodes": model_info.get("nnodes", "1"),  # Default to 1 for local execution
+            "gpus_per_node": model_info.get("gpus_per_node", model_info.get("n_gpus", "1")),
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": os.environ.get("pipeline", ""),
             "args": model_info.get("args", ""),
@@ -109,6 +111,7 @@ class ContainerRunner:
             ),
             "performance": run_results.get("performance", ""),
             "metric": run_results.get("metric", ""),
+            "scaling_efficiency": run_results.get("scaling_efficiency", ""),
             "relative_change": "",
             "status": run_results.get("status", "FAILURE"),
             "build_duration": build_info.get("build_duration", ""),
