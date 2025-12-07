@@ -10,6 +10,7 @@ import csv
 
 # third-party modules
 import pytest
+import json
 
 # project modules
 from .fixtures.utils import BASE_DIR, MODEL_DIR
@@ -19,6 +20,7 @@ from .fixtures.utils import get_gpu_nodeid_map
 from .fixtures.utils import get_num_gpus
 from .fixtures.utils import get_num_cpus
 from .fixtures.utils import requires_gpu
+from .fixtures.utils import generate_additional_context_for_machine
 
 from madengine.core.context import Context
 
@@ -40,7 +42,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest "
+            + "madengine-cli run --live-output --tags dummy_ctxtest "
         )
 
         success = False
@@ -74,7 +76,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest "
+            + "madengine-cli run --live-output --tags dummy_ctxtest "
         )
 
         success = False
@@ -108,7 +110,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest "
+            + "madengine-cli run --live-output --tags dummy_ctxtest "
         )
 
         foundDockerfiles = []
@@ -154,7 +156,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context \"{'ctx_test': '1'}\" "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'ctx_test': '1'}\" "
         )
 
         success = False
@@ -188,7 +190,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context-file ctx.json "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context-file ctx.json "
         )
 
         success = False
@@ -222,7 +224,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context-file ctx.json --additional-context \"{'ctx_test': '1'}\" "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context-file ctx.json --additional-context \"{'ctx_test': '1'}\" "
         )
 
         success = False
@@ -251,7 +253,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context \"{'docker_build_arg':{'BASE_DOCKER':'rocm/tensorflow' }}\" "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_build_arg':{'BASE_DOCKER':'rocm/tensorflow' }}\" "
         )
 
         foundBaseDocker = []
@@ -266,7 +268,7 @@ class TestContexts:
         if not "rocm/tensorflow" in foundBaseDocker:
             pytest.fail(
                 "BASE_DOCKER does not override base docker. Expected: rocm/tensorflow Found:"
-                + foundBaseDocker
+                + str(foundBaseDocker)
             )
 
     @pytest.mark.parametrize(
@@ -283,7 +285,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'},'MAD_CONTAINER_IMAGE':'rocm/tensorflow:latest' }\" "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'},'MAD_CONTAINER_IMAGE':'rocm/tensorflow:latest' }\" "
         )
 
         foundLocalImage = None
@@ -315,7 +317,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'} }\" "
+            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'} }\" "
         )
 
         success = False
@@ -348,7 +350,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_mountpath --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'}, 'docker_mounts':{'/data':'/tmp'} }\" "
+            + "madengine-cli run --live-output --tags dummy_mountpath --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'}, 'docker_mounts':{'/data':'/tmp'} }\" "
         )
 
         success = False
@@ -386,7 +388,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
+            + "madengine-cli run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
         )
 
         gpu_nodeid_map = get_gpu_nodeid_map()
@@ -434,7 +436,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_cpubind --additional-context \"{'docker_cpus':'14-18,32,44-44,62'}\" "
+            + "madengine-cli run --live-output --tags dummy_cpubind --additional-context \"{'docker_cpus':'14-18,32,44-44,62'}\" "
         )
 
         success = False

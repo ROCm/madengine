@@ -11,12 +11,14 @@ import time
 
 # 3rd party modules
 import pytest
+import json
 
 # project modules
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import is_nvidia
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestPrePostScriptsFunctionality:
@@ -35,7 +37,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}] }\" "
         )
 
         regexp = re.compile(r"Pre-Script test called ([0-9]*)")
@@ -75,7 +77,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh'}] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh'}] }\" "
         )
 
         regexp = re.compile(r"Post-Script test called ([0-9]*)")
@@ -115,7 +117,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'1'}] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'1'}] }\" "
         )
 
         regexp = re.compile(r"Pre-Script test called ([0-9]*)")
@@ -155,7 +157,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh', 'args':'1'}] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh', 'args':'1'}] }\" "
         )
 
         regexp = re.compile(r"Post-Script test called ([0-9]*)")
@@ -197,7 +199,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}], 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh'}] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}], 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh'}] }\" "
         )
 
         regexp = re.compile(r"Pre-Script test called ([0-9]*)")
@@ -260,7 +262,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'1'}, {'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'2'} ] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'1'}, {'path':'scripts/common/pre_scripts/pre_test.sh', 'args':'2'} ] }\" "
         )
 
         regexp = re.compile(r"Pre-Script test called ([0-9]*)")
@@ -308,7 +310,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh', 'args':'1'}, {'path':'scripts/common/post_scripts/post_test.sh', 'args':'2'} ] }\" "
+            + "madengine-cli run --live-output --tags dummy --additional-context \"{ 'post_scripts':[{'path':'scripts/common/post_scripts/post_test.sh', 'args':'1'}, {'path':'scripts/common/post_scripts/post_test.sh', 'args':'2'} ] }\" "
         )
 
         regexp = re.compile(r"Post-Script test called ([0-9]*)")

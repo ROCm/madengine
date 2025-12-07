@@ -68,11 +68,15 @@ class BuildOrchestrator:
         if hasattr(args, "additional_context") and args.additional_context:
             try:
                 if isinstance(args.additional_context, str):
-                    context_from_string = json.loads(args.additional_context)
+                    # Use ast.literal_eval for Python dict syntax (single quotes)
+                    # This matches what Context class expects
+                    import ast
+                    context_from_string = ast.literal_eval(args.additional_context)
                     merged_context.update(context_from_string)
                 elif isinstance(args.additional_context, dict):
                     merged_context.update(args.additional_context)
-            except json.JSONDecodeError:
+            except (ValueError, SyntaxError) as e:
+                print(f"Warning: Could not parse additional_context: {e}")
                 pass
 
         # Finally merge parameter additional_context (overrides all)

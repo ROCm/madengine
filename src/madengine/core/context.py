@@ -147,6 +147,12 @@ class Context:
         print("Initializing build-only context...")
 
         # Initialize only essential system contexts if not provided via additional_context
+        if "ctx_test" not in self.ctx:
+            try:
+                self.ctx["ctx_test"] = self.get_ctx_test()
+            except Exception as e:
+                print(f"Warning: Could not detect ctx_test on build node: {e}")
+
         if "host_os" not in self.ctx:
             try:
                 self.ctx["host_os"] = self.get_host_os()

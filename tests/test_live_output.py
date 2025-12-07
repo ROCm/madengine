@@ -1,16 +1,20 @@
 """Test the functionality of live output in MADEngine.
 
+UPDATED: Refactored to use madengine-cli instead of legacy mad.py
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # built-in modules
 import re
+import json
 import pytest
 
 # project modules
 from .fixtures.utils import global_data
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import clean_test_temp_files
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestLiveOutputFunctionality:
@@ -22,7 +26,9 @@ class TestLiveOutputFunctionality:
     def test_default_silent_run(self, global_data, clean_test_temp_files):
         """
         default run is silent
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -30,7 +36,7 @@ class TestLiveOutputFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy"
+            + f"madengine-cli run --live-output --tags dummy --additional-context '{json.dumps(context)}'"
         )
 
         regexp = re.compile(r"performance: [0-9]* samples_per_second")
@@ -48,7 +54,9 @@ class TestLiveOutputFunctionality:
     ):
         """
         live_output prints output to screen
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -56,7 +64,7 @@ class TestLiveOutputFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --live-output"
+            + f"madengine-cli run --live-output --tags dummy --live-output --additional-context '{json.dumps(context)}'"
         )
 
         regexp = re.compile(r"performance: [0-9]* samples_per_second")

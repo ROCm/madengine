@@ -58,10 +58,14 @@ class RunOrchestrator:
         if hasattr(args, "additional_context") and args.additional_context:
             try:
                 if isinstance(args.additional_context, str):
-                    merged_context = json.loads(args.additional_context)
+                    # Use ast.literal_eval for Python dict syntax (single quotes)
+                    # This matches what Context class expects
+                    import ast
+                    merged_context = ast.literal_eval(args.additional_context)
                 elif isinstance(args.additional_context, dict):
                     merged_context = args.additional_context
-            except json.JSONDecodeError:
+            except (ValueError, SyntaxError) as e:
+                print(f"Warning: Could not parse additional_context: {e}")
                 pass
 
         if additional_context:
@@ -79,12 +83,16 @@ class RunOrchestrator:
 
     def _init_runtime_context(self):
         """Initialize runtime context (with GPU detection)."""
-        if self.context is not None:
-            return
-
+        # Always reinitialize context in runtime mode for run phase
+        # This ensures GPU detection and proper runtime context even after build phase
+        
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
-        context_string = repr(self.additional_context) if self.additional_context else None
+        if self.additional_context:
+            context_string = repr(self.additional_context)
+        else:
+            context_string = None
+            
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
@@ -131,8 +139,36 @@ class RunOrchestrator:
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
         try:
+            # Check for MAD_CONTAINER_IMAGE (local image mode)
+            # This must be checked before normal build/manifest flow
+            mad_container_image = None
+            if self.additional_context:
+                mad_container_image = self.additional_context.get("MAD_CONTAINER_IMAGE")
+            
+            if mad_container_image:
+                # Local image mode: Skip build, create synthetic manifest
+                if not tags:
+                    raise ConfigurationError(
+                        "Tags required for MAD_CONTAINER_IMAGE mode",
+                        context=create_error_context(
+                            operation="local_image_mode",
+                            component="RunOrchestrator",
+                        ),
+                        suggestions=[
+                            "Provide --tags to specify which models to run",
+                            "Example: --tags model_name --additional-context \"{'MAD_CONTAINER_IMAGE': 'rocm/tensorflow:latest'}\"",
+                        ],
+                    )
+                
+                # Generate synthetic manifest using the provided image
+                manifest_file = self._create_manifest_from_local_image(
+                    image_name=mad_container_image,
+                    tags=tags,
+                    manifest_output=getattr(self.args, "manifest_output", "build_manifest.json"),
+                )
+            
             # Step 1: Ensure we have a manifest (build if needed)
-            if not manifest_file or not os.path.exists(manifest_file):
+            elif not manifest_file or not os.path.exists(manifest_file):
                 if not tags:
                     raise ConfigurationError(
                         "Either --manifest-file or --tags required",
@@ -228,6 +264,141 @@ class RunOrchestrator:
         )
 
         return manifest_file
+
+    def _create_manifest_from_local_image(
+        self, 
+        image_name: str, 
+        tags: list, 
+        manifest_output: str = "build_manifest.json"
+    ) -> str:
+        """
+        Create a synthetic manifest for a user-provided local image.
+        
+        This enables MAD_CONTAINER_IMAGE functionality where users can skip
+        the build phase and directly run models using a pre-existing Docker image.
+        
+        Args:
+            image_name: Docker image name/tag (e.g., 'rocm/tensorflow:latest')
+            tags: Model tags to discover
+            manifest_output: Output path for the manifest file
+            
+        Returns:
+            Path to the generated manifest file
+            
+        Raises:
+            DiscoveryError: If no models are found
+            RuntimeError: If image validation fails
+        """
+        from madengine.utils.discover_models import DiscoverModels
+        from madengine.core.errors import DiscoveryError
+        
+        self.rich_console.print(f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]")
+        self.rich_console.print(f"[dim]Skipping build phase, creating synthetic manifest...[/dim]\n")
+        
+        # Validate that the image exists locally or can be pulled
+        try:
+            self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
+            self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
+        except:
+            self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
+            try:
+                self.console.sh(f"docker pull {image_name}")
+                self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to find or pull image {image_name}. "
+                    f"Ensure the image exists locally or can be pulled from a registry. "
+                    f"Error: {e}"
+                )
+        
+        # Discover models by tags (without building)
+        self.args.tags = tags
+        discover_models = DiscoverModels(args=self.args)
+        models = discover_models.run()
+        
+        if not models:
+            raise DiscoveryError(
+                "No models discovered for local image mode",
+                context=create_error_context(
+                    operation="create_local_image_manifest",
+                    component="RunOrchestrator",
+                ),
+                suggestions=[
+                    "Check if models.json exists",
+                    "Verify --tags parameter is correct",
+                    "Ensure model definitions have matching tags",
+                ],
+            )
+        
+        self.rich_console.print(f"[green]✓ Discovered {len(models)} model(s) for tags: {tags}[/green]\n")
+        
+        # Initialize build-only context for manifest generation
+        # (we need context structure, but skip GPU detection since we're not building)
+        context_string = repr(self.additional_context) if self.additional_context else None
+        build_context = Context(
+            additional_context=context_string,
+            build_only_mode=True,
+        )
+        
+        # Create manifest structure
+        manifest = {
+            "built_images": {},
+            "built_models": {},
+            "context": build_context.ctx,
+            "local_image_mode": True,
+            "local_image_name": image_name,
+            "deployment_config": self.additional_context.get("deployment_config", {}),
+        }
+        
+        # For each model, create a synthetic entry using the provided image
+        for model in models:
+            model_name = model["name"]
+            # Create a synthetic image identifier (not an actual built image)
+            synthetic_image_id = f"local-{model_name.replace('/', '_')}"
+            
+            manifest["built_images"][synthetic_image_id] = {
+                "docker_image": image_name,  # Use user-provided image
+                "dockerfile": "N/A (local image mode)",
+                "build_status": "SKIPPED",
+                "build_time": 0,
+                "local_image": True,
+                "registry_image": None,
+            }
+            
+            # Convert data list to comma-separated string (required by dataprovider)
+            data_field = model.get("data", [])
+            if isinstance(data_field, list):
+                data_str = ",".join(data_field) if data_field else ""
+            else:
+                data_str = data_field if data_field else ""
+            
+            # Build model info dict with all fields that ContainerRunner expects
+            # Use exact field names from models.json format
+            manifest["built_models"][synthetic_image_id] = {
+                "name": model_name,
+                "tags": model.get("tags", []),
+                "dockerfile": "N/A (local image mode)",
+                "scripts": model.get("scripts", ""),  # models.json uses "scripts" (plural)
+                "n_gpus": model.get("n_gpus", "1"),  # models.json uses "n_gpus" (string format)
+                "owner": model.get("owner", ""),
+                "training_precision": model.get("training_precision", ""),
+                "args": model.get("args", ""),  # Required field for docker run
+                "timeout": model.get("timeout", None),  # Optional timeout override
+                "data": data_str,
+                "cred": model.get("cred", ""),
+                "deprecated": model.get("deprecated", False),
+                "skip_gpu_arch": model.get("skip_gpu_arch", []),
+                "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+            }
+        
+        # Write manifest to file
+        with open(manifest_output, "w") as f:
+            json.dump(manifest, f, indent=2)
+        
+        self.rich_console.print(f"[green]✓ Generated synthetic manifest: {manifest_output}[/green]")
+        self.rich_console.print(f"[yellow]⚠️  Warning: User-provided image {image_name}. Model support not guaranteed.[/yellow]\n")
+        
+        return manifest_output
 
     def _load_and_merge_manifest(self, manifest_file: str) -> str:
         """Load manifest and merge with runtime --additional-context."""
@@ -343,9 +514,30 @@ class RunOrchestrator:
 
             manifest["built_images"] = compatible_images
             print(f"Filtered to {len(compatible_images)} compatible images\n")
+            
+            # Filter by skip_gpu_arch from model definitions
+            if "built_models" in manifest and compatible_images:
+                self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
+                compatible_images = self._filter_images_by_skip_gpu_arch(
+                    compatible_images, manifest["built_models"], runtime_gpu_arch
+                )
+            manifest["built_images"] = compatible_images
+            print(f"After skip_gpu_arch filtering: {len(compatible_images)} images to run\n")
+            
+            # NOTE: Dockerfile context filtering is already done during build phase
+            # Re-filtering during run phase causes issues because:
+            # 1. The build phase already filtered dockerfiles based on build-time context
+            # 2. All built images should be runnable on the runtime node
+            # 3. Legacy behavior: filtering happens once (either build or run, not both)
+            
+            # Write filtered manifest back to file so runner sees the filtered list
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f, indent=2)
 
         except Exception as e:
-            self.rich_console.print(f"[yellow]Warning: GPU filtering failed: {e}[/yellow]")
+            import traceback
+            self.rich_console.print(f"[yellow]Warning: GPU/Context filtering failed: {e}[/yellow]")
+            self.rich_console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
             self.rich_console.print("[yellow]Proceeding with all images[/yellow]\n")
 
         # Copy scripts
@@ -650,4 +842,160 @@ class RunOrchestrator:
         return self._filter_images_by_gpu_compatibility(
             built_images, runtime_gpu_vendor, runtime_gpu_arch
         )
+
+    def _filter_images_by_skip_gpu_arch(
+        self, built_images: Dict, built_models: Dict, runtime_gpu_arch: str
+    ) -> Dict:
+        """Filter out models that should skip the current GPU architecture.
+        
+        This implements the skip_gpu_arch logic from model definitions,
+        where models can specify GPU architectures they don't support.
+        
+        Args:
+            built_images: Dictionary of built images from manifest
+            built_models: Dictionary of model metadata from manifest
+            runtime_gpu_arch: Runtime GPU architecture (gfx90a, A100, etc.)
+            
+        Returns:
+            Dictionary of images that should run (not skipped)
+        """
+        if getattr(self.args, 'disable_skip_gpu_arch', False):
+            # User disabled skip logic, run all models
+            self.rich_console.print("[dim]  --disable-skip-gpu-arch flag set, skipping GPU architecture checks[/dim]")
+            return built_images
+        
+        compatible_images = {}
+        
+        for model_name, image_info in built_images.items():
+            # Get model metadata to check skip_gpu_arch field
+            model_info = built_models.get(model_name, {})
+            skip_gpu_arch_str = model_info.get("skip_gpu_arch", "")
+            
+            if skip_gpu_arch_str:
+                # Parse comma-separated list of architectures to skip
+                skip_list = [arch.strip() for arch in skip_gpu_arch_str.split(",")]
+                
+                # Normalize architecture comparison (handle "NVIDIA A100" -> "A100")
+                sys_gpu_arch = runtime_gpu_arch
+                if sys_gpu_arch and "NVIDIA" in sys_gpu_arch:
+                    sys_gpu_arch = sys_gpu_arch.split()[1]
+                
+                if sys_gpu_arch in skip_list:
+                    self.rich_console.print(
+                        f"[yellow]  Skipping model {model_name} as it is not supported on {runtime_gpu_arch} architecture.[/yellow]"
+                    )
+                    
+                    # Write SKIPPED status to perf CSV
+                    self._write_skipped_status(model_name, image_info, runtime_gpu_arch)
+                    continue
+            
+            compatible_images[model_name] = image_info
+        
+        return compatible_images
+
+    def _write_skipped_status(self, model_name: str, image_info: Dict, gpu_arch: str) -> None:
+        """Write SKIPPED status to perf CSV for models that were skipped.
+        
+        Args:
+            model_name: Name of the model that was skipped
+            image_info: Image information dictionary
+            gpu_arch: GPU architecture that caused the skip
+        """
+        try:
+            from madengine.reporting.update_perf_csv import update_perf_csv
+            import json
+            import tempfile
+            
+            # Create a perf entry for the skipped model
+            perf_entry = {
+                "model": model_name,
+                "status": "SKIPPED",
+                "reason": f"Model not supported on {gpu_arch} architecture",
+                "gpu_architecture": gpu_arch,
+            }
+            
+            # Write to temporary JSON file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(perf_entry, f)
+                temp_file = f.name
+            
+            # Get output CSV path from args
+            output_csv = getattr(self.args, 'output', 'perf.csv')
+            
+            # Update perf CSV with skipped entry
+            update_perf_csv(exception_result=temp_file, perf_csv=output_csv)
+            
+            # Clean up temp file
+            import os
+            os.unlink(temp_file)
+            
+        except Exception as e:
+            self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
+
+    def _filter_images_by_dockerfile_context(self, built_images: Dict) -> Dict:
+        """Filter images by dockerfile context matching runtime context.
+        
+        This implements the legacy behavior where dockerfiles are filtered
+        at runtime based on their CONTEXT header matching the current runtime context.
+        
+        Args:
+            built_images: Dictionary of built images from manifest
+            
+        Returns:
+            Dictionary of images that match the runtime context
+        """
+        if not self.context:
+            return built_images
+        
+        compatible_images = {}
+        
+        for image_name, image_info in built_images.items():
+            dockerfile = image_info.get("dockerfile", "")
+            
+            if not dockerfile:
+                # No dockerfile info, include by default (legacy compatibility)
+                compatible_images[image_name] = image_info
+                continue
+            
+            # Check if dockerfile exists
+            if not os.path.exists(dockerfile):
+                self.rich_console.print(
+                    f"[dim]  Warning: Dockerfile {dockerfile} not found. Including by default.[/dim]"
+                )
+                compatible_images[image_name] = image_info
+                continue
+            
+            # Read dockerfile context header
+            try:
+                dockerfile_context_str = self.console.sh(
+                    f"head -n5 {dockerfile} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
+                ).strip()
+                
+                if not dockerfile_context_str:
+                    # No context header, include by default
+                    compatible_images[image_name] = image_info
+                    continue
+                
+                # Create a dict with this dockerfile and its context
+                dockerfile_dict = {dockerfile: dockerfile_context_str}
+                
+                # Use context.filter() to check if this dockerfile matches runtime context
+                filtered = self.context.filter(dockerfile_dict)
+                
+                if filtered:
+                    # Dockerfile matches runtime context
+                    compatible_images[image_name] = image_info
+                else:
+                    self.rich_console.print(
+                        f"[dim]  Skipping {image_name}: dockerfile context doesn't match runtime context[/dim]"
+                    )
+                    
+            except Exception as e:
+                # If we can't read the dockerfile, include it by default
+                self.rich_console.print(
+                    f"[dim]  Warning: Could not read context for {dockerfile}: {e}. Including by default.[/dim]"
+                )
+                compatible_images[image_name] = image_info
+        
+        return compatible_images
 

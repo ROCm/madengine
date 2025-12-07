@@ -10,11 +10,13 @@ import pandas as pd
 
 # third-party modules
 import pytest
+import json
 
 # project modules
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestDiscover:
@@ -34,7 +36,7 @@ class TestDiscover:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy2/model2 "
+            + "madengine-cli run --live-output --tags dummy2/model2 "
         )
 
         success = False
@@ -60,7 +62,7 @@ class TestDiscover:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy3/model4 "
+            + "madengine-cli run --live-output --tags dummy3/model4 "
         )
 
         success = False
@@ -86,7 +88,7 @@ class TestDiscover:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy2/model2:batch-size=32 "
+            + "madengine-cli run --live-output --tags dummy2/model2:batch-size=32 "
         )
 
         success = False
@@ -116,7 +118,7 @@ class TestDiscover:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_test_group_1 dummy_test_group_2 dummy_test_group_3 "
+            + "madengine-cli run --live-output --tags dummy_test_group_1 dummy_test_group_2 dummy_test_group_3 "
         )
 
         success = False

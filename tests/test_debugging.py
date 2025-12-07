@@ -1,16 +1,20 @@
 """Test the debugging in MADEngine.
 
+UPDATED: Refactored to use madengine-cli instead of legacy mad.py
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import pytest
 import os
 import re
+import json
 
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import is_nvidia
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestDebuggingFunctionality:
@@ -24,7 +28,9 @@ class TestDebuggingFunctionality:
     def test_keepAlive_keeps_docker_alive(self, global_data, clean_test_temp_files):
         """
         keep-alive command-line argument keeps the docker container alive
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -32,7 +38,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --keep-alive"
+            + f"madengine-cli run --live-output --tags dummy --keep-alive --additional-context '{json.dumps(context)}'"
         )
         output = global_data["console"].sh(
             "docker ps -aqf 'name=container_dummy_dummy.ubuntu."
@@ -62,7 +68,9 @@ class TestDebuggingFunctionality:
     ):
         """
         without keep-alive command-line argument, the docker container is not kept alive
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -70,7 +78,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy"
+            + f"madengine-cli run --live-output --tags dummy --additional-context '{json.dumps(context)}'"
         )
         output = global_data["console"].sh(
             "docker ps -aqf 'name=container_dummy_dummy.ubuntu."
@@ -99,7 +107,9 @@ class TestDebuggingFunctionality:
     def test_keepAlive_preserves_model_dir(self, global_data, clean_test_temp_files):
         """
         keep-alive command-line argument will keep model directory after run
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -107,7 +117,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --keep-alive"
+            + f"madengine-cli run --live-output --tags dummy --keep-alive --additional-context '{json.dumps(context)}'"
         )
 
         global_data["console"].sh(
@@ -129,7 +139,9 @@ class TestDebuggingFunctionality:
     def test_keepModelDir_keeps_model_dir(self, global_data, clean_test_temp_files):
         """
         keep-model-dir command-line argument keeps model directory after run
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -137,7 +149,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --keep-model-dir"
+            + f"madengine-cli run --live-output --tags dummy --keep-model-dir --additional-context '{json.dumps(context)}'"
         )
 
         if not os.path.exists(os.path.join(BASE_DIR, "run_directory")):
@@ -153,7 +165,9 @@ class TestDebuggingFunctionality:
     ):
         """
         keep-model-dir command-line argument keeps model directory after run
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -161,7 +175,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy"
+            + f"madengine-cli run --live-output --tags dummy --additional-context '{json.dumps(context)}'"
         )
 
         if os.path.exists(os.path.join(BASE_DIR, "run_directory")):
@@ -177,7 +191,9 @@ class TestDebuggingFunctionality:
     def test_skipModelRun_does_not_run_model(self, global_data, clean_test_temp_files):
         """
         skip-model-run command-line argument does not run model
+        UPDATED: Now uses madengine-cli with additional-context
         """
+        context = generate_additional_context_for_machine()
         global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -185,7 +201,7 @@ class TestDebuggingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --skip-model-run"
+            + f"madengine-cli run --live-output --tags dummy --skip-model-run --additional-context '{json.dumps(context)}'"
         )
 
         regexp = re.compile(r"performance: [0-9]* samples_per_second")

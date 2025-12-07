@@ -1140,8 +1140,24 @@ class ContainerRunner:
                 continue
             
             try:
-                # Pull image if registry is specified
-                if build_info.get("registry_image"):
+                # Handle different image sources
+                if build_info.get("local_image"):
+                    # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
+                    run_image = build_info.get("docker_image")
+                    self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
+                    
+                    # Verify image exists
+                    try:
+                        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
+                    except:
+                        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
+                        try:
+                            self.pull_image(run_image)
+                        except Exception as e:
+                            raise RuntimeError(f"Failed to find or pull local image {run_image}: {e}")
+                
+                elif build_info.get("registry_image"):
+                    # Registry image: Pull from registry
                     try:
                         self.pull_image(build_info["registry_image"])
                         # Update docker_image to use registry image
@@ -1150,6 +1166,7 @@ class ContainerRunner:
                         self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name
                 else:
+                    # Normal built image: Use the image name directly
                     run_image = image_name
                 
                 # Run the container

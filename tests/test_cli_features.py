@@ -5,6 +5,8 @@ This module tests various command-line argument behaviors including:
 - GPU architecture checking and skip flags
 - Multiple results output handling
 
+UPDATED: Refactored to use madengine-cli instead of legacy mad.py
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
@@ -12,6 +14,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import os
 import sys
 import csv
+import json
 import pandas as pd
 
 # 3rd party modules
@@ -21,6 +24,7 @@ import pytest
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestCLIFeatures:
@@ -34,7 +38,9 @@ class TestCLIFeatures:
     ):
         """
         Test that -o/--output command-line argument writes CSV file to specified path.
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -42,7 +48,7 @@ class TestCLIFeatures:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy -o perf_test.csv"
+            + f"madengine-cli run --tags dummy -o perf_test.csv --live-output --additional-context '{json.dumps(context)}'"
         )
         success = False
         with open(os.path.join(BASE_DIR, "perf_test.csv"), "r") as csv_file:
@@ -65,7 +71,9 @@ class TestCLIFeatures:
     ):
         """
         Test that skip_gpu_arch command-line argument skips GPU architecture check.
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -73,7 +81,7 @@ class TestCLIFeatures:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch"
+            + f"madengine-cli run --tags dummy_skip_gpu_arch --live-output --additional-context '{json.dumps(context)}'"
         )
         if "Skipping model" not in output:
             pytest.fail("Enable skipping gpu arch for running model is failed.")
@@ -86,7 +94,9 @@ class TestCLIFeatures:
     ):
         """
         Test that --disable-skip-gpu-arch fails GPU architecture check as expected.
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -94,7 +104,7 @@ class TestCLIFeatures:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch --disable-skip-gpu-arch"
+            + f"madengine-cli run --tags dummy_skip_gpu_arch --disable-skip-gpu-arch --live-output --additional-context '{json.dumps(context)}'"
         )
         # Check if exception with message 'Skipping model' is thrown
         if "Skipping model" in output:
@@ -106,8 +116,14 @@ class TestCLIFeatures:
     def test_output_multi_results(self, global_data, clean_test_temp_files):
         """
         Test that multiple results are correctly written and merged into output CSV.
+        UPDATED: Now uses madengine-cli instead of legacy mad.py
         """
-        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_multi") 
+        context = generate_additional_context_for_machine()
+        output = global_data['console'].sh(
+            "cd " + BASE_DIR + "; " + 
+            "MODEL_DIR=" + MODEL_DIR + " " + 
+            f"madengine-cli run --tags dummy_multi --live-output --additional-context '{json.dumps(context)}'"
+        )
         # Check if multiple results are written to perf_dummy.csv
         success = False
         # Read the csv file to a dataframe using pandas

@@ -1,4 +1,7 @@
-"""
+"""Test tag functionality in MADEngine.
+
+UPDATED: Refactored to use madengine-cli instead of legacy mad.py
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
@@ -10,6 +13,7 @@ import json
 from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestTagsFunctionality:
@@ -23,6 +27,7 @@ class TestTagsFunctionality:
         """
         can select subset of models with tag with command-line argument
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -30,13 +35,14 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_group_1"
+            +             f"madengine-cli run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
         )
 
-        if "Running model dummy" not in output:
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
             pytest.fail("dummy tag not selected with commandline --tags argument")
 
-        if "Running model dummy2" not in output:
+        if "dummy2" not in output or "ci-dummy2_dummy" not in output:
             pytest.fail("dummy2 tag not selected with commandline --tags argument")
 
     @pytest.mark.parametrize(
@@ -48,6 +54,7 @@ class TestTagsFunctionality:
         """
         if multiple tags are specified, all models that match any tag will be selected
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -55,16 +62,17 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_group_1 dummy_group_2"
+            + f"madengine-cli run --tags dummy_group_1,dummy_group_2 --live-output --additional-context '{json.dumps(context)}'"
         )
 
-        if "Running model dummy" not in output:
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
             pytest.fail("dummy tag not selected with commandline --tags argument")
 
-        if "Running model dummy2" not in output:
+        if "dummy2" not in output or "ci-dummy2_dummy" not in output:
             pytest.fail("dummy2 tag not selected with commandline --tags argument")
 
-        if "Running model dummy3" not in output:
+        if "dummy3" not in output or "ci-dummy3_dummy" not in output:
             pytest.fail("dummy3 tag not selected with commandline --tags argument")
 
     @pytest.mark.parametrize(
@@ -76,6 +84,7 @@ class TestTagsFunctionality:
         """
         Each model name is automatically a tag
         """
+        context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
             "cd "
             + BASE_DIR
@@ -83,8 +92,9 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy"
+            +             f"madengine-cli run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
         )
 
-        if "Running model dummy" not in output:
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
             pytest.fail("dummy tag not selected with commandline --tags argument")

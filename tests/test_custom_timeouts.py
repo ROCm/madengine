@@ -4,6 +4,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import pytest
+import json
 import os
 import re
 import csv
@@ -13,6 +14,7 @@ from .fixtures.utils import BASE_DIR, MODEL_DIR
 from .fixtures.utils import global_data
 from .fixtures.utils import clean_test_temp_files
 from .fixtures.utils import is_nvidia
+from .fixtures.utils import generate_additional_context_for_machine
 
 
 class TestCustomTimeoutsFunctionality:
@@ -32,7 +34,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy"
+            + "madengine-cli run --live-output --tags dummy"
         )
 
         regexp = re.compile(r"Setting timeout to ([0-9]*) seconds.")
@@ -71,7 +73,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_timeout"
+            + "madengine-cli run --live-output --tags dummy_timeout"
         )
 
         regexp = re.compile(r"Setting timeout to ([0-9]*) seconds.")
@@ -116,7 +118,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --timeout 120"
+            + "madengine-cli run --live-output --tags dummy --timeout 120"
         )
 
         regexp = re.compile(r"Setting timeout to ([0-9]*) seconds.")
@@ -161,7 +163,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_timeout --timeout 120"
+            + "madengine-cli run --live-output --tags dummy_timeout --timeout 120"
         )
 
         regexp = re.compile(r"Setting timeout to ([0-9]*) seconds.")
@@ -208,7 +210,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_sleep --timeout 60",
+            + "madengine-cli run --live-output --tags dummy_sleep --timeout 60",
             canFail=True,
             timeout=180,
         )
@@ -236,7 +238,7 @@ class TestCustomTimeoutsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_sleep",
+            + "madengine-cli run --live-output --tags dummy_sleep",
             canFail=True,
             timeout=180,
         )

@@ -369,13 +369,6 @@ def _process_batch_manifest_entries(
                     clean_docker_cache=False,
                     manifest_output=manifest_output,
                     live_output=False,
-                    output="perf.csv",
-                    ignore_deprecated_flag=False,
-                    data_config_file_name="data.json",
-                    tools_json_file_name="scripts/common/tools.json",
-                    generate_sys_env_details=True,
-                    force_mirror_local=None,
-                    disable_skip_gpu_arch=False,
                     verbose=False,
                     _separate_phases=True,
                 )
@@ -769,33 +762,6 @@ def build(
     live_output: Annotated[
         bool, typer.Option("--live-output", "-l", help="Print output in real-time")
     ] = False,
-    output: Annotated[
-        str, typer.Option("--output", "-o", help="Performance output file")
-    ] = DEFAULT_PERF_OUTPUT,
-    ignore_deprecated_flag: Annotated[
-        bool, typer.Option("--ignore-deprecated", help="Force run deprecated models")
-    ] = False,
-    data_config_file_name: Annotated[
-        str, typer.Option("--data-config", help="Custom data configuration file")
-    ] = DEFAULT_DATA_CONFIG,
-    tools_json_file_name: Annotated[
-        str, typer.Option("--tools-config", help="Custom tools JSON configuration")
-    ] = DEFAULT_TOOLS_CONFIG,
-    generate_sys_env_details: Annotated[
-        bool,
-        typer.Option("--sys-env-details", help="Generate system config env details"),
-    ] = True,
-    force_mirror_local: Annotated[
-        Optional[str],
-        typer.Option("--force-mirror-local", help="Path to force local data mirroring"),
-    ] = None,
-    disable_skip_gpu_arch: Annotated[
-        bool,
-        typer.Option(
-            "--disable-skip-gpu-arch",
-            help="Disable skipping models based on GPU architecture",
-        ),
-    ] = False,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
     ] = False,
@@ -890,13 +856,6 @@ def build(
             clean_docker_cache=clean_docker_cache,
             manifest_output=manifest_output,
             live_output=live_output,
-            output=output,
-            ignore_deprecated_flag=ignore_deprecated_flag,
-            data_config_file_name=data_config_file_name,
-            tools_json_file_name=tools_json_file_name,
-            generate_sys_env_details=generate_sys_env_details,
-            force_mirror_local=force_mirror_local,
-            disable_skip_gpu_arch=disable_skip_gpu_arch,
             verbose=verbose,
             _separate_phases=True,
             batch_build_metadata=batch_build_metadata if batch_build_metadata else None,
@@ -1254,116 +1213,26 @@ def run(
                     )
                     raise typer.Exit(ExitCode.INVALID_ARGS)
 
-            # Check for MAD_CONTAINER_IMAGE in additional context
-            mad_container_image = additional_context_dict.get("MAD_CONTAINER_IMAGE")
-            
-            if mad_container_image:
-                # Local image mode - skip build phase and generate manifest
+            # MAD_CONTAINER_IMAGE handling is now done in RunOrchestrator
+            # Full workflow (may include MAD_CONTAINER_IMAGE mode)
+            if manifest_file:
                 console.print(
-                    Panel(
-                        f"🏠📦 [bold cyan]Local Image Mode (Skip Build + Run)[/bold cyan]\n"
-                        f"Container Image: [yellow]{mad_container_image}[/yellow]\n"
-                        f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
-                        f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s\n"
-                        f"[dim]Note: Build phase will be skipped, using local image[/dim]",
-                        title="Local Image Configuration",
-                        border_style="blue",
-                    )
+                    f"⚠️  Manifest file [yellow]{manifest_file}[/yellow] not found, running complete workflow"
                 )
 
-                # Create arguments object for local image mode
-                args = create_args_namespace(
-                    tags=processed_tags,
-                    registry=registry,
-                    timeout=timeout,
-                    additional_context=additional_context,
-                    additional_context_file=additional_context_file,
-                    keep_alive=keep_alive,
-                    keep_model_dir=keep_model_dir,
-                    skip_model_run=skip_model_run,
-                    clean_docker_cache=clean_docker_cache,
-                    manifest_output=manifest_output,
-                    live_output=live_output,
-                    output=output,
-                    ignore_deprecated_flag=ignore_deprecated_flag,
-                    data_config_file_name=data_config_file_name,
-                    tools_json_file_name=tools_json_file_name,
-                    generate_sys_env_details=generate_sys_env_details,
-                    force_mirror_local=force_mirror_local,
-                    disable_skip_gpu_arch=disable_skip_gpu_arch,
-                    verbose=verbose,
-                    _separate_phases=True,
+            console.print(
+                Panel(
+                    f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
+                    f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
+                    f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
+                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
+                    title="Workflow Configuration",
+                    border_style="magenta",
                 )
+            )
 
-                # Local image mode is deprecated after removing DistributedOrchestrator
-                # TODO: Reimplement using new BuildOrchestrator + RunOrchestrator architecture
-                console.print(
-                    "[bold red]❌ Local image mode (MAD_CONTAINER_IMAGE) is temporarily unavailable[/bold red]"
-                )
-                console.print(
-                    "\n[yellow]This feature is being refactored to use the new orchestration architecture.[/yellow]"
-                )
-                console.print(
-                    "\n[cyan]Alternative workflows:[/cyan]\n"
-                    "1. Use --manifest-file with a pre-built manifest\n"
-                    "2. Let madengine-cli build images normally (remove MAD_CONTAINER_IMAGE)\n"
-                    "3. Use the legacy 'mad.py run' command if you need local image support"
-                )
-                raise typer.Exit(ExitCode.FAILURE)
-                
-                # Placeholder for future reimplementation
-                build_summary = {"successful_builds": [], "failed_builds": []}
-                execution_summary = {"successful_runs": [], "failed_runs": []}
-
-                # Combine summaries for local image mode
-                workflow_summary = {
-                    "build_phase": build_summary,
-                    "run_phase": execution_summary,
-                    "local_image_mode": True,
-                    "container_image": mad_container_image,
-                    "overall_success": len(execution_summary.get("failed_runs", [])) == 0,
-                }
-
-                # Display results summary
-                display_results_table(execution_summary, "Local Image Execution Results")
-                
-                # Display detailed performance metrics from CSV
-                display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
-                
-                save_summary_with_feedback(workflow_summary, summary_output, "Local Image Workflow")
-
-                if workflow_summary["overall_success"]:
-                    console.print(
-                        "🎉 [bold green]Local image workflow finished successfully![/bold green]"
-                    )
-                    raise typer.Exit(ExitCode.SUCCESS)
-                else:
-                    failed_runs = len(execution_summary.get("failed_runs", []))
-                    console.print(
-                        f"💥 [bold red]Local image workflow completed but {failed_runs} model executions failed[/bold red]"
-                    )
-                    raise typer.Exit(ExitCode.RUN_FAILURE)
-
-            else:
-                # Full workflow
-                if manifest_file:
-                    console.print(
-                        f"⚠️  Manifest file [yellow]{manifest_file}[/yellow] not found, running complete workflow"
-                    )
-
-                console.print(
-                    Panel(
-                        f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
-                        f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
-                        f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
-                        f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
-                        title="Workflow Configuration",
-                        border_style="magenta",
-                    )
-                )
-
-                # Create arguments object for full workflow
-                args = create_args_namespace(
+            # Create arguments object for full workflow
+            args = create_args_namespace(
                 tags=processed_tags,
                 registry=registry,
                 timeout=timeout,

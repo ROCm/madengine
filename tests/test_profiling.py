@@ -1,4 +1,6 @@
-"""Test the data provider module.
+"""Test the profiling functionality.
+
+UPDATED: Refactored to use madengine-cli instead of legacy mad.py
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -8,6 +10,7 @@ import os
 import re
 import sys
 import csv
+import json
 
 # third-party modules
 import pytest
@@ -20,6 +23,7 @@ from .fixtures.utils import (
     clean_test_temp_files,
     requires_gpu,
     is_nvidia,
+    generate_additional_context_for_machine,
 )
 
 
@@ -45,7 +49,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rocprof' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\"}]}' ",
             canFail=True,
         )
 
@@ -89,7 +93,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rpd' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rpd\"}]}' ",
             canFail=True,
         )
 
@@ -115,7 +119,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'gpu_info_power_profiler' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"gpu_info_power_profiler\"}]}' ",
             canFail=False,
         )
 
@@ -145,7 +149,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'gpu_info_vram_profiler' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"gpu_info_vram_profiler\"}]}' ",
             canFail=False,
         )
 
@@ -173,7 +177,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rocblas_trace' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocblas_trace\"}]}' ",
             canFail=False,
         )
 
@@ -209,7 +213,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'tensile_trace' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"tensile_trace\"}]}' ",
             canFail=False,
         )
 
@@ -245,7 +249,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'miopen_trace' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"miopen_trace\"}]}' ",
             canFail=False,
         )
 
@@ -279,7 +283,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof_rccl --additional-context \"{ 'tools': [{ 'name': 'rccl_trace' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof_rccl --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rccl_trace\"}]}' ",
             canFail=False,
         )
 
@@ -320,7 +324,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'tools': [{ 'name': 'test_tools_A' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"test_tools_A\"}]}' ",
             canFail=False,
         )
 
@@ -366,7 +370,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy --additional-context \"{ 'tools': [{ 'name': 'test_tools_A' }, { 'name': 'test_tools_B' } ] }\" ",
+            + "madengine-cli run --live-output --tags dummy --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"test_tools_A\"}, {\"name\": \"test_tools_B\"}]}' ",
             canFail=False,
         )
 
@@ -428,7 +432,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_prof --additional-context \"{ 'tools': [{ 'name': 'rocprof', 'cmd': 'bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace' }] }\" ",
+            + "madengine-cli run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\", \"cmd\": \"bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace\"}]}' ",
             canFail=True,
         )
 
