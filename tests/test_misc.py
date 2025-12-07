@@ -30,7 +30,7 @@ class TestMiscFunctionality:
         """ 
         output command-line argument writes csv file to specified output path
         """
-        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy -o perf_test.csv") 
+        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "PYTHONPATH=src MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy -o perf_test.csv") 
         success = False
         with open(os.path.join(BASE_DIR, 'perf_test.csv'), 'r') as csv_file:
             csv_reader = csv.DictReader(csv_file)
@@ -49,7 +49,7 @@ class TestMiscFunctionality:
         """
         skip_gpu_arch command-line argument skips GPU architecture check
         """
-        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch")   
+        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "PYTHONPATH=src MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch")   
         if 'Skipping model' not in output:
             pytest.fail("Enable skipping gpu arch for running model is failed.")    
 
@@ -58,7 +58,7 @@ class TestMiscFunctionality:
         """
         skip_gpu_arch command-line argument fails GPU architecture check
         """
-        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch --disable-skip-gpu-arch") 
+        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "PYTHONPATH=src MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_skip_gpu_arch --disable-skip-gpu-arch") 
         # Check if exception with message 'Skipping model' is thrown 
         if 'Skipping model' in output:
             pytest.fail("Disable skipping gpu arch for running model is failed.")
@@ -68,7 +68,7 @@ class TestMiscFunctionality:
         """
         test output multiple results
         """
-        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_multi") 
+        output = global_data['console'].sh("cd " + BASE_DIR + "; " + "PYTHONPATH=src MODEL_DIR=" + MODEL_DIR + " " + "python3 src/madengine/mad.py run --tags dummy_multi") 
         # Check if multiple results are written to perf_dummy.csv
         success = False
         # Read the csv file to a dataframe using pandas
