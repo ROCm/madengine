@@ -29,10 +29,10 @@ from madengine.core.errors import (
 class TestMadCLIErrorIntegration:
     """Test mad_cli.py error handling integration."""
     
-    @patch('madengine.mad_cli.Console')
+    @patch('madengine.cli.utils.Console')
     def test_setup_logging_creates_error_handler(self, mock_console_class):
         """Test that setup_logging initializes the unified error handler."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         
         mock_console = Mock(spec=Console)
         mock_console_class.return_value = mock_console
@@ -51,7 +51,7 @@ class TestMadCLIErrorIntegration:
     
     def test_setup_logging_verbose_flag(self):
         """Test that verbose flag is properly passed to error handler."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         
         # Test with verbose=False
         setup_logging(verbose=False)
@@ -65,12 +65,12 @@ class TestMadCLIErrorIntegration:
     
     def test_build_command_error_handling(self):
         """Test that build command imports and can use unified error handling."""
-        from madengine.mad_cli import ExitCode
+        from madengine.cli import ExitCode
         
         # Test that the import works and error handling is available
         try:
             # This tests the actual import in mad_cli.py
-            from madengine.mad_cli import setup_logging
+            from madengine.cli import setup_logging
             
             # Verify error handler can be set up
             setup_logging(verbose=False)
@@ -92,10 +92,10 @@ class TestMadCLIErrorIntegration:
         except ImportError as e:
             pytest.fail(f"Error handling integration failed: {e}")
     
-    @patch('madengine.mad_cli.console')
+    @patch('madengine.cli.utils.console')
     def test_cli_error_display_consistency(self, mock_console):
         """Test that CLI errors are displayed consistently through unified handler."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         
         # Setup logging to initialize error handler
         setup_logging(verbose=False)
@@ -231,10 +231,10 @@ class TestDistributedOrchestratorErrorIntegration:
 class TestErrorHandlingWorkflow:
     """Test complete error handling workflow across components."""
     
-    @patch('madengine.mad_cli.console')
+    @patch('madengine.cli.utils.console')
     def test_end_to_end_error_flow(self, mock_console):
         """Test complete error flow from CLI through orchestrator."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         from madengine.core.errors import ValidationError
         
         # Setup unified error handling
@@ -267,7 +267,7 @@ class TestErrorHandlingWorkflow:
     
     def test_error_logging_integration(self):
         """Test that errors are properly logged with structured data."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         from madengine.core.errors import BuildError
         
         # Setup logging

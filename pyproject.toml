@@ -39,7 +39,7 @@ classifiers = [
 
 [project.scripts]
 madengine = "madengine.mad:main"
-madengine-cli = "madengine.mad_cli:cli_main"
+madengine-cli = "madengine.cli.app:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/ROCm/madengine"

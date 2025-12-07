@@ -58,7 +58,7 @@ class TestUnifiedErrorSystem:
     
     def test_mad_cli_error_handler_setup(self):
         """Test that mad_cli properly sets up error handling."""
-        from madengine.mad_cli import setup_logging
+        from madengine.cli import setup_logging
         
         # Clear existing handler
         set_error_handler(None)
