@@ -137,8 +137,11 @@ class RunDetails:
         Raises:
             Exception: An error occurred while generating JSON file for performance results of a model.
         """
+        # Exclude configs from CSV workflow as it can contain list/dict values
+        # that cause issues with pandas DataFrame creation
         keys_to_exclude = (
-            {"model", "performance", "metric", "status"} if multiple_results else {}
+            {"model", "performance", "metric", "status", "configs"} if multiple_results 
+            else {"configs"}
         )
         attributes = vars(self)
         output_dict = {x: attributes[x] for x in attributes if x not in keys_to_exclude}
