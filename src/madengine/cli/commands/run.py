@@ -83,9 +83,6 @@ def run(
     keep_model_dir: Annotated[
         bool, typer.Option("--keep-model-dir", help="Keep model directory after run")
     ] = False,
-    skip_model_run: Annotated[
-        bool, typer.Option("--skip-model-run", help="Skip running the model")
-    ] = False,
     clean_docker_cache: Annotated[
         bool,
         typer.Option(
@@ -155,6 +152,10 @@ def run(
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
+    # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
+    if timeout == -1:
+        timeout = 7200
+
     try:
         # Check if we're doing execution-only or full workflow
         manifest_exists = manifest_file and os.path.exists(manifest_file)
@@ -181,7 +182,6 @@ def run(
                 additional_context_file=additional_context_file,
                 keep_alive=keep_alive,
                 keep_model_dir=keep_model_dir,
-                skip_model_run=skip_model_run,
                 live_output=live_output,
                 output=output,
                 ignore_deprecated_flag=ignore_deprecated_flag,
@@ -290,7 +290,6 @@ def run(
                 additional_context_file=additional_context_file,
                 keep_alive=keep_alive,
                 keep_model_dir=keep_model_dir,
-                skip_model_run=skip_model_run,
                 clean_docker_cache=clean_docker_cache,
                 manifest_output=manifest_output,
                 live_output=live_output,

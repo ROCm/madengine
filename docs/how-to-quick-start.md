@@ -31,7 +31,7 @@ You can use `madengine run` to benchmark the training and inference performance 
 usage: madengine run [-h] [--tags TAGS [TAGS ...]] [--timeout TIMEOUT] [--live-output] [--clean-docker-cache] [--additional-context-file ADDITIONAL_CONTEXT_FILE]
                      [--additional-context ADDITIONAL_CONTEXT] [--data-config-file-name DATA_CONFIG_FILE_NAME] [--tools-json-file-name TOOLS_JSON_FILE_NAME]
                      [--generate-sys-env-details GENERATE_SYS_ENV_DETAILS] [--force-mirror-local FORCE_MIRROR_LOCAL] [--keep-alive] [--keep-model-dir]
-                     [--skip-model-run] [--disable-skip-gpu-arch] [-o OUTPUT]
+                     [--disable-skip-gpu-arch] [-o OUTPUT]
 
 Run LLMs and Deep Learning models on container
 
@@ -58,7 +58,6 @@ optional arguments:
                         Path to force all relevant dataproviders to mirror data locally on.
   --keep-alive          keep Docker container alive after run; will keep model directory after run
   --keep-model-dir      keep model directory after run
-  --skip-model-run      skips running the model; will not keep model directory after run unless specified through keep-alive or keep-model-dir
   --disable-skip-gpu-arch
                         disables skipping model based on gpu architecture
   -o OUTPUT, --output OUTPUT

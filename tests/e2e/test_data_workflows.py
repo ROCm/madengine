@@ -15,9 +15,9 @@ import tempfile
 import pytest
 
 # project modules
-from .fixtures.utils import BASE_DIR, MODEL_DIR
-from .fixtures.utils import global_data
-from .fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
+from tests.fixtures.utils import global_data
+from tests.fixtures.utils import clean_test_temp_files
 from madengine.core.dataprovider import Data
 
 
@@ -100,7 +100,7 @@ class TestDataProviders:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_data_local "
+            + "python3 -m madengine.cli.app run --tags dummy_data_local --live-output "
         )
 
         success = False
@@ -133,7 +133,7 @@ class TestDataProviders:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_data_local_fail --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'} }\" --live-output ",
+            + "python3 -m madengine.cli.app run --tags dummy_data_local_fail --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'} }\" --live-output ",
             canFail=True,
         )
 
@@ -172,8 +172,9 @@ class TestDataProviders:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 src/madengine/mad.py run --tags dummy_data_local --force-mirror-local "
+            + "python3 -m madengine.cli.app run --tags dummy_data_local --force-mirror-local "
             + mirrorPath
+            + " --live-output"
         )
 
         success = False

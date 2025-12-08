@@ -72,14 +72,6 @@ class TestUnifiedErrorSystem:
         assert isinstance(handler, ErrorHandler)
         assert handler.verbose is True
     
-    @pytest.mark.skip(reason="DistributedOrchestrator removed - tested in test_orchestration.py instead")
-    def test_distributed_orchestrator_error_imports(self):
-        """DEPRECATED: Test that distributed_orchestrator can import error handling.
-        
-        DistributedOrchestrator has been removed and replaced by BuildOrchestrator
-        and RunOrchestrator. Error handling for these is tested in test_orchestration.py.
-        """
-        pass
     
     def test_runner_error_base_class(self):
         """Test that RunnerError base class works properly."""

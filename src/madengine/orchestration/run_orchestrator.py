@@ -568,6 +568,7 @@ class RunOrchestrator:
             registry=getattr(self.args, "registry", None),
             timeout=timeout,
             keep_alive=getattr(self.args, "keep_alive", False),
+            keep_model_dir=getattr(self.args, "keep_model_dir", False),
             phase_suffix=phase_suffix,
         )
 

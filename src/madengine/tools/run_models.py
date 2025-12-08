@@ -988,33 +988,21 @@ class RunModels:
 
             # run model
             test_start_time = time.time()
-            if not self.args.skip_model_run:
-                print("Running model...")
-                if "model_args" in self.context.ctx:
-                    model_docker.sh(
-                        "cd "
-                        + model_dir
-                        + " && "
-                        + script_name
-                        + " "
-                        + self.context.ctx["model_args"],
-                        timeout=None,
-                    )
-                else:
-                    model_docker.sh(
-                        "cd " + model_dir + " && " + script_name + " " + info["args"],
-                        timeout=None,
-                    )
-            else:
-                print("Skipping model run")
-                print(
-                    "To run model: "
-                    + "cd "
+            print("Running model...")
+            if "model_args" in self.context.ctx:
+                model_docker.sh(
+                    "cd "
                     + model_dir
                     + " && "
                     + script_name
                     + " "
-                    + info["args"]
+                    + self.context.ctx["model_args"],
+                    timeout=None,
+                )
+            else:
+                model_docker.sh(
+                    "cd " + model_dir + " && " + script_name + " " + info["args"],
+                    timeout=None,
                 )
 
             run_details.test_duration = time.time() - test_start_time
@@ -1192,10 +1180,6 @@ class RunModels:
                                 self.run_model_impl(
                                     model_info, cur_docker_file, run_details
                                 )
-
-                        if self.args.skip_model_run:
-                            # move to next dockerfile
-                            continue
 
                         # Check if we are looking for a single result or multiple.
                         multiple_results = (

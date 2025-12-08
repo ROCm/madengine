@@ -23,7 +23,7 @@ from madengine.execution.container_runner import ContainerRunner
 from madengine.core.context import Context
 from madengine.core.console import Console
 from madengine.core.dataprovider import Data
-from .fixtures.utils import BASE_DIR, MODEL_DIR
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestContainerRunner:

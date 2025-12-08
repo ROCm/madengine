@@ -311,11 +311,6 @@ def main():
         "--keep-model-dir", action="store_true", help="keep model directory after run"
     )
     parser_run.add_argument(
-        "--skip-model-run",
-        action="store_true",
-        help="skips running the model; will not keep model directory after run unless specified through keep-alive or keep-model-dir",
-    )
-    parser_run.add_argument(
         "--disable-skip-gpu-arch",
         action="store_true",
         help="disables skipping model based on gpu architecture",

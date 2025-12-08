@@ -82,9 +82,27 @@ def global_data():
 
 @pytest.fixture()
 def clean_test_temp_files(request):
+    """
+    Fixture to clean up test temporary files and Docker containers.
+    
+    Cleans up both before (to ensure clean state) and after (to avoid conflicts).
+    """
+    import subprocess
+    
+    # Clean up Docker containers BEFORE test (ensure clean state)
+    try:
+        subprocess.run(
+            "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
+            shell=True,
+            capture_output=True,
+            timeout=30
+        )
+    except:
+        pass  # Ignore cleanup errors before test
 
     yield
 
+    # Clean up files after test
     for filename in request.param:
         file_path = os.path.join(BASE_DIR, filename)
         if os.path.exists(file_path):
@@ -92,6 +110,17 @@ def clean_test_temp_files(request):
                 shutil.rmtree(file_path)
             else:
                 os.remove(file_path)
+    
+    # Clean up Docker containers AFTER test (avoid conflicts with next test)
+    try:
+        subprocess.run(
+            "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
+            shell=True,
+            capture_output=True,
+            timeout=30
+        )
+    except:
+        pass  # Ignore cleanup errors after test
 
 
 def generate_additional_context_for_machine() -> dict:

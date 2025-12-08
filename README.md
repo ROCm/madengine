@@ -783,8 +783,8 @@ madengine-cli run --tags models --force-mirror-local /tmp/mirror
 # Keep containers alive for debugging
 madengine-cli run --tags models --keep-alive --keep-model-dir
 
-# Skip model execution (build/setup only)
-madengine-cli run --tags models --skip-model-run
+# Build only (no execution) - use separate build command
+madengine-cli build --tags models
 
 # Detailed logging with stack traces
 madengine-cli run --tags models --verbose
@@ -1421,7 +1421,6 @@ madengine-cli run [OPTIONS]
 | `--additional-context-file, -f` | File | Runtime context from file | `None` |
 | `--keep-alive` | Flag | Keep containers alive after run | `false` |
 | `--keep-model-dir` | Flag | Keep model directory after run | `false` |
-| `--skip-model-run` | Flag | Skip model execution (setup only) | `false` |
 | `--live-output, -l` | Flag | Real-time output streaming | `false` |
 | `--verbose, -v` | Flag | Enable detailed logging | `false` |
 

@@ -13,16 +13,21 @@ import pytest
 import json
 
 # project modules
-from .fixtures.utils import BASE_DIR, MODEL_DIR
-from .fixtures.utils import global_data
-from .fixtures.utils import clean_test_temp_files
-from .fixtures.utils import get_gpu_nodeid_map
-from .fixtures.utils import get_num_gpus
-from .fixtures.utils import get_num_cpus
-from .fixtures.utils import requires_gpu
-from .fixtures.utils import generate_additional_context_for_machine
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
+from tests.fixtures.utils import global_data
+from tests.fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import get_gpu_nodeid_map
+from tests.fixtures.utils import get_num_gpus
+from tests.fixtures.utils import get_num_cpus
+from tests.fixtures.utils import requires_gpu
+from tests.fixtures.utils import generate_additional_context_for_machine
 
 from madengine.core.context import Context
+
+
+# ============================================================================
+# Context Handling Tests
+# ============================================================================
 
 class TestContexts:
 
@@ -42,7 +47,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest "
         )
 
         success = False
@@ -76,7 +81,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest "
         )
 
         success = False
@@ -110,7 +115,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest "
         )
 
         foundDockerfiles = []
@@ -156,7 +161,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'ctx_test': '1'}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context \"{'ctx_test': '1'}\" "
         )
 
         success = False
@@ -190,7 +195,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context-file ctx.json "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context-file ctx.json "
         )
 
         success = False
@@ -224,7 +229,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context-file ctx.json --additional-context \"{'ctx_test': '1'}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context-file ctx.json --additional-context \"{'ctx_test': '1'}\" "
         )
 
         success = False
@@ -253,7 +258,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_build_arg':{'BASE_DOCKER':'rocm/tensorflow' }}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context \"{'docker_build_arg':{'BASE_DOCKER':'rocm/tensorflow' }}\" "
         )
 
         foundBaseDocker = []
@@ -285,7 +290,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'},'MAD_CONTAINER_IMAGE':'rocm/tensorflow:latest' }\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'},'MAD_CONTAINER_IMAGE':'rocm/tensorflow:latest' }\" "
         )
 
         foundLocalImage = None
@@ -317,7 +322,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'} }\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest --additional-context \"{'docker_env_vars':{'ctxtest':'1'} }\" "
         )
 
         success = False
@@ -350,7 +355,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_mountpath --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'}, 'docker_mounts':{'/data':'/tmp'} }\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_mountpath --additional-context \"{'docker_env_vars':{'MAD_DATAHOME':'/data'}, 'docker_mounts':{'/data':'/tmp'} }\" "
         )
 
         success = False
@@ -388,7 +393,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
         )
 
         gpu_nodeid_map = get_gpu_nodeid_map()
@@ -436,7 +441,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "madengine-cli run --live-output --tags dummy_cpubind --additional-context \"{'docker_cpus':'14-18,32,44-44,62'}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_cpubind --additional-context \"{'docker_cpus':'14-18,32,44-44,62'}\" "
         )
 
         success = False
@@ -474,3 +479,94 @@ class TestContexts:
         #that it was parsed properly
         if not ("AMD" in product_name or "NVIDIA" in product_name):
             pytest.fail(f"Incorrect product name={product_name!r}")
+
+
+
+# ============================================================================
+# Tag Filtering Tests
+# ============================================================================
+
+class TestTagsFunctionality:
+
+    @pytest.mark.parametrize(
+        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+    )
+    def test_can_select_model_subset_with_commandline_tag_argument(
+        self, global_data, clean_test_temp_files
+    ):
+        """
+        can select subset of models with tag with command-line argument
+        """
+        context = generate_additional_context_for_machine()
+        output = global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            +             f"python3 -m madengine.cli.app run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
+        )
+
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
+            pytest.fail("dummy tag not selected with commandline --tags argument")
+
+        if "dummy2" not in output or "ci-dummy2_dummy" not in output:
+            pytest.fail("dummy2 tag not selected with commandline --tags argument")
+
+    @pytest.mark.parametrize(
+        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+    )
+    def test_all_models_matching_any_tag_selected_with_multiple_tags(
+        self, global_data, clean_test_temp_files
+    ):
+        """
+        if multiple tags are specified, all models that match any tag will be selected
+        """
+        context = generate_additional_context_for_machine()
+        output = global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + f"python3 -m madengine.cli.app run --tags dummy_group_1,dummy_group_2 --live-output --additional-context '{json.dumps(context)}'"
+        )
+
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
+            pytest.fail("dummy tag not selected with commandline --tags argument")
+
+        if "dummy2" not in output or "ci-dummy2_dummy" not in output:
+            pytest.fail("dummy2 tag not selected with commandline --tags argument")
+
+        if "dummy3" not in output or "ci-dummy3_dummy" not in output:
+            pytest.fail("dummy3 tag not selected with commandline --tags argument")
+
+    @pytest.mark.parametrize(
+        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+    )
+    def test_model_names_are_automatically_tags(
+        self, global_data, clean_test_temp_files
+    ):
+        """
+        Each model name is automatically a tag
+        """
+        context = generate_additional_context_for_machine()
+        output = global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            +             f"python3 -m madengine.cli.app run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
+        )
+
+        # Check for model execution (handles ANSI codes in output)
+        if "dummy" not in output or "ci-dummy_dummy" not in output:
+            pytest.fail("dummy tag not selected with commandline --tags argument")
+
+

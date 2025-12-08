@@ -124,7 +124,6 @@ def mock_run_args():
     args.timeout = 3600
     args.keep_alive = False
     args.keep_model_dir = False
-    args.skip_model_run = False
     args.additional_context = None
     args.additional_context_file = None
     args.live_output = False

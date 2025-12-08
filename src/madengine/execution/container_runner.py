@@ -489,6 +489,7 @@ class ContainerRunner:
         docker_image: str,
         build_info: typing.Dict = None,
         keep_alive: bool = False,
+        keep_model_dir: bool = False,
         timeout: int = 7200,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
@@ -501,6 +502,7 @@ class ContainerRunner:
             docker_image: Docker image name to run
             build_info: Optional build information from manifest
             keep_alive: Whether to keep container alive after execution
+            keep_model_dir: Whether to keep model directory after execution
             timeout: Execution timeout in seconds
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
@@ -510,6 +512,13 @@ class ContainerRunner:
             dict: Execution results including performance metrics
         """
         self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
+
+        # Apply timeout logic: model timeout can override default timeout
+        # If model has a timeout in models.json and CLI timeout is default (7200), use model's timeout
+        # If CLI timeout is explicitly set (not default), it overrides model timeout
+        if "timeout" in model_info and model_info["timeout"] > 0 and timeout == 7200:
+            # Model has a timeout and CLI is using default, so use model's timeout
+            timeout = model_info["timeout"]
 
         # Create log file for this run
         # Extract dockerfile part from docker image name (remove "ci-" prefix and model name prefix)
@@ -642,9 +651,6 @@ class ContainerRunner:
 
         print(f"Docker options: {docker_options}")
 
-        # set timeout
-        print(f"⏰ Setting timeout to {str(timeout)} seconds.")
-
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")
         print(f"📦 Container: {container_name}")
@@ -658,6 +664,9 @@ class ContainerRunner:
                 with redirect_stdout(
                     PythonicTee(outlog, self.live_output)
                 ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                    # set timeout (print inside log redirection so it appears in log file)
+                    print(f"⏰ Setting timeout to {str(timeout)} seconds.")
+                    
                     with Timeout(timeout):
                         model_docker = Docker(
                             docker_image,
@@ -1025,13 +1034,14 @@ class ContainerRunner:
                         except Exception as e:
                             self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
 
-                        # Cleanup if not keeping alive
-                        if not keep_alive:
+                        # Cleanup if not keeping alive and not keeping model directory
+                        if not keep_alive and not keep_model_dir:
                             model_docker.sh(f"rm -rf {model_dir}", timeout=240)
                         else:
                             model_docker.sh(f"chmod -R a+rw {model_dir}")
+                            reason = "keep_alive" if keep_alive else "keep_model_dir"
                             print(
-                                f"keep_alive specified; model_dir({model_dir}) is not removed"
+                                f"{reason} specified; model_dir({model_dir}) is not removed"
                             )
 
                         # Explicitly delete model docker to stop the container
@@ -1086,6 +1096,7 @@ class ContainerRunner:
         registry: str = None,
         timeout: int = 7200,
         keep_alive: bool = False,
+        keep_model_dir: bool = False,
         phase_suffix: str = "",
     ) -> typing.Dict:
         """Run all models from a build manifest file.
@@ -1097,6 +1108,7 @@ class ContainerRunner:
             registry: Optional registry override
             timeout: Execution timeout per model in seconds
             keep_alive: Whether to keep containers alive after execution
+            keep_model_dir: Whether to keep model directory after execution
             phase_suffix: Suffix for log files (e.g., ".run")
 
         Returns:
@@ -1175,6 +1187,7 @@ class ContainerRunner:
                     docker_image=run_image,
                     build_info=build_info,
                     keep_alive=keep_alive,
+                    keep_model_dir=keep_model_dir,
                     timeout=timeout,
                     phase_suffix=phase_suffix,
                 )
