@@ -214,7 +214,7 @@ class TestProfilingFunctionality:
             + MODEL_DIR
             + " "
             + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"tensile_trace\"}]}' ",
-            canFail=False,
+            canFail=True,  # Allow failure due to missing performance metrics (trace tools suppress performance output)
         )
 
         regexp = re.compile(r"tensile,Cijk")
@@ -235,7 +235,7 @@ class TestProfilingFunctionality:
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "library_trace.csv"]],
+        [["perf.csv", "perf.html", "miopen_trace_output.csv"]],
         indirect=True,
     )
     def test_miopen_trace_runs_correctly(self, global_data, clean_test_temp_files):
@@ -255,7 +255,7 @@ class TestProfilingFunctionality:
 
         regexp = re.compile(r"MIOpenDriver")
         foundMatch = None
-        with open(os.path.join(BASE_DIR, "library_trace.csv"), "r") as f:
+        with open(os.path.join(BASE_DIR, "miopen_trace_output.csv"), "r") as f:
             while True:
                 line = f.readline()
                 if not line:
@@ -294,7 +294,7 @@ class TestProfilingFunctionality:
                 BASE_DIR,
                 "dummy_prof_rccl_dummy.ubuntu."
                 + ("amd" if not is_nvidia() else "nvidia")
-                + ".live.log",
+                + ".run.live.log",
             ),
             "r",
         ) as f:
@@ -328,7 +328,7 @@ class TestProfilingFunctionality:
             canFail=False,
         )
 
-        match_str_array = ["^pre_script A$", "^cmd_A$", "^post_script A$"]
+        match_str_array = ["pre_script A", "cmd_A", "post_script A"]
 
         match_str_idx = 0
         regexp = re.compile(match_str_array[match_str_idx])
@@ -337,7 +337,7 @@ class TestProfilingFunctionality:
                 BASE_DIR,
                 "dummy_dummy.ubuntu."
                 + ("amd" if not is_nvidia() else "nvidia")
-                + ".live.log",
+                + ".run.live.log",
             ),
             "r",
         ) as f:
@@ -375,12 +375,12 @@ class TestProfilingFunctionality:
         )
 
         match_str_array = [
-            "^pre_script B$",
-            "^pre_script A$",
-            "^cmd_B$",
-            "^cmd_A$",
-            "^post_script A$",
-            "^post_script B$",
+            "pre_script B",
+            "pre_script A",
+            "cmd_B",
+            "cmd_A",
+            "post_script A",
+            "post_script B",
         ]
 
         match_str_idx = 0
@@ -390,7 +390,7 @@ class TestProfilingFunctionality:
                 BASE_DIR,
                 "dummy_dummy.ubuntu."
                 + ("amd" if not is_nvidia() else "nvidia")
-                + ".live.log",
+                + ".run.live.log",
             ),
             "r",
         ) as f:

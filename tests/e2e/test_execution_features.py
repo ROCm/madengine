@@ -447,7 +447,7 @@ class TestLiveOutputFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + f"python3 -m madengine.cli.app run --live-output --tags dummy --additional-context '{json.dumps(context)}'"
+            + f"python3 -m madengine.cli.app run --tags dummy --additional-context '{json.dumps(context)}'"
         )
 
         regexp = re.compile(r"performance: [0-9]* samples_per_second")

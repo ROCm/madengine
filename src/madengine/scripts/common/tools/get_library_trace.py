@@ -241,8 +241,11 @@ class LibraryFilter(object):
             m_match = process_miopen_trace(data.splitlines())
             matched |= m_match
 
-        if self.stdio and (self.printConfigs or (not matched)):
-            self.stdio.write(data)
+        if self.stdio:
+            # Always print non-matching lines (like performance output)
+            # Only suppress matching trace lines if printConfigs is False
+            if self.printConfigs or (not matched):
+                self.stdio.write(data)
         # else: #debug
         #    self.stdio.write( "$(%s,%s,%s) " % (r_match, t_match, m_match) + data )
 

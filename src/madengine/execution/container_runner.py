@@ -834,10 +834,12 @@ class ContainerRunner:
                         model_args = self.context.ctx.get(
                             "model_args", model_info["args"]
                         )
-                        model_docker.sh(
+                        model_output = model_docker.sh(
                             f"cd {model_dir} && {script_name} {model_args}",
                             timeout=None,
                         )
+                        # Print output to ensure it gets captured in log file
+                        print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
@@ -1033,6 +1035,17 @@ class ContainerRunner:
 
                         except Exception as e:
                             self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+
+                        # Copy profiler/trace output files from run_directory to base directory before cleanup
+                        # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
+                        try:
+                            model_docker.sh(f"cp {model_dir}/*_profiler_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/*_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/*_trace.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/library_trace.csv . 2>/dev/null || true")
+                        except Exception as e:
+                            # Ignore errors if no profiler/trace output files exist
+                            pass
 
                         # Cleanup if not keeping alive and not keeping model directory
                         if not keep_alive and not keep_model_dir:
