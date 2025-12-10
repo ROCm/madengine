@@ -40,7 +40,6 @@ from madengine.cli import (
     DEFAULT_PERF_OUTPUT,
     DEFAULT_DATA_CONFIG,
     DEFAULT_TOOLS_CONFIG,
-    DEFAULT_ANSIBLE_OUTPUT,
     DEFAULT_TIMEOUT,
 )
 from tests.fixtures.utils import (
@@ -79,7 +78,6 @@ class TestConstants:
         assert DEFAULT_PERF_OUTPUT == "perf.csv"
         assert DEFAULT_DATA_CONFIG == "data.json"
         assert DEFAULT_TOOLS_CONFIG == "./scripts/common/tools.json"
-        assert DEFAULT_ANSIBLE_OUTPUT == "madengine_distributed.yml"
         assert DEFAULT_TIMEOUT == -1
 
 

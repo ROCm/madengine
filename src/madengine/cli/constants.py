@@ -26,8 +26,5 @@ DEFAULT_MANIFEST_FILE = "build_manifest.json"
 DEFAULT_PERF_OUTPUT = "perf.csv"
 DEFAULT_DATA_CONFIG = "data.json"
 DEFAULT_TOOLS_CONFIG = "./scripts/common/tools.json"
-DEFAULT_ANSIBLE_OUTPUT = "madengine_distributed.yml"
 DEFAULT_TIMEOUT = -1
-DEFAULT_INVENTORY_FILE = "inventory.yml"
-DEFAULT_RUNNER_REPORT = "runner_report.json"
 

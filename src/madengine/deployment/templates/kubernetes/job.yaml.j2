@@ -70,7 +70,7 @@ spec:
                 echo "✓ Copied K8s data provider script"
             fi
             
-            # Extract model scripts directory (all .sh and .py files)
+            # Extract model scripts directory (all .sh, .py, and .json files)
             {% if model_scripts_contents %}
             echo "Extracting model scripts directory..."
             {% for script_path, _ in model_scripts_contents.items() %}
@@ -79,7 +79,10 @@ spec:
             mkdir -p /workspace/{{ script_dir }}
             if [ -f /config/{{ config_key }} ]; then
                 cp /config/{{ config_key }} /workspace/{{ script_path }}
+                # Only chmod executable files (.sh, .py), not config files (.json)
+                {% if script_path.endswith('.sh') or script_path.endswith('.py') %}
                 chmod +x /workspace/{{ script_path }}
+                {% endif %}
                 echo "  ✓ {{ script_path }}"
             fi
             {% endfor %}
@@ -137,14 +140,14 @@ spec:
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
             
-            {% if launcher_type == "torchrun" %}
-            # Torchrun distributed environment (auto-configured from K8s)
+            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" %}
+            # {{ launcher_type }} distributed environment (auto-configured from K8s)
             {% if nnodes > 1 %}
-            # Multi-node torchrun (Indexed Job)
+            # Multi-node {{ launcher_type }} (Indexed Job)
             export JOB_COMPLETION_INDEX=${JOB_COMPLETION_INDEX:-0}
             export POD_INDEX=$JOB_COMPLETION_INDEX
             {% else %}
-            # Single-node torchrun
+            # Single-node {{ launcher_type }}
             export JOB_COMPLETION_INDEX=0
             {% endif %}
             {% endif %}

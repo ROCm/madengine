@@ -253,11 +253,8 @@ class BuildOrchestrator:
             )
 
             # Determine phase suffix for log files
-            phase_suffix = (
-                ".build"
-                if hasattr(self.args, "_separate_phases") and self.args._separate_phases
-                else ""
-            )
+            # Build phase always uses .build suffix to avoid conflicts with run logs
+            phase_suffix = ".build"
 
             # Get target architectures from args if provided
             target_archs = getattr(self.args, "target_archs", [])

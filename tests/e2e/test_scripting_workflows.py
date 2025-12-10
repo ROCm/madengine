@@ -37,7 +37,7 @@ class TestPrePostScriptsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}] }\" "
+            + "python3 -m madengine.cli.app run --tags dummy --additional-context \"{ 'pre_scripts':[{'path':'scripts/common/pre_scripts/pre_test.sh'}] }\" --live-output "
         )
 
         regexp = re.compile(r"Pre-Script test called ([0-9]*)")

@@ -76,6 +76,9 @@ class RunOrchestrator:
         # Track if we copied MODEL_DIR contents (for cleanup)
         self._copied_from_model_dir = False
         
+        # Track if we ran build phase in this workflow (for log combination)
+        self._did_build_phase = False
+        
         # Initialize context in runtime mode (with GPU detection for local)
         # This will be lazy-initialized only when needed
         self.context = None
@@ -184,6 +187,7 @@ class RunOrchestrator:
 
                 self.rich_console.print("[cyan]No manifest found, building first...[/cyan]\n")
                 manifest_file = self._build_phase(tags, registry)
+                self._did_build_phase = True  # Mark that we built in this workflow
 
             # Step 2: Load manifest and merge with runtime context
             manifest_file = self._load_and_merge_manifest(manifest_file)
@@ -218,6 +222,10 @@ class RunOrchestrator:
                     results = self._execute_local(manifest_file, timeout)
                 else:
                     results = self._execute_distributed(target, manifest_file)
+                
+                # Combine build and run logs for full workflow
+                if self._did_build_phase and target == "local":
+                    self._combine_build_and_run_logs()
                 
                 # Cleanup MODEL_DIR copies after successful execution
                 if self._copied_from_model_dir:
@@ -555,12 +563,8 @@ class RunOrchestrator:
         if hasattr(self.args, "output") and self.args.output:
             runner.set_perf_csv_path(self.args.output)
 
-        # Determine phase suffix
-        phase_suffix = (
-            ".run"
-            if hasattr(self.args, "_separate_phases") and self.args._separate_phases
-            else ""
-        )
+        # Run phase always uses .run suffix for consistency
+        phase_suffix = ".run"
 
         # Run models
         results = runner.run_models_from_manifest(
@@ -674,6 +678,60 @@ class RunOrchestrator:
                         self.rich_console.print(
                             f"[yellow]   Manual cleanup may be required: sudo rm -rf {dirname}/[/yellow]"
                         )
+
+    def _combine_build_and_run_logs(self):
+        """Combine build.live.log and run.live.log into live.log for full workflow.
+        
+        For full workflow (build + run), this creates a unified log file by:
+        1. Finding all *.build.live.log and corresponding *.run.live.log files
+        2. Concatenating them into *.live.log
+        3. Keeping the original build and run logs for reference
+        """
+        import glob
+        
+        build_logs = glob.glob("*.build.live.log")
+        if not build_logs:
+            return  # No build logs to combine
+        
+        self.rich_console.print("\n[dim]📝 Combining build and run logs...[/dim]")
+        combined_count = 0
+        
+        for build_log in build_logs:
+            # Derive the base name and corresponding run log
+            base_name = build_log.replace(".build.live.log", "")
+            run_log = f"{base_name}.run.live.log"
+            combined_log = f"{base_name}.live.log"
+            
+            # Check if run log exists
+            if not os.path.exists(run_log):
+                continue  # Skip if run log doesn't exist
+            
+            try:
+                # Combine build and run logs
+                with open(combined_log, 'w') as outfile:
+                    # Add build log
+                    with open(build_log, 'r') as infile:
+                        outfile.write(infile.read())
+                    
+                    # Add separator
+                    outfile.write("\n" + "=" * 80 + "\n")
+                    outfile.write("RUN PHASE LOG\n")
+                    outfile.write("=" * 80 + "\n\n")
+                    
+                    # Add run log
+                    with open(run_log, 'r') as infile:
+                        outfile.write(infile.read())
+                
+                combined_count += 1
+                self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
+                
+            except Exception as e:
+                self.rich_console.print(
+                    f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
+                )
+        
+        if combined_count > 0:
+            self.rich_console.print(f"[dim]✓ Combined {combined_count} log file(s)[/dim]")
 
     def _copy_scripts(self):
         """Copy common scripts to model directories.

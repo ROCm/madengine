@@ -18,10 +18,12 @@ RUN if [ -d "$HOME/.config/miopen" ]; then \
     fi
 
 # Set MIOpen environment variables for better performance
-# These help avoid "Duplicate ID" warnings by using compiled kernels
+# Disable cache to avoid "Duplicate ID" warnings completely
 ENV MIOPEN_FIND_MODE=1 \
     MIOPEN_USER_DB_PATH=/tmp/.miopen \
-    MIOPEN_CUSTOM_CACHE_DIR=/tmp/.miopen
+    MIOPEN_CUSTOM_CACHE_DIR=/tmp/.miopen \
+    MIOPEN_DISABLE_CACHE=1 \
+    MIOPEN_ENABLE_LOGGING=0
 
 # Pre-create MIOpen cache directory with proper permissions
 RUN mkdir -p /tmp/.miopen && chmod 1777 /tmp/.miopen

@@ -16,7 +16,7 @@ data:
 {{ data_json_content | indent(4, first=True) }}
   {% endif %}
   {% if model_scripts_contents %}
-  # Model scripts directory (all .sh and .py files from scripts folder)
+  # Model scripts directory (all .sh, .py, and .json files from scripts folder)
   {% for script_path, script_content in model_scripts_contents.items() %}
   {{ script_path | replace("/", "-") }}: |
 {{ script_content | indent(4, first=True) }}

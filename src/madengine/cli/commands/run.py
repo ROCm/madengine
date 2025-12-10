@@ -301,7 +301,7 @@ def run(
                 force_mirror_local=force_mirror_local,
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
-                _separate_phases=True,
+                _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 
             with Progress(

@@ -40,7 +40,6 @@ from madengine.cli import (
     DEFAULT_PERF_OUTPUT,
     DEFAULT_DATA_CONFIG,
     DEFAULT_TOOLS_CONFIG,
-    DEFAULT_ANSIBLE_OUTPUT,
     DEFAULT_TIMEOUT,
 )
 from tests.fixtures.utils import (

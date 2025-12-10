@@ -510,6 +510,16 @@ class KubernetesDeployment(BaseDeployment):
                             relative_path = str(script)
                         model_scripts_contents[relative_path] = f.read()
                 
+                # Also check for JSON config files (e.g., DeepSpeed configs)
+                for script in scripts_dir_path.glob("*.json"):
+                    with open(script, "r") as f:
+                        # Use the path directly if relative, otherwise convert to relative
+                        if script.is_absolute():
+                            relative_path = str(script.relative_to(Path.cwd()))
+                        else:
+                            relative_path = str(script)
+                        model_scripts_contents[relative_path] = f.read()
+                
                 self.console.print(f"[dim]Loaded {len(model_scripts_contents)} script(s) from {model_script_dir}[/dim]")
             elif script_file.exists():
                 # Fallback: load single file if directory doesn't exist
@@ -605,6 +615,14 @@ class KubernetesDeployment(BaseDeployment):
                 raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
             
             self.console.print(f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+        
+        elif launcher_type == "deepspeed":
+            if not isinstance(nnodes, int) or nnodes < 1:
+                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+            if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+            
+            self.console.print(f"[cyan]Configuring DeepSpeed: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
         # Determine if we need multi-node setup
         create_headless_service = False
@@ -617,6 +635,19 @@ class KubernetesDeployment(BaseDeployment):
             
             # Generate torchrun launcher command
             launcher_command = self._generate_torchrun_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh")
+            )
+        
+        elif launcher_type == "deepspeed":
+            if nnodes > 1:
+                create_headless_service = True
+                self.console.print(f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]")
+            
+            # Generate DeepSpeed launcher command
+            launcher_command = self._generate_deepspeed_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
@@ -689,7 +720,7 @@ class KubernetesDeployment(BaseDeployment):
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
-            "model_script": model_info.get("scripts", "run.sh"),
+            "model_script": f"{model_info.get('scripts', 'run.sh')} {model_info.get('args', '')}".strip(),
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
             "nnodes": nnodes,
@@ -908,6 +939,105 @@ torchrun \\
     --rdzv_id={self.job_name} \\
     --role=worker \\
     --tee=3 \\
+    {model_script}"""
+    
+    def _generate_deepspeed_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate DeepSpeed launcher command for K8s Indexed Jobs.
+        
+        DeepSpeed has its own launcher that handles:
+        - ZeRO optimization stages (ZeRO-1, ZeRO-2, ZeRO-3)
+        - Gradient accumulation
+        - Mixed precision training
+        - Pipeline parallelism
+        - Hostfile management (handled by K8s in our case)
+        
+        For single-node (nnodes=1), uses localhost setup.
+        For multi-node (nnodes>1), uses headless service DNS for coordination.
+        
+        Args:
+            nnodes: Number of nodes (pods). Must be >= 1.
+            nproc_per_node: GPUs per node. Must be >= 1.
+            master_port: Master communication port. Must be 1-65535.
+            model_script: Path to model's run script. Cannot be empty.
+        
+        Returns:
+            Complete DeepSpeed launcher command string
+        
+        Raises:
+            ValueError: If any parameter is invalid
+        """
+        # Validate inputs
+        if not isinstance(nnodes, int) or nnodes < 1:
+            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
+        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
+            raise ValueError(f"master_port must be 1-65535, got {master_port}")
+        if not model_script or not isinstance(model_script, str):
+            raise ValueError(f"model_script must be non-empty string, got {model_script}")
+        
+        # For single-node
+        if nnodes == 1:
+            return f"""# DeepSpeed Single-Node Setup
+export MASTER_ADDR=localhost
+export MASTER_PORT={master_port}
+export RANK=0
+export LOCAL_RANK=0
+export WORLD_SIZE={nproc_per_node}
+
+echo "DeepSpeed Configuration:"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  WORLD_SIZE: $WORLD_SIZE"
+echo "  NUM_GPUS: {nproc_per_node}"
+
+# DeepSpeed launcher (single-node)
+deepspeed --num_gpus={nproc_per_node} \\
+    --master_port={master_port} \\
+    {model_script}"""
+        
+        # Multi-node: Use K8s headless service for coordination
+        return f"""# Multi-node DeepSpeed setup (Kubernetes Indexed Job)
+export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_PORT={master_port}
+export RANK=${{JOB_COMPLETION_INDEX}}
+export LOCAL_RANK=0
+export WORLD_SIZE={nnodes * nproc_per_node}
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+
+echo "DeepSpeed Multi-Node Configuration:"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  RANK (Node Rank): $RANK"
+echo "  WORLD_SIZE: $WORLD_SIZE"
+echo "  NNODES: $NNODES"
+echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
+
+# Create hostfile for DeepSpeed (K8s Indexed Job aware)
+cat > /tmp/hostfile << EOF
+{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}
+EOF
+
+# Add all nodes to hostfile
+for i in $(seq 1 $((NNODES - 1))); do
+    echo "{self.job_name}-$i.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}" >> /tmp/hostfile
+done
+
+echo ""
+echo "Generated hostfile:"
+cat /tmp/hostfile
+echo ""
+
+# DeepSpeed launcher (multi-node with hostfile)
+deepspeed --hostfile=/tmp/hostfile \\
+    --master_addr=$MASTER_ADDR \\
+    --master_port=$MASTER_PORT \\
+    --num_nodes={nnodes} \\
+    --num_gpus={nproc_per_node} \\
     {model_script}"""
     
     def _load_k8s_tools(self) -> Dict:
