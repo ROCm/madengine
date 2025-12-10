@@ -885,20 +885,22 @@ class ContainerRunner:
                                 # Extract from log file
                                 try:
                                     # Extract performance number: capture digits (with optional decimal/scientific notation)
+                                    # Use head -1 to take only the first match (avoid duplicates)
                                     perf_cmd = (
                                         "cat "
                                         + log_file_path
-                                        + " | grep 'performance:' | sed -n 's/.*performance:[[:space:]]*\\([0-9][0-9.eE+-]*\\)[[:space:]].*/\\1/p'"
+                                        + " | grep 'performance:' | head -1 | sed -n 's/.*performance:[[:space:]]*\\([0-9][0-9.eE+-]*\\)[[:space:]].*/\\1/p'"
                                     )
                                     run_results["performance"] = self.console.sh(
                                         perf_cmd
                                     )
 
                                     # Extract metric unit: capture the word after the number
+                                    # Use head -1 to take only the first match (avoid duplicates)
                                     metric_cmd = (
                                         "cat "
                                         + log_file_path
-                                        + " | grep 'performance:' | sed -n 's/.*performance:[[:space:]]*[0-9][0-9.eE+-]*[[:space:]]*\\([a-zA-Z_][a-zA-Z0-9_]*\\).*/\\1/p'"
+                                        + " | grep 'performance:' | head -1 | sed -n 's/.*performance:[[:space:]]*[0-9][0-9.eE+-]*[[:space:]]*\\([a-zA-Z_][a-zA-Z0-9_]*\\).*/\\1/p'"
                                     )
                                     run_results["metric"] = self.console.sh(metric_cmd)
                                 except Exception:

@@ -36,6 +36,7 @@ except ImportError:
 from jinja2 import Environment, FileSystemLoader, Template
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
+from .config_loader import ConfigLoader
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
 from madengine.core.errors import ConfigurationError, create_error_context
@@ -84,9 +85,14 @@ class KubernetesDeployment(BaseDeployment):
                 "Install with: pip install pyyaml"
             )
 
+        # Apply intelligent defaults using ConfigLoader
+        # This merges built-in presets with user configuration
+        full_config = ConfigLoader.load_k8s_config(config.additional_context)
+        config.additional_context = full_config
+
         super().__init__(config)
 
-        # Parse K8s configuration
+        # Parse K8s configuration (now with defaults applied)
         self.k8s_config = config.additional_context.get("k8s", {})
         if not self.k8s_config:
             self.k8s_config = config.additional_context.get("kubernetes", {})

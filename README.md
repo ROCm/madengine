@@ -3,10 +3,13 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Version](https://img.shields.io/badge/version-2.0-brightgreen.svg)](RELEASE_NOTES_v2.0.md)
 
 > **Enterprise-grade AI model automation and distributed benchmarking platform**
 
 madengine is a sophisticated CLI tool designed for running Large Language Models (LLMs) and Deep Learning models across local and distributed environments. Built with modern Python practices, it provides both traditional single-node execution and advanced distributed orchestration capabilities as part of the [MAD (Model Automation and Dashboarding)](https://github.com/ROCm/MAD) ecosystem.
+
+> 🎉 **NEW in v2.0:** Minimal Kubernetes configurations with intelligent defaults! Reduce config size by 70-90%. [Learn more →](RELEASE_NOTES_v2.0.md)
 
 ## Table of Contents
 
@@ -81,6 +84,13 @@ madengine discover --tags dummy2:dummy_2
 That's it! You're now ready to run AI models with madengine. Continue reading for advanced features and distributed execution.
 
 ## ✨ Features
+
+### 🎉 New in v2.0
+- 🎯 **Minimal Configurations** - Reduce K8s config size by 70-90% with intelligent defaults
+- 🚀 **Auto-Inference** - Deployment type automatically detected from config structure
+- 📦 **Built-in Presets** - AMD/NVIDIA optimizations, resource scaling, best practices
+- ✅ **Smart Validation** - Early conflict detection with clear, actionable error messages
+- 🔄 **Multi-Layer Merging** - Base → Vendor → Profile → User → CLI override hierarchy
 
 ### Core Capabilities
 - 🎯 **Dual CLI Interface** - Traditional `madengine` + modern `madengine-cli` with Typer+Rich
@@ -538,12 +548,41 @@ Cloud-native execution in Kubernetes clusters:
 **Use Cases:** Cloud deployments, container orchestration, auto-scaling  
 **Features:** Dynamic Job creation, ConfigMap management, namespace isolation
 
+> 🎉 **NEW in v2.0:** Minimal K8s configurations! Just specify GPU count and go. [See examples →](examples/k8s-configs/minimal/)
+
 ```bash
+# Minimal config - just specify GPU count
+madengine-cli run --tags model \
+  --additional-context '{"k8s": {"gpu_count": 1}}'
+
+# Traditional runner command
 madengine-cli runner k8s \
   --inventory k8s_inventory.yml \
   --manifests-dir k8s-setup \
   --report-output k8s_results.json
 ```
+
+**Quick Start with Minimal Configs:**
+```bash
+# Single GPU (1-5 lines of config)
+cat > config.json << EOF
+{"k8s": {"gpu_count": 1}}
+EOF
+
+# Multi-GPU with custom namespace
+cat > config.json << EOF
+{
+  "k8s": {
+    "gpu_count": 2,
+    "namespace": "ml-team"
+  }
+}
+EOF
+
+madengine-cli build --tags model --additional-context-file config.json
+```
+
+See [Minimal Config Guide](examples/k8s-configs/minimal/README.md) for complete examples.
 
 #### 🖥️ SLURM Runner  
 HPC cluster execution with job scheduling:
@@ -641,6 +680,68 @@ madengine-cli runner slurm --inventory hpc_cluster.yml --job-scripts-dir slurm-s
 ```
 ## ⚙️ Configuration
 
+### 🎉 NEW in v2.0: Minimal Kubernetes Configurations
+
+madengine now supports **minimal configurations** that automatically apply intelligent defaults, reducing configuration size by **70-90%**.
+
+**Before (Old way - still works):**
+```json
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "deploy": "k8s",
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 1,
+    "memory": "16Gi",
+    "memory_limit": "32Gi",
+    "cpu": "8",
+    "cpu_limit": "16",
+    "image_pull_policy": "Always"
+  },
+  "env_vars": {"OMP_NUM_THREADS": "8"}
+}
+```
+
+**After (New way - recommended):**
+```json
+{
+  "k8s": {
+    "gpu_count": 1
+  }
+}
+```
+
+Both produce **identical results**! Defaults are automatically applied based on GPU vendor, count, and deployment type.
+
+**Key Features:**
+- 🎯 **Auto-inferred deployment type** - No redundant `deploy` field needed
+- 🚀 **Built-in presets** - AMD/NVIDIA optimizations, resource defaults
+- ✅ **Validation** - Clear error messages for conflicting configurations
+- 🔄 **Multi-layer merging** - Base → Vendor → Profile → User → CLI
+- 📚 **Full documentation** - See `examples/k8s-configs/minimal/README.md`
+
+**Quick Examples:**
+```bash
+# Minimal K8s config (just GPU count)
+madengine-cli run --tags model \
+  --additional-context '{"k8s": {"gpu_count": 1}}'
+
+# Multi-GPU with custom namespace
+madengine-cli build --tags model \
+  --additional-context '{"k8s": {"gpu_count": 2, "namespace": "ml-team"}}'
+
+# Full config file (for complex scenarios)
+madengine-cli run --tags model \
+  --additional-context-file examples/k8s-configs/minimal/single-gpu-minimal.json
+```
+
+**Learn More:**
+- 📖 [Minimal Config Guide](examples/k8s-configs/minimal/README.md) - Getting started
+- 📄 [Migration Guide](DEPLOY_FIELD_MIGRATION.md) - Upgrading from old configs
+- 🎉 [Release Notes](RELEASE_NOTES_v2.0.md) - Full v2.0 feature list
+
 ### Context System
 
 Runtime parameters controlling model execution behavior:
@@ -654,9 +755,11 @@ Runtime parameters controlling model execution behavior:
 }
 ```
 
-**Required Build Context:**
+**Required Build Context (Local Execution):**
 - `gpu_vendor`: AMD, NVIDIA, INTEL (case-insensitive)
 - `guest_os`: UBUNTU, CENTOS, ROCKY (case-insensitive)
+
+**Note:** For Kubernetes deployments, these fields are now **optional** and auto-applied via presets.
 
 **Context Usage:**
 ```bash
@@ -729,11 +832,24 @@ Configure data sources in `data.json`:
 | `MODEL_DIR` | Model directory path | `/path/to/models` |
 | `MAD_DOCKERHUB_*` | Docker Hub credentials override | See above |
 
-**Configuration Priority:**
+**Configuration Priority (v2.0 Multi-Layer System):**
+
+For Kubernetes/SLURM deployments:
+1. CLI overrides (`--additional-context`) - **Highest priority**
+2. User config file (`--additional-context-file`)
+3. Profile presets (single-gpu/multi-gpu/multi-node)
+4. GPU vendor presets (AMD/NVIDIA optimizations)
+5. Base defaults (k8s/defaults.json)
+6. Environment variables
+7. Built-in fallbacks - **Lowest priority**
+
+For local execution:
 1. Environment variables (highest)
 2. Command-line arguments
 3. Configuration files
 4. Built-in defaults (lowest)
+
+> 💡 **Tip:** User overrides always win! Minimal configs get smart defaults, but you can override anything.
 ## 🎯 Advanced Usage
 
 ### Custom Timeouts

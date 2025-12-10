@@ -5,7 +5,6 @@
   
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  "deploy": "k8s",
   
   "tools": [{
     "name": "gpu_info_vram_profiler"

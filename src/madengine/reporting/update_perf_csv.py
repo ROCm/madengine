@@ -229,7 +229,6 @@ def update_perf_csv(
     perf_csv_df.to_csv(perf_csv, index=False)
     print(f"✅ Successfully updated: {perf_csv}")
     print("=" * 80 + "\n")
-    perf_csv_df.to_csv(perf_csv, index=False)
 
 
 class UpdatePerfCsv:

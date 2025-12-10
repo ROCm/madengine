@@ -84,6 +84,24 @@ class BuildOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+        
+        # Apply ConfigLoader to infer deploy type, validate, and apply defaults
+        if self.additional_context:
+            try:
+                from madengine.deployment.config_loader import ConfigLoader
+                # This will:
+                # 1. Infer deploy type from k8s/slurm presence
+                # 2. Validate for conflicts (e.g., both k8s and slurm)
+                # 3. Apply appropriate defaults
+                # 4. Add 'deploy' field for internal use
+                self.additional_context = ConfigLoader.load_config(self.additional_context)
+            except ValueError as e:
+                # Configuration validation error - fail fast
+                self.rich_console.print(f"[red]Configuration Error: {e}[/red]")
+                raise SystemExit(1)
+            except Exception as e:
+                # Other errors during config loading - warn but continue
+                self.rich_console.print(f"[yellow]Warning: Could not apply config defaults: {e}[/yellow]")
 
         # Initialize context in build-only mode (no GPU detection)
         # Context expects additional_context as a string representation of Python dict

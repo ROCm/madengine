@@ -6,6 +6,7 @@ Complete reference for deploying MADEngine workloads on Kubernetes clusters.
 
 ## 📋 Table of Contents
 
+- [Minimal Configuration (NEW!)](#-minimal-configuration-new)
 - [Quick Start](#-quick-start)
 - [Available Configurations](#-available-configurations)
 - [Decision Matrix](#-decision-matrix-which-config-to-use)
@@ -17,9 +18,88 @@ Complete reference for deploying MADEngine workloads on Kubernetes clusters.
 
 ---
 
+## 🌟 Minimal Configuration (NEW!)
+
+**MADEngine v2.0+ includes built-in presets!** You only need to specify what's unique:
+
+### Single GPU - Just 1 Field!
+```json
+{
+  "k8s": {
+    "gpu_count": 1
+  }
+}
+```
+**Note**: No `"deploy": "k8s"` needed - automatically inferred from `k8s` field presence!
+
+### Multi-GPU (2 GPUs)
+```json
+{
+  "k8s": {
+    "gpu_count": 2
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 2
+  }
+}
+```
+
+### Multi-Node (2 nodes × 2 GPUs)
+```json
+{
+  "k8s": {
+    "gpu_count": 2
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 2,
+    "nproc_per_node": 2
+  }
+}
+```
+
+**Auto-Applied Defaults:**
+- ✅ Deployment type (k8s/slurm/local) inferred from config structure
+- ✅ Resource limits (memory, CPU) based on GPU count
+- ✅ AMD/NVIDIA-specific optimizations
+- ✅ ROCm/CUDA environment variables
+- ✅ NCCL/RCCL configuration
+- ✅ Multi-node settings (host_ipc, etc.)
+
+**See:** [minimal/](minimal/) directory for more examples and documentation.
+
+---
+
 ## 🚀 Quick Start
 
-### 1. Choose a Configuration
+### Option 1: Minimal Configuration (Recommended)
+
+```bash
+# Create minimal config
+cat > my-config.json << EOF
+{
+  "k8s": {
+    "gpu_count": 1
+  }
+}
+EOF
+
+# Build and run
+MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+  --tags my_model \
+  --additional-context-file my-config.json \
+  --registry dockerhub
+
+MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+  --manifest-file build_manifest.json \
+  --live-output
+```
+
+### Option 2: Full Configuration (Advanced)
+
+#### 1. Choose a Configuration
 
 ```bash
 # For single GPU testing
@@ -35,23 +115,23 @@ cp examples/k8s-configs/03-multi-node-basic.json my-config.json
 cp examples/k8s-configs/06-data-provider-with-pvc.json my-config.json
 ```
 
-### 2. Customize for Your Cluster
+#### 2. Customize for Your Cluster (Optional)
 
-Update these fields (optional - defaults work in most cases):
+With built-in defaults, customization is optional. Override only what you need:
 
 ```json
 {
   "k8s": {
-    "kubeconfig": "~/.kube/config",     // Path to your kubeconfig
-    "namespace": "default",              // Your namespace
-    "node_selector": {                  // Optional: target specific nodes
+    "namespace": "my-namespace",         // Override default "default"
+    "memory": "32Gi",                    // Override auto-calculated memory
+    "node_selector": {                   // Optional: target specific nodes
       "node.kubernetes.io/instance-type": "Standard_ND96isr_H100_v5"
     }
   }
 }
 ```
 
-### 3. Build and Deploy
+#### 3. Build and Deploy
 
 ```bash
 # Build container image
@@ -69,6 +149,24 @@ MODEL_DIR=tests/fixtures/dummy madengine-cli run \
 ---
 
 ## 📁 Available Configurations
+
+### Minimal Configs (NEW - Recommended for Most Users)
+
+Located in [`minimal/`](minimal/) directory:
+
+| File | Description | GPU Count |
+|------|-------------|-----------|
+| [`minimal/single-gpu-minimal.json`](minimal/single-gpu-minimal.json) | Single GPU with auto-defaults | 1 |
+| [`minimal/multi-gpu-minimal.json`](minimal/multi-gpu-minimal.json) | Multi-GPU with auto-defaults | 2 |
+| [`minimal/multi-node-minimal.json`](minimal/multi-node-minimal.json) | Multi-node with auto-defaults | 2×2 |
+| [`minimal/nvidia-gpu-minimal.json`](minimal/nvidia-gpu-minimal.json) | NVIDIA GPUs with auto-defaults | 4 |
+| [`minimal/custom-namespace-minimal.json`](minimal/custom-namespace-minimal.json) | Shows override examples | 1 |
+
+**See [minimal/README.md](minimal/README.md) for detailed documentation.**
+
+### Full Configs (Reference Examples)
+
+Complete configurations showing all available fields:
 
 | File | GPUs | Nodes | Launcher | Use Case |
 |------|------|-------|----------|----------|

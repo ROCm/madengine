@@ -136,3 +136,5 @@ scripts/
 
 tmp/
 k8s_manifests/
+k8s_results/
+rocprof_output/
