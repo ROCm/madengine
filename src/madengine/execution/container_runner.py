@@ -516,7 +516,7 @@ class ContainerRunner:
         # Apply timeout logic: model timeout can override default timeout
         # If model has a timeout in models.json and CLI timeout is default (7200), use model's timeout
         # If CLI timeout is explicitly set (not default), it overrides model timeout
-        if "timeout" in model_info and model_info["timeout"] > 0 and timeout == 7200:
+        if "timeout" in model_info and model_info["timeout"] is not None and model_info["timeout"] > 0 and timeout == 7200:
             # Model has a timeout and CLI is using default, so use model's timeout
             timeout = model_info["timeout"]
 
