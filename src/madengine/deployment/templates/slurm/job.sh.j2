@@ -72,33 +72,156 @@ export MAD_TOTAL_NODES={{ nodes }}
 # Workspace Setup
 # =============================================================================
 
+# Determine workspace strategy based on configuration and node count
 {% if shared_workspace %}
-# Use shared workspace (NFS/Lustre)
+# Explicitly configured shared workspace (NFS/Lustre)
 WORKSPACE={{ shared_workspace }}
+WORKSPACE_TYPE="shared-explicit"
 {% else %}
-# Use node-local scratch
-WORKSPACE=$SLURM_TMPDIR
+# Auto-detect: Use shared storage for multi-node, can use local for single-node
+{% if nodes > 1 %}
+# Multi-node REQUIRES shared storage (all nodes must access same files)
+# Use submission directory as workspace (typically on NFS-mounted /home)
+WORKSPACE={{ manifest_file | dirname }}
+WORKSPACE_TYPE="shared-auto"
+echo "Multi-node job: Using shared workspace at $WORKSPACE"
+{% else %}
+# Single-node: Prefer shared storage (submission dir), with local fallback if needed
+# Check if submission directory is on shared filesystem
+SUBMIT_DIR={{ manifest_file | dirname }}
+if df -T "$SUBMIT_DIR" 2>/dev/null | grep -qE '\bnfs\b|\blustre\b|\bgpfs\b|\bceph\b'; then
+    # Submission directory is on shared storage - use it directly (best practice)
+    WORKSPACE=$SUBMIT_DIR
+    WORKSPACE_TYPE="shared-nfs"
+    echo "Using shared NFS workspace: $WORKSPACE"
+else
+    # Submission directory is local - use node scratch (rare case)
+    if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
+        WORKSPACE=$SLURM_TMPDIR
+        WORKSPACE_TYPE="local-slurm"
+    else
+        WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID:-$$}
+        mkdir -p $WORKSPACE
+        WORKSPACE_TYPE="local-tmp"
+    fi
+    echo "Using local node workspace: $WORKSPACE"
+fi
+{% endif %}
 {% endif %}
 
+echo "Workspace type: $WORKSPACE_TYPE"
+echo "Working directory: $WORKSPACE"
 cd $WORKSPACE
 
-# Copy required files
+# File handling based on workspace type
+{% if nodes > 1 %}
+# Multi-node: Files already in shared workspace, no copying needed
+echo "Multi-node: Using files in shared workspace"
 {% if manifest_file %}
-cp {{ manifest_file }} $WORKSPACE/build_manifest.json
+MANIFEST_FILE={{ manifest_file }}
 {% endif %}
 {% if credential_file %}
-cp {{ credential_file }} $WORKSPACE/credential.json
+CREDENTIAL_FILE={{ manifest_file | dirname }}/{{ credential_file }}
 {% endif %}
 {% if data_file %}
-cp {{ data_file }} $WORKSPACE/data.json
+DATA_FILE={{ manifest_file | dirname }}/{{ data_file }}
+{% endif %}
+{% else %}
+# Single-node: Use shared files if available, copy only if using local workspace
+if [ "$WORKSPACE_TYPE" = "shared-nfs" ] || [ "$WORKSPACE_TYPE" = "shared-auto" ] || [ "$WORKSPACE_TYPE" = "shared-explicit" ]; then
+    # Using shared workspace - reference files directly
+    echo "Using files from shared storage (no copy needed)"
+{% if manifest_file %}
+    MANIFEST_FILE={{ manifest_file }}
+{% endif %}
+{% if credential_file %}
+    CREDENTIAL_FILE={{ manifest_file | dirname }}/{{ credential_file }}
+{% endif %}
+{% if data_file %}
+    DATA_FILE={{ manifest_file | dirname }}/{{ data_file }}
+{% endif %}
+else
+    # Using local workspace - copy files from shared storage
+    echo "Copying files to local workspace"
+    SUBMIT_DIR={{ manifest_file | dirname }}
+{% if manifest_file %}
+    cp {{ manifest_file }} $WORKSPACE/build_manifest.json
+    MANIFEST_FILE=$WORKSPACE/build_manifest.json
+{% endif %}
+{% if credential_file %}
+    if [ -f "$SUBMIT_DIR/{{ credential_file }}" ]; then
+        cp $SUBMIT_DIR/{{ credential_file }} $WORKSPACE/credential.json
+        CREDENTIAL_FILE=$WORKSPACE/credential.json
+    fi
+{% endif %}
+{% if data_file %}
+    if [ -f "$SUBMIT_DIR/{{ data_file }}" ]; then
+        cp $SUBMIT_DIR/{{ data_file }} $WORKSPACE/data.json
+        DATA_FILE=$WORKSPACE/data.json
+    fi
+{% endif %}
+fi
 {% endif %}
 
 # =============================================================================
 # Execute madengine Workflow
 # =============================================================================
 
-madengine run \
-    {% if manifest_file %}--manifest-file build_manifest.json{% else %}--tags {{ tags }}{% endif %} \
+# Note: MODEL_DIR should be auto-detected by madengine-cli from manifest location
+# or preserved from environment. Do NOT override it here.
+
+# CRITICAL: We're already IN a SLURM job, so we must force LOCAL execution
+# Otherwise madengine-cli will try to submit ANOTHER SLURM job (infinite recursion!)
+# Solution: Temporarily modify manifest to force local execution
+
+{% if manifest_file %}
+# Create a local-execution manifest by modifying deployment_config
+ORIGINAL_MANIFEST=${MANIFEST_FILE:-build_manifest.json}
+LOCAL_MANIFEST="${WORKSPACE}/build_manifest_local.json"
+
+# Modify manifest to force local execution (remove slurm config, set target=local)
+python3 -c "
+import json
+manifest_file = '$ORIGINAL_MANIFEST'
+output_file = '$LOCAL_MANIFEST'
+with open(manifest_file, 'r') as f:
+    manifest = json.load(f)
+if 'deployment_config' in manifest:
+    manifest['deployment_config']['target'] = 'local'
+    manifest['deployment_config'].pop('slurm', None)
+    manifest['deployment_config'].pop('k8s', None)
+    manifest['deployment_config'].pop('kubernetes', None)
+with open(output_file, 'w') as f:
+    json.dump(manifest, f, indent=2)
+print('Created local execution manifest')
+"
+
+if [ $? -eq 0 ]; then
+    echo "✓ Forced local execution in manifest"
+    EXEC_MANIFEST="$LOCAL_MANIFEST"
+else
+    echo "⚠ Failed to modify manifest, using original"
+    EXEC_MANIFEST="$ORIGINAL_MANIFEST"
+fi
+{% else %}
+EXEC_MANIFEST=""
+{% endif %}
+
+# SLURM GPU Environment Check
+# SLURM already sets CUDA_VISIBLE_DEVICES, ROCR_VISIBLE_DEVICES, GPU_DEVICE_ORDINAL
+echo "SLURM GPU allocation:"
+echo "  Allocated GPUs: ${SLURM_GPUS_ON_NODE:-unknown}"
+echo "  CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-not set}"
+echo "  ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-not set}"
+
+# Set deployment environment flags
+export MAD_IN_SLURM_JOB=1
+export MAD_DEPLOYMENT_TYPE=slurm
+
+# Now execute madengine-cli with the LOCAL manifest
+echo "Executing madengine-cli in LOCAL mode (inside SLURM job)"
+madengine-cli run \
+    {% if manifest_file %}--manifest-file "$EXEC_MANIFEST"{% else %}--tags {{ tags }}{% endif %} \
     --timeout {{ timeout | default(3600) }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
     {% if live_output %}--live-output{% endif %}

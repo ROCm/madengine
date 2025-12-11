@@ -700,21 +700,25 @@ class Context:
                     raise RuntimeError(f"Failed to parse ROCm version '{rocm_version_str}': {parse_err}")
             
             # Get renderDs from KFD properties
-            kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
-            if not kfd_output or kfd_output.strip() == "":
-                raise RuntimeError("Failed to retrieve KFD properties from /sys/devices/virtual/kfd/kfd/topology/nodes")
-            
-            kfd_properties = kfd_output.split("\n")
-            # Filter out empty lines and CPU entries (renderD value 0)
-            kfd_properties = [
-                line for line in kfd_properties 
-                if line.strip() and line.split() and int(line.split()[-1]) != 0
-            ]
-            
-            if not kfd_properties:
-                raise RuntimeError("No valid GPU renderD entries found in KFD properties")
-            
-            kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
+            # Try KFD topology first (preferred), but gracefully handle permission errors
+            # On HPC/multi-user systems, KFD topology files may be restricted
+            kfd_renderDs = None
+            kfd_properties = []
+            try:
+                kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
+                if kfd_output and kfd_output.strip():
+                    kfd_properties = kfd_output.split("\n")
+                    # Filter out empty lines and CPU entries (renderD value 0)
+                    kfd_properties = [
+                        line for line in kfd_properties 
+                        if line.strip() and line.split() and int(line.split()[-1]) != 0
+                    ]
+                    if kfd_properties:
+                        kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
+            except Exception as kfd_error:
+                # KFD topology read failed (common on HPC clusters with restricted permissions)
+                # Will use amd-smi/rocm-smi fallback which provides renderD info directly
+                print(f"Note: KFD topology not accessible ({kfd_error}), using ROCm tools fallback")
 
             # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
             # node id is more robust but is only available from 6.4.1 (PR #54)
@@ -766,60 +770,89 @@ class Context:
                     except (IndexError, KeyError) as e:
                         raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
             else:
-                # Modern method using node_id (ROCm >= 6.4.0)
-                kfd_nodeids = []
-                for line in kfd_properties:
-                    try:
-                        match = re.search(r"\d+", line.split()[0])
-                        if match:
-                            kfd_nodeids.append(int(match.group()))
-                        else:
-                            print(f"Warning: Could not extract node ID from line: {line}")
-                    except (IndexError, ValueError) as e:
-                        print(f"Warning: Failed to parse node ID from line '{line}': {e}")
-                        continue
-
-                if len(kfd_nodeids) != len(kfd_renderDs):
-                    raise RuntimeError(
-                        f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
-                        f"and renderDs count ({len(kfd_renderDs)})"
-                    )
-
-                # Map node ids to renderDs
-                nodeid_renderD_map = {
-                    nodeid: renderD 
-                    for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
-                }
-
-                # Get list of GPUs from amd-smi
-                output = self.console.sh("amd-smi list -e --json")
+                # Modern method using amd-smi (ROCm >= 6.4.0)
+                # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
+                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1")
                 if not output or output.strip() == "":
                     raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
                 
+                # amd-smi may output warnings before JSON - extract only JSON part
+                # Look for lines starting with '[' or '{' (JSON start)
+                json_start = -1
+                lines = output.split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('[') or line.strip().startswith('{'):
+                        json_start = i
+                        break
+                
+                if json_start >= 0:
+                    json_output = '\n'.join(lines[json_start:])
+                else:
+                    json_output = output
+                
                 try:
-                    data = json.loads(output)
+                    data = json.loads(json_output)
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}")
+                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}")
                 
                 if not data or not isinstance(data, list):
                     raise ValueError("amd-smi returned empty or invalid data")
 
-                # Get gpu id to node id map from amd-smi
-                gpuid_nodeid_map = {}
-                for item in data:
-                    try:
-                        gpuid_nodeid_map[item["gpu"]] = item["node_id"]
-                    except KeyError as e:
-                        raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
+                # Check if we successfully got KFD renderDs
+                if kfd_renderDs:
+                    # Original method: Map KFD renderDs via node_id from amd-smi
+                    kfd_nodeids = []
+                    for line in kfd_properties:
+                        try:
+                            match = re.search(r"\d+", line.split()[0])
+                            if match:
+                                kfd_nodeids.append(int(match.group()))
+                            else:
+                                print(f"Warning: Could not extract node ID from line: {line}")
+                        except (IndexError, ValueError) as e:
+                            print(f"Warning: Failed to parse node ID from line '{line}': {e}")
+                            continue
 
-                # Sort gpu_renderDs based on gpu ids
-                try:
-                    gpu_renderDs = [
-                        nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
-                        for gpuid in sorted(gpuid_nodeid_map.keys())
-                    ]
-                except KeyError as e:
-                    raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
+                    if len(kfd_nodeids) != len(kfd_renderDs):
+                        raise RuntimeError(
+                            f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
+                            f"and renderDs count ({len(kfd_renderDs)})"
+                        )
+
+                    # Map node ids to renderDs
+                    nodeid_renderD_map = {
+                        nodeid: renderD 
+                        for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
+                    }
+
+                    # Get gpu id to node id map from amd-smi
+                    gpuid_nodeid_map = {}
+                    for item in data:
+                        try:
+                            gpuid_nodeid_map[item["gpu"]] = item["node_id"]
+                        except KeyError as e:
+                            raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
+
+                    # Sort gpu_renderDs based on gpu ids
+                    try:
+                        gpu_renderDs = [
+                            nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
+                            for gpuid in sorted(gpuid_nodeid_map.keys())
+                        ]
+                    except KeyError as e:
+                        raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
+                else:
+                    # Fallback method: Get renderD directly from amd-smi (ROCm >= 6.4.1)
+                    # This is actually BETTER - no KFD topology parsing needed!
+                    print("Using amd-smi renderD info directly (cleaner method)")
+                    gpu_renderDs = []
+                    for item in sorted(data, key=lambda x: x["gpu"]):
+                        try:
+                            render_str = item["render"]  # e.g., "renderD128"
+                            render_num = int(render_str.replace("renderD", ""))
+                            gpu_renderDs.append(render_num)
+                        except (KeyError, ValueError) as e:
+                            raise RuntimeError(f"Failed to parse renderD from amd-smi: {e}. Item: {item}")
 
         except (RuntimeError, ValueError, KeyError) as e:
             # Re-raise with context

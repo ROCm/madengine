@@ -172,7 +172,12 @@ class ConfigLoader:
     @classmethod
     def load_slurm_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Load complete SLURM configuration with defaults.
+        Load complete SLURM configuration with multi-layer merging.
+        
+        Layers:
+        1. Base SLURM defaults
+        2. Profile preset (single-node/multi-node)
+        3. User configuration (already merged from file + CLI)
         
         Args:
             user_config: User-provided configuration
@@ -180,8 +185,28 @@ class ConfigLoader:
         Returns:
             Complete configuration with defaults applied
         """
+        # Layer 1: Base defaults
         config = cls.load_preset("slurm/defaults.json")
-        return cls.deep_merge(config, user_config)
+        
+        # Merge user config temporarily to detect requirements
+        temp_config = cls.deep_merge(config, user_config)
+        
+        # Layer 2: Profile preset based on detected configuration
+        slurm_config = temp_config.get("slurm", {})
+        nodes = slurm_config.get("nodes", 1)
+        
+        # Select profile based on node count
+        if nodes > 1:
+            profile_preset = cls.load_preset("slurm/profiles/multi-node.json")
+            config = cls.deep_merge(config, profile_preset)
+        else:
+            profile_preset = cls.load_preset("slurm/profiles/single-node.json")
+            config = cls.deep_merge(config, profile_preset)
+        
+        # Layer 3: User configuration (highest priority)
+        config = cls.deep_merge(config, user_config)
+        
+        return config
     
     @classmethod
     def infer_and_validate_deploy_type(cls, user_config: Dict[str, Any]) -> str:
@@ -245,11 +270,17 @@ class ConfigLoader:
         Validates for conflicting configurations.
         Applies appropriate defaults based on deployment type.
         
+        Convention over Configuration:
+        - Presence of "k8s" field → Kubernetes deployment
+        - Presence of "slurm" field → SLURM deployment
+        - Neither present → Local execution
+        - No explicit "deploy" field needed!
+        
         Args:
             user_config: User configuration (from file + CLI merge)
             
         Returns:
-            Complete configuration with defaults and deploy field set
+            Complete configuration with defaults applied (no deploy field added)
             
         Raises:
             ValueError: If conflicting deployment configs present
@@ -257,15 +288,13 @@ class ConfigLoader:
         # Infer and validate deployment type
         deploy_type = cls.infer_and_validate_deploy_type(user_config)
         
-        # Set deploy field (for internal use in manifest)
-        user_config["deploy"] = deploy_type
-        
         # Apply appropriate defaults based on deployment type
+        # Note: We do NOT add a "deploy" field - type is inferred from structure
         if deploy_type == "k8s":
             return cls.load_k8s_config(user_config)
         elif deploy_type == "slurm":
             return cls.load_slurm_config(user_config)
         else:
-            # Local - return as-is with deploy field added
+            # Local - return as-is (no deploy field needed)
             return user_config
 

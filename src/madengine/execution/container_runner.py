@@ -770,9 +770,15 @@ class ContainerRunner:
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
                         if scripts_arg.endswith(".sh"):
+                            # Shell script specified directly
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
+                        elif scripts_arg.endswith(".py"):
+                            # Python script specified directly
+                            dir_path = os.path.dirname(scripts_arg)
+                            script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
+                            # Directory specified (legacy behavior)
                             dir_path = model_info["scripts"]
                             script_name = "bash run.sh"
 

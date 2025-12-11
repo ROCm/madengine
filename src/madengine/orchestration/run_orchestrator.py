@@ -198,12 +198,6 @@ class RunOrchestrator:
                 manifest = json.load(f)
             
             deployment_config = manifest.get("deployment_config", {})
-            target = deployment_config.get("target", "local")
-            
-            # Allow runtime --additional-context to override target
-            if self.additional_context and "deploy" in self.additional_context:
-                target = self.additional_context["deploy"]
-                self.rich_console.print(f"[yellow]Runtime override: deploy target = '{target}'[/yellow]\n")
             
             # Update additional_context with deployment_config for deployment layer
             if not self.additional_context:
@@ -213,7 +207,15 @@ class RunOrchestrator:
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
-
+            
+            # Infer deployment target from config structure (Convention over Configuration)
+            # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
+            target = self._infer_deployment_target(self.additional_context)
+            
+            # Legacy support: check manifest for explicit target
+            if not target or target == "local":
+                target = deployment_config.get("target", "local")
+            
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
             # Step 4: Execute based on target
@@ -991,6 +993,28 @@ class RunOrchestrator:
         except Exception as e:
             self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
 
+    def _infer_deployment_target(self, config: Dict) -> str:
+        """
+        Infer deployment target from configuration structure.
+        
+        Convention over Configuration:
+        - Presence of "k8s" or "kubernetes" field → k8s deployment
+        - Presence of "slurm" field → slurm deployment
+        - Neither present → local execution
+        
+        Args:
+            config: Configuration dictionary
+            
+        Returns:
+            Deployment target: "k8s", "slurm", or "local"
+        """
+        if "k8s" in config or "kubernetes" in config:
+            return "k8s"
+        elif "slurm" in config:
+            return "slurm"
+        else:
+            return "local"
+    
     def _filter_images_by_dockerfile_context(self, built_images: Dict) -> Dict:
         """Filter images by dockerfile context matching runtime context.
         

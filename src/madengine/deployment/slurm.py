@@ -19,6 +19,7 @@ from typing import Any, Dict
 from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
+from .config_loader import ConfigLoader
 
 
 class SlurmDeployment(BaseDeployment):
@@ -50,9 +51,14 @@ class SlurmDeployment(BaseDeployment):
         Args:
             config: Deployment configuration
         """
+        # Apply intelligent defaults using ConfigLoader
+        # This merges built-in presets with user configuration
+        full_config = ConfigLoader.load_slurm_config(config.additional_context)
+        config.additional_context = full_config
+
         super().__init__(config)
 
-        # Parse SLURM configuration
+        # Parse SLURM configuration (now with defaults applied)
         self.slurm_config = config.additional_context.get("slurm", {})
         self.distributed_config = config.additional_context.get("distributed", {})
 
@@ -66,6 +72,9 @@ class SlurmDeployment(BaseDeployment):
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
         self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
+        
+        # Register custom Jinja2 filters
+        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
 
         # Generated script path
         self.script_path = None
@@ -229,11 +238,15 @@ class SlurmDeployment(BaseDeployment):
                 timeout=10,
             )
 
-            if result.returncode != 0:
-                # Job not found - likely completed or failed
+            if result.returncode != 0 or not result.stdout.strip():
+                # Job not found in queue - likely completed or failed
                 return self._check_job_completion(deployment_id)
 
             status = result.stdout.strip().upper()
+
+            # Stream work node output if job is running and output file exists
+            if status == "RUNNING":
+                self._stream_job_output(deployment_id)
 
             if status in ["RUNNING", "PENDING", "CONFIGURING"]:
                 return DeploymentResult(
@@ -242,12 +255,16 @@ class SlurmDeployment(BaseDeployment):
                     message=f"Job {deployment_id} is {status.lower()}",
                 )
             elif status in ["COMPLETED"]:
+                # Show final output before marking complete
+                self._stream_job_output(deployment_id, final=True)
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} completed successfully",
                 )
             else:  # FAILED, CANCELLED, TIMEOUT, etc.
+                # Show output on failure
+                self._stream_job_output(deployment_id, final=True)
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
                     deployment_id=deployment_id,
@@ -255,11 +272,60 @@ class SlurmDeployment(BaseDeployment):
                 )
 
         except Exception as e:
+            self.console.print(f"[red]Monitor exception for job {deployment_id}: {e}[/red]")
+            import traceback
+            self.console.print(f"[dim red]{traceback.format_exc()}[/dim red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
                 deployment_id=deployment_id,
                 message=f"Monitor error: {str(e)}",
             )
+
+    def _stream_job_output(self, job_id: str, final: bool = False):
+        """Stream output from SLURM job output file."""
+        # Track last position read from output file
+        if not hasattr(self, '_output_positions'):
+            self._output_positions = {}
+        
+        # Find output file
+        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        output_pattern = f"{output_dir}/madengine-*_{job_id}_*.out"
+        
+        try:
+            import glob
+            output_files = glob.glob(output_pattern)
+            
+            if not output_files:
+                return  # Output file not created yet
+            
+            output_file = output_files[0]  # Use first match
+            
+            # Read new content from file
+            try:
+                with open(output_file, 'r') as f:
+                    # Seek to last position
+                    last_pos = self._output_positions.get(job_id, 0)
+                    f.seek(last_pos)
+                    
+                    # Read new lines
+                    new_content = f.read()
+                    
+                    if new_content:
+                        # Print new output with prefix
+                        for line in new_content.splitlines():
+                            if line.strip():  # Skip empty lines
+                                self.console.print(f"[dim cyan]│[/dim cyan] {line}")
+                    
+                    # Update position
+                    self._output_positions[job_id] = f.tell()
+                    
+            except FileNotFoundError:
+                pass  # File not ready yet
+                
+        except Exception as e:
+            # Silently ignore streaming errors to not disrupt monitoring
+            if final:
+                self.console.print(f"[dim yellow]Note: Could not stream output: {e}[/dim yellow]")
 
     def _check_job_completion(self, job_id: str) -> DeploymentResult:
         """Check completed job status using sacct (locally)."""
@@ -273,13 +339,18 @@ class SlurmDeployment(BaseDeployment):
 
             if result.returncode == 0:
                 status = result.stdout.strip().upper()
+                self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
                 if "COMPLETED" in status:
+                    # Show final output
+                    self._stream_job_output(job_id, final=True)
                     return DeploymentResult(
                         status=DeploymentStatus.SUCCESS,
                         deployment_id=job_id,
-                        message=f"Job {job_id} completed",
+                        message=f"Job {job_id} completed successfully",
                     )
                 else:
+                    # Show output on failure
+                    self._stream_job_output(job_id, final=True)
                     return DeploymentResult(
                         status=DeploymentStatus.FAILED,
                         deployment_id=job_id,
@@ -287,13 +358,15 @@ class SlurmDeployment(BaseDeployment):
                     )
 
             # Fallback - assume completed
+            self.console.print(f"[dim yellow]Warning: Could not get status for job {job_id}, assuming success[/dim yellow]")
             return DeploymentResult(
                 status=DeploymentStatus.SUCCESS,
                 deployment_id=job_id,
                 message=f"Job {job_id} completed (assumed)",
             )
 
-        except Exception:
+        except Exception as e:
+            self.console.print(f"[dim yellow]Warning: Exception checking job {job_id}: {e}[/dim yellow]")
             return DeploymentResult(
                 status=DeploymentStatus.SUCCESS,
                 deployment_id=job_id,
@@ -308,6 +381,8 @@ class SlurmDeployment(BaseDeployment):
             "gpus_per_node": self.gpus_per_node,
             "perf_files": [],
             "logs": [],
+            "successful_runs": [],
+            "failed_runs": [],
         }
 
         try:
@@ -318,11 +393,48 @@ class SlurmDeployment(BaseDeployment):
             results["logs"] = [str(f) for f in output_files]
 
             # Find performance CSV files
+            # Strategy 1: Check results_dir if configured
             if self.slurm_config.get("results_dir"):
                 results_dir = Path(self.slurm_config["results_dir"])
                 perf_pattern = f"perf_{deployment_id}_*.csv"
                 perf_files = list(results_dir.glob(perf_pattern))
                 results["perf_files"] = [str(f) for f in perf_files]
+            
+            # Strategy 2: Check shared workspace (NFS) for perf.csv
+            # When using shared storage, perf.csv is written directly to workspace
+            if not results["perf_files"]:
+                workspace_perf = Path("perf.csv")
+                if workspace_perf.exists():
+                    results["perf_files"] = [str(workspace_perf)]
+                    self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
+            
+            # Parse perf.csv to populate successful_runs and failed_runs
+            if results["perf_files"]:
+                perf_file = Path(results["perf_files"][0])
+                try:
+                    import csv
+                    with open(perf_file, 'r') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            # Only include runs from this specific job
+                            # Check if this row is from the current deployment
+                            run_data = {
+                                "model": row.get("model", ""),
+                                "status": row.get("status", ""),
+                                "performance": row.get("performance", ""),
+                                "metric": row.get("metric", ""),
+                                "duration": row.get("test_duration", ""),
+                                "gpu_arch": row.get("gpu_architecture", ""),
+                                "deployment": row.get("deployment_type", ""),
+                                "machine": row.get("machine_name", ""),
+                            }
+                            
+                            if row.get("status") == "SUCCESS":
+                                results["successful_runs"].append(run_data)
+                            else:
+                                results["failed_runs"].append(run_data)
+                except Exception as parse_error:
+                    self.console.print(f"[dim yellow]Note: Could not parse perf.csv: {parse_error}[/dim yellow]")
 
             self.console.print(
                 f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
