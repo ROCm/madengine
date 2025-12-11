@@ -229,6 +229,15 @@ spec:
             echo "No pre-scripts configured"
             {% endif %}
             
+            # Clear MIOpen cache to prevent "Duplicate ID" warnings
+            echo ""
+            echo "=== Clearing MIOpen cache ==="
+            if [ -d "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}" ]; then
+                rm -rf "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}"/*
+                echo "✓ Cleared MIOpen cache directory"
+            fi
+            mkdir -p "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}"
+            
             # Create wrapper script for launcher
             echo ""
             echo "=== Running model benchmark with launcher ==="
@@ -372,6 +381,15 @@ spec:
             {% else %}
             echo "No pre-scripts configured"
             {% endif %}
+            
+            # Clear MIOpen cache to prevent "Duplicate ID" warnings
+            echo ""
+            echo "=== Clearing MIOpen cache ==="
+            if [ -d "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}" ]; then
+                rm -rf "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}"/*
+                echo "✓ Cleared MIOpen cache directory"
+            fi
+            mkdir -p "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}"
             
             # Run main model script
             echo ""
