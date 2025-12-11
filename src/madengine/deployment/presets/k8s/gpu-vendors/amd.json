@@ -1,0 +1,7 @@
+{
+  "_comment": "AMD GPU - only resource name, minimal env vars for single GPU",
+  "k8s": {
+    "gpu_resource_name": "amd.com/gpu"
+  }
+}
+

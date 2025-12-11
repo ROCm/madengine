@@ -1,0 +1,18 @@
+{
+  "_comment": "Base Kubernetes defaults - deploy field inferred from presence of k8s field",
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "debug": false,
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "image_pull_policy": "Always",
+    "backoff_limit": 3
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  }
+}
+

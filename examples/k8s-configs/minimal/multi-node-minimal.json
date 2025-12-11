@@ -1,0 +1,19 @@
+{
+  "_comment": "Minimal Multi-Node Config - 2 nodes x 2 GPUs each",
+  "_description": "Uses built-in defaults for multi-node distributed training",
+  "_use_case": "Quick multi-node testing with 4 GPUs total",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 2
+  },
+  
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 2,
+    "nproc_per_node": 2
+  }
+}
+

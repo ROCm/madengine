@@ -1,0 +1,22 @@
+{
+  "_comment": "Multi-node distributed profile",
+  "k8s": {
+    "memory": "64Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    "host_ipc": true
+  },
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "torchrun",
+    "master_port": 29500
+  },
+  "env_vars": {
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_TIMEOUT": "600"
+  }
+}
+
