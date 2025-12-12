@@ -60,14 +60,20 @@ class Docker:
         container_name_exists = self.console.sh(
             "docker container ps -a | grep " + container_name + " | wc -l"
         )
-        # if container name exists, raise error.
+        # if container name exists, clean it up automatically
         if container_name_exists != "0":
-            raise RuntimeError(
-                "Container with name, "
-                + container_name
-                + " already exists. "
-                + "Please stop (docker stop --time=1 SHA) and remove this (docker rm -f SHA) to proceed..."
+            print(
+                f"⚠️  Container '{container_name}' already exists. Cleaning up..."
             )
+            # Stop the container (with timeout)
+            self.console.sh(
+                f"docker stop --timeout=1 {container_name} 2>/dev/null || true"
+            )
+            # Remove the container
+            self.console.sh(
+                f"docker rm -f {container_name} 2>/dev/null || true"
+            )
+            print(f"✓ Cleaned up existing container '{container_name}'")
 
         # run docker command
         command = (
@@ -97,9 +103,9 @@ class Docker:
         command += "--name " + container_name + " "
         command += image + " "
 
-        # Use 'cat' command to keep the container running in interactive mode
+        # Use 'sleep infinity' command to keep the container running in interactive mode
         # This allows subsequent exec commands while maintaining the container state
-        command += "cat "
+        command += "sleep infinity "
         self.console.sh(command)
 
         # find container sha

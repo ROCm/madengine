@@ -249,9 +249,12 @@ class SlurmDeployment(BaseDeployment):
                 return self._check_job_completion(deployment_id)
 
             status = result.stdout.strip().upper()
+            
+            # Check if live output is enabled
+            live_output = self.config.additional_context.get("live_output", False)
 
-            # Stream work node output if job is running and output file exists
-            if status == "RUNNING":
+            # Stream work node output if live_output is enabled and job is running
+            if status == "RUNNING" and live_output:
                 self._stream_job_output(deployment_id)
 
             if status in ["RUNNING", "PENDING", "CONFIGURING"]:
@@ -261,16 +264,22 @@ class SlurmDeployment(BaseDeployment):
                     message=f"Job {deployment_id} is {status.lower()}",
                 )
             elif status in ["COMPLETED"]:
-                # Show final output before marking complete
-                self._stream_job_output(deployment_id, final=True)
+                # Show final output only if live_output is enabled
+                if live_output:
+                    self._stream_job_output(deployment_id, final=True)
+                else:
+                    self._show_log_summary(deployment_id, success=True)
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} completed successfully",
                 )
             else:  # FAILED, CANCELLED, TIMEOUT, etc.
-                # Show output on failure
-                self._stream_job_output(deployment_id, final=True)
+                # Show output on failure or show summary
+                if live_output:
+                    self._stream_job_output(deployment_id, final=True)
+                else:
+                    self._show_log_summary(deployment_id, success=False)
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
                     deployment_id=deployment_id,
@@ -333,6 +342,50 @@ class SlurmDeployment(BaseDeployment):
             if final:
                 self.console.print(f"[dim yellow]Note: Could not stream output: {e}[/dim yellow]")
 
+    def _show_log_summary(self, job_id: str, success: bool = True):
+        """Show a summary with pointers to log files instead of streaming verbose output."""
+        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        
+        try:
+            import glob
+            # Find output and error files for this job
+            output_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.out")
+            error_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.err")
+            
+            if output_files or error_files:
+                status_symbol = "✓" if success else "✗"
+                status_color = "green" if success else "red"
+                
+                self.console.print(f"[{status_color}]{status_symbol}[/{status_color}] SLURM job {job_id} logs saved to:")
+                
+                for out_file in output_files:
+                    self.console.print(f"  [cyan]→[/cyan] Output: {out_file}")
+                    
+                for err_file in error_files:
+                    # Check if error file has content
+                    if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
+                        self.console.print(f"  [yellow]→[/yellow] Errors: {err_file}")
+                
+                if not success and error_files:
+                    # Show last few lines of error file for failed jobs
+                    for err_file in error_files:
+                        if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
+                            self.console.print(f"\n[yellow]Last 10 lines of error log:[/yellow]")
+                            try:
+                                with open(err_file, 'r') as f:
+                                    lines = f.readlines()
+                                    for line in lines[-10:]:
+                                        if line.strip():
+                                            self.console.print(f"  {line.rstrip()}")
+                            except Exception:
+                                pass
+                            break  # Only show first error file
+            else:
+                self.console.print(f"[dim yellow]Note: Log files for job {job_id} not found in {output_dir}[/dim yellow]")
+                
+        except Exception as e:
+            self.console.print(f"[dim yellow]Note: Could not locate log files: {e}[/dim yellow]")
+
     def _check_job_completion(self, job_id: str) -> DeploymentResult:
         """Check completed job status using sacct (locally)."""
         try:
@@ -346,17 +399,27 @@ class SlurmDeployment(BaseDeployment):
             if result.returncode == 0:
                 status = result.stdout.strip().upper()
                 self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
+                
+                # Check if live output is enabled
+                live_output = self.config.additional_context.get("live_output", False)
+                
                 if "COMPLETED" in status:
-                    # Show final output
-                    self._stream_job_output(job_id, final=True)
+                    # Show final output or summary based on live_output flag
+                    if live_output:
+                        self._stream_job_output(job_id, final=True)
+                    else:
+                        self._show_log_summary(job_id, success=True)
                     return DeploymentResult(
                         status=DeploymentStatus.SUCCESS,
                         deployment_id=job_id,
                         message=f"Job {job_id} completed successfully",
                     )
                 else:
-                    # Show output on failure
-                    self._stream_job_output(job_id, final=True)
+                    # Show output on failure or summary
+                    if live_output:
+                        self._stream_job_output(job_id, final=True)
+                    else:
+                        self._show_log_summary(job_id, success=False)
                     return DeploymentResult(
                         status=DeploymentStatus.FAILED,
                         deployment_id=job_id,
