@@ -371,7 +371,7 @@ class TestRunOrchestrator:
     @patch(
         "builtins.open",
         new_callable=mock_open,
-        read_data='{"built_images": {"model1": {"name": "model1"}}}',
+        read_data='{"built_images": {"model1": {"name": "model1"}}, "deployment_config": {"slurm": {"partition": "gpu", "nodes": 2}}}',
     )
     @patch("os.path.exists", return_value=True)
     def test_run_execute_distributed(self, mock_exists, mock_file):

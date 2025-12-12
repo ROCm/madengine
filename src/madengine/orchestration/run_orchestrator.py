@@ -779,6 +779,8 @@ class RunOrchestrator:
             print(f"Copying madengine common scripts from {madengine_common} to scripts/common")
             
             dest_common = Path("scripts/common")
+            # Ensure the destination directory exists before copying
+            dest_common.mkdir(parents=True, exist_ok=True)
             
             # Copy pre_scripts, post_scripts, tools if they exist
             for item in ["pre_scripts", "post_scripts", "tools", "tools.json", "test_echo.sh"]:
@@ -794,7 +796,6 @@ class RunOrchestrator:
                     if src_item.is_dir():
                         shutil.copytree(src_item, dest_item, ignore=ignore_cache_files)
                     else:
-                        dest_common.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src_item, dest_item)
                     print(f"  Copied {item}")
 
