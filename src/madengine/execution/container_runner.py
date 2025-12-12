@@ -94,6 +94,16 @@ class ContainerRunner:
         # Resolve GPU count using hierarchical resolution
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         
+        # Convert -1 (all GPUs) to actual system GPU count for accurate reporting
+        if resolved_gpu_count == -1 and self.context:
+            try:
+                system_ngpus = int(self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"])
+                resolved_gpu_count = system_ngpus
+                print(f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}")
+            except (KeyError, ValueError, TypeError):
+                # If system GPU count not available, keep -1
+                pass
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
@@ -356,13 +366,6 @@ class ContainerRunner:
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                # Skip individual MAD_MULTI_NODE_* env vars (except MAD_MULTI_NODE_RUNNER)
-                # These are redundant since MAD_MULTI_NODE_RUNNER contains all necessary information
-                if (
-                    env_arg.startswith("MAD_MULTI_NODE_")
-                    and env_arg != "MAD_MULTI_NODE_RUNNER"
-                ):
-                    continue
                 env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
 
         print(f"Env arguments: {env_args}")

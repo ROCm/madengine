@@ -441,12 +441,6 @@ class DockerBuilder:
         if "encapsulate_script" in self.context.ctx:
             manifest["context"]["encapsulate_script"] = self.context.ctx["encapsulate_script"]
 
-        # Add multi-node args to context if present
-        if "build_multi_node_args" in self.context.ctx:
-            manifest["context"]["multi_node_args"] = self.context.ctx[
-                "build_multi_node_args"
-            ]
-
         # Add push failure summary if any pushes failed
         push_failures = []
         for image_name, build_info in self.built_images.items():

@@ -73,14 +73,22 @@ class DiscoverModels:
         This copies the contents of MODEL_DIR to the current working directory
         to support the model discovery process. This operation is safe for
         build-only (CPU) nodes as it only involves file operations.
+        
+        MODEL_DIR defaults to "." (current directory) if not set.
+        Only copies if MODEL_DIR points to a different directory than current working directory.
         """
-        model_dir_env = os.environ.get("MODEL_DIR")
-        if model_dir_env:
+        model_dir_env = os.environ.get("MODEL_DIR", ".")
+        
+        # Get absolute paths to compare
+        model_dir_abs = os.path.abspath(model_dir_env)
+        cwd_abs = os.path.abspath(".")
+        
+        # Only copy if MODEL_DIR points to a different directory (not current dir)
+        if model_dir_abs != cwd_abs:
             import subprocess
 
-            cwd_path = os.getcwd()
             self.rich_console.print(f"[bold cyan]📁 MODEL_DIR environment variable detected:[/bold cyan] [yellow]{model_dir_env}[/yellow]")
-            print(f"Copying contents to current working directory: {cwd_path}")
+            print(f"Copying contents to current working directory: {cwd_abs}")
 
             try:
                 # Check if source directory exists
@@ -90,7 +98,7 @@ class DiscoverModels:
 
                 # Use cp command similar to the original implementation
                 # cp -vLR --preserve=all source/* destination/
-                cmd = f"cp -vLR --preserve=all {model_dir_env}/* {cwd_path}"
+                cmd = f"cp -vLR --preserve=all {model_dir_env}/* {cwd_abs}"
                 result = subprocess.run(
                     cmd, shell=True, capture_output=True, text=True, check=True
                 )
@@ -100,7 +108,7 @@ class DiscoverModels:
                     print(result.stdout)
                 elif result.stdout:
                     print(f"Copied {len(result.stdout.splitlines())} files/directories")
-                print(f"Model dir: {model_dir_env} → current dir: {cwd_path}")
+                print(f"Model dir: {model_dir_env} → current dir: {cwd_abs}")
             except subprocess.CalledProcessError as e:
                 self.rich_console.print(f"[yellow]⚠️  Warning: Failed to copy MODEL_DIR contents: {e}[/yellow]")
                 if e.stderr:

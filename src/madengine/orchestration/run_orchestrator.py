@@ -229,18 +229,16 @@ class RunOrchestrator:
                 if self._did_build_phase and target == "local":
                     self._combine_build_and_run_logs()
                 
-                # Cleanup MODEL_DIR copies after successful execution
-                if self._copied_from_model_dir:
-                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
-                    self._cleanup_model_dir_copies()
+                # Always cleanup madengine package files after execution
+                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self._cleanup_model_dir_copies()
                 
                 return results
                 
             except Exception as e:
-                # Cleanup MODEL_DIR copies even on error
-                if self._copied_from_model_dir:
-                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
-                    self._cleanup_model_dir_copies()
+                # Always cleanup madengine package files even on error
+                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self._cleanup_model_dir_copies()
                 raise
 
         except (ConfigurationError, MADRuntimeError):
@@ -647,38 +645,65 @@ class RunOrchestrator:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
     def _cleanup_model_dir_copies(self):
-        """Clean up scripts/ and docker/ directories copied from MODEL_DIR.
+        """Clean up only madengine package files from scripts/common directory.
         
-        This cleanup is necessary to:
-        1. Remove stale files from previous runs
-        2. Avoid permission errors from .pyc files
-        3. Keep project root clean
+        This cleanup removes ONLY the files that were copied from madengine package:
+        - scripts/common/tools.json
+        - scripts/common/test_echo.sh
+        - scripts/common/pre_scripts/
+        - scripts/common/post_scripts/
+        - scripts/common/tools/
+        
+        This preserves the user's actual scripts/ and docker/ directories in MAD project.
         """
         import shutil
         import subprocess
         
-        for dirname in ["scripts", "docker"]:
-            dirpath = Path(dirname)
-            if dirpath.exists():
+        # Only clean up scripts/common/ subdirectories that came from madengine package
+        common_dir = Path("scripts/common")
+        if not common_dir.exists():
+            return
+        
+        # List of items to clean up (from madengine package)
+        items_to_cleanup = [
+            "tools.json",
+            "test_echo.sh",
+            "pre_scripts",
+            "post_scripts",
+            "tools"
+        ]
+        
+        for item_name in items_to_cleanup:
+            item_path = common_dir / item_name
+            if item_path.exists():
                 try:
-                    # Try normal removal first
-                    shutil.rmtree(dirpath)
-                    self.rich_console.print(f"[dim]  Cleaned up: {dirname}/[/dim]")
-                except PermissionError:
-                    # If permission denied, use sudo (for .pyc files owned by root)
+                    if item_path.is_dir():
+                        # Fix permissions first for directories
+                        try:
+                            subprocess.run(
+                                ["chmod", "-R", "+w", str(item_path)],
+                                capture_output=True,
+                                timeout=10
+                            )
+                        except:
+                            pass
+                        shutil.rmtree(item_path)
+                    else:
+                        item_path.unlink()
+                    self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name}[/dim]")
+                except Exception as e:
+                    # Try with sudo for permission issues
                     try:
                         subprocess.run(
-                            ["sudo", "rm", "-rf", str(dirpath)],
+                            ["sudo", "rm", "-rf", str(item_path)],
                             check=True,
-                            capture_output=True
+                            capture_output=True,
+                            timeout=10
                         )
-                        self.rich_console.print(f"[dim]  Cleaned up: {dirname}/ (with elevated permissions)[/dim]")
-                    except Exception as e:
+                        self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name} (elevated)[/dim]")
+                    except Exception as e2:
                         self.rich_console.print(
-                            f"[yellow]⚠️  Warning: Could not clean up {dirname}/: {e}[/yellow]"
-                        )
-                        self.rich_console.print(
-                            f"[yellow]   Manual cleanup may be required: sudo rm -rf {dirname}/[/yellow]"
+                            f"[yellow]⚠️  Warning: Could not clean up {item_path}: {e2}[/yellow]"
                         )
 
     def _combine_build_and_run_logs(self):
@@ -738,44 +763,69 @@ class RunOrchestrator:
     def _copy_scripts(self):
         """Copy common scripts to model directories.
         
-        Handles two scenarios:
-        1. MAD Project: scripts/common already exists with pre/post scripts
-        2. madengine Testing: Need to copy from src/madengine/scripts/common
+        Handles scenarios:
+        1. MAD Project: scripts/ already exists in current directory - just add madengine common files
+        2. External MODEL_DIR: Copy from external path to current directory
+        3. madengine Testing: Copy from src/madengine/scripts/common
+        
+        NOTE: Does NOT delete existing scripts/ or docker/ directories in current working directory.
         """
         import shutil
-
-        # Clean up any previous MODEL_DIR copies first
-        self._cleanup_model_dir_copies()
 
         # Define ignore function for cache files (used for all copy operations)
         def ignore_cache_files(directory, files):
             """Ignore Python cache files and directories."""
             return [f for f in files if f.endswith('.pyc') or f == '__pycache__' or f.endswith('.pyo')]
         
-        # Step 1: Check if MODEL_DIR is set and copy if needed
-        model_dir_env = os.environ.get("MODEL_DIR")
-        if model_dir_env and os.path.exists(model_dir_env) and model_dir_env != ".":
-            self.rich_console.print(f"[yellow]📁 MODEL_DIR detected: {model_dir_env}[/yellow]")
+        # Step 1: Check if MODEL_DIR points to external directory and copy if needed
+        # MODEL_DIR default is "." (current directory), so only copy if it's different
+        model_dir_env = os.environ.get("MODEL_DIR", ".")
+        model_dir_abs = os.path.abspath(model_dir_env)
+        current_dir_abs = os.path.abspath(".")
+        
+        # Only copy if MODEL_DIR points to a different directory (not current dir)
+        if model_dir_abs != current_dir_abs and os.path.exists(model_dir_env):
+            self.rich_console.print(f"[yellow]📁 External MODEL_DIR detected: {model_dir_env}[/yellow]")
             self.rich_console.print("[yellow]Copying MODEL_DIR contents for run phase...[/yellow]")
             
-            # Mark that we copied from MODEL_DIR (will need cleanup later)
-            self._copied_from_model_dir = True
-            
-            # Copy docker/ and scripts/ from MODEL_DIR
+            # Copy docker/ and scripts/ from MODEL_DIR (without deleting existing ones first)
             for subdir in ["docker", "scripts"]:
                 src_path = Path(model_dir_env) / subdir
                 if src_path.exists():
                     dest_path = Path(subdir)
+                    # Use copytree with dirs_exist_ok=True to merge instead of replace
                     if dest_path.exists():
-                        shutil.rmtree(dest_path)
-                    shutil.copytree(src_path, dest_path, ignore=ignore_cache_files)
+                        # Only warn, don't delete existing directories
+                        self.rich_console.print(f"[dim]  Note: Merging {subdir}/ from MODEL_DIR with existing directory[/dim]")
+                    shutil.copytree(src_path, dest_path, dirs_exist_ok=True, ignore=ignore_cache_files)
             
             self.rich_console.print("[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]")
+        elif not os.path.exists(model_dir_env):
+            self.rich_console.print(f"[yellow]⚠️  Warning: MODEL_DIR '{model_dir_env}' does not exist, using current directory[/yellow]")
 
         # Step 2: Copy madengine's common scripts (pre_scripts, post_scripts, tools)
         # This provides the execution framework scripts
-        madengine_common = Path("src/madengine/scripts/common")
-        if madengine_common.exists():
+        # Find madengine installation path (works for both development and installed package)
+        madengine_common = None
+        
+        # Option 1: Development mode - check if running from source
+        dev_path = Path("src/madengine/scripts/common")
+        if dev_path.exists():
+            madengine_common = dev_path
+            print(f"Found madengine scripts in development mode: {madengine_common}")
+        else:
+            # Option 2: Installed package - find via module location
+            try:
+                import madengine
+                madengine_module_path = Path(madengine.__file__).parent
+                installed_path = madengine_module_path / "scripts" / "common"
+                if installed_path.exists():
+                    madengine_common = installed_path
+                    print(f"Found madengine scripts in installed package: {madengine_common}")
+            except Exception as e:
+                print(f"Could not locate madengine scripts: {e}")
+        
+        if madengine_common and madengine_common.exists():
             print(f"Copying madengine common scripts from {madengine_common} to scripts/common")
             
             dest_common = Path("scripts/common")
@@ -798,6 +848,8 @@ class RunOrchestrator:
                     else:
                         shutil.copy2(src_item, dest_item)
                     print(f"  Copied {item}")
+        else:
+            self.rich_console.print("[yellow]⚠️  Could not find madengine scripts directory[/yellow]")
 
         # Step 3: Distribute scripts/common to each model directory
         common_scripts = Path("scripts/common")
