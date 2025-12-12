@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 from .config_loader import ConfigLoader
+from madengine.utils.gpu_config import resolve_runtime_gpus
 
 
 class SlurmDeployment(BaseDeployment):
@@ -147,12 +148,17 @@ class SlurmDeployment(BaseDeployment):
 
     def _prepare_template_context(self, model_info: Dict) -> Dict[str, Any]:
         """Prepare context for Jinja2 template rendering."""
+        # Use hierarchical GPU resolution: runtime > deployment > model > default
+        additional_context = self.config.additional_context.copy()
+        additional_context["slurm"] = self.slurm_config
+        resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
+        
         return {
             "model_name": model_info["name"],
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
-            "gpus_per_node": self.gpus_per_node,
+            "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": self.distributed_config.get("port", 29500),

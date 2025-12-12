@@ -180,6 +180,7 @@ ORIGINAL_MANIFEST=${MANIFEST_FILE:-build_manifest.json}
 LOCAL_MANIFEST="${WORKSPACE}/build_manifest_local.json"
 
 # Modify manifest to force local execution (remove slurm config, set target=local)
+# BUT preserve gpus_per_node for GPU resolution
 python3 -c "
 import json
 manifest_file = '$ORIGINAL_MANIFEST'
@@ -187,10 +188,19 @@ output_file = '$LOCAL_MANIFEST'
 with open(manifest_file, 'r') as f:
     manifest = json.load(f)
 if 'deployment_config' in manifest:
+    # Preserve gpus_per_node from slurm config before removing it
+    gpus_per_node = None
+    if 'slurm' in manifest['deployment_config']:
+        gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
+    
     manifest['deployment_config']['target'] = 'local'
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
+    
+    # Add gpus_per_node as a top-level runtime override
+    if gpus_per_node:
+        manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
 print('Created local execution manifest')

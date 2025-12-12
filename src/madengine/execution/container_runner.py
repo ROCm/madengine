@@ -22,6 +22,7 @@ from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.utils.gpu_config import resolve_runtime_gpus
 
 
 class ContainerRunner:
@@ -33,6 +34,7 @@ class ContainerRunner:
         data: Data = None,
         console: Console = None,
         live_output: bool = False,
+        additional_context: typing.Dict = None,
     ):
         """Initialize the Container Runner.
 
@@ -41,6 +43,7 @@ class ContainerRunner:
             data: The data provider instance
             console: Optional console instance
             live_output: Whether to show live output
+            additional_context: Additional configuration context (for GPU resolution)
         """
         self.context = context
         self.data = data
@@ -49,6 +52,7 @@ class ContainerRunner:
         self.rich_console = RichConsole()
         self.credentials = None
         self.perf_csv_path = "perf.csv"  # Default output path
+        self.additional_context = additional_context or {}
 
         # Ensure runtime context is initialized for container operations
         if self.context:
@@ -87,12 +91,15 @@ class ContainerRunner:
         """
         import os
 
+        # Resolve GPU count using hierarchical resolution
+        resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
-            "n_gpus": model_info.get("n_gpus", ""),
+            "n_gpus": str(resolved_gpu_count),  # Use resolved GPU count
             "nnodes": model_info.get("nnodes", "1"),  # Default to 1 for local execution
-            "gpus_per_node": model_info.get("gpus_per_node", model_info.get("n_gpus", "1")),
+            "gpus_per_node": str(resolved_gpu_count),  # Use resolved GPU count
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": os.environ.get("pipeline", ""),
             "args": model_info.get("args", ""),
@@ -638,7 +645,9 @@ class ContainerRunner:
             )
 
         # Build docker options
-        docker_options += self.get_gpu_arg(model_info["n_gpus"])
+        # Use hierarchical GPU resolution: runtime > deployment > model > default
+        resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
+        docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
@@ -1141,6 +1150,10 @@ class ContainerRunner:
         manifest = self.load_build_manifest(manifest_file)
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
+        
+        # Load deployment_config from manifest for GPU resolution
+        if "deployment_config" in manifest and not self.additional_context:
+            self.additional_context = {"deployment_config": manifest["deployment_config"]}
         
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")

@@ -40,6 +40,7 @@ from .config_loader import ConfigLoader
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
 from madengine.core.errors import ConfigurationError, create_error_context
+from madengine.utils.gpu_config import resolve_runtime_gpus
 
 
 class KubernetesDeployment(BaseDeployment):
@@ -452,8 +453,10 @@ class KubernetesDeployment(BaseDeployment):
         Returns:
             Context dictionary with all template variables
         """
-        # K8s config gpu_count overrides model n_gpus
-        gpu_count = int(self.k8s_config.get("gpu_count", model_info.get("n_gpus", 1)))
+        # Use hierarchical GPU resolution: runtime > deployment > model > default
+        additional_context = self.config.additional_context.copy()
+        additional_context["k8s"] = self.k8s_config
+        gpu_count = resolve_runtime_gpus(model_info, additional_context)
         model_name = model_info["name"]
 
         # Load manifest and credential content for ConfigMap
