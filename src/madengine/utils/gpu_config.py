@@ -16,7 +16,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import warnings
 from typing import Dict, Any, Optional, Tuple
-from pathlib import Path
 
 
 class GPUConfigResolver:
@@ -158,19 +157,17 @@ class GPUConfigResolver:
         # Warn if multiple GPU fields found
         if len(found_fields) > 1:
             field_list = ", ".join([f"{name}={val}" for name, val in found_fields])
-            warnings.warn(
-                f"Multiple GPU count fields found in {context}: {field_list}. "
-                f"Using {found_fields[0][0]}={found_fields[0][1]}",
-                UserWarning
+            print(
+                f"⚠️  Multiple GPU fields in {context}: {field_list}. "
+                f"Using {found_fields[0][0]}={found_fields[0][1]}"
             )
         
         # Convert to int (handle string values like "8")
         try:
             return int(found_fields[0][1])
         except (ValueError, TypeError):
-            warnings.warn(
-                f"Invalid GPU count value in {context}: {found_fields[0][1]}. Using default.",
-                UserWarning
+            print(
+                f"⚠️  Invalid GPU count in {context}: {found_fields[0][1]}. Using default."
             )
             return None
     
@@ -226,58 +223,28 @@ class GPUConfigResolver:
         unique_counts = set(all_counts.values())
         if len(unique_counts) > 1:
             mismatch_details = ", ".join([f"{k}={v}" for k, v in all_counts.items()])
-            warnings.warn(
-                f"\n⚠️  GPU count mismatch detected:\n"
-                f"   {mismatch_details}\n"
-                f"   Using highest priority: {sources[0][0]}={sources[0][1]}\n"
-                f"   This mismatch may indicate a configuration error.\n"
-                f"   Precedence: runtime_override > deployment_config > model_info > default",
-                UserWarning,
-                stacklevel=3
+            # Determine if this is likely intentional (deployment override) or an error
+            is_deployment_override = (
+                sources[0][0].startswith("runtime_override") or
+                sources[0][0].startswith("deployment_config")
             )
-    
-    @classmethod
-    def normalize_gpu_field_name(cls, config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize GPU field names to the standard 'gpus_per_node'.
-        
-        Creates a copy of config with standardized field name.
-        
-        Args:
-            config: Configuration dictionary
             
-        Returns:
-            New dict with normalized field name
-        """
-        normalized = config.copy()
-        
-        # Find existing GPU field
-        for field_name in cls.GPU_FIELD_ALIASES:
-            if field_name in normalized and field_name != "gpus_per_node":
-                # Move to standard name
-                normalized["gpus_per_node"] = normalized[field_name]
-                # Keep old name for backward compatibility
-                break
-        
-        return normalized
-    
-    @classmethod
-    def get_deployment_type(cls, config: Dict[str, Any]) -> str:
-        """
-        Determine deployment type from configuration structure.
-        
-        Args:
-            config: Configuration dictionary
-            
-        Returns:
-            "k8s", "slurm", or "local"
-        """
-        if "k8s" in config or "kubernetes" in config:
-            return "k8s"
-        elif "slurm" in config:
-            return "slurm"
-        else:
-            return "local"
+            if is_deployment_override:
+                # This is normal - deployment config overriding model default
+                # Use print instead of warnings.warn for cleaner output
+                print(
+                    f"ℹ️  GPU configuration override: {sources[0][0]}={sources[0][1]} "
+                    f"(overriding model default: {mismatch_details.split(',')[-1].strip()})"
+                )
+            else:
+                # Potentially unexpected mismatch - use warning for actual errors
+                warnings.warn(
+                    f"\n⚠️  GPU count mismatch detected: {mismatch_details}\n"
+                    f"   Using: {sources[0][0]}={sources[0][1]}\n"
+                    f"   Precedence: runtime_override > deployment_config > model_info > default",
+                    UserWarning,
+                    stacklevel=4
+                )
 
 
 def resolve_runtime_gpus(

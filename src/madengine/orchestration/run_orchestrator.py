@@ -28,6 +28,7 @@ from madengine.core.errors import (
     create_error_context,
     handle_error,
 )
+from madengine.utils.session_tracker import SessionTracker
 
 
 class RunOrchestrator:
@@ -78,6 +79,10 @@ class RunOrchestrator:
         
         # Track if we ran build phase in this workflow (for log combination)
         self._did_build_phase = False
+        
+        # Initialize session tracker for filtering current run results
+        perf_csv_path = getattr(args, "output", "perf.csv")
+        self.session_tracker = SessionTracker(perf_csv_path)
         
         # Initialize context in runtime mode (with GPU detection for local)
         # This will be lazy-initialized only when needed
@@ -140,6 +145,10 @@ class RunOrchestrator:
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print("[bold blue]🚀 RUN PHASE[/bold blue]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+        # Track session start for filtering current run results
+        # The marker file is automatically saved in same directory as perf.csv
+        session_start_row = self.session_tracker.start_session()
 
         try:
             # Check for MAD_CONTAINER_IMAGE (local image mode)
@@ -229,9 +238,17 @@ class RunOrchestrator:
                 if self._did_build_phase and target == "local":
                     self._combine_build_and_run_logs()
                 
+                # Add session information to results for filtering
+                results["session_start_row"] = session_start_row
+                results["session_row_count"] = self.session_tracker.get_session_row_count()
+                
                 # Always cleanup madengine package files after execution
                 self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
                 self._cleanup_model_dir_copies()
+                
+                # NOTE: Do NOT cleanup session marker here!
+                # It's needed by display functions in CLI layer
+                # Cleanup happens in CLI after display (via perf_csv_path)
                 
                 return results
                 
@@ -592,6 +609,11 @@ class RunOrchestrator:
         # Add runtime flags to additional_context for deployment layer
         if "live_output" not in self.additional_context:
             self.additional_context["live_output"] = getattr(self.args, "live_output", False)
+        
+        # Pass session_start_row for result filtering in collect_results
+        session_start_row = self.session_tracker.session_start_row
+        if "session_start_row" not in self.additional_context:
+            self.additional_context["session_start_row"] = session_start_row
 
         # Create deployment configuration
         deployment_config = DeploymentConfig(

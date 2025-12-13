@@ -76,15 +76,11 @@ class Docker:
             print(f"✓ Cleaned up existing container '{container_name}'")
 
         # run docker command
-        command = (
-            "docker run -t -d -u "
-            + self.userid
-            + ":"
-            + self.groupid
-            + " "
-            + dockerOpts
-            + " "
-        )
+        command = "docker run -t -d "
+        # Conditionally add -u flag if not already present in dockerOpts
+        if "-u " not in dockerOpts:
+            command += f"-u {self.userid}:{self.groupid} "
+        command += dockerOpts + " "
 
         # add mounts
         if mounts is not None:

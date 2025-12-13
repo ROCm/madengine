@@ -223,10 +223,60 @@ echo "SLURM GPU allocation:"
 echo "  Allocated GPUs: ${SLURM_GPUS_ON_NODE:-unknown}"
 echo "  CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-not set}"
 echo "  ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-not set}"
+echo "  Node: ${SLURM_NODEID}/${SLURM_NNODES} (Rank ${SLURM_PROCID}/${SLURM_NTASKS})"
 
 # Set deployment environment flags
 export MAD_IN_SLURM_JOB=1
 export MAD_DEPLOYMENT_TYPE=slurm
+
+# =============================================================================
+# Configure Distributed Training Launcher
+# =============================================================================
+echo ""
+echo "Distributed Training Configuration:"
+echo "  NNODES: ${NNODES}"
+echo "  GPUS_PER_NODE: ${GPUS_PER_NODE}"
+echo "  TOTAL_GPUS: $((NNODES * GPUS_PER_NODE))"
+echo "  MASTER_ADDR: ${MASTER_ADDR}"
+echo "  MASTER_PORT: ${MASTER_PORT}"
+echo "  NODE_RANK: ${SLURM_PROCID}"
+echo "  WORLD_SIZE: ${WORLD_SIZE}"
+
+# Configure MAD_MULTI_NODE_RUNNER for model scripts
+# This environment variable will be passed to containers and used by model run scripts
+if [ ${NNODES} -gt 1 ]; then
+    # Multi-node distributed training: Use full torchrun with master coordination
+    export MAD_MULTI_NODE_RUNNER="torchrun --nnodes=${NNODES} --nproc_per_node=${GPUS_PER_NODE} --node_rank=${SLURM_PROCID} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT}"
+    echo "  Launcher: torchrun (multi-node distributed)"
+else
+    # Single-node training (1 or more GPUs): Use standalone mode
+    export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=${GPUS_PER_NODE}"
+    echo "  Launcher: torchrun (single-node standalone)"
+fi
+echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+echo ""
+
+# Set network interface for NCCL/GLOO if not already set
+{% if network_interface %}
+export NCCL_SOCKET_IFNAME={{ network_interface }}
+export GLOO_SOCKET_IFNAME={{ network_interface }}
+{% else %}
+# Try to auto-detect InfiniBand or high-speed network interface
+if [ -z "${NCCL_SOCKET_IFNAME}" ]; then
+    # Check for InfiniBand interfaces
+    if ip link show | grep -q "ib[0-9]"; then
+        export NCCL_SOCKET_IFNAME=ib0
+        export GLOO_SOCKET_IFNAME=ib0
+        echo "  Network: InfiniBand (ib0)"
+    else
+        # Fallback to first non-loopback interface
+        DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+        export NCCL_SOCKET_IFNAME=${DEFAULT_IFACE:-eth0}
+        export GLOO_SOCKET_IFNAME=${DEFAULT_IFACE:-eth0}
+        echo "  Network: ${NCCL_SOCKET_IFNAME}"
+    fi
+fi
+{% endif %}
 
 # Now execute madengine-cli with the LOCAL manifest
 echo "Executing madengine-cli in LOCAL mode (inside SLURM job)"
@@ -234,7 +284,24 @@ madengine-cli run \
     {% if manifest_file %}--manifest-file "$EXEC_MANIFEST"{% else %}--tags {{ tags }}{% endif %} \
     --timeout {{ timeout | default(3600) }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
-    {% if live_output %}--live-output{% endif %}
+    {% if live_output %}--live-output{% endif %} \
+    --additional-context "{
+        'docker_env_vars': {
+            'MASTER_ADDR': '${MASTER_ADDR}',
+            'MASTER_PORT': '${MASTER_PORT}',
+            'WORLD_SIZE': '${WORLD_SIZE}',
+            'RANK': '${RANK}',
+            'LOCAL_RANK': '${LOCAL_RANK}',
+            'NNODES': '${NNODES}',
+            'NPROC_PER_NODE': '${GPUS_PER_NODE}',
+            'MAD_MULTI_NODE_RUNNER': '${MAD_MULTI_NODE_RUNNER}',
+            'NCCL_SOCKET_IFNAME': '${NCCL_SOCKET_IFNAME}',
+            'GLOO_SOCKET_IFNAME': '${GLOO_SOCKET_IFNAME}',
+            'NCCL_DEBUG': 'INFO',
+            'NCCL_IB_DISABLE': '0',
+            'NCCL_NET_GDR_LEVEL': '5'
+        }
+    }"
 
 EXIT_CODE=$?
 

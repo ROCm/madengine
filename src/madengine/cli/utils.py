@@ -183,11 +183,14 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     console.print(table)
 
 
-def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
+def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row: int = None) -> None:
     """Display performance metrics from perf.csv file.
+    
+    Shows all historical runs with visual markers for current session runs.
     
     Args:
         perf_csv_path: Path to the performance CSV file
+        session_start_row: Optional row number to filter from (for current session only)
     """
     if not os.path.exists(perf_csv_path):
         console.print(f"[yellow]⚠️  Performance CSV not found: {perf_csv_path}[/yellow]")
@@ -195,6 +198,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
     
     try:
         import pandas as pd
+        from madengine.utils.session_tracker import SessionTracker
         
         # Read CSV file
         df = pd.read_csv(perf_csv_path)
@@ -203,22 +207,36 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
             console.print("[yellow]⚠️  Performance CSV is empty[/yellow]")
             return
         
+        # Get session_start_row to mark current runs (don't filter, just mark)
+        total_rows = len(df)
+        
+        # Try parameter first, then fall back to marker file
+        if session_start_row is None:
+            session_start_row = SessionTracker.load_session_marker_for_csv(perf_csv_path)
+        
+        # Count current session runs for title
+        if session_start_row is not None and session_start_row < total_rows:
+            current_run_count = total_rows - session_start_row
+            title = f"📊 Performance Results (all {total_rows} runs, {current_run_count} from current session)"
+        else:
+            title = f"📊 Performance Results (all {total_rows} runs)"
+        
         # Create performance table
         perf_table = Table(
-            title="📊 Performance Results",
+            title=title,
             show_header=True,
             header_style="bold magenta"
         )
         
-        # Add columns
+        # Add columns (with "Run" marker column as first column)
+        perf_table.add_column("Run", justify="center", width=4)  # Marker column for current session
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
-        perf_table.add_column("Topology", justify="center", style="blue")  # Changed from "GPUs"
+        perf_table.add_column("Topology", justify="center", style="blue")
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
-        perf_table.add_column("Efficiency", justify="right", style="yellow")  # NEW
         perf_table.add_column("Status", style="bold")
         perf_table.add_column("Duration", justify="right", style="blue")
         perf_table.add_column("Data Name", style="magenta")
@@ -256,6 +274,10 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
         
         # Add rows from dataframe
         for idx, row in df.iterrows():
+            # Determine if this is a current session run
+            is_current_run = (session_start_row is not None and idx >= session_start_row)
+            run_marker = "[bold green]➤[/]" if is_current_run else ""  # Arrow marker for current runs
+            
             model = str(row.get("model", "Unknown"))
             dataname = str(row.get("dataname", "")) if not pd.isna(row.get("dataname")) and row.get("dataname") != "" else "N/A"
             data_provider_type = str(row.get("data_provider_type", "")) if not pd.isna(row.get("data_provider_type")) and row.get("data_provider_type") != "" else "N/A"
@@ -282,17 +304,6 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
             
-            # Format scaling efficiency
-            scaling_efficiency = row.get("scaling_efficiency", "")
-            if not pd.isna(scaling_efficiency) and scaling_efficiency != "":
-                try:
-                    efficiency_val = float(scaling_efficiency)
-                    efficiency_display = f"{efficiency_val:.1f}%"
-                except (ValueError, TypeError):
-                    efficiency_display = "N/A"
-            else:
-                efficiency_display = "N/A"
-            
             status = str(row.get("status", "UNKNOWN"))
             duration = format_duration(row.get("test_duration", ""))
             
@@ -305,14 +316,14 @@ def display_performance_table(perf_csv_path: str = "perf.csv") -> None:
                 status_display = f"⚠️  {status}"
             
             perf_table.add_row(
+                run_marker,         # Marker column showing ➤ for current runs
                 str(idx),
                 model,
-                topology,           # Changed from n_gpus
+                topology,
                 deployment_type,
                 gpu_arch,
                 performance,
                 metric,
-                efficiency_display, # NEW
                 status_display,
                 duration,
                 dataname,

@@ -257,7 +257,8 @@ class SlurmDeployment(BaseDeployment):
             if status == "RUNNING" and live_output:
                 self._stream_job_output(deployment_id)
 
-            if status in ["RUNNING", "PENDING", "CONFIGURING"]:
+            if status in ["RUNNING", "PENDING", "CONFIGURING", "COMPLETING"]:
+                # COMPLETING is a transient state before COMPLETED - treat as running
                 return DeploymentResult(
                     status=DeploymentStatus.RUNNING,
                     deployment_id=deployment_id,
@@ -274,7 +275,7 @@ class SlurmDeployment(BaseDeployment):
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} completed successfully",
                 )
-            else:  # FAILED, CANCELLED, TIMEOUT, etc.
+            else:  # FAILED, CANCELLED, TIMEOUT, NODE_FAIL, etc.
                 # Show output on failure or show summary
                 if live_output:
                     self._stream_job_output(deployment_id, final=True)
@@ -443,7 +444,14 @@ class SlurmDeployment(BaseDeployment):
             )
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
-        """Collect performance results from SLURM output files."""
+        """Collect performance results from SLURM output files.
+        
+        Args:
+            deployment_id: SLURM job ID
+        """
+        # Get session_start_row from config (passed from orchestrator)
+        session_start_row = self.config.additional_context.get("session_start_row")
+        
         results = {
             "job_id": deployment_id,
             "nodes": self.nodes,
@@ -452,6 +460,7 @@ class SlurmDeployment(BaseDeployment):
             "logs": [],
             "successful_runs": [],
             "failed_runs": [],
+            "session_start_row": session_start_row,  # Track for downstream filtering
         }
 
         try:
@@ -478,15 +487,29 @@ class SlurmDeployment(BaseDeployment):
                     self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
             
             # Parse perf.csv to populate successful_runs and failed_runs
+            # Filter based on session_start_row passed as parameter (no external files!)
             if results["perf_files"]:
                 perf_file = Path(results["perf_files"][0])
                 try:
                     import csv
+                    
                     with open(perf_file, 'r') as f:
                         reader = csv.DictReader(f)
-                        for row in reader:
-                            # Only include runs from this specific job
-                            # Check if this row is from the current deployment
+                        rows = list(reader)
+                        
+                        # Filter to only include rows from current session if session_start_row provided
+                        if session_start_row is not None and session_start_row < len(rows):
+                            rows = rows[session_start_row:]
+                            self.console.print(f"[cyan]📊 Filtered to current session: {len(rows)} runs (from row {session_start_row} of {len(rows) + session_start_row} total)[/cyan]")
+                        elif session_start_row is not None:
+                            # Session start equals or exceeds current rows - no new runs yet
+                            self.console.print(f"[yellow]⚠️  No new runs in this session (session started at row {session_start_row}, CSV has {len(rows)} rows)[/yellow]")
+                            rows = []
+                        else:
+                            # No session info provided - show all rows (for backward compatibility)
+                            self.console.print(f"[dim]Showing all {len(rows)} runs from perf.csv (no session filtering)[/dim]")
+                        
+                        for row in rows:
                             run_data = {
                                 "model": row.get("model", ""),
                                 "status": row.get("status", ""),
@@ -503,7 +526,9 @@ class SlurmDeployment(BaseDeployment):
                             else:
                                 results["failed_runs"].append(run_data)
                 except Exception as parse_error:
-                    self.console.print(f"[dim yellow]Note: Could not parse perf.csv: {parse_error}[/dim yellow]")
+                    import traceback
+                    self.console.print(f"[red]ERROR parsing perf.csv: {parse_error}[/red]")
+                    self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
             self.console.print(
                 f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "

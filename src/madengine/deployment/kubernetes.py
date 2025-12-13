@@ -2149,14 +2149,6 @@ deepspeed --hostfile=/tmp/hostfile \\
             gpus_per_node = str(distributed_config.get("nproc_per_node", 1))
             total_gpus = str(model_info.get("n_gpus", 1))
         
-        # NEW: Extract scaling efficiency
-        # Format: "scaling_efficiency: 98.5"
-        scaling_efficiency = ""
-        scaling_pattern = r'scaling_efficiency:\s+([0-9.]+)'
-        scaling_match = re.search(scaling_pattern, log)
-        if scaling_match:
-            scaling_efficiency = scaling_match.group(1)
-        
         # Extract GPU architecture from device ID in log
         gpu_architecture = ""
         gpu_match = re.search(r'0x([0-9a-fA-F]+)', log)
@@ -2238,7 +2230,6 @@ deepspeed --hostfile=/tmp/hostfile \\
             # Performance metrics
             "performance": performance,
             "metric": metric,
-            "scaling_efficiency": scaling_efficiency,  # NEW: Scaling efficiency %
             "relative_change": "",
             "status": "SUCCESS",
             
@@ -2316,7 +2307,6 @@ deepspeed --hostfile=/tmp/hostfile \\
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
-            "scaling_efficiency": "",
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
             
@@ -2378,7 +2368,6 @@ deepspeed --hostfile=/tmp/hostfile \\
             "gpu_architecture",
             "performance",
             "metric",
-            "scaling_efficiency",  # NEW: Scaling efficiency %
             "relative_change",
             "status",
             "build_duration",

@@ -90,6 +90,92 @@ madengine-cli run --tags model_tag \
   --additional-context '{"slurm": {"nodes": 4, "time": "48:00:00"}}'
 ```
 
+## 🔄 Distributed Training Support
+
+The SLURM deployment **automatically configures distributed training** for multi-node and multi-GPU setups:
+
+### How It Works
+
+1. **Environment Variables**: SLURM sets distributed training environment (MASTER_ADDR, MASTER_PORT, RANK, etc.)
+2. **MAD_MULTI_NODE_RUNNER**: Automatically configured with the appropriate `torchrun` command
+3. **Docker Containers**: Environment variables are passed into containers via `docker_env_vars`
+4. **Model Scripts**: Use `$MAD_MULTI_NODE_RUNNER` to launch training (see below)
+
+### Model Script Pattern
+
+Your model's run script should use the `MAD_MULTI_NODE_RUNNER` environment variable:
+
+```bash
+#!/bin/bash
+# Example: scripts/my_model/run.sh
+
+# MAD_MULTI_NODE_RUNNER is automatically set by madengine for distributed training
+if [ -z "$MAD_MULTI_NODE_RUNNER" ]; then
+    # Fallback for standalone execution
+    N_GPUS="${MAD_RUNTIME_NGPUS:-1}"
+    MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=$N_GPUS"
+fi
+
+# Launch your Python training script with torchrun
+$MAD_MULTI_NODE_RUNNER train.py --your-args
+```
+
+### Distributed Environment Variables
+
+The following variables are automatically available in your containers:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `MASTER_ADDR` | Master node address | `node001` |
+| `MASTER_PORT` | Master communication port | `29500` |
+| `WORLD_SIZE` | Total number of processes | `16` (2 nodes × 8 GPUs) |
+| `RANK` | Global process rank | `0`, `1`, ... |
+| `LOCAL_RANK` | Local GPU rank on node | `0-7` |
+| `NNODES` | Number of nodes | `2` |
+| `NPROC_PER_NODE` | GPUs per node | `8` |
+| `MAD_MULTI_NODE_RUNNER` | Complete torchrun command | `torchrun --nnodes=2 ...` |
+
+### Example Configurations
+
+**Single-Node Multi-GPU (Data Parallel)**:
+```json
+{
+  "slurm": {
+    "nodes": 1,
+    "gpus_per_node": 8
+  }
+}
+```
+→ `MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=8"`
+
+**Multi-Node Distributed Training**:
+```json
+{
+  "slurm": {
+    "nodes": 4,
+    "gpus_per_node": 8
+  }
+}
+```
+→ `MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 --node_rank=$SLURM_PROCID --master_addr=$MASTER_ADDR --master_port=29500"`
+
+### Verification
+
+Check that distributed training is configured correctly:
+
+```bash
+# In your SLURM output logs, you should see:
+Distributed Training Configuration:
+  NNODES: 2
+  GPUS_PER_NODE: 8
+  TOTAL_GPUS: 16
+  MASTER_ADDR: node001
+  MASTER_PORT: 29500
+  NODE_RANK: 0
+  Launcher: torchrun (distributed)
+  MAD_MULTI_NODE_RUNNER: torchrun --nnodes=2 --nproc_per_node=8 ...
+```
+
 ## ⚙️ Configuration Layers
 
 madengine uses intelligent multi-layer configuration merging:

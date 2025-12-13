@@ -70,7 +70,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,scaling_efficiency,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -128,7 +128,6 @@ class ContainerRunner:
             ),
             "performance": run_results.get("performance", ""),
             "metric": run_results.get("metric", ""),
-            "scaling_efficiency": run_results.get("scaling_efficiency", ""),
             "relative_change": "",
             "status": run_results.get("status", "FAILURE"),
             "build_duration": build_info.get("build_duration", ""),
@@ -585,9 +584,9 @@ class ContainerRunner:
             )
         elif gpu_vendor.find("NVIDIA") != -1:
             docker_options = (
-                "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
+                "-u root --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
                 "--security-opt seccomp=unconfined --security-opt apparmor=unconfined "
-                "--network host -u root --ipc=host "
+                "--network host --ipc=host "
             )
         else:
             raise RuntimeError("Unable to determine gpu vendor.")
