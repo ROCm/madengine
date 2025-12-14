@@ -201,7 +201,7 @@
     "scripts": "scripts/dummy/run_data_aws.sh",
     "data": "dummy_data_aws",
     "n_gpus": "1",
-    "owner": "aswin.mathews@amd.com",
+    "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
       "dummies",
@@ -229,7 +229,7 @@
     "scripts": "scripts/dummy/run_data_nas.sh",
     "data": "dummy_data_austin_nas",
     "n_gpus": "1",
-    "owner": "aswin.mathews@amd.com",
+    "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
       "dummies",
@@ -240,7 +240,7 @@
   {
     "name": "dummy_torchrun",
     "dockerfile": "docker/dummy_torchrun",
-    "scripts": "scripts/dummy_torchrun/run_torchrun.py",
+    "scripts": "scripts/dummy_torchrun/run.sh",
     "n_gpus": "1",
     "owner": "mad.support@amd.com",
     "training_precision": "",
@@ -268,6 +268,21 @@
     "dockerfile": "docker/dummy_torchrun",
     "scripts": "scripts/dummy_torchrun/run_torchrun_data_minio.py",
     "data": "dummy_data_minio",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchrun_data_nas",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run_torchrun_data_nas.py",
+    "data": "dummy_data_austin_nas",
     "n_gpus": "1",
     "owner": "mad.support@amd.com",
     "training_precision": "",

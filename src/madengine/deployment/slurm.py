@@ -76,6 +76,7 @@ class SlurmDeployment(BaseDeployment):
         
         # Register custom Jinja2 filters
         self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
+        self.jinja_env.filters['basename'] = lambda path: str(Path(path).name)
 
         # Generated script path
         self.script_path = None

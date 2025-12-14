@@ -77,14 +77,22 @@ export MAD_TOTAL_NODES={{ nodes }}
 # Explicitly configured shared workspace (NFS/Lustre)
 WORKSPACE={{ shared_workspace }}
 WORKSPACE_TYPE="shared-explicit"
+cd $WORKSPACE
 {% else %}
-# Auto-detect: Use shared storage for multi-node, can use local for single-node
 {% if nodes > 1 %}
-# Multi-node REQUIRES shared storage (all nodes must access same files)
-# Use submission directory as workspace (typically on NFS-mounted /home)
-WORKSPACE={{ manifest_file | dirname }}
-WORKSPACE_TYPE="shared-auto"
-echo "Multi-node job: Using shared workspace at $WORKSPACE"
+# =============================================================================
+# Multi-node: Per-Node Setup (executed by srun on each task)
+# =============================================================================
+# For multi-node jobs, workspace setup must happen INSIDE srun context
+# where SLURM_PROCID is properly set for each task.
+# We'll create a setup script that srun will execute on each node.
+
+echo "Multi-node deployment detected ({{ nodes }} nodes)"
+echo "Per-node setup will be executed by srun on each task"
+echo "Submission directory: {{ manifest_file | dirname }}"
+
+# Note: Workspace setup happens later in srun context
+# Skip to distributed training configuration
 {% else %}
 # Single-node: Prefer shared storage (submission dir), with local fallback if needed
 # Check if submission directory is on shared filesystem
@@ -109,24 +117,15 @@ fi
 {% endif %}
 {% endif %}
 
+{% if nodes > 1 %}
+# Multi-node: Workspace setup happens in task script (executed by srun)
+{% else %}
+# Single-node: Setup workspace now
 echo "Workspace type: $WORKSPACE_TYPE"
 echo "Working directory: $WORKSPACE"
 cd $WORKSPACE
 
 # File handling based on workspace type
-{% if nodes > 1 %}
-# Multi-node: Files already in shared workspace, no copying needed
-echo "Multi-node: Using files in shared workspace"
-{% if manifest_file %}
-MANIFEST_FILE={{ manifest_file }}
-{% endif %}
-{% if credential_file %}
-CREDENTIAL_FILE={{ manifest_file | dirname }}/{{ credential_file }}
-{% endif %}
-{% if data_file %}
-DATA_FILE={{ manifest_file | dirname }}/{{ data_file }}
-{% endif %}
-{% else %}
 # Single-node: Use shared files if available, copy only if using local workspace
 if [ "$WORKSPACE_TYPE" = "shared-nfs" ] || [ "$WORKSPACE_TYPE" = "shared-auto" ] || [ "$WORKSPACE_TYPE" = "shared-explicit" ]; then
     # Using shared workspace - reference files directly
@@ -163,24 +162,42 @@ else
 fi
 {% endif %}
 
+{% if nodes == 1 %}
 # =============================================================================
-# Execute madengine Workflow
+# Single-node: Verify madengine-cli availability
 # =============================================================================
 
-# Note: MODEL_DIR should be auto-detected by madengine-cli from manifest location
-# or preserved from environment. Do NOT override it here.
+# Verify madengine-cli is available (or prepare fallback)
+echo ""
+echo "Verifying madengine-cli availability..."
+if command -v madengine-cli >/dev/null 2>&1; then
+    echo "  ✓ madengine-cli is available in PATH"
+    MAD_CLI_VERSION=$(madengine-cli --version 2>/dev/null | head -n1 || echo "unknown")
+    echo "  Version: $MAD_CLI_VERSION"
+    export MAD_CLI_COMMAND="madengine-cli"
+elif [ -f "$WORKSPACE/src/madengine/cli/app.py" ]; then
+    echo "  ⚠ madengine-cli not found in PATH"
+    echo "  Will use Python module fallback: python3 -m madengine.cli.app"
+    export PYTHONPATH=$WORKSPACE/src:$PYTHONPATH
+    export MAD_CLI_COMMAND="python3 -m madengine.cli.app"
+else
+    echo "  ❌ ERROR: madengine-cli not available and no source code found!"
+    echo "  Cannot continue without madengine"
+    exit 1
+fi
+echo ""
 
-# CRITICAL: We're already IN a SLURM job, so we must force LOCAL execution
-# Otherwise madengine-cli will try to submit ANOTHER SLURM job (infinite recursion!)
-# Solution: Temporarily modify manifest to force local execution
+# =============================================================================
+# Single-node: Create local execution manifest
+# =============================================================================
 
 {% if manifest_file %}
 # Create a local-execution manifest by modifying deployment_config
-ORIGINAL_MANIFEST=${MANIFEST_FILE:-build_manifest.json}
-LOCAL_MANIFEST="${WORKSPACE}/build_manifest_local.json"
+ORIGINAL_MANIFEST="{{ manifest_file | basename }}"
+LOCAL_MANIFEST="build_manifest_local.json"
 
-# Modify manifest to force local execution (remove slurm config, set target=local)
-# BUT preserve gpus_per_node for GPU resolution
+echo "Creating local execution manifest from: $ORIGINAL_MANIFEST"
+
 python3 -c "
 import json
 manifest_file = '$ORIGINAL_MANIFEST'
@@ -188,17 +205,13 @@ output_file = '$LOCAL_MANIFEST'
 with open(manifest_file, 'r') as f:
     manifest = json.load(f)
 if 'deployment_config' in manifest:
-    # Preserve gpus_per_node from slurm config before removing it
     gpus_per_node = None
     if 'slurm' in manifest['deployment_config']:
         gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
-    
     manifest['deployment_config']['target'] = 'local'
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
-    
-    # Add gpus_per_node as a top-level runtime override
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 with open(output_file, 'w') as f:
@@ -207,7 +220,7 @@ print('Created local execution manifest')
 "
 
 if [ $? -eq 0 ]; then
-    echo "✓ Forced local execution in manifest"
+    echo "✓ Forced local execution in manifest: $LOCAL_MANIFEST"
     EXEC_MANIFEST="$LOCAL_MANIFEST"
 else
     echo "⚠ Failed to modify manifest, using original"
@@ -215,6 +228,7 @@ else
 fi
 {% else %}
 EXEC_MANIFEST=""
+{% endif %}
 {% endif %}
 
 # SLURM GPU Environment Check
@@ -246,6 +260,8 @@ echo "  WORLD_SIZE: ${WORLD_SIZE}"
 # This environment variable will be passed to containers and used by model run scripts
 if [ ${NNODES} -gt 1 ]; then
     # Multi-node distributed training: Use full torchrun with master coordination
+    # IMPORTANT: SLURM_PROCID is evaluated HERE (on the host) before passing to Docker
+    # because Docker containers don't have access to SLURM environment variables
     export MAD_MULTI_NODE_RUNNER="torchrun --nnodes=${NNODES} --nproc_per_node=${GPUS_PER_NODE} --node_rank=${SLURM_PROCID} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT}"
     echo "  Launcher: torchrun (multi-node distributed)"
 else
@@ -278,9 +294,214 @@ if [ -z "${NCCL_SOCKET_IFNAME}" ]; then
 fi
 {% endif %}
 
-# Now execute madengine-cli with the LOCAL manifest
-echo "Executing madengine-cli in LOCAL mode (inside SLURM job)"
-madengine-cli run \
+{% if nodes > 1 %}
+# =============================================================================
+# Multi-node: Execute with per-task setup
+# =============================================================================
+# Create a wrapper script that each srun task will execute
+# This ensures workspace setup happens with correct SLURM_PROCID
+
+TASK_SCRIPT="/tmp/madengine_task_${SLURM_JOB_ID}.sh"
+
+cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
+#!/bin/bash
+set -e
+
+echo "========================================================================="
+echo "Task started on node: $(hostname)"
+echo "SLURM_PROCID: ${SLURM_PROCID}"
+echo "SLURM_JOB_ID: ${SLURM_JOB_ID}"
+echo "========================================================================="
+
+# Setup workspace (SLURM_PROCID is now available)
+if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
+    WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
+else
+    WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
+fi
+mkdir -p $WORKSPACE
+WORKSPACE_TYPE="local-multinode"
+echo "Multi-node: Node ${SLURM_PROCID} using local workspace: $WORKSPACE"
+cd $WORKSPACE
+
+# Copy entire project to local workspace
+echo "Copying entire project to local workspace"
+SUBMISSION_DIR={{ manifest_file | dirname }}
+
+echo "  Copying from: $SUBMISSION_DIR"
+echo "  Copying to: $WORKSPACE"
+rsync -a --quiet \
+      --exclude='.git' \
+      --exclude='__pycache__' \
+      --exclude='*.pyc' \
+      --exclude='**/__pycache__' \
+      --exclude='*.egg-info' \
+      --exclude='.pytest_cache' \
+      --exclude='venv' \
+      --exclude='.venv' \
+      --exclude='env' \
+      --exclude='.env' \
+      --exclude='slurm_output/*.out' \
+      --exclude='slurm_output/*.log' \
+      "$SUBMISSION_DIR/" "$WORKSPACE/"
+
+echo "  ✓ Project copied to local workspace"
+echo ""
+
+# Install madengine on work node
+echo "Installing madengine on work node..."
+
+if [ -f "$WORKSPACE/pyproject.toml" ] && grep -q '"madengine"' "$WORKSPACE/pyproject.toml"; then
+    echo "  Detected: madengine package"
+    echo "  Installing: pip install -e ."
+    if python3 -m pip install --user -q -e "$WORKSPACE" >/dev/null 2>&1; then
+        echo "  ✓ madengine installed"
+    else
+        echo "  ⚠ Warning: pip install failed"
+    fi
+elif [ -f "$WORKSPACE/requirements.txt" ]; then
+    echo "  Detected: MAD package"
+    echo "  Installing: pip install -r requirements.txt"
+    if python3 -m pip install --user -q -r "$WORKSPACE/requirements.txt" >/dev/null 2>&1; then
+        echo "  ✓ Dependencies installed"
+    else
+        echo "  ⚠ Warning: pip install failed"
+    fi
+elif [ -f "$WORKSPACE/setup.py" ]; then
+    echo "  Detected: Package with setup.py"
+    if python3 -m pip install --user -q -e "$WORKSPACE" >/dev/null 2>&1; then
+        echo "  ✓ Package installed"
+    else
+        echo "  ⚠ Warning: pip install failed"
+    fi
+fi
+
+# Verify madengine-cli availability
+echo ""
+if command -v madengine-cli >/dev/null 2>&1; then
+    echo "✓ madengine-cli available"
+    MAD_CLI_COMMAND="madengine-cli"
+elif [ -f "$WORKSPACE/src/madengine/cli/app.py" ]; then
+    echo "⚠ Using Python module fallback"
+    export PYTHONPATH=$WORKSPACE/src:$PYTHONPATH
+    MAD_CLI_COMMAND="python3 -m madengine.cli.app"
+else
+    echo "❌ ERROR: madengine-cli not available!"
+    exit 1
+fi
+
+# Create local execution manifest
+ORIGINAL_MANIFEST="{{ manifest_file | basename }}"
+LOCAL_MANIFEST="build_manifest_local.json"
+
+echo ""
+echo "Creating local execution manifest: $LOCAL_MANIFEST"
+
+python3 -c "
+import json
+manifest_file = '$ORIGINAL_MANIFEST'
+output_file = '$LOCAL_MANIFEST'
+with open(manifest_file, 'r') as f:
+    manifest = json.load(f)
+if 'deployment_config' in manifest:
+    gpus_per_node = None
+    if 'slurm' in manifest['deployment_config']:
+        gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
+    manifest['deployment_config']['target'] = 'local'
+    manifest['deployment_config'].pop('slurm', None)
+    manifest['deployment_config'].pop('k8s', None)
+    manifest['deployment_config'].pop('kubernetes', None)
+    if gpus_per_node:
+        manifest['deployment_config']['gpus_per_node'] = gpus_per_node
+with open(output_file, 'w') as f:
+    json.dump(manifest, f, indent=2)
+print('✓ Created local execution manifest')
+"
+
+if [ $? -eq 0 ] && [ -f "$LOCAL_MANIFEST" ]; then
+    EXEC_MANIFEST="$LOCAL_MANIFEST"
+    echo "✓ Manifest ready: $EXEC_MANIFEST"
+else
+    echo "⚠ Using original manifest"
+    EXEC_MANIFEST="$ORIGINAL_MANIFEST"
+fi
+
+# Show configuration
+echo ""
+echo "Node ${SLURM_PROCID} ready:"
+echo "  Workspace: $WORKSPACE"
+echo "  Manifest: $EXEC_MANIFEST"
+echo "  Command: $MAD_CLI_COMMAND"
+echo ""
+
+# Execute madengine-cli
+echo "Executing madengine-cli in LOCAL mode..."
+$MAD_CLI_COMMAND run \
+    --manifest-file "$EXEC_MANIFEST" \
+    --timeout {{ timeout | default(3600) }} \
+    {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
+    {% if live_output %}--live-output{% endif %} \
+    --additional-context "{
+        'docker_env_vars': {
+            'MASTER_ADDR': '${MASTER_ADDR}',
+            'MASTER_PORT': '${MASTER_PORT}',
+            'WORLD_SIZE': '${WORLD_SIZE}',
+            'RANK': '${RANK}',
+            'LOCAL_RANK': '${LOCAL_RANK}',
+            'NNODES': '${NNODES}',
+            'NPROC_PER_NODE': '${GPUS_PER_NODE}',
+            'MAD_MULTI_NODE_RUNNER': '${MAD_MULTI_NODE_RUNNER}',
+            'NCCL_SOCKET_IFNAME': '${NCCL_SOCKET_IFNAME}',
+            'GLOO_SOCKET_IFNAME': '${GLOO_SOCKET_IFNAME}',
+            'NCCL_DEBUG': 'INFO',
+            'NCCL_IB_DISABLE': '0',
+            'NCCL_NET_GDR_LEVEL': '5'
+        }
+    }"
+
+TASK_EXIT=$?
+echo ""
+echo "Task completed with exit code: $TASK_EXIT"
+
+# Copy results back to submission directory
+if [ $TASK_EXIT -eq 0 ]; then
+    RESULTS_DIR={{ manifest_file | dirname }}
+    echo "Copying results back to: $RESULTS_DIR"
+    
+    if [ -f "$WORKSPACE/perf.csv" ]; then
+        cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf_node_${SLURM_PROCID}.csv" 2>/dev/null || true
+        echo "  Copied: perf_node_${SLURM_PROCID}.csv"
+    fi
+    
+    for log in "$WORKSPACE"/*.log; do
+        if [ -f "$log" ]; then
+            cp "$log" "$RESULTS_DIR/" 2>/dev/null || true
+        fi
+    done
+    
+    echo "  ✓ Results copied"
+fi
+
+exit $TASK_EXIT
+TASK_SCRIPT_EOF
+
+chmod +x "$TASK_SCRIPT"
+
+echo "Launching tasks on {{ nodes }} nodes..."
+srun bash "$TASK_SCRIPT"
+EXIT_CODE=$?
+
+# Cleanup task script
+rm -f "$TASK_SCRIPT"
+
+{% else %}
+# =============================================================================
+# Single-node: Execute directly
+# =============================================================================
+echo "Executing madengine in LOCAL mode (inside SLURM job)"
+echo "  Command: $MAD_CLI_COMMAND"
+
+$MAD_CLI_COMMAND run \
     {% if manifest_file %}--manifest-file "$EXEC_MANIFEST"{% else %}--tags {{ tags }}{% endif %} \
     --timeout {{ timeout | default(3600) }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
@@ -304,6 +525,39 @@ madengine-cli run \
     }"
 
 EXIT_CODE=$?
+{% endif %}
+
+# =============================================================================
+# Copy Results from Local Workspace to Shared Results Directory (Multi-node)
+# =============================================================================
+
+{% if nodes > 1 %}
+# Multi-node: Copy results/logs from each work node back to shared results directory
+# This allows collecting outputs from all nodes in one location
+if [ "$WORKSPACE_TYPE" = "local-multinode" ]; then
+    RESULTS_DIR={{ manifest_file | dirname }}
+    echo "Copying results from local workspace to shared results directory..."
+    
+    # Copy performance results (per-node)
+    if [ -f "$WORKSPACE/perf.csv" ]; then
+        cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf_node_${SLURM_PROCID}.csv" 2>/dev/null || true
+        echo "  Copied: perf_node_${SLURM_PROCID}.csv"
+    fi
+    
+    # Copy log files
+    if ls "$WORKSPACE"/*.log >/dev/null 2>&1; then
+        cp "$WORKSPACE"/*.log "$RESULTS_DIR/" 2>/dev/null || true
+        echo "  Copied: log files"
+    fi
+    
+    # Copy any output files that might be needed
+    if ls "$WORKSPACE"/*.out >/dev/null 2>&1; then
+        cp "$WORKSPACE"/*.out "$RESULTS_DIR/" 2>/dev/null || true
+    fi
+    
+    echo "Results copied to: $RESULTS_DIR"
+fi
+{% endif %}
 
 # =============================================================================
 # Collect Results

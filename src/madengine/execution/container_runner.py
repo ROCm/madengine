@@ -656,9 +656,16 @@ class ContainerRunner:
         docker_options += f" {model_info.get('additional_docker_run_options', '')}"
 
         # Generate container name
-        container_name = "container_" + re.sub(
+        base_container_name = "container_" + re.sub(
             ".*:", "", docker_image.replace("/", "_").replace(":", "_")
         )
+        
+        # For multi-node SLURM jobs, add node rank to avoid name conflicts
+        node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
+        if node_rank is not None:
+            container_name = f"{base_container_name}_node{node_rank}"
+        else:
+            container_name = base_container_name
 
         print(f"Docker options: {docker_options}")
 
