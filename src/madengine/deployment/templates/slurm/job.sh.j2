@@ -301,7 +301,9 @@ fi
 # Create a wrapper script that each srun task will execute
 # This ensures workspace setup happens with correct SLURM_PROCID
 
-TASK_SCRIPT="/tmp/madengine_task_${SLURM_JOB_ID}.sh"
+# Use submission directory (shared filesystem) for task script
+# /tmp is local to each node and won't be accessible by srun on other nodes
+TASK_SCRIPT="{{ manifest_file | dirname }}/slurm_output/madengine_task_${SLURM_JOB_ID}.sh"
 
 cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
 #!/bin/bash
