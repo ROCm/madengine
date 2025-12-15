@@ -134,7 +134,10 @@ scripts/
 .*_env/
 .vscode/
 
+build_manifest.json
 tmp/
 k8s_manifests/
 k8s_results/
 rocprof_output/
+slurm_output/
+MagicMock/

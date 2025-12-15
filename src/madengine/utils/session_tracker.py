@@ -96,6 +96,8 @@ class SessionTracker:
         Args:
             start_row: The starting row number
         """
+        # Ensure parent directory exists
+        self.marker_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.marker_file, 'w') as f:
             f.write(str(start_row))
     
