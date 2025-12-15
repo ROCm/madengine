@@ -662,14 +662,54 @@ class ContainerRunner:
         mount_datapaths = None
 
         # Merge docker_env_vars from additional_context into context
-        # This allows SLURM jobs to pass environment variables to Docker containers
+        # Also check shell environment for SLURM-passed variables
+        if "docker_env_vars" not in self.context.ctx:
+            self.context.ctx["docker_env_vars"] = {}
+        
+        # For SLURM jobs, check shell environment and populate additional_context with GPU info
+        # This ensures GPU resolution works correctly
+        if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
+            if "NPROC_PER_NODE" in os.environ or "GPUS_PER_NODE" in os.environ:
+                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get("GPUS_PER_NODE")
+                if gpus_per_node_str:
+                    try:
+                        gpus = int(gpus_per_node_str)
+                        # Add gpus_per_node to additional_context for GPU resolution
+                        # resolve_runtime_gpus looks for this field name
+                        if not self.additional_context:
+                            self.additional_context = {}
+                        if "gpus_per_node" not in self.additional_context:
+                            self.additional_context["gpus_per_node"] = gpus
+                            print(f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)")
+                    except ValueError:
+                        pass
+        
+        # List of environment variables to pass from shell to Docker (for SLURM jobs)
+        slurm_env_vars = [
+            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL'
+        ]
+        
+        # Check shell environment and add to docker_env_vars
+        merged_from_env = 0
+        for var_name in slurm_env_vars:
+            if var_name in os.environ:
+                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged_from_env += 1
+        
+        if merged_from_env > 0:
+            print(f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker")
+        
+        # Also merge from additional_context if present
         if self.additional_context and "docker_env_vars" in self.additional_context:
-            if "docker_env_vars" not in self.context.ctx:
-                self.context.ctx["docker_env_vars"] = {}
-            # Merge additional docker env vars (they override existing ones)
+            merged_count = 0
             for key, value in self.additional_context["docker_env_vars"].items():
                 self.context.ctx["docker_env_vars"][key] = value
-            print(f"ℹ️  Merged {len(self.additional_context['docker_env_vars'])} environment variables from additional_context")
+                merged_count += 1
+            if merged_count > 0:
+                print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
@@ -701,6 +741,19 @@ class ContainerRunner:
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
+        
+        # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
+        # It should be passed via docker_env_vars in context instead
+        if "MIOPEN_USER_DB_PATH" in run_env:
+            del run_env["MIOPEN_USER_DB_PATH"]
+            print("ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)")
+        
+        # Add MIOPEN_USER_DB_PATH from shell environment to context.docker_env_vars
+        # This is set by SLURM script with ${LOCAL_RANK} variable for per-process paths
+        if "MIOPEN_USER_DB_PATH" in os.environ and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]:
+            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+            print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
+        
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
         docker_options += f" {model_info.get('additional_docker_run_options', '')}"
@@ -1022,12 +1075,17 @@ class ContainerRunner:
                                     pass  # Error checking is optional
 
                             # Status logic: Must have performance AND no errors to be considered success
+                            # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
+                            # are not expected to report global performance metrics
                             performance_value = run_results.get("performance")
                             has_performance = (
                                 performance_value
                                 and performance_value.strip()
                                 and performance_value.strip() != "N/A"
                             )
+                            
+                            # Check if this is a worker node (not collecting metrics)
+                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
 
                             if has_errors:
                                 run_results["status"] = "FAILURE"
@@ -1039,6 +1097,12 @@ class ContainerRunner:
                                 self.rich_console.print(
                                     f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
                                 )
+                            elif is_worker_node:
+                                # Worker nodes don't report global performance metrics - this is expected
+                                run_results["status"] = "SUCCESS"
+                                self.rich_console.print(
+                                    f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
+                                )
                             else:
                                 run_results["status"] = "FAILURE"
                                 self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
@@ -1046,9 +1110,11 @@ class ContainerRunner:
                         except Exception as e:
                             self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
                             # Fallback to simple performance check
+                            # Worker nodes don't need performance metrics
+                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
                             run_results["status"] = (
                                 "SUCCESS"
-                                if run_results.get("performance")
+                                if run_results.get("performance") or is_worker_node
                                 else "FAILURE"
                             )
 

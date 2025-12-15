@@ -62,17 +62,22 @@ class RunOrchestrator:
                     # Use ast.literal_eval for Python dict syntax (single quotes)
                     # This matches what Context class expects
                     import ast
-                    merged_context = ast.literal_eval(args.additional_context)
+                    parsed = ast.literal_eval(args.additional_context)
+                    print(f"📝 RunOrchestrator: Parsed additional_context keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not a dict'}")
+                    merged_context = parsed
                 elif isinstance(args.additional_context, dict):
                     merged_context = args.additional_context
+                    print(f"📝 RunOrchestrator: Got dict additional_context keys: {list(merged_context.keys())}")
             except (ValueError, SyntaxError) as e:
                 print(f"Warning: Could not parse additional_context: {e}")
+                print(f"Raw additional_context: {args.additional_context[:200] if args.additional_context else 'None'}")
                 pass
 
         if additional_context:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+        print(f"📝 RunOrchestrator: Final additional_context keys: {list(self.additional_context.keys()) if self.additional_context else 'None'}")
 
         # Track if we copied MODEL_DIR contents (for cleanup)
         self._copied_from_model_dir = False
@@ -574,6 +579,7 @@ class RunOrchestrator:
             self.data,
             self.console,
             live_output=getattr(self.args, "live_output", False),
+            additional_context=self.additional_context,
         )
         runner.set_credentials(credentials)
 

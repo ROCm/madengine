@@ -389,6 +389,13 @@ class BuildOrchestrator:
                 else:
                     target = "local"
             
+            # Get env_vars and filter out MIOPEN_USER_DB_PATH
+            # This variable must be set per-process in multi-GPU training to avoid database conflicts
+            env_vars = self.additional_context.get("env_vars", {}).copy()
+            if "MIOPEN_USER_DB_PATH" in env_vars:
+                del env_vars["MIOPEN_USER_DB_PATH"]
+                print("ℹ️  Filtered MIOPEN_USER_DB_PATH from env_vars (will be set per-process in training)")
+            
             deployment_config = {
                 "target": target,
                 "slurm": self.additional_context.get("slurm"),
@@ -396,7 +403,7 @@ class BuildOrchestrator:
                 "kubernetes": self.additional_context.get("kubernetes"),
                 "distributed": self.additional_context.get("distributed"),
                 "vllm": self.additional_context.get("vllm"),
-                "env_vars": self.additional_context.get("env_vars", {}),
+                "env_vars": env_vars,
                 "debug": self.additional_context.get("debug", False),
             }
 

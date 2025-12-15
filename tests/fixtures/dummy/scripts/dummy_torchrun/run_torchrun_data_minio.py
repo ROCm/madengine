@@ -49,6 +49,8 @@ world_size = int(os.environ.get("WORLD_SIZE", 1))
 master_addr = os.environ.get("MASTER_ADDR", "localhost")
 master_port = os.environ.get("MASTER_PORT", "29500")
 
+# NOTE: MIOpen directory creation moved to main() after LOCAL_RANK is available
+
 
 def print_header():
     """Print benchmark header"""
@@ -257,6 +259,15 @@ def train_epoch(model, optimizer, criterion, epoch, device):
 def main():
     """Main training function"""
     print_header()
+    
+    # Create per-process MIOpen cache directory to avoid database conflicts
+    # This must be done AFTER torchrun sets LOCAL_RANK environment variable
+    if "MIOPEN_USER_DB_PATH" in os.environ:
+        # Construct the per-process MIOpen path using actual local_rank value
+        miopen_template = os.environ["MIOPEN_USER_DB_PATH"]
+        miopen_path = miopen_template.replace("${LOCAL_RANK:-0}", str(local_rank)).replace("$LOCAL_RANK", str(local_rank))
+        os.makedirs(miopen_path, exist_ok=True)
+        print(f"[Rank {rank}] ✓ Created MIOpen cache directory: {miopen_path}")
     
     # ========================================================================
     # K8s Best Practice: Validate Data Before Initializing Training

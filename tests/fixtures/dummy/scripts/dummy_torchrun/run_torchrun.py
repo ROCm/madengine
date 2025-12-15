@@ -197,6 +197,18 @@ def main():
     """Main training function"""
     print_header()
     
+    # Create per-process MIOpen cache directory to avoid database conflicts
+    # This must be done AFTER torchrun sets LOCAL_RANK environment variable
+    # This prevents "Duplicate ID" errors and database corruption in multi-GPU training
+    if "MIOPEN_USER_DB_PATH" in os.environ:
+        # Construct the per-process MIOpen path using actual local_rank value
+        # Cannot use expandvars() because the template uses ${LOCAL_RANK} syntax
+        miopen_template = os.environ["MIOPEN_USER_DB_PATH"]
+        # Replace ${LOCAL_RANK} or $LOCAL_RANK with actual value
+        miopen_path = miopen_template.replace("${LOCAL_RANK:-0}", str(local_rank)).replace("$LOCAL_RANK", str(local_rank))
+        os.makedirs(miopen_path, exist_ok=True)
+        print(f"[Rank {rank}] ✓ Created MIOpen cache directory: {miopen_path}")
+    
     # Initialize distributed training
     if world_size > 1:
         print(f"\n[Rank {rank}] Initializing distributed process group...")

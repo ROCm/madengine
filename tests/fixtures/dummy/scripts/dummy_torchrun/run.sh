@@ -31,6 +31,16 @@ echo "Launcher Command:"
 echo "$MAD_MULTI_NODE_RUNNER"
 echo "========================================================================"
 
+# Create MIOpen cache directory if MIOPEN_USER_DB_PATH is set
+# This prevents "Duplicate ID" errors in multi-GPU training
+if [ -n "$MIOPEN_USER_DB_PATH" ]; then
+    # Extract base directory (before LOCAL_RANK expansion)
+    MIOPEN_BASE_DIR=$(dirname "$MIOPEN_USER_DB_PATH")
+    mkdir -p "$MIOPEN_BASE_DIR"
+    echo "ℹ️  MIOpen cache directory: $MIOPEN_USER_DB_PATH"
+    echo "   (will be created per-process with LOCAL_RANK)"
+fi
+
 # Execute the Python training script with torchrun
 $MAD_MULTI_NODE_RUNNER run_torchrun.py
 
