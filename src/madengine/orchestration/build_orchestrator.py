@@ -378,8 +378,19 @@ class BuildOrchestrator:
                 manifest = json.load(f)
 
             # Extract deployment configuration
+            # Auto-detect target from config presence if not explicitly set
+            target = self.additional_context.get("deploy")
+            if not target:
+                # Auto-detect based on config presence
+                if self.additional_context.get("slurm"):
+                    target = "slurm"
+                elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
+                    target = "k8s"
+                else:
+                    target = "local"
+            
             deployment_config = {
-                "target": self.additional_context.get("deploy", "local"),
+                "target": target,
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),

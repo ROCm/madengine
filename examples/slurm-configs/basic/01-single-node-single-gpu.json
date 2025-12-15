@@ -1,0 +1,25 @@
+{
+  "_comment": "Single Node, Single GPU - Basic SLURM Configuration",
+  "_description": "Configuration for running a model on a single GPU on a SLURM cluster",
+  "_use_case": "Testing, small models, quick benchmarks without distributed training",
+  "_note": "Using 'amd-rccl' partition. Change to your cluster's partition name if different (e.g., 'gpu', 'compute').",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 1,
+    "time": "01:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": false
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  },
+  
+  "debug": false
+}
+

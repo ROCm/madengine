@@ -104,12 +104,52 @@ class ContainerRunner:
                 # If system GPU count not available, keep -1
                 pass
         
+        # Determine number of nodes and GPUs per node
+        # Priority: 1. SLURM env vars, 2. additional_context, 3. model_info, 4. default (1)
+        nnodes = "1"  # Default for local execution
+        gpus_per_node = str(resolved_gpu_count)
+        
+        # Check for SLURM multi-node environment
+        if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
+            # Get from SLURM environment variables (most accurate for SLURM jobs)
+            slurm_nnodes = os.environ.get("NNODES") or os.environ.get("SLURM_NNODES")
+            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get("SLURM_GPUS_PER_NODE")
+            
+            if slurm_nnodes:
+                nnodes = str(slurm_nnodes)
+                print(f"ℹ️  Detected SLURM multi-node: {nnodes} nodes")
+            
+            if slurm_gpus_per_node:
+                gpus_per_node = str(slurm_gpus_per_node)
+                print(f"ℹ️  GPUs per node: {gpus_per_node}")
+        
+        # Fallback to additional_context (for non-SLURM or if env vars not set)
+        if nnodes == "1" and self.additional_context:
+            slurm_config = self.additional_context.get("slurm", {})
+            if slurm_config:
+                ctx_nodes = slurm_config.get("nodes")
+                ctx_gpus = slurm_config.get("gpus_per_node")
+                if ctx_nodes:
+                    nnodes = str(ctx_nodes)
+                if ctx_gpus:
+                    gpus_per_node = str(ctx_gpus)
+        
+        # Final fallback to model_info
+        if nnodes == "1":
+            nnodes = model_info.get("nnodes", "1")
+        
+        # Calculate total GPUs
+        try:
+            total_gpus = int(nnodes) * int(gpus_per_node)
+        except (ValueError, TypeError):
+            total_gpus = resolved_gpu_count
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
-            "n_gpus": str(resolved_gpu_count),  # Use resolved GPU count
-            "nnodes": model_info.get("nnodes", "1"),  # Default to 1 for local execution
-            "gpus_per_node": str(resolved_gpu_count),  # Use resolved GPU count
+            "n_gpus": str(total_gpus),  # Total GPUs across all nodes
+            "nnodes": nnodes,
+            "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": os.environ.get("pipeline", ""),
             "args": model_info.get("args", ""),
@@ -621,6 +661,16 @@ class ContainerRunner:
         run_env = {}
         mount_datapaths = None
 
+        # Merge docker_env_vars from additional_context into context
+        # This allows SLURM jobs to pass environment variables to Docker containers
+        if self.additional_context and "docker_env_vars" in self.additional_context:
+            if "docker_env_vars" not in self.context.ctx:
+                self.context.ctx["docker_env_vars"] = {}
+            # Merge additional docker env vars (they override existing ones)
+            for key, value in self.additional_context["docker_env_vars"].items():
+                self.context.ctx["docker_env_vars"][key] = value
+            print(f"ℹ️  Merged {len(self.additional_context['docker_env_vars'])} environment variables from additional_context")
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
@@ -1006,61 +1056,74 @@ class ContainerRunner:
                             f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
                         )
 
-                        # Generate performance results and update perf.csv
-                        self.ensure_perf_csv_exists()
-                        try:
-                            # Create run details dictionary for CSV generation
-                            run_details_dict = self.create_run_details_dict(
-                                model_info, build_info, run_results
+                        # =============================================================================
+                        # Multi-Node Performance Collection (Master Node Only)
+                        # =============================================================================
+                        # For distributed training, only master node should collect metrics
+                        # Check skip_perf_collection flag from additional_context
+                        skip_perf = self.additional_context.get("skip_perf_collection", False)
+                        
+                        if skip_perf:
+                            self.rich_console.print(
+                                "[cyan]ℹ️  Worker node: Skipping performance metric collection "
+                                "(master node will collect results)[/cyan]"
                             )
-
-                            # Handle multiple results if specified
-                            multiple_results = model_info.get("multiple_results", None)
-                            if (
-                                multiple_results
-                                and run_results.get("status") == "SUCCESS"
-                            ):
-                                # Generate common info JSON for multiple results
-                                common_info = run_details_dict.copy()
-                                # Remove model-specific fields for common info
-                                for key in ["model", "performance", "metric", "status"]:
-                                    common_info.pop(key, None)
-
-                                with open("common_info.json", "w") as f:
-                                    json.dump(common_info, f)
-
-                                # Update perf.csv with multiple results
-                                update_perf_csv(
-                                    multiple_results=multiple_results,
-                                    perf_csv=self.perf_csv_path,
-                                    model_name=run_details_dict["model"],
-                                    common_info="common_info.json",
+                        else:
+                            # Generate performance results and update perf.csv
+                            self.ensure_perf_csv_exists()
+                            try:
+                                # Create run details dictionary for CSV generation
+                                run_details_dict = self.create_run_details_dict(
+                                    model_info, build_info, run_results
                                 )
-                                print(
-                                    f"Updated perf.csv with multiple results for {model_info['name']}"
-                                )
-                            else:
-                                # Generate single result JSON
-                                with open("perf_entry.json", "w") as f:
-                                    json.dump(run_details_dict, f)
 
-                                # Update perf.csv with single result
-                                if run_results.get("status") == "SUCCESS":
+                                # Handle multiple results if specified
+                                multiple_results = model_info.get("multiple_results", None)
+                                if (
+                                    multiple_results
+                                    and run_results.get("status") == "SUCCESS"
+                                ):
+                                    # Generate common info JSON for multiple results
+                                    common_info = run_details_dict.copy()
+                                    # Remove model-specific fields for common info
+                                    for key in ["model", "performance", "metric", "status"]:
+                                        common_info.pop(key, None)
+
+                                    with open("common_info.json", "w") as f:
+                                        json.dump(common_info, f)
+
+                                    # Update perf.csv with multiple results
                                     update_perf_csv(
-                                        single_result="perf_entry.json",
+                                        multiple_results=multiple_results,
                                         perf_csv=self.perf_csv_path,
+                                        model_name=run_details_dict["model"],
+                                        common_info="common_info.json",
+                                    )
+                                    print(
+                                        f"Updated perf.csv with multiple results for {model_info['name']}"
                                     )
                                 else:
-                                    update_perf_csv(
-                                        exception_result="perf_entry.json",
-                                        perf_csv=self.perf_csv_path,
-                                    )
-                                print(
-                                    f"Updated perf.csv with result for {model_info['name']}"
-                                )
+                                    # Generate single result JSON
+                                    with open("perf_entry.json", "w") as f:
+                                        json.dump(run_details_dict, f)
 
-                        except Exception as e:
-                            self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+                                    # Update perf.csv with single result
+                                    if run_results.get("status") == "SUCCESS":
+                                        update_perf_csv(
+                                            single_result="perf_entry.json",
+                                            perf_csv=self.perf_csv_path,
+                                        )
+                                    else:
+                                        update_perf_csv(
+                                            exception_result="perf_entry.json",
+                                            perf_csv=self.perf_csv_path,
+                                        )
+                                    print(
+                                        f"Updated perf.csv with result for {model_info['name']}"
+                                    )
+
+                            except Exception as e:
+                                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
 
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible

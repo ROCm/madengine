@@ -37,7 +37,8 @@ module load {{ module }}
 export MASTER_ADDR=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
 export MASTER_PORT={{ master_port | default(29500) }}
 export WORLD_SIZE=$SLURM_NTASKS
-export RANK=$SLURM_PROCID
+# NOTE: RANK is set per-task inside srun context (not here in main script)
+# export RANK=$SLURM_PROCID  # <-- DO NOT SET HERE: will be 0 for all tasks
 export LOCAL_RANK=$SLURM_LOCALID
 export NNODES={{ nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -253,24 +254,18 @@ echo "  GPUS_PER_NODE: ${GPUS_PER_NODE}"
 echo "  TOTAL_GPUS: $((NNODES * GPUS_PER_NODE))"
 echo "  MASTER_ADDR: ${MASTER_ADDR}"
 echo "  MASTER_PORT: ${MASTER_PORT}"
-echo "  NODE_RANK: ${SLURM_PROCID}"
 echo "  WORLD_SIZE: ${WORLD_SIZE}"
-
-# Configure MAD_MULTI_NODE_RUNNER for model scripts
-# This environment variable will be passed to containers and used by model run scripts
-if [ ${NNODES} -gt 1 ]; then
-    # Multi-node distributed training: Use full torchrun with master coordination
-    # IMPORTANT: SLURM_PROCID is evaluated HERE (on the host) before passing to Docker
-    # because Docker containers don't have access to SLURM environment variables
-    export MAD_MULTI_NODE_RUNNER="torchrun --nnodes=${NNODES} --nproc_per_node=${GPUS_PER_NODE} --node_rank=${SLURM_PROCID} --master_addr=${MASTER_ADDR} --master_port=${MASTER_PORT}"
-    echo "  Launcher: torchrun (multi-node distributed)"
-else
-    # Single-node training (1 or more GPUs): Use standalone mode
-    export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=${GPUS_PER_NODE}"
-    echo "  Launcher: torchrun (single-node standalone)"
-fi
-echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+{% if nodes > 1 %}
+echo "  Launcher: torchrun (multi-node distributed)"
+echo "  MAD_MULTI_NODE_RUNNER: torchrun --nnodes={{ nodes }} --nproc_per_node={{ gpus_per_node }} --node_rank=\${SLURM_PROCID} --master_addr=\${MASTER_ADDR} --master_port={{ master_port | default(29500) }}"
+{% else %}
+echo "  Launcher: torchrun (single-node)"  
+echo "  MAD_MULTI_NODE_RUNNER: torchrun --standalone --nproc_per_node={{ gpus_per_node }}"
+{% endif %}
 echo ""
+
+# Note: For multi-node jobs, node-specific variables (RANK, NODE_RANK, MAD_MULTI_NODE_RUNNER)
+# are set inside each task where SLURM_PROCID is properly available per-node
 
 # Set network interface for NCCL/GLOO if not already set
 {% if network_interface %}
@@ -298,6 +293,18 @@ fi
 # =============================================================================
 # Multi-node: Execute with per-task setup
 # =============================================================================
+# For multi-node distributed training:
+# 1. Each srun task runs on a separate node with unique SLURM_PROCID
+# 2. All nodes participate in training via PyTorch DDP/torchrun
+# 3. Global metrics are computed via all_reduce (identical on all nodes)
+# 4. Only master node (SLURM_PROCID=0) collects/reports final metrics
+#
+# This approach follows PyTorch distributed training best practices:
+# - Avoids duplicate data in perf.csv
+# - Prevents race conditions in metric extraction
+# - Ensures worker nodes exit cleanly after training
+# =============================================================================
+
 # Create a wrapper script that each srun task will execute
 # This ensures workspace setup happens with correct SLURM_PROCID
 
@@ -314,6 +321,40 @@ echo "Task started on node: $(hostname)"
 echo "SLURM_PROCID: ${SLURM_PROCID}"
 echo "SLURM_JOB_ID: ${SLURM_JOB_ID}"
 echo "========================================================================="
+
+# Configure MAD_MULTI_NODE_RUNNER for this specific node
+# CRITICAL: This must be done HERE where SLURM_PROCID is unique for each task
+{% if nodes > 1 %}
+# Verify SLURM_PROCID is set
+if [ -z "${SLURM_PROCID}" ]; then
+    echo "ERROR: SLURM_PROCID not set! Cannot determine node rank."
+    exit 1
+fi
+
+# Capture node rank explicitly
+NODE_RANK=${SLURM_PROCID}
+export NODE_RANK
+
+# Build torchrun command with explicit node_rank
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={{ nodes }} --nproc_per_node={{ gpus_per_node }} --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} --master_port={{ master_port | default(29500) }}"
+
+# Debug output
+echo "=========================================="
+echo "🔧 Multi-node Distributed Training Setup"
+echo "=========================================="
+echo "  SLURM_PROCID: ${SLURM_PROCID}"
+echo "  NODE_RANK: ${NODE_RANK}"
+echo "  NNODES: {{ nodes }}"
+echo "  NPROC_PER_NODE: {{ gpus_per_node }}"
+echo "  MASTER_ADDR: ${MASTER_ADDR}"
+echo "  MASTER_PORT: {{ master_port | default(29500) }}"
+echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+echo "=========================================="
+{% else %}
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={{ gpus_per_node }}"
+echo "Single-node launcher: ${MAD_MULTI_NODE_RUNNER}"
+{% endif %}
+echo ""
 
 # Setup workspace (SLURM_PROCID is now available)
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
@@ -438,6 +479,54 @@ echo ""
 
 # Execute madengine-cli
 echo "Executing madengine-cli in LOCAL mode..."
+
+# Set RANK to node rank for this task (SLURM_PROCID)
+export RANK=${SLURM_PROCID}
+
+# Set environment variable to control metric collection
+# Only master node (SLURM_PROCID=0) should collect and report metrics
+if [ "${SLURM_PROCID}" = "0" ]; then
+    export MAD_COLLECT_METRICS="true"
+else
+    export MAD_COLLECT_METRICS="false"
+fi
+
+# Export all environment variables that need to be passed to Docker
+# This ensures they're inherited by the madengine-cli process and Docker containers
+export MASTER_ADDR="${MASTER_ADDR}"
+export MASTER_PORT="${MASTER_PORT}"
+export WORLD_SIZE="${WORLD_SIZE}"
+export NNODES="{{ nodes }}"
+export GPUS_PER_NODE="{{ gpus_per_node }}"
+
+# Debug: Show environment variables being passed
+echo "Environment variables for Docker container:"
+echo "  MASTER_ADDR: ${MASTER_ADDR}"
+echo "  MASTER_PORT: ${MASTER_PORT}"
+echo "  WORLD_SIZE: ${WORLD_SIZE}"
+echo "  RANK (node rank): ${RANK}"
+echo "  NODE_RANK: ${NODE_RANK}"
+echo "  NNODES: ${NNODES}"
+echo "  NPROC_PER_NODE: ${GPUS_PER_NODE}"
+echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+if [ "${SLURM_PROCID}" = "0" ]; then
+    echo "  MAD_IS_MASTER_NODE: true (will collect performance metrics)"
+else
+    echo "  MAD_IS_MASTER_NODE: false (training only, no metric collection)"
+fi
+echo ""
+
+# Create node-specific log files in results directory
+RESULTS_DIR={{ manifest_file | dirname }}
+NODE_LOG_OUT="${RESULTS_DIR}/slurm_output/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/slurm_output/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+
+echo "Node ${SLURM_PROCID} logs:"
+echo "  stdout: ${NODE_LOG_OUT}"
+echo "  stderr: ${NODE_LOG_ERR}"
+echo ""
+
+# Run madengine-cli with output redirected to node-specific log files
 $MAD_CLI_COMMAND run \
     --manifest-file "$EXEC_MANIFEST" \
     --timeout {{ timeout | default(3600) }} \
@@ -449,39 +538,86 @@ $MAD_CLI_COMMAND run \
             'MASTER_PORT': '${MASTER_PORT}',
             'WORLD_SIZE': '${WORLD_SIZE}',
             'RANK': '${RANK}',
-            'LOCAL_RANK': '${LOCAL_RANK}',
+            'LOCAL_RANK': '0',
             'NNODES': '${NNODES}',
             'NPROC_PER_NODE': '${GPUS_PER_NODE}',
+            'NODE_RANK': '${NODE_RANK}',
             'MAD_MULTI_NODE_RUNNER': '${MAD_MULTI_NODE_RUNNER}',
+            'MAD_COLLECT_METRICS': '${MAD_COLLECT_METRICS}',
             'NCCL_SOCKET_IFNAME': '${NCCL_SOCKET_IFNAME}',
             'GLOO_SOCKET_IFNAME': '${GLOO_SOCKET_IFNAME}',
             'NCCL_DEBUG': 'INFO',
             'NCCL_IB_DISABLE': '0',
             'NCCL_NET_GDR_LEVEL': '5'
-        }
-    }"
+        },
+        'skip_perf_collection': $([ '${SLURM_PROCID}' != '0' ] && echo 'true' || echo 'false')
+    }" > "${NODE_LOG_OUT}" 2> "${NODE_LOG_ERR}"
 
 TASK_EXIT=$?
 echo ""
 echo "Task completed with exit code: $TASK_EXIT"
 
-# Copy results back to submission directory
+# =============================================================================
+# Multi-Node Result Collection (Best Practice: Master Node Only)
+# =============================================================================
+# For distributed training, only the master node (SLURM_PROCID=0) should
+# collect and report performance metrics to avoid:
+# - Duplicate data in perf.csv
+# - Race conditions in metric extraction
+# - Failures from non-master nodes trying to report identical global metrics
+#
+# This follows PyTorch distributed training best practices where only rank 0
+# reports final metrics.
+# =============================================================================
+
 if [ $TASK_EXIT -eq 0 ]; then
-    RESULTS_DIR={{ manifest_file | dirname }}
-    echo "Copying results back to: $RESULTS_DIR"
-    
-    if [ -f "$WORKSPACE/perf.csv" ]; then
-        cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf_node_${SLURM_PROCID}.csv" 2>/dev/null || true
-        echo "  Copied: perf_node_${SLURM_PROCID}.csv"
-    fi
-    
-    for log in "$WORKSPACE"/*.log; do
-        if [ -f "$log" ]; then
-            cp "$log" "$RESULTS_DIR/" 2>/dev/null || true
+    if [ "${SLURM_PROCID}" = "0" ]; then
+        # Master node: Collect and report results
+        RESULTS_DIR={{ manifest_file | dirname }}
+        echo ""
+        echo "========================================================================"
+        echo "Master Node (SLURM_PROCID=0): Collecting results"
+        echo "========================================================================"
+        echo "Copying results back to: $RESULTS_DIR"
+        
+        # Copy performance results (main metric file)
+        if [ -f "$WORKSPACE/perf.csv" ]; then
+            cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf.csv" 2>/dev/null || true
+            echo "  ✓ Copied: perf.csv (global metrics)"
         fi
-    done
-    
-    echo "  ✓ Results copied"
+        
+        # Copy log files
+        for log in "$WORKSPACE"/*.log; do
+            if [ -f "$log" ]; then
+                log_basename=$(basename "$log")
+                cp "$log" "$RESULTS_DIR/${log_basename}" 2>/dev/null || true
+                echo "  ✓ Copied: ${log_basename}"
+            fi
+        done
+        
+        # Copy any training results files
+        if [ -f "$WORKSPACE/training_results.txt" ]; then
+            cp "$WORKSPACE/training_results.txt" "$RESULTS_DIR/" 2>/dev/null || true
+            echo "  ✓ Copied: training_results.txt"
+        fi
+        
+        echo "  ✓ Master node results collection complete"
+        echo "========================================================================"
+    else
+        # Worker nodes: Exit cleanly without collecting results
+        echo ""
+        echo "========================================================================"
+        echo "Worker Node (SLURM_PROCID=${SLURM_PROCID}): Exiting cleanly"
+        echo "========================================================================"
+        echo "  Note: Performance metrics collected by master node only (best practice)"
+        echo "========================================================================"
+    fi
+else
+    echo ""
+    echo "========================================================================"
+    echo "Task FAILED with exit code: $TASK_EXIT"
+    echo "  Node: SLURM_PROCID=${SLURM_PROCID}"
+    echo "========================================================================"
 fi
 
 exit $TASK_EXIT
@@ -500,8 +636,22 @@ rm -f "$TASK_SCRIPT"
 # =============================================================================
 # Single-node: Execute directly
 # =============================================================================
+# Configure MAD_MULTI_NODE_RUNNER for single-node
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={{ gpus_per_node }}"
+export RANK=0  # Single node always has rank 0
+export NODE_RANK=0
+
+echo "=========================================="
+echo "🔧 Single-node Training Setup"
+echo "=========================================="
+echo "  NPROC_PER_NODE: {{ gpus_per_node }}"
+echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+echo "=========================================="
+echo ""
+
 echo "Executing madengine in LOCAL mode (inside SLURM job)"
 echo "  Command: $MAD_CLI_COMMAND"
+echo ""
 
 $MAD_CLI_COMMAND run \
     {% if manifest_file %}--manifest-file "$EXEC_MANIFEST"{% else %}--tags {{ tags }}{% endif %} \
@@ -514,9 +664,10 @@ $MAD_CLI_COMMAND run \
             'MASTER_PORT': '${MASTER_PORT}',
             'WORLD_SIZE': '${WORLD_SIZE}',
             'RANK': '${RANK}',
-            'LOCAL_RANK': '${LOCAL_RANK}',
+            'LOCAL_RANK': '0',
             'NNODES': '${NNODES}',
             'NPROC_PER_NODE': '${GPUS_PER_NODE}',
+            'NODE_RANK': '${NODE_RANK}',
             'MAD_MULTI_NODE_RUNNER': '${MAD_MULTI_NODE_RUNNER}',
             'NCCL_SOCKET_IFNAME': '${NCCL_SOCKET_IFNAME}',
             'GLOO_SOCKET_IFNAME': '${GLOO_SOCKET_IFNAME}',
@@ -530,52 +681,64 @@ EXIT_CODE=$?
 {% endif %}
 
 # =============================================================================
-# Copy Results from Local Workspace to Shared Results Directory (Multi-node)
+# Job Completion
 # =============================================================================
+# Note: For multi-node jobs, only the master node (SLURM_PROCID=0) collects
+# and reports performance metrics. This follows distributed training best
+# practices where:
+# - Global metrics are identical across all nodes (computed via all_reduce)
+# - Only rank 0 should report to avoid duplicate/conflicting data
+# - Worker nodes exit cleanly after training completes
 
-{% if nodes > 1 %}
-# Multi-node: Copy results/logs from each work node back to shared results directory
-# This allows collecting outputs from all nodes in one location
-if [ "$WORKSPACE_TYPE" = "local-multinode" ]; then
-    RESULTS_DIR={{ manifest_file | dirname }}
-    echo "Copying results from local workspace to shared results directory..."
-    
-    # Copy performance results (per-node)
-    if [ -f "$WORKSPACE/perf.csv" ]; then
-        cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf_node_${SLURM_PROCID}.csv" 2>/dev/null || true
-        echo "  Copied: perf_node_${SLURM_PROCID}.csv"
-    fi
-    
-    # Copy log files
-    if ls "$WORKSPACE"/*.log >/dev/null 2>&1; then
-        cp "$WORKSPACE"/*.log "$RESULTS_DIR/" 2>/dev/null || true
-        echo "  Copied: log files"
-    fi
-    
-    # Copy any output files that might be needed
-    if ls "$WORKSPACE"/*.out >/dev/null 2>&1; then
-        cp "$WORKSPACE"/*.out "$RESULTS_DIR/" 2>/dev/null || true
-    fi
-    
-    echo "Results copied to: $RESULTS_DIR"
+echo ""
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "========================================================================"
+    echo "✅ SLURM Job Completed Successfully"
+    echo "========================================================================"
+    echo "  Job ID: ${SLURM_JOB_ID}"
+    echo "  Nodes: {{ nodes }}"
+    echo "  GPUs per node: {{ gpus_per_node }}"
+    echo "  Total GPUs: $(({{ nodes }} * {{ gpus_per_node }}))"
+    echo "  Results: {{ manifest_file | dirname }}/perf.csv"
+    {% if nodes > 1 %}
+    echo ""
+    echo "  📋 Individual Node Logs ({{ nodes }} nodes):"
+    echo "  ─────────────────────────────────────────────"
+    for i in $(seq 0 $(({{ nodes }} - 1))); do
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        if [ -f "$NODE_OUT" ]; then
+            OUT_SIZE=$(du -h "$NODE_OUT" 2>/dev/null | cut -f1)
+            ERR_SIZE=$(du -h "$NODE_ERR" 2>/dev/null | cut -f1)
+            echo "  Node $i:"
+            echo "    stdout: ${NODE_OUT} (${OUT_SIZE})"
+            echo "    stderr: ${NODE_ERR} (${ERR_SIZE})"
+        fi
+    done
+    {% endif %}
+    echo "========================================================================"
+else
+    echo "========================================================================"
+    echo "❌ SLURM Job Failed"
+    echo "========================================================================"
+    echo "  Job ID: ${SLURM_JOB_ID}"
+    echo "  Exit Code: $EXIT_CODE"
+    {% if nodes > 1 %}
+    echo ""
+    echo "  📋 Check Individual Node Logs:"
+    echo "  ─────────────────────────────────"
+    for i in $(seq 0 $(({{ nodes }} - 1))); do
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        if [ -f "$NODE_OUT" ] || [ -f "$NODE_ERR" ]; then
+            echo "  Node $i: ${NODE_OUT}"
+        fi
+    done
+    {% else %}
+    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_*.out"
+    {% endif %}
+    echo "========================================================================"
 fi
-{% endif %}
 
-# =============================================================================
-# Collect Results
-# =============================================================================
-
-{% if results_dir %}
-# Copy performance results to shared location
-if [ -f "perf.csv" ]; then
-    cp perf.csv {{ results_dir }}/perf_${SLURM_JOB_ID}_node${SLURM_NODEID}.csv
-fi
-
-# Copy logs
-cp {{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_${SLURM_PROCID}.out \
-   {{ results_dir }}/logs/ 2>/dev/null || true
-{% endif %}
-
-echo "Node $SLURM_NODEID completed with exit code $EXIT_CODE"
 exit $EXIT_CODE
 

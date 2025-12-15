@@ -1,0 +1,26 @@
+{
+  "_comment": "Single Node, Multi-GPU (8 GPUs) - SLURM Configuration",
+  "_description": "Configuration for running a model on 8 GPUs on a single SLURM node",
+  "_use_case": "Single-node distributed training, large models requiring multiple GPUs",
+  "_note": "Using 'amd-rccl' partition. Change to your cluster's partition name if different.",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 8,
+    "time": "12:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8",
+    "NCCL_DEBUG": "WARN"
+  },
+  
+  "debug": false
+}
+
