@@ -173,22 +173,33 @@ fi
 # Single-node: Verify madengine-cli availability
 # =============================================================================
 
-# Verify madengine-cli is available (or prepare fallback)
+# Verify madengine-cli availability
+# Note: We rely on the submission environment being inherited by compute nodes
 echo ""
 echo "Verifying madengine-cli availability..."
 if command -v madengine-cli >/dev/null 2>&1; then
-    echo "  ✓ madengine-cli is available in PATH"
-    MAD_CLI_VERSION=$(madengine-cli --version 2>/dev/null | head -n1 || echo "unknown")
+    MAD_CLI_VERSION=$(madengine-cli --version 2>&1 | head -n1 || echo "unknown")
+    MAD_CLI_PATH=$(which madengine-cli 2>/dev/null || echo "unknown")
+    
+    echo "  ✓ madengine-cli available"
     echo "  Version: $MAD_CLI_VERSION"
-    export MAD_CLI_COMMAND="madengine-cli"
-elif [ -f "$WORKSPACE/src/madengine/cli/app.py" ]; then
-    echo "  ⚠ madengine-cli not found in PATH"
-    echo "  Will use Python module fallback: python3 -m madengine.cli.app"
-    export PYTHONPATH=$WORKSPACE/src:$PYTHONPATH
-    export MAD_CLI_COMMAND="python3 -m madengine.cli.app"
+    echo "  Path: $MAD_CLI_PATH"
+    
+    # Verify it's executable
+    if madengine-cli --help >/dev/null 2>&1; then
+        export MAD_CLI_COMMAND="madengine-cli"
+    else
+        echo "  ❌ ERROR: madengine-cli found but not functional!"
+        exit 1
+    fi
 else
-    echo "  ❌ ERROR: madengine-cli not available and no source code found!"
-    echo "  Cannot continue without madengine"
+    echo "  ❌ ERROR: madengine-cli not found in PATH"
+    echo ""
+    echo "  To fix:"
+    echo "    • Activate your virtual environment: source venv/bin/activate"
+    echo "    • Install madengine: pip install -e . (for development)"
+    echo "    • Verify before submission: madengine-cli --version"
+    echo ""
     exit 1
 fi
 echo ""
@@ -396,45 +407,47 @@ rsync -a --quiet \
 echo "  ✓ Project copied to local workspace"
 echo ""
 
-# Install madengine on work node
-echo "Installing madengine on work node..."
+# =============================================================================
+# Verify madengine-cli Availability
+# =============================================================================
+# Note: We rely on the submission environment being inherited by compute nodes.
+# The submission node MUST have madengine-cli available before job submission.
+# This is validated pre-flight by the Python deployment code.
 
-if [ -f "$WORKSPACE/pyproject.toml" ] && grep -q '"madengine"' "$WORKSPACE/pyproject.toml"; then
-    echo "  Detected: madengine package"
-    echo "  Installing: pip install -e ."
-    if python3 -m pip install --user -q -e "$WORKSPACE" >/dev/null 2>&1; then
-        echo "  ✓ madengine installed"
-    else
-        echo "  ⚠ Warning: pip install failed"
-    fi
-elif [ -f "$WORKSPACE/requirements.txt" ]; then
-    echo "  Detected: MAD package"
-    echo "  Installing: pip install -r requirements.txt"
-    if python3 -m pip install --user -q -r "$WORKSPACE/requirements.txt" >/dev/null 2>&1; then
-        echo "  ✓ Dependencies installed"
-    else
-        echo "  ⚠ Warning: pip install failed"
-    fi
-elif [ -f "$WORKSPACE/setup.py" ]; then
-    echo "  Detected: Package with setup.py"
-    if python3 -m pip install --user -q -e "$WORKSPACE" >/dev/null 2>&1; then
-        echo "  ✓ Package installed"
-    else
-        echo "  ⚠ Warning: pip install failed"
-    fi
-fi
+echo "Verifying madengine-cli availability..."
 
-# Verify madengine-cli availability
-echo ""
 if command -v madengine-cli >/dev/null 2>&1; then
+    MAD_CLI_VERSION=$(madengine-cli --version 2>&1 | head -n1 || echo "unknown")
+    MAD_CLI_PATH=$(which madengine-cli 2>/dev/null || echo "unknown")
+    
     echo "✓ madengine-cli available"
-    MAD_CLI_COMMAND="madengine-cli"
-elif [ -f "$WORKSPACE/src/madengine/cli/app.py" ]; then
-    echo "⚠ Using Python module fallback"
-    export PYTHONPATH=$WORKSPACE/src:$PYTHONPATH
-    MAD_CLI_COMMAND="python3 -m madengine.cli.app"
+    echo "  Version: $MAD_CLI_VERSION"
+    echo "  Path: $MAD_CLI_PATH"
+    
+    # Verify it's executable
+    if madengine-cli --help >/dev/null 2>&1; then
+        echo "  ✓ Verified: madengine-cli is functional"
+        MAD_CLI_COMMAND="madengine-cli"
+    else
+        echo "❌ ERROR: madengine-cli found but not functional!"
+        echo "   Please check your installation on the submission node"
+        exit 1
+    fi
 else
-    echo "❌ ERROR: madengine-cli not available!"
+    echo "❌ ERROR: madengine-cli not found in PATH"
+    echo ""
+    echo "This means:"
+    echo "  1. madengine is not installed, OR"
+    echo "  2. Virtual environment not activated on submission node, OR"
+    echo "  3. Environment not properly inherited by SLURM"
+    echo ""
+    echo "To fix:"
+    echo "  • Activate your virtual environment: source venv/bin/activate"
+    echo "  • Install madengine: pip install -e . (for development)"
+    echo "  • Verify before submission: madengine-cli --version"
+    echo ""
+    echo "Current PATH: $PATH"
+    echo ""
     exit 1
 fi
 

@@ -113,8 +113,81 @@ class SlurmDeployment(BaseDeployment):
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
 
+    def _validate_cli_availability(self) -> bool:
+        """
+        Validate madengine-cli is available before job submission.
+        
+        Compute nodes inherit the submission environment, so madengine-cli
+        must be available in PATH on the submission node.
+        
+        Returns:
+            bool: True if madengine-cli is available and functional
+        """
+        try:
+            result = subprocess.run(
+                ["madengine-cli", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip() or "unknown"
+                self.console.print(
+                    f"[green]✓[/green] madengine-cli available: [cyan]{version}[/cyan]"
+                )
+                
+                # Show path for transparency
+                which_result = subprocess.run(
+                    ["which", "madengine-cli"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if which_result.returncode == 0:
+                    cli_path = which_result.stdout.strip()
+                    self.console.print(f"  Path: [dim]{cli_path}[/dim]")
+                
+                return True
+            else:
+                self.console.print(
+                    "[red]✗ madengine-cli found but returned error[/red]"
+                )
+                if result.stderr:
+                    self.console.print(f"  Error: {result.stderr.strip()}")
+                return False
+                
+        except FileNotFoundError:
+            self.console.print(
+                "\n[red]✗ ERROR: madengine-cli not found[/red]\n"
+            )
+            self.console.print(
+                "[yellow]Compute nodes need madengine-cli in PATH.[/yellow]\n"
+                "\n[bold]To fix:[/bold]\n"
+                "  1. Activate virtual environment: [cyan]source venv/bin/activate[/cyan]\n"
+                "  2. Install madengine:\n"
+                "     • Development: [cyan]pip install -e .[/cyan]\n"
+                "     • Production:  [cyan]pip install madengine[/cyan]\n"
+                "  3. Verify: [cyan]madengine-cli --version[/cyan]\n"
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            self.console.print("[red]✗ madengine-cli command timed out[/red]")
+            return False
+        except Exception as e:
+            self.console.print(f"[red]✗ Error checking madengine-cli: {e}[/red]")
+            return False
+
     def prepare(self) -> bool:
         """Generate sbatch script from template."""
+        # Validate environment BEFORE generating job scripts
+        self.console.print("\n[bold]Validating submission environment...[/bold]")
+        if not self._validate_cli_availability():
+            self.console.print(
+                "\n[yellow]⚠ Tip: Compute nodes inherit your submission environment[/yellow]"
+            )
+            return False
+        
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
