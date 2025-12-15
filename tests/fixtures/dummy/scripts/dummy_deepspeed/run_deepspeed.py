@@ -19,6 +19,7 @@ import socket
 import argparse
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import deepspeed
 
 # Configuration
@@ -108,7 +109,8 @@ def train_epoch(model_engine, criterion, epoch):
 def main():
     # Parse DeepSpeed args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--local_rank', type=int, default=0)
+    # local_rank default should come from environment (set by torchrun)
+    parser.add_argument('--local_rank', type=int, default=int(os.environ.get('LOCAL_RANK', 0)))
     parser.add_argument('--deepspeed_config', type=str, default='ds_config.json')
     args = parser.parse_args()
     
@@ -157,6 +159,12 @@ def main():
         sys.exit(1)
     
     print_header(args)
+    
+    # Initialize PyTorch distributed backend BEFORE DeepSpeed
+    # This prevents DeepSpeed from trying to use MPI
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+        print(f"✓ PyTorch distributed initialized (backend: nccl)")
     
     # Create model
     model = SimpleModel(NUM_CLASSES)

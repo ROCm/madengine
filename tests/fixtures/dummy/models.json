@@ -310,8 +310,8 @@
   {
     "name": "dummy_deepspeed",
     "dockerfile": "docker/dummy_deepspeed",
-    "scripts": "scripts/dummy_deepspeed/run_deepspeed.py",
-    "n_gpus": "2",
+    "scripts": "scripts/dummy_deepspeed/run.sh",
+    "n_gpus": "4",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
@@ -319,6 +319,6 @@
       "dummy_distributed",
       "dummy_deepspeed"
     ],
-    "args": "--deepspeed_config ds_config.json"
+    "args": ""
   }
 ]
