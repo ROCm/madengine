@@ -320,5 +320,35 @@
       "dummy_deepspeed"
     ],
     "args": ""
+  },
+  {
+    "name": "dummy_vllm",
+    "dockerfile": "docker/dummy_vllm",
+    "scripts": "scripts/dummy_vllm/run.sh",
+    "n_gpus": "4",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_vllm",
+      "inference"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_sglang",
+    "dockerfile": "docker/dummy_sglang",
+    "scripts": "scripts/dummy_sglang/run.sh",
+    "n_gpus": "4",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_sglang",
+      "inference"
+    ],
+    "args": ""
   }
 ]
