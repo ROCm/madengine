@@ -115,7 +115,7 @@ def run_inference(args):
             "pipeline_parallel_size": args.pipeline_parallel_size,
             "trust_remote_code": True,
             "dtype": "auto",
-            "gpu_memory_utilization": 0.90,
+            "gpu_memory_utilization": 0.70,  # Reduced to 70% to avoid OOM errors
             "max_model_len": 2048,
             "disable_log_stats": True,  # Reduce logging noise
         }

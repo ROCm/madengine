@@ -162,9 +162,11 @@ The script outputs the following metrics:
 ## Troubleshooting
 
 ### Out of Memory (OOM) Errors
-- Reduce `--gpu-memory-utilization` (default: 0.90)
-- Use smaller model or reduce `--max-model-len`
-- Increase tensor parallelism size
+- GPU memory utilization is set to 0.70 (70%) by default for stability
+- If you still encounter OOM errors:
+  - Use a smaller model or reduce `max_model_len` in the script
+  - Increase tensor parallelism size to split the model across more GPUs
+  - Check for other processes using GPU memory before running
 
 ### Slow Performance
 - Enable CUDA graphs (remove `--enforce-eager`)
