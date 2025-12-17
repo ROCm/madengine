@@ -8,6 +8,12 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node={{ gpus_per_node }}
 #SBATCH --time={{ time_limit }}
+{% if exclude %}
+#SBATCH --exclude={{ exclude }}
+{% endif %}
+{% if constraint %}
+#SBATCH --constraint={{ constraint }}
+{% endif %}
 {% if exclusive %}
 #SBATCH --exclusive
 {% endif %}
@@ -221,23 +227,32 @@ manifest_file = '$ORIGINAL_MANIFEST'
 output_file = '$LOCAL_MANIFEST'
 with open(manifest_file, 'r') as f:
     manifest = json.load(f)
+
+# Keep built_images for Docker execution
+# Only modify deployment_config to run on this node (not via SLURM scheduler again)
 if 'deployment_config' in manifest:
     gpus_per_node = None
     if 'slurm' in manifest['deployment_config']:
         gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
-    manifest['deployment_config']['target'] = 'local'
+    
+    # Set to 'docker' instead of 'local' to force container execution
+    manifest['deployment_config']['target'] = 'docker'
+    
+    # Remove scheduler configs (but keep built_images!)
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
+    
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
+
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
-print('Created local execution manifest')
+print('Created Docker execution manifest for SLURM compute node')
 "
 
 if [ $? -eq 0 ]; then
-    echo "✓ Forced local execution in manifest: $LOCAL_MANIFEST"
+    echo "✓ Forced Docker execution in manifest: $LOCAL_MANIFEST"
     EXEC_MANIFEST="$LOCAL_MANIFEST"
 else
     echo "⚠ Failed to modify manifest, using original"
@@ -464,24 +479,33 @@ manifest_file = '$ORIGINAL_MANIFEST'
 output_file = '$LOCAL_MANIFEST'
 with open(manifest_file, 'r') as f:
     manifest = json.load(f)
+
+# Keep built_images for Docker execution
+# Only modify deployment_config to run on this node (not via SLURM scheduler again)
 if 'deployment_config' in manifest:
     gpus_per_node = None
     if 'slurm' in manifest['deployment_config']:
         gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
-    manifest['deployment_config']['target'] = 'local'
+    
+    # Set to 'docker' instead of 'local' to force container execution
+    manifest['deployment_config']['target'] = 'docker'
+    
+    # Remove scheduler configs (but keep built_images!)
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
+    
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
+
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
-print('✓ Created local execution manifest')
+print('✓ Created Docker execution manifest for SLURM compute node')
 "
 
 if [ $? -eq 0 ] && [ -f "$LOCAL_MANIFEST" ]; then
     EXEC_MANIFEST="$LOCAL_MANIFEST"
-    echo "✓ Manifest ready: $EXEC_MANIFEST"
+    echo "✓ Manifest ready for Docker execution: $EXEC_MANIFEST"
 else
     echo "⚠ Using original manifest"
     EXEC_MANIFEST="$ORIGINAL_MANIFEST"

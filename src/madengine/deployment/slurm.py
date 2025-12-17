@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 from .config_loader import ConfigLoader
+from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
 
 
@@ -239,6 +240,8 @@ class SlurmDeployment(BaseDeployment):
             "distributed_backend": self.distributed_config.get("backend", "nccl"),
             "network_interface": self.slurm_config.get("network_interface"),
             "exclusive": self.slurm_config.get("exclusive", True),
+            "exclude": self.slurm_config.get("exclude"),
+            "constraint": self.slurm_config.get("constraint"),
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
@@ -263,6 +266,45 @@ class SlurmDeployment(BaseDeployment):
                 deployment_id="",
                 message="Script not generated. Run prepare() first.",
             )
+
+        # ==================== PREFLIGHT NODE SELECTION ====================
+        # For multi-node jobs with Ray/vLLM, check for clean nodes first
+        # to avoid OOM errors from stale processes
+        enable_preflight = self.slurm_config.get("enable_node_check", True)
+        auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
+        
+        if enable_preflight and self.nodes > 1:
+            try:
+                selector = SlurmNodeSelector(
+                    console=self.console,
+                    auto_cleanup=auto_cleanup,
+                    verbose=self.slurm_config.get("verbose_node_check", False),
+                )
+                
+                # Select clean nodes and get updated exclude list
+                clean_nodes, updated_exclude = selector.select_nodes(
+                    partition=self.partition,
+                    nodes_needed=self.nodes,
+                    exclude=self.slurm_config.get("exclude"),
+                    constraint=self.slurm_config.get("constraint"),
+                )
+                
+                # Update exclude list if dirty nodes found
+                if updated_exclude and updated_exclude != self.slurm_config.get("exclude", ""):
+                    self.console.print(
+                        f"[dim]Updated exclude list for sbatch: {updated_exclude}[/dim]\n"
+                    )
+                    # Re-generate script with updated exclude list
+                    self.slurm_config["exclude"] = updated_exclude
+                    self.prepare()  # Re-generate sbatch script
+                    
+            except Exception as e:
+                # Don't fail deployment if preflight fails
+                self.console.print(
+                    f"[yellow]⚠ Node health check failed: {e}[/yellow]"
+                )
+                self.console.print("[dim]Continuing with job submission[/dim]\n")
+        # ==================== END PREFLIGHT ====================
 
         try:
             # Submit job to SLURM (runs locally on login node)

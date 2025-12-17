@@ -180,10 +180,8 @@ class Context:
         for nodes that will run containers.
         """
         print("Initializing runtime context with system and GPU detection...")
-
         # Initialize system context first
         self.init_system_context()
-
         # Initialize GPU context
         self.init_gpu_context()
 
@@ -377,32 +375,33 @@ class Context:
         # Check NVIDIA first (simplest check)
         if os.path.exists("/usr/bin/nvidia-smi"):
             try:
-                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''")
+                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''", timeout=180)
                 if result and result.strip() == "NVIDIA":
                     return "NVIDIA"
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
+        # Increased timeout to 180s for SLURM compute nodes where GPU initialization may be slow
         amd_smi_paths = ["/opt/rocm/bin/amd-smi", "/usr/local/bin/amd-smi"]
         for amd_smi_path in amd_smi_paths:
             if os.path.exists(amd_smi_path):
                 try:
-                    # Verify amd-smi actually works
-                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                    # Verify amd-smi actually works (180s timeout for slow GPU initialization)
+                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
                     if result and result.strip() == "AMD":
                         return "AMD"
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Warning: amd-smi check failed for {amd_smi_path}: {e}")
         
         # Fallback to rocm-smi (PR #54)
         if os.path.exists("/opt/rocm/bin/rocm-smi"):
             try:
-                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
                 if result and result.strip() == "AMD":
                     return "AMD"
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: rocm-smi check failed: {e}")
         
         return "Unable to detect GPU vendor"
 
@@ -482,9 +481,9 @@ class Context:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_count()
             except Exception as e:
-                # Fallback to direct command for NVIDIA
+                # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
+                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l", timeout=180))
                     return number_gpus
                 except Exception:
                     raise RuntimeError(
@@ -562,9 +561,9 @@ class Context:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_product_name(gpu_id=0)
             except Exception as e:
-                # Fallback to direct command for NVIDIA
+                # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
+                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0", timeout=180)
                 except Exception:
                     raise RuntimeError(
                         f"Unable to determine NVIDIA GPU product name. "
@@ -730,8 +729,8 @@ class Context:
                     for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)
                 }
 
-                # Get GPU ID to unique ID mapping from rocm-smi
-                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'")
+                # Get GPU ID to unique ID mapping from rocm-smi (longer timeout for slow compute nodes)
+                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'", timeout=180)
                 if not rsmi_output or rsmi_output.strip() == "":
                     raise RuntimeError("Failed to retrieve unique IDs from rocm-smi")
                 
@@ -750,7 +749,8 @@ class Context:
             else:
                 # Modern method using amd-smi (ROCm >= 6.4.0)
                 # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
-                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1")
+                # Longer timeout (180s) for slow GPU initialization on SLURM compute nodes
+                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1", timeout=180)
                 if not output or output.strip() == "":
                     raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
                 

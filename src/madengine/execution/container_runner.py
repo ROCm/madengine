@@ -1333,7 +1333,7 @@ class ContainerRunner:
                     # Verify image exists
                     try:
                         self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except:
+                    except (subprocess.CalledProcessError, RuntimeError) as e:
                         self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
                         try:
                             self.pull_image(run_image)
