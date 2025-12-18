@@ -526,46 +526,49 @@ class RunOrchestrator:
         # Filter images by GPU vendor and architecture
         # Filter images by GPU compatibility
         try:
+            # Always filter by runtime GPU compatibility (both Docker and bare-metal)
+            runtime_gpu_vendor = self.context.get_gpu_vendor()
+            runtime_gpu_arch = self.context.get_system_gpu_architecture()
+            print(f"Runtime GPU vendor: {runtime_gpu_vendor}")
+            print(f"Runtime GPU architecture detected: {runtime_gpu_arch}")
+
             if has_docker_images:
-                # Docker images are pre-built for specific GPUs, skip runtime filtering
-                self.rich_console.print("[dim cyan]Using all Docker images (already GPU-specific from build)[/dim cyan]\n")
-                compatible_images = manifest["built_images"]
+                # Docker images: filter by GPU vendor at runtime to avoid cross-vendor execution
+                self.rich_console.print("[dim cyan]Filtering Docker images by runtime GPU compatibility...[/dim cyan]")
             else:
                 # Bare-metal execution: filter by runtime GPU
-                runtime_gpu_vendor = self.context.get_gpu_vendor()
-                runtime_gpu_arch = self.context.get_system_gpu_architecture()
-                print(f"Runtime GPU vendor: {runtime_gpu_vendor}")
-                print(f"Runtime GPU architecture detected: {runtime_gpu_arch}")
+                self.rich_console.print("[dim cyan]Filtering bare-metal images by runtime GPU compatibility...[/dim cyan]")
 
-                compatible_images = self._filter_images_by_gpu_compatibility(
-                    manifest["built_images"], runtime_gpu_vendor, runtime_gpu_arch
+            compatible_images = self._filter_images_by_gpu_compatibility(
+                manifest["built_images"], runtime_gpu_vendor, runtime_gpu_arch
+            )
+
+            if not compatible_images:
+                raise MADRuntimeError(
+                    f"No compatible images for GPU vendor '{runtime_gpu_vendor}' and architecture '{runtime_gpu_arch}'",
+                    context=create_error_context(
+                        operation="filter_images",
+                        component="RunOrchestrator",
+                    ),
+                    suggestions=[
+                        f"Build images for {runtime_gpu_vendor} GPU",
+                        f"Build images for {runtime_gpu_arch} using --target-archs",
+                        "Check manifest contains images for your GPU",
+                    ],
                 )
 
-                if not compatible_images:
-                    raise MADRuntimeError(
-                        f"No compatible images for GPU vendor '{runtime_gpu_vendor}' and architecture '{runtime_gpu_arch}'",
-                        context=create_error_context(
-                            operation="filter_images",
-                            component="RunOrchestrator",
-                        ),
-                        suggestions=[
-                            f"Build images for {runtime_gpu_vendor} GPU",
-                            f"Build images for {runtime_gpu_arch} using --target-archs",
-                            "Check manifest contains images for your GPU",
-                        ],
-                    )
-
-                manifest["built_images"] = compatible_images
-                print(f"Filtered to {len(compatible_images)} compatible images\n")
-                
-                # Filter by skip_gpu_arch from model definitions
-                if "built_models" in manifest and compatible_images:
-                    self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
-                    compatible_images = self._filter_images_by_skip_gpu_arch(
-                        compatible_images, manifest["built_models"], runtime_gpu_arch
-                    )
-                manifest["built_images"] = compatible_images
-                print(f"After skip_gpu_arch filtering: {len(compatible_images)} images to run\n")
+            manifest["built_images"] = compatible_images
+            print(f"Filtered to {len(compatible_images)} compatible images\n")
+            
+            # Filter by skip_gpu_arch from model definitions (applies to both Docker and bare-metal)
+            runtime_gpu_arch = self.context.get_system_gpu_architecture()
+            if "built_models" in manifest and compatible_images:
+                self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
+                compatible_images = self._filter_images_by_skip_gpu_arch(
+                    compatible_images, manifest["built_models"], runtime_gpu_arch
+                )
+            manifest["built_images"] = compatible_images
+            print(f"After skip_gpu_arch filtering: {len(compatible_images)} images to run\n")
             
             # NOTE: Dockerfile context filtering is already done during build phase
             # Re-filtering during run phase causes issues because:

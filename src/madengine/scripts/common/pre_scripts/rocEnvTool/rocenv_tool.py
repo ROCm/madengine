@@ -63,6 +63,7 @@ def print_gpu_hardware_information(gpu_device_type):
         cmd = "nvidia-smi -L"
     else:
         print ("WARNING: Unknown GPU device detected")
+        cmd = "echo 'Unknown GPU device'"
     cmd_info = CommandInfo("GPU Information", [cmd])
     return cmd_info
 

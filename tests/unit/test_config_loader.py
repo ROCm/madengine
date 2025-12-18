@@ -22,7 +22,7 @@ from madengine.deployment.config_loader import ConfigLoader
 # Helper function to get project root
 def get_project_root():
     """Get the project root directory."""
-    return Path(__file__).parent.parent.parent.parent
+    return Path(__file__).parent.parent.parent
 
 
 # Helper function to check if config file exists
