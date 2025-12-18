@@ -43,8 +43,8 @@ The deployment type is **inferred** from the configuration structure:
 | File | Description | Nodes | GPUs | Use Case |
 |------|-------------|-------|------|----------|
 | `01-torchrun-single-node-single-gpu.json` | Single GPU training | 1 | 1 | Quick tests, small models |
-| `02-single-node-multi-gpu.json` | Single node, 8 GPUs | 1 | 8 | Single-node distributed training |
-| `03-multi-node-basic.json` | 2 nodes, 8 GPUs each | 2 | 16 | Multi-node distributed training |
+| `02-single-node-multi-gpu.json` | Single node, 8 GPUs | 1 | 8 | Single-node distributed workload |
+| `03-multi-node-basic.json` | 2 nodes, 8 GPUs each | 2 | 16 | Multi-node distributed workload |
 | `04-multi-node-advanced.json` | 4 nodes, advanced features | 4 | 32 | Production-scale training |
 
 ### vLLM Inference Configurations (`basic/`)
@@ -166,13 +166,13 @@ madengine-cli run --tags model_tag \
   --additional-context '{"slurm": {"nodes": 4, "time": "48:00:00"}}'
 ```
 
-## 🔄 Distributed Training Support
+## 🔄 Distributed Workload Support
 
-The SLURM deployment **automatically configures distributed training** for multi-node and multi-GPU setups:
+The SLURM deployment **automatically configures distributed execution** for multi-node and multi-GPU setups (training with torchrun/deepspeed or inference with vLLM/SGLang):
 
 ### How It Works
 
-1. **Environment Variables**: SLURM sets distributed training environment (MASTER_ADDR, MASTER_PORT, RANK, etc.)
+1. **Environment Variables**: SLURM sets distributed execution environment (MASTER_ADDR, MASTER_PORT, RANK, etc.)
 2. **MAD_MULTI_NODE_RUNNER**: Automatically configured with the appropriate `torchrun` command
 3. **Docker Containers**: Environment variables are passed into containers via `docker_env_vars`
 4. **Model Scripts**: Use `$MAD_MULTI_NODE_RUNNER` to launch training (see below)
@@ -185,7 +185,7 @@ Your model's run script should use the `MAD_MULTI_NODE_RUNNER` environment varia
 #!/bin/bash
 # Example: scripts/my_model/run.sh
 
-# MAD_MULTI_NODE_RUNNER is automatically set by madengine for distributed training
+# MAD_MULTI_NODE_RUNNER is automatically set by madengine for distributed workloads
 if [ -z "$MAD_MULTI_NODE_RUNNER" ]; then
     # Fallback for standalone execution
     N_GPUS="${MAD_RUNTIME_NGPUS:-1}"
@@ -224,7 +224,7 @@ The following variables are automatically available in your containers:
 ```
 → `MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=8"`
 
-**Multi-Node Distributed Training**:
+**Multi-Node Distributed Workload**:
 ```json
 {
   "slurm": {
@@ -237,11 +237,11 @@ The following variables are automatically available in your containers:
 
 ### Verification
 
-Check that distributed training is configured correctly:
+Check that distributed execution is configured correctly:
 
 ```bash
 # In your SLURM output logs, you should see:
-Distributed Training Configuration:
+Distributed Execution Configuration:
   NNODES: 2
   GPUS_PER_NODE: 8
   TOTAL_GPUS: 16
@@ -389,17 +389,30 @@ madengine uses intelligent multi-layer configuration merging:
 }
 ```
 
-### Distributed Training Section
+### Distributed Execution Section
 
 ```json
 {
   "distributed": {
-    "backend": "nccl",    // Communication backend (nccl/gloo)
-    "port": 29500,        // Master node port
-    "launcher": "torchrun" // Launcher type (torchrun/vllm/sglang)
+    "launcher": "torchrun",    // Launcher type: torchrun, vllm, sglang, deepspeed, megatron
+    "backend": "nccl",         // Communication backend (nccl/gloo)
+    "port": 29500,             // Master node port
+    "nnodes": 2,               // Number of nodes (overrides slurm.nodes if set)
+    "nproc_per_node": 8        // GPUs per node (overrides slurm.gpus_per_node if set)
   }
 }
 ```
+
+**Supported Launchers:**
+- `torchrun`: PyTorch distributed training (default)
+- `vllm`: vLLM inference engine (TP/PP parallelism)
+- `sglang`: SGLang inference engine
+- `deepspeed`: DeepSpeed training framework
+- `megatron`: Megatron-LM large model training
+- Custom: Set environment variables, model script handles launcher
+
+**Note**: For vLLM and SGLang, the model script handles process spawning directly.
+For torchrun/deepspeed/megatron, use `$MAD_MULTI_NODE_RUNNER` in your model script.
 
 ### Environment Variables
 
@@ -736,6 +749,8 @@ tail -f slurm_output/madengine-*_<job_id>_*.err | grep -i "memory"
 - [SLURM Official Documentation](https://slurm.schedmd.com/)
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [PyTorch Distributed Training](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
+- [vLLM Distributed Inference](https://docs.vllm.ai/en/latest/serving/distributed_serving.html)
+- [SGLang Distributed Serving](https://sgl-project.github.io/)
 
 ---
 

@@ -1,0 +1,47 @@
+{
+  "_comment": "SGLang Multi-Node Multi-GPU - Distributed Inference Configuration",
+  "_description": "SGLang inference with tensor + data parallelism across nodes",
+  "_use_case": "High-throughput LLM inference requiring multiple nodes",
+  "_note": "SGLang uses tensor parallelism within nodes and data parallelism across nodes",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 4,
+    "time": "04:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 2,
+    "nproc_per_node": 4,
+    "backend": "nccl",
+    "port": 29500
+  },
+  
+  "env_vars": {
+    "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "SGLANG_USE_MODELSCOPE": "False",
+    "SGLANG_ENABLE_FLASHINFER": "1",
+    "SGLANG_ENABLE_RADIX_CACHE": "1",
+    "SGLANG_RADIX_CACHE_SIZE": "0.9",
+    "SGLANG_LOGGING_LEVEL": "INFO",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_ENABLE_SDMA": "0",
+    "GPU_MAX_HW_QUEUES": "2",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "NCCL_MIN_NCHANNELS": "16",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "RAY_DEDUP_LOGS": "1",
+    "RAY_BACKEND_LOG_LEVEL": "warning"
+  }
+}
+

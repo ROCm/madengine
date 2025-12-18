@@ -1,0 +1,18 @@
+{
+  "_comment": "Minimal SGLang single-node configuration",
+  "_description": "SGLang inference with 4 GPUs tensor parallelism",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 4,
+    "time": "02:00:00"
+  },
+  
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  }
+}
+

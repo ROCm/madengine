@@ -228,6 +228,20 @@ class SlurmDeployment(BaseDeployment):
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
         
+        # Extract launcher configuration
+        launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
+        nnodes = self.distributed_config.get("nnodes", self.nodes)
+        nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
+        master_port = self.distributed_config.get("port", 29500)
+        
+        # Generate launcher-specific command
+        launcher_command = self._generate_launcher_command(
+            launcher_type=launcher_type,
+            nnodes=nnodes,
+            nproc_per_node=nproc_per_node,
+            master_port=master_port
+        )
+        
         return {
             "model_name": model_info["name"],
             "manifest_file": os.path.abspath(self.config.manifest_file),
@@ -236,7 +250,7 @@ class SlurmDeployment(BaseDeployment):
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
-            "master_port": self.distributed_config.get("port", 29500),
+            "master_port": master_port,
             "distributed_backend": self.distributed_config.get("backend", "nccl"),
             "network_interface": self.slurm_config.get("network_interface"),
             "exclusive": self.slurm_config.get("exclusive", True),
@@ -256,7 +270,207 @@ class SlurmDeployment(BaseDeployment):
             if Path("credential.json").exists()
             else None,
             "data_file": "data.json" if Path("data.json").exists() else None,
+            # Launcher configuration
+            "launcher_type": launcher_type,
+            "launcher_command": launcher_command,
+            "nnodes": nnodes,
+            "nproc_per_node": nproc_per_node,
         }
+
+    def _generate_launcher_command(
+        self, launcher_type: str, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate launcher-specific command based on launcher type.
+        
+        Follows k8s pattern: different launchers have different command generation.
+        
+        Args:
+            launcher_type: Type of launcher (torchrun, vllm, sglang, deepspeed, etc.)
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master communication port
+            
+        Returns:
+            Launcher-specific environment setup and command string
+        """
+        if launcher_type == "torchrun":
+            return self._generate_torchrun_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "vllm":
+            return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "sglang":
+            return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "deepspeed":
+            return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "megatron":
+            return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
+        else:
+            # For unknown launchers, provide basic environment variables
+            # and let the model script handle launcher invocation
+            self.console.print(
+                f"[yellow]Warning: Unknown launcher type '{launcher_type}'. "
+                f"Using basic environment setup.[/yellow]"
+            )
+            return self._generate_basic_env_command(nnodes, nproc_per_node, master_port)
+
+    def _generate_torchrun_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate torchrun launcher command for SLURM.
+        
+        For single-node (nnodes=1): Uses standalone mode
+        For multi-node (nnodes>1): Uses distributed mode with SLURM environment
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER environment variable setup
+        """
+        if nnodes == 1:
+            return f'export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'
+        else:
+            # Multi-node: Build command with SLURM_PROCID for node_rank
+            return f'''# Multi-node torchrun setup
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_vllm_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate vLLM launcher environment variables.
+        
+        vLLM manages its own process spawning - no torchrun needed.
+        Model script directly invokes vLLM with tensor/pipeline parallelism.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Environment variable setup for vLLM
+        """
+        if nnodes == 1:
+            return f'''# vLLM single-node setup (Tensor Parallelism)
+export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export VLLM_PIPELINE_PARALLEL_SIZE=1
+export VLLM_DISTRIBUTED_BACKEND="auto"
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+        else:
+            return f'''# vLLM multi-node setup (TP + PP with Ray)
+export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export VLLM_PIPELINE_PARALLEL_SIZE={nnodes}
+export VLLM_DISTRIBUTED_BACKEND="ray"
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+
+    def _generate_sglang_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate SGLang launcher environment variables.
+        
+        SGLang similar to vLLM - manages its own process spawning.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Environment variable setup for SGLang
+        """
+        if nnodes == 1:
+            return f'''# SGLang single-node setup (Tensor Parallelism)
+export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export SGLANG_PIPELINE_PARALLEL_SIZE=1
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+        else:
+            return f'''# SGLang multi-node setup (TP + PP with Ray)
+export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export SGLANG_PIPELINE_PARALLEL_SIZE={nnodes}
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+
+    def _generate_deepspeed_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate DeepSpeed launcher command.
+        
+        DeepSpeed has its own launcher similar to torchrun.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with deepspeed launcher
+        """
+        if nnodes == 1:
+            return f'''# DeepSpeed single-node setup
+export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
+        else:
+            return f'''# DeepSpeed multi-node setup
+# Generate hostfile dynamically from SLURM
+cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
+$(scontrol show hostnames $SLURM_JOB_NODELIST | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+EOF
+export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_megatron_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate Megatron-LM launcher command.
+        
+        Megatron-LM typically uses torchrun but with specific environment variables.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with megatron-specific setup
+        """
+        # Megatron usually uses torchrun, so similar to torchrun but with Megatron env vars
+        if nnodes == 1:
+            return f'''# Megatron-LM single-node setup
+export MEGATRON_TENSOR_PARALLEL_SIZE={min(nproc_per_node, 8)}
+export MEGATRON_PIPELINE_PARALLEL_SIZE=1
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'''
+        else:
+            return f'''# Megatron-LM multi-node setup
+export MEGATRON_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export MEGATRON_PIPELINE_PARALLEL_SIZE={nnodes}
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_basic_env_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate basic environment variables for unknown launchers.
+        
+        Provides standard distributed execution environment variables
+        and lets the model script handle launcher invocation.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Basic environment variable setup
+        """
+        return f'''# Basic distributed environment (custom launcher)
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+export MASTER_PORT={master_port}
+# Model script should handle launcher invocation'''
 
     def deploy(self) -> DeploymentResult:
         """Submit sbatch script to SLURM scheduler (locally)."""

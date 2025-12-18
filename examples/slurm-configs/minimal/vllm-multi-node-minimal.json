@@ -1,0 +1,30 @@
+{
+  "_comment": "Minimal vLLM multi-node configuration",
+  "_description": "vLLM inference with 2 nodes, 4 GPUs per node",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 4,
+    "time": "04:00:00",
+    "enable_node_check": true,
+    "auto_cleanup_nodes": false
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 2,
+    "nproc_per_node": 4
+  },
+  
+  "env_vars": {
+    "VLLM_KV_CACHE_SIZE": "0.5",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "NCCL_TIMEOUT": "600",
+    "VLLM_ENGINE_ITERATION_TIMEOUT_S": "180",
+    "RAY_health_check_timeout_ms": "60000"
+  },
+  
+  "pre_scripts": []
+}
+

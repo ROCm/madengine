@@ -1,6 +1,6 @@
 {
-  "_comment": "Multi-node SLURM profile - optimized for distributed training across nodes",
-  "_description": "Configuration for multi-node distributed training on SLURM cluster",
+  "_comment": "Multi-node SLURM profile - optimized for distributed workloads across nodes",
+  "_description": "Configuration for multi-node distributed execution (training/inference) on SLURM cluster",
   
   "slurm": {
     "nodes": 2,

@@ -479,13 +479,16 @@ To use an existing PVC instead of auto-creation:
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
 | `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
 
-#### Distributed Training Fields
+#### Distributed Execution Fields
+
+Configuration for distributed workloads (training with torchrun/deepspeed or inference with vLLM/SGLang):
 
 For multi-GPU and multi-node (torchrun):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable distributed training |
+| `launcher` | string | - | Launcher type: `torchrun`, `vllm`, `sglang`, `deepspeed` |
+| `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
 | `launcher` | string | `"torchrun"` | `"torchrun"`, `"deepspeed"`, `"accelerate"` |
 | `nnodes` | integer | `1` | Number of nodes |
@@ -499,7 +502,7 @@ Custom environment variables for containers:
 ```json
 {
   "env_vars": {
-    // NCCL/RCCL (AMD distributed training)
+    // NCCL/RCCL (AMD distributed execution)
     "NCCL_DEBUG": "WARN",              // "INFO" for debugging, "WARN" for production
     "NCCL_IB_DISABLE": "1",            // Disable InfiniBand (required for K8s)
     "NCCL_SOCKET_IFNAME": "eth0",      // Network interface
@@ -563,13 +566,13 @@ PVCs: Recommended for data and results
 
 ✅ **Use torchrun when:**
 - Multi-GPU on single node (2+ GPUs)
-- Multi-node distributed training
+- Multi-node distributed workloads
 - Testing distributed infrastructure
 - Data parallelism or model parallelism
 
 ❌ **Don't use torchrun when:**
 - Single GPU workloads
-- Simple benchmarks without distributed training
+- Simple benchmarks without distributed execution
 - Minimal testing scenarios
 
 ### AMD ROCm Optimizations
@@ -1095,7 +1098,7 @@ kubectl logs <pod> | grep NCCL
 
 ### Level 2: Intermediate
 1. Try `02-single-node-multi-gpu.json`
-2. Learn distributed training with torchrun
+2. Learn distributed execution with torchrun (training workloads)
 3. Understand NCCL configuration
 4. Profile GPU utilization
 

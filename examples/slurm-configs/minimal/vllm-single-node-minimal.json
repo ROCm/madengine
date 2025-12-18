@@ -1,0 +1,25 @@
+{
+  "_comment": "Minimal vLLM single-node configuration",
+  "_description": "vLLM inference with 4 GPUs tensor parallelism",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 4,
+    "time": "02:00:00"
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  },
+  
+  "env_vars": {
+    "VLLM_KV_CACHE_SIZE": "0.7",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
+  },
+  
+  "pre_scripts": []
+}
+

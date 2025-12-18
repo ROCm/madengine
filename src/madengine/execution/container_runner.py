@@ -961,9 +961,11 @@ class ContainerRunner:
                         model_args = self.context.ctx.get(
                             "model_args", model_info["args"]
                         )
+                        # Use the container timeout (default 7200s) for script execution
+                        # to prevent indefinite hangs
                         model_output = model_docker.sh(
                             f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=None,
+                            timeout=timeout,
                         )
                         # Print output to ensure it gets captured in log file
                         print(model_output)
@@ -1058,10 +1060,27 @@ class ContainerRunner:
                             has_errors = False
                             if log_file_path and os.path.exists(log_file_path):
                                 try:
-                                    # Check for error patterns in the log (exclude our own grep commands and output messages)
+                                    # Define benign patterns to exclude from error detection
+                                    # These are known warnings/info messages that should not trigger failures
+                                    benign_patterns = [
+                                        "Failed to establish connection to the metrics exporter agent",
+                                        "RpcError: Running out of retries to initialize the metrics agent",
+                                        "Metrics will not be exported",
+                                        "FutureWarning",
+                                    ]
+                                    
+                                    # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns)
                                     for pattern in error_patterns:
-                                        # Use grep with -v to exclude our own commands and output to avoid false positives
-                                        error_check_cmd = f"grep -v -E '(grep -q.*{pattern}|Found error pattern.*{pattern})' {log_file_path} | grep -q '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'"
+                                        # Build exclusion regex: our own commands, output messages, and benign patterns
+                                        exclusions = f"(grep -q.*{pattern}|Found error pattern.*{pattern}"
+                                        for benign in benign_patterns:
+                                            # Escape special regex characters in benign patterns
+                                            escaped_benign = benign.replace(".", r"\.").replace("(", r"\(").replace(")", r"\)")
+                                            exclusions += f"|{escaped_benign}"
+                                        exclusions += ")"
+                                        
+                                        # Use grep with -v to exclude false positives
+                                        error_check_cmd = f"grep -v -E '{exclusions}' {log_file_path} | grep -q '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'"
                                         result = self.console.sh(
                                             error_check_cmd, canFail=True
                                         )

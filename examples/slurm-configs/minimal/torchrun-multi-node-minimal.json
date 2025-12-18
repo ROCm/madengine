@@ -1,0 +1,14 @@
+{
+  "_comment": "Minimal multi-node SLURM configuration (2 nodes x 8 GPUs)",
+  "_note": "Using 'amd-rccl' partition (default for this cluster)",
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 8,
+    "time": "24:00:00"
+  },
+  "distributed": {
+    "launcher": "torchrun"
+  }
+}
+

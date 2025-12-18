@@ -1,7 +1,7 @@
 {
   "_comment": "Multi-Node (2 nodes, 8 GPUs each) - SLURM Configuration",
-  "_description": "Configuration for distributed training across 2 nodes with 8 GPUs per node (16 GPUs total)",
-  "_use_case": "Multi-node distributed training for large models",
+  "_description": "Configuration for distributed workload across 2 nodes with 8 GPUs per node (16 GPUs total)",
+  "_use_case": "Multi-node distributed execution for large models (training or inference)",
   "_note": "Target is auto-detected as 'slurm' from presence of 'slurm' config section",
   
   "gpu_vendor": "AMD",
@@ -18,8 +18,11 @@
   },
   
   "distributed": {
+    "launcher": "torchrun",
     "backend": "nccl",
-    "port": 29500
+    "port": 29500,
+    "nnodes": 2,
+    "nproc_per_node": 8
   },
   
   "env_vars": {

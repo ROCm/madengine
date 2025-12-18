@@ -1,6 +1,6 @@
 {
   "_comment": "Multi-Node (4 nodes, 8 GPUs each) - Advanced SLURM Configuration",
-  "_description": "Configuration for large-scale distributed training with advanced options",
+  "_description": "Configuration for large-scale distributed workloads with advanced options",
   "_use_case": "Production-scale multi-node training with custom workspace and results collection",
   "_note": "Using 'amd-rccl' partition. Adjust for your cluster if needed.",
   
@@ -27,8 +27,11 @@
   },
   
   "distributed": {
+    "launcher": "torchrun",
     "backend": "nccl",
-    "port": 29500
+    "port": 29500,
+    "nnodes": 4,
+    "nproc_per_node": 8
   },
   
   "env_vars": {

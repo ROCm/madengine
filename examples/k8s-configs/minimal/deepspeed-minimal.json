@@ -1,7 +1,7 @@
 {
   "_comment": "DeepSpeed Config - Uses deepspeed launcher",
   "_description": "DeepSpeed with ZeRO-1 optimization",
-  "_use_case": "Test DeepSpeed distributed training",
+  "_use_case": "Test DeepSpeed distributed training (training-specific launcher)",
   
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
