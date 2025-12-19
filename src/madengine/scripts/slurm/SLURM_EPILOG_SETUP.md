@@ -261,9 +261,9 @@ fi
 
 ---
 
-## Integration with MADEngine
+## Integration with madengine
 
-The epilog script is designed to work seamlessly with MADEngine's `run.sh` cleanup:
+The epilog script is designed to work seamlessly with madengine's `run.sh` cleanup:
 
 1. **During Job**: `run.sh` trap handler cleans up on script exit
 2. **After Job**: SLURM epilog catches any missed processes

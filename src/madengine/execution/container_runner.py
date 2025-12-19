@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker Container Runner Module for MADEngine
+Docker Container Runner Module for madengine
 
 This module handles the Docker container execution phase separately from building,
 enabling distributed workflows where containers are run on remote nodes
@@ -39,7 +39,7 @@ class ContainerRunner:
         """Initialize the Container Runner.
 
         Args:
-            context: The MADEngine context
+            context: The madengine context
             data: The data provider instance
             console: Optional console instance
             live_output: Whether to show live output

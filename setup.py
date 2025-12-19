@@ -159,9 +159,9 @@ def get_version():
                         )
                         is_dirty = dirty_result.returncode != 0
                         if is_dirty:
-                            return f"1.0.0.dev0+g{commit}.dirty"
+                            return f"2.0.0.dev0+g{commit}.dirty"
                         else:
-                            return f"1.0.0.dev0+g{commit}"
+                            return f"2.0.0.dev0+g{commit}"
                 
                 # Clean up the version string to be PEP 440 compliant
                 if version_str.startswith('v'):
@@ -188,9 +188,9 @@ def get_version():
                 if re.match(r'^[a-f0-9]+(-dirty)?$', version_str):
                     clean_hash = version_str.replace('-dirty', '')
                     if '-dirty' in version_str:
-                        return f"1.0.0.dev0+g{clean_hash}.dirty"
+                        return f"2.0.0.dev0+g{clean_hash}.dirty"
                     else:
-                        return f"1.0.0.dev0+g{clean_hash}"
+                        return f"2.0.0.dev0+g{clean_hash}"
                 
                 return version_str
                 
@@ -204,13 +204,13 @@ def get_version():
         )
         if result.returncode == 0:
             commit = result.stdout.strip()
-            return f"1.0.0.dev0+g{commit}"
+            return f"2.0.0.dev0+g{commit}"
             
     except Exception:
         pass
     
     # Final fallback
-    return "1.0.0.dev0"
+    return "2.0.0.dev0"
 
 def main():
     """Main setup function."""

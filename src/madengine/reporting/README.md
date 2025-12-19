@@ -135,5 +135,5 @@ Potential improvements (not currently planned):
 ---
 
 **Last Updated**: November 30, 2025  
-**Maintainer**: MADEngine Team
+**Maintainer**: madengine Team
 

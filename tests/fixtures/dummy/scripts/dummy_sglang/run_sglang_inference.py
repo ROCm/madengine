@@ -178,7 +178,7 @@ def run_inference_sglang(args):
             print(f"\n[Prompt {i+1}]: {prompt}")
             print(f"[Output {i+1}]: {generated_text[:200]}...")
         
-        # MADEngine output format
+        # madengine output format
         print(f"\nperformance: {throughput:.2f} requests_per_second")
         print(f"tokens_per_second: {tokens_per_second:.2f}")
         print(f"model: {args.model}")
@@ -205,7 +205,7 @@ def run_inference_mock(args):
     print("\n" + "=" * 70)
     print("⚠️  Running Mock Inference (Testing Mode)")
     print("=" * 70)
-    print("This simulates SGLang inference for testing MADEngine infrastructure.")
+    print("This simulates SGLang inference for testing madengine infrastructure.")
     print("=" * 70)
     
     # Simulate initialization
@@ -255,7 +255,7 @@ def run_inference_mock(args):
         print(f"\n[Prompt {i+1}]: {prompts[i]}")
         print(f"[Output {i+1}]: [Mock generated text for infrastructure testing...]")
     
-    # MADEngine output format
+    # madengine output format
     print(f"\nperformance: {throughput:.2f} requests_per_second")
     print(f"tokens_per_second: {tokens_per_second:.2f}")
     print(f"model: {args.model}")

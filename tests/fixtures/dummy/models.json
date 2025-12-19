@@ -352,6 +352,21 @@
     "args": ""
   },
   {
+    "name": "dummy_torchtitan",
+    "dockerfile": "docker/dummy_torchtitan",
+    "scripts": "scripts/dummy_torchtitan/run.sh",
+    "n_gpus": "8",
+    "owner": "mad.support@amd.com",
+    "training_precision": "bf16",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_torchtitan",
+      "llm_training"
+    ],
+    "args": ""
+  },
+  {
     "name": "pyt_huggingface_gpt2",
     "url": "https://github.com/huggingface/transformers",
     "dockerfile": "docker/pyt_huggingface",

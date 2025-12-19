@@ -1,6 +1,6 @@
-# SGLang Distributed Inference - MADEngine Integration
+# SGLang Distributed Inference - madengine Integration
 
-This directory contains scripts for running SGLang distributed inference on SLURM clusters through MADEngine.
+This directory contains scripts for running SGLang distributed inference on SLURM clusters through madengine.
 
 ## Overview
 
@@ -71,7 +71,7 @@ python3 -m sglang.launch_server --model-path MODEL --tp 4 \
 
 ## Usage
 
-### Quick Start with MADEngine
+### Quick Start with madengine
 
 #### Single-Node Inference (4 GPUs)
 
@@ -123,7 +123,7 @@ This mode is better for:
 
 ### Manual Execution
 
-If you want to run the scripts directly without MADEngine:
+If you want to run the scripts directly without madengine:
 
 #### Single-Node (4 GPUs with TP)
 
@@ -360,7 +360,7 @@ pip install "sglang[all]"
 
 ## Output Format
 
-The benchmark script outputs performance metrics in MADEngine format:
+The benchmark script outputs performance metrics in madengine format:
 
 ```
 performance: 45.23 requests_per_second
@@ -370,19 +370,19 @@ tp_size: 4
 nnodes: 2
 ```
 
-MADEngine automatically parses these metrics and stores them in `perf.csv`.
+madengine automatically parses these metrics and stores them in `perf.csv`.
 
 ## References
 
 - **SGLang GitHub**: https://github.com/sgl-project/sglang
 - **SGLang Documentation**: https://docs.sglang.ai/
 - **SGLang Native Launcher**: https://github.com/sgl-project/sglang#distributed-serving
-- **MADEngine Documentation**: See `examples/slurm-configs/README.md`
+- **madengine Documentation**: See `examples/slurm-configs/README.md`
 - **ROCm Documentation**: https://rocm.docs.amd.com/
 
 ## Support
 
 For issues specific to:
-- **MADEngine integration**: Contact mad.support@amd.com
+- **madengine integration**: Contact mad.support@amd.com
 - **SGLang itself**: Open issue at https://github.com/sgl-project/sglang/issues
 - **ROCm compatibility**: Check ROCm documentation or AMD support

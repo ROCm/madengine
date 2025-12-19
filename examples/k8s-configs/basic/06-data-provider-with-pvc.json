@@ -62,7 +62,7 @@
   },
   
   "_how_it_works": {
-    "auto_pvc": "MADEngine creates 'madengine-shared-data' PVC automatically if not found",
+    "auto_pvc": "madengine creates 'madengine-shared-data' PVC automatically if not found",
     "reusable": "PVC persists across runs - data downloads once, reuses forever",
     "smart_mode": "Single-node: ReadWriteOnce, Multi-node: ReadWriteMany (auto-selected)",
     "verify": "kubectl get pvc madengine-shared-data",

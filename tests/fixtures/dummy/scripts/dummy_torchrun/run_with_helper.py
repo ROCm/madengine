@@ -37,7 +37,7 @@ world_size = int(os.environ.get("WORLD_SIZE", 1))
 def print_header(config):
     """Print benchmark header"""
     print("=" * 70)
-    print("MADEngine PyTorch Benchmark (with Helper Modules)")
+    print("madengine PyTorch Benchmark (with Helper Modules)")
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
     print(f"Rank: {rank}/{world_size}")
@@ -228,7 +228,7 @@ def main():
             f.write(f"Model: ResNet-{sum(config.resnet_blocks)*2+2}\n")
             f.write(f"Average Throughput: {avg_throughput:.2f} samples/sec\n")
         
-        # Output performance metric for MADEngine (REQUIRED FORMAT)
+        # Output performance metric for madengine (REQUIRED FORMAT)
         print(f"\nperformance: {avg_throughput:.2f} samples_per_second")
     
     # Cleanup

@@ -1,5 +1,5 @@
 {
-  "_comment": "MADEngine K8s Tools Configuration",
+  "_comment": "madengine K8s Tools Configuration",
   "_description": "Configuration for K8s-specific tools and data providers",
   
   "data_providers": {

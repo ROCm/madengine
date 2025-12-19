@@ -1,5 +1,5 @@
 """
-Multi-platform integration tests for MADEngine.
+Multi-platform integration tests for madengine.
 
 Tests the complete build and run workflows across AMD GPU, NVIDIA GPU, and CPU platforms.
 These tests focus on integration and end-to-end flows rather than isolated unit tests.

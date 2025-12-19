@@ -180,12 +180,14 @@ class Console:
             try:
                 if proc.stdin and not proc.stdin.closed:
                     proc.stdin.close()
-            except:
+            except (OSError, ValueError):
+                # Expected errors during cleanup - stdin may already be closed
                 pass
             try:
                 if proc.stdout and not proc.stdout.closed:
                     proc.stdout.close()
-            except:
+            except (OSError, ValueError):
+                # Expected errors during cleanup - stdout may already be closed
                 pass
 
         # Check for failure

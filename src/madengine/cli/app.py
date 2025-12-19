@@ -55,7 +55,7 @@ def main(
     if version:
         # You might want to get the actual version from your package
         console.print(
-            "🚀 [bold cyan]madengine-cli[/bold cyan] version [green]1.0.0[/green]"
+            "🚀 [bold cyan]madengine-cli[/bold cyan] version [green]2.0.0[/green]"
         )
         raise typer.Exit()
 

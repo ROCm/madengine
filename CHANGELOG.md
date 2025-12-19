@@ -1,13 +1,30 @@
 # Changelog
 
-All notable changes to MADEngine will be documented in this file.
+All notable changes to madengine will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **CRITICAL:** Fixed SQL injection vulnerability in legacy database module (`src/madengine/db/database_functions.py`)
+  - Replaced string formatting with parameterized queries using SQLAlchemy `text()`
+  - Prevents potential SQL injection attacks in `get_matching_db_entries()` function
+- Fixed 4 instances of bare `except:` blocks that could mask critical exceptions
+  - `kubernetes.py`: Replaced with specific exception types (`ConfigException`, `FileNotFoundError`, `ApiException`)
+  - `console.py`: Replaced with specific exception types (`OSError`, `ValueError`) for resource cleanup
+
 ### Added
+- **Comprehensive Launcher Support**: Full K8s and SLURM support for 6 distributed frameworks
+  - TorchTitan: LLM pre-training with FSDP2+TP+PP+CP parallelism
+  - vLLM: High-throughput LLM inference with continuous batching
+  - SGLang: Fast LLM inference with structured generation
+  - DeepSpeed: ZeRO optimization training (K8s support added)
+  - Megatron-LM: Large-scale transformer training (SLURM)
+  - torchrun: Standard PyTorch DDP/FSDP
+- **Centralized Launcher Documentation**: `docs/distributed-launchers.md` with comprehensive guide
+- **Example Configurations**: 6 new minimal configs for distributed launchers (K8s)
 - Comprehensive development tooling and configuration
 - Pre-commit hooks for code quality
 - Makefile for common development tasks
@@ -23,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modern deployment scenarios and configuration examples
 
 ### Changed
+- **README.md**: Added launcher ecosystem highlights to v2.0 features
+- **K8s README**: Updated with new launcher configs and comprehensive launcher section
+- **Documentation Structure**: Consolidated all launcher docs into single comprehensive guide
 - Improved package initialization and imports
 - Replaced print statements with proper logging in main CLI
 - Enhanced error handling and logging throughout codebase
@@ -37,11 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed Python cache files from repository
 - Fixed import organization and structure
 - Improved docstring formatting and consistency
+- Cleaned up documentation fragmentation
 
 ### Removed
 - Unnecessary debug print statements
 - Python cache files and build artifacts
 - **Legacy documentation files**: `docs/distributed-execution-solution.md` and `docs/madengine-cli-guide.md`
+- **Duplicate documentation**: `docs/TORCHTITAN_LAUNCHER.md` (consolidated into distributed-launchers.md)
 - Redundant documentation scattered across multiple files
 
 ## [Previous Versions]

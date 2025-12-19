@@ -10,7 +10,7 @@
 set -e
 
 echo "========================================================================"
-echo "MADEngine vLLM V1 Engine Inference Script"
+echo "madengine vLLM V1 Engine Inference Script"
 echo "========================================================================"
 
 # Cleanup function to ensure Ray and GPU processes are properly terminated

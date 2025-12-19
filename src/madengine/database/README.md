@@ -107,5 +107,5 @@ When this layer is implemented, legacy tools will be deprecated:
 ---
 
 **Last Updated**: November 30, 2025  
-**Maintainer**: MADEngine Team
+**Maintainer**: madengine Team
 

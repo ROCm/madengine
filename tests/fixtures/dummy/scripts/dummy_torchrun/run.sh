@@ -7,7 +7,7 @@
 set -e
 
 echo "========================================================================"
-echo "MADEngine Torchrun Wrapper Script"
+echo "madengine Torchrun Wrapper Script"
 echo "========================================================================"
 
 # Get current directory

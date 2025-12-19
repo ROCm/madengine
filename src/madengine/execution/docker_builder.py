@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker Image Builder Module for MADEngine
+Docker Image Builder Module for madengine
 
 This module handles the Docker image building phase separately from execution,
 enabling distributed workflows where images are built on a central host
@@ -37,7 +37,7 @@ class DockerBuilder:
         """Initialize the Docker Builder.
 
         Args:
-            context: The MADEngine context
+            context: The madengine context
             console: Optional console instance
             live_output: Whether to show live output
         """

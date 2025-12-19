@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PyTorch Distributed Training Benchmark for MADEngine
+PyTorch Distributed Training Benchmark for madengine
 
 This benchmark demonstrates typical PyTorch distributed training patterns:
 - DistributedDataParallel (DDP) for multi-GPU/multi-node training
@@ -49,7 +49,7 @@ master_port = os.environ.get("MASTER_PORT", "29500")
 def print_header():
     """Print benchmark header"""
     print("=" * 70)
-    print("MADEngine PyTorch Distributed Training Benchmark")
+    print("madengine PyTorch Distributed Training Benchmark")
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
     print(f"Rank: {rank}/{world_size}")
@@ -351,7 +351,7 @@ def main():
             f.write(f"Global Throughput: {avg_global_throughput:.2f} samples/sec\n")
             f.write(f"Scaling Efficiency: {scaling_efficiency:.1f}%\n")
         
-        # Output performance metric for MADEngine (REQUIRED FORMAT)
+        # Output performance metric for madengine (REQUIRED FORMAT)
         # Use GLOBAL throughput (sum of all nodes - accurate measurement)
         print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second")
         

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Data Provider module for MADEngine
+"""Data Provider module for madengine
 
 This module provides data to the models. It can provide data from different sources like local, NAS, AWS, etc.
 
@@ -24,7 +24,7 @@ import os
 import time
 import typing
 
-# MADEngine modules
+# madengine modules
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker

@@ -8,7 +8,7 @@
 set -e
 
 echo "========================================================================"
-echo "MADEngine DeepSpeed Wrapper Script"
+echo "madengine DeepSpeed Wrapper Script"
 echo "========================================================================"
 
 # Get current directory

@@ -227,7 +227,7 @@ def run_inference(args):
         print(f"\n[Prompt {i+1}]: {prompt}")
         print(f"[Output {i+1}]: {generated_text[:200]}...")  # First 200 chars
     
-    # MADEngine output format
+    # madengine output format
     print(f"\nperformance: {throughput:.2f} requests_per_second")
     print(f"tokens_per_second: {tokens_per_second:.2f}")
     print(f"model: {args.model}")

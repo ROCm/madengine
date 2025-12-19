@@ -207,7 +207,7 @@ def main():
         print(f"  World Size: {model_engine.world_size}")
         print(f"{'='*70}")
         
-        # MADEngine output format
+        # madengine output format
         print(f"\nperformance: {avg_throughput:.2f} samples_per_second")
         print(f"deepspeed_config: ZeRO_stage={model_engine.zero_optimization_stage()}")
     

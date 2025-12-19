@@ -8,7 +8,7 @@
 set -e
 
 echo "========================================================================"
-echo "MADEngine SGLang Inference Wrapper Script"
+echo "madengine SGLang Inference Wrapper Script"
 echo "========================================================================"
 
 # Get current directory

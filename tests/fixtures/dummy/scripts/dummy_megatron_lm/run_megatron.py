@@ -245,7 +245,7 @@ def main():
         print(f"  Per-GPU Throughput: {avg_throughput/world_size:.2f} samples/sec")
         print(f"{'='*70}")
         
-        # MADEngine output format
+        # madengine output format
         print(f"\nperformance: {avg_throughput:.2f} samples_per_second")
         print(f"megatron_config: TP={tp_size} PP={pp_size} CP={context_parallel_size} DP={dp_size}")
     

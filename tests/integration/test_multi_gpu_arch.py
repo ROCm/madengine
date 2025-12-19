@@ -1,4 +1,4 @@
-"""Comprehensive unit tests for multi-GPU architecture support in MADEngine.
+"""Comprehensive unit tests for multi-GPU architecture support in madengine.
 
 Covers:
 - Multi-arch DockerBuilder logic (image naming, manifest, legacy/override)

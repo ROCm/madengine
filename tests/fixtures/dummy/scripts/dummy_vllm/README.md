@@ -1,4 +1,4 @@
-# vLLM Distributed Inference for MADEngine
+# vLLM Distributed Inference for madengine
 
 This directory contains vLLM inference benchmarking scripts for AMD ROCm GPUs.
 
@@ -83,14 +83,14 @@ cd /path/to/scripts/dummy_vllm
 python3 run_vllm_inference.py --model facebook/opt-125m
 ```
 
-### Single-Node Multi-GPU (via MADEngine)
+### Single-Node Multi-GPU (via madengine)
 ```bash
 madengine-cli run \
   --model-name dummy_vllm \
   --additional-config examples/slurm-configs/minimal/vllm-single-node-minimal.json
 ```
 
-### Multi-Node Multi-GPU (via MADEngine)
+### Multi-Node Multi-GPU (via madengine)
 ```bash
 madengine-cli run \
   --model-name dummy_vllm \
@@ -183,11 +183,11 @@ The script outputs the following metrics:
 - [vLLM GitHub](https://github.com/vllm-project/vllm)
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [ROCm Documentation](https://rocm.docs.amd.com/)
-- [MADEngine Documentation](../../../../../../README.md)
+- [madengine Documentation](../../../../../../README.md)
 
 ## Support
 
 For issues or questions:
 - vLLM: [GitHub Issues](https://github.com/vllm-project/vllm/issues)
-- MADEngine: Contact mad.support@amd.com
+- madengine: Contact mad.support@amd.com
 

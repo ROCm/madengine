@@ -1,6 +1,6 @@
 # Kubernetes Configuration Guide
 
-Complete reference for deploying MADEngine workloads on Kubernetes clusters.
+Complete reference for deploying madengine workloads on Kubernetes clusters.
 
 ---
 
@@ -20,7 +20,7 @@ Complete reference for deploying MADEngine workloads on Kubernetes clusters.
 
 ## 🌟 Minimal Configuration (NEW!)
 
-**MADEngine v2.0+ includes built-in presets!** You only need to specify what's unique:
+**madengine v2.0+ includes built-in presets!** You only need to specify what's unique:
 
 ### Single GPU - Just 1 Field!
 ```json
@@ -154,6 +154,8 @@ MODEL_DIR=tests/fixtures/dummy madengine-cli run \
 
 Located in [`minimal/`](minimal/) directory:
 
+**General Purpose:**
+
 | File | Description | GPU Count |
 |------|-------------|-----------|
 | [`minimal/single-gpu-minimal.json`](minimal/single-gpu-minimal.json) | Single GPU with auto-defaults | 1 |
@@ -162,11 +164,21 @@ Located in [`minimal/`](minimal/) directory:
 | [`minimal/nvidia-gpu-minimal.json`](minimal/nvidia-gpu-minimal.json) | NVIDIA GPUs with auto-defaults | 4 |
 | [`minimal/custom-namespace-minimal.json`](minimal/custom-namespace-minimal.json) | Shows override examples | 1 |
 
-**See [minimal/README.md](minimal/README.md) for detailed documentation.**
+**Distributed Launchers:**
+
+| File | Launcher | Description | GPUs |
+|------|----------|-------------|------|
+| [`minimal/torchtitan-single-node-minimal.json`](minimal/torchtitan-single-node-minimal.json) | TorchTitan | LLM pre-training (single-node) | 8 |
+| [`minimal/vllm-single-node-minimal.json`](minimal/vllm-single-node-minimal.json) | vLLM | LLM inference (single-node) | 4 |
+| [`minimal/sglang-single-node-minimal.json`](minimal/sglang-single-node-minimal.json) | SGLang | LLM inference (single-node) | 4 |
+
+**See [minimal/README.md](minimal/README.md) for detailed documentation and [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for launcher details.**
 
 ### Full Configs (Reference Examples)
 
 Complete configurations showing all available fields:
+
+**Training Configs:**
 
 | File | GPUs | Nodes | Launcher | Use Case |
 |------|------|-------|----------|----------|
@@ -178,6 +190,14 @@ Complete configurations showing all available fields:
 | [`04-multi-node-advanced.json`](04-multi-node-advanced.json) | 2/node | 4 | torchrun | Production multi-node (8 GPUs) |
 | [`05-nvidia-gpu-example.json`](05-nvidia-gpu-example.json) | 4 | 1 | torchrun | NVIDIA GPUs (A100, H100) |
 | [`06-data-provider-with-pvc.json`](06-data-provider-with-pvc.json) | 2 | 1+ | torchrun | **Data provider with auto-PVC** |
+
+**Distributed Launcher Configs (basic/):**
+
+| File | GPUs | Nodes | Launcher | Use Case |
+|------|------|-------|----------|----------|
+| [`basic/torchtitan-multi-node-basic.json`](basic/torchtitan-multi-node-basic.json) | 8/node | 4 | TorchTitan | Llama 3.1 70B+ training |
+| [`basic/vllm-multi-node-basic.json`](basic/vllm-multi-node-basic.json) | 4/node | 2 | vLLM | High-throughput inference |
+| [`basic/sglang-multi-node-basic.json`](basic/sglang-multi-node-basic.json) | 4/node | 2 | SGLang | Distributed inference |
 
 ---
 
@@ -271,11 +291,11 @@ kubectl get pvc madengine-shared-data
 
 ## 📦 Data Providers with Kubernetes
 
-**NEW:** MADEngine automatically handles data provisioning for K8s deployments!
+**NEW:** madengine automatically handles data provisioning for K8s deployments!
 
 ### ✨ Auto-PVC Feature
 
-**No manual PVC creation needed!** MADEngine automatically:
+**No manual PVC creation needed!** madengine automatically:
 1. Creates `madengine-shared-data` PVC if it doesn't exist
 2. Selects appropriate access mode (RWO for single-node, RWX for multi-node)
 3. Downloads data on first run
@@ -313,7 +333,7 @@ kubectl exec -it <pod-name> -- ls -lh /data/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  1. MADEngine detects data provider in model config          │
+│  1. madengine detects data provider in model config          │
 ├─────────────────────────────────────────────────────────────┤
 │  2. Auto-creates madengine-shared-data PVC (if not exists)  │
 │     • Single-node: ReadWriteOnce (RWO)                      │
@@ -481,16 +501,13 @@ To use an existing PVC instead of auto-creation:
 
 #### Distributed Execution Fields
 
-Configuration for distributed workloads (training with torchrun/deepspeed or inference with vLLM/SGLang):
-
-For multi-GPU and multi-node (torchrun):
+Configuration for distributed workloads (training and inference):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `launcher` | string | - | Launcher type: `torchrun`, `vllm`, `sglang`, `deepspeed` |
+| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `vllm`, `sglang` |
 | `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
-| `launcher` | string | `"torchrun"` | `"torchrun"`, `"deepspeed"`, `"accelerate"` |
 | `nnodes` | integer | `1` | Number of nodes |
 | `nproc_per_node` | integer | gpu_count | Processes per node (= GPUs per node) |
 | `master_port` | integer | `29500` | Master communication port |
@@ -562,18 +579,29 @@ host_ipc: true
 PVCs: Recommended for data and results
 ```
 
-### When to Use torchrun
+### Distributed Launchers
 
-✅ **Use torchrun when:**
-- Multi-GPU on single node (2+ GPUs)
-- Multi-node distributed workloads
-- Testing distributed infrastructure
-- Data parallelism or model parallelism
+**Training Launchers:**
+- **torchrun**: Standard PyTorch DDP/FSDP training
+- **deepspeed**: ZeRO optimization for memory efficiency
+- **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
 
-❌ **Don't use torchrun when:**
-- Single GPU workloads
-- Simple benchmarks without distributed execution
-- Minimal testing scenarios
+**Inference Launchers:**
+- **vllm**: High-throughput LLM serving with continuous batching
+- **sglang**: Fast LLM inference with structured generation
+
+**When to use distributed launchers:**
+✅ Multi-GPU on single node (2+ GPUs)
+✅ Multi-node distributed workloads
+✅ Large model training or inference
+✅ Production-scale deployments
+
+**When NOT to use:**
+❌ Single GPU workloads
+❌ Simple benchmarks without distributed execution
+❌ Development and testing (use single GPU)
+
+**See [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for comprehensive launcher guide.**
 
 ### AMD ROCm Optimizations
 

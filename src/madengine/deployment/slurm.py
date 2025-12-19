@@ -304,6 +304,8 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "megatron":
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "torchtitan":
+            return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
         else:
             # For unknown launchers, provide basic environment variables
             # and let the model script handle launcher invocation
@@ -447,6 +449,51 @@ export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_
             return f'''# Megatron-LM multi-node setup
 export MEGATRON_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export MEGATRON_PIPELINE_PARALLEL_SIZE={nnodes}
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_torchtitan_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate TorchTitan launcher command for SLURM.
+        
+        TorchTitan is a PyTorch native platform for LLM pre-training that uses
+        torchrun as its underlying launcher but requires additional configuration
+        for multi-dimensional parallelism (FSDP2, Tensor Parallel, Pipeline Parallel).
+        
+        Key TorchTitan features:
+        - Uses TOML configuration files for training setup
+        - Supports FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel
+        - Built on top of torchrun for distributed coordination
+        
+        For single-node (nnodes=1): Uses standalone torchrun mode
+        For multi-node (nnodes>1): Uses distributed torchrun with SLURM environment
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with torchtitan-specific setup
+        """
+        if nnodes == 1:
+            return f'''# TorchTitan single-node setup
+# TorchTitan uses torchrun as underlying launcher
+export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export TORCHTITAN_PIPELINE_PARALLEL_SIZE=1
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'''
+        else:
+            # Multi-node: Use torchrun with SLURM coordination
+            # TorchTitan will detect multi-node and enable appropriate parallelism
+            return f'''# TorchTitan multi-node setup
+# Configure multi-dimensional parallelism for TorchTitan
+export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export TORCHTITAN_PIPELINE_PARALLEL_SIZE={nnodes}
+export TORCHTITAN_FSDP_ENABLED=1
+export TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
+
+# Use torchrun as launcher (TorchTitan built on top of it)
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
     def _generate_basic_env_command(

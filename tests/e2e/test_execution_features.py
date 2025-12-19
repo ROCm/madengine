@@ -1,4 +1,4 @@
-"""Test the timeouts in MADEngine.
+"""Test the timeouts in madengine.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """

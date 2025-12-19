@@ -91,9 +91,11 @@ That's it! You're now ready to run AI models with madengine. Continue reading fo
 - 📦 **Built-in Presets** - AMD/NVIDIA optimizations, resource scaling, best practices
 - ✅ **Smart Validation** - Early conflict detection with clear, actionable error messages
 - 🔄 **Multi-Layer Merging** - Base → Vendor → Profile → User → CLI override hierarchy
+- 🚀 **Comprehensive Launcher Support** - TorchTitan, vLLM, SGLang for both K8s and SLURM
 
 ### Core Capabilities
 - 🎯 **Dual CLI Interface** - Traditional `madengine` + modern `madengine-cli` with Typer+Rich
+- 🚀 **Multi-Framework Launchers** - Unified support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - � **Distributed Execution** - SSH, Ansible, Kubernetes, and SLURM runners for scalable deployments
 - 🐳 **Containerized Models** - Full Docker integration with GPU support (ROCm, CUDA, Intel)
 - � **Intelligent Discovery** - Static, directory-specific, and dynamic Python-based model discovery

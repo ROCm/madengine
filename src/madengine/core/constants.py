@@ -69,7 +69,7 @@ def _setup_model_dir():
 if os.environ.get("MAD_SETUP_MODEL_DIR", "").lower() == "true":
     _setup_model_dir()
 
-# MADEngine credentials configuration
+# madengine credentials configuration
 CRED_FILE = "credential.json"
 
 

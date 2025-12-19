@@ -40,7 +40,7 @@ from contextlib import redirect_stdout, redirect_stderr
 import warnings
 import typing
 
-# MADEngine modules
+# madengine modules
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
@@ -1299,7 +1299,7 @@ class RunModels:
 
         # get credentials
         try:
-            # MADEngine update
+            # madengine update
             credential_file = "credential.json"
             # read credentials
             with open(credential_file) as f:

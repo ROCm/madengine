@@ -91,7 +91,7 @@ source = "versioningit"
 
 [tool.versioningit.vcs]
 method = "git"
-default-tag = "v1.0.0"
+default-tag = "v2.0.0"
 
 [tool.versioningit.tag2version]
 regex = "v(?P<version>.*)"

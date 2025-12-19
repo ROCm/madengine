@@ -1,0 +1,36 @@
+{
+  "_comment": "SGLang Multi-Node K8s Config - 2 nodes x 4 GPUs",
+  "_description": "Multi-node SGLang with native launcher and Ray",
+  "_use_case": "Distributed LLM inference serving",
+  "_reference": "https://github.com/sgl-project/sglang",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 4,
+    "memory": "256Gi",
+    "memory_limit": "384Gi",
+    "cpu": "64",
+    "cpu_limit": "96",
+    "node_selector": {
+      "node.kubernetes.io/instance-type": "mi300x"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 2,
+    "nproc_per_node": 4,
+    "master_port": 29500
+  },
+  
+  "context": {
+    "env_vars": {
+      "SGLANG_KV_CACHE_SIZE": "0.5",
+      "NCCL_TIMEOUT": "600",
+      "RAY_health_check_timeout_ms": "60000"
+    }
+  }
+}
+

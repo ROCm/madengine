@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Data Provider - Local
+# madengine K8s Data Provider - Local
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Usage: download_local.sh <dataname> <datapath> <datahome>

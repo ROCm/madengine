@@ -1,10 +1,10 @@
 # Minimal Kubernetes Configuration Examples
 
-These are minimal configuration examples that leverage MADEngine's built-in defaults.
+These are minimal configuration examples that leverage madengine's built-in defaults.
 
 ## 🎯 Philosophy
 
-With MADEngine v2.0+, you only need to specify what's unique to your deployment:
+With madengine v2.0+, you only need to specify what's unique to your deployment:
 - **GPU count** (required)
 - **Distributed settings** (if using multiple GPUs)
 - **Overrides** (only if you need to change defaults)

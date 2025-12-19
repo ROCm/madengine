@@ -1,4 +1,4 @@
-# Build MADEngine
+# Build madengine
 
 Clone the madengine repository to your local machine and build it from source by following these steps:
 

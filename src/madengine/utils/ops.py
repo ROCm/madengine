@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Utility functions for MADEngine
+"""Utility functions for madengine
 
-This module contains utility functions for MADEngine.
+This module contains utility functions for madengine.
 
 functions:
     PythonicTee: Class to both write and display stream, in "live" mode

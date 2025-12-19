@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Data Provider - NAS (SSH/rsync)
+# madengine K8s Data Provider - NAS (SSH/rsync)
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Usage: download_nas.sh <dataname> <datapath> <datahome>
