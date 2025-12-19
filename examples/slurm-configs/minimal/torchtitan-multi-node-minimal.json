@@ -2,6 +2,9 @@
   "_comment": "TorchTitan multi-node SLURM configuration (4 nodes x 8 GPUs)",
   "_description": "Llama 3.1 70B pre-training with TP + PP + FSDP2",
   "_reference": "https://github.com/pytorch/torchtitan",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
   
   "slurm": {
     "partition": "amd-rccl",

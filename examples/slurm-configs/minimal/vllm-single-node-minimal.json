@@ -1,6 +1,9 @@
 {
   "_comment": "Minimal vLLM single-node configuration",
   "_description": "vLLM inference with 4 GPUs tensor parallelism",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
   
   "slurm": {
     "partition": "amd-rccl",

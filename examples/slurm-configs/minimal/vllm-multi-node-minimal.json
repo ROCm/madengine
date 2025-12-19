@@ -2,6 +2,9 @@
   "_comment": "Minimal vLLM multi-node configuration",
   "_description": "vLLM inference with 2 nodes, 4 GPUs per node",
   
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 2,

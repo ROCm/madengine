@@ -2,6 +2,9 @@
   "_comment": "Minimal SGLang multi-node configuration",
   "_description": "SGLang inference with 2 nodes, 4 GPUs per node",
   
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+    
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 2,

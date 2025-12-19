@@ -1,6 +1,10 @@
 {
   "_comment": "Minimal multi-GPU SLURM configuration (8 GPUs, single node)",
   "_note": "Using 'amd-rccl' partition (default for this cluster)",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+
   "slurm": {
     "partition": "amd-rccl",
     "gpus_per_node": 8,

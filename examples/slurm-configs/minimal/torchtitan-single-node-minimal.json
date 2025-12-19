@@ -2,6 +2,9 @@
   "_comment": "Minimal TorchTitan SLURM configuration (1 node x 8 GPUs)",
   "_description": "Llama 3.1 8B pre-training with Tensor Parallelism",
   "_reference": "https://github.com/pytorch/torchtitan",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
   
   "slurm": {
     "partition": "amd-rccl",

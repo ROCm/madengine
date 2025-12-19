@@ -2,6 +2,9 @@
   "_comment": "Minimal SGLang single-node configuration",
   "_description": "SGLang inference with 4 GPUs tensor parallelism",
   
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 1,
