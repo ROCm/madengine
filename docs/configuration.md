@@ -40,12 +40,10 @@ madengine-cli run --tags model --additional-context-file config.json
 **gpu_vendor** (case-insensitive):
 - `"AMD"` - AMD ROCm GPUs
 - `"NVIDIA"` - NVIDIA CUDA GPUs
-- `"INTEL"` - Intel GPUs
 
 **guest_os** (case-insensitive):
 - `"UBUNTU"` - Ubuntu Linux
 - `"CENTOS"` - CentOS Linux
-- `"ROCKY"` - Rocky Linux
 
 ## Docker Configuration
 

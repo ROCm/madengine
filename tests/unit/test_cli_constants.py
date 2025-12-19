@@ -66,11 +66,9 @@ class TestConstants:
         """Test valid value constants."""
         assert "AMD" in VALID_GPU_VENDORS
         assert "NVIDIA" in VALID_GPU_VENDORS
-        assert "INTEL" in VALID_GPU_VENDORS
 
         assert "UBUNTU" in VALID_GUEST_OS
         assert "CENTOS" in VALID_GUEST_OS
-        assert "ROCKY" in VALID_GUEST_OS
 
     def test_default_values(self):
         """Test default value constants."""

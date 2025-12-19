@@ -226,8 +226,8 @@ madengine-cli run --tags model \
 ```
 
 **Required for Local:**
-- `gpu_vendor`: "AMD", "NVIDIA", or "INTEL"
-- `guest_os`: "UBUNTU", "CENTOS", or "ROCKY"
+- `gpu_vendor`: "AMD", "NVIDIA"
+- `guest_os`: "UBUNTU", "CENTOS"
 
 ### Deploy to Kubernetes
 

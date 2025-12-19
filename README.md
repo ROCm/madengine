@@ -15,7 +15,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🚀 Modern CLI** - Rich terminal output with Typer and Rich
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
-- **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA, Intel)
+- **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
 - **📊 Performance Tools** - Integrated profiling with rocprof, rocblas, MIOpen, RCCL tracing
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
 
