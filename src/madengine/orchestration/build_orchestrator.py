@@ -162,20 +162,15 @@ class BuildOrchestrator:
         return credentials
 
     def _copy_scripts(self):
-        """Copy common scripts to model directories."""
-        common_scripts = Path("scripts/common")
-        if not common_scripts.exists():
-            return
-
-        print(f"Copying common scripts from {common_scripts}")
-
-        for model_script_dir in Path("scripts").iterdir():
-            if model_script_dir.is_dir() and model_script_dir.name != "common":
-                dest = model_script_dir / "common"
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(common_scripts, dest)
-                print(f"  Copied to {dest}")
+        """[DEPRECATED] Copy common scripts to model directories.
+        
+        This method is no longer called during build phase as it's not needed.
+        Build phase only creates Docker images - script execution happens in run phase.
+        Scripts are copied by run_orchestrator._copy_scripts() for local execution.
+        K8s and Slurm deployments have their own script management mechanisms.
+        """
+        # No-op: This method is deprecated and should not be called
+        pass
 
     def execute(
         self,
@@ -227,12 +222,9 @@ class BuildOrchestrator:
 
             self.rich_console.print(f"[green]✓ Found {len(models)} models[/green]\n")
 
-            # Step 2: Copy common scripts
-            self.rich_console.print("[bold cyan]📋 Copying scripts...[/bold cyan]")
-            self._copy_scripts()
-            self.rich_console.print("[green]✓ Scripts copied[/green]\n")
-
-            # Step 3: Validate build context
+            # Step 2: Validate build context (scripts not needed for build phase)
+            # Build phase only creates Docker images - script execution happens in run phase
+            # Note: K8s and Slurm have their own script management mechanisms
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.context.ctx["docker_build_arg"]:
                 self.rich_console.print(
                     "[yellow]⚠️  Warning: MAD_SYSTEM_GPU_ARCHITECTURE not provided[/yellow]"
@@ -244,7 +236,7 @@ class BuildOrchestrator:
                     '[dim]  --additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}\'[/dim]\n'
                 )
 
-            # Step 4: Build Docker images
+            # Step 3: Build Docker images
             self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
             builder = DockerBuilder(
                 self.context,
@@ -297,20 +289,20 @@ class BuildOrchestrator:
                     error_msg = failed.get("error", "unknown error")
                     self.rich_console.print(f"  [red]• {model_name}: {error_msg}[/red]")
 
-            # Step 5: ALWAYS generate manifest (even with partial failures)
+            # Step 4: ALWAYS generate manifest (even with partial failures)
             self.rich_console.print("\n[bold cyan]📄 Generating build manifest...[/bold cyan]")
             builder.export_build_manifest(manifest_output, registry, batch_build_metadata)
 
-            # Step 6: Save build summary to manifest
+            # Step 5: Save build summary to manifest
             self._save_build_summary(manifest_output, build_summary)
 
-            # Step 7: Save deployment_config to manifest
+            # Step 6: Save deployment_config to manifest
             self._save_deployment_config(manifest_output)
 
             self.rich_console.print(f"[green]✓ Build complete: {manifest_output}[/green]")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
-            # Step 8: Check if we should fail (only if ALL builds failed)
+            # Step 7: Check if we should fail (only if ALL builds failed)
             if len(failed_builds) > 0:
                 if len(successful_builds) == 0:
                     # All builds failed - this is critical

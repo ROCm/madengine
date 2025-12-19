@@ -895,21 +895,17 @@ class RunOrchestrator:
         else:
             self.rich_console.print("[yellow]⚠️  Could not find madengine scripts directory[/yellow]")
 
-        # Step 3: Distribute scripts/common to each model directory
-        common_scripts = Path("scripts/common")
-        if not common_scripts.exists():
-            self.rich_console.print("[yellow]⚠️  No scripts/common directory found after copy, skipping distribution[/yellow]")
-            return
-
-        print(f"Distributing common scripts to model directories")
-
-        for model_script_dir in Path("scripts").iterdir():
-            if model_script_dir.is_dir() and model_script_dir.name != "common":
-                dest = model_script_dir / "common"
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(common_scripts, dest, ignore=ignore_cache_files)
-                print(f"  Copied to {dest}")
+        # Step 3: REMOVED - Distribution to model directories is incorrect
+        # scripts/common should remain at <cwd>/scripts/common/ for proper relative path access
+        # Model scripts reference it via ../scripts/common/ from their directory (e.g., scripts/dummy/)
+        # 
+        # This ensures compatibility with legacy workflow where:
+        # - scripts/common/ stays at working directory root
+        # - Model scripts use ../scripts/common/ relative paths
+        # - ContainerRunner mounts the entire working directory preserving structure
+        #
+        # Note: K8s and Slurm deployments have their own script handling mechanisms
+        # and do not rely on this local filesystem operation
 
     def _load_credentials(self) -> Optional[Dict]:
         """Load credentials from credential.json and environment."""
