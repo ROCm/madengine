@@ -233,12 +233,13 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
+        perf_table.add_column("Launcher", justify="center", style="magenta")  # Distributed launcher
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
         perf_table.add_column("Status", style="bold")
-        perf_table.add_column("Duration", justify="right", style="blue")
+        perf_table.add_column("Duration", justify="right", style="blue", min_width=8)
         perf_table.add_column("Data Name", style="magenta")
         perf_table.add_column("Data Provider", style="magenta")        
         
@@ -299,13 +300,22 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 # Fallback if parsing fails
                 topology = "N/A"
             
+            # Get launcher value as-is from the CSV (don't default to "docker" here)
+            launcher = str(row.get("launcher", "")) if not pd.isna(row.get("launcher")) and row.get("launcher") != "" else "N/A"
             deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
             
             status = str(row.get("status", "UNKNOWN"))
-            duration = format_duration(row.get("test_duration", ""))
+            
+            # Duration column shows ONLY test/execution time (not build time)
+            # If test_duration is missing, show N/A
+            test_dur = row.get("test_duration", "")
+            if not pd.isna(test_dur) and test_dur != "":
+                duration = format_duration(test_dur)
+            else:
+                duration = "N/A"
             
             # Color-code status
             if status == "SUCCESS":
@@ -320,6 +330,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
+                launcher,           # Distributed launcher (docker, torchrun, vllm, etc.)
                 deployment_type,
                 gpu_arch,
                 performance,

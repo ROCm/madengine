@@ -2399,6 +2399,16 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
                 }
             }
             
+            # Delete existing collector pod if it exists (prevents 409 Conflict)
+            try:
+                self.core_v1.delete_namespaced_pod(
+                    collector_pod_name, self.namespace, grace_period_seconds=0
+                )
+                time.sleep(2)  # Wait for pod to be deleted
+            except ApiException as e:
+                if e.status != 404:  # 404 means pod doesn't exist, which is fine
+                    pass
+            
             # Create collector pod
             self.core_v1.create_namespaced_pod(self.namespace, collector_pod_spec)
             
@@ -2631,6 +2641,7 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
             "git_commit": "",  # Not available in K8s pod
             "machine_name": pod_name,  # Use pod name as machine identifier
             "deployment_type": "kubernetes",  # Deployment environment
+            "launcher": model_info.get("launcher", "native"),  # Execution launcher (native, docker, torchrun, etc.)
             "gpu_architecture": gpu_architecture,
             
             # Performance metrics

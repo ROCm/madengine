@@ -22,7 +22,9 @@ from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.config_parser import ConfigParser
 
 
 class ContainerRunner:
@@ -70,7 +72,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,launcher,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -144,6 +146,51 @@ class ContainerRunner:
         except (ValueError, TypeError):
             total_gpus = resolved_gpu_count
         
+        # Extract launcher from multiple sources in priority order:
+        # 1. additional_context (passed via --additional-context CLI arg)
+        # 2. model_info distributed config (in models.json)
+        # 3. MAD_LAUNCHER environment variable
+        # 4. Default to 'docker' for local deployments
+        launcher = ""
+        
+        # Check additional_context first (highest priority)
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+            if launcher:
+                print(f"🚀 Launcher from additional_context: {launcher}")
+        
+        # Check model_info distributed config
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+            if launcher:
+                print(f"🚀 Launcher from model_info: {launcher}")
+        
+        # Fallback to environment variable
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER", "")
+            if launcher:
+                print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
+        
+        # Apply deployment-specific defaults if no launcher specified
+        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
+        if not launcher:
+            if deployment_type == "kubernetes":
+                launcher = "native"
+                print(f"🚀 Launcher defaulted to 'native' for kubernetes deployment")
+            elif deployment_type == "slurm":
+                launcher = "docker"
+                print(f"🚀 Launcher defaulted to 'docker' for slurm deployment")
+            elif deployment_type == "local":
+                launcher = "docker"
+                print(f"🚀 Launcher defaulted to 'docker' for local deployment")
+        
+        # Print final launcher selection
+        if launcher:
+            print(f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})")
+        else:
+            print(f"⚠️  No launcher specified (deployment_type: {deployment_type})")
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
@@ -161,6 +208,7 @@ class ContainerRunner:
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
+            "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
                 self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
                 if self.context
@@ -184,6 +232,19 @@ class ContainerRunner:
 
         # Flatten tags if they are in list format
         flatten_tags(run_details)
+
+        # Parse and load config file if present in args for perf_entry_super.json
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""),
+                scripts_path
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Could not parse config file: {e}")
+            run_details["configs"] = None
 
         return run_details
 
@@ -1187,6 +1248,35 @@ class ContainerRunner:
                                     print(
                                         f"Updated perf.csv with multiple results for {model_info['name']}"
                                     )
+
+                                    # Update perf_entry_super.json with multiple results
+                                    try:
+                                        # Create common_info_super.json with configs field
+                                        common_info_super = run_details_dict.copy()
+                                        for key in ["model", "performance", "metric", "status"]:
+                                            common_info_super.pop(key, None)
+                                        
+                                        with open("common_info_super.json", "w") as f:
+                                            json.dump(common_info_super, f)
+                                        
+                                        scripts_path = model_info.get("scripts", "")
+                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        
+                                        update_perf_super_json(
+                                            multiple_results=multiple_results,
+                                            perf_super_json="perf_entry_super.json",
+                                            model_name=run_details_dict["model"],
+                                            common_info="common_info_super.json",
+                                            scripts_base_dir=scripts_base_dir,
+                                        )
+                                        
+                                        # Generate CSV files from JSON
+                                        update_perf_super_csv(
+                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_csv="perf_super.csv"
+                                        )
+                                    except Exception as e:
+                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
                                 else:
                                     # Generate single result JSON
                                     with open("perf_entry.json", "w") as f:
@@ -1206,6 +1296,36 @@ class ContainerRunner:
                                     print(
                                         f"Updated perf.csv with result for {model_info['name']}"
                                     )
+
+                                    # Update perf_entry_super.json with single result
+                                    try:
+                                        # Generate perf_entry_super.json with configs field
+                                        with open("perf_entry_super.json", "w") as f:
+                                            json.dump(run_details_dict, f)
+                                        
+                                        scripts_path = model_info.get("scripts", "")
+                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        
+                                        if run_results.get("status") == "SUCCESS":
+                                            update_perf_super_json(
+                                                single_result="perf_entry_super.json",
+                                                perf_super_json="perf_entry_super.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+                                        else:
+                                            update_perf_super_json(
+                                                exception_result="perf_entry_super.json",
+                                                perf_super_json="perf_entry_super.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+                                        
+                                        # Generate CSV files from JSON
+                                        update_perf_super_csv(
+                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_csv="perf_super.csv"
+                                        )
+                                    except Exception as e:
+                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
 
                             except Exception as e:
                                 self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
@@ -1263,6 +1383,29 @@ class ContainerRunner:
                 print(
                     f"Updated perf.csv with exception result for {model_info['name']}"
                 )
+
+                # Update perf_entry_super.json with exception result
+                try:
+                    # Generate perf_entry_super.json with configs field
+                    with open("perf_entry_super.json", "w") as f:
+                        json.dump(run_details_dict, f)
+                    
+                    scripts_path = model_info.get("scripts", "")
+                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    
+                    update_perf_super_json(
+                        exception_result="perf_entry_super.json",
+                        perf_super_json="perf_entry_super.json",
+                        scripts_base_dir=scripts_base_dir,
+                    )
+                    
+                    # Generate CSV files from JSON
+                    update_perf_super_csv(
+                        perf_super_json="perf_entry_super.json",
+                        perf_super_csv="perf_super.csv"
+                    )
+                except Exception as e:
+                    print(f"⚠️  Warning: Could not update perf_super files: {e}")
 
             except Exception as csv_e:
                 self.rich_console.print(f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]")
