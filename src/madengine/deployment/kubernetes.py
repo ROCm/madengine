@@ -973,6 +973,24 @@ class KubernetesDeployment(BaseDeployment):
         if not model_script or not isinstance(model_script, str):
             raise ValueError(f"model_script must be non-empty string, got {model_script}")
         
+        # Check if model_script is a bash script
+        # If so, execute it directly as it handles torchrun internally
+        if model_script.endswith('.sh'):
+            # For bash scripts, set environment variables and execute script
+            # The script itself will invoke torchrun with the appropriate Python file
+            if nnodes == 1:
+                return f"""export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"
+export MAD_RUNTIME_NGPUS={nproc_per_node}
+bash {model_script}"""
+            else:
+                return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
+export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_PORT={master_port}
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
+export MAD_RUNTIME_NGPUS={nproc_per_node}
+bash {model_script}"""
+        
+        # For Python scripts, invoke torchrun directly
         # For single-node, simpler standalone command
         if nnodes == 1:
             return f"""torchrun \\
