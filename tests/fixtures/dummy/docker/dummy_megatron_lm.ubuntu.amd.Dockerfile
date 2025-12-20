@@ -1,5 +1,5 @@
 # CONTEXT {'gpu_vendor': 'AMD', 'guest_os': 'UBUNTU'}
-# Using official ROCm Megatron-LM image with pre-installed dependencies
+# Using official ROCm Megatron-LM image from https://hub.docker.com/r/rocm/megatron-lm
 ARG BASE_DOCKER=rocm/megatron-lm:latest
 FROM $BASE_DOCKER
 

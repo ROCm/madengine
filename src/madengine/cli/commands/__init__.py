@@ -10,6 +10,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 from .build import build
 from .run import run
 from .discover import discover
+from .report import report_app
+from .database import database
 
-__all__ = ["build", "run", "discover"]
+__all__ = ["build", "run", "discover", "report_app", "database"]
 

@@ -17,7 +17,7 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from .commands import build, run, discover
+from .commands import build, run, discover, report_app, database
 from .constants import ExitCode
 from .utils import console
 
@@ -37,6 +37,8 @@ app = typer.Typer(
 app.command()(build)
 app.command()(run)
 app.command()(discover)
+app.command()(database)
+app.add_typer(report_app, name="report")
 
 
 @app.callback(invoke_without_command=True)

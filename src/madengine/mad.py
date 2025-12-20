@@ -17,10 +17,10 @@ from madengine.tools.run_models import RunModels
 from madengine.utils.discover_models import DiscoverModels
 from madengine.tools.create_table_db import CreateTable
 from madengine.tools.update_table_db import UpdateTable
-from madengine.tools.upload_mongodb import MongoDBHandler
+from madengine.database.mongodb import MongoDBHandler
 from madengine.reporting.update_perf_csv import UpdatePerfCsv
-from madengine.tools.csv_to_html import ConvertCsvToHtml
-from madengine.tools.csv_to_email import ConvertCsvToEmail
+from madengine.reporting.csv_to_html import ConvertCsvToHtml
+from madengine.reporting.csv_to_email import ConvertCsvToEmail
 from madengine.core.constants import MODEL_DIR  # pylint: disable=unused-import
 from madengine.utils.gpu_validator import validate_gpu_installation, GPUInstallationError, detect_gpu_vendor, GPUVendor
 
