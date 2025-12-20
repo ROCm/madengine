@@ -99,9 +99,10 @@ class Docker:
         command += "--name " + container_name + " "
         command += image + " "
 
-        # Use 'sleep infinity' command to keep the container running in interactive mode
+        # Use 'cat' command to keep the container running in interactive mode
         # This allows subsequent exec commands while maintaining the container state
-        command += "sleep infinity "
+        # 'cat' blocks waiting for stdin and is more portable than 'sleep infinity'
+        command += "cat "
         self.console.sh(command)
 
         # find container sha
