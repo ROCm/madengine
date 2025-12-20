@@ -2581,9 +2581,10 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
             }
             gpu_architecture = gpu_map.get(device_id, "")
         
-        # Extract duration from logs if available
+        # Extract test duration from logs if available
         test_duration = ""
-        duration_match = re.search(r'duration:\s+([0-9.]+)', log, re.IGNORECASE)
+        # Look for "test_duration: 1.234s" format
+        duration_match = re.search(r'test_duration:\s+([0-9.]+)s?', log, re.IGNORECASE)
         if duration_match:
             test_duration = duration_match.group(1)
         
@@ -2782,6 +2783,7 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
             "git_commit",
             "machine_name",
             "deployment_type",
+            "launcher",            # Execution launcher (native, docker, torchrun, etc.)
             "gpu_architecture",
             "performance",
             "metric",
