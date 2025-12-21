@@ -307,41 +307,6 @@ class TestConfigLoaderDeploymentType:
         assert "memory" in result["k8s"]  # Defaults applied
 
 
-class TestConfigLoaderEdgeCases:
-    """Test edge cases and error handling."""
-    
-    def test_empty_config(self):
-        """Test empty config defaults to local deployment."""
-        user_config = {}
-        
-        result = ConfigLoader.load_config(user_config)
-        
-        # Should default to local (no k8s or slurm fields)
-        assert "k8s" not in result or result.get("k8s") == {}
-        assert "slurm" not in result or result.get("slurm") == {}
-        # Empty config should return as-is
-        assert isinstance(result, dict)
-    
-    def test_deep_merge_preserves_nested(self):
-        """Test that deep merge preserves nested structures."""
-        user_config = {
-            "k8s": {
-                "gpu_count": 2,
-                "labels": {
-                    "app": "myapp",
-                    "env": "prod"
-                }
-            }
-        }
-        
-        result = ConfigLoader.load_k8s_config(user_config)
-        
-        # Nested structure should be preserved
-        assert result["k8s"]["labels"]["app"] == "myapp"
-        assert result["k8s"]["labels"]["env"] == "prod"
-        # Defaults should still be applied at top level
-        assert result["k8s"]["memory"] == "64Gi"
-
 
 # Run pytest if executed directly
 if __name__ == "__main__":

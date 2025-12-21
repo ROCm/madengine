@@ -16,6 +16,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 | Guide | Description |
 |-------|-------------|
 | [Configuration](configuration.md) | Advanced configuration options |
+| [Batch Build](batch-build.md) | Selective builds with batch manifests |
 | [Deployment](deployment.md) | Kubernetes and SLURM deployment |
 | [Launchers](launchers.md) | Multi-node training frameworks |
 
@@ -84,6 +85,9 @@ Complete documentation for madengine - AI model automation and distributed bench
 
 **Deploy to SLURM**
 → [Configuration](configuration.md) → [Deployment](deployment.md)
+
+**Build multiple models selectively (CI/CD)**
+→ [Batch Build](batch-build.md)
 
 **Profile model performance**
 → [Profiling](profiling.md)

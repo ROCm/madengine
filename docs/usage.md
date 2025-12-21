@@ -73,6 +73,7 @@ madengine-cli build --tags model --manifest-output my_manifest.json
 
 **Options:**
 - `--tags, -t` - Model tags to build
+- `--batch-manifest` - Input batch.json file for batch build mode (mutually exclusive with --tags)
 - `--registry, -r` - Docker registry URL
 - `--additional-context, -c` - Configuration JSON string
 - `--additional-context-file, -f` - Configuration file path
@@ -212,6 +213,111 @@ Or use environment variables:
 export MAD_DOCKERHUB_USER=your_username
 export MAD_DOCKERHUB_PASSWORD=your_token
 export MAD_DOCKERHUB_REPO=myorg
+```
+
+### Batch Build Mode
+
+Batch build mode enables selective builds with per-model configuration, ideal for CI/CD pipelines where you need fine-grained control over which models to rebuild.
+
+#### Batch Manifest Format
+
+Create a JSON file (e.g., `batch.json`) with a list of model entries:
+
+```json
+[
+  {
+    "model_name": "model1",
+    "build_new": true,
+    "registry": "my-registry.com",
+    "registry_image": "custom-namespace/model1"
+  },
+  {
+    "model_name": "model2",
+    "build_new": false,
+    "registry": "my-registry.com",
+    "registry_image": "custom-namespace/model2"
+  },
+  {
+    "model_name": "model3",
+    "build_new": true
+  }
+]
+```
+
+**Fields:**
+- `model_name` (required): Model tag to include
+- `build_new` (optional, default: false): If true, build this model; if false, reference existing image
+- `registry` (optional): Per-model registry override
+- `registry_image` (optional): Custom registry image name/namespace
+
+#### Usage Example
+
+```bash
+# Basic batch build
+madengine-cli build --batch-manifest batch.json \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# With global registry (can be overridden per model)
+madengine-cli build --batch-manifest batch.json \
+  --registry localhost:5000 \
+  --additional-context-file config.json
+
+# Verbose output
+madengine-cli build --batch-manifest batch.json \
+  --registry my-registry.com \
+  --verbose
+```
+
+#### Key Features
+
+**Selective Building**: Only models with `"build_new": true` are built. Models with `"build_new": false` are added to the output manifest without building, useful for referencing existing images.
+
+**Per-Model Registry Override**: Each model can specify its own `registry` and `registry_image`, overriding the global `--registry` flag.
+
+**Mutually Exclusive**: Cannot use `--batch-manifest` and `--tags` together.
+
+#### Use Cases
+
+**CI/CD Incremental Builds**:
+```json
+[
+  {"model_name": "changed_model", "build_new": true},
+  {"model_name": "unchanged_model1", "build_new": false},
+  {"model_name": "unchanged_model2", "build_new": false}
+]
+```
+
+**Multi-Registry Deployment**:
+```json
+[
+  {
+    "model_name": "public_model",
+    "build_new": true,
+    "registry": "docker.io/myorg"
+  },
+  {
+    "model_name": "private_model",
+    "build_new": true,
+    "registry": "gcr.io/myproject"
+  }
+]
+```
+
+**Development vs Production**:
+```json
+[
+  {
+    "model_name": "dev_model",
+    "build_new": true,
+    "registry": "localhost:5000"
+  },
+  {
+    "model_name": "prod_model",
+    "build_new": false,
+    "registry": "prod-registry.com",
+    "registry_image": "production/model"
+  }
+]
 ```
 
 ## Run Workflow

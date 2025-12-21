@@ -182,6 +182,21 @@ madengine-cli run --tags model \
 
 See [Usage Guide](docs/usage.md) and [Configuration Guide](docs/configuration.md) for more examples.
 
+### Building Images
+
+```bash
+# Build with tags
+madengine-cli build --tags model1 model2 \
+  --registry localhost:5000 \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Batch build mode (selective builds for CI/CD)
+madengine-cli build --batch-manifest examples/build-manifest/batch.json \
+  --registry docker.io/myorg
+```
+
+See [Batch Build Guide](docs/batch-build.md) and examples in [`examples/build-manifest/`](examples/build-manifest/).
+
 ## 🔍 Model Discovery
 
 madengine discovers models from the MAD package using three methods:

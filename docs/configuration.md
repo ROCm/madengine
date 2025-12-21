@@ -45,6 +45,63 @@ madengine-cli run --tags model --additional-context-file config.json
 - `"UBUNTU"` - Ubuntu Linux
 - `"CENTOS"` - CentOS Linux
 
+## Build Configuration
+
+### Batch Manifest
+
+Use batch manifest files for selective builds with per-model configuration:
+
+```bash
+madengine-cli build --batch-manifest batch.json \
+  --registry my-registry.com \
+  --additional-context-file config.json
+```
+
+**Batch manifest structure** (`batch.json`):
+
+```json
+[
+  {
+    "model_name": "model1",
+    "build_new": true,
+    "registry": "registry1.io",
+    "registry_image": "namespace/model1"
+  },
+  {
+    "model_name": "model2",
+    "build_new": false,
+    "registry": "registry2.io",
+    "registry_image": "namespace/model2"
+  }
+]
+```
+
+**Fields:**
+- `model_name` (string, required): Model tag to include
+- `build_new` (boolean, optional, default: `false`): Whether to build this model
+  - `true`: Build the model from source
+  - `false`: Reference existing image without rebuilding
+- `registry` (string, optional): Per-model registry override
+- `registry_image` (string, optional): Custom registry image name/namespace
+
+**Key Behaviors:**
+- Only models with `"build_new": true` are built
+- Models with `"build_new": false` are included in output manifest without building
+- Per-model `registry` overrides the global `--registry` flag
+- Cannot use `--batch-manifest` and `--tags` together (mutually exclusive)
+
+**Use Case - CI/CD Incremental Builds:**
+
+```json
+[
+  {"model_name": "changed_model", "build_new": true},
+  {"model_name": "stable_model1", "build_new": false},
+  {"model_name": "stable_model2", "build_new": false}
+]
+```
+
+This allows you to rebuild only changed models while maintaining references to existing stable images in a single manifest.
+
 ## Docker Configuration
 
 ### Environment Variables
