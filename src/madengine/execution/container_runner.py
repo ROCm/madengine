@@ -179,8 +179,10 @@ class ContainerRunner:
                 launcher = "native"
                 print(f"🚀 Launcher defaulted to 'native' for kubernetes deployment")
             elif deployment_type == "slurm":
-                launcher = "docker"
-                print(f"🚀 Launcher defaulted to 'docker' for slurm deployment")
+                # For SLURM, try to get launcher type from environment or default to torchrun
+                # Note: "slurm" is the deployment type, not the launcher
+                launcher = os.environ.get("MAD_LAUNCHER_TYPE", "torchrun")
+                print(f"🚀 Launcher defaulted to '{launcher}' for slurm deployment")
             elif deployment_type == "local":
                 launcher = "docker"
                 print(f"🚀 Launcher defaulted to 'docker' for local deployment")
@@ -360,6 +362,21 @@ class ContainerRunner:
         self.rich_console.print(f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]")
         print(f"📍 Registry: {registry or 'Default'}")
         print(f"🏷️  Image: {registry_image}")
+        
+        # Force fresh pull on SLURM compute nodes to avoid corrupted cached layers
+        # This prevents "permission denied" errors from corrupted image layers
+        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
+        in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
+        
+        if deployment_type == "slurm" and in_slurm_job:
+            print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
+            # Remove any existing cached image to force fresh pull
+            try:
+                self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
+                print(f"✓ Removed cached image layers")
+            except:
+                pass  # It's okay if image doesn't exist
+        
         try:
             self.console.sh(f"docker pull {registry_image}")
 

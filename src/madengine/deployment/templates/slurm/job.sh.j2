@@ -274,6 +274,11 @@ echo "  Node: ${SLURM_NODEID}/${SLURM_NNODES} (Rank ${SLURM_PROCID}/${SLURM_NTAS
 # Set deployment environment flags
 export MAD_IN_SLURM_JOB=1
 export MAD_DEPLOYMENT_TYPE=slurm
+{% if launcher_type %}
+export MAD_LAUNCHER_TYPE="{{ launcher_type }}"
+{% else %}
+export MAD_LAUNCHER_TYPE="torchrun"
+{% endif %}
 
 # =============================================================================
 # Configure Distributed Execution Launcher
@@ -286,11 +291,7 @@ echo "  TOTAL_GPUS: $((NNODES * GPUS_PER_NODE))"
 echo "  MASTER_ADDR: ${MASTER_ADDR}"
 echo "  MASTER_PORT: ${MASTER_PORT}"
 echo "  WORLD_SIZE: ${WORLD_SIZE}"
-{% if launcher_type %}
-echo "  Launcher: {{ launcher_type }}"
-{% else %}
-echo "  Launcher: torchrun (default)"
-{% endif %}
+echo "  Launcher: ${MAD_LAUNCHER_TYPE}"
 echo ""
 
 # Note: For multi-node jobs, node-specific variables (RANK, NODE_RANK, MAD_MULTI_NODE_RUNNER)

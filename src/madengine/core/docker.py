@@ -98,19 +98,11 @@ class Docker:
         command += "--workdir /myworkspace/ "
         command += "--name " + container_name + " "
         command += image + " "
-
-        # Smart switch: Use appropriate command based on deployment type
-        # SLURM: Use 'tail -f /dev/null' (most portable for minimal Docker images)
-        # Local/K8s: Use 'cat' (existing behavior, works well)
-        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
-        if deployment_type == "slurm":
-            # Use 'tail -f /dev/null' for SLURM - extremely portable, works on minimal images
-            # This is more reliable than 'sleep' or 'cat' for bare-bones containers
-            command += "tail -f /dev/null "
-        else:
-            # Use 'cat' for local and k8s deployments (existing behavior)
-            # 'cat' blocks waiting for stdin and is more portable than 'sleep infinity'
-            command += "cat "
+        
+        # Use 'cat' to keep container alive (blocks waiting for stdin)
+        # Works reliably across all deployment types (local, k8s, slurm)
+        # with fresh image pulls preventing corrupted layer issues
+        command += "cat "
         self.console.sh(command)
 
         # find container sha
