@@ -100,12 +100,13 @@ class Docker:
         command += image + " "
 
         # Smart switch: Use appropriate command based on deployment type
-        # SLURM: Use 'sleep infinity' (more reliable for minimal Docker images)
+        # SLURM: Use 'tail -f /dev/null' (most portable for minimal Docker images)
         # Local/K8s: Use 'cat' (existing behavior, works well)
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         if deployment_type == "slurm":
-            # Use 'sleep infinity' for SLURM - more portable for minimal images
-            command += "sleep infinity "
+            # Use 'tail -f /dev/null' for SLURM - extremely portable, works on minimal images
+            # This is more reliable than 'sleep' or 'cat' for bare-bones containers
+            command += "tail -f /dev/null "
         else:
             # Use 'cat' for local and k8s deployments (existing behavior)
             # 'cat' blocks waiting for stdin and is more portable than 'sleep infinity'
