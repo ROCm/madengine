@@ -99,10 +99,17 @@ class Docker:
         command += "--name " + container_name + " "
         command += image + " "
 
-        # Use 'cat' command to keep the container running in interactive mode
-        # This allows subsequent exec commands while maintaining the container state
-        # 'cat' blocks waiting for stdin and is more portable than 'sleep infinity'
-        command += "cat "
+        # Smart switch: Use appropriate command based on deployment type
+        # SLURM: Use 'sleep infinity' (more reliable for minimal Docker images)
+        # Local/K8s: Use 'cat' (existing behavior, works well)
+        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
+        if deployment_type == "slurm":
+            # Use 'sleep infinity' for SLURM - more portable for minimal images
+            command += "sleep infinity "
+        else:
+            # Use 'cat' for local and k8s deployments (existing behavior)
+            # 'cat' blocks waiting for stdin and is more portable than 'sleep infinity'
+            command += "cat "
         self.console.sh(command)
 
         # find container sha
