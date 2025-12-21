@@ -424,6 +424,7 @@ class DockerBuilder:
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
                 "docker_build_arg": self.context.ctx.get("docker_build_arg", {}),
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
+                "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
             },
             "credentials_required": credentials_required,
