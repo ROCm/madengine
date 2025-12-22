@@ -1,13 +1,16 @@
 {
-  "_comment": "DeepSpeed Config - Uses deepspeed launcher",
+  "_comment": "DeepSpeed Minimal Config - Uses bash script with torchrun",
   "_description": "DeepSpeed with ZeRO-1 optimization",
-  "_use_case": "Test DeepSpeed distributed training (training-specific launcher)",
+  "_use_case": "Test DeepSpeed distributed training with bash wrapper",
   
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   
   "k8s": {
-    "gpu_count": 2
+    "gpu_count": 2,
+    "namespace": "default",
+    "memory": "32Gi",
+    "cpu": "16"
   },
   
   "distributed": {
@@ -17,6 +20,6 @@
   },
   
   "env_vars": {
-    "DEEPSPEED_LAUNCHER": "deepspeed"
+    "OMP_NUM_THREADS": "8"
   }
 }

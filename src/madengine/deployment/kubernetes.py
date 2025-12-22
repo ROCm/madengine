@@ -682,13 +682,26 @@ class KubernetesDeployment(BaseDeployment):
                 create_headless_service = True
                 self.console.print(f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]")
             
-            # Generate DeepSpeed launcher command
-            launcher_command = self._generate_deepspeed_command(
-                nnodes=nnodes,
-                nproc_per_node=nproc_per_node,
-                master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
-            )
+            model_script = model_info.get("scripts", "run.sh")
+            
+            # Check if script is a bash script - if so, execute it directly
+            # as it will handle the launcher internally
+            if model_script.endswith('.sh'):
+                self.console.print(f"[dim]Detected bash script ({model_script}), will execute directly[/dim]")
+                launcher_command = self._generate_bash_script_command(
+                    nnodes=nnodes,
+                    nproc_per_node=nproc_per_node,
+                    master_port=master_port,
+                    model_script=model_script
+                )
+            else:
+                # Python script - use DeepSpeed launcher
+                launcher_command = self._generate_deepspeed_command(
+                    nnodes=nnodes,
+                    nproc_per_node=nproc_per_node,
+                    master_port=master_port,
+                    model_script=model_script
+                )
 
         elif launcher_type == "torchtitan":
             if nnodes > 1:
@@ -1145,6 +1158,75 @@ deepspeed --hostfile=/tmp/hostfile \\
     --num_nodes={nnodes} \\
     --num_gpus={nproc_per_node} \\
     {model_script}"""
+    
+    def _generate_bash_script_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate command to execute a bash script directly.
+        
+        This is used when the model script is a .sh file that handles
+        launcher invocation internally (e.g., using torchrun inside the script).
+        
+        Sets up environment variables for distributed training that the bash
+        script can use.
+        
+        Args:
+            nnodes: Number of nodes (pods)
+            nproc_per_node: GPUs per node
+            master_port: Master communication port
+            model_script: Path to the bash script
+        
+        Returns:
+            Command to execute the bash script with environment setup
+        """
+        # For single-node
+        if nnodes == 1:
+            return f"""# Bash Script Execution (Single-Node)
+# Setting up environment for script to use
+export MASTER_ADDR=localhost
+export MASTER_PORT={master_port}
+export RANK=0
+export LOCAL_RANK=0
+export WORLD_SIZE={nproc_per_node}
+export NNODES=1
+export NPROC_PER_NODE={nproc_per_node}
+
+echo "Bash Script Configuration:"
+echo "  Script: {model_script}"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  WORLD_SIZE: $WORLD_SIZE"
+echo "  NNODES: $NNODES"
+echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
+echo ""
+
+# Execute the bash script directly
+bash {model_script}"""
+        
+        # Multi-node: Use K8s headless service for coordination
+        return f"""# Bash Script Execution (Multi-Node)
+# Setting up environment for script to use
+export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_PORT={master_port}
+export RANK=${{JOB_COMPLETION_INDEX}}
+export LOCAL_RANK=0
+export WORLD_SIZE={nnodes * nproc_per_node}
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+
+echo "Bash Script Multi-Node Configuration:"
+echo "  Script: {model_script}"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  RANK (Node Rank): $RANK"
+echo "  WORLD_SIZE: $WORLD_SIZE"
+echo "  NNODES: $NNODES"
+echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
+echo ""
+
+# Execute the bash script directly
+bash {model_script}"""
     
     def _generate_torchtitan_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
@@ -2759,12 +2841,12 @@ torchrun \\
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
             
-            # Runtime information
-            "git_commit": "",  # Not available in K8s pod
-            "machine_name": pod_name,  # Use pod name as machine identifier
-            "deployment_type": "kubernetes",  # Deployment environment
-            "launcher": model_info.get("launcher", "native"),  # Execution launcher (native, docker, torchrun, etc.)
-            "gpu_architecture": gpu_architecture,
+        # Runtime information
+        "git_commit": "",  # Not available in K8s pod
+        "machine_name": pod_name,  # Use pod name as machine identifier
+        "deployment_type": "kubernetes",  # Deployment environment
+        "launcher": distributed_config.get("launcher", "native"),  # Execution launcher (native, torchrun, megatron, etc.)
+        "gpu_architecture": gpu_architecture,
             
             # Performance metrics
             "performance": performance,

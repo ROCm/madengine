@@ -1,0 +1,34 @@
+{
+  "_comment": "Megatron-LM Multi-Node Training Configuration",
+  "_description": "Large-scale transformer training with Megatron-LM on Kubernetes",
+  "_use_case": "Multi-node Megatron-LM training with tensor and pipeline parallelism",
+  "_reference": "https://github.com/NVIDIA/Megatron-LM",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 8,
+    "namespace": "ml-training",
+    "memory": "128Gi",
+    "memory_limit": "256Gi",
+    "cpu": "32",
+    "cpu_limit": "64",
+    "image_pull_policy": "IfNotPresent"
+  },
+  
+  "distributed": {
+    "launcher": "megatron",
+    "nnodes": 4,
+    "nproc_per_node": 8,
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "16",
+    "NCCL_DEBUG": "INFO"
+  },
+  
+  "debug": false
+}
+
