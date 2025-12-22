@@ -18,8 +18,6 @@ dependencies = [
   "sqlalchemy",
   "setuptools-rust",
   "paramiko",
-  "mysql-connector-python",
-  "pymysql",
   "tqdm",
   "pytest",
   "typing-extensions",
@@ -146,8 +144,6 @@ strict_equality = true
 module = [
     "paramiko.*",
     "pymongo.*",
-    "mysql.connector.*",
-    "pymysql.*",
     "toml.*",
     "jsondiff.*",
     "git.*",

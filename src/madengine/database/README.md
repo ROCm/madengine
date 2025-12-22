@@ -23,15 +23,17 @@ For current database operations, use the existing `db/` package which handles My
 
 ---
 
-## 🗂️ Legacy Database Tools
+## 🗂️ Legacy MySQL Tools (Removed)
 
-The following legacy tools remain in `tools/` for backward compatibility:
+**MySQL support has been removed from madengine**. The following tools are no longer available:
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `tools/create_table_db.py` | MySQL table creation | Legacy (used by `mad.py`) |
-| `tools/update_table_db.py` | MySQL table updates | Legacy (used by `mad.py`) |
-| `tools/upload_mongodb.py` | MongoDB upload | Legacy (used by `mad.py`) |
+| ~~`tools/create_table_db.py`~~ | MySQL table creation | **REMOVED** |
+| ~~`tools/update_table_db.py`~~ | MySQL table updates | **REMOVED** |
+| ~~`db/` package~~ | MySQL operations via SSH | **REMOVED** |
+
+For database operations, use MongoDB via the `database` command in the new CLI or legacy `mad.py`.
 
 ---
 
@@ -76,33 +78,35 @@ ingest_results(
 
 ---
 
-## 📦 Difference from `db/` Package
+## 📦 Difference from `db/` Package (Removed)
 
-| Aspect | `db/` (Existing) | `database/` (Future) |
+| Aspect | `db/` (Removed) | `database/` (Current) |
 |--------|------------------|---------------------|
-| **Purpose** | MySQL operations via SSH | Modern MongoDB + local storage |
+| **Purpose** | MySQL operations via SSH | MongoDB support |
 | **Target** | Remote MySQL server | Local/distributed MongoDB |
-| **Transport** | SSH tunnel | Direct connection / API |
-| **Status** | Active (until MySQL deprecated) | Planned |
+| **Transport** | SSH tunnel | Direct connection |
+| **Status** | **REMOVED** | Active |
 
 ---
 
-## 🔄 Migration Path
+## 🔄 Migration Status
 
-When this layer is implemented, legacy tools will be deprecated:
+MySQL support has been fully removed from madengine:
 
-1. ✅ **Phase 1**: Keep both `db/` and legacy `tools/` (current)
-2. 🚧 **Phase 2**: Implement new `database/` layer
-3. 📋 **Phase 3**: Migrate users to new API
-4. 🗑️ **Phase 4**: Deprecate legacy MySQL tools
+1. ✅ **Phase 1**: Removed `db/` package (MySQL operations)
+2. ✅ **Phase 2**: Removed `tools/create_table_db.py` and `tools/update_table_db.py`
+3. ✅ **Phase 3**: Removed `utils/ssh_to_db.py` (SSH to MySQL host)
+4. ✅ **Phase 4**: Removed MySQL dependencies (`mysql-connector-python`, `pymysql`)
+
+**Current state**: Only MongoDB support remains via the `database/` package.
 
 ---
 
 ## 📚 References
 
-- **Existing MySQL package**: `src/madengine/db/`
-- **Legacy tools**: `src/madengine/tools/*_db.py`
-- **Future tracking**: TBD (create GitHub issue when ready to implement)
+- **MongoDB package**: `src/madengine/database/mongodb.py`
+- **New CLI database command**: `madengine-cli database --help`
+- **Legacy CLI database command**: `madengine database upload-mongodb --help`
 
 ---
 

@@ -104,7 +104,7 @@ def get_fallback_config():
         "authors": [{"name": "Advanced Micro Devices", "email": "mad.support@amd.com"}],
         "dependencies": [
             "pandas", "GitPython", "jsondiff", "sqlalchemy", "setuptools-rust",
-            "paramiko", "mysql-connector-python", "pymysql", "tqdm", "pytest",
+            "paramiko", "tqdm", "pytest",
             "typing-extensions", "pymongo", "toml",
         ],
         "optional_dependencies": {

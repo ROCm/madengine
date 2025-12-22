@@ -15,8 +15,6 @@ import sys
 from madengine import __version__
 from madengine.tools.run_models import RunModels
 from madengine.utils.discover_models import DiscoverModels
-from madengine.tools.create_table_db import CreateTable
-from madengine.tools.update_table_db import UpdateTable
 from madengine.database.mongodb import MongoDBHandler
 from madengine.reporting.update_perf_csv import UpdatePerfCsv
 from madengine.reporting.csv_to_html import ConvertCsvToHtml
@@ -110,28 +108,6 @@ def csv_to_email(args):
     logger.info("Convert CSV to Email of models")
     convert_csv_to_email = ConvertCsvToEmail(args=args)
     return convert_csv_to_email.run()
-
-
-def create_table(args):
-    """Create table in DB.
-
-    Args:
-        args: The command-line arguments.
-    """
-    logger.info("Create table in DB")
-    create_table_instance = CreateTable(args=args)
-    return create_table_instance.run()
-
-
-def update_table(args):
-    """Update table in DB.
-
-    Args:
-        args: The command-line arguments.
-    """
-    logger.info("Update table in DB")
-    update_table_instance = UpdateTable(args=args)
-    return update_table_instance.run()
 
 
 def upload_mongodb(args):
@@ -389,28 +365,9 @@ def main():
     parser_database = subparsers.add_parser("database", help="CRUD for database")
     subparsers_database = parser_database.add_subparsers(
         title="Database Commands",
-        description="Available commands for database, such as creating and updating table in DB.",
+        description="Available commands for database, such as uploading to MongoDB.",
         dest="database_command",
     )
-    # Database subcommand creating tabe
-    parser_database_create_table = subparsers_database.add_parser(
-        "create-table", description="Create table in DB.", help="Create table in DB"
-    )
-    parser_database_create_table.add_argument(
-        "-v", "--verbose", action="store_true", help="verbose output"
-    )
-    parser_database_create_table.set_defaults(func=create_table)
-    # Database subcommand updating table
-    parser_database_update_table = subparsers_database.add_parser(
-        "update-table", description="Update table in DB.", help="Update table in DB"
-    )
-    parser_database_update_table.add_argument(
-        "--csv-file-path", type=str, help="Path to the csv file"
-    )
-    parser_database_update_table.add_argument(
-        "--model-json-path", type=str, help="Path to the model json file"
-    )
-    parser_database_update_table.set_defaults(func=update_table)
     # Database subcommand uploading to MongoDB
     parser_database_upload_mongodb = subparsers_database.add_parser(
         "upload-mongodb", description="Update table in DB.", help="Update table in DB"
