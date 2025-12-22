@@ -652,6 +652,14 @@ class KubernetesDeployment(BaseDeployment):
             
             self.console.print(f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
+        elif launcher_type == "megatron":
+            if not isinstance(nnodes, int) or nnodes < 1:
+                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+            if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+            
+            self.console.print(f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+
         # Determine if we need multi-node setup
         create_headless_service = False
         launcher_command = None
@@ -715,6 +723,19 @@ class KubernetesDeployment(BaseDeployment):
             
             # Generate SGLang launcher command
             launcher_command = self._generate_sglang_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh")
+            )
+
+        elif launcher_type == "megatron":
+            if nnodes > 1:
+                create_headless_service = True
+                self.console.print(f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]")
+            
+            # Generate Megatron-LM launcher command
+            launcher_command = self._generate_megatron_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
@@ -1446,6 +1467,106 @@ echo "Starting SGLang with native multi-node launcher..."
 
 # Cleanup Ray on exit
 trap "ray stop --force 2>/dev/null || true" EXIT"""
+
+    def _generate_megatron_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate Megatron-LM launcher command for K8s Indexed Jobs.
+        
+        Megatron-LM is a training framework for large transformers with tensor and pipeline parallelism.
+        It uses torchrun as the underlying launcher but with Megatron-specific environment variables.
+        
+        Architecture:
+        - Single-node: Tensor Parallelism (TP) across GPUs
+        - Multi-node: Tensor + Pipeline Parallelism
+          * TP across GPUs within each node
+          * PP across nodes
+        
+        For K8s:
+        - Uses headless service for node discovery (like torchrun/deepspeed)
+        - Each pod knows its rank via JOB_COMPLETION_INDEX
+        - Sets TENSOR_MODEL_PARALLEL_SIZE and PIPELINE_MODEL_PARALLEL_SIZE (Megatron-Core standard)
+        
+        Args:
+            nnodes: Number of nodes (pods). Must be >= 1.
+            nproc_per_node: GPUs per node. Must be >= 1.
+            master_port: Master communication port (for NCCL). Must be 1-65535.
+            model_script: Path to model's run script. Cannot be empty.
+        
+        Returns:
+            Complete Megatron-LM launch setup with environment configuration
+        
+        Raises:
+            ValueError: If any parameter is invalid
+        """
+        # Validate inputs
+        if not isinstance(nnodes, int) or nnodes < 1:
+            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
+        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
+            raise ValueError(f"master_port must be 1-65535, got {master_port}")
+        if not model_script or not isinstance(model_script, str):
+            raise ValueError(f"model_script must be non-empty string, got {model_script}")
+        
+        # For single-node, use TP only
+        if nnodes == 1:
+            return f"""# Megatron-LM single-node setup (Tensor Parallelism)
+export TENSOR_MODEL_PARALLEL_SIZE={min(nproc_per_node, 8)}
+export PIPELINE_MODEL_PARALLEL_SIZE=1
+export CONTEXT_PARALLEL_SIZE=1
+export NNODES=1
+export NPROC_PER_NODE={nproc_per_node}
+export MASTER_ADDR=localhost
+export MASTER_PORT={master_port}
+export NODE_RANK=0
+
+echo "Megatron-LM Configuration (Single-Node):"
+echo "  Tensor Model Parallel Size: {min(nproc_per_node, 8)}"
+echo "  Pipeline Model Parallel Size: 1"
+echo "  Total GPUs: {nproc_per_node}"
+
+# Launch using torchrun with Megatron configuration
+torchrun \\
+    --standalone \\
+    --nproc_per_node={nproc_per_node} \\
+    {model_script}"""
+        
+        # Multi-node: TP + PP
+        else:
+            # Use headless service for node discovery (set by template)
+            return f"""# Megatron-LM multi-node setup (Tensor + Pipeline Parallelism)
+export TENSOR_MODEL_PARALLEL_SIZE={nproc_per_node}
+export PIPELINE_MODEL_PARALLEL_SIZE={nnodes}
+export CONTEXT_PARALLEL_SIZE=1
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+export NODE_RANK=${{JOB_COMPLETION_INDEX}}
+export MASTER_ADDR=${{MASTER_ADDR}}
+export MASTER_PORT={master_port}
+
+echo "Megatron-LM Configuration (Multi-Node):"
+echo "  MASTER_ADDR: $MASTER_ADDR"
+echo "  MASTER_PORT: $MASTER_PORT"
+echo "  NODE_RANK: $NODE_RANK (Pod Index)"
+echo "  NNODES: $NNODES"
+echo "  Tensor Model Parallel Size: {nproc_per_node}"
+echo "  Pipeline Model Parallel Size: {nnodes}"
+echo "  Total GPUs: {nnodes * nproc_per_node}"
+
+# Wait for all pods to be ready (K8s Indexed Job coordination)
+echo "Waiting for all {nnodes} pods to be ready..."
+sleep 5
+
+# Launch using torchrun with Megatron multi-node configuration
+torchrun \\
+    --nnodes={nnodes} \\
+    --nproc_per_node={nproc_per_node} \\
+    --node_rank=${{NODE_RANK}} \\
+    --master_addr=${{MASTER_ADDR}} \\
+    --master_port={master_port} \\
+    {model_script}"""
     
     def _load_k8s_tools(self) -> Dict:
         """

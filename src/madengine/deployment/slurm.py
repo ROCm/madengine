@@ -439,16 +439,18 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SL
         Returns:
             MAD_MULTI_NODE_RUNNER with megatron-specific setup
         """
-        # Megatron usually uses torchrun, so similar to torchrun but with Megatron env vars
+        # Megatron uses torchrun with Megatron-Core standard environment variables
         if nnodes == 1:
             return f'''# Megatron-LM single-node setup
-export MEGATRON_TENSOR_PARALLEL_SIZE={min(nproc_per_node, 8)}
-export MEGATRON_PIPELINE_PARALLEL_SIZE=1
+export TENSOR_MODEL_PARALLEL_SIZE={min(nproc_per_node, 8)}
+export PIPELINE_MODEL_PARALLEL_SIZE=1
+export CONTEXT_PARALLEL_SIZE=1
 export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'''
         else:
             return f'''# Megatron-LM multi-node setup
-export MEGATRON_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export MEGATRON_PIPELINE_PARALLEL_SIZE={nnodes}
+export TENSOR_MODEL_PARALLEL_SIZE={nproc_per_node}
+export PIPELINE_MODEL_PARALLEL_SIZE={nnodes}
+export CONTEXT_PARALLEL_SIZE=1
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
     def _generate_torchtitan_command(

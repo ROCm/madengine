@@ -140,7 +140,7 @@ spec:
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
             
-            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" %}
+            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" %}
             # {{ launcher_type }} distributed environment (auto-configured from K8s)
             {% if nnodes > 1 %}
             # Multi-node {{ launcher_type }} (Indexed Job)

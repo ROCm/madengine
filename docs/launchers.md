@@ -14,7 +14,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 |----------|------|----------|-----|-------|------------|
 | **torchrun** | Training | PyTorch DDP/FSDP training | ✅ | ✅ | ✅ |
 | **DeepSpeed** | Training | ZeRO optimization training | ✅ | ✅ | ✅ |
-| **Megatron-LM** | Training | Large-scale transformer training | ❌ | ✅ | ✅ |
+| **Megatron-LM** | Training | Large-scale transformer training | ✅ | ✅ | ✅ |
 | **TorchTitan** | Training | LLM pre-training (FSDP2+TP+PP) | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
@@ -145,10 +145,29 @@ madengine-cli run --manifest-file build_manifest.json
 - Pipeline parallelism across nodes
 - Optimized for transformer architectures
 - Built on top of torchrun
+- Automatic TP/PP size configuration
 
 **Availability**:
-- ❌ K8s: Not yet implemented
+- ✅ K8s: Fully supported (dedicated launcher)
 - ✅ SLURM: Fully supported
+
+**Examples**:
+- K8s: `examples/k8s-configs/minimal/megatron-lm-minimal.json`
+- K8s Multi-node: `examples/k8s-configs/basic/megatron-lm-multi-node-basic.json`
+- SLURM: `examples/slurm-configs/minimal/megatron-lm-minimal.json`
+- SLURM Multi-node: `examples/slurm-configs/basic/09-megatron-lm-multi-node.json`
+
+**Environment Variables** (automatically set by launcher):
+```bash
+# Megatron-Core standard variables
+TENSOR_MODEL_PARALLEL_SIZE    # Tensor parallelism (GPUs per node)
+PIPELINE_MODEL_PARALLEL_SIZE  # Pipeline parallelism (typically = nnodes)
+CONTEXT_PARALLEL_SIZE         # Context parallelism (default: 1)
+```
+
+**Note**: The launcher automatically configures:
+- Single-node: TP only (PP=1)
+- Multi-node: TP across GPUs + PP across nodes
 
 ---
 
@@ -417,6 +436,15 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 **DeepSpeed**:
 ```bash
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
+```
+
+**Megatron-LM**:
+```bash
+# Megatron-Core standard environment variables
+TENSOR_MODEL_PARALLEL_SIZE=8         # Tensor parallelism size
+PIPELINE_MODEL_PARALLEL_SIZE=4       # Pipeline parallelism size
+CONTEXT_PARALLEL_SIZE=1              # Context parallelism size
+MAD_MULTI_NODE_RUNNER="torchrun ..."  # Uses torchrun (SLURM only)
 ```
 
 **TorchTitan**:

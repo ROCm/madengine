@@ -91,7 +91,7 @@ madengine-cli run --tags dummy \
 |----------|-------|-----------|-------|------|--------------|
 | **torchrun** | ✅ | ✅ | ✅ | Training | PyTorch DDP/FSDP, elastic training |
 | **DeepSpeed** | ✅ | ✅ | ✅ | Training | ZeRO optimization, pipeline parallelism |
-| **Megatron-LM** | ✅ | ❌ | ✅ | Training | Tensor+Pipeline parallel, large transformers |
+| **Megatron-LM** | ✅ | ✅ | ✅ | Training | Tensor+Pipeline parallel, large transformers |
 | **TorchTitan** | ✅ | ✅ | ✅ | Training | FSDP2+TP+PP+CP, Llama 3.1 (8B-405B) |
 | **vLLM** | ✅ | ✅ | ✅ | Inference | v1 engine, PagedAttention, Ray cluster |
 | **SGLang** | ✅ | ✅ | ✅ | Inference | RadixAttention, structured generation |

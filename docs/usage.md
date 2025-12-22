@@ -464,7 +464,7 @@ Configure distributed training:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (SLURM only)
+- `megatron` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
 - `vllm` - LLM inference
 - `sglang` - Structured generation

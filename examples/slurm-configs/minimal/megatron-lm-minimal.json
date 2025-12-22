@@ -1,7 +1,7 @@
 {
-  "_comment": "Megatron-LM Style Config - Uses torchrun launcher",
-  "_description": "Megatron-LM uses torchrun with Megatron-specific env vars",
-  "_use_case": "Test Megatron-LM style training patterns on SLURM",
+  "_comment": "Megatron-LM Minimal Config - Dedicated launcher support",
+  "_description": "Megatron-LM with automated tensor/pipeline parallelism setup",
+  "_use_case": "Large-scale transformer training with Megatron-LM on SLURM",
   
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
@@ -14,15 +14,12 @@
   },
   
   "distributed": {
-    "launcher": "torchrun",
+    "launcher": "megatron",
     "nnodes": 1,
     "nproc_per_node": 2
   },
   
   "env_vars": {
-    "TENSOR_MODEL_PARALLEL_SIZE": "1",
-    "PIPELINE_MODEL_PARALLEL_SIZE": "1",
-    "MEGATRON_FRAMEWORK": "megatron_lm"
+    "OMP_NUM_THREADS": "8"
   }
 }
-
