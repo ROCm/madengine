@@ -1,0 +1,37 @@
+{
+  "_comment": "vLLM Single Node Multi-GPU - Inference Configuration",
+  "_description": "vLLM inference with tensor parallelism on single node",
+  "_use_case": "High-throughput LLM inference on single node with multiple GPUs",
+  "_note": "vLLM uses tensor parallelism to split model across GPUs",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 4,
+    "time": "02:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  },
+  
+  "pre_scripts": [],
+  
+  "env_vars": {
+    "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "VLLM_USE_MODELSCOPE": "False",
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    "VLLM_KV_CACHE_SIZE": "0.7",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "NCCL_DEBUG": "WARN"
+  }
+}
+

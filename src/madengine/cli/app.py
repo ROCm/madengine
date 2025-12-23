@@ -17,7 +17,7 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from .commands import build, run, discover
+from .commands import build, run, discover, report_app, database
 from .constants import ExitCode
 from .utils import console
 
@@ -26,7 +26,7 @@ install(show_locals=True)
 
 # Initialize the main Typer app
 app = typer.Typer(
-    name="madengine-cli",
+    name="madengine",
     help="🚀 madengine Distributed Orchestrator - Build and run AI models in distributed scenarios",
     rich_markup_mode="rich",
     add_completion=False,
@@ -37,6 +37,8 @@ app = typer.Typer(
 app.command()(build)
 app.command()(run)
 app.command()(discover)
+app.command()(database)
+app.add_typer(report_app, name="report")
 
 
 @app.callback(invoke_without_command=True)
@@ -55,7 +57,7 @@ def main(
     if version:
         # You might want to get the actual version from your package
         console.print(
-            "🚀 [bold cyan]madengine-cli[/bold cyan] version [green]1.0.0[/green]"
+            "🚀 [bold cyan]madengine[/bold cyan] version [green]2.0.0[/green]"
         )
         raise typer.Exit()
 

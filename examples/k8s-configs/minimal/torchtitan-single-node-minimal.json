@@ -1,0 +1,22 @@
+{
+  "_comment": "Minimal TorchTitan Single-Node Config - 8 GPUs for Llama 3.1 8B",
+  "_description": "Uses torchtitan with Tensor Parallelism for single-node training",
+  "_use_case": "Quick LLM pre-training with torchtitan (8B model)",
+  "_reference": "https://github.com/pytorch/torchtitan",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 8,
+    "memory": "256Gi",
+    "cpu": "64"
+  },
+  
+  "distributed": {
+    "launcher": "torchtitan",
+    "nnodes": 1,
+    "nproc_per_node": 8
+  }
+}
+

@@ -1,0 +1,32 @@
+{
+  "_comment": "Base SLURM defaults - deployment type inferred from presence of slurm field",
+  "_description": "Default configuration for SLURM HPC cluster deployment",
+  "_note": "Default partition is 'amd-rccl' for AMD RCCL cluster. Override if your cluster uses different partition names.",
+  "_best_practice": "Use shared storage workspace for multi-node. Single-node auto-detects NFS and uses shared storage when available.",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "debug": false,
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 8,
+    "time": "24:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true,
+    "modules": []
+  },
+  
+  "distributed": {
+    "backend": "nccl",
+    "port": 29500
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen"
+  }
+}
+

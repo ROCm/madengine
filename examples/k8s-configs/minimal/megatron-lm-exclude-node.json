@@ -1,0 +1,42 @@
+{
+  "_comment": "Megatron-LM Configuration - Excluding Specific Problem Nodes",
+  "_description": "Use this if you need to explicitly exclude a node with disk pressure or other issues",
+  "_use_case": "Temporary config to avoid problematic nodes during maintenance",
+  "_note": "This uses anti-affinity to exclude banff-pla-r25-05. Update the hostname as needed.",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 2,
+    "namespace": "default",
+    
+    "memory": "32Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    
+    "image_pull_policy": "IfNotPresent",
+    
+    "node_selector": {
+      "feature.node.kubernetes.io/amd-gpu": "true"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "megatron",
+    "nnodes": 1,
+    "nproc_per_node": 2
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  },
+  
+  "_instructions": [
+    "To exclude a specific node, add node affinity in the deployment code,",
+    "or temporarily drain the node: kubectl drain banff-pla-r25-05 --ignore-daemonsets",
+    "This config ensures scheduling only on nodes with AMD GPUs"
+  ]
+}
+

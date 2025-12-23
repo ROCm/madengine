@@ -1,0 +1,80 @@
+{
+  "_comment": "K8s Configuration with Data Provider (Auto-PVC)",
+  "_description": "Production-ready setup for training with external data (MinIO, S3, NAS, etc.)",
+  "_use_case": "Models that require data provider (e.g., dummy_torchrun_data_minio)",
+  "_auto_pvc": "✅ PVC is automatically created - NO manual kubectl commands needed!",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 2,
+    
+    "_comment_pvc": "OPTIONAL - Leave empty for auto-creation (recommended)",
+    "_pvc_auto": "Auto-created: madengine-shared-data (100Gi, RWO/RWX based on nnodes)",
+    "_pvc_custom": "To use existing PVC: uncomment and set: \"data_pvc\": \"your-pvc-name\"",
+    
+    "memory": "64Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    
+    "image_pull_policy": "Always",
+    "backoff_limit": 3,
+    "host_ipc": true
+  },
+  
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "torchrun",
+    
+    "_comment_single_node": "For single-node: nnodes=1, nproc_per_node=N_GPUs",
+    "_comment_multi_node": "For multi-node: nnodes=N, nproc_per_node=GPUs_per_node",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "_comment_mad_datahome": "MAD_DATAHOME points to PVC mount point (default: /data)",
+    "MAD_DATAHOME": "/data",
+    
+    "_comment_nccl": "NCCL/RCCL configuration for AMD GPUs",
+    "NCCL_DEBUG": "WARN",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    
+    "_comment_rocm": "ROCm optimizations",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_ENABLE_SDMA": "0",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  },
+  
+  "_quick_start": {
+    "step_1": "Build: madengine build --tags dummy_torchrun_data_minio --additional-context-file THIS_FILE",
+    "step_2": "Run: madengine run --manifest-file build_manifest.json",
+    "result": "✅ PVC auto-created, data downloaded, training started - all automatic!"
+  },
+  
+  "_how_it_works": {
+    "auto_pvc": "madengine creates 'madengine-shared-data' PVC automatically if not found",
+    "reusable": "PVC persists across runs - data downloads once, reuses forever",
+    "smart_mode": "Single-node: ReadWriteOnce, Multi-node: ReadWriteMany (auto-selected)",
+    "verify": "kubectl get pvc madengine-shared-data",
+    "inspect": "kubectl describe pvc madengine-shared-data"
+  },
+  
+  "_advanced": {
+    "custom_pvc": "To use existing PVC: Add \"data_pvc\": \"your-pvc-name\" to k8s config above",
+    "storage_class": "Auto-PVC uses cluster's default storage class",
+    "pvc_size": "Default 100Gi - modify code in kubernetes.py if needed"
+  },
+  
+  "debug": false
+}
+

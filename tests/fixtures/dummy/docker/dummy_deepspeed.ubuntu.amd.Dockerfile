@@ -3,9 +3,10 @@ ARG BASE_DOCKER=rocm/pytorch
 FROM $BASE_DOCKER
 
 # ============================================================================
-# Install DeepSpeed
+# Install DeepSpeed and Dependencies
 # ============================================================================
-RUN pip install deepspeed
+# Install mpi4py (required for DeepSpeed distributed initialization)
+RUN pip install mpi4py deepspeed
 
 # ============================================================================
 # ROCm/MIOpen Optimizations

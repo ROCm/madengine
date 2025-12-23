@@ -1,0 +1,28 @@
+{
+  "_comment": "Minimal SGLang Single-Node K8s Config - 4 GPUs",
+  "_description": "SGLang inference with Tensor Parallelism for single-node",
+  "_use_case": "LLM inference serving with SGLang",
+  "_reference": "https://github.com/sgl-project/sglang",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 4,
+    "memory": "128Gi",
+    "cpu": "32"
+  },
+  
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  },
+  
+  "context": {
+    "env_vars": {
+      "SGLANG_KV_CACHE_SIZE": "0.7"
+    }
+  }
+}
+

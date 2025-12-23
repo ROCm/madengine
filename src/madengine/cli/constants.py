@@ -18,8 +18,8 @@ class ExitCode:
 
 
 # Valid values for validation
-VALID_GPU_VENDORS = ["AMD", "NVIDIA", "INTEL"]
-VALID_GUEST_OS = ["UBUNTU", "CENTOS", "ROCKY"]
+VALID_GPU_VENDORS = ["AMD", "NVIDIA"]
+VALID_GUEST_OS = ["UBUNTU", "CENTOS"]
 
 # Default file paths and values
 DEFAULT_MANIFEST_FILE = "build_manifest.json"

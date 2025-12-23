@@ -1,0 +1,24 @@
+[
+  {
+    "model_name": "model1",
+    "build_new": true,
+    "registry": "docker.io/myorg",
+    "registry_image": "myorg/model1"
+  },
+  {
+    "model_name": "model2",
+    "build_new": true,
+    "registry": "localhost:5000"
+  },
+  {
+    "model_name": "model3",
+    "build_new": false,
+    "registry": "gcr.io/myproject",
+    "registry_image": "myproject/stable-model3"
+  },
+  {
+    "model_name": "model4",
+    "build_new": false
+  }
+]
+

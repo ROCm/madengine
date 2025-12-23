@@ -170,9 +170,6 @@ class Context:
                 "Info: MAD_SYSTEM_GPU_ARCHITECTURE not provided - should be set via --additional-context for GPU-specific builds"
             )
 
-        # Handle multi-node configuration for build phase
-        self._setup_build_multi_node_context()
-
         # Don't initialize NUMA balancing check for build-only nodes
         # This is runtime-specific and should be handled on execution nodes
 
@@ -183,15 +180,10 @@ class Context:
         for nodes that will run containers.
         """
         print("Initializing runtime context with system and GPU detection...")
-
         # Initialize system context first
         self.init_system_context()
-
         # Initialize GPU context
         self.init_gpu_context()
-
-        # Setup runtime multi-node runner
-        self._setup_runtime_multi_node_context()
 
     def init_system_context(self) -> None:
         """Initialize system-specific context.
@@ -293,22 +285,6 @@ class Context:
             if "gpu_renderDs" not in self.ctx:
                 self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
 
-            # Default multi-node configuration - only if not already set
-            if "multi_node_args" not in self.ctx:
-                self.ctx["multi_node_args"] = {
-                    "RUNNER": "torchrun",
-                    "MAD_RUNTIME_NGPUS": self.ctx["docker_env_vars"][
-                        "MAD_SYSTEM_NGPUS"
-                    ],  # Use system's GPU count
-                    "NNODES": 1,
-                    "NODE_RANK": 0,
-                    "MASTER_ADDR": "localhost",
-                    "MASTER_PORT": 6006,
-                    "HOST_LIST": "",
-                    "NCCL_SOCKET_IFNAME": "",
-                    "GLOO_SOCKET_IFNAME": "",
-                }
-
             self._gpu_context_initialized = True
 
         except Exception as e:
@@ -399,32 +375,33 @@ class Context:
         # Check NVIDIA first (simplest check)
         if os.path.exists("/usr/bin/nvidia-smi"):
             try:
-                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''")
+                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''", timeout=180)
                 if result and result.strip() == "NVIDIA":
                     return "NVIDIA"
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
+        # Increased timeout to 180s for SLURM compute nodes where GPU initialization may be slow
         amd_smi_paths = ["/opt/rocm/bin/amd-smi", "/usr/local/bin/amd-smi"]
         for amd_smi_path in amd_smi_paths:
             if os.path.exists(amd_smi_path):
                 try:
-                    # Verify amd-smi actually works
-                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                    # Verify amd-smi actually works (180s timeout for slow GPU initialization)
+                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
                     if result and result.strip() == "AMD":
                         return "AMD"
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Warning: amd-smi check failed for {amd_smi_path}: {e}")
         
         # Fallback to rocm-smi (PR #54)
         if os.path.exists("/opt/rocm/bin/rocm-smi"):
             try:
-                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''")
+                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
                 if result and result.strip() == "AMD":
                     return "AMD"
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: rocm-smi check failed: {e}")
         
         return "Unable to detect GPU vendor"
 
@@ -504,9 +481,9 @@ class Context:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_count()
             except Exception as e:
-                # Fallback to direct command for NVIDIA
+                # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l"))
+                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l", timeout=180))
                     return number_gpus
                 except Exception:
                     raise RuntimeError(
@@ -584,9 +561,9 @@ class Context:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_product_name(gpu_id=0)
             except Exception as e:
-                # Fallback to direct command for NVIDIA
+                # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
+                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0", timeout=180)
                 except Exception:
                     raise RuntimeError(
                         f"Unable to determine NVIDIA GPU product name. "
@@ -700,21 +677,25 @@ class Context:
                     raise RuntimeError(f"Failed to parse ROCm version '{rocm_version_str}': {parse_err}")
             
             # Get renderDs from KFD properties
-            kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
-            if not kfd_output or kfd_output.strip() == "":
-                raise RuntimeError("Failed to retrieve KFD properties from /sys/devices/virtual/kfd/kfd/topology/nodes")
-            
-            kfd_properties = kfd_output.split("\n")
-            # Filter out empty lines and CPU entries (renderD value 0)
-            kfd_properties = [
-                line for line in kfd_properties 
-                if line.strip() and line.split() and int(line.split()[-1]) != 0
-            ]
-            
-            if not kfd_properties:
-                raise RuntimeError("No valid GPU renderD entries found in KFD properties")
-            
-            kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
+            # Try KFD topology first (preferred), but gracefully handle permission errors
+            # On HPC/multi-user systems, KFD topology files may be restricted
+            kfd_renderDs = None
+            kfd_properties = []
+            try:
+                kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
+                if kfd_output and kfd_output.strip():
+                    kfd_properties = kfd_output.split("\n")
+                    # Filter out empty lines and CPU entries (renderD value 0)
+                    kfd_properties = [
+                        line for line in kfd_properties 
+                        if line.strip() and line.split() and int(line.split()[-1]) != 0
+                    ]
+                    if kfd_properties:
+                        kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
+            except Exception as kfd_error:
+                # KFD topology read failed (common on HPC clusters with restricted permissions)
+                # Will use amd-smi/rocm-smi fallback which provides renderD info directly
+                print(f"Note: KFD topology not accessible ({kfd_error}), using ROCm tools fallback")
 
             # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
             # node id is more robust but is only available from 6.4.1 (PR #54)
@@ -748,8 +729,8 @@ class Context:
                     for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)
                 }
 
-                # Get GPU ID to unique ID mapping from rocm-smi
-                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'")
+                # Get GPU ID to unique ID mapping from rocm-smi (longer timeout for slow compute nodes)
+                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'", timeout=180)
                 if not rsmi_output or rsmi_output.strip() == "":
                     raise RuntimeError("Failed to retrieve unique IDs from rocm-smi")
                 
@@ -766,60 +747,90 @@ class Context:
                     except (IndexError, KeyError) as e:
                         raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
             else:
-                # Modern method using node_id (ROCm >= 6.4.0)
-                kfd_nodeids = []
-                for line in kfd_properties:
-                    try:
-                        match = re.search(r"\d+", line.split()[0])
-                        if match:
-                            kfd_nodeids.append(int(match.group()))
-                        else:
-                            print(f"Warning: Could not extract node ID from line: {line}")
-                    except (IndexError, ValueError) as e:
-                        print(f"Warning: Failed to parse node ID from line '{line}': {e}")
-                        continue
-
-                if len(kfd_nodeids) != len(kfd_renderDs):
-                    raise RuntimeError(
-                        f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
-                        f"and renderDs count ({len(kfd_renderDs)})"
-                    )
-
-                # Map node ids to renderDs
-                nodeid_renderD_map = {
-                    nodeid: renderD 
-                    for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
-                }
-
-                # Get list of GPUs from amd-smi
-                output = self.console.sh("amd-smi list -e --json")
+                # Modern method using amd-smi (ROCm >= 6.4.0)
+                # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
+                # Longer timeout (180s) for slow GPU initialization on SLURM compute nodes
+                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1", timeout=180)
                 if not output or output.strip() == "":
                     raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
                 
+                # amd-smi may output warnings before JSON - extract only JSON part
+                # Look for lines starting with '[' or '{' (JSON start)
+                json_start = -1
+                lines = output.split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('[') or line.strip().startswith('{'):
+                        json_start = i
+                        break
+                
+                if json_start >= 0:
+                    json_output = '\n'.join(lines[json_start:])
+                else:
+                    json_output = output
+                
                 try:
-                    data = json.loads(output)
+                    data = json.loads(json_output)
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}")
+                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}")
                 
                 if not data or not isinstance(data, list):
                     raise ValueError("amd-smi returned empty or invalid data")
 
-                # Get gpu id to node id map from amd-smi
-                gpuid_nodeid_map = {}
-                for item in data:
-                    try:
-                        gpuid_nodeid_map[item["gpu"]] = item["node_id"]
-                    except KeyError as e:
-                        raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
+                # Check if we successfully got KFD renderDs
+                if kfd_renderDs:
+                    # Original method: Map KFD renderDs via node_id from amd-smi
+                    kfd_nodeids = []
+                    for line in kfd_properties:
+                        try:
+                            match = re.search(r"\d+", line.split()[0])
+                            if match:
+                                kfd_nodeids.append(int(match.group()))
+                            else:
+                                print(f"Warning: Could not extract node ID from line: {line}")
+                        except (IndexError, ValueError) as e:
+                            print(f"Warning: Failed to parse node ID from line '{line}': {e}")
+                            continue
 
-                # Sort gpu_renderDs based on gpu ids
-                try:
-                    gpu_renderDs = [
-                        nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
-                        for gpuid in sorted(gpuid_nodeid_map.keys())
-                    ]
-                except KeyError as e:
-                    raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
+                    if len(kfd_nodeids) != len(kfd_renderDs):
+                        raise RuntimeError(
+                            f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
+                            f"and renderDs count ({len(kfd_renderDs)})"
+                        )
+
+                    # Map node ids to renderDs
+                    nodeid_renderD_map = {
+                        nodeid: renderD 
+                        for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
+                    }
+
+                    # Get gpu id to node id map from amd-smi
+                    gpuid_nodeid_map = {}
+                    for item in data:
+                        try:
+                            gpuid_nodeid_map[item["gpu"]] = item["node_id"]
+                        except KeyError as e:
+                            raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
+
+                    # Sort gpu_renderDs based on gpu ids
+                    try:
+                        gpu_renderDs = [
+                            nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
+                            for gpuid in sorted(gpuid_nodeid_map.keys())
+                        ]
+                    except KeyError as e:
+                        raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
+                else:
+                    # Fallback method: Get renderD directly from amd-smi (ROCm >= 6.4.1)
+                    # This is actually BETTER - no KFD topology parsing needed!
+                    print("Using amd-smi renderD info directly (cleaner method)")
+                    gpu_renderDs = []
+                    for item in sorted(data, key=lambda x: x["gpu"]):
+                        try:
+                            render_str = item["render"]  # e.g., "renderD128"
+                            render_num = int(render_str.replace("renderD", ""))
+                            gpu_renderDs.append(render_num)
+                        except (KeyError, ValueError) as e:
+                            raise RuntimeError(f"Failed to parse renderD from amd-smi: {e}. Item: {item}")
 
         except (RuntimeError, ValueError, KeyError) as e:
             # Re-raise with context
@@ -829,194 +840,6 @@ class Context:
             raise RuntimeError(f"Unexpected error in get_gpu_renderD_nodes: {e}") from e
 
         return gpu_renderDs
-
-    def set_multi_node_runner(self) -> str:
-        """
-        Sets the `MAD_MULTI_NODE_RUNNER` environment variable based on the selected multi-node
-        runner (e.g., `torchrun`, `mpirun`, or fallback to `python3`). This method dynamically
-        generates the appropriate command based on the provided multi-node configuration.
-
-        Returns:
-            str: The command string for the multi-node runner, including necessary arguments and
-            environment variable settings.
-        """
-        # NOTE: mpirun is untested
-        if self.ctx["multi_node_args"]["RUNNER"] == "mpirun":
-            if not self.ctx["multi_node_args"]["HOST_LIST"]:
-                self.ctx["multi_node_args"][
-                    "HOST_LIST"
-                ] = f"localhost:{self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']}"
-            multi_node_runner = (
-                f"mpirun -np {self.ctx['multi_node_args']['NNODES'] * self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']} "
-                f"--host {self.ctx['multi_node_args']['HOST_LIST']}"
-            )
-        else:
-            distributed_args = (
-                f"--nproc_per_node {self.ctx['multi_node_args']['MAD_RUNTIME_NGPUS']} "
-                f"--nnodes {self.ctx['multi_node_args']['NNODES']} "
-                f"--node_rank {self.ctx['multi_node_args']['NODE_RANK']} "
-                f"--master_addr {self.ctx['multi_node_args']['MASTER_ADDR']} "
-                f"--master_port {self.ctx['multi_node_args']['MASTER_PORT']}"
-            )
-            multi_node_runner = f"torchrun {distributed_args}"
-
-        # Add NCCL and GLOO interface environment variables
-        multi_node_runner = (
-            f"NCCL_SOCKET_IFNAME={self.ctx['multi_node_args']['NCCL_SOCKET_IFNAME']} "
-            f"GLOO_SOCKET_IFNAME={self.ctx['multi_node_args']['GLOO_SOCKET_IFNAME']} "
-            f"{multi_node_runner}"
-        )
-
-        return multi_node_runner
-
-    def _setup_build_multi_node_context(self) -> None:
-        """Setup multi-node context for build phase.
-
-        This method handles multi-node configuration during build phase,
-        storing the configuration for inclusion in the manifest without requiring
-        runtime GPU detection. The multi_node_args will be preserved as-is and
-        MAD_MULTI_NODE_RUNNER will be generated at runtime.
-        """
-        if "multi_node_args" in self.ctx:
-            print("Setting up multi-node context for build phase...")
-
-            # Store the complete multi_node_args structure (excluding MAD_RUNTIME_NGPUS)
-            # This will be included in build_manifest.json and used at runtime
-            build_multi_node_args = {}
-            for key, value in self.ctx["multi_node_args"].items():
-                # Skip MAD_RUNTIME_NGPUS as it's runtime-specific - will be set at runtime
-                if key != "MAD_RUNTIME_NGPUS":
-                    build_multi_node_args[key] = value
-
-            # Store the multi_node_args for inclusion in the manifest
-            # This will be accessible in build_manifest.json under context
-            self.ctx["build_multi_node_args"] = build_multi_node_args
-
-            # Remove any individual MAD_MULTI_NODE_* env vars from docker_env_vars
-            # Only structured multi_node_args should be stored in the manifest
-            env_vars_to_remove = []
-            for env_var in self.ctx.get("docker_env_vars", {}):
-                if (
-                    env_var.startswith("MAD_MULTI_NODE_")
-                    and env_var != "MAD_MULTI_NODE_RUNNER"
-                ):
-                    env_vars_to_remove.append(env_var)
-
-            for env_var in env_vars_to_remove:
-                del self.ctx["docker_env_vars"][env_var]
-                print(
-                    f"Removed {env_var} from docker_env_vars - will be reconstructed at runtime"
-                )
-
-            print(
-                f"Multi-node configuration stored for runtime: {list(build_multi_node_args.keys())}"
-            )
-            print("MAD_RUNTIME_NGPUS will be resolved at runtime phase")
-
-    def _create_build_multi_node_runner_template(self) -> str:
-        """Create a build-time multi-node runner command template.
-
-        This creates a command template that uses environment variable substitution
-        for runtime-specific values like MAD_RUNTIME_NGPUS.
-
-        Returns:
-            str: Command template string with environment variable placeholders
-        """
-        runner = self.ctx["multi_node_args"].get("RUNNER", "torchrun")
-
-        if runner == "mpirun":
-            # For mpirun, construct command with runtime substitution
-            host_list = self.ctx["multi_node_args"].get("HOST_LIST", "")
-            if not host_list:
-                # Use runtime GPU count substitution
-                multi_node_runner = (
-                    "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) "
-                    "--host ${MAD_MULTI_NODE_HOST_LIST:-localhost:${MAD_RUNTIME_NGPUS:-1}}"
-                )
-            else:
-                multi_node_runner = (
-                    "mpirun -np $(($MAD_MULTI_NODE_NNODES * ${MAD_RUNTIME_NGPUS:-1})) "
-                    f"--host {host_list}"
-                )
-        else:
-            # For torchrun, use environment variable substitution
-            distributed_args = (
-                "--nproc_per_node ${MAD_RUNTIME_NGPUS:-1} "
-                "--nnodes ${MAD_MULTI_NODE_NNODES:-1} "
-                "--node_rank ${MAD_MULTI_NODE_NODE_RANK:-0} "
-                "--master_addr ${MAD_MULTI_NODE_MASTER_ADDR:-localhost} "
-                "--master_port ${MAD_MULTI_NODE_MASTER_PORT:-6006}"
-            )
-            multi_node_runner = f"torchrun {distributed_args}"
-
-        # Add NCCL and GLOO interface environment variables with conditional setting
-        nccl_var = "${MAD_MULTI_NODE_NCCL_SOCKET_IFNAME:+NCCL_SOCKET_IFNAME=$MAD_MULTI_NODE_NCCL_SOCKET_IFNAME}"
-        gloo_var = "${MAD_MULTI_NODE_GLOO_SOCKET_IFNAME:+GLOO_SOCKET_IFNAME=$MAD_MULTI_NODE_GLOO_SOCKET_IFNAME}"
-
-        multi_node_runner = f"{nccl_var} {gloo_var} {multi_node_runner}"
-
-        return multi_node_runner
-
-    def _setup_runtime_multi_node_context(self) -> None:
-        """Setup runtime multi-node context.
-
-        This method handles multi-node configuration during runtime phase,
-        setting MAD_RUNTIME_NGPUS and creating the final MAD_MULTI_NODE_RUNNER.
-        """
-        # Set MAD_RUNTIME_NGPUS for runtime based on detected GPU count
-        if "MAD_RUNTIME_NGPUS" not in self.ctx["docker_env_vars"]:
-            runtime_ngpus = self.ctx["docker_env_vars"].get("MAD_SYSTEM_NGPUS", 1)
-            self.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"] = runtime_ngpus
-            print(f"Set MAD_RUNTIME_NGPUS to {runtime_ngpus} for runtime")
-
-        # If we have multi_node_args from build phase or runtime, ensure MAD_RUNTIME_NGPUS is set
-        if "multi_node_args" in self.ctx:
-            # Add MAD_RUNTIME_NGPUS to multi_node_args if not already present
-            if "MAD_RUNTIME_NGPUS" not in self.ctx["multi_node_args"]:
-                self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
-                    "docker_env_vars"
-                ]["MAD_RUNTIME_NGPUS"]
-
-        # If we have build_multi_node_args from manifest, reconstruct full multi_node_args
-        elif "build_multi_node_args" in self.ctx:
-            print("Reconstructing multi_node_args from build manifest...")
-            self.ctx["multi_node_args"] = self.ctx["build_multi_node_args"].copy()
-            self.ctx["multi_node_args"]["MAD_RUNTIME_NGPUS"] = self.ctx[
-                "docker_env_vars"
-            ]["MAD_RUNTIME_NGPUS"]
-
-        # Generate MAD_MULTI_NODE_RUNNER if we have multi_node_args
-        if "multi_node_args" in self.ctx:
-            print("Creating MAD_MULTI_NODE_RUNNER with runtime values...")
-
-            # Set individual MAD_MULTI_NODE_* environment variables for runtime execution
-            # These are needed by the bash scripts that use the template runner command
-            multi_node_mapping = {
-                "NNODES": "MAD_MULTI_NODE_NNODES",
-                "NODE_RANK": "MAD_MULTI_NODE_NODE_RANK",
-                "MASTER_ADDR": "MAD_MULTI_NODE_MASTER_ADDR",
-                "MASTER_PORT": "MAD_MULTI_NODE_MASTER_PORT",
-                "NCCL_SOCKET_IFNAME": "MAD_MULTI_NODE_NCCL_SOCKET_IFNAME",
-                "GLOO_SOCKET_IFNAME": "MAD_MULTI_NODE_GLOO_SOCKET_IFNAME",
-                "HOST_LIST": "MAD_MULTI_NODE_HOST_LIST",
-            }
-
-            for multi_node_key, env_var_name in multi_node_mapping.items():
-                if multi_node_key in self.ctx["multi_node_args"]:
-                    self.ctx["docker_env_vars"][env_var_name] = str(
-                        self.ctx["multi_node_args"][multi_node_key]
-                    )
-                    print(
-                        f"Set {env_var_name} to {self.ctx['multi_node_args'][multi_node_key]} for runtime"
-                    )
-
-            # Generate the MAD_MULTI_NODE_RUNNER command
-            self.ctx["docker_env_vars"][
-                "MAD_MULTI_NODE_RUNNER"
-            ] = self.set_multi_node_runner()
-            print(
-                f"MAD_MULTI_NODE_RUNNER: {self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER']}"
-            )
 
     def filter(self, unfiltered: typing.Dict) -> typing.Dict:
         """Filter the unfiltered dictionary based on the context.

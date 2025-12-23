@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PyTorch Distributed Training Benchmark for MADEngine
+PyTorch Distributed Training Benchmark for madengine
 
 This benchmark demonstrates typical PyTorch distributed training patterns:
 - DistributedDataParallel (DDP) for multi-GPU/multi-node training
@@ -49,7 +49,7 @@ master_port = os.environ.get("MASTER_PORT", "29500")
 def print_header():
     """Print benchmark header"""
     print("=" * 70)
-    print("MADEngine PyTorch Distributed Training Benchmark")
+    print("madengine PyTorch Distributed Training Benchmark")
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
     print(f"Rank: {rank}/{world_size}")
@@ -197,6 +197,18 @@ def main():
     """Main training function"""
     print_header()
     
+    # Create per-process MIOpen cache directory to avoid database conflicts
+    # This must be done AFTER torchrun sets LOCAL_RANK environment variable
+    # This prevents "Duplicate ID" errors and database corruption in multi-GPU training
+    if "MIOPEN_USER_DB_PATH" in os.environ:
+        # Construct the per-process MIOpen path using actual local_rank value
+        # Cannot use expandvars() because the template uses ${LOCAL_RANK} syntax
+        miopen_template = os.environ["MIOPEN_USER_DB_PATH"]
+        # Replace ${LOCAL_RANK} or $LOCAL_RANK with actual value
+        miopen_path = miopen_template.replace("${LOCAL_RANK:-0}", str(local_rank)).replace("$LOCAL_RANK", str(local_rank))
+        os.makedirs(miopen_path, exist_ok=True)
+        print(f"[Rank {rank}] ✓ Created MIOpen cache directory: {miopen_path}")
+    
     # Initialize distributed training
     if world_size > 1:
         print(f"\n[Rank {rank}] Initializing distributed process group...")
@@ -339,7 +351,7 @@ def main():
             f.write(f"Global Throughput: {avg_global_throughput:.2f} samples/sec\n")
             f.write(f"Scaling Efficiency: {scaling_efficiency:.1f}%\n")
         
-        # Output performance metric for MADEngine (REQUIRED FORMAT)
+        # Output performance metric for madengine (REQUIRED FORMAT)
         # Use GLOBAL throughput (sum of all nodes - accurate measurement)
         print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second")
         

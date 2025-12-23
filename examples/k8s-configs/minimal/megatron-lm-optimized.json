@@ -1,0 +1,53 @@
+{
+  "_comment": "Optimized Megatron-LM Configuration with Node Selector",
+  "_description": "Production-ready configuration with resource management and node selection",
+  "_use_case": "Megatron-LM training with automatic node selection to avoid problematic nodes",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 2,
+    "namespace": "default",
+    
+    "memory": "32Gi",
+    "memory_limit": "128Gi",
+    "cpu": "16",
+    "cpu_limit": "32",
+    
+    "image_pull_policy": "IfNotPresent",
+    "backoff_limit": 3,
+    
+    "node_selector": {
+      "feature.node.kubernetes.io/amd-gpu": "true",
+      "amd.com/gpu.product-name": "AMD_Instinct_MI300X_OAM"
+    },
+    
+    "tolerations": []
+  },
+  
+  "distributed": {
+    "enabled": true,
+    "backend": "nccl",
+    "launcher": "megatron",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    "master_port": 29500
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "2",
+    "HSA_ENABLE_SDMA": "0",
+    "MIOPEN_FIND_MODE": "1",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  },
+  
+  "debug": false
+}
+

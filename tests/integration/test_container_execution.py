@@ -2,7 +2,7 @@
 
 This module tests the Docker container execution functionality for distributed execution.
 
-UPDATED: Now uses execution/container_runner.py (madengine-cli architecture).
+UPDATED: Now uses execution/container_runner.py (modern madengine architecture).
 Previous: Used deprecated tools/container_runner.py (removed).
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.

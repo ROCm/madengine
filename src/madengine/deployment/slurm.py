@@ -6,7 +6,7 @@ Uses subprocess to call SLURM CLI commands (sbatch, squeue, scancel).
 No Python SLURM library required (zero dependencies).
 
 **Assumption**: User has already SSH'd to SLURM login node manually.
-madengine-cli is executed ON the login node, not remotely.
+madengine is executed ON the login node, not remotely.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -19,6 +19,9 @@ from typing import Any, Dict
 from jinja2 import Environment, FileSystemLoader
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
+from .config_loader import ConfigLoader
+from .slurm_node_selector import SlurmNodeSelector
+from madengine.utils.gpu_config import resolve_runtime_gpus
 
 
 class SlurmDeployment(BaseDeployment):
@@ -27,8 +30,8 @@ class SlurmDeployment(BaseDeployment):
 
     **Workflow**:
     1. User: ssh login_node@hpc.example.com
-    2. User: madengine-cli run --tags model --additional-context '{"deploy": "slurm", ...}'
-    3. madengine-cli: Runs sbatch locally (no SSH needed)
+    2. User: madengine run --tags model --additional-context '{"deploy": "slurm", ...}'
+    3. madengine: Runs sbatch locally (no SSH needed)
 
     Uses subprocess to call SLURM CLI commands locally:
     - sbatch: Submit jobs to SLURM scheduler
@@ -50,9 +53,14 @@ class SlurmDeployment(BaseDeployment):
         Args:
             config: Deployment configuration
         """
+        # Apply intelligent defaults using ConfigLoader
+        # This merges built-in presets with user configuration
+        full_config = ConfigLoader.load_slurm_config(config.additional_context)
+        config.additional_context = full_config
+
         super().__init__(config)
 
-        # Parse SLURM configuration
+        # Parse SLURM configuration (now with defaults applied)
         self.slurm_config = config.additional_context.get("slurm", {})
         self.distributed_config = config.additional_context.get("distributed", {})
 
@@ -66,6 +74,10 @@ class SlurmDeployment(BaseDeployment):
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
         self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
+        
+        # Register custom Jinja2 filters
+        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
+        self.jinja_env.filters['basename'] = lambda path: str(Path(path).name)
 
         # Generated script path
         self.script_path = None
@@ -102,8 +114,81 @@ class SlurmDeployment(BaseDeployment):
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
 
+    def _validate_cli_availability(self) -> bool:
+        """
+        Validate madengine is available before job submission.
+        
+        Compute nodes inherit the submission environment, so madengine
+        must be available in PATH on the submission node.
+        
+        Returns:
+            bool: True if madengine is available and functional
+        """
+        try:
+            result = subprocess.run(
+                ["madengine", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip() or "unknown"
+                self.console.print(
+                    f"[green]✓[/green] madengine available: [cyan]{version}[/cyan]"
+                )
+                
+                # Show path for transparency
+                which_result = subprocess.run(
+                    ["which", "madengine"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if which_result.returncode == 0:
+                    cli_path = which_result.stdout.strip()
+                    self.console.print(f"  Path: [dim]{cli_path}[/dim]")
+                
+                return True
+            else:
+                self.console.print(
+                    "[red]✗ madengine found but returned error[/red]"
+                )
+                if result.stderr:
+                    self.console.print(f"  Error: {result.stderr.strip()}")
+                return False
+                
+        except FileNotFoundError:
+            self.console.print(
+                "\n[red]✗ ERROR: madengine not found[/red]\n"
+            )
+            self.console.print(
+                "[yellow]Compute nodes need madengine in PATH.[/yellow]\n"
+                "\n[bold]To fix:[/bold]\n"
+                "  1. Activate virtual environment: [cyan]source venv/bin/activate[/cyan]\n"
+                "  2. Install madengine:\n"
+                "     • Development: [cyan]pip install -e .[/cyan]\n"
+                "     • Production:  [cyan]pip install madengine[/cyan]\n"
+                "  3. Verify: [cyan]madengine --version[/cyan]\n"
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            self.console.print("[red]✗ madengine command timed out[/red]")
+            return False
+        except Exception as e:
+            self.console.print(f"[red]✗ Error checking madengine: {e}[/red]")
+            return False
+
     def prepare(self) -> bool:
         """Generate sbatch script from template."""
+        # Validate environment BEFORE generating job scripts
+        self.console.print("\n[bold]Validating submission environment...[/bold]")
+        if not self._validate_cli_availability():
+            self.console.print(
+                "\n[yellow]⚠ Tip: Compute nodes inherit your submission environment[/yellow]"
+            )
+            return False
+        
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,18 +223,39 @@ class SlurmDeployment(BaseDeployment):
 
     def _prepare_template_context(self, model_info: Dict) -> Dict[str, Any]:
         """Prepare context for Jinja2 template rendering."""
+        # Use hierarchical GPU resolution: runtime > deployment > model > default
+        additional_context = self.config.additional_context.copy()
+        additional_context["slurm"] = self.slurm_config
+        resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
+        
+        # Extract launcher configuration
+        launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
+        nnodes = self.distributed_config.get("nnodes", self.nodes)
+        nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
+        master_port = self.distributed_config.get("port", 29500)
+        
+        # Generate launcher-specific command
+        launcher_command = self._generate_launcher_command(
+            launcher_type=launcher_type,
+            nnodes=nnodes,
+            nproc_per_node=nproc_per_node,
+            master_port=master_port
+        )
+        
         return {
             "model_name": model_info["name"],
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
-            "gpus_per_node": self.gpus_per_node,
+            "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
-            "master_port": self.distributed_config.get("port", 29500),
+            "master_port": master_port,
             "distributed_backend": self.distributed_config.get("backend", "nccl"),
             "network_interface": self.slurm_config.get("network_interface"),
             "exclusive": self.slurm_config.get("exclusive", True),
+            "exclude": self.slurm_config.get("exclude"),
+            "constraint": self.slurm_config.get("constraint"),
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
@@ -164,7 +270,256 @@ class SlurmDeployment(BaseDeployment):
             if Path("credential.json").exists()
             else None,
             "data_file": "data.json" if Path("data.json").exists() else None,
+            # Launcher configuration
+            "launcher_type": launcher_type,
+            "launcher_command": launcher_command,
+            "nnodes": nnodes,
+            "nproc_per_node": nproc_per_node,
         }
+
+    def _generate_launcher_command(
+        self, launcher_type: str, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate launcher-specific command based on launcher type.
+        
+        Follows k8s pattern: different launchers have different command generation.
+        
+        Args:
+            launcher_type: Type of launcher (torchrun, vllm, sglang, deepspeed, etc.)
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master communication port
+            
+        Returns:
+            Launcher-specific environment setup and command string
+        """
+        if launcher_type == "torchrun":
+            return self._generate_torchrun_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "vllm":
+            return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "sglang":
+            return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "deepspeed":
+            return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "megatron":
+            return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "torchtitan":
+            return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
+        else:
+            # For unknown launchers, provide basic environment variables
+            # and let the model script handle launcher invocation
+            self.console.print(
+                f"[yellow]Warning: Unknown launcher type '{launcher_type}'. "
+                f"Using basic environment setup.[/yellow]"
+            )
+            return self._generate_basic_env_command(nnodes, nproc_per_node, master_port)
+
+    def _generate_torchrun_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate torchrun launcher command for SLURM.
+        
+        For single-node (nnodes=1): Uses standalone mode
+        For multi-node (nnodes>1): Uses distributed mode with SLURM environment
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER environment variable setup
+        """
+        if nnodes == 1:
+            return f'export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'
+        else:
+            # Multi-node: Build command with SLURM_PROCID for node_rank
+            return f'''# Multi-node torchrun setup
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_vllm_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate vLLM launcher environment variables.
+        
+        vLLM manages its own process spawning - no torchrun needed.
+        Model script directly invokes vLLM with tensor/pipeline parallelism.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Environment variable setup for vLLM
+        """
+        if nnodes == 1:
+            return f'''# vLLM single-node setup (Tensor Parallelism)
+export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export VLLM_PIPELINE_PARALLEL_SIZE=1
+export VLLM_DISTRIBUTED_BACKEND="auto"
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+        else:
+            return f'''# vLLM multi-node setup (TP + PP with Ray)
+export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export VLLM_PIPELINE_PARALLEL_SIZE={nnodes}
+export VLLM_DISTRIBUTED_BACKEND="ray"
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+
+    def _generate_sglang_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate SGLang launcher environment variables.
+        
+        SGLang similar to vLLM - manages its own process spawning.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Environment variable setup for SGLang
+        """
+        if nnodes == 1:
+            return f'''# SGLang single-node setup (Tensor Parallelism)
+export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export SGLANG_PIPELINE_PARALLEL_SIZE=1
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+        else:
+            return f'''# SGLang multi-node setup (TP + PP with Ray)
+export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export SGLANG_PIPELINE_PARALLEL_SIZE={nnodes}
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+
+    def _generate_deepspeed_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate DeepSpeed launcher command.
+        
+        DeepSpeed has its own launcher similar to torchrun.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with deepspeed launcher
+        """
+        if nnodes == 1:
+            return f'''# DeepSpeed single-node setup
+export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
+        else:
+            return f'''# DeepSpeed multi-node setup
+# Generate hostfile dynamically from SLURM
+cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
+$(scontrol show hostnames $SLURM_JOB_NODELIST | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+EOF
+export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_megatron_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate Megatron-LM launcher command.
+        
+        Megatron-LM typically uses torchrun but with specific environment variables.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with megatron-specific setup
+        """
+        # Megatron uses torchrun with Megatron-Core standard environment variables
+        if nnodes == 1:
+            return f'''# Megatron-LM single-node setup
+export TENSOR_MODEL_PARALLEL_SIZE={min(nproc_per_node, 8)}
+export PIPELINE_MODEL_PARALLEL_SIZE=1
+export CONTEXT_PARALLEL_SIZE=1
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'''
+        else:
+            return f'''# Megatron-LM multi-node setup
+export TENSOR_MODEL_PARALLEL_SIZE={nproc_per_node}
+export PIPELINE_MODEL_PARALLEL_SIZE={nnodes}
+export CONTEXT_PARALLEL_SIZE=1
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_torchtitan_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate TorchTitan launcher command for SLURM.
+        
+        TorchTitan is a PyTorch native platform for LLM pre-training that uses
+        torchrun as its underlying launcher but requires additional configuration
+        for multi-dimensional parallelism (FSDP2, Tensor Parallel, Pipeline Parallel).
+        
+        Key TorchTitan features:
+        - Uses TOML configuration files for training setup
+        - Supports FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel
+        - Built on top of torchrun for distributed coordination
+        
+        For single-node (nnodes=1): Uses standalone torchrun mode
+        For multi-node (nnodes>1): Uses distributed torchrun with SLURM environment
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            MAD_MULTI_NODE_RUNNER with torchtitan-specific setup
+        """
+        if nnodes == 1:
+            return f'''# TorchTitan single-node setup
+# TorchTitan uses torchrun as underlying launcher
+export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export TORCHTITAN_PIPELINE_PARALLEL_SIZE=1
+export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"'''
+        else:
+            # Multi-node: Use torchrun with SLURM coordination
+            # TorchTitan will detect multi-node and enable appropriate parallelism
+            return f'''# TorchTitan multi-node setup
+# Configure multi-dimensional parallelism for TorchTitan
+export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
+export TORCHTITAN_PIPELINE_PARALLEL_SIZE={nnodes}
+export TORCHTITAN_FSDP_ENABLED=1
+export TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
+
+# Use torchrun as launcher (TorchTitan built on top of it)
+export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_basic_env_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate basic environment variables for unknown launchers.
+        
+        Provides standard distributed execution environment variables
+        and lets the model script handle launcher invocation.
+        
+        Args:
+            nnodes: Number of nodes
+            nproc_per_node: GPUs per node
+            master_port: Master port
+            
+        Returns:
+            Basic environment variable setup
+        """
+        return f'''# Basic distributed environment (custom launcher)
+export NNODES={nnodes}
+export NPROC_PER_NODE={nproc_per_node}
+export MASTER_PORT={master_port}
+# Model script should handle launcher invocation'''
 
     def deploy(self) -> DeploymentResult:
         """Submit sbatch script to SLURM scheduler (locally)."""
@@ -174,6 +529,45 @@ class SlurmDeployment(BaseDeployment):
                 deployment_id="",
                 message="Script not generated. Run prepare() first.",
             )
+
+        # ==================== PREFLIGHT NODE SELECTION ====================
+        # For multi-node jobs with Ray/vLLM, check for clean nodes first
+        # to avoid OOM errors from stale processes
+        enable_preflight = self.slurm_config.get("enable_node_check", True)
+        auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
+        
+        if enable_preflight and self.nodes > 1:
+            try:
+                selector = SlurmNodeSelector(
+                    console=self.console,
+                    auto_cleanup=auto_cleanup,
+                    verbose=self.slurm_config.get("verbose_node_check", False),
+                )
+                
+                # Select clean nodes and get updated exclude list
+                clean_nodes, updated_exclude = selector.select_nodes(
+                    partition=self.partition,
+                    nodes_needed=self.nodes,
+                    exclude=self.slurm_config.get("exclude"),
+                    constraint=self.slurm_config.get("constraint"),
+                )
+                
+                # Update exclude list if dirty nodes found
+                if updated_exclude and updated_exclude != self.slurm_config.get("exclude", ""):
+                    self.console.print(
+                        f"[dim]Updated exclude list for sbatch: {updated_exclude}[/dim]\n"
+                    )
+                    # Re-generate script with updated exclude list
+                    self.slurm_config["exclude"] = updated_exclude
+                    self.prepare()  # Re-generate sbatch script
+                    
+            except Exception as e:
+                # Don't fail deployment if preflight fails
+                self.console.print(
+                    f"[yellow]⚠ Node health check failed: {e}[/yellow]"
+                )
+                self.console.print("[dim]Continuing with job submission[/dim]\n")
+        # ==================== END PREFLIGHT ====================
 
         try:
             # Submit job to SLURM (runs locally on login node)
@@ -229,25 +623,43 @@ class SlurmDeployment(BaseDeployment):
                 timeout=10,
             )
 
-            if result.returncode != 0:
-                # Job not found - likely completed or failed
+            if result.returncode != 0 or not result.stdout.strip():
+                # Job not found in queue - likely completed or failed
                 return self._check_job_completion(deployment_id)
 
             status = result.stdout.strip().upper()
+            
+            # Check if live output is enabled
+            live_output = self.config.additional_context.get("live_output", False)
 
-            if status in ["RUNNING", "PENDING", "CONFIGURING"]:
+            # Stream work node output if live_output is enabled and job is running
+            if status == "RUNNING" and live_output:
+                self._stream_job_output(deployment_id)
+
+            if status in ["RUNNING", "PENDING", "CONFIGURING", "COMPLETING"]:
+                # COMPLETING is a transient state before COMPLETED - treat as running
                 return DeploymentResult(
                     status=DeploymentStatus.RUNNING,
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} is {status.lower()}",
                 )
             elif status in ["COMPLETED"]:
+                # Show final output only if live_output is enabled
+                if live_output:
+                    self._stream_job_output(deployment_id, final=True)
+                else:
+                    self._show_log_summary(deployment_id, success=True)
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} completed successfully",
                 )
-            else:  # FAILED, CANCELLED, TIMEOUT, etc.
+            else:  # FAILED, CANCELLED, TIMEOUT, NODE_FAIL, etc.
+                # Show output on failure or show summary
+                if live_output:
+                    self._stream_job_output(deployment_id, final=True)
+                else:
+                    self._show_log_summary(deployment_id, success=False)
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
                     deployment_id=deployment_id,
@@ -255,11 +667,104 @@ class SlurmDeployment(BaseDeployment):
                 )
 
         except Exception as e:
+            self.console.print(f"[red]Monitor exception for job {deployment_id}: {e}[/red]")
+            import traceback
+            self.console.print(f"[dim red]{traceback.format_exc()}[/dim red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
                 deployment_id=deployment_id,
                 message=f"Monitor error: {str(e)}",
             )
+
+    def _stream_job_output(self, job_id: str, final: bool = False):
+        """Stream output from SLURM job output file."""
+        # Track last position read from output file
+        if not hasattr(self, '_output_positions'):
+            self._output_positions = {}
+        
+        # Find output file
+        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        output_pattern = f"{output_dir}/madengine-*_{job_id}_*.out"
+        
+        try:
+            import glob
+            output_files = glob.glob(output_pattern)
+            
+            if not output_files:
+                return  # Output file not created yet
+            
+            output_file = output_files[0]  # Use first match
+            
+            # Read new content from file
+            try:
+                with open(output_file, 'r') as f:
+                    # Seek to last position
+                    last_pos = self._output_positions.get(job_id, 0)
+                    f.seek(last_pos)
+                    
+                    # Read new lines
+                    new_content = f.read()
+                    
+                    if new_content:
+                        # Print new output with prefix
+                        for line in new_content.splitlines():
+                            if line.strip():  # Skip empty lines
+                                self.console.print(f"[dim cyan]│[/dim cyan] {line}")
+                    
+                    # Update position
+                    self._output_positions[job_id] = f.tell()
+                    
+            except FileNotFoundError:
+                pass  # File not ready yet
+                
+        except Exception as e:
+            # Silently ignore streaming errors to not disrupt monitoring
+            if final:
+                self.console.print(f"[dim yellow]Note: Could not stream output: {e}[/dim yellow]")
+
+    def _show_log_summary(self, job_id: str, success: bool = True):
+        """Show a summary with pointers to log files instead of streaming verbose output."""
+        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        
+        try:
+            import glob
+            # Find output and error files for this job
+            output_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.out")
+            error_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.err")
+            
+            if output_files or error_files:
+                status_symbol = "✓" if success else "✗"
+                status_color = "green" if success else "red"
+                
+                self.console.print(f"[{status_color}]{status_symbol}[/{status_color}] SLURM job {job_id} logs saved to:")
+                
+                for out_file in output_files:
+                    self.console.print(f"  [cyan]→[/cyan] Output: {out_file}")
+                    
+                for err_file in error_files:
+                    # Check if error file has content
+                    if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
+                        self.console.print(f"  [yellow]→[/yellow] Errors: {err_file}")
+                
+                if not success and error_files:
+                    # Show last few lines of error file for failed jobs
+                    for err_file in error_files:
+                        if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
+                            self.console.print(f"\n[yellow]Last 10 lines of error log:[/yellow]")
+                            try:
+                                with open(err_file, 'r') as f:
+                                    lines = f.readlines()
+                                    for line in lines[-10:]:
+                                        if line.strip():
+                                            self.console.print(f"  {line.rstrip()}")
+                            except Exception:
+                                pass
+                            break  # Only show first error file
+            else:
+                self.console.print(f"[dim yellow]Note: Log files for job {job_id} not found in {output_dir}[/dim yellow]")
+                
+        except Exception as e:
+            self.console.print(f"[dim yellow]Note: Could not locate log files: {e}[/dim yellow]")
 
     def _check_job_completion(self, job_id: str) -> DeploymentResult:
         """Check completed job status using sacct (locally)."""
@@ -273,13 +778,28 @@ class SlurmDeployment(BaseDeployment):
 
             if result.returncode == 0:
                 status = result.stdout.strip().upper()
+                self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
+                
+                # Check if live output is enabled
+                live_output = self.config.additional_context.get("live_output", False)
+                
                 if "COMPLETED" in status:
+                    # Show final output or summary based on live_output flag
+                    if live_output:
+                        self._stream_job_output(job_id, final=True)
+                    else:
+                        self._show_log_summary(job_id, success=True)
                     return DeploymentResult(
                         status=DeploymentStatus.SUCCESS,
                         deployment_id=job_id,
-                        message=f"Job {job_id} completed",
+                        message=f"Job {job_id} completed successfully",
                     )
                 else:
+                    # Show output on failure or summary
+                    if live_output:
+                        self._stream_job_output(job_id, final=True)
+                    else:
+                        self._show_log_summary(job_id, success=False)
                     return DeploymentResult(
                         status=DeploymentStatus.FAILED,
                         deployment_id=job_id,
@@ -287,13 +807,15 @@ class SlurmDeployment(BaseDeployment):
                     )
 
             # Fallback - assume completed
+            self.console.print(f"[dim yellow]Warning: Could not get status for job {job_id}, assuming success[/dim yellow]")
             return DeploymentResult(
                 status=DeploymentStatus.SUCCESS,
                 deployment_id=job_id,
                 message=f"Job {job_id} completed (assumed)",
             )
 
-        except Exception:
+        except Exception as e:
+            self.console.print(f"[dim yellow]Warning: Exception checking job {job_id}: {e}[/dim yellow]")
             return DeploymentResult(
                 status=DeploymentStatus.SUCCESS,
                 deployment_id=job_id,
@@ -301,13 +823,23 @@ class SlurmDeployment(BaseDeployment):
             )
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
-        """Collect performance results from SLURM output files."""
+        """Collect performance results from SLURM output files.
+        
+        Args:
+            deployment_id: SLURM job ID
+        """
+        # Get session_start_row from config (passed from orchestrator)
+        session_start_row = self.config.additional_context.get("session_start_row")
+        
         results = {
             "job_id": deployment_id,
             "nodes": self.nodes,
             "gpus_per_node": self.gpus_per_node,
             "perf_files": [],
             "logs": [],
+            "successful_runs": [],
+            "failed_runs": [],
+            "session_start_row": session_start_row,  # Track for downstream filtering
         }
 
         try:
@@ -318,11 +850,64 @@ class SlurmDeployment(BaseDeployment):
             results["logs"] = [str(f) for f in output_files]
 
             # Find performance CSV files
+            # Strategy 1: Check results_dir if configured
             if self.slurm_config.get("results_dir"):
                 results_dir = Path(self.slurm_config["results_dir"])
                 perf_pattern = f"perf_{deployment_id}_*.csv"
                 perf_files = list(results_dir.glob(perf_pattern))
                 results["perf_files"] = [str(f) for f in perf_files]
+            
+            # Strategy 2: Check shared workspace (NFS) for perf.csv
+            # When using shared storage, perf.csv is written directly to workspace
+            if not results["perf_files"]:
+                workspace_perf = Path("perf.csv")
+                if workspace_perf.exists():
+                    results["perf_files"] = [str(workspace_perf)]
+                    self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
+            
+            # Parse perf.csv to populate successful_runs and failed_runs
+            # Filter based on session_start_row passed as parameter (no external files!)
+            if results["perf_files"]:
+                perf_file = Path(results["perf_files"][0])
+                try:
+                    import csv
+                    
+                    with open(perf_file, 'r') as f:
+                        reader = csv.DictReader(f)
+                        rows = list(reader)
+                        
+                        # Filter to only include rows from current session if session_start_row provided
+                        if session_start_row is not None and session_start_row < len(rows):
+                            rows = rows[session_start_row:]
+                            self.console.print(f"[cyan]📊 Filtered to current session: {len(rows)} runs (from row {session_start_row} of {len(rows) + session_start_row} total)[/cyan]")
+                        elif session_start_row is not None:
+                            # Session start equals or exceeds current rows - no new runs yet
+                            self.console.print(f"[yellow]⚠️  No new runs in this session (session started at row {session_start_row}, CSV has {len(rows)} rows)[/yellow]")
+                            rows = []
+                        else:
+                            # No session info provided - show all rows (for backward compatibility)
+                            self.console.print(f"[dim]Showing all {len(rows)} runs from perf.csv (no session filtering)[/dim]")
+                        
+                        for row in rows:
+                            run_data = {
+                                "model": row.get("model", ""),
+                                "status": row.get("status", ""),
+                                "performance": row.get("performance", ""),
+                                "metric": row.get("metric", ""),
+                                "duration": row.get("test_duration", ""),
+                                "gpu_arch": row.get("gpu_architecture", ""),
+                                "deployment": row.get("deployment_type", ""),
+                                "machine": row.get("machine_name", ""),
+                            }
+                            
+                            if row.get("status") == "SUCCESS":
+                                results["successful_runs"].append(run_data)
+                            else:
+                                results["failed_runs"].append(run_data)
+                except Exception as parse_error:
+                    import traceback
+                    self.console.print(f"[red]ERROR parsing perf.csv: {parse_error}[/red]")
+                    self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
             self.console.print(
                 f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "

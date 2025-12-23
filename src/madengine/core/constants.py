@@ -40,27 +40,36 @@ def _log_config_info(message: str, force_print: bool = False):
 # third-party modules
 from madengine.core.console import Console
 
-# Get the model directory, if it is not set, set it to None.
-MODEL_DIR = os.environ.get("MODEL_DIR")
+# Get the model directory, if it is not set, default to "." (current directory)
+MODEL_DIR = os.environ.get("MODEL_DIR", ".")
 
 
 def _setup_model_dir():
-    """Setup model directory if MODEL_DIR environment variable is set."""
-    if MODEL_DIR:
+    """Setup model directory if MODEL_DIR environment variable is set.
+    
+    MODEL_DIR defaults to "." (current directory) if not set.
+    Only copies if MODEL_DIR points to a different directory than current working directory.
+    """
+    # Get absolute paths to compare
+    model_dir_abs = os.path.abspath(MODEL_DIR)
+    cwd_abs = os.path.abspath(".")
+    
+    # Only copy if MODEL_DIR points to a different directory (not current dir)
+    if model_dir_abs != cwd_abs:
         # Copy MODEL_DIR to the current working directory.
-        cwd_path = os.getcwd()
-        _log_config_info(f"Current working directory: {cwd_path}")
+        _log_config_info(f"Current working directory: {cwd_abs}")
+        _log_config_info(f"MODEL_DIR: {MODEL_DIR} (different from current dir)")
         console = Console(live_output=True)
         # copy the MODEL_DIR to the current working directory
-        console.sh(f"cp -vLR --preserve=all {MODEL_DIR}/* {cwd_path}")
-        _log_config_info(f"Model dir: {MODEL_DIR} copied to current dir: {cwd_path}")
+        console.sh(f"cp -vLR --preserve=all {MODEL_DIR}/* {cwd_abs}")
+        _log_config_info(f"Model dir: {MODEL_DIR} copied to current dir: {cwd_abs}")
 
 
 # Only setup model directory if explicitly requested (when not just importing for constants)
 if os.environ.get("MAD_SETUP_MODEL_DIR", "").lower() == "true":
     _setup_model_dir()
 
-# MADEngine credentials configuration
+# madengine credentials configuration
 CRED_FILE = "credential.json"
 
 

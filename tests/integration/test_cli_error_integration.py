@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for MADEngine CLI error handling integration.
+Unit tests for madengine CLI error handling integration.
 
 Tests the integration of unified error handling in mad_cli.py and
 distributed_orchestrator.py components.

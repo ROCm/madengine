@@ -110,7 +110,7 @@ spec:
           - |
             set -e
             echo "==================================================================="
-            echo "MADEngine Kubernetes Benchmark Job"
+            echo "madengine Kubernetes Benchmark Job"
             echo "Model: {{ model_name }}"
             echo "Pod: $HOSTNAME"
             {% if launcher_type %}
@@ -140,7 +140,7 @@ spec:
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
             
-            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" %}
+            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" %}
             # {{ launcher_type }} distributed environment (auto-configured from K8s)
             {% if nnodes > 1 %}
             # Multi-node {{ launcher_type }} (Indexed Job)
@@ -257,12 +257,16 @@ spec:
             {% endif %}
             
             # Execute launcher with tool chain
+            MODEL_START_TIME=$(date +%s.%N)
             {% if launcher_tool_chain and launcher_tool_chain != "bash /tmp/run_launcher.sh" %}
             {{ launcher_tool_chain }}
             {% else %}
             bash /tmp/run_launcher.sh
             {% endif %}
             MODEL_EXIT_CODE=$?
+            MODEL_END_TIME=$(date +%s.%N)
+            MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")
+            echo "test_duration: ${MODEL_DURATION}s"
             
             # Run post-scripts (like local execution)
             {% if post_scripts %}
@@ -405,12 +409,16 @@ spec:
                 {% endif %}
                 
                 # Execute script with tool chain
+                MODEL_START_TIME=$(date +%s.%N)
                 {% if direct_script_tool_chain and direct_script_tool_chain != "bash " ~ model_script %}
                 {{ direct_script_tool_chain }}
                 {% else %}
                 bash {{ model_script }}
                 {% endif %}
                 MODEL_EXIT_CODE=$?
+                MODEL_END_TIME=$(date +%s.%N)
+                MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")
+                echo "test_duration: ${MODEL_DURATION}s"
             else
                 echo "ERROR: Script not found: {{ model_script }}"
                 echo "Available files in /workspace:"

@@ -1,0 +1,14 @@
+{
+  "_comment": "Minimal single GPU SLURM configuration",
+  "_note": "Using 'amd-rccl' partition (default for this cluster)",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "gpus_per_node": 1,
+    "time": "01:00:00"
+  }
+}
+

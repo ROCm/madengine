@@ -1,0 +1,38 @@
+{
+  "_comment": "vLLM Multi-Node K8s Config - 2 nodes x 4 GPUs (Data Parallelism)",
+  "_description": "Each pod runs independent vLLM replica for higher throughput",
+  "_use_case": "High-throughput LLM inference serving",
+  "_reference": "https://github.com/vllm-project/vllm",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 4,
+    "memory": "256Gi",
+    "memory_limit": "384Gi",
+    "cpu": "64",
+    "cpu_limit": "96",
+    "node_selector": {
+      "node.kubernetes.io/instance-type": "mi300x"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 2,
+    "nproc_per_node": 4,
+    "master_port": 29500
+  },
+  
+  "context": {
+    "env_vars": {
+      "VLLM_KV_CACHE_SIZE": "0.5",
+      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+      "NCCL_TIMEOUT": "600",
+      "VLLM_ENGINE_ITERATION_TIMEOUT_S": "180",
+      "RAY_health_check_timeout_ms": "60000"
+    }
+  }
+}
+

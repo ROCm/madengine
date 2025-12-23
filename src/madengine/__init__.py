@@ -1,8 +1,8 @@
 """
-MADEngine - AI Models automation and dashboarding command-line tool.
+madengine - AI Models automation and dashboarding command-line tool.
 
 An AI Models automation and dashboarding command-line tool to run LLMs and Deep Learning
-models locally or remotely with CI. The MADEngine library supports AI automation with:
+models locally or remotely with CI. The madengine library supports AI automation with:
 - AI Models run reliably on supported platforms and drive software quality
 - Simple, minimalistic, out-of-the-box solution that enables confidence on hardware and software stack
 - Real-time, audience-relevant AI Models performance metrics tracking, presented in clear, intuitive manner

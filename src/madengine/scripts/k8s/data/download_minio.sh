@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Data Provider - MinIO
+# madengine K8s Data Provider - MinIO
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Usage: download_minio.sh <dataname> <datapath> <datahome>

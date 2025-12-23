@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integration tests for MADEngine unified error handling system.
+Integration tests for madengine unified error handling system.
 
 This test file focuses on testing the integration without requiring
 optional dependencies like paramiko, ansible-runner, or kubernetes.

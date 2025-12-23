@@ -1,0 +1,66 @@
+{
+  "_comment": "vLLM Multi-Node Data Parallelism - Benchmark Configuration",
+  "_description": "vLLM inference with Data Parallelism across nodes for high throughput",
+  "_use_case": "Benchmarking vLLM with independent replicas per node",
+  "_strategy": "Data Parallelism: Each node runs independent replica with Tensor Parallelism",
+  "_benefits": [
+    "Simpler setup - no shared Ray cluster",
+    "Faster initialization - parallel node startup",
+    "More robust - nodes are independent",
+    "Better throughput - parallel processing",
+    "Ideal for benchmarking and production serving"
+  ],
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 4,
+    "time": "00:45:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true,
+    
+    "_comment_node_check": "Preflight GPU health check (helps avoid OOM from stale processes)",
+    "enable_node_check": true,
+    "auto_cleanup_nodes": false,
+    "verbose_node_check": false
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 2,
+    "nproc_per_node": 4,
+    "backend": "nccl",
+    "port": 29500,
+    "_note": "Data Parallelism: Each node runs independently, no cross-node communication needed"
+  },
+  
+  "pre_scripts": [],
+  
+  "env_vars": {
+    "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "VLLM_USE_MODELSCOPE": "False",
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    
+    "_comment_memory": "Higher GPU utilization for Data Parallelism (no PP overhead)",
+    "VLLM_KV_CACHE_SIZE": "0.8",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    
+    "_comment_timeouts": "Reduced timeouts for faster failure detection in DP mode",
+    "NCCL_TIMEOUT": "300",
+    "VLLM_ENGINE_ITERATION_TIMEOUT_S": "120",
+    "RAY_health_check_timeout_ms": "30000",
+    "RAY_gcs_rpc_server_reconnect_timeout_s": "60",
+    
+    "_comment_nccl": "NCCL settings for within-node tensor parallelism",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1"
+  }
+}
+

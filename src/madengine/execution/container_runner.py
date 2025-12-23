@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker Container Runner Module for MADEngine
+Docker Container Runner Module for madengine
 
 This module handles the Docker container execution phase separately from building,
 enabling distributed workflows where containers are run on remote nodes
@@ -22,6 +22,9 @@ from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.config_parser import ConfigParser
 
 
 class ContainerRunner:
@@ -33,14 +36,16 @@ class ContainerRunner:
         data: Data = None,
         console: Console = None,
         live_output: bool = False,
+        additional_context: typing.Dict = None,
     ):
         """Initialize the Container Runner.
 
         Args:
-            context: The MADEngine context
+            context: The madengine context
             data: The data provider instance
             console: Optional console instance
             live_output: Whether to show live output
+            additional_context: Additional configuration context (for GPU resolution)
         """
         self.context = context
         self.data = data
@@ -49,6 +54,7 @@ class ContainerRunner:
         self.rich_console = RichConsole()
         self.credentials = None
         self.perf_csv_path = "perf.csv"  # Default output path
+        self.additional_context = additional_context or {}
 
         # Ensure runtime context is initialized for container operations
         if self.context:
@@ -66,7 +72,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,gpu_architecture,performance,metric,scaling_efficiency,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,launcher,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -87,12 +93,112 @@ class ContainerRunner:
         """
         import os
 
+        # Resolve GPU count using hierarchical resolution
+        resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
+        
+        # Convert -1 (all GPUs) to actual system GPU count for accurate reporting
+        if resolved_gpu_count == -1 and self.context:
+            try:
+                system_ngpus = int(self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"])
+                resolved_gpu_count = system_ngpus
+                print(f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}")
+            except (KeyError, ValueError, TypeError):
+                # If system GPU count not available, keep -1
+                pass
+        
+        # Determine number of nodes and GPUs per node
+        # Priority: 1. SLURM env vars, 2. additional_context, 3. model_info, 4. default (1)
+        nnodes = "1"  # Default for local execution
+        gpus_per_node = str(resolved_gpu_count)
+        
+        # Check for SLURM multi-node environment
+        if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
+            # Get from SLURM environment variables (most accurate for SLURM jobs)
+            slurm_nnodes = os.environ.get("NNODES") or os.environ.get("SLURM_NNODES")
+            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get("SLURM_GPUS_PER_NODE")
+            
+            if slurm_nnodes:
+                nnodes = str(slurm_nnodes)
+                print(f"ℹ️  Detected SLURM multi-node: {nnodes} nodes")
+            
+            if slurm_gpus_per_node:
+                gpus_per_node = str(slurm_gpus_per_node)
+                print(f"ℹ️  GPUs per node: {gpus_per_node}")
+        
+        # Fallback to additional_context (for non-SLURM or if env vars not set)
+        if nnodes == "1" and self.additional_context:
+            slurm_config = self.additional_context.get("slurm", {})
+            if slurm_config:
+                ctx_nodes = slurm_config.get("nodes")
+                ctx_gpus = slurm_config.get("gpus_per_node")
+                if ctx_nodes:
+                    nnodes = str(ctx_nodes)
+                if ctx_gpus:
+                    gpus_per_node = str(ctx_gpus)
+        
+        # Final fallback to model_info
+        if nnodes == "1":
+            nnodes = model_info.get("nnodes", "1")
+        
+        # Calculate total GPUs
+        try:
+            total_gpus = int(nnodes) * int(gpus_per_node)
+        except (ValueError, TypeError):
+            total_gpus = resolved_gpu_count
+        
+        # Extract launcher from multiple sources in priority order:
+        # 1. additional_context (passed via --additional-context CLI arg)
+        # 2. model_info distributed config (in models.json)
+        # 3. MAD_LAUNCHER environment variable
+        # 4. Default to 'docker' for local deployments
+        launcher = ""
+        
+        # Check additional_context first (highest priority)
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+            if launcher:
+                print(f"🚀 Launcher from additional_context: {launcher}")
+        
+        # Check model_info distributed config
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+            if launcher:
+                print(f"🚀 Launcher from model_info: {launcher}")
+        
+        # Fallback to environment variable
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER", "")
+            if launcher:
+                print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
+        
+        # Apply deployment-specific defaults if no launcher specified
+        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
+        if not launcher:
+            if deployment_type == "kubernetes":
+                launcher = "native"
+                print(f"🚀 Launcher defaulted to 'native' for kubernetes deployment")
+            elif deployment_type == "slurm":
+                # For SLURM, try to get launcher type from environment or default to torchrun
+                # Note: "slurm" is the deployment type, not the launcher
+                launcher = os.environ.get("MAD_LAUNCHER_TYPE", "torchrun")
+                print(f"🚀 Launcher defaulted to '{launcher}' for slurm deployment")
+            elif deployment_type == "local":
+                launcher = "docker"
+                print(f"🚀 Launcher defaulted to 'docker' for local deployment")
+        
+        # Print final launcher selection
+        if launcher:
+            print(f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})")
+        else:
+            print(f"⚠️  No launcher specified (deployment_type: {deployment_type})")
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
-            "n_gpus": model_info.get("n_gpus", ""),
-            "nnodes": model_info.get("nnodes", "1"),  # Default to 1 for local execution
-            "gpus_per_node": model_info.get("gpus_per_node", model_info.get("n_gpus", "1")),
+            "n_gpus": str(total_gpus),  # Total GPUs across all nodes
+            "nnodes": nnodes,
+            "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": os.environ.get("pipeline", ""),
             "args": model_info.get("args", ""),
@@ -104,6 +210,7 @@ class ContainerRunner:
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
+            "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
                 self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
                 if self.context
@@ -111,7 +218,6 @@ class ContainerRunner:
             ),
             "performance": run_results.get("performance", ""),
             "metric": run_results.get("metric", ""),
-            "scaling_efficiency": run_results.get("scaling_efficiency", ""),
             "relative_change": "",
             "status": run_results.get("status", "FAILURE"),
             "build_duration": build_info.get("build_duration", ""),
@@ -128,6 +234,19 @@ class ContainerRunner:
 
         # Flatten tags if they are in list format
         flatten_tags(run_details)
+
+        # Parse and load config file if present in args for perf_entry_super.json
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""),
+                scripts_path
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Could not parse config file: {e}")
+            run_details["configs"] = None
 
         return run_details
 
@@ -243,6 +362,21 @@ class ContainerRunner:
         self.rich_console.print(f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]")
         print(f"📍 Registry: {registry or 'Default'}")
         print(f"🏷️  Image: {registry_image}")
+        
+        # Force fresh pull on SLURM compute nodes to avoid corrupted cached layers
+        # This prevents "permission denied" errors from corrupted image layers
+        deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
+        in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
+        
+        if deployment_type == "slurm" and in_slurm_job:
+            print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
+            # Remove any existing cached image to force fresh pull
+            try:
+                self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
+                print(f"✓ Removed cached image layers")
+            except:
+                pass  # It's okay if image doesn't exist
+        
         try:
             self.console.sh(f"docker pull {registry_image}")
 
@@ -349,13 +483,6 @@ class ContainerRunner:
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                # Skip individual MAD_MULTI_NODE_* env vars (except MAD_MULTI_NODE_RUNNER)
-                # These are redundant since MAD_MULTI_NODE_RUNNER contains all necessary information
-                if (
-                    env_arg.startswith("MAD_MULTI_NODE_")
-                    and env_arg != "MAD_MULTI_NODE_RUNNER"
-                ):
-                    continue
                 env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
 
         print(f"Env arguments: {env_args}")
@@ -575,9 +702,9 @@ class ContainerRunner:
             )
         elif gpu_vendor.find("NVIDIA") != -1:
             docker_options = (
-                "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
+                "-u root --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
                 "--security-opt seccomp=unconfined --security-opt apparmor=unconfined "
-                "--network host -u root --ipc=host "
+                "--network host --ipc=host "
             )
         else:
             raise RuntimeError("Unable to determine gpu vendor.")
@@ -612,6 +739,56 @@ class ContainerRunner:
         run_env = {}
         mount_datapaths = None
 
+        # Merge docker_env_vars from additional_context into context
+        # Also check shell environment for SLURM-passed variables
+        if "docker_env_vars" not in self.context.ctx:
+            self.context.ctx["docker_env_vars"] = {}
+        
+        # For SLURM jobs, check shell environment and populate additional_context with GPU info
+        # This ensures GPU resolution works correctly
+        if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
+            if "NPROC_PER_NODE" in os.environ or "GPUS_PER_NODE" in os.environ:
+                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get("GPUS_PER_NODE")
+                if gpus_per_node_str:
+                    try:
+                        gpus = int(gpus_per_node_str)
+                        # Add gpus_per_node to additional_context for GPU resolution
+                        # resolve_runtime_gpus looks for this field name
+                        if not self.additional_context:
+                            self.additional_context = {}
+                        if "gpus_per_node" not in self.additional_context:
+                            self.additional_context["gpus_per_node"] = gpus
+                            print(f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)")
+                    except ValueError:
+                        pass
+        
+        # List of environment variables to pass from shell to Docker (for SLURM jobs)
+        slurm_env_vars = [
+            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL'
+        ]
+        
+        # Check shell environment and add to docker_env_vars
+        merged_from_env = 0
+        for var_name in slurm_env_vars:
+            if var_name in os.environ:
+                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged_from_env += 1
+        
+        if merged_from_env > 0:
+            print(f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker")
+        
+        # Also merge from additional_context if present
+        if self.additional_context and "docker_env_vars" in self.additional_context:
+            merged_count = 0
+            for key, value in self.additional_context["docker_env_vars"].items():
+                self.context.ctx["docker_env_vars"][key] = value
+                merged_count += 1
+            if merged_count > 0:
+                print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
@@ -638,16 +815,38 @@ class ContainerRunner:
             )
 
         # Build docker options
-        docker_options += self.get_gpu_arg(model_info["n_gpus"])
+        # Use hierarchical GPU resolution: runtime > deployment > model > default
+        resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
+        docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
+        
+        # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
+        # It should be passed via docker_env_vars in context instead
+        if "MIOPEN_USER_DB_PATH" in run_env:
+            del run_env["MIOPEN_USER_DB_PATH"]
+            print("ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)")
+        
+        # Add MIOPEN_USER_DB_PATH from shell environment to context.docker_env_vars
+        # This is set by SLURM script with ${LOCAL_RANK} variable for per-process paths
+        if "MIOPEN_USER_DB_PATH" in os.environ and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]:
+            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+            print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
+        
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
         docker_options += f" {model_info.get('additional_docker_run_options', '')}"
 
         # Generate container name
-        container_name = "container_" + re.sub(
+        base_container_name = "container_" + re.sub(
             ".*:", "", docker_image.replace("/", "_").replace(":", "_")
         )
+        
+        # For multi-node SLURM jobs, add node rank to avoid name conflicts
+        node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
+        if node_rank is not None:
+            container_name = f"{base_container_name}_node{node_rank}"
+        else:
+            container_name = base_container_name
 
         print(f"Docker options: {docker_options}")
 
@@ -770,9 +969,15 @@ class ContainerRunner:
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
                         if scripts_arg.endswith(".sh"):
+                            # Shell script specified directly
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
+                        elif scripts_arg.endswith(".py"):
+                            # Python script specified directly
+                            dir_path = os.path.dirname(scripts_arg)
+                            script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
+                            # Directory specified (legacy behavior)
                             dir_path = model_info["scripts"]
                             script_name = "bash run.sh"
 
@@ -834,9 +1039,11 @@ class ContainerRunner:
                         model_args = self.context.ctx.get(
                             "model_args", model_info["args"]
                         )
+                        # Use the container timeout (default 7200s) for script execution
+                        # to prevent indefinite hangs
                         model_output = model_docker.sh(
                             f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=None,
+                            timeout=timeout,
                         )
                         # Print output to ensure it gets captured in log file
                         print(model_output)
@@ -931,10 +1138,27 @@ class ContainerRunner:
                             has_errors = False
                             if log_file_path and os.path.exists(log_file_path):
                                 try:
-                                    # Check for error patterns in the log (exclude our own grep commands and output messages)
+                                    # Define benign patterns to exclude from error detection
+                                    # These are known warnings/info messages that should not trigger failures
+                                    benign_patterns = [
+                                        "Failed to establish connection to the metrics exporter agent",
+                                        "RpcError: Running out of retries to initialize the metrics agent",
+                                        "Metrics will not be exported",
+                                        "FutureWarning",
+                                    ]
+                                    
+                                    # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns)
                                     for pattern in error_patterns:
-                                        # Use grep with -v to exclude our own commands and output to avoid false positives
-                                        error_check_cmd = f"grep -v -E '(grep -q.*{pattern}|Found error pattern.*{pattern})' {log_file_path} | grep -q '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'"
+                                        # Build exclusion regex: our own commands, output messages, and benign patterns
+                                        exclusions = f"(grep -q.*{pattern}|Found error pattern.*{pattern}"
+                                        for benign in benign_patterns:
+                                            # Escape special regex characters in benign patterns
+                                            escaped_benign = benign.replace(".", r"\.").replace("(", r"\(").replace(")", r"\)")
+                                            exclusions += f"|{escaped_benign}"
+                                        exclusions += ")"
+                                        
+                                        # Use grep with -v to exclude false positives
+                                        error_check_cmd = f"grep -v -E '{exclusions}' {log_file_path} | grep -q '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'"
                                         result = self.console.sh(
                                             error_check_cmd, canFail=True
                                         )
@@ -948,12 +1172,17 @@ class ContainerRunner:
                                     pass  # Error checking is optional
 
                             # Status logic: Must have performance AND no errors to be considered success
+                            # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
+                            # are not expected to report global performance metrics
                             performance_value = run_results.get("performance")
                             has_performance = (
                                 performance_value
                                 and performance_value.strip()
                                 and performance_value.strip() != "N/A"
                             )
+                            
+                            # Check if this is a worker node (not collecting metrics)
+                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
 
                             if has_errors:
                                 run_results["status"] = "FAILURE"
@@ -965,6 +1194,12 @@ class ContainerRunner:
                                 self.rich_console.print(
                                     f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
                                 )
+                            elif is_worker_node:
+                                # Worker nodes don't report global performance metrics - this is expected
+                                run_results["status"] = "SUCCESS"
+                                self.rich_console.print(
+                                    f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
+                                )
                             else:
                                 run_results["status"] = "FAILURE"
                                 self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
@@ -972,9 +1207,11 @@ class ContainerRunner:
                         except Exception as e:
                             self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
                             # Fallback to simple performance check
+                            # Worker nodes don't need performance metrics
+                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
                             run_results["status"] = (
                                 "SUCCESS"
-                                if run_results.get("performance")
+                                if run_results.get("performance") or is_worker_node
                                 else "FAILURE"
                             )
 
@@ -982,61 +1219,133 @@ class ContainerRunner:
                             f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
                         )
 
-                        # Generate performance results and update perf.csv
-                        self.ensure_perf_csv_exists()
-                        try:
-                            # Create run details dictionary for CSV generation
-                            run_details_dict = self.create_run_details_dict(
-                                model_info, build_info, run_results
+                        # =============================================================================
+                        # Multi-Node Performance Collection (Master Node Only)
+                        # =============================================================================
+                        # For distributed training, only master node should collect metrics
+                        # Check skip_perf_collection flag from additional_context
+                        skip_perf = self.additional_context.get("skip_perf_collection", False)
+                        
+                        if skip_perf:
+                            self.rich_console.print(
+                                "[cyan]ℹ️  Worker node: Skipping performance metric collection "
+                                "(master node will collect results)[/cyan]"
                             )
-
-                            # Handle multiple results if specified
-                            multiple_results = model_info.get("multiple_results", None)
-                            if (
-                                multiple_results
-                                and run_results.get("status") == "SUCCESS"
-                            ):
-                                # Generate common info JSON for multiple results
-                                common_info = run_details_dict.copy()
-                                # Remove model-specific fields for common info
-                                for key in ["model", "performance", "metric", "status"]:
-                                    common_info.pop(key, None)
-
-                                with open("common_info.json", "w") as f:
-                                    json.dump(common_info, f)
-
-                                # Update perf.csv with multiple results
-                                update_perf_csv(
-                                    multiple_results=multiple_results,
-                                    perf_csv=self.perf_csv_path,
-                                    model_name=run_details_dict["model"],
-                                    common_info="common_info.json",
+                        else:
+                            # Generate performance results and update perf.csv
+                            self.ensure_perf_csv_exists()
+                            try:
+                                # Create run details dictionary for CSV generation
+                                run_details_dict = self.create_run_details_dict(
+                                    model_info, build_info, run_results
                                 )
-                                print(
-                                    f"Updated perf.csv with multiple results for {model_info['name']}"
-                                )
-                            else:
-                                # Generate single result JSON
-                                with open("perf_entry.json", "w") as f:
-                                    json.dump(run_details_dict, f)
 
-                                # Update perf.csv with single result
-                                if run_results.get("status") == "SUCCESS":
+                                # Handle multiple results if specified
+                                multiple_results = model_info.get("multiple_results", None)
+                                if (
+                                    multiple_results
+                                    and run_results.get("status") == "SUCCESS"
+                                ):
+                                    # Generate common info JSON for multiple results
+                                    common_info = run_details_dict.copy()
+                                    # Remove model-specific fields for common info
+                                    for key in ["model", "performance", "metric", "status"]:
+                                        common_info.pop(key, None)
+
+                                    with open("common_info.json", "w") as f:
+                                        json.dump(common_info, f)
+
+                                    # Update perf.csv with multiple results
                                     update_perf_csv(
-                                        single_result="perf_entry.json",
+                                        multiple_results=multiple_results,
                                         perf_csv=self.perf_csv_path,
+                                        model_name=run_details_dict["model"],
+                                        common_info="common_info.json",
                                     )
+                                    print(
+                                        f"Updated perf.csv with multiple results for {model_info['name']}"
+                                    )
+
+                                    # Update perf_entry_super.json with multiple results
+                                    try:
+                                        # Create common_info_super.json with configs field
+                                        common_info_super = run_details_dict.copy()
+                                        for key in ["model", "performance", "metric", "status"]:
+                                            common_info_super.pop(key, None)
+                                        
+                                        with open("common_info_super.json", "w") as f:
+                                            json.dump(common_info_super, f)
+                                        
+                                        scripts_path = model_info.get("scripts", "")
+                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        
+                                        update_perf_super_json(
+                                            multiple_results=multiple_results,
+                                            perf_super_json="perf_entry_super.json",
+                                            model_name=run_details_dict["model"],
+                                            common_info="common_info_super.json",
+                                            scripts_base_dir=scripts_base_dir,
+                                        )
+                                        
+                                        # Generate CSV files from JSON
+                                        update_perf_super_csv(
+                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_csv="perf_super.csv"
+                                        )
+                                    except Exception as e:
+                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
                                 else:
-                                    update_perf_csv(
-                                        exception_result="perf_entry.json",
-                                        perf_csv=self.perf_csv_path,
-                                    )
-                                print(
-                                    f"Updated perf.csv with result for {model_info['name']}"
-                                )
+                                    # Generate single result JSON
+                                    with open("perf_entry.json", "w") as f:
+                                        json.dump(run_details_dict, f)
 
-                        except Exception as e:
-                            self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+                                    # Update perf.csv with single result
+                                    if run_results.get("status") == "SUCCESS":
+                                        update_perf_csv(
+                                            single_result="perf_entry.json",
+                                            perf_csv=self.perf_csv_path,
+                                        )
+                                    else:
+                                        update_perf_csv(
+                                            exception_result="perf_entry.json",
+                                            perf_csv=self.perf_csv_path,
+                                        )
+                                    print(
+                                        f"Updated perf.csv with result for {model_info['name']}"
+                                    )
+
+                                    # Update perf_entry_super.json with single result
+                                    try:
+                                        # Generate perf_entry_super.json with configs field
+                                        with open("perf_entry_super.json", "w") as f:
+                                            json.dump(run_details_dict, f)
+                                        
+                                        scripts_path = model_info.get("scripts", "")
+                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        
+                                        if run_results.get("status") == "SUCCESS":
+                                            update_perf_super_json(
+                                                single_result="perf_entry_super.json",
+                                                perf_super_json="perf_entry_super.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+                                        else:
+                                            update_perf_super_json(
+                                                exception_result="perf_entry_super.json",
+                                                perf_super_json="perf_entry_super.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+                                        
+                                        # Generate CSV files from JSON
+                                        update_perf_super_csv(
+                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_csv="perf_super.csv"
+                                        )
+                                    except Exception as e:
+                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
+
+                            except Exception as e:
+                                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
 
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
@@ -1092,6 +1401,29 @@ class ContainerRunner:
                     f"Updated perf.csv with exception result for {model_info['name']}"
                 )
 
+                # Update perf_entry_super.json with exception result
+                try:
+                    # Generate perf_entry_super.json with configs field
+                    with open("perf_entry_super.json", "w") as f:
+                        json.dump(run_details_dict, f)
+                    
+                    scripts_path = model_info.get("scripts", "")
+                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    
+                    update_perf_super_json(
+                        exception_result="perf_entry_super.json",
+                        perf_super_json="perf_entry_super.json",
+                        scripts_base_dir=scripts_base_dir,
+                    )
+                    
+                    # Generate CSV files from JSON
+                    update_perf_super_csv(
+                        perf_super_json="perf_entry_super.json",
+                        perf_super_csv="perf_super.csv"
+                    )
+                except Exception as e:
+                    print(f"⚠️  Warning: Could not update perf_super files: {e}")
+
             except Exception as csv_e:
                 self.rich_console.print(f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]")
 
@@ -1136,6 +1468,10 @@ class ContainerRunner:
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
         
+        # Load deployment_config from manifest for GPU resolution
+        if "deployment_config" in manifest and not self.additional_context:
+            self.additional_context = {"deployment_config": manifest["deployment_config"]}
+        
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")
             return {"successful_runs": [], "failed_runs": []}
@@ -1176,7 +1512,7 @@ class ContainerRunner:
                     # Verify image exists
                     try:
                         self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except:
+                    except (subprocess.CalledProcessError, RuntimeError) as e:
                         self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
                         try:
                             self.pull_image(run_image)

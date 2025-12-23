@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified Error Handling System for MADEngine
+Unified Error Handling System for madengine
 
 This module provides a centralized error handling system with structured
 error types and consistent Rich console-based error reporting.
@@ -50,7 +50,7 @@ class ErrorContext:
 
 
 class MADEngineError(Exception):
-    """Base exception for all MADEngine errors."""
+    """Base exception for all madengine errors."""
     
     def __init__(
         self,
@@ -224,7 +224,7 @@ class ErrorHandler:
             self._handle_generic_error(error, context, show_tb)
     
     def _handle_madengine_error(self, error: MADEngineError, show_traceback: bool) -> None:
-        """Handle MADEngine structured errors."""
+        """Handle madengine structured errors."""
         
         # Determine error emoji and color
         category_info = {

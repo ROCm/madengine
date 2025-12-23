@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for MADEngine tests.
+Pytest configuration and shared fixtures for madengine tests.
 
 Provides reusable fixtures for multi-platform testing (AMD GPU, NVIDIA GPU, CPU),
 mock contexts, and integration test utilities.

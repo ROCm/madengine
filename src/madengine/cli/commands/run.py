@@ -218,8 +218,15 @@ def run(
             # Display results summary
             display_results_table(execution_summary, "Execution Results")
             
-            # Display detailed performance metrics from CSV
-            display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
+            # Display detailed performance metrics from CSV (show all historical runs, mark current ones)
+            perf_csv_path = getattr(args, "output", DEFAULT_PERF_OUTPUT)
+            session_start_row = execution_summary.get("session_start_row")
+            display_performance_table(perf_csv_path, session_start_row)
+            
+            # Cleanup session marker AFTER display (so display functions can use it)
+            from madengine.utils.session_tracker import SessionTracker
+            tracker = SessionTracker(perf_csv_path)
+            tracker.cleanup_marker()
             
             save_summary_with_feedback(execution_summary, summary_output, "Execution")
 
@@ -344,8 +351,15 @@ def run(
             display_results_table(build_summary, "Build Results")
             display_results_table(execution_summary, "Execution Results")
             
-            # Display detailed performance metrics from CSV
-            display_performance_table(getattr(args, "output", DEFAULT_PERF_OUTPUT))
+            # Display detailed performance metrics from CSV (show all historical runs, mark current ones)
+            perf_csv_path = getattr(args, "output", DEFAULT_PERF_OUTPUT)
+            session_start_row = execution_summary.get("session_start_row")
+            display_performance_table(perf_csv_path, session_start_row)
+            
+            # Cleanup session marker AFTER display (so display functions can use it)
+            from madengine.utils.session_tracker import SessionTracker
+            tracker = SessionTracker(perf_csv_path)
+            tracker.cleanup_marker()
             
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 

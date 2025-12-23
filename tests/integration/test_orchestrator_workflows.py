@@ -365,13 +365,15 @@ class TestRunOrchestrator:
         ) as mock_execute_local:
             result = orchestrator.execute(manifest_file="build_manifest.json")
 
-        assert result == {"status": "success"}
+        assert result["status"] == "success"
+        assert "session_start_row" in result
+        assert "session_row_count" in result
         mock_execute_local.assert_called_once()
 
     @patch(
         "builtins.open",
         new_callable=mock_open,
-        read_data='{"built_images": {"model1": {"name": "model1"}}}',
+        read_data='{"built_images": {"model1": {"name": "model1"}}, "deployment_config": {"slurm": {"partition": "gpu", "nodes": 2}}}',
     )
     @patch("os.path.exists", return_value=True)
     def test_run_execute_distributed(self, mock_exists, mock_file):
@@ -389,7 +391,9 @@ class TestRunOrchestrator:
         ) as mock_execute_distributed:
             result = orchestrator.execute(manifest_file="build_manifest.json")
 
-        assert result == {"status": "deployed"}
+        assert result["status"] == "deployed"
+        assert "session_start_row" in result
+        assert "session_row_count" in result
         mock_execute_distributed.assert_called_once_with("slurm", "build_manifest.json")
 
     @patch(

@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Data Provider - AWS S3
+# madengine K8s Data Provider - AWS S3
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Usage: download_aws.sh <dataname> <datapath> <datahome>

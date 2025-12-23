@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Wrapper - rocEnvTool
+# madengine K8s Wrapper - rocEnvTool
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Wrapper for rocEnvTool to work in K8s environment

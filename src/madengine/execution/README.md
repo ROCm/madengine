@@ -143,8 +143,7 @@ print(result["duration"])
    - ✅ Pure Docker operations
 
 3. **Reusability**: Can be used by:
-   - Legacy `mad.py` (via `run_models.py`)
-   - New `madengine-cli` (via orchestrators)
+   - Modern `madengine` CLI (via orchestrators)
    - Future automation scripts
 
 4. **Testability**: Mock Docker client for unit tests
@@ -208,5 +207,5 @@ context.ctx["docker_mounts"]  # Volume mounts
 ---
 
 **Last Updated**: November 30, 2025  
-**Maintainer**: MADEngine Team
+**Maintainer**: madengine Team
 

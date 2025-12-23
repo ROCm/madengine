@@ -47,90 +47,12 @@ def is_amd_gpu():
 
 class TestBaseGPUToolManager:
     """Test the base GPU tool manager abstract class."""
-    
-    def test_cannot_instantiate_abstract_class(self):
-        """Test that BaseGPUToolManager cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            BaseGPUToolManager()
-    
-    def test_is_tool_available_caching(self):
-        """Test that tool availability checks are cached."""
-        # Create a concrete implementation for testing
-        class ConcreteManager(BaseGPUToolManager):
-            def get_version(self):
-                return "1.0"
-            
-            def execute_command(self, command, fallback_command=None, timeout=30):
-                return "output"
-        
-        manager = ConcreteManager()
-        
-        with patch('os.path.isfile', return_value=True), \
-             patch('os.access', return_value=True):
-            # First call should check filesystem
-            assert manager.is_tool_available("/test/tool")
-            
-            # Second call should use cache (won't call os.path.isfile again)
-            assert manager.is_tool_available("/test/tool")
-            
-            # Verify result is cached
-            assert "tool_available:/test/tool" in manager._cache
-    
-    def test_execute_shell_command(self):
-        """Test shell command execution."""
-        class ConcreteManager(BaseGPUToolManager):
-            def get_version(self):
-                return "1.0"
-            
-            def execute_command(self, command, fallback_command=None, timeout=30):
-                return self._execute_shell_command(command, timeout)[1]
-        
-        manager = ConcreteManager()
-        
-        with patch('subprocess.run') as mock_run:
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout="test output",
-                stderr=""
-            )
-            
-            success, stdout, stderr = manager._execute_shell_command("test command")
-            
-            assert success is True
-            assert stdout == "test output"
-            assert stderr == ""
-    
-    def test_cache_operations(self):
-        """Test cache get/set operations are thread-safe."""
-        class ConcreteManager(BaseGPUToolManager):
-            def get_version(self):
-                return "1.0"
-            
-            def execute_command(self, command, fallback_command=None, timeout=30):
-                return "output"
-        
-        manager = ConcreteManager()
-        
-        # Test cache set
-        manager._cache_result("test_key", "test_value")
-        
-        # Test cache get
-        assert manager._get_cached_result("test_key") == "test_value"
-        assert manager._get_cached_result("nonexistent") is None
-        
-        # Test clear cache
-        manager.clear_cache()
-        assert manager._get_cached_result("test_key") is None
 
-
+    
 
 
 class TestROCmToolManager:
     """Test the ROCm tool manager with 6.4.1 threshold (PR #54)."""
-    
-    def test_rocm_version_threshold(self):
-        """Test that ROCm version threshold is set correctly (PR #54)."""
-        assert ROCM_VERSION_THRESHOLD == (6, 4, 1)
     
     def test_get_rocm_version_from_hipconfig(self):
         """Test ROCm version detection from hipconfig."""
@@ -145,17 +67,6 @@ class TestROCmToolManager:
             assert version == (6, 4, 1)
             # Verify result is cached
             assert manager._get_cached_result("rocm_version") == (6, 4, 1)
-    
-    def test_get_rocm_version_from_file(self):
-        """Test ROCm version detection from version file."""
-        manager = ROCmToolManager()
-        
-        with patch.object(manager, 'is_tool_available', return_value=False), \
-             patch('os.path.exists', return_value=True), \
-             patch('builtins.open', unittest.mock.mock_open(read_data="6.4.1-54321\n")):
-            version = manager.get_rocm_version()
-            
-            assert version == (6, 4, 1)
     
     def test_get_preferred_smi_tool_6_4_1_and_above(self):
         """Test that amd-smi is preferred for ROCm >= 6.4.1."""

@@ -1,0 +1,39 @@
+{
+  "_comment": "TorchTitan Multi-Node Config - 4 nodes x 8 GPUs for Llama 3.1 70B",
+  "_description": "Uses multi-dimensional parallelism (TP + PP + FSDP2)",
+  "_use_case": "Large-scale LLM pre-training (70B+ models)",
+  "_reference": "https://github.com/pytorch/torchtitan",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 8,
+    "memory": "512Gi",
+    "memory_limit": "768Gi",
+    "cpu": "96",
+    "cpu_limit": "128",
+    "node_selector": {
+      "node.kubernetes.io/instance-type": "mi300x"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "torchtitan",
+    "nnodes": 4,
+    "nproc_per_node": 8,
+    "master_port": 29500
+  },
+  
+  "context": {
+    "pre_scripts": [
+      "scripts/common/setup_pytorch_env.sh"
+    ],
+    "env_vars": {
+      "PYTORCH_TUNABLEOP_ENABLED": "1",
+      "PYTORCH_TUNABLEOP_TUNING": "1",
+      "NCCL_DEBUG": "INFO"
+    }
+  }
+}
+

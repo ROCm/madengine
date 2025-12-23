@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker Image Builder Module for MADEngine
+Docker Image Builder Module for madengine
 
 This module handles the Docker image building phase separately from execution,
 enabling distributed workflows where images are built on a central host
@@ -37,7 +37,7 @@ class DockerBuilder:
         """Initialize the Docker Builder.
 
         Args:
-            context: The MADEngine context
+            context: The madengine context
             console: Optional console instance
             live_output: Whether to show live output
         """
@@ -424,6 +424,7 @@ class DockerBuilder:
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
                 "docker_build_arg": self.context.ctx.get("docker_build_arg", {}),
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
+                "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
             },
             "credentials_required": credentials_required,
@@ -440,12 +441,6 @@ class DockerBuilder:
             manifest["context"]["post_scripts"] = self.context.ctx["post_scripts"]
         if "encapsulate_script" in self.context.ctx:
             manifest["context"]["encapsulate_script"] = self.context.ctx["encapsulate_script"]
-
-        # Add multi-node args to context if present
-        if "build_multi_node_args" in self.context.ctx:
-            manifest["context"]["multi_node_args"] = self.context.ctx[
-                "build_multi_node_args"
-            ]
 
         # Add push failure summary if any pushes failed
         push_failures = []

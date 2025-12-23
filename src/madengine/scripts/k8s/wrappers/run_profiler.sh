@@ -1,5 +1,5 @@
 #!/bin/bash
-# MADEngine K8s Wrapper - GPU Info Profiler
+# madengine K8s Wrapper - GPU Info Profiler
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # Wrapper for gpu_info_profiler.py to work in K8s environment

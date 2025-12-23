@@ -74,14 +74,14 @@ def validate_additional_context(
         # Show example usage
         example_panel = Panel(
             """[bold cyan]Example usage:[/bold cyan]
-madengine-cli build --tags dummy --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+madengine build --tags dummy --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 [bold cyan]Or using a file:[/bold cyan]
-madengine-cli build --tags dummy --additional-context-file context.json
+madengine build --tags dummy --additional-context-file context.json
 
 [bold cyan]Required fields:[/bold cyan]
-• gpu_vendor: [green]AMD[/green], [green]NVIDIA[/green], [green]INTEL[/green]
-• guest_os: [green]UBUNTU[/green], [green]CENTOS[/green], [green]ROCKY[/green]""",
+• gpu_vendor: [green]AMD[/green], [green]NVIDIA[/green]
+• guest_os: [green]UBUNTU[/green], [green]CENTOS[/green]""",
             title="Additional Context Help",
             border_style="blue",
         )

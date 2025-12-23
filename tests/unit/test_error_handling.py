@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for MADEngine unified error handling system.
+Unit tests for madengine unified error handling system.
 
 Tests the core error handling functionality including error types,
 context management, Rich console integration, and error propagation.
@@ -111,10 +111,10 @@ class TestErrorContext:
 
 
 class TestMADEngineErrorHierarchy:
-    """Test MADEngine error class hierarchy."""
+    """Test madengine error class hierarchy."""
     
     def test_base_madengine_error(self):
-        """Test base MADEngine error functionality."""
+        """Test base madengine error functionality."""
         context = ErrorContext(operation="test")
         error = MADEngineError(
             message="Test error",
@@ -191,7 +191,7 @@ class TestErrorHandler:
         assert self.error_handler.logger is not None
     
     def test_handle_madengine_error(self):
-        """Test handling of MADEngine structured errors."""
+        """Test handling of madengine structured errors."""
         context = create_error_context(
             operation="test_operation",
             component="TestComponent",

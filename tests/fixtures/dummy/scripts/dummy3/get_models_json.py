@@ -1,6 +1,6 @@
 """Model template for dummy3 model.
 
-This model is used to test the dynamic model discovery feature of MADEngine.
+This model is used to test the dynamic model discovery feature of madengine.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """

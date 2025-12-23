@@ -28,6 +28,7 @@ from madengine.core.errors import (
     create_error_context,
     handle_error,
 )
+from madengine.utils.session_tracker import SessionTracker
 
 
 class RunOrchestrator:
@@ -61,23 +62,32 @@ class RunOrchestrator:
                     # Use ast.literal_eval for Python dict syntax (single quotes)
                     # This matches what Context class expects
                     import ast
-                    merged_context = ast.literal_eval(args.additional_context)
+                    parsed = ast.literal_eval(args.additional_context)
+                    print(f"📝 RunOrchestrator: Parsed additional_context keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not a dict'}")
+                    merged_context = parsed
                 elif isinstance(args.additional_context, dict):
                     merged_context = args.additional_context
+                    print(f"📝 RunOrchestrator: Got dict additional_context keys: {list(merged_context.keys())}")
             except (ValueError, SyntaxError) as e:
                 print(f"Warning: Could not parse additional_context: {e}")
+                print(f"Raw additional_context: {args.additional_context[:200] if args.additional_context else 'None'}")
                 pass
 
         if additional_context:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+        print(f"📝 RunOrchestrator: Final additional_context keys: {list(self.additional_context.keys()) if self.additional_context else 'None'}")
 
         # Track if we copied MODEL_DIR contents (for cleanup)
         self._copied_from_model_dir = False
         
         # Track if we ran build phase in this workflow (for log combination)
         self._did_build_phase = False
+        
+        # Initialize session tracker for filtering current run results
+        perf_csv_path = getattr(args, "output", "perf.csv")
+        self.session_tracker = SessionTracker(perf_csv_path)
         
         # Initialize context in runtime mode (with GPU detection for local)
         # This will be lazy-initialized only when needed
@@ -141,6 +151,10 @@ class RunOrchestrator:
         self.rich_console.print("[bold blue]🚀 RUN PHASE[/bold blue]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
+        # Track session start for filtering current run results
+        # The marker file is automatically saved in same directory as perf.csv
+        session_start_row = self.session_tracker.start_session()
+
         try:
             # Check for MAD_CONTAINER_IMAGE (local image mode)
             # This must be checked before normal build/manifest flow
@@ -198,12 +212,6 @@ class RunOrchestrator:
                 manifest = json.load(f)
             
             deployment_config = manifest.get("deployment_config", {})
-            target = deployment_config.get("target", "local")
-            
-            # Allow runtime --additional-context to override target
-            if self.additional_context and "deploy" in self.additional_context:
-                target = self.additional_context["deploy"]
-                self.rich_console.print(f"[yellow]Runtime override: deploy target = '{target}'[/yellow]\n")
             
             # Update additional_context with deployment_config for deployment layer
             if not self.additional_context:
@@ -213,32 +221,46 @@ class RunOrchestrator:
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
-
+            
+            # Infer deployment target from config structure (Convention over Configuration)
+            # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
+            target = self._infer_deployment_target(self.additional_context)
+            
+            # Legacy support: check manifest for explicit target
+            if not target or target == "local":
+                target = deployment_config.get("target", "local")
+            
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
             # Step 4: Execute based on target
             try:
-                if target == "local":
+                if target == "local" or target == "docker":
                     results = self._execute_local(manifest_file, timeout)
                 else:
                     results = self._execute_distributed(target, manifest_file)
                 
                 # Combine build and run logs for full workflow
-                if self._did_build_phase and target == "local":
+                if self._did_build_phase and (target == "local" or target == "docker"):
                     self._combine_build_and_run_logs()
                 
-                # Cleanup MODEL_DIR copies after successful execution
-                if self._copied_from_model_dir:
-                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
-                    self._cleanup_model_dir_copies()
+                # Add session information to results for filtering
+                results["session_start_row"] = session_start_row
+                results["session_row_count"] = self.session_tracker.get_session_row_count()
+                
+                # Always cleanup madengine package files after execution
+                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self._cleanup_model_dir_copies()
+                
+                # NOTE: Do NOT cleanup session marker here!
+                # It's needed by display functions in CLI layer
+                # Cleanup happens in CLI after display (via perf_csv_path)
                 
                 return results
                 
             except Exception as e:
-                # Cleanup MODEL_DIR copies even on error
-                if self._copied_from_model_dir:
-                    self.rich_console.print("\n[dim]🧹 Cleaning up MODEL_DIR copies...[/dim]")
-                    self._cleanup_model_dir_copies()
+                # Always cleanup madengine package files even on error
+                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self._cleanup_model_dir_copies()
                 raise
 
         except (ConfigurationError, MADRuntimeError):
@@ -307,7 +329,7 @@ class RunOrchestrator:
         try:
             self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
             self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
-        except:
+        except (subprocess.CalledProcessError, RuntimeError) as e:
             self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
             try:
                 self.console.sh(f"docker pull {image_name}")
@@ -452,10 +474,20 @@ class RunOrchestrator:
         """Execute locally using container_runner."""
         self.rich_console.print("[cyan]Executing locally...[/cyan]\n")
 
-        # Initialize runtime context (with GPU detection)
+        # Load manifest first to check if we have Docker images
+        with open(manifest_file, "r") as f:
+            manifest = json.load(f)
+        
+        has_docker_images = bool(manifest.get("built_images", {}))
+        
+        if has_docker_images:
+            # Using Docker containers - containers have GPU support built-in
+            self.rich_console.print("[dim cyan]Using Docker containers with built-in GPU support[/dim cyan]\n")
+        
+        # Initialize runtime context (runs full GPU detection on compute nodes)
         self._init_runtime_context()
-
-        # Show node ROCm info
+        
+        # Show node info
         self._show_node_info()
 
         # Import from execution layer
@@ -463,10 +495,6 @@ class RunOrchestrator:
 
         # Load credentials
         credentials = self._load_credentials()
-
-        # Load manifest to restore context
-        with open(manifest_file, "r") as f:
-            manifest = json.load(f)
 
         # Restore context from manifest if present
         if "context" in manifest:
@@ -496,11 +524,20 @@ class RunOrchestrator:
                 self.context.ctx["encapsulate_script"] = self.additional_context["encapsulate_script"]
 
         # Filter images by GPU vendor and architecture
+        # Filter images by GPU compatibility
         try:
+            # Always filter by runtime GPU compatibility (both Docker and bare-metal)
             runtime_gpu_vendor = self.context.get_gpu_vendor()
             runtime_gpu_arch = self.context.get_system_gpu_architecture()
             print(f"Runtime GPU vendor: {runtime_gpu_vendor}")
             print(f"Runtime GPU architecture detected: {runtime_gpu_arch}")
+
+            if has_docker_images:
+                # Docker images: filter by GPU vendor at runtime to avoid cross-vendor execution
+                self.rich_console.print("[dim cyan]Filtering Docker images by runtime GPU compatibility...[/dim cyan]")
+            else:
+                # Bare-metal execution: filter by runtime GPU
+                self.rich_console.print("[dim cyan]Filtering bare-metal images by runtime GPU compatibility...[/dim cyan]")
 
             compatible_images = self._filter_images_by_gpu_compatibility(
                 manifest["built_images"], runtime_gpu_vendor, runtime_gpu_arch
@@ -523,7 +560,8 @@ class RunOrchestrator:
             manifest["built_images"] = compatible_images
             print(f"Filtered to {len(compatible_images)} compatible images\n")
             
-            # Filter by skip_gpu_arch from model definitions
+            # Filter by skip_gpu_arch from model definitions (applies to both Docker and bare-metal)
+            runtime_gpu_arch = self.context.get_system_gpu_architecture()
             if "built_models" in manifest and compatible_images:
                 self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
                 compatible_images = self._filter_images_by_skip_gpu_arch(
@@ -557,6 +595,7 @@ class RunOrchestrator:
             self.data,
             self.console,
             live_output=getattr(self.args, "live_output", False),
+            additional_context=self.additional_context,
         )
         runner.set_credentials(credentials)
 
@@ -592,6 +631,11 @@ class RunOrchestrator:
         # Add runtime flags to additional_context for deployment layer
         if "live_output" not in self.additional_context:
             self.additional_context["live_output"] = getattr(self.args, "live_output", False)
+        
+        # Pass session_start_row for result filtering in collect_results
+        session_start_row = self.session_tracker.session_start_row
+        if "session_start_row" not in self.additional_context:
+            self.additional_context["session_start_row"] = session_start_row
 
         # Create deployment configuration
         deployment_config = DeploymentConfig(
@@ -645,38 +689,65 @@ class RunOrchestrator:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
     def _cleanup_model_dir_copies(self):
-        """Clean up scripts/ and docker/ directories copied from MODEL_DIR.
+        """Clean up only madengine package files from scripts/common directory.
         
-        This cleanup is necessary to:
-        1. Remove stale files from previous runs
-        2. Avoid permission errors from .pyc files
-        3. Keep project root clean
+        This cleanup removes ONLY the files that were copied from madengine package:
+        - scripts/common/tools.json
+        - scripts/common/test_echo.sh
+        - scripts/common/pre_scripts/
+        - scripts/common/post_scripts/
+        - scripts/common/tools/
+        
+        This preserves the user's actual scripts/ and docker/ directories in MAD project.
         """
         import shutil
         import subprocess
         
-        for dirname in ["scripts", "docker"]:
-            dirpath = Path(dirname)
-            if dirpath.exists():
+        # Only clean up scripts/common/ subdirectories that came from madengine package
+        common_dir = Path("scripts/common")
+        if not common_dir.exists():
+            return
+        
+        # List of items to clean up (from madengine package)
+        items_to_cleanup = [
+            "tools.json",
+            "test_echo.sh",
+            "pre_scripts",
+            "post_scripts",
+            "tools"
+        ]
+        
+        for item_name in items_to_cleanup:
+            item_path = common_dir / item_name
+            if item_path.exists():
                 try:
-                    # Try normal removal first
-                    shutil.rmtree(dirpath)
-                    self.rich_console.print(f"[dim]  Cleaned up: {dirname}/[/dim]")
-                except PermissionError:
-                    # If permission denied, use sudo (for .pyc files owned by root)
+                    if item_path.is_dir():
+                        # Fix permissions first for directories
+                        try:
+                            subprocess.run(
+                                ["chmod", "-R", "+w", str(item_path)],
+                                capture_output=True,
+                                timeout=10
+                            )
+                        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
+                            print(f"Warning: chmod failed for {item_path}: {e}")
+                        shutil.rmtree(item_path)
+                    else:
+                        item_path.unlink()
+                    self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name}[/dim]")
+                except Exception as e:
+                    # Try with sudo for permission issues
                     try:
                         subprocess.run(
-                            ["sudo", "rm", "-rf", str(dirpath)],
+                            ["sudo", "rm", "-rf", str(item_path)],
                             check=True,
-                            capture_output=True
+                            capture_output=True,
+                            timeout=10
                         )
-                        self.rich_console.print(f"[dim]  Cleaned up: {dirname}/ (with elevated permissions)[/dim]")
-                    except Exception as e:
+                        self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name} (elevated)[/dim]")
+                    except Exception as e2:
                         self.rich_console.print(
-                            f"[yellow]⚠️  Warning: Could not clean up {dirname}/: {e}[/yellow]"
-                        )
-                        self.rich_console.print(
-                            f"[yellow]   Manual cleanup may be required: sudo rm -rf {dirname}/[/yellow]"
+                            f"[yellow]⚠️  Warning: Could not clean up {item_path}: {e2}[/yellow]"
                         )
 
     def _combine_build_and_run_logs(self):
@@ -736,47 +807,74 @@ class RunOrchestrator:
     def _copy_scripts(self):
         """Copy common scripts to model directories.
         
-        Handles two scenarios:
-        1. MAD Project: scripts/common already exists with pre/post scripts
-        2. madengine Testing: Need to copy from src/madengine/scripts/common
+        Handles scenarios:
+        1. MAD Project: scripts/ already exists in current directory - just add madengine common files
+        2. External MODEL_DIR: Copy from external path to current directory
+        3. madengine Testing: Copy from src/madengine/scripts/common
+        
+        NOTE: Does NOT delete existing scripts/ or docker/ directories in current working directory.
         """
         import shutil
-
-        # Clean up any previous MODEL_DIR copies first
-        self._cleanup_model_dir_copies()
 
         # Define ignore function for cache files (used for all copy operations)
         def ignore_cache_files(directory, files):
             """Ignore Python cache files and directories."""
             return [f for f in files if f.endswith('.pyc') or f == '__pycache__' or f.endswith('.pyo')]
         
-        # Step 1: Check if MODEL_DIR is set and copy if needed
-        model_dir_env = os.environ.get("MODEL_DIR")
-        if model_dir_env and os.path.exists(model_dir_env) and model_dir_env != ".":
-            self.rich_console.print(f"[yellow]📁 MODEL_DIR detected: {model_dir_env}[/yellow]")
+        # Step 1: Check if MODEL_DIR points to external directory and copy if needed
+        # MODEL_DIR default is "." (current directory), so only copy if it's different
+        model_dir_env = os.environ.get("MODEL_DIR", ".")
+        model_dir_abs = os.path.abspath(model_dir_env)
+        current_dir_abs = os.path.abspath(".")
+        
+        # Only copy if MODEL_DIR points to a different directory (not current dir)
+        if model_dir_abs != current_dir_abs and os.path.exists(model_dir_env):
+            self.rich_console.print(f"[yellow]📁 External MODEL_DIR detected: {model_dir_env}[/yellow]")
             self.rich_console.print("[yellow]Copying MODEL_DIR contents for run phase...[/yellow]")
             
-            # Mark that we copied from MODEL_DIR (will need cleanup later)
-            self._copied_from_model_dir = True
-            
-            # Copy docker/ and scripts/ from MODEL_DIR
+            # Copy docker/ and scripts/ from MODEL_DIR (without deleting existing ones first)
             for subdir in ["docker", "scripts"]:
                 src_path = Path(model_dir_env) / subdir
                 if src_path.exists():
                     dest_path = Path(subdir)
+                    # Use copytree with dirs_exist_ok=True to merge instead of replace
                     if dest_path.exists():
-                        shutil.rmtree(dest_path)
-                    shutil.copytree(src_path, dest_path, ignore=ignore_cache_files)
+                        # Only warn, don't delete existing directories
+                        self.rich_console.print(f"[dim]  Note: Merging {subdir}/ from MODEL_DIR with existing directory[/dim]")
+                    shutil.copytree(src_path, dest_path, dirs_exist_ok=True, ignore=ignore_cache_files)
             
             self.rich_console.print("[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]")
+        elif not os.path.exists(model_dir_env):
+            self.rich_console.print(f"[yellow]⚠️  Warning: MODEL_DIR '{model_dir_env}' does not exist, using current directory[/yellow]")
 
         # Step 2: Copy madengine's common scripts (pre_scripts, post_scripts, tools)
         # This provides the execution framework scripts
-        madengine_common = Path("src/madengine/scripts/common")
-        if madengine_common.exists():
+        # Find madengine installation path (works for both development and installed package)
+        madengine_common = None
+        
+        # Option 1: Development mode - check if running from source
+        dev_path = Path("src/madengine/scripts/common")
+        if dev_path.exists():
+            madengine_common = dev_path
+            print(f"Found madengine scripts in development mode: {madengine_common}")
+        else:
+            # Option 2: Installed package - find via module location
+            try:
+                import madengine
+                madengine_module_path = Path(madengine.__file__).parent
+                installed_path = madengine_module_path / "scripts" / "common"
+                if installed_path.exists():
+                    madengine_common = installed_path
+                    print(f"Found madengine scripts in installed package: {madengine_common}")
+            except Exception as e:
+                print(f"Could not locate madengine scripts: {e}")
+        
+        if madengine_common and madengine_common.exists():
             print(f"Copying madengine common scripts from {madengine_common} to scripts/common")
             
             dest_common = Path("scripts/common")
+            # Ensure the destination directory exists before copying
+            dest_common.mkdir(parents=True, exist_ok=True)
             
             # Copy pre_scripts, post_scripts, tools if they exist
             for item in ["pre_scripts", "post_scripts", "tools", "tools.json", "test_echo.sh"]:
@@ -792,25 +890,22 @@ class RunOrchestrator:
                     if src_item.is_dir():
                         shutil.copytree(src_item, dest_item, ignore=ignore_cache_files)
                     else:
-                        dest_common.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src_item, dest_item)
                     print(f"  Copied {item}")
+        else:
+            self.rich_console.print("[yellow]⚠️  Could not find madengine scripts directory[/yellow]")
 
-        # Step 3: Distribute scripts/common to each model directory
-        common_scripts = Path("scripts/common")
-        if not common_scripts.exists():
-            self.rich_console.print("[yellow]⚠️  No scripts/common directory found after copy, skipping distribution[/yellow]")
-            return
-
-        print(f"Distributing common scripts to model directories")
-
-        for model_script_dir in Path("scripts").iterdir():
-            if model_script_dir.is_dir() and model_script_dir.name != "common":
-                dest = model_script_dir / "common"
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(common_scripts, dest, ignore=ignore_cache_files)
-                print(f"  Copied to {dest}")
+        # Step 3: REMOVED - Distribution to model directories is incorrect
+        # scripts/common should remain at <cwd>/scripts/common/ for proper relative path access
+        # Model scripts reference it via ../scripts/common/ from their directory (e.g., scripts/dummy/)
+        # 
+        # This ensures compatibility with legacy workflow where:
+        # - scripts/common/ stays at working directory root
+        # - Model scripts use ../scripts/common/ relative paths
+        # - ContainerRunner mounts the entire working directory preserving structure
+        #
+        # Note: K8s and Slurm deployments have their own script handling mechanisms
+        # and do not rely on this local filesystem operation
 
     def _load_credentials(self) -> Optional[Dict]:
         """Load credentials from credential.json and environment."""
@@ -991,6 +1086,28 @@ class RunOrchestrator:
         except Exception as e:
             self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
 
+    def _infer_deployment_target(self, config: Dict) -> str:
+        """
+        Infer deployment target from configuration structure.
+        
+        Convention over Configuration:
+        - Presence of "k8s" or "kubernetes" field → k8s deployment
+        - Presence of "slurm" field → slurm deployment
+        - Neither present → local execution
+        
+        Args:
+            config: Configuration dictionary
+            
+        Returns:
+            Deployment target: "k8s", "slurm", or "local"
+        """
+        if "k8s" in config or "kubernetes" in config:
+            return "k8s"
+        elif "slurm" in config:
+            return "slurm"
+        else:
+            return "local"
+    
     def _filter_images_by_dockerfile_context(self, built_images: Dict) -> Dict:
         """Filter images by dockerfile context matching runtime context.
         

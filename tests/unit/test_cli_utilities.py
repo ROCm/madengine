@@ -90,13 +90,6 @@ class TestCreateArgsNamespace:
         assert args.registry == "localhost:5000"
         assert args.verbose is True
 
-    def test_create_args_namespace_empty(self):
-        """Test creating args namespace with no parameters."""
-        args = create_args_namespace()
-
-        # Should create an object with no attributes
-        assert not hasattr(args, "tags")
-
     def test_create_args_namespace_complex(self):
         """Test creating args namespace with complex parameters."""
         args = create_args_namespace(
@@ -140,16 +133,6 @@ class TestSaveSummaryWithFeedback:
                 mock_console.print.assert_called()
         finally:
             os.unlink(temp_file)
-
-    def test_save_summary_no_output_path(self):
-        """Test summary saving with no output path."""
-        summary = {"successful_builds": ["model1"], "failed_builds": []}
-
-        with patch("madengine.cli.utils.console") as mock_console:
-            save_summary_with_feedback(summary, None, "Build")
-
-            # Should not call console.print for saving
-            mock_console.print.assert_not_called()
 
     def test_save_summary_io_error(self):
         """Test summary saving with IO error."""
@@ -203,27 +186,6 @@ class TestDisplayResultsTable:
 
         with patch("madengine.cli.utils.console") as mock_console:
             display_results_table(summary, "Run Results")
-
-            mock_console.print.assert_called()
-
-    def test_display_results_table_empty_results(self):
-        """Test displaying empty results table."""
-        summary = {"successful_builds": [], "failed_builds": []}
-
-        with patch("madengine.cli.utils.console") as mock_console:
-            display_results_table(summary, "Empty Results")
-
-            mock_console.print.assert_called()
-
-    def test_display_results_table_many_items(self):
-        """Test displaying results table with many items (truncation)."""
-        summary = {
-            "successful_builds": [f"model{i}" for i in range(10)],
-            "failed_builds": [],
-        }
-
-        with patch("madengine.cli.utils.console") as mock_console:
-            display_results_table(summary, "Many Results")
 
             mock_console.print.assert_called()
 

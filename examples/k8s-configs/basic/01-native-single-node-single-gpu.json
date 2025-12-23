@@ -1,0 +1,28 @@
+{
+  "_comment": "Single Node, Single GPU - Basic Configuration",
+  "_description": "Configuration for running a model on a single GPU in a Kubernetes cluster",
+  "_use_case": "Testing, small models, quick benchmarks (single GPU, no distributed execution)",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "gpu_count": 1,
+    
+    "memory": "16Gi",
+    "memory_limit": "32Gi",
+    "cpu": "8",
+    "cpu_limit": "16",
+    
+    "image_pull_policy": "Always",
+    "backoff_limit": 3
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  },
+  
+  "debug": false
+}
