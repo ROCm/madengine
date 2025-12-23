@@ -10,9 +10,6 @@ import subprocess
 import typing
 import re
 
-# third-party modules
-import typing_extensions
-
 
 class Console:
     """Class to run console commands.
@@ -116,7 +113,7 @@ class Console:
             timeout (int): The timeout in seconds.
             secret (bool): The flag to hide the command.
             prefix (str): The prefix of the output.
-            env (typing_extensions.TypedDict): The environment variables.
+            env (typing.Optional[typing.Dict[str, str]]): The environment variables.
 
         Returns:
             str: The output of the shell command.

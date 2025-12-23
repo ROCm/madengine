@@ -54,7 +54,7 @@ madengine run --tags dummy \
 
 ```
 ┌─────────────────────────────────────────────────┐
-│               madengine                     │
+│               madengine                         │
 │          (build, run, discover)                 │
 └─────────────────────────────────────────────────┘
                        │
@@ -273,9 +273,12 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-## ⚠️ Migration Notice (v2.1.0+)
+## ⚠️ Migration Notice (v2.0.0+)
 
-The CLI has been unified! Starting from v2.1.0:
+The CLI has been unified! Starting from v2.0.0:
 - ✅ Use `madengine` (unified modern CLI with K8s, SLURM, distributed support)
 - ❌ Legacy v1.x CLI has been removed
 
+---
+
+**Code Quality**: Clean codebase with no dead code, comprehensive test coverage, and following Python best practices.

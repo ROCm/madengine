@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Removed stale compiled Python file (`__init__.pyc`) from source tree
+- Cleaned up unused `typing_extensions` import in `core/console.py`
+- Improved type hint accuracy in `Console.sh()` method docstring
+
 ### Breaking Changes
 - **CLI Unification**: Simplified command-line interface
   - ✅ `madengine` is now the unified CLI command (previously `madengine-cli`)
@@ -68,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced CLI usage examples and distributed execution workflows
 - Improved developer contribution guidelines and legacy compatibility notes
 
-### Fixed
+### Changed (Previous)
 - Removed Python cache files from repository
 - Fixed import organization and structure
 - Improved docstring formatting and consistency
