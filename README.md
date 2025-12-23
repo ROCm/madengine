@@ -29,10 +29,10 @@ pip install git+https://github.com/ROCm/madengine.git
 git clone https://github.com/ROCm/MAD.git && cd MAD
 
 # Discover available models
-madengine-cli discover --tags dummy
+madengine discover --tags dummy
 
 # Run locally
-madengine-cli run --tags dummy \
+madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
@@ -54,7 +54,7 @@ madengine-cli run --tags dummy \
 
 ```
 ┌─────────────────────────────────────────────────┐
-│               madengine-cli                     │
+│               madengine                     │
 │          (build, run, discover)                 │
 └─────────────────────────────────────────────────┘
                        │
@@ -126,11 +126,11 @@ madengine-cli run --tags dummy \
 
 ```bash
 # Single GPU
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # Multi-GPU with torchrun
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -146,11 +146,11 @@ madengine-cli run --tags model \
 
 ```bash
 # Minimal config (auto-defaults)
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"k8s": {"gpu_count": 2}}'
 
 # Multi-node with vLLM
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "k8s": {"gpu_count": 8},
     "distributed": {
@@ -165,7 +165,7 @@ madengine-cli run --tags model \
 
 ```bash
 # Multi-node with TorchTitan
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "slurm": {
       "partition": "gpu",
@@ -186,12 +186,12 @@ See [Usage Guide](docs/usage.md) and [Configuration Guide](docs/configuration.md
 
 ```bash
 # Build with tags
-madengine-cli build --tags model1 model2 \
+madengine build --tags model1 model2 \
   --registry localhost:5000 \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # Batch build mode (selective builds for CI/CD)
-madengine-cli build --batch-manifest examples/build-manifest/batch.json \
+madengine build --batch-manifest examples/build-manifest/batch.json \
   --registry docker.io/myorg
 ```
 
@@ -203,28 +203,28 @@ madengine discovers models from the MAD package using three methods:
 
 ```bash
 # Root models (models.json)
-madengine-cli discover --tags pyt_huggingface_bert
+madengine discover --tags pyt_huggingface_bert
 
 # Directory-specific (scripts/{dir}/models.json)
-madengine-cli discover --tags dummy2:dummy_2
+madengine discover --tags dummy2:dummy_2
 
 # Dynamic with parameters (scripts/{dir}/get_models_json.py)
-madengine-cli discover --tags dummy3:dummy_3:batch_size=512
+madengine discover --tags dummy3:dummy_3:batch_size=512
 ```
 
 ## 📊 Performance Profiling
 
 ```bash
 # GPU profiling
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocprof"}]}'
 
 # Library tracing (rocBLAS, MIOpen, Tensile, RCCL)
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
 
 # Power and VRAM monitoring
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "gpu_info_power_profiler"}]}'
 ```
 
@@ -273,4 +273,9 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Note:** For legacy `madengine` CLI (v1.x), see [Legacy CLI Guide](docs/legacy-cli.md). New projects should use `madengine-cli`.
+## ⚠️ Migration Notice (v2.1.0+)
+
+The CLI has been unified! Starting from v2.1.0:
+- ✅ Use `madengine` (unified modern CLI with K8s, SLURM, distributed support)
+- ❌ Legacy v1.x CLI has been removed
+

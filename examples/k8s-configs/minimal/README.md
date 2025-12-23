@@ -39,7 +39,7 @@ This follows the **Convention over Configuration** principle.
 
 **Usage:**
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context-file examples/k8s-configs/minimal/single-gpu-minimal.json
 ```
 
@@ -181,11 +181,11 @@ madengine-cli run --tags model \
 
 3. **Build and run:**
    ```bash
-   MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+   MODEL_DIR=tests/fixtures/dummy madengine build \
      --tags my_model \
      --additional-context-file my-config.json
    
-   madengine-cli run \
+   madengine run \
      --manifest-file build_manifest.json \
      --live-output
    ```
@@ -196,14 +196,14 @@ madengine-cli run --tags model \
 
 ### Use CLI for one-off overrides
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context-file minimal/single-gpu-minimal.json \
   --additional-context '{"debug": true}'
 ```
 
 ### View resolved configuration
 ```bash
-madengine-cli config show \
+madengine config show \
   --additional-context-file my-config.json
 ```
 (Shows all defaults that will be applied)

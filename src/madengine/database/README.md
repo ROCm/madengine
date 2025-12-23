@@ -105,8 +105,7 @@ MySQL support has been fully removed from madengine:
 ## 📚 References
 
 - **MongoDB package**: `src/madengine/database/mongodb.py`
-- **New CLI database command**: `madengine-cli database --help`
-- **Legacy CLI database command**: `madengine database upload-mongodb --help`
+- **CLI database command**: `madengine database --help`
 
 ---
 

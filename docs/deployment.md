@@ -16,7 +16,7 @@ Deployment is configured via `--additional-context` and happens automatically du
 ```
 ┌─────────────────────────────────────────────┐
 │  1. Build Phase (Local or CI/CD)           │
-│     madengine-cli build --tags model       │
+│     madengine build --tags model       │
 │     → Creates Docker image                  │
 │     → Pushes to registry                    │
 │     → Generates build_manifest.json         │
@@ -24,7 +24,7 @@ Deployment is configured via `--additional-context` and happens automatically du
                      ↓
 ┌─────────────────────────────────────────────┐
 │  2. Deploy Phase (Run with Context)         │
-│     madengine-cli run                       │
+│     madengine run                       │
 │       --manifest-file build_manifest.json   │
 │       --additional-context '{"deploy":...}' │
 │     → Detects deployment target             │
@@ -60,12 +60,12 @@ This automatically applies intelligent defaults for namespace, resources, image 
 
 ```bash
 # 1. Build image
-madengine-cli build --tags my_model \
+madengine build --tags my_model \
   --registry my-registry.io \
   --additional-context-file k8s-config.json
 
 # 2. Deploy to Kubernetes
-madengine-cli run \
+madengine run \
   --manifest-file build_manifest.json \
   --timeout 3600
 ```
@@ -183,7 +183,7 @@ kubectl delete job madengine-job-xxx -n your-namespace
 
 ```bash
 # 1. Build image (on build node or locally)
-madengine-cli build --tags my_model \
+madengine build --tags my_model \
   --registry my-registry.io \
   --additional-context-file slurm-config.json
 
@@ -192,7 +192,7 @@ ssh user@hpc-login.example.com
 
 # 3. Deploy to SLURM
 cd /shared/workspace
-madengine-cli run \
+madengine run \
   --manifest-file build_manifest.json \
   --timeout 7200
 ```

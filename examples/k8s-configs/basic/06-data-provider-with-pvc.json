@@ -56,8 +56,8 @@
   },
   
   "_quick_start": {
-    "step_1": "Build: madengine-cli build --tags dummy_torchrun_data_minio --additional-context-file THIS_FILE",
-    "step_2": "Run: madengine-cli run --manifest-file build_manifest.json",
+    "step_1": "Build: madengine build --tags dummy_torchrun_data_minio --additional-context-file THIS_FILE",
+    "step_2": "Run: madengine run --manifest-file build_manifest.json",
     "result": "✅ PVC auto-created, data downloaded, training started - all automatic!"
   },
   

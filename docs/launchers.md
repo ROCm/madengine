@@ -39,11 +39,11 @@ madengine provides unified support for multiple distributed frameworks, enabling
 
 ```bash
 # Build with configuration
-madengine-cli build --tags my_model \
+madengine build --tags my_model \
   --additional-context-file config.json
 
 # Deploy to K8s or SLURM
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 ---

@@ -85,14 +85,14 @@ python3 run_vllm_inference.py --model facebook/opt-125m
 
 ### Single-Node Multi-GPU (via madengine)
 ```bash
-madengine-cli run \
+madengine run \
   --model-name dummy_vllm \
   --additional-config examples/slurm-configs/minimal/vllm-single-node-minimal.json
 ```
 
 ### Multi-Node Multi-GPU (via madengine)
 ```bash
-madengine-cli run \
+madengine run \
   --model-name dummy_vllm \
   --additional-config examples/slurm-configs/minimal/vllm-multi-node-minimal.json
 ```

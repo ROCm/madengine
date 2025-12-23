@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+- **CLI Unification**: Simplified command-line interface
+  - ✅ `madengine` is now the unified CLI command (previously `madengine-cli`)
+  - ❌ Removed legacy `madengine` v1.x CLI (previously `mad.py`)
+  - ❌ Removed `madengine-cli` alias (use `madengine` instead)
+  - **Migration**: Simply replace `madengine-cli` with `madengine` in your scripts
+  - All functionality remains identical, just cleaner command naming
+
+### Removed
+- **Legacy CLI Components**:
+  - `src/madengine/mad.py` - Legacy CLI entry point (v1.x)
+  - `src/madengine/tools/run_models.py` - Legacy model runner
+  - `docs/legacy-cli.md` - Legacy CLI documentation
+- Justification: Modern `madengine` CLI (formerly `madengine-cli`) provides all functionality plus K8s, SLURM, and distributed support
+
 ### Security
 - **CRITICAL:** Fixed SQL injection vulnerability in legacy database module (`src/madengine/db/database_functions.py`)
   - Replaced string formatting with parameterized queries using SQLAlchemy `text()`
@@ -21,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - vLLM: High-throughput LLM inference with continuous batching
   - SGLang: Fast LLM inference with structured generation
   - DeepSpeed: ZeRO optimization training (K8s support added)
-  - Megatron-LM: Large-scale transformer training (SLURM)
+  - Megatron-LM: Large-scale transformer training (K8s + SLURM)
   - torchrun: Standard PyTorch DDP/FSDP
 - **Centralized Launcher Documentation**: `docs/distributed-launchers.md` with comprehensive guide
 - **Example Configurations**: 6 new minimal configs for distributed launchers (K8s)

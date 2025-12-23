@@ -9,7 +9,7 @@ Batch build mode enables selective builds with per-model configuration through a
 ## Usage
 
 ```bash
-madengine-cli build --batch-manifest examples/build-manifest/batch.json \
+madengine build --batch-manifest examples/build-manifest/batch.json \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
@@ -81,10 +81,10 @@ Cannot use `--batch-manifest` and `--tags` together:
 
 ```bash
 # ❌ Error
-madengine-cli build --batch-manifest batch.json --tags model1
+madengine build --batch-manifest batch.json --tags model1
 
 # ✅ Correct
-madengine-cli build --batch-manifest batch.json
+madengine build --batch-manifest batch.json
 ```
 
 ## Common Use Cases
@@ -105,7 +105,7 @@ Rebuild only changed models while referencing stable ones:
 
 **Usage:**
 ```bash
-madengine-cli build --batch-manifest examples/build-manifest/ci_incremental.json \
+madengine build --batch-manifest examples/build-manifest/ci_incremental.json \
   --registry docker.io/myorg \
   --additional-context-file config.json
 ```
@@ -168,7 +168,7 @@ EOF
 ### 2. Build with Batch Manifest
 
 ```bash
-madengine-cli build --batch-manifest my_batch.json \
+madengine build --batch-manifest my_batch.json \
   --registry localhost:5000 \
   --additional-context '{
     "gpu_vendor": "AMD",
@@ -186,7 +186,7 @@ The command generates `build_manifest.json` containing:
 
 Run the models:
 ```bash
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 ## Examples
@@ -200,7 +200,7 @@ See [`examples/build-manifest/`](../examples/build-manifest/) directory for:
 ### Build Command
 
 ```bash
-madengine-cli build [OPTIONS]
+madengine build [OPTIONS]
 ```
 
 **Batch Build Options:**

@@ -6,7 +6,7 @@ Uses subprocess to call SLURM CLI commands (sbatch, squeue, scancel).
 No Python SLURM library required (zero dependencies).
 
 **Assumption**: User has already SSH'd to SLURM login node manually.
-madengine-cli is executed ON the login node, not remotely.
+madengine is executed ON the login node, not remotely.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -30,8 +30,8 @@ class SlurmDeployment(BaseDeployment):
 
     **Workflow**:
     1. User: ssh login_node@hpc.example.com
-    2. User: madengine-cli run --tags model --additional-context '{"deploy": "slurm", ...}'
-    3. madengine-cli: Runs sbatch locally (no SSH needed)
+    2. User: madengine run --tags model --additional-context '{"deploy": "slurm", ...}'
+    3. madengine: Runs sbatch locally (no SSH needed)
 
     Uses subprocess to call SLURM CLI commands locally:
     - sbatch: Submit jobs to SLURM scheduler
@@ -116,17 +116,17 @@ class SlurmDeployment(BaseDeployment):
 
     def _validate_cli_availability(self) -> bool:
         """
-        Validate madengine-cli is available before job submission.
+        Validate madengine is available before job submission.
         
-        Compute nodes inherit the submission environment, so madengine-cli
+        Compute nodes inherit the submission environment, so madengine
         must be available in PATH on the submission node.
         
         Returns:
-            bool: True if madengine-cli is available and functional
+            bool: True if madengine is available and functional
         """
         try:
             result = subprocess.run(
-                ["madengine-cli", "--version"],
+                ["madengine", "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -135,12 +135,12 @@ class SlurmDeployment(BaseDeployment):
             if result.returncode == 0:
                 version = result.stdout.strip() or "unknown"
                 self.console.print(
-                    f"[green]✓[/green] madengine-cli available: [cyan]{version}[/cyan]"
+                    f"[green]✓[/green] madengine available: [cyan]{version}[/cyan]"
                 )
                 
                 # Show path for transparency
                 which_result = subprocess.run(
-                    ["which", "madengine-cli"],
+                    ["which", "madengine"],
                     capture_output=True,
                     text=True,
                     check=False
@@ -152,7 +152,7 @@ class SlurmDeployment(BaseDeployment):
                 return True
             else:
                 self.console.print(
-                    "[red]✗ madengine-cli found but returned error[/red]"
+                    "[red]✗ madengine found but returned error[/red]"
                 )
                 if result.stderr:
                     self.console.print(f"  Error: {result.stderr.strip()}")
@@ -160,23 +160,23 @@ class SlurmDeployment(BaseDeployment):
                 
         except FileNotFoundError:
             self.console.print(
-                "\n[red]✗ ERROR: madengine-cli not found[/red]\n"
+                "\n[red]✗ ERROR: madengine not found[/red]\n"
             )
             self.console.print(
-                "[yellow]Compute nodes need madengine-cli in PATH.[/yellow]\n"
+                "[yellow]Compute nodes need madengine in PATH.[/yellow]\n"
                 "\n[bold]To fix:[/bold]\n"
                 "  1. Activate virtual environment: [cyan]source venv/bin/activate[/cyan]\n"
                 "  2. Install madengine:\n"
                 "     • Development: [cyan]pip install -e .[/cyan]\n"
                 "     • Production:  [cyan]pip install madengine[/cyan]\n"
-                "  3. Verify: [cyan]madengine-cli --version[/cyan]\n"
+                "  3. Verify: [cyan]madengine --version[/cyan]\n"
             )
             return False
         except subprocess.TimeoutExpired:
-            self.console.print("[red]✗ madengine-cli command timed out[/red]")
+            self.console.print("[red]✗ madengine command timed out[/red]")
             return False
         except Exception as e:
-            self.console.print(f"[red]✗ Error checking madengine-cli: {e}[/red]")
+            self.console.print(f"[red]✗ Error checking madengine: {e}[/red]")
             return False
 
     def prepare(self) -> bool:

@@ -1,17 +1,17 @@
 # Profiling Guide
 
-Complete guide to profiling model performance and analyzing library calls with madengine-cli.
+Complete guide to profiling model performance and analyzing library calls with madengine.
 
 ## Overview
 
-madengine-cli integrates multiple profiling and tracing tools to analyze GPU usage, library calls, and system performance. Tools are configured via `--additional-context` and applied in a stackable design pattern.
+madengine integrates multiple profiling and tracing tools to analyze GPU usage, library calls, and system performance. Tools are configured via `--additional-context` and applied in a stackable design pattern.
 
 ## Quick Start
 
 ### Basic GPU Profiling
 
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -37,7 +37,7 @@ For complex profiling setups, use configuration files:
 ```
 
 ```bash
-madengine-cli run --tags model --additional-context-file profiling-config.json
+madengine run --tags model --additional-context-file profiling-config.json
 ```
 
 ## Profiling Tools
@@ -252,7 +252,7 @@ Tools can be stacked to collect multiple types of profiling data simultaneously.
 
 **Example:**
 ```bash
-madengine-cli run --tags pyt_torchvision_alexnet \
+madengine run --tags pyt_torchvision_alexnet \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -278,7 +278,7 @@ Collect library API call traces:
 
 ```bash
 # Trace MIOpen calls
-madengine-cli run --tags pyt_torchvision_alexnet \
+madengine run --tags pyt_torchvision_alexnet \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -286,7 +286,7 @@ madengine-cli run --tags pyt_torchvision_alexnet \
   }'
 
 # Trace rocBLAS calls
-madengine-cli run --tags pyt_torchvision_alexnet \
+madengine run --tags pyt_torchvision_alexnet \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -297,7 +297,7 @@ madengine-cli run --tags pyt_torchvision_alexnet \
 Or collect both in one run:
 
 ```bash
-madengine-cli run --tags pyt_torchvision_alexnet \
+madengine run --tags pyt_torchvision_alexnet \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -315,7 +315,7 @@ madengine-cli run --tags pyt_torchvision_alexnet \
 Use the collected traces to benchmark different library configurations:
 
 ```bash
-madengine-cli run --tags pyt_library_config_perf
+madengine run --tags pyt_library_config_perf
 ```
 
 **Prerequisites:**
@@ -339,7 +339,7 @@ Compare results from `library_perf.csv` to:
 
 ```bash
 # Step 1: Collect comprehensive traces
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -360,11 +360,11 @@ cat gpu_info_vram_profiler_output.csv
 
 ```bash
 # 1. Profile current implementation
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "miopen_trace"}]}'
 
 # 2. Test library configurations
-madengine-cli run --tags pyt_library_config_perf
+madengine run --tags pyt_library_config_perf
 
 # 3. Analyze and compare
 python analyze_library_perf.py library_perf.csv
@@ -373,7 +373,7 @@ python analyze_library_perf.py library_perf.csv
 ### Multi-GPU Profiling
 
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -451,11 +451,11 @@ Profiling works best with single model tags:
 
 ```bash
 # Good
-madengine-cli run --tags pyt_torchvision_alexnet \
+madengine run --tags pyt_torchvision_alexnet \
   --additional-context '{"tools": [{"name": "rocprof"}]}'
 
 # Avoid
-madengine-cli run --tags model1 model2 model3 \
+madengine run --tags model1 model2 model3 \
   --additional-context '{"tools": [{"name": "rocprof"}]}'
 ```
 
@@ -520,10 +520,10 @@ For performance-critical profiling:
 
 ```bash
 # Baseline run (no profiling)
-madengine-cli run --tags model
+madengine run --tags model
 
 # Profiling run
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocprof"}]}'
 ```
 
@@ -624,7 +624,7 @@ To add new profiling tools:
 1. Create pre-script: `scripts/common/pre_scripts/tool_name_pre.sh`
 2. Create post-script: `scripts/common/post_scripts/tool_name_post.sh`
 3. Add default config to `scripts/common/tools.json`
-4. Test with madengine-cli
+4. Test with madengine
 
 ## Next Steps
 

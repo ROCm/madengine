@@ -1,6 +1,6 @@
 # Usage Guide
 
-Complete guide to using madengine-cli for running AI models locally and in distributed environments.
+Complete guide to using madengine for running AI models locally and in distributed environments.
 
 ## Quick Start
 
@@ -20,10 +20,10 @@ pip install git+https://github.com/ROCm/madengine.git
 
 ```bash
 # Discover models
-madengine-cli discover --tags dummy
+madengine discover --tags dummy
 
 # Run locally
-madengine-cli run --tags dummy \
+madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
@@ -37,13 +37,13 @@ List models in the MAD package:
 
 ```bash
 # All models
-madengine-cli discover
+madengine discover
 
 # Specific models
-madengine-cli discover --tags dummy pyt_huggingface_bert
+madengine discover --tags dummy pyt_huggingface_bert
 
 # With verbose output
-madengine-cli discover --tags model --verbose
+madengine discover --tags model --verbose
 ```
 
 ### build - Create Docker Images
@@ -52,23 +52,23 @@ Build Docker images for models:
 
 ```bash
 # Basic build
-madengine-cli build --tags model \
+madengine build --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # Build with registry
-madengine-cli build --tags model \
+madengine build --tags model \
   --registry docker.io/myorg \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # Multiple models
-madengine-cli build --tags model1 model2 model3 \
+madengine build --tags model1 model2 model3 \
   --registry localhost:5000
 
 # Clean rebuild (no cache)
-madengine-cli build --tags model --clean-docker-cache
+madengine build --tags model --clean-docker-cache
 
 # Custom manifest output
-madengine-cli build --tags model --manifest-output my_manifest.json
+madengine build --tags model --manifest-output my_manifest.json
 ```
 
 **Options:**
@@ -87,20 +87,20 @@ Run models locally or deploy to clusters:
 
 ```bash
 # Run locally
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # Run with manifest (pre-built images)
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 
 # Real-time output
-madengine-cli run --tags model --live-output --verbose
+madengine run --tags model --live-output --verbose
 
 # Custom timeout (seconds)
-madengine-cli run --tags model --timeout 7200
+madengine run --tags model --timeout 7200
 
 # Keep container alive for debugging
-madengine-cli run --tags model --keep-alive
+madengine run --tags model --keep-alive
 ```
 
 **Options:**
@@ -123,7 +123,7 @@ madengine supports three discovery methods:
 Central model definitions in MAD package root:
 
 ```bash
-madengine-cli discover --tags dummy pyt_huggingface_bert
+madengine discover --tags dummy pyt_huggingface_bert
 ```
 
 ### 2. Directory-Specific Models
@@ -131,7 +131,7 @@ madengine-cli discover --tags dummy pyt_huggingface_bert
 Models organized in subdirectories (`scripts/{dir}/models.json`):
 
 ```bash
-madengine-cli discover --tags dummy2:dummy_2
+madengine discover --tags dummy2:dummy_2
 ```
 
 ### 3. Dynamic Models with Parameters
@@ -139,7 +139,7 @@ madengine-cli discover --tags dummy2:dummy_2
 Python-generated models (`scripts/{dir}/get_models_json.py`):
 
 ```bash
-madengine-cli discover --tags dummy3:dummy_3:batch_size=512:in=32
+madengine discover --tags dummy3:dummy_3:batch_size=512:in=32
 ```
 
 ## Build Workflow
@@ -149,7 +149,7 @@ madengine-cli discover --tags dummy3:dummy_3:batch_size=512:in=32
 Create Docker images and manifest:
 
 ```bash
-madengine-cli build --tags model \
+madengine build --tags model \
   --registry localhost:5000 \
   --additional-context-file config.json
 ```
@@ -186,7 +186,7 @@ Include deployment configuration:
 ```
 
 ```bash
-madengine-cli build --tags model \
+madengine build --tags model \
   --registry docker.io/myorg \
   --additional-context-file k8s-config.json
 ```
@@ -254,16 +254,16 @@ Create a JSON file (e.g., `batch.json`) with a list of model entries:
 
 ```bash
 # Basic batch build
-madengine-cli build --batch-manifest batch.json \
+madengine build --batch-manifest batch.json \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
 # With global registry (can be overridden per model)
-madengine-cli build --batch-manifest batch.json \
+madengine build --batch-manifest batch.json \
   --registry localhost:5000 \
   --additional-context-file config.json
 
 # Verbose output
-madengine-cli build --batch-manifest batch.json \
+madengine build --batch-manifest batch.json \
   --registry my-registry.com \
   --verbose
 ```
@@ -327,7 +327,7 @@ madengine-cli build --batch-manifest batch.json \
 Run on local machine:
 
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
@@ -339,12 +339,12 @@ madengine-cli run --tags model \
 
 ```bash
 # Build phase
-madengine-cli build --tags model \
+madengine build --tags model \
   --registry gcr.io/myproject \
   --additional-context '{"k8s": {"gpu_count": 2}}'
 
 # Deploy phase
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 Deployment target is automatically detected from `k8s` key in configuration.
@@ -353,13 +353,13 @@ Deployment target is automatically detected from `k8s` key in configuration.
 
 ```bash
 # Build phase (local or CI)
-madengine-cli build --tags model \
+madengine build --tags model \
   --registry my-registry.io \
   --additional-context '{"slurm": {"partition": "gpu", "gpus_per_node": 4}}'
 
 # Deploy phase (on SLURM login node)
 ssh user@hpc-login.example.com
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 Deployment target is automatically detected from `slurm` key in configuration.
@@ -384,37 +384,37 @@ Use configuration files for complex settings:
 ```
 
 ```bash
-madengine-cli run --tags model --additional-context-file config.json
+madengine run --tags model --additional-context-file config.json
 ```
 
 ### Custom Timeouts
 
 ```bash
 # Override default timeout
-madengine-cli run --tags model --timeout 7200
+madengine run --tags model --timeout 7200
 
 # No timeout (run indefinitely)
-madengine-cli run --tags model --timeout 0
+madengine run --tags model --timeout 0
 ```
 
 ### Debugging
 
 ```bash
 # Keep containers alive
-madengine-cli run --tags model --keep-alive
+madengine run --tags model --keep-alive
 
 # Verbose output
-madengine-cli run --tags model --verbose --live-output
+madengine run --tags model --verbose --live-output
 
 # Both
-madengine-cli run --tags model --keep-alive --verbose --live-output
+madengine run --tags model --keep-alive --verbose --live-output
 ```
 
 ### Clean Rebuild
 
 ```bash
 # Rebuild without Docker cache
-madengine-cli build --tags model --clean-docker-cache
+madengine build --tags model --clean-docker-cache
 ```
 
 ## Performance Profiling
@@ -423,7 +423,7 @@ Profile GPU usage and library calls:
 
 ```bash
 # GPU profiling
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{
     "gpu_vendor": "AMD",
     "guest_os": "UBUNTU",
@@ -431,11 +431,11 @@ madengine-cli run --tags model \
   }'
 
 # Library tracing
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
 
 # Multiple tools (stackable)
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"tools": [
     {"name": "rocprof"},
     {"name": "miopen_trace"}
@@ -493,7 +493,7 @@ my_model,125.3,98.5,15.2,...
 Use this manifest to run pre-built images:
 
 ```bash
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 ## Troubleshooting
@@ -503,7 +503,7 @@ madengine-cli run --manifest-file build_manifest.json
 ```bash
 # Ensure you're in MAD directory
 cd /path/to/MAD
-madengine-cli discover --tags your_model
+madengine discover --tags your_model
 ```
 
 ### Docker Permission Denied
@@ -535,7 +535,7 @@ docker run --rm --device=/dev/kfd --device=/dev/dri \
 docker ps
 
 # Rebuild without cache
-madengine-cli build --tags model --clean-docker-cache --verbose
+madengine build --tags model --clean-docker-cache --verbose
 ```
 
 ## Environment Variables

@@ -87,12 +87,12 @@ cat > my-config.json << EOF
 EOF
 
 # Build and run
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags my_model \
   --additional-context-file my-config.json \
   --registry dockerhub
 
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 ```
@@ -135,13 +135,13 @@ With built-in defaults, customization is optional. Override only what you need:
 
 ```bash
 # Build container image
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags my_model \
   --additional-context-file my-config.json \
   --registry dockerhub
 
 # Deploy and run
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 ```
@@ -235,12 +235,12 @@ Complete configurations showing all available fields:
 ### Example 1: Single GPU Test
 
 ```bash
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy \
   --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
   --registry dockerhub
 
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 ```
@@ -248,12 +248,12 @@ MODEL_DIR=tests/fixtures/dummy madengine-cli run \
 ### Example 2: Multi-GPU Training (2 GPUs)
 
 ```bash
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun \
   --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
   --registry dockerhub
 
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 ```
@@ -261,12 +261,12 @@ MODEL_DIR=tests/fixtures/dummy madengine-cli run \
 ### Example 3: Multi-Node Training (2 nodes, 4 GPUs)
 
 ```bash
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun \
   --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
   --registry dockerhub
 
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 ```
@@ -274,12 +274,12 @@ MODEL_DIR=tests/fixtures/dummy madengine-cli run \
 ### Example 4: With Data Provider (Auto-PVC)
 
 ```bash
-MODEL_DIR=tests/fixtures/dummy madengine-cli build \
+MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun_data_minio \
   --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
   --registry dockerhub
 
-MODEL_DIR=tests/fixtures/dummy madengine-cli run \
+MODEL_DIR=tests/fixtures/dummy madengine run \
   --manifest-file build_manifest.json \
   --live-output
 
@@ -305,14 +305,14 @@ kubectl get pvc madengine-shared-data
 
 **Step 1: Use data provider config**
 ```bash
-madengine-cli build --tags dummy_torchrun_data_minio \
+madengine build --tags dummy_torchrun_data_minio \
   --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
   --registry dockerhub
 ```
 
 **Step 2: Run (PVC auto-created)**
 ```bash
-madengine-cli run --manifest-file build_manifest.json --live-output
+madengine run --manifest-file build_manifest.json --live-output
 
 # Output shows:
 # 📦 Data provider detected: Will auto-create shared data PVC
@@ -933,44 +933,44 @@ Use Case: Large-scale production training
 
 ```bash
 # Use minimal config (defaults for everything)
-madengine-cli build --tags dummy \
+madengine build --tags dummy \
   --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
   --registry dockerhub
 
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 ### Scenario 2: Benchmark on Busy Cluster
 
 ```bash
 # Use 2 GPUs to avoid scheduling conflicts
-madengine-cli build --tags resnet50 \
+madengine build --tags resnet50 \
   --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
   --registry dockerhub
 
-madengine-cli run --manifest-file build_manifest.json --live-output
+madengine run --manifest-file build_manifest.json --live-output
 ```
 
 ### Scenario 3: Large Model Training
 
 ```bash
 # Multi-node for large models
-madengine-cli build --tags llama_13b \
+madengine build --tags llama_13b \
   --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
   --registry dockerhub
 
-madengine-cli run --manifest-file build_manifest.json --live-output
+madengine run --manifest-file build_manifest.json --live-output
 ```
 
 ### Scenario 4: Production with Datasets
 
 ```bash
 # Data provider with auto-PVC
-madengine-cli build --tags bert_large \
+madengine build --tags bert_large \
   --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
   --registry dockerhub
 
-madengine-cli run --manifest-file build_manifest.json --live-output
+madengine run --manifest-file build_manifest.json --live-output
 
 # Verify PVC
 kubectl get pvc madengine-shared-data
@@ -981,11 +981,11 @@ kubectl exec <pod> -- ls -lh /data/
 
 ```bash
 # Use *-tools.json variant for monitoring
-madengine-cli build --tags model \
+madengine build --tags model \
   --additional-context-file examples/k8s-configs/02-single-node-multi-gpu-tools.json \
   --registry dockerhub
 
-madengine-cli run --manifest-file build_manifest.json --live-output
+madengine run --manifest-file build_manifest.json --live-output
 
 # Profiling results in PVC
 kubectl cp <pod>:/results/gpu_info_*.csv ./

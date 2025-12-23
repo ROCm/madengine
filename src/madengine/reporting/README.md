@@ -1,7 +1,7 @@
 # Performance Reporting Layer
 
 **Status**: Active  
-**Shared by**: Both legacy `mad.py` and new `madengine-cli`
+**Used by**: Modern `madengine` CLI
 
 ---
 
@@ -18,9 +18,7 @@ Handles performance metrics collection, processing, and CSV output generation fo
 Updates performance CSV files with run results from both legacy and new CLI.
 
 **Used by:**
-- ✅ `mad.py` (legacy CLI)
-- ✅ `tools/run_models.py` (legacy runner)
-- ✅ `execution/container_runner.py` (new madengine-cli)
+- ✅ `execution/container_runner.py` (modern madengine CLI)
 
 **Key Functions:**
 ```python
@@ -47,7 +45,7 @@ The following legacy-only reporting tools remain in `tools/`:
 | `tools/csv_to_html.py` | Convert CSV to HTML | `mad.py`, `run_models.py` | Legacy only |
 | `tools/csv_to_email.py` | Email CSV reports | `mad.py` | Legacy only |
 
-These tools are **NOT** used by the new `madengine-cli` and remain in `tools/` for legacy compatibility.
+These tools are **NOT** used by the modern `madengine` CLI.
 
 ---
 
@@ -62,15 +60,15 @@ These tools are **NOT** used by the new `madengine-cli` and remain in `tools/` f
 
 **Why are other CSV tools still in `tools/`?**
 
-- They are **legacy-only** (not used by new madengine-cli)
-- Kept for backward compatibility with `mad.py`
+- They are **not used** by the modern `madengine` CLI
+- Kept for backward compatibility only
 - Will be deprecated when legacy CLI is retired
 
 ---
 
 ## 🔄 Usage Examples
 
-### **New madengine-cli** (via `container_runner.py`)
+### **New madengine** (via `container_runner.py`)
 
 ```python
 from madengine.reporting.update_perf_csv import update_perf_csv

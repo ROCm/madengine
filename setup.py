@@ -124,7 +124,7 @@ def get_fallback_config():
             "Issues": "https://github.com/ROCm/madengine/issues",
         },
         "scripts": {
-            "madengine": "madengine.mad:main"
+            "madengine": "madengine.cli.app:cli_main"
         },
     }
 

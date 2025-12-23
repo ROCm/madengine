@@ -65,7 +65,7 @@ cd MAD
 pip install git+https://github.com/ROCm/madengine.git
 
 # Verify installation
-madengine-cli --version
+madengine --version
 madengine discover  # Test model discovery
 ```
 
@@ -79,7 +79,7 @@ docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video \
   rocm/pytorch:latest rocm-smi
 
 # Verify with madengine
-madengine-cli run --tags dummy \
+madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
@@ -90,7 +90,7 @@ madengine-cli run --tags dummy \
 docker run --rm --gpus all nvidia/cuda:latest nvidia-smi
 
 # Verify with madengine
-madengine-cli run --tags dummy \
+madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "UBUNTU"}'
 ```
 
@@ -98,13 +98,13 @@ madengine-cli run --tags dummy \
 
 ```bash
 # Check installation
-madengine-cli --version
+madengine --version
 madengine --version
 
 # Test basic functionality (requires MAD package)
 cd /path/to/MAD
 madengine discover --tags dummy
-madengine-cli run --tags dummy \
+madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 

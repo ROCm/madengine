@@ -189,10 +189,10 @@ madengine/
 
 ```bash
 # Run with verbose logging
-madengine-cli run --tags model --verbose
+madengine run --tags model --verbose
 
 # Keep containers alive for debugging
-madengine-cli run --tags model --keep-alive
+madengine run --tags model --keep-alive
 
 # Use Python debugger
 python -m pdb -m madengine.cli.app run --tags model

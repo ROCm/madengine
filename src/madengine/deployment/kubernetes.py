@@ -55,7 +55,7 @@ class KubernetesDeployment(BaseDeployment):
 
     **Workflow**:
     1. User has kubeconfig configured (in-cluster or ~/.kube/config)
-    2. madengine-cli run --tags model --additional-context '{"deploy": "k8s", ...}'
+    2. madengine run --tags model --additional-context '{"deploy": "k8s", ...}'
     3. Creates K8s Job using built Docker image from build phase
     4. Job runs madengine workflow inside container (no docker-in-docker)
     """

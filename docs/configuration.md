@@ -1,20 +1,20 @@
 # Configuration Guide
 
-Complete guide to configuring madengine-cli for various use cases and environments.
+Complete guide to configuring madengine for various use cases and environments.
 
 ## Configuration Methods
 
 ### 1. Inline JSON String
 
 ```bash
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
 ### 2. Configuration File
 
 ```bash
-madengine-cli run --tags model --additional-context-file config.json
+madengine run --tags model --additional-context-file config.json
 ```
 
 **config.json:**
@@ -52,7 +52,7 @@ madengine-cli run --tags model --additional-context-file config.json
 Use batch manifest files for selective builds with per-model configuration:
 
 ```bash
-madengine-cli build --batch-manifest batch.json \
+madengine build --batch-manifest batch.json \
   --registry my-registry.com \
   --additional-context-file config.json
 ```
@@ -191,7 +191,7 @@ Format: Comma-separated list with hyphen ranges.
 Or use command-line option:
 
 ```bash
-madengine-cli run --tags model --timeout 7200
+madengine run --tags model --timeout 7200
 ```
 
 ### Local Data Mirroring
@@ -207,7 +207,7 @@ Force local data caching:
 Or use command-line option:
 
 ```bash
-madengine-cli run --tags model --force-mirror-local /tmp/mirror
+madengine run --tags model --force-mirror-local /tmp/mirror
 ```
 
 ## Kubernetes Deployment
@@ -633,7 +633,7 @@ For Kubernetes/SLURM deployments:
 python -m json.tool config.json
 
 # Use verbose logging
-madengine-cli run --tags model \
+madengine run --tags model \
   --additional-context-file config.json \
   --verbose
 ```
@@ -675,7 +675,7 @@ Override with explicit configuration:
 
 ## Next Steps
 
-- [Usage Guide](usage.md) - Using madengine-cli commands
+- [Usage Guide](usage.md) - Using madengine commands
 - [Deployment Guide](deployment.md) - Deploy to clusters
 - [Profiling Guide](profiling.md) - Performance analysis
 - [Launchers Guide](launchers.md) - Distributed training frameworks

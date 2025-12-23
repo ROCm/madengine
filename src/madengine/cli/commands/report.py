@@ -55,8 +55,8 @@ def to_html(
     useful for viewing performance metrics in a web browser.
     
     Examples:
-        madengine-cli report to-html --csv-file perf_amd.csv
-        madengine-cli report to-html --csv-file results/perf_mi300.csv
+        madengine report to-html --csv-file perf_amd.csv
+        madengine report to-html --csv-file results/perf_mi300.csv
     """
     setup_logging(verbose)
 
@@ -134,9 +134,9 @@ def to_email(
     HTML report with sections for each CSV file, suitable for email distribution.
     
     Examples:
-        madengine-cli report to-email
-        madengine-cli report to-email --directory ./results
-        madengine-cli report to-email --dir ./results --output summary.html
+        madengine report to-email
+        madengine report to-email --directory ./results
+        madengine report to-email --dir ./results --output summary.html
     """
     setup_logging(verbose)
 

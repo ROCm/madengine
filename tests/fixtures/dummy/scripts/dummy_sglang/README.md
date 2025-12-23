@@ -76,7 +76,7 @@ python3 -m sglang.launch_server --model-path MODEL --tp 4 \
 #### Single-Node Inference (4 GPUs)
 
 ```bash
-madengine-cli run \
+madengine run \
   --model-name dummy_sglang \
   --additional-context-file examples/slurm-configs/minimal/sglang-single-node-minimal.json
 ```
@@ -84,7 +84,7 @@ madengine-cli run \
 #### Multi-Node Inference (2 nodes × 4 GPUs)
 
 ```bash
-madengine-cli run \
+madengine run \
   --model-name dummy_sglang \
   --additional-context-file examples/slurm-configs/minimal/sglang-multi-node-minimal.json
 ```

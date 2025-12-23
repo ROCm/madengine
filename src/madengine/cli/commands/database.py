@@ -59,8 +59,8 @@ def database(
     - MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASSWORD
     
     Examples:
-        madengine-cli database --csv-file perf.csv --db mydb --collection results
-        madengine-cli database --csv-file perf_entry.csv --database-name test --collection-name perf
+        madengine database --csv-file perf.csv --db mydb --collection results
+        madengine database --csv-file perf_entry.csv --database-name test --collection-name perf
     """
     setup_logging(verbose)
 

@@ -75,7 +75,7 @@ Understanding how configurations flow through madengine:
                    │ --additional-context-file
                    ↓
 ┌──────────────────────────────────────────────────┐
-│ 2. madengine-cli build                           │
+│ 2. madengine build                           │
 │    - BuildOrchestrator._save_deployment_config() │
 │    - Extracts env_vars, slurm, distributed       │
 └──────────────────┬───────────────────────────────┘
@@ -89,7 +89,7 @@ Understanding how configurations flow through madengine:
                    │ --manifest-file
                    ↓
 ┌──────────────────────────────────────────────────┐
-│ 4. madengine-cli run                             │
+│ 4. madengine run                             │
 │    - RunOrchestrator._execute_*()                │
 │    - Loads deployment_config from manifest       │
 └──────────────────┬───────────────────────────────┘
@@ -119,13 +119,13 @@ When using configuration files with `env_vars`, use the two-phase workflow:
 ssh user@hpc-cluster.example.com
 
 # Phase 1: Build with configuration
-MODEL_DIR=models/my-model madengine-cli build \
+MODEL_DIR=models/my-model madengine build \
   --tags model_tag \
   --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --manifest-output build_manifest.json
 
 # Phase 2: Run from manifest
-MODEL_DIR=models/my-model madengine-cli run \
+MODEL_DIR=models/my-model madengine run \
   --manifest-file build_manifest.json
 ```
 
@@ -139,14 +139,14 @@ MODEL_DIR=models/my-model madengine-cli run \
 For quick tests without custom `env_vars`:
 
 ```bash
-madengine-cli run --tags model_tag \
+madengine run --tags model_tag \
   --additional-context-file examples/slurm-configs/minimal/single-gpu-minimal.json
 ```
 
 ### 3. CLI Override
 
 ```bash
-madengine-cli run --tags model_tag \
+madengine run --tags model_tag \
   --additional-context '{
     "slurm": {
       "partition": "gpu",
@@ -161,7 +161,7 @@ madengine-cli run --tags model_tag \
 
 ```bash
 # Use base config, override specific fields
-madengine-cli run --tags model_tag \
+madengine run --tags model_tag \
   --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --additional-context '{"slurm": {"nodes": 4, "time": "48:00:00"}}'
 ```
@@ -290,7 +290,7 @@ vLLM configurations include critical memory management environment variables to 
 
 ```bash
 # 1. Build with vLLM configuration
-MODEL_DIR=models/llama2-70b madengine-cli build \
+MODEL_DIR=models/llama2-70b madengine build \
   --tags vllm \
   --additional-context-file examples/slurm-configs/basic/06-vllm-multi-node.json \
   --manifest-output build_manifest.json
@@ -302,7 +302,7 @@ grep -A 10 "env_vars" build_manifest.json
 #   "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
 
 # 3. Run the inference job
-MODEL_DIR=models/llama2-70b madengine-cli run \
+MODEL_DIR=models/llama2-70b madengine run \
   --manifest-file build_manifest.json
 ```
 
@@ -439,7 +439,7 @@ For torchrun/deepspeed/megatron, use `$MAD_MULTI_NODE_RUNNER` in your model scri
 ### Testing on Single GPU
 
 ```bash
-madengine-cli run --tags my_model \
+madengine run --tags my_model \
   --additional-context-file examples/slurm-configs/minimal/single-gpu-minimal.json
 ```
 
@@ -447,12 +447,12 @@ madengine-cli run --tags my_model \
 
 ```bash
 # Build with config
-MODEL_DIR=models/my-model madengine-cli build \
+MODEL_DIR=models/my-model madengine build \
   --tags training \
   --additional-context-file examples/slurm-configs/03-multi-node-basic.json
 
 # Run from manifest
-MODEL_DIR=models/my-model madengine-cli run \
+MODEL_DIR=models/my-model madengine run \
   --manifest-file build_manifest.json
 ```
 
@@ -460,12 +460,12 @@ MODEL_DIR=models/my-model madengine-cli run \
 
 ```bash
 # Build with vLLM config
-MODEL_DIR=models/llama2-13b madengine-cli build \
+MODEL_DIR=models/llama2-13b madengine build \
   --tags vllm \
   --additional-context-file examples/slurm-configs/basic/05-vllm-single-node.json
 
 # Run inference
-MODEL_DIR=models/llama2-13b madengine-cli run \
+MODEL_DIR=models/llama2-13b madengine run \
   --manifest-file build_manifest.json
 ```
 
@@ -473,22 +473,22 @@ MODEL_DIR=models/llama2-13b madengine-cli run \
 
 ```bash
 # Build with multi-node vLLM config
-MODEL_DIR=models/llama2-70b madengine-cli build \
+MODEL_DIR=models/llama2-70b madengine build \
   --tags vllm \
   --additional-context-file examples/slurm-configs/basic/06-vllm-multi-node.json
 
 # Run multi-node inference
-MODEL_DIR=models/llama2-70b madengine-cli run \
+MODEL_DIR=models/llama2-70b madengine run \
   --manifest-file build_manifest.json
 ```
 
 ### Production Deployment with Shared Storage
 
 ```bash
-madengine-cli build --tags my_model \
+madengine build --tags my_model \
   --additional-context-file examples/slurm-configs/04-multi-node-advanced.json
 
-madengine-cli run --manifest-file build_manifest.json
+madengine run --manifest-file build_manifest.json
 ```
 
 ### Custom vLLM Memory Settings
@@ -698,13 +698,13 @@ ssh user@hpc-cluster.example.com
 module load python/3.9
 
 # 3. Build with configuration
-MODEL_DIR=models/my-model madengine-cli build \
+MODEL_DIR=models/my-model madengine build \
   --tags llama2_training \
   --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --manifest-output build_manifest.json
 
 # 4. Run from manifest
-MODEL_DIR=models/my-model madengine-cli run \
+MODEL_DIR=models/my-model madengine run \
   --manifest-file build_manifest.json
 
 # 5. Monitor job
@@ -722,7 +722,7 @@ tail -f slurm_output/madengine-*_<job_id>_*.out
 ssh user@hpc-cluster.example.com
 
 # 2. Build vLLM image with memory management config
-MODEL_DIR=models/llama2-70b madengine-cli build \
+MODEL_DIR=models/llama2-70b madengine build \
   --tags vllm \
   --additional-context-file examples/slurm-configs/basic/06-vllm-multi-node.json \
   --manifest-output build_manifest.json
@@ -731,7 +731,7 @@ MODEL_DIR=models/llama2-70b madengine-cli build \
 grep -A 5 "VLLM_KV_CACHE_SIZE" build_manifest.json
 
 # 4. Submit inference job
-MODEL_DIR=models/llama2-70b madengine-cli run \
+MODEL_DIR=models/llama2-70b madengine run \
   --manifest-file build_manifest.json
 
 # 5. Monitor for OOM errors

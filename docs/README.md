@@ -31,13 +31,12 @@ Complete documentation for madengine - AI model automation and distributed bench
 
 | Guide | Description |
 |-------|-------------|
-| [Legacy CLI](legacy-cli.md) | Legacy `madengine` CLI (v1.x, deprecated) |
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│               madengine-cli                     │
+│               madengine                     │
 │          (build, run, discover)                 │
 └─────────────────────────────────────────────────┘
                        │
@@ -98,9 +97,6 @@ Complete documentation for madengine - AI model automation and distributed bench
 **Contribute to madengine**
 → [Contributing](contributing.md)
 
-**Use legacy CLI**
-→ [Legacy CLI](legacy-cli.md) (deprecated, use `madengine-cli` instead)
-
 ## 🔍 Key Concepts
 
 ### MAD Package
@@ -114,7 +110,7 @@ madengine operates within the MAD (Model Automation and Dashboarding) ecosystem.
 
 ### CLI Interface
 
-**`madengine-cli`** - Modern CLI with:
+**`madengine`** - Modern CLI with:
 - Rich terminal output
 - Distributed deployment support (K8s, SLURM)
 - Build/run separation
