@@ -115,10 +115,26 @@ else
     DISTRIBUTED_BACKEND="ray"
     
     # Set GPU environment variables for visibility
-    export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-0,1,2,3}
-    export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0,1,2,3}
-    export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
-    echo "  GPU environment: ROCR_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES"
+    # CRITICAL: Ray requires ONLY ONE visibility variable
+    # - AMD GPUs: Use ONLY HIP_VISIBLE_DEVICES
+    # - NVIDIA GPUs: Use ONLY CUDA_VISIBLE_DEVICES
+    # Setting both causes Ray error: "Inconsistent values found"
+    if command -v rocm-smi &> /dev/null || command -v rocminfo &> /dev/null; then
+        # AMD GPU detected - use HIP_VISIBLE_DEVICES ONLY
+        # CRITICAL: Unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES which is set by rocm/vllm image
+        # This variable tells Ray to ignore HIP_VISIBLE_DEVICES, causing conflicts
+        unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+        export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0,1,2,3}
+        unset ROCR_VISIBLE_DEVICES  # Unset to avoid Ray conflicts
+        unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error
+        echo "  GPU environment (AMD): HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
+    else
+        # NVIDIA GPU - use CUDA_VISIBLE_DEVICES ONLY
+        export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+        unset HIP_VISIBLE_DEVICES   # Unset to avoid Ray conflicts
+        unset ROCR_VISIBLE_DEVICES
+        echo "  GPU environment (NVIDIA): CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+    fi
     echo ""
     
     # Get current node IP

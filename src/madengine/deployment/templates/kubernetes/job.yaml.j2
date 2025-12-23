@@ -130,8 +130,36 @@ spec:
                 rocm-smi || true
             fi
             
-            # Set GPU visibility
+            # Set GPU visibility for ROCm/CUDA
+            # CRITICAL: Ray (vLLM, SGLang) requires ONLY ONE visibility variable
+            # - AMD GPUs: Use ONLY HIP_VISIBLE_DEVICES
+            # - NVIDIA GPUs: Use ONLY CUDA_VISIBLE_DEVICES
+            # Setting both HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES simultaneously
+            # causes Ray error: "Inconsistent values found"
+            {% if launcher_type == "vllm" or launcher_type == "sglang" %}
+            # Ray-based launchers: Detect GPU vendor and set appropriate variable
+            if command -v rocm-smi &> /dev/null || command -v rocminfo &> /dev/null; then
+                # AMD GPU detected - use HIP_VISIBLE_DEVICES ONLY
+                # CRITICAL: Unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES which is set by rocm/vllm image
+                # This variable tells Ray to ignore HIP_VISIBLE_DEVICES, causing conflicts
+                unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+                export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-{{ gpu_visibility }}}
+                unset ROCR_VISIBLE_DEVICES  # Unset to avoid Ray conflicts
+                unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error
+                echo "🔧 GPU Config (AMD): HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
+            else
+                # NVIDIA GPU - use CUDA_VISIBLE_DEVICES ONLY
+                export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-{{ gpu_visibility }}}
+                unset HIP_VISIBLE_DEVICES   # Unset to avoid Ray conflicts
+                unset ROCR_VISIBLE_DEVICES
+                echo "🔧 GPU Config (NVIDIA): CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+            fi
+            {% else %}
+            # Non-Ray launchers: Set both HIP and ROCR for broader compatibility
+            export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-{{ gpu_visibility }}}
             export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-{{ gpu_visibility }}}
+            export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-{{ gpu_visibility }}}
+            {% endif %}
             export MAD_SYSTEM_GPU_ARCHITECTURE={{ gpu_architecture }}
             
             # K8s environment
@@ -580,7 +608,7 @@ spec:
       - name: shm
         emptyDir:
           medium: Memory
-          sizeLimit: 8Gi
+          sizeLimit: 16Gi  # Increased for Ray/vLLM (should be >30% of RAM, recommended 16Gi+)
       - name: results
         persistentVolumeClaim:
           claimName: {{ results_pvc }}

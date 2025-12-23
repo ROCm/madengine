@@ -2228,7 +2228,12 @@ torchrun \\
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
-        Enhanced results collection from K8s pods.
+        Enhanced results collection from K8s pods following vLLM multi-node best practices.
+        
+        For Data Parallel deployments (vLLM, SGLang):
+        - Each pod runs an independent replica
+        - Only pod-0 reports metrics to avoid duplicates
+        - Total throughput = pod-0 throughput × num_replicas
         
         Collects:
         1. Pod logs
@@ -2282,21 +2287,41 @@ torchrun \\
             nnodes = distributed_config.get("nnodes", 1)
             is_multinode = is_distributed and nnodes > 1
             
+            # Determine launcher_type the same way as _prepare_template_context does
+            # (deployment_config doesn't store launcher_type directly)
+            launcher_config = self.config.additional_context.get("launcher", {})
+            launcher_type = (
+                launcher_config.get("type") 
+                if launcher_config.get("type") is not None 
+                else distributed_config.get("launcher")
+            )
+            is_ray_launcher = launcher_type in ["vllm", "sglang"]
+            
             # Sort pods by name to ensure consistent ordering (pod-0 is master)
             sorted_pods = sorted(pods.items, key=lambda p: p.metadata.name)
 
+            # For multi-node Ray-based launchers (vLLM, SGLang), only collect from pod-0
+            # Worker pods run independent replicas and don't output metrics
+            if is_multinode and is_ray_launcher:
+                self.console.print(
+                    f"[cyan]Multi-node Ray deployment: {nnodes} nodes (Data Parallel mode)[/cyan]"
+                )
+                self.console.print(
+                    f"[dim]  Collecting from master pod only (pod-0)[/dim]"
+                )
+                pods_to_process = [sorted_pods[0]] if sorted_pods else []
+                num_skipped = len(sorted_pods) - len(pods_to_process)
+            else:
+                pods_to_process = sorted_pods
+                num_skipped = 0
+
             # Collect from each pod
-            for pod_index, pod in enumerate(sorted_pods):
+            for pod_index, pod in enumerate(pods_to_process):
                 pod_name = pod.metadata.name
                 pod_dir = results_dir / pod_name
                 pod_dir.mkdir(exist_ok=True)
                 
                 self.console.print(f"[dim]  Collecting from pod: {pod_name}[/dim]")
-                
-                # Determine if this pod should have performance metrics
-                # In multi-node jobs, only the master pod (pod-0) outputs performance
-                is_master_pod = pod_index == 0
-                should_have_metrics = not is_multinode or is_master_pod
                 
                 try:
                     # 1. Collect pod logs
@@ -2315,13 +2340,31 @@ torchrun \\
                     perf_data = self._parse_performance_from_log(
                         log, model_info, build_info, pod_name
                     )
+                    
                     if perf_data:
+                        # For multi-node Ray deployments, multiply by nnodes
+                        # This gives total throughput (Data Parallel mode)
+                        if is_multinode and is_ray_launcher:
+                            original_perf = perf_data.get("performance", 0.0)
+                            perf_data["performance"] = original_perf * nnodes
+                            perf_data["performance_per_replica"] = original_perf
+                            perf_data["topology_note"] = (
+                                f"Data Parallel: {nnodes} independent replicas"
+                            )
+                            
+                            self.console.print(
+                                f"[green]  Per-replica: {original_perf:.1f} req/s[/green]"
+                            )
+                            self.console.print(
+                                f"[green]  Total capacity: {perf_data['performance']:.1f} req/s "
+                                f"({nnodes} nodes)[/green]"
+                            )
+                        
                         results["successful_runs"].append(perf_data)
                         # Write to local perf.csv
                         self._write_to_perf_csv(perf_data)
-                    elif should_have_metrics:
-                        # Only mark as FAILED if this pod should have metrics
-                        # In multi-node jobs, worker pods don't output metrics
+                    else:
+                        # Only mark as FAILED if we expected metrics from this pod
                         error_msg = "Failed to parse performance metrics from logs"
                         failure_record = self._create_failure_record(
                             model_info, build_info, pod_name, error_msg
@@ -2334,12 +2377,13 @@ torchrun \\
                         })
                         # Write failure to perf.csv
                         self._write_to_perf_csv(failure_record)
-                        self.console.print(f"[yellow]⚠ No performance metrics found for pod {pod_name}, recorded as FAILED[/yellow]")
-                    else:
-                        # Worker pod in multi-node job - no metrics expected
-                        self.console.print(f"[dim]  Worker pod {pod_name}: metrics not expected (multi-node job)[/dim]")
+                        self.console.print(
+                            f"[yellow]⚠ No performance metrics found for pod {pod_name}, "
+                            f"recorded as FAILED[/yellow]"
+                        )
                         
                 except ApiException as e:
+                    # Only create failure record if we expected metrics from this pod
                     error_msg = f"Failed to get logs: {e.reason}"
                     failure_record = self._create_failure_record(
                         model_info, build_info, pod_name, error_msg
@@ -2352,7 +2396,9 @@ torchrun \\
                     })
                     # Write failure to perf.csv
                     self._write_to_perf_csv(failure_record)
-                    self.console.print(f"[red]✗ Failed to get logs for pod {pod_name}: {e.reason}[/red]")
+                    self.console.print(
+                        f"[red]✗ Failed to get logs for pod {pod_name}: {e.reason}[/red]"
+                    )
                 except Exception as e:
                     error_msg = str(e)
                     failure_record = self._create_failure_record(
@@ -2366,7 +2412,16 @@ torchrun \\
                     })
                     # Write failure to perf.csv
                     self._write_to_perf_csv(failure_record)
-                    self.console.print(f"[red]✗ Error collecting results from pod {pod_name}: {e}[/red]")
+                    self.console.print(
+                        f"[red]✗ Error collecting results from pod {pod_name}: {e}[/red]"
+                    )
+            
+            # Report what we skipped for multi-node
+            if num_skipped > 0:
+                self.console.print(
+                    f"[dim]  Skipped {num_skipped} worker pod(s) "
+                    f"(no metrics expected in Data Parallel mode)[/dim]"
+                )
 
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"

@@ -14,7 +14,7 @@
     "cpu": "96",
     "cpu_limit": "128",
     "node_selector": {
-      "node.kubernetes.io/instance-type": "mi300x"
+      "feature.node.kubernetes.io/amd-gpu-mi300x": "true"
     }
   },
   

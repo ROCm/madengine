@@ -22,7 +22,7 @@
     "host_ipc": true,
     
     "node_selector": {
-      "node.kubernetes.io/instance-type": "mi300x-8gpu",
+      "feature.node.kubernetes.io/amd-gpu-mi300x": "true",
       "topology.kubernetes.io/zone": "us-west-2a",
       "workload-type": "ml-training"
     },

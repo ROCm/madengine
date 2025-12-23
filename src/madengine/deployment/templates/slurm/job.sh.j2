@@ -50,8 +50,34 @@ export NNODES={{ nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 
 # GPU visibility (ROCm/CUDA)
-export ROCR_VISIBLE_DEVICES=$(seq -s, 0 $(({{ gpus_per_node }}-1)))
-export CUDA_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES
+# IMPORTANT: Ray (vLLM, SGLang) requires HIP_VISIBLE_DEVICES for AMD GPUs
+# Do NOT set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES together
+GPU_LIST=$(seq -s, 0 $(({{ gpus_per_node }}-1)))
+{% if launcher_type == "vllm" or launcher_type == "sglang" %}
+# Ray-based launchers: Detect GPU vendor and set appropriate variable
+# CRITICAL: Do NOT set both HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES together
+if command -v rocm-smi &> /dev/null || command -v rocminfo &> /dev/null; then
+    # AMD GPU detected - use HIP_VISIBLE_DEVICES ONLY
+    # CRITICAL: Unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES which is set by rocm/vllm image
+    # This variable tells Ray to ignore HIP_VISIBLE_DEVICES, causing conflicts
+    unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+    export HIP_VISIBLE_DEVICES=$GPU_LIST
+    unset ROCR_VISIBLE_DEVICES  # Unset to avoid Ray conflicts
+    unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error
+    echo "🔧 GPU Config (AMD): HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
+else
+    # NVIDIA GPU - use CUDA_VISIBLE_DEVICES ONLY
+    export CUDA_VISIBLE_DEVICES=$GPU_LIST
+    unset HIP_VISIBLE_DEVICES   # Unset to avoid Ray conflicts
+    unset ROCR_VISIBLE_DEVICES
+    echo "🔧 GPU Config (NVIDIA): CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+fi
+{% else %}
+# Non-Ray launchers: Set both for broader compatibility
+export HIP_VISIBLE_DEVICES=$GPU_LIST
+export ROCR_VISIBLE_DEVICES=$GPU_LIST
+export CUDA_VISIBLE_DEVICES=$GPU_LIST
+{% endif %}
 
 # Network configuration
 {% if network_interface %}
