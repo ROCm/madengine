@@ -95,19 +95,21 @@ madengine run --tags dummy \
 | **TorchTitan** | ✅ | ✅ | ✅ | Training | FSDP2+TP+PP+CP, Llama 3.1 (8B-405B) |
 | **vLLM** | ✅ | ✅ | ✅ | Inference | v1 engine, PagedAttention, Ray cluster |
 | **SGLang** | ✅ | ✅ | ✅ | Inference | RadixAttention, structured generation |
+| **SGLang Disagg** | ❌ | ✅ | ✅ | Inference | Disaggregated prefill/decode, Mooncake, 3+ nodes |
 
 **Note:** All launchers support single-GPU, multi-GPU (single node), and multi-node (where infrastructure allows). See [Launchers Guide](docs/launchers.md) for details.
 
 ### Parallelism Capabilities
 
-| Launcher | Data Parallel | Tensor Parallel | Pipeline Parallel | Context Parallel | Ray Cluster |
-|----------|--------------|----------------|-------------------|-----------------|-------------|
-| **torchrun** | ✅ DDP/FSDP | ❌ | ❌ | ❌ | ❌ |
-| **DeepSpeed** | ✅ ZeRO | ❌ | ✅ | ❌ | ❌ |
-| **Megatron-LM** | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **TorchTitan** | ✅ FSDP2 | ✅ | ✅ | ✅ | ❌ |
-| **vLLM** | ❌ | ✅ | ✅ | ❌ | ✅ Multi-node |
-| **SGLang** | ❌ | ✅ | ❌ | ❌ | ✅ Multi-node |
+| Launcher | Data Parallel | Tensor Parallel | Pipeline Parallel | Context Parallel | Ray Cluster | Architecture |
+|----------|--------------|----------------|-------------------|-----------------|-------------|--------------|
+| **torchrun** | ✅ DDP/FSDP | ❌ | ❌ | ❌ | ❌ | Unified |
+| **DeepSpeed** | ✅ ZeRO | ❌ | ✅ | ❌ | ❌ | Unified |
+| **Megatron-LM** | ✅ | ✅ | ✅ | ❌ | ❌ | Unified |
+| **TorchTitan** | ✅ FSDP2 | ✅ | ✅ | ✅ | ❌ | Unified |
+| **vLLM** | ❌ | ✅ | ✅ | ❌ | ✅ Multi-node | Unified |
+| **SGLang** | ❌ | ✅ | ❌ | ❌ | ✅ Multi-node | Unified |
+| **SGLang Disagg** | ❌ | ✅ | ✅ (via disagg) | ❌ | ✅ Multi-node | Disaggregated |
 
 ### Infrastructure Capabilities
 

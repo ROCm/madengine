@@ -1,0 +1,48 @@
+{
+  "_comment": "SGLang Disaggregated K8s Config - Custom Prefill/Decode Split",
+  "_description": "7 nodes with custom split: 1 proxy + 4 prefill + 2 decode",
+  "_use_case": "Workload with long prompts requiring more prefill capacity",
+  "_reference": "https://github.com/sgl-project/sglang",
+  "_architecture": {
+    "proxy": "Pod 0 (Load Balancer)",
+    "prefill": "Pods 1-4 (4 nodes, 57% - custom)",
+    "decode": "Pods 5-6 (2 nodes, 29% - custom)",
+    "total": "7 pods total",
+    "note": "Custom split overrides default 40/60 ratio"
+  },
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 8,
+    "memory": "256Gi",
+    "memory_limit": "384Gi",
+    "cpu": "64",
+    "cpu_limit": "96",
+    "node_selector": {
+      "feature.node.kubernetes.io/amd-gpu-mi300x": "true"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 7,
+    "nproc_per_node": 8,
+    "master_port": 29500,
+    "sglang_disagg": {
+      "prefill_nodes": 4,
+      "decode_nodes": 2
+    }
+  },
+  
+  "context": {
+    "env_vars": {
+      "SGLANG_ENABLE_RADIX_CACHE": "1",
+      "SGLANG_RADIX_CACHE_SIZE": "0.9",
+      "NCCL_TIMEOUT": "600",
+      "RAY_health_check_timeout_ms": "60000"
+    }
+  }
+}
+

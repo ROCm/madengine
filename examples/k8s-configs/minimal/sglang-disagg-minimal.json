@@ -1,0 +1,19 @@
+{
+  "_comment": "Minimal SGLang Disaggregated configuration - 3 nodes minimum",
+  "_description": "SGLang disaggregated inference with 3 pods (1 proxy + 1 prefill + 1 decode)",
+  "_architecture": "Pod 0: Proxy, Pod 1: Prefill, Pod 2: Decode",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+    
+  "k8s": {
+    "gpu_count": 3
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 3,
+    "nproc_per_node": 1
+  }
+}
+

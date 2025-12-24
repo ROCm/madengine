@@ -742,6 +742,26 @@ class KubernetesDeployment(BaseDeployment):
                 model_script=model_info.get("scripts", "run.sh")
             )
 
+        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+            if nnodes < 3:
+                raise ValueError(
+                    f"SGLang Disaggregated requires minimum 3 nodes "
+                    f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
+                )
+            
+            # Always create headless service for disaggregated architecture
+            create_headless_service = True
+            self.console.print(f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]")
+            self.console.print(f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]")
+            
+            # Generate SGLang Disaggregated launcher command
+            launcher_command = self._generate_sglang_disagg_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh")
+            )
+
         elif launcher_type == "megatron":
             if nnodes > 1:
                 create_headless_service = True
@@ -1340,6 +1360,151 @@ torchrun \\
     --role=worker \\
     --tee=3 \\
     {model_script}"""
+    
+    def _generate_sglang_disagg_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate SGLang Disaggregated launcher command for K8s Indexed Jobs.
+        
+        SGLang Disaggregated uses separate node pools for:
+        - Proxy (index 0): Load balancer and request router
+        - Prefill (indices 1 to xP): Prompt processing
+        - Decode (indices xP+1 to end): Token generation
+        
+        Communication via Mooncake framework for efficient KV cache transfer.
+        
+        Architecture:
+        - Pod 0: Runs mini_lb (proxy/load balancer)
+        - Pods 1-xP: Run prefill servers
+        - Pods xP+1 to N-1: Run decode servers
+        
+        Args:
+            nnodes: Total number of pods (must be >= 3)
+            nproc_per_node: GPUs per pod
+            master_port: Port for proxy service
+            model_script: Path to model launch script
+            
+        Returns:
+            Complete disaggregated launch setup
+            
+        Raises:
+            ValueError: If nnodes < 3 or invalid parameters
+        """
+        # Validate
+        if not isinstance(nnodes, int) or nnodes < 3:
+            raise ValueError(
+                f"SGLang Disaggregated requires minimum 3 nodes, got {nnodes}"
+            )
+        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+            raise ValueError(f"nproc_per_node must be >= 1, got {nproc_per_node}")
+        if not model_script or not isinstance(model_script, str):
+            raise ValueError(f"model_script must be non-empty string")
+        
+        # Check if custom split is specified in additional_context
+        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        prefill_nodes = sglang_disagg_config.get("prefill_nodes")
+        decode_nodes = sglang_disagg_config.get("decode_nodes")
+        
+        if prefill_nodes is not None and decode_nodes is not None:
+            # User specified custom split - validate
+            if prefill_nodes < 1 or decode_nodes < 1:
+                raise ValueError(
+                    f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
+                    f"got prefill={prefill_nodes}, decode={decode_nodes}"
+                )
+            if prefill_nodes + decode_nodes + 1 != nnodes:
+                raise ValueError(
+                    f"Custom split validation failed: "
+                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
+                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
+                )
+            xP = prefill_nodes
+            yD = decode_nodes
+        else:
+            # Default automatic split (can be customized via additional_context)
+            xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% prefill
+            yD = nnodes - 1 - xP  # remaining decode
+        
+        # Build prefill and decode server lists
+        prefill_servers = " ".join([
+            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
+            for i in range(1, xP + 1)
+        ])
+        
+        decode_servers = " ".join([
+            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
+            for i in range(xP + 1, nnodes)
+        ])
+        
+        return f"""# SGLang Disaggregated K8s Setup
+# ============================================
+# Cluster: {nnodes} pods total
+#   Proxy: Pod 0
+#   Prefill: Pods 1-{xP} ({xP} nodes)
+#   Decode: Pods {xP+1}-{nnodes-1} ({yD} nodes)
+# ============================================
+
+export POD_INDEX=${{JOB_COMPLETION_INDEX:-0}}
+export TOTAL_PODS={nnodes}
+export PREFILL_COUNT={xP}
+export DECODE_COUNT={yD}
+export TP_SIZE={nproc_per_node}
+
+# Get pod IP
+export POD_IP=$(hostname -i | awk '{{print $1}}')
+
+echo "=========================================="
+echo "SGLang Disaggregated Pod Info"
+echo "=========================================="
+echo "Pod Index: $POD_INDEX"
+echo "Pod IP: $POD_IP"
+echo "Total Pods: $TOTAL_PODS"
+echo "Prefill Pods: $PREFILL_COUNT"
+echo "Decode Pods: $DECODE_COUNT"
+echo "TP Size: $TP_SIZE"
+echo "=========================================="
+
+# Node role assignment based on pod index
+if [ "$POD_INDEX" -eq 0 ]; then
+    # Proxy Node (Load Balancer)
+    echo "🔀 This pod is PROXY (Load Balancer)"
+    
+    python3 -m sglang.srt.disaggregation.mini_lb \\
+        --prefill {prefill_servers} \\
+        --decode {decode_servers} \\
+        --host 0.0.0.0 \\
+        --port {master_port}
+    
+elif [ "$POD_INDEX" -le "{xP}" ]; then
+    # Prefill Nodes
+    echo "⚡ This pod is PREFILL Node"
+    
+    python3 -m sglang.launch_server \\
+        --model-path "$MODEL_PATH" \\
+        --disaggregation-mode prefill \\
+        --tp-size {nproc_per_node} \\
+        --host $POD_IP \\
+        --port 30000 \\
+        --trust-remote-code \\
+        --disaggregation-transfer-backend mooncake
+    
+else
+    # Decode Nodes
+    echo "🔤 This pod is DECODE Node"
+    
+    python3 -m sglang.launch_server \\
+        --model-path "$MODEL_PATH" \\
+        --disaggregation-mode decode \\
+        --tp-size {nproc_per_node} \\
+        --host $POD_IP \\
+        --port 30000 \\
+        --trust-remote-code \\
+        --disaggregation-transfer-backend mooncake
+fi
+
+echo "SGLang Disaggregated setup complete"
+"""
     
     def _generate_vllm_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str

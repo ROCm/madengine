@@ -66,34 +66,40 @@ RUN python3 -c "import sglang; \
     (echo "✗ SGLang import failed" && exit 1)
 
 # Verify PyTorch with ROCm 7.x
-RUN python3 -c "import torch; \
-    print(f'✓ PyTorch version: {torch.__version__}'); \
-    is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None; \
-    print(f'✓ ROCm available: {is_rocm}'); \
-    if is_rocm: \
-        hip_version = torch.version.hip; \
-        print(f'✓ ROCm/HIP version: {hip_version}'); \
-        major_version = int(hip_version.split('.')[0]) if hip_version else 0; \
-        if major_version >= 7: \
-            print(f'✓ ROCm 7.x+ detected (optimal for MI300X)'); \
-        else: \
-            print(f'⚠ ROCm version < 7.0 (consider upgrading)')" || \
-    (echo "✗ PyTorch/ROCm check failed" && exit 1)
+RUN python3 <<'EOF'
+import torch
+print(f'✓ PyTorch version: {torch.__version__}')
+is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+print(f'✓ ROCm available: {is_rocm}')
+if is_rocm:
+    hip_version = torch.version.hip
+    print(f'✓ ROCm/HIP version: {hip_version}')
+    major_version = int(hip_version.split('.')[0]) if hip_version else 0
+    if major_version >= 7:
+        print(f'✓ ROCm 7.x+ detected (optimal for MI300X)')
+    else:
+        print(f'⚠ ROCm version < 7.0 (consider upgrading)')
+EOF
 
 # GPU device check (will show count = 0 in build environment)
-RUN python3 -c "import torch; \
-    gpu_count = torch.cuda.device_count(); \
-    print(f'✓ GPU devices detected: {gpu_count}'); \
-    if gpu_count == 0: \
-        print('  (No GPUs in build environment - GPUs will be available at runtime)'); \
-    else: \
-        for i in range(gpu_count): \
-            print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')" || true
+RUN python3 <<'EOF' || true
+import torch
+gpu_count = torch.cuda.device_count()
+print(f'✓ GPU devices detected: {gpu_count}')
+if gpu_count == 0:
+    print('  (No GPUs in build environment - GPUs will be available at runtime)')
+else:
+    for i in range(gpu_count):
+        print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')
+EOF
 
-# Verify key dependencies (Ray for distributed inference)
-RUN python3 -c "import transformers; print(f'✓ Transformers: {transformers.__version__}')" && \
-    python3 -c "import ray; print(f'✓ Ray: {ray.__version__} (for distributed coordination)')" || \
-    (echo "✗ Dependency check failed" && exit 1)
+# Verify key dependencies
+RUN python3 -c "import transformers; print(f'✓ Transformers: {transformers.__version__}')" || \
+    (echo "✗ Transformers check failed" && exit 1)
+
+# Verify Ray (optional - only needed for distributed multi-node inference)
+RUN python3 -c "import ray; print(f'✓ Ray: {ray.__version__} (for distributed coordination)')" || \
+    echo "⚠ Ray not found (optional - only needed for multi-node distributed inference)"
 
 # Verify SGLang server module (key for inference)
 RUN python3 -c "from sglang import launch_server; print('✓ SGLang server module available')" || \

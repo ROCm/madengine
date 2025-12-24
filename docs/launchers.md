@@ -18,6 +18,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **TorchTitan** | Training | LLM pre-training (FSDP2+TP+PP) | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
+| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
 
 ---
 
@@ -326,7 +327,191 @@ SGLANG_PIPELINE_PARALLEL_SIZE=1
 
 **Examples**:
 - K8s: `examples/k8s-configs/minimal/sglang-single-node-minimal.json`
-- SLURM: `examples/slurm-configs/basic/05-vllm-single-node.json` (similar pattern)
+- SLURM: `examples/slurm-configs/basic/07-sglang-single-node.json`
+
+---
+
+### 7. SGLang Disaggregated (NEW!)
+
+**Purpose**: Large-scale disaggregated LLM inference with specialized prefill/decode clusters
+
+**Reference**: [sgl-project/sglang](https://github.com/sgl-project/sglang) | [Mooncake Framework](https://github.com/kvcache-ai/Mooncake)
+
+**When to Use**:
+- ✅ Large-scale LLM inference (multi-node clusters)
+- ✅ Optimized resource allocation (separate prefill/decode)
+- ✅ High-throughput production deployments
+- ✅ Workload-specific optimization (tune prefill/decode ratio)
+
+**Architecture**:
+
+SGLang Disaggregated separates inference into specialized node pools:
+
+```
+┌─────────────────────────────────────────────────┐
+│         SGLang Disaggregated Cluster            │
+├─────────────────────────────────────────────────┤
+│  Node 0:        Proxy (Load Balancer)           │
+│  Nodes 1-P:     Prefill Servers (~40%)          │
+│  Nodes P+1-N:   Decode Servers (~60%)           │
+│                                                  │
+│  Communication: Mooncake (KV cache transfer)    │
+└─────────────────────────────────────────────────┘
+```
+
+**Configuration**:
+
+```json
+{
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 5,
+    "nproc_per_node": 8,
+    "sglang_disagg": {
+      "prefill_nodes": 2,
+      "decode_nodes": 2
+    }
+  }
+}
+```
+
+**Minimum Requirements**:
+- **Nodes**: Minimum 3 nodes (1 proxy + 1 prefill + 1 decode)
+- **GPUs**: Minimum 1 GPU per node (for tensor parallelism)
+- **Network**: High-speed interconnect (InfiniBand recommended for production)
+
+**Node Roles**:
+1. **Proxy Node (Rank 0)**: Load balancer, request router (mini_lb)
+2. **Prefill Nodes**: Process input prompts, generate KV cache
+3. **Decode Nodes**: Receive KV cache, generate output tokens
+
+**Automatic Split (Default)**:
+- Uses 40/60 golden ratio for prefill/decode
+- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`
+
+| Total Nodes | Proxy | Prefill | Decode |
+|-------------|-------|---------|--------|
+| 3 | 1 | 1 (33%) | 1 (33%) |
+| 5 | 1 | 2 (40%) | 2 (40%) |
+| 7 | 1 | 2 (29%) | 4 (57%) |
+| 11 | 1 | 4 (40%) | 6 (60%) |
+
+**Custom Split (NEW Feature!)**:
+
+Override automatic split based on workload characteristics:
+
+```json
+{
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 7,
+    "nproc_per_node": 8,
+    "sglang_disagg": {
+      "prefill_nodes": 4,
+      "decode_nodes": 2
+    }
+  }
+}
+```
+
+**Custom Split Use Cases**:
+
+| Workload Type | Recommended Split | Example (7 nodes) |
+|---------------|------------------|-------------------|
+| Long prompts (code gen) | 60% prefill | `prefill: 4, decode: 2` |
+| Long outputs (creative) | 30% prefill | `prefill: 2, decode: 4` |
+| Balanced (default) | 40% prefill | Omit sglang_disagg |
+| Document processing | 50% prefill | `prefill: 3, decode: 3` |
+
+**Validation Rules**:
+- `prefill_nodes >= 1`
+- `decode_nodes >= 1`
+- `prefill_nodes + decode_nodes + 1 == nnodes`
+
+**Features**:
+- Disaggregated prefill/decode architecture
+- Mooncake framework for KV cache transfer
+- Automatic or custom node role assignment
+- RadixAttention for KV cache efficiency
+- Ray cluster coordination
+- No torchrun needed (manages own processes)
+
+**Environment Variables (K8s)**:
+```bash
+POD_INDEX=${JOB_COMPLETION_INDEX}  # Pod index for role assignment
+TOTAL_PODS=5                        # Total number of pods
+PREFILL_COUNT=2                     # Number of prefill nodes
+DECODE_COUNT=2                      # Number of decode nodes
+TP_SIZE=8                           # Tensor parallel size
+```
+
+**Environment Variables (SLURM)**:
+```bash
+SGLANG_DISAGG_MODE="enabled"
+SGLANG_DISAGG_PREFILL_NODES=2
+SGLANG_DISAGG_DECODE_NODES=2
+SGLANG_DISAGG_TOTAL_NODES=5
+SGLANG_TP_SIZE=8
+SGLANG_NODE_RANK=${SLURM_PROCID}
+SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
+```
+
+**Examples**:
+- K8s Minimal: `examples/k8s-configs/minimal/sglang-disagg-minimal.json`
+- K8s Basic: `examples/k8s-configs/basic/sglang-disagg-multi-node-basic.json`
+- K8s Custom: `examples/k8s-configs/basic/sglang-disagg-custom-split.json`
+- SLURM Minimal: `examples/slurm-configs/minimal/sglang-disagg-minimal.json`
+- SLURM Basic: `examples/slurm-configs/basic/sglang-disagg-multi-node.json`
+- SLURM Custom: `examples/slurm-configs/basic/sglang-disagg-custom-split.json`
+
+**Comparison: SGLang vs SGLang Disaggregated**:
+
+| Feature | SGLang | SGLang Disaggregated |
+|---------|--------|---------------------|
+| **Architecture** | Unified | Separated prefill/decode |
+| **Min Nodes** | 1 | 3 |
+| **Node Types** | Same for all | Specialized (proxy/prefill/decode) |
+| **KV Transfer** | In-memory | Mooncake framework |
+| **Load Balancer** | Ray | mini_lb (dedicated) |
+| **Best For** | General inference | Large-scale clusters |
+| **Optimization** | General | Workload-specific tuning |
+
+**Production Considerations**:
+1. **Install Mooncake**: Full framework with RDMA support
+2. **Configure Network**: InfiniBand/RoCE for high-speed KV transfer
+3. **Setup etcd**: For distributed coordination
+4. **Monitor Metrics**: Track prefill latency, decode throughput, queue depths
+5. **Tune Split**: Adjust prefill/decode ratio based on workload
+
+**Performance Tuning**:
+```bash
+# Start with automatic split
+madengine run --tags model --config minimal-config.json
+
+# Monitor bottleneck (prefill latency vs decode throughput)
+# If prefill is bottleneck → increase prefill nodes
+# If decode is bottleneck → increase decode nodes
+
+# Apply custom split
+madengine run --tags model --config custom-split-config.json
+```
+
+**Troubleshooting**:
+
+1. **"requires minimum 3 nodes"**
+   - Solution: Set `nnodes >= 3`
+
+2. **"prefill_nodes + decode_nodes + 1 must equal nnodes"**
+   - Solution: Verify math in custom split configuration
+
+3. **Pod/Node stuck in Init**
+   - K8s: Check headless service creation
+   - SLURM: Verify node IP discovery
+
+4. **High KV cache transfer latency**
+   - Enable RDMA/InfiniBand
+   - Configure Mooncake transfer backend
+   - Check network connectivity
 
 ---
 
@@ -347,16 +532,20 @@ SGLANG_PIPELINE_PARALLEL_SIZE=1
 
 ### Inference Launchers
 
-| Feature | vLLM | SGLang |
-|---------|------|--------|
-| **Throughput** | Very High | High |
-| **Memory Efficiency** | PagedAttention | RadixAttention |
-| **Batching** | Continuous | Continuous |
-| **API** | OpenAI-compatible | OpenAI-compatible |
-| **Structured Gen** | Limited | ✅ Native |
-| **Multi-Node** | ✅ Ray | ✅ Ray |
-| **K8s Support** | ✅ | ✅ |
-| **SLURM Support** | ✅ | ✅ |
+| Feature | vLLM | SGLang | SGLang Disaggregated |
+|---------|------|--------|----------------------|
+| **Throughput** | Very High | High | Very High |
+| **Memory Efficiency** | PagedAttention | RadixAttention | RadixAttention + Mooncake |
+| **Batching** | Continuous | Continuous | Continuous |
+| **API** | OpenAI-compatible | OpenAI-compatible | OpenAI-compatible |
+| **Structured Gen** | Limited | ✅ Native | ✅ Native |
+| **Multi-Node** | ✅ Ray | ✅ Ray | ✅ Ray + mini_lb |
+| **Architecture** | Unified | Unified | Disaggregated |
+| **Min Nodes** | 1 | 1 | 3 |
+| **Specialization** | ❌ | ❌ | ✅ Prefill/Decode |
+| **Custom Split** | ❌ | ❌ | ✅ |
+| **K8s Support** | ✅ | ✅ | ✅ |
+| **SLURM Support** | ✅ | ✅ | ✅ |
 
 ---
 
@@ -374,9 +563,11 @@ Very large (70B+)          → TorchTitan with full parallelism
 
 **Inference Workloads**:
 ```
-High throughput           → vLLM
-Structured generation     → SGLang
-Memory constrained        → vLLM (PagedAttention)
+High throughput            → vLLM or SGLang Disaggregated
+Structured generation      → SGLang or SGLang Disaggregated
+Memory constrained         → vLLM (PagedAttention)
+Large-scale clusters (5+)  → SGLang Disaggregated
+Workload-specific tuning   → SGLang Disaggregated
 ```
 
 ### 2. Resource Allocation
@@ -469,6 +660,17 @@ NCCL_INIT_ADDR="master:29500"
 # No MAD_MULTI_NODE_RUNNER (SGLang manages processes)
 ```
 
+**SGLang Disaggregated**:
+```bash
+SGLANG_DISAGG_MODE="enabled"
+SGLANG_DISAGG_PREFILL_NODES=2
+SGLANG_DISAGG_DECODE_NODES=2
+SGLANG_DISAGG_TOTAL_NODES=5
+SGLANG_TP_SIZE=8
+SGLANG_NODE_RANK=${SLURM_PROCID}
+# No MAD_MULTI_NODE_RUNNER (SGLang disagg manages processes)
+```
+
 ---
 
 ## Troubleshooting
@@ -479,7 +681,7 @@ NCCL_INIT_ADDR="master:29500"
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `sglang-disagg`
 
 **2. Multi-Node Communication Fails**
 ```bash

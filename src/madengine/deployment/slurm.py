@@ -300,6 +300,8 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+            return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "megatron":
@@ -395,6 +397,102 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
 export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE={nnodes}
 # SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+
+    def _generate_sglang_disagg_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate SGLang Disaggregated launcher environment for SLURM.
+        
+        SGLang Disaggregated Architecture:
+        - Node 0: Proxy (load balancer)
+        - Nodes 1 to xP: Prefill nodes
+        - Nodes xP+1 to xP+yD: Decode nodes
+        
+        Minimum cluster: 3 nodes (1 proxy + 1 prefill + 1 decode)
+        
+        Args:
+            nnodes: Total number of nodes (must be >= 3)
+            nproc_per_node: GPUs per node (tensor parallel size)
+            master_port: Master port for coordination
+            
+        Returns:
+            Environment setup with node role assignment
+            
+        Raises:
+            ValueError: If nnodes < 3 (minimum for disagg)
+        """
+        if nnodes < 3:
+            raise ValueError(
+                f"SGLang Disaggregated requires minimum 3 nodes "
+                f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
+            )
+        
+        # Check if custom split is specified in additional_context
+        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        prefill_nodes = sglang_disagg_config.get("prefill_nodes")
+        decode_nodes = sglang_disagg_config.get("decode_nodes")
+        
+        if prefill_nodes is not None and decode_nodes is not None:
+            # User specified custom split - validate
+            if prefill_nodes < 1 or decode_nodes < 1:
+                raise ValueError(
+                    f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
+                    f"got prefill={prefill_nodes}, decode={decode_nodes}"
+                )
+            if prefill_nodes + decode_nodes + 1 != nnodes:
+                raise ValueError(
+                    f"Custom split validation failed: "
+                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
+                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
+                )
+            xP = prefill_nodes
+            yD = decode_nodes
+        else:
+            # Default split: use golden ratio for prefill/decode
+            # For N total nodes: 1 proxy + ~40% prefill + ~60% decode
+            xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% of worker nodes
+            yD = nnodes - 1 - xP  # remaining nodes
+        
+        return f'''# SGLang Disaggregated multi-node setup
+# ============================================
+# Cluster Configuration:
+#   Total Nodes: {nnodes}
+#   Proxy: 1 node (NODE_RANK=0)
+#   Prefill: {xP} nodes (NODE_RANK=1 to {xP})
+#   Decode: {yD} nodes (NODE_RANK={xP+1} to {nnodes-1})
+# ============================================
+
+# Export cluster topology
+export SGLANG_DISAGG_MODE="enabled"
+export SGLANG_DISAGG_PREFILL_NODES={xP}
+export SGLANG_DISAGG_DECODE_NODES={yD}
+export SGLANG_DISAGG_TOTAL_NODES={nnodes}
+export SGLANG_TP_SIZE={nproc_per_node}
+
+# Master coordination
+export MASTER_PORT={master_port}
+
+# Build node IP list from SLURM
+SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
+    getent hosts "$node" | awk '{{print $1}}'
+done | tr '\\n' ',' | sed 's/,$//')
+
+export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
+export SGLANG_NODE_RANK=${{SLURM_PROCID}}
+
+echo "=========================================="
+echo "SGLang Disaggregated Cluster Info"
+echo "=========================================="
+echo "Node Rank: $SGLANG_NODE_RANK"
+echo "Node IPs: $SGLANG_NODE_IPS"
+echo "Prefill Nodes: {xP}"
+echo "Decode Nodes: {yD}"
+echo "TP Size: {nproc_per_node}"
+echo "=========================================="
+
+# No MAD_MULTI_NODE_RUNNER - SGLang disagg handles process management
+# Model script should detect SGLANG_DISAGG_MODE and launch appropriately'''
 
     def _generate_deepspeed_command(
         self, nnodes: int, nproc_per_node: int, master_port: int

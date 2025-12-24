@@ -1,0 +1,22 @@
+{
+  "_comment": "Minimal SGLang Disaggregated configuration - 3 nodes minimum",
+  "_description": "SGLang disaggregated inference with 3 nodes (1 proxy + 1 prefill + 1 decode)",
+  "_architecture": "Node 0: Proxy, Node 1: Prefill, Node 2: Decode",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+    
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "gpus_per_node": 1,
+    "time": "02:00:00"
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 3,
+    "nproc_per_node": 1
+  }
+}
+

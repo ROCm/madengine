@@ -1,0 +1,59 @@
+{
+  "_comment": "SGLang Disaggregated SLURM Config - Custom Prefill/Decode Split",
+  "_description": "7 nodes with custom split: 1 proxy + 4 prefill + 2 decode",
+  "_use_case": "Workload with long prompts requiring more prefill capacity",
+  "_architecture": {
+    "proxy": "Node 0 (Load Balancer)",
+    "prefill": "Nodes 1-4 (4 nodes, 57% - custom)",
+    "decode": "Nodes 5-6 (2 nodes, 29% - custom)",
+    "total": "7 nodes total",
+    "default_would_be": "2 prefill + 4 decode (2/4 split)",
+    "custom_override": "4 prefill + 2 decode (4/2 split)"
+  },
+  "_note": "Custom split allows optimization for prompt-heavy workloads",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 7,
+    "gpus_per_node": 8,
+    "time": "04:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 7,
+    "nproc_per_node": 8,
+    "backend": "nccl",
+    "port": 29500,
+    "sglang_disagg": {
+      "prefill_nodes": 4,
+      "decode_nodes": 2
+    }
+  },
+  
+  "env_vars": {
+    "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "SGLANG_USE_MODELSCOPE": "False",
+    "SGLANG_ENABLE_RADIX_CACHE": "1",
+    "SGLANG_RADIX_CACHE_SIZE": "0.9",
+    "SGLANG_LOGGING_LEVEL": "INFO",
+    "SGLANG_DISAGG_TRANSFER_BACKEND": "mooncake",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_ENABLE_SDMA": "0",
+    "GPU_MAX_HW_QUEUES": "2",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_MIN_NCHANNELS": "16",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "mlx5_0",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "RAY_DEDUP_LOGS": "1",
+    "RAY_BACKEND_LOG_LEVEL": "warning"
+  }
+}
+
