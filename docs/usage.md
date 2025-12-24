@@ -2,6 +2,8 @@
 
 Complete guide to using madengine for running AI models locally and in distributed environments.
 
+> **📖 Quick Reference:** For detailed command options and flags, see the **[CLI Command Reference](cli-reference.md)**.
+
 ## Quick Start
 
 ### Prerequisites
@@ -29,90 +31,41 @@ madengine run --tags dummy \
 
 Results are saved to `perf_entry.csv`.
 
-## Commands
+## Commands Overview
 
-### discover - Find Available Models
+madengine provides five main commands:
 
-List models in the MAD package:
+| Command | Purpose | Common Options |
+|---------|---------|----------------|
+| `discover` | Find available models | `--tags`, `--verbose` |
+| `build` | Build Docker images | `--tags`, `--registry`, `--batch-manifest` |
+| `run` | Execute models | `--tags`, `--manifest-file`, `--timeout` |
+| `report` | Generate HTML reports | `to-html`, `to-email` |
+| `database` | Upload to MongoDB | `--csv-file`, `--database-name` |
 
-```bash
-# All models
-madengine discover
+For complete command options and detailed examples, see **[CLI Command Reference](cli-reference.md)**.
 
-# Specific models
-madengine discover --tags dummy pyt_huggingface_bert
-
-# With verbose output
-madengine discover --tags model --verbose
-```
-
-### build - Create Docker Images
-
-Build Docker images for models:
+### Quick Command Examples
 
 ```bash
-# Basic build
+# Discover models
+madengine discover --tags dummy
+
+# Build image
 madengine build --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
-# Build with registry
-madengine build --tags model \
-  --registry docker.io/myorg \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-
-# Multiple models
-madengine build --tags model1 model2 model3 \
-  --registry localhost:5000
-
-# Clean rebuild (no cache)
-madengine build --tags model --clean-docker-cache
-
-# Custom manifest output
-madengine build --tags model --manifest-output my_manifest.json
-```
-
-**Options:**
-- `--tags, -t` - Model tags to build
-- `--batch-manifest` - Input batch.json file for batch build mode (mutually exclusive with --tags)
-- `--registry, -r` - Docker registry URL
-- `--additional-context, -c` - Configuration JSON string
-- `--additional-context-file, -f` - Configuration file path
-- `--clean-docker-cache` - Rebuild without Docker cache
-- `--manifest-output, -m` - Output manifest file (default: build_manifest.json)
-- `--verbose, -v` - Verbose logging
-
-### run - Execute Models
-
-Run models locally or deploy to clusters:
-
-```bash
-# Run locally
+# Run model
 madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
-# Run with manifest (pre-built images)
-madengine run --manifest-file build_manifest.json
+# Generate HTML report
+madengine report to-html --csv-file perf_entry.csv
 
-# Real-time output
-madengine run --tags model --live-output --verbose
-
-# Custom timeout (seconds)
-madengine run --tags model --timeout 7200
-
-# Keep container alive for debugging
-madengine run --tags model --keep-alive
+# Upload to MongoDB
+madengine database --csv-file perf_entry.csv \
+  --database-name mydb --collection-name results
 ```
-
-**Options:**
-- `--tags, -t` - Model tags to run
-- `--manifest-file, -m` - Build manifest (for pre-built images)
-- `--registry, -r` - Docker registry URL
-- `--timeout` - Execution timeout in seconds
-- `--additional-context, -c` - Configuration JSON string
-- `--additional-context-file, -f` - Configuration file path
-- `--keep-alive` - Keep containers alive after run
-- `--live-output, -l` - Real-time output streaming
-- `--verbose, -v` - Verbose logging
 
 ## Model Discovery
 
@@ -442,7 +395,88 @@ madengine run --tags model \
   ]}'
 ```
 
-See [Profiling Guide](profiling.md) for details.
+See [Profiling Guide](profiling.md) and [CLI Reference - run command](cli-reference.md#run---execute-models) for details.
+
+## Reporting and Database Integration
+
+### Generate HTML Reports
+
+Convert performance CSV files to viewable HTML reports:
+
+```bash
+# Single CSV to HTML
+madengine report to-html --csv-file perf_entry.csv
+
+# Result: Creates perf_entry.html in same directory
+```
+
+### Consolidated Email Reports
+
+Generate a single HTML report from multiple CSV files:
+
+```bash
+# Process all CSV files in current directory
+madengine report to-email
+
+# Specify directory
+madengine report to-email --directory ./results
+
+# Custom output filename
+madengine report to-email --dir ./results --output weekly_summary.html
+```
+
+**Use Cases:**
+- Weekly performance summaries
+- CI/CD result reports
+- Team email distributions
+- Performance trend analysis
+
+### Upload to MongoDB
+
+Store performance data in MongoDB for long-term tracking:
+
+```bash
+# Configure MongoDB connection
+export MONGO_HOST=mongodb.example.com
+export MONGO_PORT=27017
+export MONGO_USER=performance_user
+export MONGO_PASSWORD=secretpassword
+
+# Upload results
+madengine database \
+  --csv-file perf_entry.csv \
+  --database-name performance_tracking \
+  --collection-name model_runs
+
+# Upload specific results
+madengine database \
+  --csv-file results/perf_mi300.csv \
+  --db benchmarks \
+  --collection mi300_results
+```
+
+**Integration Workflow:**
+
+```bash
+# 1. Run benchmarks
+madengine run --tags model1 model2 model3 \
+  --output perf_entry.csv
+
+# 2. Generate HTML report
+madengine report to-html --csv-file perf_entry.csv
+
+# 3. Upload to database
+madengine database \
+  --csv-file perf_entry.csv \
+  --db benchmarks \
+  --collection daily_runs
+
+# 4. Send email report
+madengine report to-email --output daily_summary.html
+# (Then use your email tool to send daily_summary.html)
+```
+
+See [CLI Reference](cli-reference.md#report---generate-reports) and [CLI Reference](cli-reference.md#database---upload-to-mongodb) for complete options.
 
 ## Multi-Node Training
 
@@ -557,10 +591,108 @@ madengine build --tags model --clean-docker-cache --verbose
 5. **Enable verbose logging** when debugging
 6. **Start with small timeouts** and increase as needed
 
+## Command-Line Tips
+
+### Using Configuration Files
+
+For complex configurations, use JSON files:
+
+```bash
+# Create config.json
+cat > config.json << 'EOF'
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "docker_gpus": "0,1,2,3",
+  "timeout_multiplier": 2.0,
+  "distributed": {
+    "launcher": "torchrun",
+    "nproc_per_node": 4
+  }
+}
+EOF
+
+# Use with commands
+madengine build --tags model --additional-context-file config.json
+madengine run --tags model --additional-context-file config.json
+```
+
+### Multiple Tags
+
+Specify tags in multiple ways:
+
+```bash
+# Space-separated
+madengine run --tags model1 --tags model2 --tags model3
+
+# Comma-separated
+madengine run --tags model1,model2,model3
+
+# Mix both
+madengine run --tags model1 --tags model2,model3
+```
+
+### Debugging Commands
+
+```bash
+# Full verbose output with real-time logs
+madengine run --tags model --verbose --live-output
+
+# Keep container alive for inspection
+madengine run --tags model --keep-alive
+
+# Check what will be discovered
+madengine discover --tags model --verbose
+```
+
+### CI/CD Integration
+
+```bash
+#!/bin/bash
+# Example CI script
+
+set -e  # Exit on error
+
+# Build images
+madengine build --batch-manifest batch.json \
+  --registry docker.io/myorg \
+  --verbose
+
+# Run tests
+madengine run --manifest-file build_manifest.json \
+  --timeout 3600
+
+# Check exit code
+if [ $? -eq 0 ]; then
+  echo "✅ Tests passed"
+  
+  # Generate and upload results
+  madengine report to-email --output ci_results.html
+  madengine database \
+    --csv-file perf_entry.csv \
+    --db ci_results \
+    --collection ${CI_BUILD_ID}
+else
+  echo "❌ Tests failed"
+  exit 1
+fi
+```
+
 ## Next Steps
 
+### Documentation
+
+- **[CLI Reference](cli-reference.md)** - Complete command options and examples
 - [Configuration Guide](configuration.md) - Advanced configuration options
 - [Deployment Guide](deployment.md) - Kubernetes and SLURM deployment
+- [Batch Build Guide](batch-build.md) - Selective builds for CI/CD
 - [Profiling Guide](profiling.md) - Performance analysis
 - [Launchers Guide](launchers.md) - Multi-node training frameworks
+
+### Quick Links
+
+- [Main README](../README.md) - Project overview
+- [Installation Guide](installation.md) - Setup instructions
+- [Contributing Guide](contributing.md) - How to contribute
+- [GitHub Issues](https://github.com/ROCm/madengine/issues) - Report issues or get help
 

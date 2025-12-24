@@ -31,6 +31,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 
 | Guide | Description |
 |-------|-------------|
+| **[CLI Reference](cli-reference.md)** | **Complete command-line options and examples** |
 
 ## 🏗️ Architecture
 
