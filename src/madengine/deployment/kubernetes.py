@@ -2345,9 +2345,9 @@ torchrun \\
                         # For multi-node Ray deployments, multiply by nnodes
                         # This gives total throughput (Data Parallel mode)
                         if is_multinode and is_ray_launcher:
-                            original_perf = perf_data.get("performance", 0.0)
-                            perf_data["performance"] = original_perf * nnodes
-                            perf_data["performance_per_replica"] = original_perf
+                            original_perf = float(perf_data.get("performance", 0.0))
+                            perf_data["performance"] = str(original_perf * nnodes)
+                            perf_data["performance_per_replica"] = str(original_perf)
                             perf_data["topology_note"] = (
                                 f"Data Parallel: {nnodes} independent replicas"
                             )
@@ -2356,7 +2356,7 @@ torchrun \\
                                 f"[green]  Per-replica: {original_perf:.1f} req/s[/green]"
                             )
                             self.console.print(
-                                f"[green]  Total capacity: {perf_data['performance']:.1f} req/s "
+                                f"[green]  Total capacity: {original_perf * nnodes:.1f} req/s "
                                 f"({nnodes} nodes)[/green]"
                             )
                         
@@ -2804,7 +2804,7 @@ torchrun \\
         if not match:
             return None
         
-        performance = match.group(1).replace(',', '')  # Remove commas
+        performance = float(match.group(1).replace(',', ''))  # Remove commas and convert to float
         metric = match.group(2)
         
         # NEW: Extract topology information from log
@@ -2904,7 +2904,7 @@ torchrun \\
         "gpu_architecture": gpu_architecture,
             
             # Performance metrics
-            "performance": performance,
+            "performance": str(performance),
             "metric": metric,
             "relative_change": "",
             "status": "SUCCESS",
