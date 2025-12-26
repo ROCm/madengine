@@ -118,11 +118,17 @@
       "pre_scripts": [
         {
           "path": "scripts/common/pre_scripts/gpu_info_pre.sh"
+        },
+        {
+          "path": "scripts/common/pre_scripts/gpu_info_power_start.sh"
         }
       ],
-      "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
-      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"power", "DUAL_GCD":"false", "OUTPUT_FILE":"gpu_info_power_profiler_output.csv"},
+      "cmd": "",
+      "env_vars": {"POWER_DEVICE":"all", "POWER_SAMPLING_RATE":"0.1", "POWER_MODE":"power", "POWER_DUAL_GCD":"false", "POWER_OUTPUT_FILE":"gpu_info_power_profiler_output.csv"},
       "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/gpu_info_power_stop.sh"
+        },
         {
           "path": "scripts/common/post_scripts/gpu_info_post.sh",
           "args": "gpu_info_power_profiler"
@@ -133,11 +139,17 @@
       "pre_scripts": [
         {
           "path": "scripts/common/pre_scripts/gpu_info_pre.sh"
+        },
+        {
+          "path": "scripts/common/pre_scripts/gpu_info_vram_start.sh"
         }
       ],
-      "cmd": "python3 ../scripts/common/tools/gpu_info_profiler.py",
-      "env_vars": {"DEVICE":"all", "SAMPLING_RATE":"0.1", "MODE":"vram", "DUAL_GCD":"false", "OUTPUT_FILE":"gpu_info_vram_profiler_output.csv"},
+      "cmd": "",
+      "env_vars": {"VRAM_DEVICE":"all", "VRAM_SAMPLING_RATE":"0.1", "VRAM_MODE":"vram", "VRAM_DUAL_GCD":"false", "VRAM_OUTPUT_FILE":"gpu_info_vram_profiler_output.csv"},
       "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/gpu_info_vram_stop.sh"
+        },
         {
           "path": "scripts/common/post_scripts/gpu_info_post.sh",
           "args": "gpu_info_vram_profiler"

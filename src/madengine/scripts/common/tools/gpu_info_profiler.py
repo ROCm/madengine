@@ -16,6 +16,7 @@ import csv
 import os
 import logging
 import typing
+import signal
 from typing import Optional, List, Dict, Any
 
 
@@ -520,18 +521,45 @@ def main() -> None:
             profiler=profiler
         )
 
+    # Global flag for signal handling
+    shutdown_requested = threading.Event()
+    
+    def signal_handler(signum, frame):
+        """Handle SIGTERM/SIGINT to gracefully shutdown."""
+        logging.info(f"Received signal {signum}, initiating graceful shutdown...")
+        shutdown_requested.set()
+        # Stop the profiler event to signal threads to stop
+        event.clear()
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     # Execute profiling
     workload_thread.start()
     profiler_thread.start()
-    workload_thread.join()
-    profiler_thread.join()
-
+    
+    # Wait for either workload completion or shutdown signal
+    workload_thread.join(timeout=1)
+    while workload_thread.is_alive() and not shutdown_requested.is_set():
+        time.sleep(0.1)
+    
+    # If shutdown was requested, clear event to stop profiler
+    if shutdown_requested.is_set():
+        event.clear()
+        logging.info("Shutdown requested, stopping profiler thread...")
+    
+    # Wait for profiler thread to finish
+    profiler_thread.join(timeout=5)
+    
     # Write results to CSV
     output_file = os.environ.get("OUTPUT_FILE", "prof.csv")
     
     if not profiler_thread.data:
-        logging.error("No profiling data collected")
-        sys.exit(1)
+        logging.warning("No profiling data collected")
+        # Don't exit with error if we got a shutdown signal - this is expected
+        if not shutdown_requested.is_set():
+            sys.exit(1)
     else:
         try:
             with open(output_file, "w", newline='') as csvfile:

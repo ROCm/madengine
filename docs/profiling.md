@@ -177,8 +177,8 @@ Profile real-time GPU power consumption:
     {
       "name": "gpu_info_power_profiler",
       "env_vars": {
-        "DEVICE": "0",
-        "SAMPLING_RATE": "0.1"
+        "POWER_DEVICE": "0",
+        "POWER_SAMPLING_RATE": "0.1"
       }
     }
   ]
@@ -186,10 +186,25 @@ Profile real-time GPU power consumption:
 ```
 
 **Environment Variables:**
-- `DEVICE` - GPU device(s): `"0"`, `"0,1,2"`, or `"all"` (default: `"0"`)
-- `SAMPLING_RATE` - Sampling interval in seconds (default: `"0.1"`)
-- `MODE` - Must be `"power"` for this tool
-- `DUAL-GCD` - Enable dual-GCD mode: `"true"` or `"false"` (default: `"false"`)
+- `POWER_DEVICE` - GPU device(s): `"0"`, `"0,1,2"`, or `"all"` (default: `"all"`)
+- `POWER_SAMPLING_RATE` - Sampling interval in seconds (default: `"0.1"`)
+- `POWER_MODE` - Must be `"power"` for this tool (default: `"power"`)
+- `POWER_DUAL_GCD` - Enable dual-GCD mode: `"true"` or `"false"` (default: `"false"`)
+
+**Note:** To customize, override in tools configuration:
+```json
+{
+  "tools": [
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "0,1",
+        "POWER_SAMPLING_RATE": "0.2"
+      }
+    }
+  ]
+}
+```
 
 **Supported Platforms:** ROCm and CUDA
 
@@ -214,9 +229,8 @@ Profile real-time GPU memory consumption:
     {
       "name": "gpu_info_vram_profiler",
       "env_vars": {
-        "DEVICE": "all",
-        "SAMPLING_RATE": "0.5",
-        "MODE": "vram"
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.5"
       }
     }
   ]
@@ -224,7 +238,21 @@ Profile real-time GPU memory consumption:
 ```
 
 **Environment Variables:**
-- `DEVICE` - GPU device(s): `"0"`, `"0,1,2"`, or `"all"`
+- `VRAM_DEVICE` - GPU device(s): `"0"`, `"0,1,2"`, or `"all"` (default: `"all"`)
+- `VRAM_SAMPLING_RATE` - Sampling interval in seconds (default: `"0.1"`)
+- `VRAM_MODE` - Must be `"vram"` for this tool (default: `"vram"`)
+- `VRAM_DUAL_GCD` - Enable dual-GCD mode: `"true"` or `"false"` (default: `"false"`)
+
+**Using Both Profilers Together:**
+```json
+{
+  "tools": [
+    {"name": "gpu_info_power_profiler"},
+    {"name": "gpu_info_vram_profiler"}
+  ]
+}
+```
+This will generate both `gpu_info_power_profiler_output.csv` and `gpu_info_vram_profiler_output.csv`.
 - `SAMPLING_RATE` - Sampling interval in seconds
 - `MODE` - Must be `"vram"` for this tool
 - `DUAL-GCD` - Enable dual-GCD mode
@@ -475,8 +503,8 @@ For complex profiling setups:
     {
       "name": "gpu_info_power_profiler",
       "env_vars": {
-        "DEVICE": "all",
-        "SAMPLING_RATE": "0.1"
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1"
       }
     }
   ]
