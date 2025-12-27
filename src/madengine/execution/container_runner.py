@@ -1091,27 +1091,50 @@ class ContainerRunner:
 
                                 # Extract from log file
                                 try:
-                                    # Extract performance number: capture digits (with optional decimal/scientific notation)
-                                    # Use head -1 to take only the first match (avoid duplicates)
-                                    perf_cmd = (
-                                        "cat "
-                                        + log_file_path
-                                        + " | grep 'performance:' | head -1 | sed -n 's/.*performance:[[:space:]]*\\([0-9][0-9.eE+-]*\\)[[:space:]].*/\\1/p'"
-                                    )
-                                    run_results["performance"] = self.console.sh(
-                                        perf_cmd
-                                    )
-
-                                    # Extract metric unit: capture the word after the number
-                                    # Use head -1 to take only the first match (avoid duplicates)
-                                    metric_cmd = (
-                                        "cat "
-                                        + log_file_path
-                                        + " | grep 'performance:' | head -1 | sed -n 's/.*performance:[[:space:]]*[0-9][0-9.eE+-]*[[:space:]]*\\([a-zA-Z_][a-zA-Z0-9_]*\\).*/\\1/p'"
-                                    )
-                                    run_results["metric"] = self.console.sh(metric_cmd)
-                                except Exception:
-                                    pass  # Performance extraction is optional
+                                    # Note: re and os are already imported at module level (lines 10, 15)
+                                    
+                                    # Verify log file exists and is readable
+                                    if not os.path.exists(log_file_path):
+                                        print(f"Warning: Log file not found: {log_file_path}")
+                                        run_results["performance"] = None
+                                        run_results["metric"] = None
+                                    else:
+                                        # Read the log file once (avoids rocprofv3 crash from shell pipelines)
+                                        # This approach matches the Kubernetes implementation pattern
+                                        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            log_content = f.read()
+                                        
+                                        # Try multiple patterns to match different log formats
+                                        
+                                        # Pattern 1: "performance: 12345 metric_name" (original expected format)
+                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+                                        match = re.search(perf_pattern, log_content)
+                                        
+                                        if match:
+                                            run_results["performance"] = match.group(1).strip()
+                                            run_results["metric"] = match.group(2).strip()
+                                            print(f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}")
+                                        else:
+                                            # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
+                                            # This matches the actual output from HuggingFace Trainer
+                                            hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
+                                            hf_match = re.search(hf_pattern, log_content)
+                                            
+                                            if hf_match:
+                                                run_results["performance"] = hf_match.group(1).strip()
+                                                run_results["metric"] = "samples_per_second"
+                                                print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
+                                            else:
+                                                # No performance metrics found
+                                                print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                run_results["performance"] = None
+                                                run_results["metric"] = None
+                                            
+                                except Exception as e:
+                                    print(f"Warning: Error extracting performance metrics: {e}")
+                                    run_results["performance"] = None
+                                    run_results["metric"] = None
+                                    # Performance extraction is optional - don't fail the entire run
                         except Exception as e:
                             print(
                                 f"Warning: Could not extract performance metrics: {e}"
