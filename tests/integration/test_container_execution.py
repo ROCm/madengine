@@ -157,8 +157,10 @@ class TestContainerRunner:
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
     @patch("madengine.execution.container_runner.Docker")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("os.path.exists")
     def test_run_container_success(
-        self, mock_docker_class, mock_sh, mock_context_class
+        self, mock_exists, mock_file, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test successful container run."""
         # Mock context to avoid GPU detection
@@ -178,6 +180,17 @@ class TestContainerRunner:
 
         mock_sh.return_value = "hostname"
 
+        # Mock log file with performance metrics
+        log_content = "Running test...\nperformance: 100.5 samples_per_second\nTest completed"
+        mock_file.return_value.read.return_value = log_content
+        
+        # Mock os.path.exists to return True for log file
+        def exists_side_effect(path):
+            if path.endswith(".live.log"):
+                return True
+            return False
+        mock_exists.side_effect = exists_side_effect
+
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
@@ -196,6 +209,8 @@ class TestContainerRunner:
         assert result["status"] == "SUCCESS"
         assert "test_duration" in result
         assert mock_docker_class.called
+        assert result["performance"] == "100.5"
+        assert result["metric"] == "samples_per_second"
 
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")

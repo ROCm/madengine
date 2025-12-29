@@ -155,6 +155,16 @@
           "args": "gpu_info_vram_profiler"
         }
       ]
+    },
+    "therock_check": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/tools/detect_therock.sh"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {},
+      "post_scripts": []
     }
   }
 }

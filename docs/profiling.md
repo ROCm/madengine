@@ -654,6 +654,68 @@ To add new profiling tools:
 3. Add default config to `scripts/common/tools.json`
 4. Test with madengine
 
+## Environment Validation Tools
+
+### TheRock Detection
+
+Validate [TheRock](https://github.com/ROCm/TheRock) ROCm installations before running models. TheRock is AMD's lightweight build system for HIP and ROCm, distributed via Python pip packages.
+
+**Enable TheRock validation:**
+
+```bash
+madengine run --tags dummy_therock \
+  --tools therock_check \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+```
+
+**Standalone detection:**
+
+```bash
+# Shell script (quick check)
+bash src/madengine/scripts/common/tools/detect_therock.sh
+
+# Python script (detailed output)
+python3 src/madengine/scripts/common/tools/therock_detector.py --verbose
+
+# JSON output (for scripting)
+python3 src/madengine/scripts/common/tools/therock_detector.py --json
+```
+
+**Detection methods:**
+- Python pip installations (`~/.local/lib/python*/site-packages/rocm`)
+- Virtual environments with rocm packages
+- System packages (`/usr/lib/python*/site-packages/rocm`)
+- Tarball installations
+- Local build directories
+- Environment variables (`ROCM_PATH`, `HIP_PATH`)
+
+**Configuration in tools.json:**
+
+```json
+{
+  "therock_check": {
+    "pre_scripts": [
+      {
+        "path": "scripts/common/tools/detect_therock.sh"
+      }
+    ],
+    "cmd": "",
+    "env_vars": {},
+    "post_scripts": []
+  }
+}
+```
+
+**Features:**
+- Non-blocking validation (warnings only)
+- Automatic integration in `dummy_therock` model
+- Reports GPU targets and installation paths
+- Exit code 0 = found, 1 = not found
+
+**Resources:**
+- [TheRock GitHub](https://github.com/ROCm/TheRock)
+- [TheRock Releases](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)
+
 ## Next Steps
 
 - [Configuration Guide](configuration.md) - Detailed profiling configuration

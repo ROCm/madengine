@@ -410,5 +410,20 @@
       "bert"
     ],
     "args": ""
+  },
+  {
+    "name": "dummy_therock",
+    "dockerfile": "docker/dummy_therock",
+    "scripts": "scripts/dummy_therock/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "fp32",
+    "tags": [
+      "dummies",
+      "therock",
+      "pytorch",
+      "rocm"
+    ],
+    "args": ""
   }
 ]

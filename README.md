@@ -35,6 +35,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
 - **📊 Performance Tools** - Integrated profiling with rocprof, rocblas, MIOpen, RCCL tracing
+- **🔍 Environment Validation** - TheRock ROCm detection and validation tools
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
 
 ## 🚀 Quick Start
@@ -456,6 +457,15 @@ madengine run --tags model \
 | `rccl_trace` | RCCL collective ops | Communication patterns |
 | `gpu_info_power_profiler` | GPU power consumption | Power usage over time |
 | `gpu_info_vram_profiler` | GPU memory usage | VRAM utilization |
+| `therock_check` | TheRock ROCm validation | Installation detection |
+
+**TheRock Validation:**
+
+```bash
+# Validate TheRock installation (AMD's pip-based ROCm)
+madengine run --tags dummy_therock \
+  --additional-context '{"tools": [{"name": "therock_check"}]}'
+```
 
 See [Profiling Guide](docs/profiling.md) for detailed usage and analysis.
 
