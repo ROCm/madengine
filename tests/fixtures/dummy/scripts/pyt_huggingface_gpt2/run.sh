@@ -80,8 +80,19 @@ torchrun --nproc_per_node="$MAD_RUNTIME_NGPUS" $HF_PATH/examples/pytorch/languag
 	2>&1 | tee log.txt
 
 # output performance metric
-performance=$(cat log.txt | grep -Eo "train_samples_per_second':[^,]+" | sed "s/train_samples_per_second': //g" | head -n 1)
+# Use a more robust approach to avoid bash segfaults when rocprof is active
+# First check if log.txt exists and has content
+if [ -f log.txt ] && [ -s log.txt ]; then
+    # Extract performance metric, handling potential rocprof interference
+    performance=$(grep -Eo "train_samples_per_second':[^,]+" log.txt 2>/dev/null | sed "s/train_samples_per_second': //g" 2>/dev/null | head -n 1 2>/dev/null || echo "")
+else
+    performance=""
+fi
 
 # unset printing trace to not confuse Jenkinsfile
 set +x
-echo "performance: $performance samples_per_second"
+if [ -n "$performance" ]; then
+    echo "performance: $performance samples_per_second"
+else
+    echo "performance: N/A samples_per_second"
+fi

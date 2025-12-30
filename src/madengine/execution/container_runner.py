@@ -1144,18 +1144,22 @@ class ContainerRunner:
                         # First check for obvious failure patterns in the logs
                         try:
                             # Check for common failure patterns in the log file
+                            # Note: Patterns should be specific enough to avoid false positives
+                            # from profiling tools (rocprof, etc.) that use "Error:" as log level
                             error_patterns = [
                                 "OutOfMemoryError",
                                 "HIP out of memory",
                                 "CUDA out of memory",
-                                "RuntimeError",
-                                "AssertionError",
-                                "ValueError",
+                                "RuntimeError:",  # More specific with colon
+                                "AssertionError:",
+                                "ValueError:",
                                 "SystemExit",
-                                "failed (exitcode:",
-                                "Error:",
+                                "failed \\(exitcode:",  # Escape parenthesis for grep
+                                "Traceback \\(most recent call last\\)",  # Python tracebacks
                                 "FAILED",
                                 "Exception:",
+                                "ImportError:",
+                                "ModuleNotFoundError:",
                             ]
 
                             has_errors = False
@@ -1168,6 +1172,16 @@ class ContainerRunner:
                                         "RpcError: Running out of retries to initialize the metrics agent",
                                         "Metrics will not be exported",
                                         "FutureWarning",
+                                        # ROCProf/glog logging patterns (E/W/I prefixes are log levels, not errors)
+                                        r"^E[0-9]{8}.*generateRocpd\.cpp",  # ROCProf error-level logs
+                                        r"^W[0-9]{8}.*simple_timer\.cpp",    # ROCProf warning-level logs
+                                        r"^W[0-9]{8}.*generateRocpd\.cpp",   # ROCProf warning-level logs
+                                        r"^E[0-9]{8}.*tool\.cpp",            # ROCProf tool logs
+                                        "Opened result file:",                # ROCProf result file messages
+                                        "SQLite3 generation ::",              # ROCProf SQLite messages
+                                        r"\[rocprofv3\]",                     # ROCProf v3 messages
+                                        "rocpd_op:",                          # ROCProf operation logs
+                                        "rpd_tracer:",                        # ROCProf tracer logs
                                     ]
                                     
                                     # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns)

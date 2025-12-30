@@ -9,6 +9,7 @@ context management, Rich console integration, and error propagation.
 import pytest
 import json
 import io
+import re
 from unittest.mock import Mock, patch, MagicMock
 from rich.console import Console
 from rich.text import Text
@@ -442,6 +443,95 @@ class TestErrorIntegration:
         handler.handle_error(final_error)
         
         mock_console.print.assert_called()
+
+
+class TestErrorPatternMatching:
+    """Test error pattern matching for log analysis.
+    
+    These tests validate the error pattern fixes for GPT2 training,
+    ensuring ROCProf logs are correctly excluded while real errors are caught.
+    """
+    
+    @pytest.fixture
+    def benign_patterns(self):
+        """Benign patterns that should be excluded from error detection."""
+        return [
+            r"^E[0-9]{8}.*generateRocpd\.cpp",
+            r"^W[0-9]{8}.*simple_timer\.cpp",
+            r"^W[0-9]{8}.*generateRocpd\.cpp",
+            r"^E[0-9]{8}.*tool\.cpp",
+            "Opened result file:",
+            "SQLite3 generation ::",
+            r"\[rocprofv3\]",
+            "rocpd_op:",
+            "rpd_tracer:",
+        ]
+    
+    @pytest.fixture
+    def error_patterns(self):
+        """Error patterns that should be detected in logs."""
+        return [
+            "OutOfMemoryError",
+            "HIP out of memory",
+            "CUDA out of memory",
+            "RuntimeError:",
+            "AssertionError:",
+            "ValueError:",
+            "SystemExit",
+            r"failed \(exitcode:",
+            r"Traceback \(most recent call last\)",
+            "FAILED",
+            "Exception:",
+            "ImportError:",
+            "ModuleNotFoundError:",
+        ]
+    
+    def test_benign_patterns_match_rocprof_logs(self, benign_patterns):
+        """Test that benign patterns correctly match ROCProf logs."""
+        # Test cases that should be excluded (false positives)
+        rocprof_messages = [
+            "E20251230 16:43:09.797714 140310524069632 generateRocpd.cpp:605] Opened result file: /myworkspace/transformers/banff-cyxtera-s83-5/1004_results.db",
+            "W20251230 16:43:09.852161 140310524069632 simple_timer.cpp:55] SQLite3 generation :: rocpd_string",
+            "W20251230 16:43:09.896980 140310524069632 simple_timer.cpp:55] [rocprofv3] output generation ::     0.121982 sec",
+            "E20251230 16:43:12.684603 140140898293696 tool.cpp:2420] HIP (runtime) version 7.1.0 initialized",
+            "rocpd_op: 0",
+            "rpd_tracer: finalized in 50.142105 ms",
+        ]
+        
+        for test_line in rocprof_messages:
+            matched = any(re.search(pattern, test_line) for pattern in benign_patterns)
+            assert matched, f"Failed to match ROCProf log: {test_line[:80]}"
+    
+    def test_error_patterns_catch_real_errors(self, error_patterns):
+        """Test that error patterns correctly catch real errors."""
+        # Test cases that should be caught (real errors)
+        real_errors = [
+            "RuntimeError: CUDA out of memory. Tried to allocate 20.00 MiB",
+            "ImportError: cannot import name 'AutoModel' from 'transformers'",
+            "ModuleNotFoundError: No module named 'torch'",
+            "Traceback (most recent call last):",
+            "ValueError: invalid literal for int() with base 10: 'abc'",
+            "AssertionError: Expected shape (2, 3) but got (3, 2)",
+            "torch.distributed.elastic.multiprocessing.errors.ChildFailedError: FAILED",
+        ]
+        
+        for test_line in real_errors:
+            matched = any(re.search(pattern, test_line) for pattern in error_patterns)
+            assert matched, f"Failed to catch error: {test_line[:80]}"
+    
+    def test_rocprof_messages_dont_trigger_errors(self, error_patterns):
+        """Test that ROCProf messages don't trigger error patterns."""
+        # ROCProf messages that should NOT trigger errors
+        rocprof_messages = [
+            "E20251230 16:43:09.797714 140310524069632 generateRocpd.cpp:605] Opened result file",
+            "W20251230 16:43:09.852161 140310524069632 simple_timer.cpp:55] SQLite3 generation",
+            "rocpd_op: 0",
+            "rpd_tracer: finalized in 50.142105 ms",
+        ]
+        
+        for test_line in rocprof_messages:
+            matched = any(re.search(pattern, test_line) for pattern in error_patterns)
+            assert not matched, f"False positive: {test_line[:80]} matched error pattern"
 
 
 if __name__ == "__main__":
