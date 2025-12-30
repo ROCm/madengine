@@ -563,6 +563,11 @@ madengine run --tags model --keep-alive
 madengine build --tags model --clean-docker-cache --verbose
 ```
 
+**Common Issues:**
+- **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)
+- **ROCProf log errors**: Messages like `E20251230` are informational logs, not errors (fixed in v2.0+)
+- **Configuration errors**: Validate JSON with `python -m json.tool your-config.json`
+
 ## 🤝 Contributing
 
 We welcome contributions! See [Contributing Guide](docs/contributing.md) for details.
@@ -572,7 +577,15 @@ git clone https://github.com/ROCm/madengine.git
 cd madengine
 python3 -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
+
+# Run all tests
 pytest
+
+# Run specific test module
+pytest tests/unit/test_error_handling.py -v
+
+# Run error pattern tests
+pytest tests/unit/test_error_handling.py::TestErrorPatternMatching -v
 ```
 
 ## 📄 License

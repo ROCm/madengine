@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Error Pattern Detection**: Fixed false failure detection in HuggingFace GPT2/BERT models
+  - ROCProf logging messages (E20251230/W20251230 prefixes) no longer trigger false failures
+  - Added benign pattern list to exclude profiling tool output from error detection
+  - Made error patterns more specific (e.g., `RuntimeError:` instead of `Error:`)
+  - Improved performance metric extraction robustness to prevent bash segfaults during profiling
+  - Tests: Added `TestErrorPatternMatching` class in `tests/unit/test_error_handling.py`
 - Removed stale compiled Python file (`__init__.pyc`) from source tree
 - Cleaned up unused `typing_extensions` import in `core/console.py`
 - Improved type hint accuracy in `Console.sh()` method docstring

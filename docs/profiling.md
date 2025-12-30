@@ -609,6 +609,40 @@ docker run --rm rocm/pytorch:latest which rocprof
 - Check execution logs for errors
 - Verify write permissions
 
+### False Failure Detection with ROCProf
+
+**Issue:** Model runs marked as FAILURE despite successful execution
+
+**Symptoms:**
+- Status shows FAILURE but performance metrics are reported
+- Log contains ROCProf messages like `E20251230 ... Opened result file`
+- Error pattern `Error:` detected in logs
+
+**Root Cause:**
+ROCProf uses glog-style logging where `E` prefix means "Error level log" (not an actual error). These informational messages were incorrectly triggering failure detection.
+
+**Fixed in:** madengine v2.0+
+
+**Verification:**
+```bash
+# Run with profiling - should show SUCCESS status
+madengine run --tags pyt_huggingface_gpt2 \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "tools": [{"name": "rocprof"}, {"name": "rpd"}]
+  }'
+
+# Check status in output
+# ✅ Expected: Status = SUCCESS, Performance = ~38-40 samples/second
+```
+
+**Technical Details:**
+- ROCProf log patterns now excluded from error detection
+- Error patterns made more specific (e.g., `RuntimeError:` vs `Error:`)
+- Performance extraction hardened against bash segfaults during profiling
+- Tests: `pytest tests/unit/test_error_handling.py::TestErrorPatternMatching`
+
 ## Developer Information
 
 ### Tool Implementation
