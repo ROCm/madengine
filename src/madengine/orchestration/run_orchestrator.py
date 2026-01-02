@@ -241,7 +241,7 @@ class RunOrchestrator:
                 
                 # Combine build and run logs for full workflow
                 if self._did_build_phase and (target == "local" or target == "docker"):
-                    self._combine_build_and_run_logs()
+                    self._combine_build_and_run_logs(manifest_file)
                 
                 # Add session information to results for filtering
                 results["session_start_row"] = session_start_row
@@ -750,56 +750,74 @@ class RunOrchestrator:
                             f"[yellow]⚠️  Warning: Could not clean up {item_path}: {e2}[/yellow]"
                         )
 
-    def _combine_build_and_run_logs(self):
+    def _combine_build_and_run_logs(self, manifest_file: str):
         """Combine build.live.log and run.live.log into live.log for full workflow.
         
         For full workflow (build + run), this creates a unified log file by:
-        1. Finding all *.build.live.log and corresponding *.run.live.log files
-        2. Concatenating them into *.live.log
-        3. Keeping the original build and run logs for reference
+        1. Reading the manifest to find models that were actually executed in this session
+        2. Finding corresponding *.build.live.log and *.run.live.log files for those models
+        3. Concatenating them into *.live.log
+        4. Keeping the original build and run logs for reference
+        
+        Args:
+            manifest_file: Path to the manifest file containing executed models
         """
         import glob
+        import json
         
-        build_logs = glob.glob("*.build.live.log")
-        if not build_logs:
-            return  # No build logs to combine
+        # Load manifest to get list of models executed in this session
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+            
+            executed_models = list(manifest.get("built_images", {}).keys())
+            if not executed_models:
+                return  # No models to process
+        except Exception as e:
+            self.rich_console.print(f"[yellow]⚠️  Warning: Could not load manifest for log combining: {e}[/yellow]")
+            return
         
         self.rich_console.print("\n[dim]📝 Combining build and run logs...[/dim]")
         combined_count = 0
         
-        for build_log in build_logs:
-            # Derive the base name and corresponding run log
-            base_name = build_log.replace(".build.live.log", "")
-            run_log = f"{base_name}.run.live.log"
-            combined_log = f"{base_name}.live.log"
+        # Only process logs for models that were executed in this session
+        for model_name in executed_models:
+            # Find build logs matching this specific model
+            build_logs = glob.glob(f"{model_name}_*.build.live.log")
             
-            # Check if run log exists
-            if not os.path.exists(run_log):
-                continue  # Skip if run log doesn't exist
-            
-            try:
-                # Combine build and run logs
-                with open(combined_log, 'w') as outfile:
-                    # Add build log
-                    with open(build_log, 'r') as infile:
-                        outfile.write(infile.read())
-                    
-                    # Add separator
-                    outfile.write("\n" + "=" * 80 + "\n")
-                    outfile.write("RUN PHASE LOG\n")
-                    outfile.write("=" * 80 + "\n\n")
-                    
-                    # Add run log
-                    with open(run_log, 'r') as infile:
-                        outfile.write(infile.read())
+            for build_log in build_logs:
+                # Derive the base name and corresponding run log
+                base_name = build_log.replace(".build.live.log", "")
+                run_log = f"{base_name}.run.live.log"
+                combined_log = f"{base_name}.live.log"
                 
-                combined_count += 1
-                self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
+                # Check if run log exists
+                if not os.path.exists(run_log):
+                    continue  # Skip if run log doesn't exist
                 
-            except Exception as e:
-                self.rich_console.print(
-                    f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
-                )
+                try:
+                    # Combine build and run logs
+                    with open(combined_log, 'w') as outfile:
+                        # Add build log
+                        with open(build_log, 'r') as infile:
+                            outfile.write(infile.read())
+                        
+                        # Add separator
+                        outfile.write("\n" + "=" * 80 + "\n")
+                        outfile.write("RUN PHASE LOG\n")
+                        outfile.write("=" * 80 + "\n\n")
+                        
+                        # Add run log
+                        with open(run_log, 'r') as infile:
+                            outfile.write(infile.read())
+                    
+                    combined_count += 1
+                    self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
+                    
+                except Exception as e:
+                    self.rich_console.print(
+                        f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
+                    )
         
         if combined_count > 0:
             self.rich_console.print(f"[dim]✓ Combined {combined_count} log file(s)[/dim]")
