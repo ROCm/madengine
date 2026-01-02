@@ -69,10 +69,14 @@ rocprof)
 	# rocprofv3 creates directories with hex UUIDs containing .db files
 	found_rocprofv3_output=false
 	for dir in */; do
-		if [ -d "$dir" ] && [ -f "${dir}"*_results.db ] 2>/dev/null; then
-			echo "Found rocprofv3 output directory: $dir"
-			mv "$dir" "$OUTPUT/" 2>/dev/null || true
-			found_rocprofv3_output=true
+		# Check if directory exists and contains .db files
+		if [ -d "$dir" ]; then
+			# Use proper glob expansion to check for any .db file
+			if compgen -G "${dir}*_results.db" > /dev/null; then
+				echo "Found rocprofv3 output directory: $dir"
+				mv "$dir" "$OUTPUT/" 2>/dev/null || true
+				found_rocprofv3_output=true
+			fi
 		fi
 	done
 	
