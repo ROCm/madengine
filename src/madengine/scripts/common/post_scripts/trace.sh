@@ -91,6 +91,26 @@ rocprof)
 		echo "Collected rocprofv3 profiling data"
 	fi
 	
+	# Check for CSV trace files in subdirectories (rocprof can create hostname subdirectories)
+	# Look for patterns like: hostname/pid_kernel_trace.csv, hostname/pid_hip_api_trace.csv, etc.
+	csv_found=false
+	for dir in */; do
+		if [ -d "$dir" ]; then
+			# Check for CSV files matching rocprof patterns
+			if compgen -G "${dir}*_trace.csv" > /dev/null || compgen -G "${dir}*_api_trace.csv" > /dev/null; then
+				echo "Found rocprof CSV files in directory: $dir"
+				# Copy CSV files to output directory, preserving subdirectory structure
+				mkdir -p "$OUTPUT/$dir"
+				cp -v "${dir}"*.csv "$OUTPUT/$dir/" 2>/dev/null || true
+				csv_found=true
+			fi
+		fi
+	done
+	
+	if [ "$csv_found" = true ]; then
+		echo "Collected rocprof CSV trace files from subdirectories"
+	fi
+	
 	# Copy output directory (even if empty - non-critical)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;
