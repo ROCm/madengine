@@ -780,6 +780,15 @@ class ContainerRunner:
                 self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
                 merged_from_env += 1
         
+        # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
+        # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
+        # which tells Ray to IGNORE HIP_VISIBLE_DEVICES. We must explicitly override it.
+        # This is only needed if HIP_VISIBLE_DEVICES is set (indicating AMD GPU usage with Ray)
+        if 'HIP_VISIBLE_DEVICES' in self.context.ctx["docker_env_vars"]:
+            # Set to empty string to disable Ray's behavior of ignoring HIP_VISIBLE_DEVICES
+            self.context.ctx["docker_env_vars"]['RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES'] = ''
+            print("ℹ️  Overriding RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES to enable HIP_VISIBLE_DEVICES")
+        
         if merged_from_env > 0:
             print(f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker")
         
