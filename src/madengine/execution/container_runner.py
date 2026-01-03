@@ -767,7 +767,10 @@ class ContainerRunner:
             'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
             'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
             'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
-            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL'
+            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+            # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
+            # CRITICAL: These must be passed to Docker for proper GPU device mapping
+            'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
         ]
         
         # Check shell environment and add to docker_env_vars
