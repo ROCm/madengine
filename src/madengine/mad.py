@@ -267,7 +267,8 @@ def main():
     parser_database_update_table.set_defaults(func=update_table)
     # Database subcommand uploading to MongoDB
     parser_database_upload_mongodb = subparsers_database.add_parser('upload-mongodb', description="Update table in DB.", help='Update table in DB')
-    parser_database_upload_mongodb.add_argument('--csv-file-path', type=str, default='perf_entry.csv', help='Path to the csv file')
+    parser_database_upload_mongodb.add_argument('--csv-file-path', type=str, default='perf_entry.csv', help='Path to the csv file (for legacy perf.csv)')
+    parser_database_upload_mongodb.add_argument('--json-file-path', type=str, default=None, help='Path to the json file (for perf_entry_super.json)')
     parser_database_upload_mongodb.add_argument("--database-name", type=str, required=True, help="Name of the MongoDB database")
     parser_database_upload_mongodb.add_argument("--collection-name", type=str, required=True, help="Name of the MongoDB collection")
     parser_database_upload_mongodb.set_defaults(func=upload_mongodb)
