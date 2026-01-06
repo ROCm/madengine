@@ -8,8 +8,11 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import typing
 
-# MAD Engine modules
-from database import ENGINE
+# MAD Engine modules (dual import)
+try:
+    from madengine.db.database import get_engine, LOGGER  # type: ignore
+except ImportError:
+    from database import get_engine, LOGGER  # type: ignore
 
 
 def get_all_gpu_archs() -> typing.List[str]:
@@ -18,7 +21,7 @@ def get_all_gpu_archs() -> typing.List[str]:
     Returns:
         typing.List[str]: A list of all GPU architectures in the database.
     """
-    matching_entries = ENGINE.execute(
+    matching_entries = get_engine().execute(
         "SELECT DISTINCT(gpu_architecture) FROM dlm_table"
     )
 
@@ -43,7 +46,7 @@ def get_matching_db_entries(
     Returns:
         typing.List[typing.Dict[str, typing.Any]]: The matching entries.
     """
-    print(
+    LOGGER.info(
         "Looking for entries with {}, {} and {}".format(
             recent_entry["model"], 
             recent_entry["gpu_architecture"], 
@@ -52,7 +55,7 @@ def get_matching_db_entries(
     )
 
     # find matching entries to current entry
-    matching_entries = ENGINE.execute(
+    matching_entries = get_engine().execute(
         "SELECT * FROM dlm_table \
         WHERE model='{}' \
         AND gpu_architecture='{}' \
@@ -74,7 +77,7 @@ def get_matching_db_entries(
         if should_add:
             filtered_matching_entries.append(m)
 
-    print(
+    LOGGER.info(
         "Found {} similar entries in database filtered down to {} entries".format(
             len(matching_entries), 
             len(filtered_matching_entries)

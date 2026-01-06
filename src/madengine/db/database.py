@@ -14,10 +14,15 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import mapper, clear_mappers
 
-# MAD Engine modules
-from logger import setup_logger
-from base_class import BASE, BaseMixin
-from utils import get_env_vars
+# MAD Engine modules (dual import: package first, then standalone fallback for scp use)
+try:  # Package import context
+    from madengine.db.logger import setup_logger  # type: ignore
+    from madengine.db.base_class import BASE, BaseMixin  # type: ignore
+    from madengine.db.utils import get_env_vars  # type: ignore
+except ImportError:  # Standalone (scp) execution context
+    from logger import setup_logger  # type: ignore
+    from base_class import BASE, BaseMixin  # type: ignore
+    from utils import get_env_vars  # type: ignore
 
 
 # Create the logger
@@ -25,26 +30,51 @@ LOGGER = setup_logger()
 # Get the environment variables
 ENV_VARS = get_env_vars()
 
-# Check if the environment variables are set
-if ENV_VARS["user_name"] is None or ENV_VARS["user_password"] is None:
-    raise ValueError("User name or password not set")
+# Global engine variable - will be lazily initialized
+ENGINE = None
 
-if ENV_VARS["db_hostname"] is None or ENV_VARS["db_port"] is None:
-    raise ValueError("DB hostname or port not set")
+def get_engine():
+    """Get database engine, creating it lazily when first needed.
+    
+    Returns:
+        sqlalchemy.engine.Engine: Database engine
+        
+    Raises:
+        ValueError: If required environment variables are not set
+    """
+    global ENGINE
+    
+    if ENGINE is None:
+        # Check if the environment variables are set
+        if not ENV_VARS["user_name"] or not ENV_VARS["user_password"]:
+            raise ValueError("User name or password not set")
 
-if ENV_VARS["db_name"] is None:
-    raise ValueError("DB name not set")
+        if not ENV_VARS["db_hostname"] or not ENV_VARS["db_port"]:
+            raise ValueError("DB hostname or port not set")
 
-# Create the engine
-ENGINE = create_engine(
-    "mysql+pymysql://{user_name}:{user_password}@{hostname}:{port}/{db_name}".format(
-        user_name=ENV_VARS["user_name"],
-        user_password=ENV_VARS["user_password"],
-        hostname=ENV_VARS["db_hostname"],
-        port=ENV_VARS["db_port"],
-        db_name=ENV_VARS["db_name"],
-    )
-)
+        if not ENV_VARS["db_name"]:
+            raise ValueError("DB name not set")
+
+        # Create the engine
+        ENGINE = create_engine(
+            "mysql+pymysql://{user_name}:{user_password}@{hostname}:{port}/{db_name}".format(
+                user_name=ENV_VARS["user_name"],
+                user_password=ENV_VARS["user_password"],
+                hostname=ENV_VARS["db_hostname"],
+                port=ENV_VARS["db_port"],
+                db_name=ENV_VARS["db_name"],
+            )
+        )
+        LOGGER.info("Database engine created for %s@%s:%s/%s", 
+                   ENV_VARS["user_name"], ENV_VARS["db_hostname"], 
+                   ENV_VARS["db_port"], ENV_VARS["db_name"])
+    
+    return ENGINE
+
+# Check for eager initialization
+if os.getenv("MADENGINE_DB_EAGER") == "1":
+    LOGGER.info("MADENGINE_DB_EAGER=1 detected, creating engine immediately")
+    ENGINE = get_engine()
 
 # Define the path to the SQL file
 SQL_FILE_PATH = os.path.join(os.path.dirname(__file__), 'db_table_def.sql')
@@ -99,7 +129,7 @@ def connect_db() -> None:
     user_name = ENV_VARS["user_name"]
 
     try:
-        ENGINE.execute("Use {}".format(db_name))
+        get_engine().execute("Use {}".format(db_name))
         return
     except OperationalError:  # as err:
         LOGGER.warning(
@@ -107,12 +137,12 @@ def connect_db() -> None:
         )
 
     try:
-        ENGINE.execute("Create database if not exists {}".format(db_name))
+        get_engine().execute("Create database if not exists {}".format(db_name))
     except OperationalError as err:
         LOGGER.error("Database creation failed %s for username: %s", err, user_name)
 
-    ENGINE.execute("Use {}".format(db_name))
-    ENGINE.execute("SET GLOBAL max_allowed_packet=4294967296")
+    get_engine().execute("Use {}".format(db_name))
+    get_engine().execute("SET GLOBAL max_allowed_packet=4294967296")
 
 
 def clear_db() -> None:
@@ -126,7 +156,7 @@ def clear_db() -> None:
     db_name = ENV_VARS["db_name"]
 
     try:
-        ENGINE.execute("DROP DATABASE IF EXISTS {}".format(db_name))
+        get_engine().execute("DROP DATABASE IF EXISTS {}".format(db_name))
         return
     except OperationalError:  # as err:
         LOGGER.warning("Database %s could not be dropped", db_name)
@@ -143,13 +173,13 @@ def show_db() -> None:
     db_name = ENV_VARS["db_name"]
 
     try:
-        result = ENGINE.execute(
+        result = get_engine().execute(
             "SELECT * FROM {} \
                 WHERE {}.created_date= \
                     (SELECT MAX(created_date) FROM {}) ;".format(DB_TABLE.__tablename__)
         )
         for row in result:
-            print(row)
+            LOGGER.info("Latest entry: %s", row)
         return
     except OperationalError:  # as err:
         LOGGER.warning("Database %s could not be shown", db_name)
@@ -195,7 +225,7 @@ def trim_column(col_name: str) -> None:
     Raises:
         OperationalError: An error occurred while trimming the column.
     """
-    ENGINE.execute(
+    get_engine().execute(
         "UPDATE {} \
         SET \
         {} = TRIM({});".format(
@@ -218,7 +248,7 @@ def get_column_names() -> list:
     """
     db_name = ENV_VARS["db_name"]
 
-    result = ENGINE.execute(
+    result = get_engine().execute(
         "SELECT `COLUMN_NAME` \
             FROM `INFORMATION_SCHEMA`.`COLUMNS` \
                 WHERE `TABLE_SCHEMA`='{}' \
