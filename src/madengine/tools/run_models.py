@@ -202,7 +202,7 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            self.console.sh("/opt/rocm/bin/amd-smi || true")
+            self.console.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -789,7 +789,7 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                smi = model_docker.sh("/opt/rocm/bin/amd-smi || true")
+                smi = model_docker.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
             else:
