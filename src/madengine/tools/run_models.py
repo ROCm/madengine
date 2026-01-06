@@ -532,6 +532,69 @@ class RunModels:
                 script_args.strip()
             model_docker.sh("cd " + model_dir + " && bash " + script_name + " " + script_args , timeout=600)
 
+    def _cleanup_model_directory(self, model_docker, model_dir: str, max_retries: int = 3, retry_delay: float = 2.0) -> None:
+        """Robustly cleanup model directory with retry logic.
+        
+        This method handles cleanup failures that can occur due to:
+        - File system sync delays
+        - Background processes holding file handles
+        - Permission issues
+        - Race conditions between test completion and cleanup
+        
+        Args:
+            model_docker: The Docker instance for executing commands
+            model_dir: The directory path to remove
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Delay in seconds between retries (default: 2.0)
+        
+        Raises:
+            RuntimeError: If cleanup fails after all retry attempts (logged as warning, not raised)
+        """
+        import time
+        
+        print(f"Cleaning up model directory: {model_dir}")
+        
+        for attempt in range(max_retries):
+            try:
+                # First attempt: Try killing any processes that might be holding files
+                if attempt > 0:
+                    print(f"Cleanup attempt {attempt + 1}/{max_retries}...")
+                    # Kill any processes using files in the directory (ignore errors)
+                    model_docker.sh(f"fuser -k {model_dir} 2>/dev/null || true", timeout=30)
+                    time.sleep(retry_delay)
+                    
+                    # Try to fix permissions before removal
+                    try:
+                        model_docker.sh(f"chmod -R 777 {model_dir} 2>/dev/null || true", timeout=60)
+                    except RuntimeError:
+                        # Permission change failed, but continue anyway
+                        pass
+                
+                # Attempt to remove the directory
+                model_docker.sh(f"rm -rf {model_dir}", timeout=240)
+                print(f"Successfully cleaned up {model_dir}")
+                return
+                
+            except RuntimeError as e:
+                error_msg = str(e)
+                print(f"Cleanup attempt {attempt + 1} failed: {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    # Not the last attempt, wait and retry
+                    print(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                else:
+                    # Last attempt failed, log warning but don't fail the build
+                    # The test itself succeeded, cleanup failure is not critical
+                    print("=" * 60)
+                    print("WARNING: Failed to cleanup model directory after all retries")
+                    print(f"Directory: {model_dir}")
+                    print(f"Error: {error_msg}")
+                    print("This is not a critical failure - the test completed successfully")
+                    print("The directory will be cleaned up when the container is removed")
+                    print("=" * 60)
+                    # Don't raise the exception - cleanup failure shouldn't fail the build
+
     def run_model_impl(
         self, info: typing.Dict, dockerfile: str, run_details: RunDetails
     ) -> None:
@@ -879,7 +942,7 @@ class RunModels:
 
             # remove model directory
             if not self.args.keep_alive and not self.args.keep_model_dir:
-                model_docker.sh("rm -rf " + model_dir, timeout=240)
+                self._cleanup_model_directory(model_docker, model_dir)
             else:
                 model_docker.sh("chmod -R a+rw " + model_dir)
                 print("keep_alive is specified; model_dir(" + model_dir + ") is not removed")
