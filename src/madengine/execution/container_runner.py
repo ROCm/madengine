@@ -1315,7 +1315,7 @@ class ContainerRunner:
                                         f"Updated perf.csv with multiple results for {model_info['name']}"
                                     )
 
-                                    # Update perf_entry_super.json with multiple results
+                                    # Update perf_super.json with multiple results
                                     try:
                                         scripts_path = model_info.get("scripts", "")
                                         scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
@@ -1323,15 +1323,15 @@ class ContainerRunner:
                                         # Reuse common_info.json for super files (no need for duplicate)
                                         num_entries = update_perf_super_json(
                                             multiple_results=multiple_results,
-                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_json="perf_super.json",
                                             model_name=run_details_dict["model"],
                                             common_info="common_info.json",
                                             scripts_base_dir=scripts_base_dir,
                                         )
                                         
-                                        # Generate CSV files from JSON
+                                        # Generate CSV and JSON files from perf_super.json
                                         update_perf_super_csv(
-                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_json="perf_super.json",
                                             perf_super_csv="perf_super.csv",
                                             num_entries=num_entries
                                         )
@@ -1357,31 +1357,28 @@ class ContainerRunner:
                                         f"Updated perf.csv with result for {model_info['name']}"
                                     )
 
-                                    # Update perf_entry_super.json with single result
+                                    # Update perf_super.json with single result
                                     try:
-                                        # Generate perf_entry_super.json with configs field
-                                        with open("perf_entry_super.json", "w") as f:
-                                            json.dump(run_details_dict, f)
-                                        
                                         scripts_path = model_info.get("scripts", "")
                                         scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
                                         
+                                        # Use perf_entry.json as input (already created above)
                                         if run_results.get("status") == "SUCCESS":
                                             num_entries = update_perf_super_json(
-                                                single_result="perf_entry_super.json",
-                                                perf_super_json="perf_entry_super.json",
+                                                single_result="perf_entry.json",
+                                                perf_super_json="perf_super.json",
                                                 scripts_base_dir=scripts_base_dir,
                                             )
                                         else:
                                             num_entries = update_perf_super_json(
-                                                exception_result="perf_entry_super.json",
-                                                perf_super_json="perf_entry_super.json",
+                                                exception_result="perf_entry.json",
+                                                perf_super_json="perf_super.json",
                                                 scripts_base_dir=scripts_base_dir,
                                             )
                                         
-                                        # Generate CSV files from JSON
+                                        # Generate CSV and JSON files from perf_super.json
                                         update_perf_super_csv(
-                                            perf_super_json="perf_entry_super.json",
+                                            perf_super_json="perf_super.json",
                                             perf_super_csv="perf_super.csv",
                                             num_entries=num_entries
                                         )
@@ -1445,24 +1442,21 @@ class ContainerRunner:
                     f"Updated perf.csv with exception result for {model_info['name']}"
                 )
 
-                # Update perf_entry_super.json with exception result
+                # Update perf_super.json with exception result
                 try:
-                    # Generate perf_entry_super.json with configs field
-                    with open("perf_entry_super.json", "w") as f:
-                        json.dump(run_details_dict, f)
-                    
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
                     
+                    # Use perf_entry.json as input (already created above)
                     num_entries = update_perf_super_json(
-                        exception_result="perf_entry_super.json",
-                        perf_super_json="perf_entry_super.json",
+                        exception_result="perf_entry.json",
+                        perf_super_json="perf_super.json",
                         scripts_base_dir=scripts_base_dir,
                     )
                     
-                    # Generate CSV files from JSON
+                    # Generate CSV and JSON files from perf_super.json
                     update_perf_super_csv(
-                        perf_super_json="perf_entry_super.json",
+                        perf_super_json="perf_super.json",
                         perf_super_csv="perf_super.csv",
                         num_entries=num_entries
                     )

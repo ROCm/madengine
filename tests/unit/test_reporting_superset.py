@@ -2,9 +2,10 @@
 
 Tests the reporting layer's superset functionality including:
 1. ConfigParser for loading model configuration files (CSV, JSON, YAML)
-2. perf_entry_super.json generation with configs and multi_results
-3. CSV export from perf_entry_super.json to perf_entry_super.csv and perf_super.csv
-4. Handling of complex fields (configs, multi_results) in CSV format
+2. perf_super.json generation (cumulative) with configs and multi_results
+3. perf_entry_super.json generation (latest run) from perf_super.json
+4. CSV export from perf_super.json to perf_entry_super.csv and perf_super.csv
+5. Handling of complex fields (configs, multi_results) in CSV format
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -158,7 +159,7 @@ class TestConfigParser:
 
 
 class TestPerfEntrySuperGeneration:
-    """Test cases for perf_entry_super.json generation."""
+    """Test cases for perf_super.json generation (cumulative)."""
     
     @pytest.fixture
     def test_dir(self):
@@ -181,7 +182,7 @@ class TestPerfEntrySuperGeneration:
         )
     
     def test_perf_entry_super_json_structure(self, test_dir, fixtures_dir):
-        """Test that perf_entry_super.json has the correct structure."""
+        """Test that perf_super.json has the correct structure."""
         # Create mock data
         common_info = {
             "pipeline": "dummy_test",
@@ -224,8 +225,8 @@ class TestPerfEntrySuperGeneration:
             f.write("dummy/model-2,2345.67,requests/s,SUCCESS\n")
             f.write("dummy/model-3,345.78,ms,SUCCESS\n")
         
-        # Generate perf_entry_super.json
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        # Generate perf_super.json (cumulative)
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -237,7 +238,7 @@ class TestPerfEntrySuperGeneration:
         
         # Verify file was created
         assert os.path.exists(perf_super_path), \
-            "perf_entry_super.json should be created"
+            "perf_super.json should be created"
         
         # Load and verify structure
         with open(perf_super_path, 'r') as f:
@@ -317,7 +318,7 @@ class TestPerfEntrySuperGeneration:
             f.write("dummy/model-2,2345.67,requests/s,serving\n")
             f.write("dummy/model-3,345.78,ms,latency\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -392,7 +393,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model,performance,metric\n")
             f.write("dummy-no-config,1234.56,tokens/s\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -453,7 +454,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model-1,1234.56,tokens/s,1234.56,8.1,7.9,12.3,12288\n")
             f.write("model-2,2345.67,requests/s,2345.67,4.3,4.1,6.8,16384\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -529,7 +530,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model,performance,metric\n")
             f.write("multi-node-test,5000.0,tokens/s\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -564,7 +565,7 @@ class TestPerfEntrySuperGeneration:
 
 
 class TestPerfSuperCSVGeneration:
-    """Test cases for CSV generation from perf_entry_super.json."""
+    """Test cases for CSV generation from perf_super.json."""
     
     @pytest.fixture
     def test_dir(self):
@@ -575,8 +576,8 @@ class TestPerfSuperCSVGeneration:
             shutil.rmtree(temp_dir)
     
     def test_csv_generation_from_json(self, test_dir):
-        """Test CSV generation from perf_entry_super.json."""
-        # Create a sample perf_entry_super.json
+        """Test CSV generation from perf_super.json."""
+        # Create a sample perf_super.json
         data = [
             {
                 "model": "test_model_1",
@@ -598,7 +599,7 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        json_path = os.path.join(test_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
         
@@ -609,7 +610,7 @@ class TestPerfSuperCSVGeneration:
         try:
             # Generate CSVs
             update_perf_super_csv(
-                perf_super_json="perf_entry_super.json",
+                perf_super_json="perf_super.json",
                 perf_super_csv="perf_super.csv"
             )
             
@@ -653,7 +654,7 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        json_path = os.path.join(test_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
         
@@ -662,7 +663,7 @@ class TestPerfSuperCSVGeneration:
         
         try:
             update_perf_super_csv(
-                perf_super_json="perf_entry_super.json",
+                perf_super_json="perf_super.json",
                 perf_super_csv="perf_super.csv"
             )
             
@@ -734,7 +735,7 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        json_path = os.path.join(test_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
         
@@ -744,7 +745,7 @@ class TestPerfSuperCSVGeneration:
         try:
             # Generate CSVs with num_entries=4 (simulating 4 entries added in current run)
             update_perf_super_csv(
-                perf_super_json="perf_entry_super.json",
+                perf_super_json="perf_super.json",
                 perf_super_csv="perf_super.csv",
                 num_entries=4
             )
