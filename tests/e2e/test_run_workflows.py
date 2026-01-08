@@ -374,7 +374,7 @@ class TestContexts:
 
     @requires_gpu("docker gpus requires GPU hardware")
     @pytest.mark.skipif(
-        lambda: get_num_gpus() < 8, reason="test requires atleast 8 gpus"
+        get_num_gpus() < 8, reason="test requires atleast 8 gpus"
     )
     @pytest.mark.parametrize(
         "clean_test_temp_files",
@@ -422,7 +422,7 @@ class TestContexts:
             pytest.fail(f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}")
 
     @pytest.mark.skipif(
-        lambda: get_num_cpus() < 64, reason="test requires atleast 64 cpus"
+        get_num_cpus() < 64, reason="test requires atleast 64 cpus"
     )
     @pytest.mark.parametrize(
         "clean_test_temp_files",
