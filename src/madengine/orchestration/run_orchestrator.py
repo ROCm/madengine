@@ -602,7 +602,8 @@ class RunOrchestrator:
         if hasattr(self.args, "output") and self.args.output:
             runner.set_perf_csv_path(self.args.output)
 
-        # Run phase always uses .run suffix for consistency
+        # Run phase always uses .run suffix
+        # For full workflow, logs are combined later by _combine_build_and_run_logs()
         phase_suffix = ".run"
 
         # Run models
@@ -762,16 +763,15 @@ class RunOrchestrator:
         Args:
             manifest_file: Path to the manifest file containing executed models
         """
-        import glob
         import json
         
-        # Load manifest to get list of models executed in this session
+        # Load manifest to get list of build log files
         try:
             with open(manifest_file, "r") as f:
                 manifest = json.load(f)
             
-            executed_models = list(manifest.get("built_images", {}).keys())
-            if not executed_models:
+            built_images = manifest.get("built_images", {})
+            if not built_images:
                 return  # No models to process
         except Exception as e:
             self.rich_console.print(f"[yellow]⚠️  Warning: Could not load manifest for log combining: {e}[/yellow]")
@@ -780,44 +780,45 @@ class RunOrchestrator:
         self.rich_console.print("\n[dim]📝 Combining build and run logs...[/dim]")
         combined_count = 0
         
-        # Only process logs for models that were executed in this session
-        for model_name in executed_models:
-            # Find build logs matching this specific model
-            build_logs = glob.glob(f"{model_name}_*.build.live.log")
+        # Process each built image
+        for image_name, image_info in built_images.items():
+            # Get build log file name from manifest
+            build_log = image_info.get("log_file")
+            if not build_log or not os.path.exists(build_log):
+                continue  # Skip if build log doesn't exist
             
-            for build_log in build_logs:
-                # Derive the base name and corresponding run log
-                base_name = build_log.replace(".build.live.log", "")
-                run_log = f"{base_name}.run.live.log"
-                combined_log = f"{base_name}.live.log"
-                
-                # Check if run log exists
-                if not os.path.exists(run_log):
-                    continue  # Skip if run log doesn't exist
-                
-                try:
-                    # Combine build and run logs
-                    with open(combined_log, 'w') as outfile:
-                        # Add build log
-                        with open(build_log, 'r') as infile:
-                            outfile.write(infile.read())
-                        
-                        # Add separator
-                        outfile.write("\n" + "=" * 80 + "\n")
-                        outfile.write("RUN PHASE LOG\n")
-                        outfile.write("=" * 80 + "\n\n")
-                        
-                        # Add run log
-                        with open(run_log, 'r') as infile:
-                            outfile.write(infile.read())
+            # Derive the base name and corresponding run log
+            base_name = build_log.replace(".build.live.log", "")
+            run_log = f"{base_name}.run.live.log"
+            combined_log = f"{base_name}.live.log"
+            
+            # Check if run log exists
+            if not os.path.exists(run_log):
+                continue  # Skip if run log doesn't exist
+            
+            try:
+                # Combine build and run logs
+                with open(combined_log, 'w') as outfile:
+                    # Add build log
+                    with open(build_log, 'r') as infile:
+                        outfile.write(infile.read())
                     
-                    combined_count += 1
-                    self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
+                    # Add separator
+                    outfile.write("\n" + "=" * 80 + "\n")
+                    outfile.write("RUN PHASE LOG\n")
+                    outfile.write("=" * 80 + "\n\n")
                     
-                except Exception as e:
-                    self.rich_console.print(
-                        f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
-                    )
+                    # Add run log
+                    with open(run_log, 'r') as infile:
+                        outfile.write(infile.read())
+                
+                combined_count += 1
+                self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
+                
+            except Exception as e:
+                self.rich_console.print(
+                    f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
+                )
         
         if combined_count > 0:
             self.rich_console.print(f"[dim]✓ Combined {combined_count} log file(s)[/dim]")

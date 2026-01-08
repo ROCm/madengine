@@ -212,7 +212,7 @@ class TestPerfEntrySuperGeneration:
         }
         
         # Create common_info.json
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(test_dir, "common_info.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
         
@@ -672,6 +672,104 @@ class TestPerfSuperCSVGeneration:
             # Verify None values are handled
             assert pd.isna(df.iloc[0]['configs']) or df.iloc[0]['configs'] == ''
             assert pd.isna(df.iloc[0]['multi_results']) or df.iloc[0]['multi_results'] == ''
+            
+        finally:
+            os.chdir(original_dir)
+    
+    def test_csv_multiple_entries_in_entry_file(self, test_dir):
+        """Test that perf_entry_super.csv can contain multiple entries from current run.
+        
+        This tests the fix for the issue where perf_entry.csv and perf_entry.json
+        had 4 entries (for multiple results) but perf_entry_super.csv only had 1.
+        Now perf_entry_super.csv should contain all entries from the current run.
+        """
+        # Simulate a cumulative JSON with old entries + new entries
+        data = [
+            # Old entry from a previous run
+            {
+                "model": "old_model",
+                "n_gpus": "4",
+                "performance": "999.99",
+                "metric": "tokens/s",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": None,
+            },
+            # New entries from current run (4 models from multiple results)
+            {
+                "model": "dummy_multi_1",
+                "n_gpus": "1",
+                "performance": "1234.56",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 12345},
+            },
+            {
+                "model": "dummy_multi_2",
+                "n_gpus": "1",
+                "performance": "2345.67",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 23456},
+            },
+            {
+                "model": "dummy_multi_3",
+                "n_gpus": "1",
+                "performance": "3456.78",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 34567},
+            },
+            {
+                "model": "dummy_multi_4",
+                "n_gpus": "1",
+                "performance": "4567.89",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 45678},
+            }
+        ]
+        
+        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        with open(json_path, 'w') as f:
+            json.dump(data, f)
+        
+        original_dir = os.getcwd()
+        os.chdir(test_dir)
+        
+        try:
+            # Generate CSVs with num_entries=4 (simulating 4 entries added in current run)
+            update_perf_super_csv(
+                perf_super_json="perf_entry_super.json",
+                perf_super_csv="perf_super.csv",
+                num_entries=4
+            )
+            
+            # Verify perf_entry_super.csv has ALL 4 entries from current run
+            entry_df = pd.read_csv("perf_entry_super.csv")
+            assert len(entry_df) == 4, \
+                f"perf_entry_super.csv should have 4 entries, got {len(entry_df)}"
+            
+            # Verify the models are the 4 from the current run (not the old one)
+            models = entry_df['model'].tolist()
+            expected_models = ['dummy_multi_1', 'dummy_multi_2', 'dummy_multi_3', 'dummy_multi_4']
+            assert models == expected_models, \
+                f"Expected {expected_models}, got {models}"
+            
+            # Verify perf_super.csv has ALL 5 entries (old + new)
+            super_df = pd.read_csv("perf_super.csv")
+            assert len(super_df) == 5, \
+                f"perf_super.csv should have 5 entries (1 old + 4 new), got {len(super_df)}"
+            
+            # Verify all models are in perf_super.csv
+            all_models = super_df['model'].tolist()
+            assert 'old_model' in all_models, "Old model should be in perf_super.csv"
+            assert all(m in all_models for m in expected_models), \
+                "All new models should be in perf_super.csv"
             
         finally:
             os.chdir(original_dir)

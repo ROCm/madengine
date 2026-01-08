@@ -1,6 +1,7 @@
-"""Test the mad_cli module.
+"""Test the CLI module.
 
-This module tests the modern Typer-based command-line interface functionality.
+This module tests the modern Typer-based command-line interface functionality
+including utilities, validation, and argument processing.
 
 GPU Hardware Support:
 - Tests automatically detect if the machine has GPU hardware
@@ -51,6 +52,141 @@ from tests.fixtures.utils import (
 )
 
 
+# ============================================================================
+# CLI Utilities Tests
+# ============================================================================
+
+class TestSetupLogging:
+    """Test the setup_logging function."""
+
+    @patch("madengine.cli.utils.logging.basicConfig")
+    def test_setup_logging_verbose(self, mock_basic_config):
+        """Test logging setup with verbose mode enabled."""
+        setup_logging(verbose=True)
+
+        mock_basic_config.assert_called_once()
+        call_args = mock_basic_config.call_args
+        assert call_args[1]["level"] == 10  # logging.DEBUG
+
+    @patch("madengine.cli.utils.logging.basicConfig")
+    def test_setup_logging_normal(self, mock_basic_config):
+        """Test logging setup with normal mode."""
+        setup_logging(verbose=False)
+
+        mock_basic_config.assert_called_once()
+        call_args = mock_basic_config.call_args
+        assert call_args[1]["level"] == 20  # logging.INFO
+
+
+class TestCreateArgsNamespace:
+    """Test the create_args_namespace function."""
+
+    def test_create_args_namespace_basic(self):
+        """Test creating args namespace with basic parameters."""
+        args = create_args_namespace(
+            tags=["dummy"], registry="localhost:5000", verbose=True
+        )
+
+        assert args.tags == ["dummy"]
+        assert args.registry == "localhost:5000"
+        assert args.verbose is True
+
+    def test_create_args_namespace_complex(self):
+        """Test creating args namespace with complex parameters."""
+        args = create_args_namespace(
+            tags=["model1", "model2"],
+            additional_context='{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+            timeout=300,
+            keep_alive=True,
+            verbose=False,
+        )
+
+        assert args.tags == ["model1", "model2"]
+        assert args.additional_context == '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+        assert args.timeout == 300
+        assert args.keep_alive is True
+        assert args.verbose is False
+
+
+class TestSaveSummaryWithFeedback:
+    """Test the save_summary_with_feedback function."""
+
+    def test_save_summary_success(self):
+        """Test successful summary saving."""
+        summary = {"successful_builds": ["model1", "model2"], "failed_builds": []}
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            temp_file = f.name
+
+        try:
+            with patch("madengine.cli.utils.console") as mock_console:
+                save_summary_with_feedback(summary, temp_file, "Build")
+
+                # Verify file was written
+                with open(temp_file, "r") as f:
+                    saved_data = json.load(f)
+                assert saved_data == summary
+
+                mock_console.print.assert_called()
+        finally:
+            os.unlink(temp_file)
+
+    def test_save_summary_io_error(self):
+        """Test summary saving with IO error."""
+        summary = {"successful_builds": ["model1"], "failed_builds": []}
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            with pytest.raises(typer.Exit) as exc_info:
+                save_summary_with_feedback(summary, "/invalid/path/file.json", "Build")
+
+            assert exc_info.value.exit_code == ExitCode.FAILURE
+            mock_console.print.assert_called()
+
+
+class TestDisplayResultsTable:
+    """Test the display_results_table function."""
+
+    def test_display_results_table_build_success(self):
+        """Test displaying build results table with successes."""
+        summary = {"successful_builds": ["model1", "model2"], "failed_builds": []}
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results")
+
+            mock_console.print.assert_called()
+
+    def test_display_results_table_build_failures(self):
+        """Test displaying build results table with failures."""
+        summary = {
+            "successful_builds": ["model1"],
+            "failed_builds": ["model2", "model3"],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results")
+
+            mock_console.print.assert_called()
+
+    def test_display_results_table_run_results(self):
+        """Test displaying run results table."""
+        summary = {
+            "successful_runs": [
+                {"model": "model1", "status": "success"},
+                {"model": "model2", "status": "success"},
+            ],
+            "failed_runs": [{"model": "model3", "status": "failed"}],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Run Results")
+
+            mock_console.print.assert_called()
+
+
+# ============================================================================
+# CLI Validation Tests
+# ============================================================================
+
 class TestValidateAdditionalContext:
     """Test the validate_additional_context function."""
 
@@ -93,46 +229,35 @@ class TestValidateAdditionalContext:
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
             mock_console.print.assert_called()
 
-    def test_validate_additional_context_missing_gpu_vendor(self):
-        """Test validation with missing gpu_vendor."""
+    def test_validate_additional_context_missing_required_fields(self):
+        """Test validation with missing required fields."""
         with patch("madengine.cli.validators.console") as mock_console:
+            # Missing gpu_vendor
             with pytest.raises(typer.Exit) as exc_info:
                 validate_additional_context('{"guest_os": "UBUNTU"}')
-
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
-            mock_console.print.assert_called()
 
-    def test_validate_additional_context_missing_guest_os(self):
-        """Test validation with missing guest_os."""
-        with patch("madengine.cli.validators.console") as mock_console:
+            # Missing guest_os
             with pytest.raises(typer.Exit) as exc_info:
                 validate_additional_context('{"gpu_vendor": "AMD"}')
-
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
-            mock_console.print.assert_called()
 
-    def test_validate_additional_context_invalid_gpu_vendor(self):
-        """Test validation with invalid gpu_vendor."""
+    def test_validate_additional_context_invalid_values(self):
+        """Test validation with invalid field values."""
         with patch("madengine.cli.validators.console") as mock_console:
+            # Invalid gpu_vendor
             with pytest.raises(typer.Exit) as exc_info:
                 validate_additional_context(
                     '{"gpu_vendor": "INVALID", "guest_os": "UBUNTU"}'
                 )
-
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
-            mock_console.print.assert_called()
 
-    def test_validate_additional_context_invalid_guest_os(self):
-        """Test validation with invalid guest_os."""
-        with patch("madengine.cli.validators.console") as mock_console:
+            # Invalid guest_os
             with pytest.raises(typer.Exit) as exc_info:
                 validate_additional_context(
                     '{"gpu_vendor": "AMD", "guest_os": "INVALID"}'
                 )
-
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
-            mock_console.print.assert_called()
-
 
 
 class TestProcessBatchManifest:
@@ -217,19 +342,16 @@ class TestProcessBatchManifest:
         finally:
             os.unlink(temp_file)
 
-    def test_process_batch_manifest_file_not_found(self):
-        """Test error handling for non-existent file."""
+    def test_process_batch_manifest_error_handling(self):
+        """Test error handling for various invalid inputs."""
         from madengine.cli.validators import process_batch_manifest
         
+        # File not found
         with pytest.raises(FileNotFoundError) as exc_info:
             process_batch_manifest("non_existent_file.json")
-        
         assert "Batch manifest file not found" in str(exc_info.value)
-
-    def test_process_batch_manifest_invalid_json(self):
-        """Test error handling for invalid JSON."""
-        from madengine.cli.validators import process_batch_manifest
         
+        # Invalid JSON
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("invalid json content{")
             temp_file = f.name
@@ -237,17 +359,16 @@ class TestProcessBatchManifest:
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
-            
             assert "Invalid JSON" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
 
-    def test_process_batch_manifest_not_a_list(self):
-        """Test validation that manifest must be a list."""
+    def test_process_batch_manifest_validation(self):
+        """Test validation rules for batch manifest."""
         from madengine.cli.validators import process_batch_manifest
         
-        batch_data = {"model_name": "model1", "build_new": True}  # Dict instead of list
-        
+        # Not a list
+        batch_data = {"model_name": "model1", "build_new": True}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
@@ -255,19 +376,12 @@ class TestProcessBatchManifest:
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
-            
             assert "must be a list" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
-
-    def test_process_batch_manifest_missing_model_name(self):
-        """Test validation for required model_name field."""
-        from madengine.cli.validators import process_batch_manifest
         
-        batch_data = [
-            {"build_new": True},  # Missing model_name
-        ]
-        
+        # Missing model_name
+        batch_data = [{"build_new": True}]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
@@ -275,11 +389,6 @@ class TestProcessBatchManifest:
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
-            
             assert "missing required 'model_name' field" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
-
-
-
-

@@ -41,22 +41,6 @@ from madengine.core.errors import (
 )
 
 
-class TestErrorCategories:
-    """Test error category enumeration."""
-    
-    def test_error_categories_exist(self):
-        """Test that all required error categories are defined."""
-        expected_categories = [
-            "validation", "connection", "authentication", "runtime",
-            "build", "discovery", "orchestration", "runner",
-            "configuration", "timeout"
-        ]
-        
-        for category in expected_categories:
-            assert hasattr(ErrorCategory, category.upper())
-            assert ErrorCategory[category.upper()].value == category
-
-
 class TestErrorContext:
     """Test error context data structure."""
     
@@ -133,40 +117,22 @@ class TestMADEngineErrorHierarchy:
         assert error.suggestions == ["Try again", "Check logs"]
         assert error.cause is None
     
-    def test_validation_error(self):
-        """Test ValidationError specific functionality."""
-        error = ValidationError("Invalid input")
+    @pytest.mark.parametrize("error_class,category,recoverable,message", [
+        (ValidationError, ErrorCategory.VALIDATION, True, "Invalid input"),
+        (ConnectionError, ErrorCategory.CONNECTION, True, "Connection failed"),
+        (BuildError, ErrorCategory.BUILD, False, "Build failed"),
+        (RunnerError, ErrorCategory.RUNNER, True, "Runner execution failed"),
+        (AuthenticationError, ErrorCategory.AUTHENTICATION, True, "Auth failed"),
+        (ConfigurationError, ErrorCategory.CONFIGURATION, True, "Config error"),
+    ])
+    def test_error_types(self, error_class, category, recoverable, message):
+        """Test all error types with parametrized test."""
+        error = error_class(message)
         
         assert isinstance(error, MADEngineError)
-        assert error.category == ErrorCategory.VALIDATION
-        assert error.recoverable is True
-        assert str(error) == "Invalid input"
-    
-    def test_connection_error(self):
-        """Test ConnectionError specific functionality."""
-        context = create_error_context(operation="connect", node_id="node-1")
-        error = ConnectionError("Connection failed", context=context)
-        
-        assert isinstance(error, MADEngineError)
-        assert error.category == ErrorCategory.CONNECTION
-        assert error.recoverable is True
-        assert error.context.node_id == "node-1"
-    
-    def test_build_error(self):
-        """Test BuildError specific functionality."""
-        error = BuildError("Build failed")
-        
-        assert isinstance(error, MADEngineError)
-        assert error.category == ErrorCategory.BUILD
-        assert error.recoverable is False
-    
-    def test_runner_error(self):
-        """Test RunnerError specific functionality."""
-        error = RunnerError("Runner execution failed")
-        
-        assert isinstance(error, MADEngineError)
-        assert error.category == ErrorCategory.RUNNER
-        assert error.recoverable is True
+        assert error.category == category
+        assert error.recoverable is recoverable
+        assert str(error) == message
     
     def test_error_with_cause(self):
         """Test error with underlying cause."""

@@ -235,7 +235,7 @@ class TestProfilingFunctionality:
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "miopen_trace_output.csv"]],
+        [["perf.csv", "perf.html", "library_trace.csv"]],
         indirect=True,
     )
     def test_miopen_trace_runs_correctly(self, global_data, clean_test_temp_files):
@@ -255,7 +255,7 @@ class TestProfilingFunctionality:
 
         regexp = re.compile(r"MIOpenDriver")
         foundMatch = None
-        with open(os.path.join(BASE_DIR, "miopen_trace_output.csv"), "r") as f:
+        with open(os.path.join(BASE_DIR, "library_trace.csv"), "r") as f:
             while True:
                 line = f.readline()
                 if not line:
