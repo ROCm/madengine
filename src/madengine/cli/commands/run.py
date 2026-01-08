@@ -133,6 +133,13 @@ def run(
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
     ] = False,
+    cleanup_perf: Annotated[
+        bool,
+        typer.Option(
+            "--cleanup-perf",
+            help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
+        ),
+    ] = False,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -191,6 +198,7 @@ def run(
                 force_mirror_local=force_mirror_local,
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
+                cleanup_perf=cleanup_perf,
                 _separate_phases=True,
             )
 
@@ -227,6 +235,12 @@ def run(
             from madengine.utils.session_tracker import SessionTracker
             tracker = SessionTracker(perf_csv_path)
             tracker.cleanup_marker()
+            
+            # Cleanup intermediate perf files if requested
+            if cleanup_perf:
+                from madengine.utils.perf_cleanup import cleanup_perf_intermediates as do_cleanup
+                console.print("\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]")
+                do_cleanup()
             
             save_summary_with_feedback(execution_summary, summary_output, "Execution")
 
@@ -308,6 +322,7 @@ def run(
                 force_mirror_local=force_mirror_local,
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
+                cleanup_perf=cleanup_perf,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 
@@ -360,6 +375,12 @@ def run(
             from madengine.utils.session_tracker import SessionTracker
             tracker = SessionTracker(perf_csv_path)
             tracker.cleanup_marker()
+            
+            # Cleanup intermediate perf files if requested
+            if cleanup_perf:
+                from madengine.utils.perf_cleanup import cleanup_perf_intermediates as do_cleanup
+                console.print("\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]")
+                do_cleanup()
             
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
