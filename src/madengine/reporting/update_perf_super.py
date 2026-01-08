@@ -1,7 +1,8 @@
-"""Module to update the perf_entry_super.json file with enhanced performance data.
+"""Module to update the perf_super.json file with enhanced performance data.
 
-This module is used to update the perf_entry_super.json file with performance data
-that includes configuration information from config files, and provides CSV export.
+This module is used to update the perf_super.json file (cumulative) with performance data
+that includes configuration information from config files, and provides CSV/JSON export.
+It also generates perf_entry_super.json (latest run only) for consistency with perf_entry.json.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -41,10 +42,10 @@ def write_json(data: typing.Union[dict, list], output_path: str) -> None:
 
 
 def load_perf_super_json(perf_super_json: str) -> list:
-    """Load existing perf_entry_super.json file.
+    """Load existing perf_super.json file (cumulative).
     
     Args:
-        perf_super_json: Path to perf_entry_super.json file.
+        perf_super_json: Path to perf_super.json file.
     
     Returns:
         List of performance records, or empty list if file doesn't exist.
@@ -60,7 +61,7 @@ def load_perf_super_json(perf_super_json: str) -> list:
         else:
             return [data]
     except Exception as e:
-        print(f"Warning: Could not load existing perf_entry_super.json: {e}")
+        print(f"Warning: Could not load existing {perf_super_json}: {e}")
         return []
 
 
@@ -216,25 +217,29 @@ def update_perf_super_json(
         common_info: typing.Optional[str] = None,
         model_name: typing.Optional[str] = None,
         scripts_base_dir: typing.Optional[str] = None,
-    ) -> None:
-    """Update the perf_entry_super.json file with the latest performance data.
+    ) -> int:
+    """Update the perf_super.json file (cumulative) with the latest performance data.
     
     Args:
-        perf_super_json: Path to perf_entry_super.json file.
+        perf_super_json: Path to perf_super.json file (cumulative).
         multiple_results: Path to multiple results CSV file.
         single_result: Path to single result JSON file.
         exception_result: Path to exception result JSON file.
         common_info: Path to common info JSON file.
         model_name: The model name.
         scripts_base_dir: Base directory for scripts (for config file resolution).
+        
+    Returns:
+        Number of entries added in this update.
     """
     print("\n" + "=" * 80)
     print("📊 UPDATING PERFORMANCE SUPERSET DATABASE")
     print("=" * 80)
     print(f"📂 Target file: {perf_super_json}")
     
-    # Load existing perf_entry_super.json
+    # Load existing perf_super.json
     perf_super_list = load_perf_super_json(perf_super_json)
+    initial_count = len(perf_super_list)
     
     # Create config parser
     config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
@@ -258,26 +263,63 @@ def update_perf_super_json(
             perf_super_list, exception_result
         )
     else:
-        print("ℹ️  No results to update in perf_entry_super.json")
+        print("ℹ️  No results to update in perf_super.json")
+        return 0
+    
+    # Write updated perf_super.json
+    write_json(perf_super_list, perf_super_json)
+    entries_added = len(perf_super_list) - initial_count
+    print(f"✅ Successfully updated: {perf_super_json} (added {entries_added} entries)")
+    print("=" * 80 + "\n")
+    
+    return entries_added
+
+
+def generate_perf_entry_super_json(
+    perf_super_json: str = "perf_super.json",
+    perf_entry_super_json: str = "perf_entry_super.json",
+    num_entries: int = 1
+) -> None:
+    """Generate perf_entry_super.json (latest entries) from perf_super.json (cumulative).
+    
+    Args:
+        perf_super_json: Path to cumulative JSON source
+        perf_entry_super_json: Path to entry JSON output (latest entries only)
+        num_entries: Number of latest entries to include
+    """
+    if not os.path.exists(perf_super_json):
+        print(f"⚠️  {perf_super_json} not found, skipping entry JSON generation")
         return
     
-    # Write updated perf_entry_super.json
-    write_json(perf_super_list, perf_super_json)
-    print(f"✅ Successfully updated: {perf_super_json}")
-    print("=" * 80 + "\n")
+    data = read_json(perf_super_json)
+    if not isinstance(data, list):
+        data = [data]
+    
+    if not data:
+        print(f"⚠️  {perf_super_json} is empty, skipping entry JSON generation")
+        return
+    
+    # Take the latest num_entries entries
+    entry_data = data[-num_entries:] if num_entries > 0 else [data[-1]]
+    
+    # Write to perf_entry_super.json
+    write_json(entry_data, perf_entry_super_json)
+    print(f"✅ Generated entry JSON: {perf_entry_super_json} ({len(entry_data)} entries)")
 
 
 def convert_super_json_to_csv(
     perf_super_json: str,
     output_csv: str,
-    entry_only: bool = False
+    entry_only: bool = False,
+    num_entries: int = 1
 ) -> None:
-    """Convert perf_entry_super.json to CSV format.
+    """Convert JSON to CSV format.
     
     Args:
-        perf_super_json: Path to perf_entry_super.json
-        output_csv: Output CSV path (perf_entry_super.csv or perf_super.csv)
-        entry_only: If True, only convert latest entry; if False, convert all
+        perf_super_json: Path to JSON source
+        output_csv: Output CSV path
+        entry_only: If True, only convert latest entries; if False, convert all
+        num_entries: Number of latest entries to include when entry_only=True
     """
     # Load JSON list
     if not os.path.exists(perf_super_json):
@@ -293,7 +335,8 @@ def convert_super_json_to_csv(
         return
     
     if entry_only and data:
-        data = [data[-1]]  # Latest entry only
+        # Take the latest num_entries entries
+        data = data[-num_entries:] if num_entries > 0 else [data[-1]]
     
     # Convert to DataFrame
     df = pd.DataFrame(data)
@@ -311,28 +354,37 @@ def convert_super_json_to_csv(
     
     # Write to CSV
     df.to_csv(output_csv, index=False)
-    print(f"✅ Generated CSV: {output_csv}")
+    print(f"✅ Generated CSV: {output_csv} ({len(df)} entries)")
 
 
 def update_perf_super_csv(
-    perf_super_json: str = "perf_entry_super.json",
-    perf_super_csv: str = "perf_super.csv"
+    perf_super_json: str = "perf_super.json",
+    perf_super_csv: str = "perf_super.csv",
+    num_entries: int = 1
 ) -> None:
-    """Update both perf_entry_super.csv and perf_super.csv.
+    """Generate perf_entry_super.json, perf_entry_super.csv and perf_super.csv from perf_super.json.
     
     Args:
-        perf_super_json: Path to JSON source
-        perf_super_csv: Path to cumulative CSV
+        perf_super_json: Path to cumulative JSON source (perf_super.json)
+        perf_super_csv: Path to cumulative CSV (perf_super.csv)
+        num_entries: Number of latest entries to include in perf_entry_super.*
     """
     print("\n" + "=" * 80)
-    print("📄 GENERATING CSV FROM PERFORMANCE SUPERSET")
+    print("📄 GENERATING FILES FROM PERFORMANCE SUPERSET")
     print("=" * 80)
     
-    # Generate perf_entry_super.csv (latest entry only)
+    # Generate perf_entry_super.json (latest entries from current run)
+    generate_perf_entry_super_json(
+        perf_super_json=perf_super_json,
+        perf_entry_super_json="perf_entry_super.json",
+        num_entries=num_entries
+    )
+    
+    # Generate perf_entry_super.csv (latest entries from current run)
     convert_super_json_to_csv(
-        perf_super_json, 
-        "perf_entry_super.csv", 
-        entry_only=True
+        "perf_entry_super.json",  # Use the entry JSON as source
+        "perf_entry_super.csv",
+        entry_only=False  # Read all from entry JSON (already filtered)
     )
     
     # Generate perf_super.csv (all entries)

@@ -131,6 +131,17 @@ def handle_multiple_results(
         final_multiple_results_df = final_multiple_results_df[columns]
 
     perf_entry_df_to_csv(final_multiple_results_df)
+    
+    # Also save as JSON for consistency with single result workflow
+    # This ensures perf_entry.json is always up-to-date regardless of result type
+    perf_entry_list = final_multiple_results_df.to_dict(orient='records')
+    with open("perf_entry.json", "w") as f:
+        # If multiple entries, save as array; if single, save as object for consistency
+        if len(perf_entry_list) == 1:
+            json.dump(perf_entry_list[0], f, indent=2)
+        else:
+            json.dump(perf_entry_list, f, indent=2)
+    
     if perf_csv_df.empty:
         perf_csv_df = final_multiple_results_df
     else:

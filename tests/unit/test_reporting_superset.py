@@ -2,9 +2,10 @@
 
 Tests the reporting layer's superset functionality including:
 1. ConfigParser for loading model configuration files (CSV, JSON, YAML)
-2. perf_entry_super.json generation with configs and multi_results
-3. CSV export from perf_entry_super.json to perf_entry_super.csv and perf_super.csv
-4. Handling of complex fields (configs, multi_results) in CSV format
+2. perf_super.json generation (cumulative) with configs and multi_results
+3. perf_entry_super.json generation (latest run) from perf_super.json
+4. CSV export from perf_super.json to perf_entry_super.csv and perf_super.csv
+5. Handling of complex fields (configs, multi_results) in CSV format
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -158,7 +159,7 @@ class TestConfigParser:
 
 
 class TestPerfEntrySuperGeneration:
-    """Test cases for perf_entry_super.json generation."""
+    """Test cases for perf_super.json generation (cumulative)."""
     
     @pytest.fixture
     def test_dir(self):
@@ -181,7 +182,7 @@ class TestPerfEntrySuperGeneration:
         )
     
     def test_perf_entry_super_json_structure(self, test_dir, fixtures_dir):
-        """Test that perf_entry_super.json has the correct structure."""
+        """Test that perf_super.json has the correct structure."""
         # Create mock data
         common_info = {
             "pipeline": "dummy_test",
@@ -212,7 +213,7 @@ class TestPerfEntrySuperGeneration:
         }
         
         # Create common_info.json
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(test_dir, "common_info.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
         
@@ -224,8 +225,8 @@ class TestPerfEntrySuperGeneration:
             f.write("dummy/model-2,2345.67,requests/s,SUCCESS\n")
             f.write("dummy/model-3,345.78,ms,SUCCESS\n")
         
-        # Generate perf_entry_super.json
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        # Generate perf_super.json (cumulative)
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -237,7 +238,7 @@ class TestPerfEntrySuperGeneration:
         
         # Verify file was created
         assert os.path.exists(perf_super_path), \
-            "perf_entry_super.json should be created"
+            "perf_super.json should be created"
         
         # Load and verify structure
         with open(perf_super_path, 'r') as f:
@@ -317,7 +318,7 @@ class TestPerfEntrySuperGeneration:
             f.write("dummy/model-2,2345.67,requests/s,serving\n")
             f.write("dummy/model-3,345.78,ms,latency\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -392,7 +393,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model,performance,metric\n")
             f.write("dummy-no-config,1234.56,tokens/s\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -453,7 +454,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model-1,1234.56,tokens/s,1234.56,8.1,7.9,12.3,12288\n")
             f.write("model-2,2345.67,requests/s,2345.67,4.3,4.1,6.8,16384\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -529,7 +530,7 @@ class TestPerfEntrySuperGeneration:
             f.write("model,performance,metric\n")
             f.write("multi-node-test,5000.0,tokens/s\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_entry_super.json")
+        perf_super_path = os.path.join(test_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -564,7 +565,7 @@ class TestPerfEntrySuperGeneration:
 
 
 class TestPerfSuperCSVGeneration:
-    """Test cases for CSV generation from perf_entry_super.json."""
+    """Test cases for CSV generation from perf_super.json."""
     
     @pytest.fixture
     def test_dir(self):
@@ -575,8 +576,8 @@ class TestPerfSuperCSVGeneration:
             shutil.rmtree(temp_dir)
     
     def test_csv_generation_from_json(self, test_dir):
-        """Test CSV generation from perf_entry_super.json."""
-        # Create a sample perf_entry_super.json
+        """Test CSV generation from perf_super.json."""
+        # Create a sample perf_super.json
         data = [
             {
                 "model": "test_model_1",
@@ -598,7 +599,7 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        json_path = os.path.join(test_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
         
@@ -609,7 +610,7 @@ class TestPerfSuperCSVGeneration:
         try:
             # Generate CSVs
             update_perf_super_csv(
-                perf_super_json="perf_entry_super.json",
+                perf_super_json="perf_super.json",
                 perf_super_csv="perf_super.csv"
             )
             
@@ -653,7 +654,7 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_entry_super.json")
+        json_path = os.path.join(test_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
         
@@ -662,7 +663,7 @@ class TestPerfSuperCSVGeneration:
         
         try:
             update_perf_super_csv(
-                perf_super_json="perf_entry_super.json",
+                perf_super_json="perf_super.json",
                 perf_super_csv="perf_super.csv"
             )
             
@@ -672,6 +673,104 @@ class TestPerfSuperCSVGeneration:
             # Verify None values are handled
             assert pd.isna(df.iloc[0]['configs']) or df.iloc[0]['configs'] == ''
             assert pd.isna(df.iloc[0]['multi_results']) or df.iloc[0]['multi_results'] == ''
+            
+        finally:
+            os.chdir(original_dir)
+    
+    def test_csv_multiple_entries_in_entry_file(self, test_dir):
+        """Test that perf_entry_super.csv can contain multiple entries from current run.
+        
+        This tests the fix for the issue where perf_entry.csv and perf_entry.json
+        had 4 entries (for multiple results) but perf_entry_super.csv only had 1.
+        Now perf_entry_super.csv should contain all entries from the current run.
+        """
+        # Simulate a cumulative JSON with old entries + new entries
+        data = [
+            # Old entry from a previous run
+            {
+                "model": "old_model",
+                "n_gpus": "4",
+                "performance": "999.99",
+                "metric": "tokens/s",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": None,
+            },
+            # New entries from current run (4 models from multiple results)
+            {
+                "model": "dummy_multi_1",
+                "n_gpus": "1",
+                "performance": "1234.56",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 12345},
+            },
+            {
+                "model": "dummy_multi_2",
+                "n_gpus": "1",
+                "performance": "2345.67",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 23456},
+            },
+            {
+                "model": "dummy_multi_3",
+                "n_gpus": "1",
+                "performance": "3456.78",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 34567},
+            },
+            {
+                "model": "dummy_multi_4",
+                "n_gpus": "1",
+                "performance": "4567.89",
+                "metric": "samples_per_sec",
+                "status": "SUCCESS",
+                "configs": None,
+                "multi_results": {"temperature": 45678},
+            }
+        ]
+        
+        json_path = os.path.join(test_dir, "perf_super.json")
+        with open(json_path, 'w') as f:
+            json.dump(data, f)
+        
+        original_dir = os.getcwd()
+        os.chdir(test_dir)
+        
+        try:
+            # Generate CSVs with num_entries=4 (simulating 4 entries added in current run)
+            update_perf_super_csv(
+                perf_super_json="perf_super.json",
+                perf_super_csv="perf_super.csv",
+                num_entries=4
+            )
+            
+            # Verify perf_entry_super.csv has ALL 4 entries from current run
+            entry_df = pd.read_csv("perf_entry_super.csv")
+            assert len(entry_df) == 4, \
+                f"perf_entry_super.csv should have 4 entries, got {len(entry_df)}"
+            
+            # Verify the models are the 4 from the current run (not the old one)
+            models = entry_df['model'].tolist()
+            expected_models = ['dummy_multi_1', 'dummy_multi_2', 'dummy_multi_3', 'dummy_multi_4']
+            assert models == expected_models, \
+                f"Expected {expected_models}, got {models}"
+            
+            # Verify perf_super.csv has ALL 5 entries (old + new)
+            super_df = pd.read_csv("perf_super.csv")
+            assert len(super_df) == 5, \
+                f"perf_super.csv should have 5 entries (1 old + 4 new), got {len(super_df)}"
+            
+            # Verify all models are in perf_super.csv
+            all_models = super_df['model'].tolist()
+            assert 'old_model' in all_models, "Old model should be in perf_super.csv"
+            assert all(m in all_models for m in expected_models), \
+                "All new models should be in perf_super.csv"
             
         finally:
             os.chdir(original_dir)

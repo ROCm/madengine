@@ -206,6 +206,7 @@ madengine run [OPTIONS]
 | `--force-mirror-local` | | TEXT | `None` | Path to force local data mirroring |
 | `--disable-skip-gpu-arch` | | FLAG | `False` | Disable skipping models based on GPU architecture |
 | `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+| `--cleanup-perf` | | FLAG | `False` | Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files) |
 
 **Examples:**
 
@@ -284,6 +285,9 @@ madengine run --tags model --live-output
 
 # Custom performance output file
 madengine run --tags model --output my_perf_results.csv
+
+# Clean up intermediate perf files after run
+madengine run --tags model --cleanup-perf
 
 # Using configuration file
 madengine run --tags model \
