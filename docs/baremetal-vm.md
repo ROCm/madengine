@@ -4,6 +4,87 @@ Run madengine workloads on bare metal nodes using VM-based isolation for complet
 
 ---
 
+## Quick Start
+
+Get started with bare metal VM execution in 5 minutes!
+
+### 1. Install Prerequisites
+
+```bash
+# Install KVM/QEMU
+sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients
+
+# Install Python package
+pip install libvirt-python
+
+# Enable IOMMU (add to /etc/default/grub)
+GRUB_CMDLINE_LINUX="amd_iommu=on iommu=pt"  # AMD
+GRUB_CMDLINE_LINUX="intel_iommu=on iommu=pt"  # Intel
+
+sudo update-grub && sudo reboot
+
+# Verify
+lsmod | grep kvm  # Should show kvm_amd or kvm_intel
+dmesg | grep -i iommu  # Should show "IOMMU enabled"
+```
+
+### 2. Prepare Base Image
+
+```bash
+# Create base VM image with GPU drivers (one-time setup)
+sudo qemu-img create -f qcow2 \
+  /var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2 50G
+
+# Install Ubuntu 22.04 + ROCm drivers in a temporary VM
+# Then shut down and use as base image
+```
+
+### 3. Create Configuration
+
+```bash
+cat > baremetal-vm-config.json << 'EOF'
+{
+  "baremetal_vm": {
+    "enabled": true,
+    "base_image": "/var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2",
+    "vcpus": 32,
+    "memory": "128G",
+    "gpu_passthrough": {
+      "mode": "sriov",
+      "gpu_vendor": "AMD"
+    }
+  },
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU"
+}
+EOF
+```
+
+### 4. Run madengine
+
+```bash
+# SSH to bare metal node
+ssh admin@baremetal-gpu-node-01.example.com
+cd /workspace/MAD
+
+# Run with VM isolation
+madengine run --tags dummy \
+  --additional-context-file baremetal-vm-config.json \
+  --timeout 3600 \
+  --live-output
+```
+
+### 5. View Results
+
+```bash
+cat perf_entry.csv
+madengine report to-html --csv-file perf_entry.csv
+```
+
+**That's it!** 🎉 The VM is automatically created, used, and destroyed with complete cleanup.
+
+---
+
 ## Overview
 
 **Bare Metal VM execution** is a new deployment mode in madengine v2 that enables running model benchmarking workloads on bare metal nodes with guaranteed clean state restoration. It combines the performance of bare metal execution with the isolation and reproducibility of containerized workflows.
