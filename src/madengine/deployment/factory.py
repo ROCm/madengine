@@ -90,6 +90,15 @@ def register_default_deployments():
     except ImportError:
         # Kubernetes library not installed, skip registration
         pass
+    
+    # Register Bare Metal VM if libvirt is available
+    try:
+        from .baremetal_vm import BareMetalVMDeployment
+        
+        DeploymentFactory.register("baremetal_vm", BareMetalVMDeployment)
+    except ImportError:
+        # libvirt-python not installed, skip registration
+        pass
 
 
 # Auto-register on module import

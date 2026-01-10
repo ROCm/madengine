@@ -17,7 +17,8 @@ Complete documentation for madengine - AI model automation and distributed bench
 |-------|-------------|
 | [Configuration](configuration.md) | Advanced configuration options |
 | [Batch Build](batch-build.md) | Selective builds with batch manifests |
-| [Deployment](deployment.md) | Kubernetes and SLURM deployment |
+| [Deployment](deployment.md) | Kubernetes, SLURM, and Bare Metal VM deployment |
+| **[Bare Metal VM](baremetal-vm.md)** | **VM-based execution with isolation and guaranteed cleanup** |
 | [Launchers](launchers.md) | Multi-node training frameworks |
 
 ### Advanced Topics
@@ -138,6 +139,9 @@ Complete documentation for madengine - AI model automation and distributed bench
 **Deploy to SLURM**
 → [Configuration](configuration.md) → [Deployment](deployment.md)
 
+**Run on bare metal with VM isolation**
+→ [Bare Metal VM Guide](baremetal-vm.md)
+
 **Build multiple models selectively (CI/CD)**
 → [Batch Build](batch-build.md)
 
@@ -174,6 +178,7 @@ madengine operates within the MAD (Model Automation and Dashboarding) ecosystem.
 - **Local** - Docker containers on local machine
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **Bare Metal VM** - VM-based execution with isolation and cleanup
 
 ### Distributed Launchers
 

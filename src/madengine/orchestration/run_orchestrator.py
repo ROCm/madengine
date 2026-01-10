@@ -218,7 +218,7 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+            for key in ["baremetal_vm", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
@@ -1110,6 +1110,7 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
         
         Convention over Configuration:
+        - Presence of "baremetal_vm" field with enabled=true → bare metal VM deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
         - Neither present → local execution
@@ -1118,9 +1119,11 @@ class RunOrchestrator:
             config: Configuration dictionary
             
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "baremetal_vm", "k8s", "slurm", or "local"
         """
-        if "k8s" in config or "kubernetes" in config:
+        if "baremetal_vm" in config and config.get("baremetal_vm", {}).get("enabled", False):
+            return "baremetal_vm"
+        elif "k8s" in config or "kubernetes" in config:
             return "k8s"
         elif "slurm" in config:
             return "slurm"
