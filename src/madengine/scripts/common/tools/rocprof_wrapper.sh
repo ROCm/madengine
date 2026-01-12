@@ -94,15 +94,16 @@ main() {
         # Need to separate profiler options from application command
         local profiler_opts=()
         local app_cmd=()
-        local found_app=false
+        local found_separator=false
         
         for arg in "$@"; do
-            if [ "$found_app" = false ] && [[ "$arg" != -* ]]; then
-                # First non-option argument is the start of the application command
-                found_app=true
+            if [ "$arg" = "--" ]; then
+                # Found the separator, everything after this is the application command
+                found_separator=true
+                continue
             fi
             
-            if [ "$found_app" = true ]; then
+            if [ "$found_separator" = true ]; then
                 app_cmd+=("$arg")
             else
                 profiler_opts+=("$arg")

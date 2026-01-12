@@ -64,7 +64,7 @@
     },
     "rocprofv3_compute": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --counter-collection -i ../scripts/common/tools/counters/compute_bound.txt --output-format pftrace -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace -i ../scripts/common/tools/counters/compute_bound.txt --output-format pftrace -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {
@@ -75,7 +75,7 @@
     },
     "rocprofv3_memory": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --memory-allocation-trace --counter-collection -i ../scripts/common/tools/counters/memory_bound.txt --output-format pftrace -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --memory-allocation-trace -i ../scripts/common/tools/counters/memory_bound.txt --output-format pftrace -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {
@@ -99,7 +99,7 @@
     },
     "rocprofv3_full": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --hsa-trace --kernel-trace --memory-copy-trace --memory-allocation-trace --rccl-trace --scratch-memory-trace --marker-trace --runtime-trace --counter-collection -i ../scripts/common/tools/counters/full_profile.txt --output-format pftrace --stats -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --hsa-trace --kernel-trace --memory-copy-trace --memory-allocation-trace --rccl-trace --scratch-memory-trace --marker-trace --runtime-trace -i ../scripts/common/tools/counters/full_profile.txt --output-format pftrace --stats -d ./rocprof_output --",
       "env_vars": {
         "RCCL_DEBUG": "INFO",
         "HSA_ENABLE_SDMA": "0"
@@ -146,7 +146,7 @@
     },
     "rocprofv3_pc_sampling": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --pc-sampling --pc-sampling-rate 1000 --output-format pftrace -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --pc-sampling-beta-enabled --pc-sampling-unit time --pc-sampling-method stochastic --pc-sampling-interval 1000 --output-format pftrace -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {
