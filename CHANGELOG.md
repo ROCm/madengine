@@ -42,6 +42,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `console.py`: Replaced with specific exception types (`OSError`, `ValueError`) for resource cleanup
 
 ### Added
+- **ROCprofv3 Profiling Suite** (ROCm 7.0+): 8 pre-configured profiling profiles for AI model benchmarking
+  - `rocprofv3_compute` - Compute-bound analysis (VALU/SALU instructions, wave execution)
+  - `rocprofv3_memory` - Memory-bound analysis (cache metrics, memory bandwidth)
+  - `rocprofv3_communication` - Multi-GPU communication analysis (RCCL traces, inter-GPU transfers)
+  - `rocprofv3_full` - Comprehensive profiling with all metrics (high overhead)
+  - `rocprofv3_lightweight` - Minimal overhead profiling (production-friendly)
+  - `rocprofv3_perfetto` - Perfetto UI compatible trace generation
+  - `rocprofv3_api_overhead` - API call timing analysis (HIP/HSA/marker traces)
+  - `rocprofv3_pc_sampling` - Kernel hotspot identification (PC sampling at 1000 Hz)
+- **Hardware Counter Definitions**: 4 counter files for targeted profiling scenarios
+  - `compute_bound.txt` - Wave execution, ALU instructions, wait states
+  - `memory_bound.txt` - Cache hit rates, memory controller traffic, LDS usage
+  - `communication_bound.txt` - PCIe traffic, atomic operations, synchronization
+  - `full_profile.txt` - Comprehensive metrics for complete analysis
+- **Profiling Configuration Examples**: 6 ready-to-use JSON configs in `examples/profiling-configs/`
+  - Single-GPU profiles (compute, memory, lightweight)
+  - Multi-GPU distributed training profile
+  - Comprehensive full-stack profiling
+  - Multi-node SLURM deployment config
 - **Comprehensive Launcher Support**: Full K8s and SLURM support for 6 distributed frameworks
   - TorchTitan: LLM pre-training with FSDP2+TP+PP+CP parallelism
   - vLLM: High-throughput LLM inference with continuous batching
