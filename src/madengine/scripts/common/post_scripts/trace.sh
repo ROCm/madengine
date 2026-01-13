@@ -12,7 +12,7 @@ tool=$1
 OUTPUT=${tool}_output
 SAVESPACE=/myworkspace/
 
-mkdir "$OUTPUT"
+mkdir -p "$OUTPUT"
 
 case "$tool" in
 

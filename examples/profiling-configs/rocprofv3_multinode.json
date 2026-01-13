@@ -1,0 +1,30 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "12:00:00"
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  },
+  "tools": [
+    {
+      "name": "rocprofv3_communication",
+      "env_vars": {
+        "RCCL_DEBUG": "INFO"
+      }
+    },
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "1.0"
+      }
+    }
+  ]
+}

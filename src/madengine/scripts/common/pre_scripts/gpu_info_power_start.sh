@@ -31,7 +31,22 @@ PROFILER_START_FILE="/tmp/gpu_info_power_profiler.started"
 # The profiler will run "tail -f /dev/null" as a dummy command that runs forever
 # We'll kill it in the post-script after the actual workload completes
 echo "Launching power profiler..."
-nohup python3 ../scripts/common/tools/gpu_info_profiler.py tail -f /dev/null > /tmp/gpu_info_power_profiler.log 2>&1 &
+
+# Determine the correct path to gpu_info_profiler.py based on environment
+# K8s: scripts are in /workspace/scripts/
+# Local: scripts are in ../scripts/ relative to working directory
+if [ -f "scripts/common/tools/gpu_info_profiler.py" ]; then
+    # K8s or working from root directory
+    PROFILER_SCRIPT="scripts/common/tools/gpu_info_profiler.py"
+elif [ -f "../scripts/common/tools/gpu_info_profiler.py" ]; then
+    # Local execution from subdirectory
+    PROFILER_SCRIPT="../scripts/common/tools/gpu_info_profiler.py"
+else
+    echo "Error: Cannot find gpu_info_profiler.py"
+    exit 1
+fi
+
+nohup python3 "$PROFILER_SCRIPT" tail -f /dev/null > /tmp/gpu_info_power_profiler.log 2>&1 &
 PROFILER_PID=$!
 
 # Save PID for later termination

@@ -1,0 +1,34 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocprofv3_full",
+      "env_vars": {
+        "RCCL_DEBUG": "INFO",
+        "HSA_ENABLE_SDMA": "0"
+      }
+    },
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1",
+        "POWER_DUAL_GCD": "false"
+      }
+    },
+    {
+      "name": "gpu_info_vram_profiler",
+      "env_vars": {
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.1"
+      }
+    },
+    {
+      "name": "miopen_trace"
+    },
+    {
+      "name": "rocblas_trace"
+    }
+  ]
+}
