@@ -1,0 +1,29 @@
+{
+  "baremetal_vm": {
+    "enabled": true,
+    "hypervisor": "kvm",
+    "base_image": "/var/lib/libvirt/images/ubuntu-22.04-cuda.qcow2",
+    
+    "vcpus": 32,
+    "memory": "128G",
+    "disk_size": "100G",
+    
+    "gpu_passthrough": {
+      "mode": "vfio",
+      "gpu_vendor": "NVIDIA",
+      "gpu_architecture": "sm_80",
+      "comment": "NVIDIA typically uses full VFIO passthrough instead of SR-IOV"
+    },
+    
+    "ssh_user": "root",
+    
+    "cleanup": {
+      "mode": "destroy",
+      "verify_clean": true,
+      "timeout": 300
+    }
+  },
+  
+  "gpu_vendor": "NVIDIA",
+  "guest_os": "UBUNTU"
+}
