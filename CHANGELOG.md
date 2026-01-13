@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **ROCprofv3 Argument Parsing**: Fixed rocprof_wrapper.sh argument parsing with custom commands
+  - Test `test_can_change_default_behavior_of_profiling_tool_with_additionalContext` now includes required `--` separator
+  - Without `--`, rocprofv3 would incorrectly parse application command as profiler boolean option
+  - Error manifested as: `ValueError: invalid truth value bash (type=str)`
+  - Fix ensures compatibility with both rocprof (legacy) and rocprofv3 (ROCm >= 7.0)
 - **Error Pattern Detection**: Fixed false failure detection in HuggingFace GPT2/BERT models
   - ROCProf logging messages (E20251230/W20251230 prefixes) no longer trigger false failures
   - Added benign pattern list to exclude profiling tool output from error detection
@@ -17,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed stale compiled Python file (`__init__.pyc`) from source tree
 - Cleaned up unused `typing_extensions` import in `core/console.py`
 - Improved type hint accuracy in `Console.sh()` method docstring
+
+### Documentation
+- **ROCprofv3 Usage Guide**: Enhanced documentation for custom profiling commands
+  - Added section in `docs/profiling.md` explaining the `--` separator requirement
+  - Added "Best Practices" section in `examples/profiling-configs/README.md`
+  - Enhanced `rocprof_wrapper.sh` header comments with usage examples
+  - Clarified that `--` must always be included when using custom rocprof commands
+  - Documented auto-detection behavior between rocprof (legacy) and rocprofv3
 
 ### Breaking Changes
 - **CLI Unification**: Simplified command-line interface

@@ -72,6 +72,42 @@ Profile GPU kernels and HIP API calls:
 }
 ```
 
+#### ROCm Profiler Version Compatibility
+
+madengine uses `rocprof_wrapper.sh` to automatically handle the transition between rocprof (legacy) and rocprofv3:
+
+| ROCm Version | Profiler Used | Command Syntax |
+|--------------|---------------|----------------|
+| ROCm < 7.0   | rocprof (legacy) | `rocprof [options] <app>` |
+| ROCm >= 7.0  | rocprofv3 (preferred) | `rocprofv3 [options] -- <app>` |
+
+**Key Points:**
+
+1. **Automatic Detection:** The wrapper detects which profiler is available and uses the appropriate syntax
+2. **Separator Requirement:** When using custom commands with `rocprof_wrapper.sh`, always include the trailing `--`:
+   ```json
+   {
+     "name": "rocprof",
+     "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --"
+   }
+   ```
+3. **Backward Compatibility:** The `--` works with both rocprof and rocprofv3, ensuring your configurations work across ROCm versions
+
+**Example - Custom Command with Wrapper:**
+```json
+{
+  "tools": [
+    {
+      "name": "rocprof",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --sys-trace --",
+      "env_vars": {
+        "HSA_ENABLE_SDMA": "0"
+      }
+    }
+  ]
+}
+```
+
 ### rpd - ROCm Profiler Data
 
 Collect comprehensive ROCm profiling data:
@@ -231,6 +267,13 @@ For advanced users, customize rocprofv3 invocation:
   ]
 }
 ```
+
+**Important:** The `--` separator at the end of the `cmd` string is **required** when using `rocprof_wrapper.sh`. This separator distinguishes between profiler options and the application command:
+
+- **rocprofv3 (ROCm >= 7.0):** Requires `--` separator → `rocprofv3 [options] -- <app>`
+- **rocprof (legacy):** Works with or without `--` → `rocprof [options] <app>`
+
+The wrapper auto-detects which profiler is available and formats arguments correctly. Always include the trailing `--` in your custom commands to ensure compatibility with both versions.
 
 #### Hardware Counter Collection
 

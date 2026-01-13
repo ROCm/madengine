@@ -12,6 +12,24 @@
 #   - ROCm < 7.0: Uses rocprof (legacy)
 #   - ROCm >= 7.0: Prefers rocprofv3, falls back to rocprof if not available
 #
+# Usage:
+#   bash rocprof_wrapper.sh [profiler-options] -- <application> [app-args]
+#
+# Important:
+#   - Always include the '--' separator between profiler options and the application command
+#   - This is required for rocprofv3 (ROCm >= 7.0) to correctly parse arguments
+#   - The separator works with both rocprof (legacy) and rocprofv3 for compatibility
+#
+# Examples:
+#   # Basic HIP trace
+#   bash rocprof_wrapper.sh --hip-trace -- python my_model.py
+#
+#   # System trace with custom options
+#   bash rocprof_wrapper.sh --sys-trace --stats -- ./my_app --batch-size 32
+#
+#   # Counter collection with output directory
+#   bash rocprof_wrapper.sh --counter-collection -i counters.txt -d ./output -- python train.py
+#
 
 # Function to detect ROCm version
 get_rocm_version() {

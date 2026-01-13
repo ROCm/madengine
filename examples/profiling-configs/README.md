@@ -149,6 +149,35 @@ madengine run --tags your_model \
   }'
 ```
 
+## Best Practices for Custom Commands
+
+### Always Include the `--` Separator
+
+When using custom profiling commands with `rocprof_wrapper.sh`, **always include the trailing `--`**:
+
+```json
+{
+  "name": "rocprof",
+  "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --"
+}
+```
+
+**Why?** The `--` separator is critical for rocprofv3 (ROCm >= 7.0):
+- **rocprofv3** requires: `rocprofv3 [options] -- <application>`
+- **rocprof (legacy)** accepts: `rocprof [options] <application>`
+
+The wrapper script auto-detects which profiler is available and formats the command correctly. Without the `--`, rocprofv3 will fail to parse arguments when the application command is appended.
+
+**❌ Wrong:**
+```json
+{"cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace"}
+```
+
+**✅ Correct:**
+```json
+{"cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --"}
+```
+
 ## Available ROCprofv3 Tools
 
 | Tool Name | Description | Key Options | Overhead |
