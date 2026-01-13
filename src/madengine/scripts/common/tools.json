@@ -20,7 +20,7 @@
     },
     "rocprof": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace --",
       "env_vars": {},
       "post_scripts": [
         {
@@ -31,7 +31,7 @@
     },
     "rocprof_hip_only": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --",
       "env_vars": {},
       "post_scripts": [
         {
@@ -42,7 +42,7 @@
     },
     "rocprof_sys": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --",
       "env_vars": {},
       "post_scripts": [
         {

@@ -42,9 +42,16 @@ if [ -n "$MIOPEN_USER_DB_PATH" ]; then
 fi
 
 # Execute the Python training script with torchrun
+echo "Executing: $MAD_MULTI_NODE_RUNNER run_torchrun.py"
 $MAD_MULTI_NODE_RUNNER run_torchrun.py
+PYTHON_EXIT_CODE=$?
 
 echo "========================================================================"
-echo "Training script completed"
+echo "Training script completed with exit code: $PYTHON_EXIT_CODE"
 echo "========================================================================"
 
+# Exit with the Python script's exit code
+if [ $PYTHON_EXIT_CODE -ne 0 ]; then
+    echo "ERROR: Training script failed with exit code $PYTHON_EXIT_CODE"
+    exit $PYTHON_EXIT_CODE
+fi

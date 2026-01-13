@@ -6,12 +6,7 @@
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   
-  "tools": [{
-    "name": "gpu_info_vram_profiler"
-  },
-  {
-    "name": "miopen_trace"
-  }],
+  "tools": [{"name": "gpu_info_power_profiler"}, {"name": "gpu_info_vram_profiler"}, {"name": "rocprof"}, {"name": "rpd"}, {"name": "miopen_trace"}, {"name": "rocblas_trace"}, {"name": "tensile_trace"}],
   
   "k8s": {
     "kubeconfig": "~/.kube/config",

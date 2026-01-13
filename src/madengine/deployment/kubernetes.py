@@ -440,6 +440,45 @@ class KubernetesDeployment(BaseDeployment):
                         with open(abs_script_path, "r") as f:
                             script_contents[script_path] = f.read()
                         self.console.print(f"[dim]Loaded tool post-script: {script_path}[/dim]")
+            
+            # NEW: Scan pre-scripts for dependencies on scripts/common/tools/ files
+            # This handles cases like gpu_info_vram_profiler where the pre-script
+            # calls python3 scripts/common/tools/gpu_info_profiler.py but the tool
+            # definition has an empty cmd field
+            for script_config in tool_def.get("pre_scripts", []):
+                script_path = script_config.get("path", "")
+                if script_path:
+                    abs_script_path = madengine_root / script_path
+                    if abs_script_path.exists():
+                        # Read the pre-script to find any tool script references
+                        with open(abs_script_path, "r") as f:
+                            script_content = f.read()
+                            # Look for references to scripts/common/tools/ in the pre-script
+                            import re
+                            # Use non-capturing group (?:...) to avoid capturing just the ../ part
+                            tool_refs = re.findall(r'(?:\.\./)?scripts/common/tools/[\w_]+\.py', script_content)
+                            for tool_ref in tool_refs:
+                                # Clean up the path
+                                tool_script_path = tool_ref.strip('"\'').replace("../", "")
+                                abs_tool_path = madengine_root / tool_script_path
+                                
+                                if abs_tool_path.exists() and tool_script_path not in script_contents:
+                                    with open(abs_tool_path, "r") as tf:
+                                        script_contents[tool_script_path] = tf.read()
+                                    self.console.print(f"[dim]Loaded tool dependency: {tool_script_path}[/dim]")
+                                    
+                                    # Also load utility modules for this Python script
+                                    if tool_script_path.endswith('.py'):
+                                        tools_dir = abs_tool_path.parent
+                                        utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                        for util_file in utility_modules:
+                                            util_path = tools_dir / util_file
+                                            if util_path.exists():
+                                                util_rel_path = f"scripts/common/tools/{util_file}"
+                                                if util_rel_path not in script_contents:
+                                                    with open(util_path, "r") as uf:
+                                                        script_contents[util_rel_path] = uf.read()
+                                                    self.console.print(f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]")
 
     def _prepare_template_context(
         self, model_info: Dict, image_info: Dict
@@ -1005,6 +1044,10 @@ class KubernetesDeployment(BaseDeployment):
         - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
         - Headless service DNS for MASTER_ADDR
         
+        CRITICAL FIX: For bash scripts that use ${BASH_SOURCE[0]}, we cd into the
+        script directory first so relative paths resolve correctly. This fixes the
+        issue where profiling tool wrappers prevent BASH_SOURCE from resolving.
+        
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
@@ -1017,6 +1060,8 @@ class KubernetesDeployment(BaseDeployment):
         Raises:
             ValueError: If any parameter is invalid
         """
+        from pathlib import Path
+        
         # Validate inputs (defensive programming)
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
@@ -1032,17 +1077,20 @@ class KubernetesDeployment(BaseDeployment):
         if model_script.endswith('.sh'):
             # For bash scripts, set environment variables and execute script
             # The script itself will invoke torchrun with the appropriate Python file
+            # CRITICAL: cd to script directory first so BASH_SOURCE[0] resolves correctly
+            script_dir = str(Path(model_script).parent)
+            script_name = str(Path(model_script).name)
             if nnodes == 1:
                 return f"""export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
-bash {model_script}"""
+cd {script_dir} && bash {script_name}"""
             else:
                 return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
 export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
-bash {model_script}"""
+cd {script_dir} && bash {script_name}"""
         
         # For Python scripts, invoke torchrun directly
         # For single-node, simpler standalone command
@@ -2962,15 +3010,35 @@ torchrun \\
         import os
         from datetime import datetime
         
-        # Look for performance line: "performance: 12345 metric_name"
+        # Try multiple patterns to match different metric formats
+        # Pattern 1: Standard format "performance: 12345 metric_name"
         perf_pattern = r'performance:\s+([0-9,.]+)\s+([a-zA-Z_/]+)'
         match = re.search(perf_pattern, log)
         
+        # Pattern 2: Alternative throughput format "Global Throughput: 12345.67 samples/sec"
         if not match:
+            alt_pattern = r'Global Throughput:\s+([0-9,.]+)\s+(samples/sec|samples_per_second)'
+            match = re.search(alt_pattern, log)
+            if match:
+                # Normalize metric name
+                metric = 'samples_per_second'
+        
+        if not match:
+            # Log the last 100 lines to help debug
+            log_tail = '\n'.join(log.split('\n')[-100:])
+            self.console.print(f"[yellow]Debug: Could not find performance metric in log.[/yellow]")
+            self.console.print(f"[dim]Last 50 lines of log:[/dim]")
+            for line in log.split('\n')[-50:]:
+                if line.strip():
+                    self.console.print(f"[dim]  {line}[/dim]")
             return None
         
         performance = float(match.group(1).replace(',', ''))  # Remove commas and convert to float
-        metric = match.group(2)
+        if 'metric' not in locals():
+            metric = match.group(2)
+        
+        # Get distributed config (needed for launcher info regardless of topology source)
+        distributed_config = self.manifest.get("deployment_config", {}).get("distributed", {})
         
         # NEW: Extract topology information from log
         # Format: "topology: 2 nodes 2 gpus_per_node 4 total_gpus"
@@ -2983,7 +3051,6 @@ torchrun \\
             total_gpus = topology_match.group(3)
         else:
             # Fallback: Try to get from manifest distributed config
-            distributed_config = self.manifest.get("deployment_config", {}).get("distributed", {})
             nnodes = str(distributed_config.get("nnodes", 1))
             gpus_per_node = str(distributed_config.get("nproc_per_node", 1))
             total_gpus = str(model_info.get("n_gpus", 1))

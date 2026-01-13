@@ -530,6 +530,10 @@ class ContainerRunner:
         with open(tools_json_file) as f:
             tool_file = json.load(f)
 
+        # Track commands that have been added to avoid duplicates
+        # Some tools (like trace tools) share the same wrapper script
+        added_cmds = set()
+
         # Iterate over tools in context, apply tool settings
         for ctx_tool_config in self.context.ctx["tools"]:
             tool_name = ctx_tool_config["name"]
@@ -557,16 +561,24 @@ class ContainerRunner:
                 pre_encapsulate_post_scripts["post_scripts"] += tool_config[
                     "post_scripts"
                 ]
-            # Update environment variables
+            # Update environment variables (always apply, even if cmd is duplicate)
             if "env_vars" in tool_config:
                 run_env.update(tool_config["env_vars"])
+            
+            # Only add cmd if it hasn't been added yet
+            # This prevents duplicate wrappers like get_library_trace.py
             if "cmd" in tool_config:
-                # Prepend encapsulate cmd
-                pre_encapsulate_post_scripts["encapsulate_script"] = (
-                    tool_config["cmd"]
-                    + " "
-                    + pre_encapsulate_post_scripts["encapsulate_script"]
-                )
+                cmd = tool_config["cmd"]
+                if cmd not in added_cmds:
+                    # Prepend encapsulate cmd
+                    pre_encapsulate_post_scripts["encapsulate_script"] = (
+                        cmd
+                        + " "
+                        + pre_encapsulate_post_scripts["encapsulate_script"]
+                    )
+                    added_cmds.add(cmd)
+                else:
+                    print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List

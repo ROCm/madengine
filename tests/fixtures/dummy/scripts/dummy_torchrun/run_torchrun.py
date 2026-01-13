@@ -319,13 +319,13 @@ def main():
     
     # Global rank 0 reports aggregated performance
     if rank == 0:
-        print(f"\n{'='*70}")
-        print("Training Complete - GLOBAL METRICS")
-        print(f"{'='*70}")
-        print(f"Topology: {num_nodes} nodes × {nproc_per_node} GPUs/node = {world_size} total GPUs")
-        print(f"Global Throughput: {avg_global_throughput:.2f} samples/sec")
-        print(f"Per-GPU Throughput: {avg_global_throughput/world_size:.2f} samples/sec")
-        print(f"Global Batch Size: {BATCH_SIZE * world_size}")
+        print(f"\n{'='*70}", flush=True)
+        print("Training Complete - GLOBAL METRICS", flush=True)
+        print(f"{'='*70}", flush=True)
+        print(f"Topology: {num_nodes} nodes × {nproc_per_node} GPUs/node = {world_size} total GPUs", flush=True)
+        print(f"Global Throughput: {avg_global_throughput:.2f} samples/sec", flush=True)
+        print(f"Per-GPU Throughput: {avg_global_throughput/world_size:.2f} samples/sec", flush=True)
+        print(f"Global Batch Size: {BATCH_SIZE * world_size}", flush=True)
         
         # Calculate scaling efficiency
         # Ideal throughput = single GPU throughput * number of GPUs
@@ -335,9 +335,10 @@ def main():
         print(f"Scaling Efficiency: {scaling_efficiency:.1f}%")
         
         if avg_time_imbalance > 5.0:
-            print(f"Average Load Imbalance: {avg_time_imbalance:.1f}%")
+            print(f"Average Load Imbalance: {avg_time_imbalance:.1f}%", flush=True)
         
-        print(f"{'='*70}")
+        print(f"{'='*70}", flush=True)
+        sys.stdout.flush()
         
         # Save results with topology information
         with open("training_results.txt", "w") as f:
@@ -353,11 +354,14 @@ def main():
         
         # Output performance metric for madengine (REQUIRED FORMAT)
         # Use GLOBAL throughput (sum of all nodes - accurate measurement)
-        print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second")
+        # CRITICAL: Flush immediately to ensure capture through profiling wrappers
+        print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second", flush=True)
+        sys.stdout.flush()
         
         # Output topology metadata for parsing
-        print(f"topology: {num_nodes} nodes {nproc_per_node} gpus_per_node {world_size} total_gpus")
-        print(f"scaling_efficiency: {scaling_efficiency:.2f}")
+        print(f"topology: {num_nodes} nodes {nproc_per_node} gpus_per_node {world_size} total_gpus", flush=True)
+        print(f"scaling_efficiency: {scaling_efficiency:.2f}", flush=True)
+        sys.stdout.flush()
 
     
     # Cleanup

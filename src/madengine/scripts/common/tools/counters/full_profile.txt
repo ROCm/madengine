@@ -1,0 +1,27 @@
+# Comprehensive profiling counters
+# Collect all major metrics
+
+# Execution
+pmc: SQ_WAVES
+pmc: SQ_WAVE_CYCLES
+pmc: SQ_INSTS_VALU
+pmc: SQ_INSTS_SALU
+pmc: SQ_ACTIVE_INST_VALU
+
+# Memory
+pmc: L2CacheHit
+pmc: TCC_HIT_sum
+pmc: TCC_MISS_sum
+pmc: TCP_TCC_READ_REQ_sum
+pmc: TCP_TCC_WRITE_REQ_sum
+
+# Cache efficiency
+pmc: TCC_EA_RDREQ_32B_sum
+pmc: TCC_EA_WRREQ_64B_sum
+
+# Waits
+pmc: SQ_WAIT_INST_ANY
+pmc: SQ_WAIT_INST_VALU
+
+# LDS
+pmc: SQ_LDS_BANK_CONFLICT

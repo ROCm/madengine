@@ -1,0 +1,18 @@
+# Communication-bound profiling counters
+# For multi-GPU distributed training
+
+# PCIe traffic
+pmc: TCC_EA_WRREQ_64B_sum
+pmc: TCC_EA_RDREQ_32B_sum
+
+# Atomic operations (used in synchronization)
+pmc: TCC_ATOMIC_sum
+pmc: TCP_TCC_ATOMIC_REQ_sum
+
+# Wave synchronization
+pmc: SQ_WAIT_INST_ANY
+pmc: SQ_WAVES
+
+# Memory transfers
+pmc: TCP_TCC_READ_REQ_sum
+pmc: TCP_TCC_WRITE_REQ_sum
