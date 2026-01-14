@@ -213,30 +213,44 @@ class ConfigLoader:
         """
         Infer deployment type from config structure and validate for conflicts.
         
-        Convention over Configuration: Presence of k8s/slurm field indicates deployment intent.
+        Convention over Configuration: Presence of k8s/slurm/baremetal_vm field indicates deployment intent.
         
         Args:
             user_config: User configuration dictionary
             
         Returns:
-            Deployment type: "k8s", "slurm", or "local"
+            Deployment type: "baremetal_vm", "k8s", "slurm", or "local"
             
         Raises:
             ValueError: If conflicting deployment configs present
         """
+        has_baremetal_vm = user_config.get("baremetal_vm", {}).get("enabled", False)
         has_k8s = "k8s" in user_config or "kubernetes" in user_config
         has_slurm = "slurm" in user_config
         explicit_deploy = user_config.get("deploy", "").lower()
         
-        # Validation Rule 1: Can't have both k8s and slurm configs
-        if has_k8s and has_slurm:
+        # Validation Rule 1: Can't have multiple deployment configs
+        deployment_count = sum([has_baremetal_vm, has_k8s, has_slurm])
+        if deployment_count > 1:
+            present_deployments = []
+            if has_baremetal_vm:
+                present_deployments.append("baremetal_vm")
+            if has_k8s:
+                present_deployments.append("k8s")
+            if has_slurm:
+                present_deployments.append("slurm")
             raise ValueError(
-                "Conflicting deployment configuration: Both 'k8s' and 'slurm' fields present. "
+                f"Conflicting deployment configuration: Multiple deployment types present: {', '.join(present_deployments)}. "
                 "Please specify only one deployment target."
             )
         
         # Validation Rule 2: If explicit deploy set, it must match config presence
         if explicit_deploy:
+            if explicit_deploy == "baremetal_vm" and not has_baremetal_vm:
+                raise ValueError(
+                    f"Conflicting deployment: 'deploy' field is 'baremetal_vm' but no 'baremetal_vm' config present or not enabled. "
+                    "Either add 'baremetal_vm' config with enabled=true or remove 'deploy' field."
+                )
             if explicit_deploy in ["k8s", "kubernetes"] and not has_k8s:
                 raise ValueError(
                     f"Conflicting deployment: 'deploy' field is '{explicit_deploy}' but no 'k8s' config present. "
@@ -247,14 +261,16 @@ class ConfigLoader:
                     f"Conflicting deployment: 'deploy' field is 'slurm' but no 'slurm' config present. "
                     "Either add 'slurm' config or remove 'deploy' field."
                 )
-            if explicit_deploy == "local" and (has_k8s or has_slurm):
+            if explicit_deploy == "local" and (has_baremetal_vm or has_k8s or has_slurm):
                 raise ValueError(
-                    f"Conflicting deployment: 'deploy' field is 'local' but k8s/slurm config present. "
-                    "Remove k8s/slurm config for local execution."
+                    f"Conflicting deployment: 'deploy' field is 'local' but baremetal_vm/k8s/slurm config present. "
+                    "Remove deployment configs for local execution."
                 )
         
         # Infer deployment type from config presence
-        if has_k8s:
+        if has_baremetal_vm:
+            return "baremetal_vm"
+        elif has_k8s:
             return "k8s"
         elif has_slurm:
             return "slurm"
@@ -266,14 +282,15 @@ class ConfigLoader:
         """
         Load configuration with auto-inferred deploy type and validation.
         
-        Infers deployment type from presence of k8s/slurm fields.
+        Infers deployment type from presence of baremetal_vm/k8s/slurm fields.
         Validates for conflicting configurations.
         Applies appropriate defaults based on deployment type.
         
         Convention over Configuration:
+        - Presence of "baremetal_vm" field with enabled=true → Bare Metal VM deployment
         - Presence of "k8s" field → Kubernetes deployment
         - Presence of "slurm" field → SLURM deployment
-        - Neither present → Local execution
+        - None present → Local execution
         - No explicit "deploy" field needed!
         
         Args:
@@ -290,7 +307,10 @@ class ConfigLoader:
         
         # Apply appropriate defaults based on deployment type
         # Note: We do NOT add a "deploy" field - type is inferred from structure
-        if deploy_type == "k8s":
+        if deploy_type == "baremetal_vm":
+            # Bare metal VM - return as-is (no presets for now)
+            return user_config
+        elif deploy_type == "k8s":
             return cls.load_k8s_config(user_config)
         elif deploy_type == "slurm":
             return cls.load_slurm_config(user_config)

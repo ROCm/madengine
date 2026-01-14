@@ -56,23 +56,39 @@ class RunOrchestrator:
 
         # Merge additional_context from args and parameter
         merged_context = {}
+        
+        # Load from file first if provided
+        if hasattr(args, "additional_context_file") and args.additional_context_file:
+            try:
+                with open(args.additional_context_file, "r") as f:
+                    merged_context = json.load(f)
+                    print(f"📝 RunOrchestrator: Loaded additional_context from file: {args.additional_context_file}")
+                    print(f"📝 RunOrchestrator: File contents keys: {list(merged_context.keys()) if isinstance(merged_context, dict) else 'not a dict'}")
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print(f"Warning: Could not load additional_context_file: {e}")
+        
+        # Then merge string additional_context (overrides file)
         if hasattr(args, "additional_context") and args.additional_context:
             try:
                 if isinstance(args.additional_context, str):
-                    # Use ast.literal_eval for Python dict syntax (single quotes)
-                    # This matches what Context class expects
-                    import ast
-                    parsed = ast.literal_eval(args.additional_context)
-                    print(f"📝 RunOrchestrator: Parsed additional_context keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not a dict'}")
-                    merged_context = parsed
+                    # Try JSON parsing first (supports both JSON and Python dict syntax)
+                    try:
+                        context_from_string = json.loads(args.additional_context)
+                    except json.JSONDecodeError:
+                        # Fall back to ast.literal_eval for Python dict syntax
+                        import ast
+                        context_from_string = ast.literal_eval(args.additional_context)
+                    print(f"📝 RunOrchestrator: Parsed additional_context string keys: {list(context_from_string.keys()) if isinstance(context_from_string, dict) else 'not a dict'}")
+                    merged_context.update(context_from_string)
                 elif isinstance(args.additional_context, dict):
-                    merged_context = args.additional_context
-                    print(f"📝 RunOrchestrator: Got dict additional_context keys: {list(merged_context.keys())}")
-            except (ValueError, SyntaxError) as e:
+                    print(f"📝 RunOrchestrator: Got dict additional_context keys: {list(args.additional_context.keys())}")
+                    merged_context.update(args.additional_context)
+            except (ValueError, SyntaxError, json.JSONDecodeError) as e:
                 print(f"Warning: Could not parse additional_context: {e}")
                 print(f"Raw additional_context: {args.additional_context[:200] if args.additional_context else 'None'}")
                 pass
 
+        # Finally merge parameter additional_context (overrides all)
         if additional_context:
             merged_context.update(additional_context)
 
@@ -446,7 +462,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "baremetal_vm", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config

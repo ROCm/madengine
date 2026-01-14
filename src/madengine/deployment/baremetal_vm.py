@@ -30,7 +30,7 @@ from typing import Dict, Any, Optional, List
 from rich.console import Console as RichConsole
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
-from madengine.core.errors import DeploymentError, create_error_context
+from madengine.core.errors import OrchestrationError, create_error_context
 from madengine.utils.vm_lifecycle import VMLifecycleManager, VMConfig
 from madengine.utils.gpu_passthrough import GPUPassthroughManager, GPUPassthroughMode
 
@@ -221,7 +221,7 @@ class BareMetalVMDeployment(BaseDeployment):
             
         except Exception as e:
             self.rich_console.print(f"\n[red]✗ Deployment failed: {e}[/red]\n")
-            raise DeploymentError(
+            raise OrchestrationError(
                 f"Bare metal VM deployment failed: {e}",
                 context=create_error_context(
                     operation="baremetal_vm_deploy",
@@ -520,4 +520,60 @@ madengine run \\
             return False
         except Exception as e:
             self.rich_console.print(f"[red]Failed to cancel job {job_id}: {e}[/red]")
+            return False
+    
+    def prepare(self) -> bool:
+        """
+        Prepare deployment artifacts (no-op for bare metal VM).
+        
+        Returns:
+            True (always succeeds)
+        """
+        # No preparation needed - everything is done in deploy()
+        return True
+    
+    def monitor(self, deployment_id: str) -> DeploymentResult:
+        """
+        Monitor deployment status.
+        
+        Args:
+            deployment_id: Deployment ID (VM name)
+            
+        Returns:
+            DeploymentResult with current status
+        """
+        return self.status(deployment_id)
+    
+    def collect_results(self, deployment_id: str) -> Dict[str, Any]:
+        """
+        Collect results from deployment.
+        
+        Args:
+            deployment_id: Deployment ID (VM name)
+            
+        Returns:
+            Dict with results (empty for bare metal VM as results are collected during deploy)
+        """
+        # Results are collected during deploy() phase
+        return {}
+    
+    def cleanup(self, deployment_id: str) -> bool:
+        """
+        Cleanup deployment resources.
+        
+        Args:
+            deployment_id: Deployment ID (VM name)
+            
+        Returns:
+            True if cleanup successful
+        """
+        # Cleanup is handled automatically in deploy() based on vm_config.cleanup
+        # This method is for manual cleanup if needed
+        try:
+            if deployment_id in self.vm_manager.vms:
+                self.vm_manager.destroy_vm(deployment_id, cleanup_disk=True)
+                return True
+            return True  # Already cleaned up
+        except Exception as e:
+            self.rich_console.print(f"[red]Failed to cleanup {deployment_id}: {e}[/red]")
             return False
