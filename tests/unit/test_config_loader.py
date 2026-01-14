@@ -259,27 +259,45 @@ class TestConfigLoaderDeploymentType:
         assert result["slurm"]["nodes"] == 1
         assert result["slurm"]["gpus_per_node"] == 4
     
+    def test_auto_infer_baremetal_vm(self):
+        """Test bare metal VM deployment when baremetal_vm field present with enabled=true."""
+        user_config = {
+            "baremetal_vm": {
+                "enabled": True,
+                "vm_name": "test-vm",
+                "host": "192.168.1.100"
+            }
+        }
+        
+        result = ConfigLoader.load_config(user_config)
+        
+        # Validate baremetal_vm config present
+        assert result["baremetal_vm"]["enabled"] is True
+        assert result["baremetal_vm"]["vm_name"] == "test-vm"
+        assert result["baremetal_vm"]["host"] == "192.168.1.100"
+    
     def test_auto_infer_local(self):
-        """Test local deployment when no k8s/slurm present."""
+        """Test local deployment when no deployment fields present."""
         user_config = {
             "env_vars": {"MY_VAR": "value"}
         }
         
         result = ConfigLoader.load_config(user_config)
         
-        # Validate local config (no k8s or slurm fields)
+        # Validate local config (no deployment type fields)
         assert "k8s" not in result or result.get("k8s") == {}
         assert "slurm" not in result or result.get("slurm") == {}
+        assert not result.get("baremetal_vm", {}).get("enabled", False)
         assert result["env_vars"]["MY_VAR"] == "value"
     
-    def test_conflict_k8s_and_slurm(self):
-        """Test error when both k8s and slurm fields present."""
+    def test_conflict_multiple_deployment_types(self):
+        """Test error when multiple deployment types are present."""
         user_config = {
             "k8s": {"gpu_count": 1},
             "slurm": {"nodes": 2}
         }
         
-        with pytest.raises(ValueError, match="Both 'k8s' and 'slurm'"):
+        with pytest.raises(ValueError, match="Multiple deployment types present"):
             ConfigLoader.load_config(user_config)
     
     def test_conflict_explicit_deploy_mismatch(self):
