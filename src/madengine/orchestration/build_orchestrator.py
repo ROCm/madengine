@@ -68,14 +68,17 @@ class BuildOrchestrator:
         if hasattr(args, "additional_context") and args.additional_context:
             try:
                 if isinstance(args.additional_context, str):
-                    # Use ast.literal_eval for Python dict syntax (single quotes)
-                    # This matches what Context class expects
-                    import ast
-                    context_from_string = ast.literal_eval(args.additional_context)
+                    # Try JSON parsing first (supports both JSON and Python dict syntax)
+                    try:
+                        context_from_string = json.loads(args.additional_context)
+                    except json.JSONDecodeError:
+                        # Fall back to ast.literal_eval for Python dict syntax
+                        import ast
+                        context_from_string = ast.literal_eval(args.additional_context)
                     merged_context.update(context_from_string)
                 elif isinstance(args.additional_context, dict):
                     merged_context.update(args.additional_context)
-            except (ValueError, SyntaxError) as e:
+            except (ValueError, SyntaxError, json.JSONDecodeError) as e:
                 print(f"Warning: Could not parse additional_context: {e}")
                 pass
 
@@ -374,7 +377,9 @@ class BuildOrchestrator:
             target = self.additional_context.get("deploy")
             if not target:
                 # Auto-detect based on config presence
-                if self.additional_context.get("slurm"):
+                if self.additional_context.get("baremetal_vm", {}).get("enabled", False):
+                    target = "baremetal_vm"
+                elif self.additional_context.get("slurm"):
                     target = "slurm"
                 elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
                     target = "k8s"
@@ -390,6 +395,7 @@ class BuildOrchestrator:
             
             deployment_config = {
                 "target": target,
+                "baremetal_vm": self.additional_context.get("baremetal_vm"),
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),

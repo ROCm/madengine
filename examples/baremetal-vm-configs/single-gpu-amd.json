@@ -1,0 +1,29 @@
+{
+  "baremetal_vm": {
+    "enabled": true,
+    "hypervisor": "kvm",
+    "base_image": "/var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2",
+    
+    "vcpus": 32,
+    "memory": "128G",
+    "disk_size": "100G",
+    
+    "gpu_passthrough": {
+      "mode": "sriov",
+      "gpu_vendor": "AMD",
+      "gpu_architecture": "gfx90a",
+      "comment": "Leave gpu_ids empty for auto-discovery, or specify: ['0000:01:00.0']"
+    },
+    
+    "ssh_user": "root",
+    
+    "cleanup": {
+      "mode": "destroy",
+      "verify_clean": true,
+      "timeout": 300
+    }
+  },
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU"
+}

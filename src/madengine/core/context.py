@@ -122,7 +122,12 @@ class Context:
         # Additional contexts provided in command-line override detected contexts and contexts in file
         if additional_context:
             # Convert the string representation of python dictionary to a dictionary.
-            dict_additional_context = ast.literal_eval(additional_context)
+            # Try JSON parsing first (supports both JSON and Python dict syntax)
+            try:
+                dict_additional_context = json.loads(additional_context)
+            except json.JSONDecodeError:
+                # Fall back to ast.literal_eval for Python dict syntax
+                dict_additional_context = ast.literal_eval(additional_context)
             update_dict(self.ctx, dict_additional_context)
 
         # Initialize context based on mode

@@ -47,10 +47,13 @@ pre-commit install
 | Extra | Install Command | Use Case |
 |-------|----------------|----------|
 | `kubernetes` | `pip install madengine[kubernetes]` | Kubernetes deployment support |
+| `baremetal_vm` | `pip install libvirt-python` | Bare Metal VM execution support |
 | `dev` | `pip install madengine[dev]` | Development tools (pytest, black, mypy, etc.) |
 | `all` | `pip install madengine[all]` | All optional dependencies |
 
-**Note**: SLURM deployment requires no additional Python dependencies (uses CLI commands).
+**Note**: 
+- SLURM deployment requires no additional Python dependencies (uses CLI commands)
+- Bare Metal VM requires `libvirt-python` and system packages (KVM/QEMU, libvirt)
 
 ## MAD Package Setup
 
@@ -93,6 +96,87 @@ docker run --rm --gpus all nvidia/cuda:latest nvidia-smi
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "UBUNTU"}'
 ```
+
+## Bare Metal VM Setup (Optional)
+
+For VM-based execution with guaranteed isolation and cleanup on bare metal nodes.
+
+### Prerequisites
+
+**Hardware:**
+- CPU with virtualization support (Intel VT-x or AMD-V)
+- IOMMU enabled (Intel VT-d or AMD-Vi)
+- AMD MI200/MI300 GPU with SR-IOV support or NVIDIA GPU with VFIO support
+- At least 128GB RAM for typical workloads
+
+**Software:**
+```bash
+# Install KVM/QEMU and libvirt
+sudo apt install qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+
+# Install Python package
+pip install libvirt-python
+
+# Enable IOMMU in /etc/default/grub
+GRUB_CMDLINE_LINUX="amd_iommu=on iommu=pt"  # For AMD
+GRUB_CMDLINE_LINUX="intel_iommu=on iommu=pt"  # For Intel
+
+sudo update-grub && sudo reboot
+```
+
+### Verify Setup
+
+```bash
+# Check KVM module
+lsmod | grep kvm  # Should show kvm_amd or kvm_intel
+
+# Verify IOMMU
+dmesg | grep -i iommu  # Should show "IOMMU enabled"
+
+# Check libvirt
+systemctl status libvirtd
+```
+
+### Prepare Base Image
+
+Create a base VM image with Ubuntu and GPU drivers (one-time setup):
+
+```bash
+# Create base image
+sudo qemu-img create -f qcow2 \
+  /var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2 50G
+
+# Install Ubuntu 22.04 + ROCm/CUDA drivers in a temporary VM
+# Then shut down and use as base image
+```
+
+### Test Bare Metal VM
+
+```bash
+cat > baremetal-vm-test.json << 'EOF'
+{
+  "baremetal_vm": {
+    "enabled": true,
+    "base_image": "/var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2",
+    "vcpus": 16,
+    "memory": "64G",
+    "gpu_passthrough": {
+      "mode": "sriov",
+      "gpu_vendor": "AMD"
+    }
+  },
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU"
+}
+EOF
+
+madengine run --tags dummy \
+  --additional-context-file baremetal-vm-test.json \
+  --timeout 3600 \
+  --live-output
+```
+
+For complete setup instructions, see **[Bare Metal VM Guide](baremetal-vm.md)**.
 
 ## Verify Installation
 
@@ -150,7 +234,8 @@ madengine discover
 
 ## Next Steps
 
-- [User Guide](user-guide.md) - Learn how to use madengine
-- [Deployment Guide](deployment.md) - Deploy to Kubernetes or SLURM
-- [Quick Start](how-to-quick-start.md) - Run your first model
+- [Usage Guide](usage.md) - Learn how to use madengine
+- [Deployment Guide](deployment.md) - Deploy to Kubernetes, SLURM, or Bare Metal VM
+- [Bare Metal VM Guide](baremetal-vm.md) - VM-based execution with isolation
+- [CLI Reference](cli-reference.md) - Complete command options
 

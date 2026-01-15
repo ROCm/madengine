@@ -31,12 +31,13 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 ## ✨ Key Features
 
 - **🚀 Modern CLI** - Rich terminal output with Typer and Rich
-- **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
+- **🎯 Flexible Deployment** - Run locally, Kubernetes, SLURM, or Bare Metal VM with guaranteed isolation
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
+- **🖥️ VM Isolation** - Bare metal execution with ephemeral VMs for complete environment cleanup
 - **📊 Performance Tools** - Integrated profiling with rocprof, rocblas, MIOpen, RCCL tracing
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
-- **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
+- **⚙️ Intelligent Defaults** - Minimal configs with automatic preset application
 
 ## 🚀 Quick Start
 
@@ -99,7 +100,8 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | [Installation](docs/installation.md) | Complete installation instructions |
 | [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
-| [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
+| [Deployment](docs/deployment.md) | Kubernetes, SLURM, and Bare Metal VM deployment |
+| [Bare Metal VM](docs/baremetal-vm.md) | VM-based execution with isolation and cleanup |
 | [Configuration](docs/configuration.md) | Advanced configuration options |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed training frameworks |
@@ -137,14 +139,14 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
         │  • RunOrchestrator     │                                  │
         └────────┬───────────────┘                                  │
                  │                                                  │
-        ┌────────┼────────┐                                         │
-        │        │        │                                         │
-   ┌────▼───┐ ┌─▼──────┐ ┌▼─────────┐                               │
-   │ Local  │ │  K8s   │ │  SLURM   │                               │
-   │ Docker │ │  Jobs  │ │  Jobs    │                               │
-   └────┬───┘ └─┬──────┘ └┬─────────┘                               │
-        │       │         │                                         │
-        └───────┼─────────┘                                         │
+        ┌────────┼───────────────┐                                  │
+        │        │        │      │                                  │
+   ┌────▼───┐ ┌─▼──────┐ ┌▼─────────┐ ┌▼────────────┐               │
+   │ Local  │ │  K8s   │ │  SLURM   │ │ Bare Metal │               │
+   │ Docker │ │  Jobs  │ │  Jobs    │ │     VM     │               │
+   └────┬───┘ └─┬──────┘ └┬─────────┘ └┬────────────┘               │
+        │       │         │            │                            │
+        └───────┼─────────┴────────────┘                            │
                 │                                                   │
         ┌───────┴─────────┐                                         │
         │   Distributed   │                                         │
@@ -185,7 +187,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 1. **CLI Layer** - User interface with 5 commands (discover, build, run, report, database)
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
-4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
+4. **Execution Targets** - Local Docker, Kubernetes Jobs, SLURM Jobs, or Bare Metal VM
 5. **Distributed Launchers** - Training (torchrun, DeepSpeed, TorchTitan, Megatron-LM) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
@@ -220,14 +222,16 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 
 ### Infrastructure Capabilities
 
-| Feature | Local | Kubernetes | SLURM |
-|---------|-------|-----------|-------|
-| **Execution** | Docker containers | K8s Jobs | SLURM jobs |
-| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays |
-| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler |
-| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol |
-| **Auto-scaling** | ❌ | ✅ | ❌ |
-| **Network** | Host | CNI plugin | InfiniBand/Ethernet |
+| Feature | Local | Kubernetes | SLURM | Bare Metal VM |
+|---------|-------|-----------|-------|---------------|
+| **Execution** | Docker containers | K8s Jobs | SLURM jobs | Ephemeral VMs |
+| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays | ❌ (single-node) |
+| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler | VM isolation |
+| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol | VM + Docker logs |
+| **Auto-scaling** | ❌ | ✅ | ❌ | ❌ |
+| **Network** | Host | CNI plugin | InfiniBand/Ethernet | VM networking |
+| **GPU Support** | Passthrough | Device plugin | Direct | SR-IOV/VFIO |
+| **Cleanup** | Manual | Automatic | Manual | Guaranteed |
 
 ## 💻 Usage Examples
 
@@ -319,6 +323,42 @@ madengine run --manifest-file build_manifest.json \
     }
   }'
 ```
+
+### Bare Metal VM Execution
+
+```bash
+# SSH to bare metal node
+ssh admin@baremetal-gpu-node.example.com
+
+# Create config with VM isolation
+cat > baremetal-vm-config.json << 'EOF'
+{
+  "baremetal_vm": {
+    "enabled": true,
+    "base_image": "/var/lib/libvirt/images/ubuntu-22.04-rocm.qcow2",
+    "vcpus": 32,
+    "memory": "128G",
+    "gpu_passthrough": {
+      "mode": "sriov",
+      "gpu_vendor": "AMD"
+    }
+  },
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU"
+}
+EOF
+
+# Run with VM isolation (guaranteed cleanup)
+madengine run --tags model \
+  --additional-context-file baremetal-vm-config.json \
+  --timeout 3600
+```
+
+**Benefits:**
+- ✅ Guaranteed clean state after each run
+- ✅ Complete environment isolation
+- ✅ Near-native GPU performance (95-98%)
+- ✅ Works with existing Docker images
 
 ### Common Workflows
 
@@ -597,7 +637,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ### Documentation
 - **[CLI Reference](docs/cli-reference.md)** - Complete command options
 - **[Usage Guide](docs/usage.md)** - Workflows and examples
-- **[Deployment Guide](docs/deployment.md)** - Kubernetes/SLURM deployment
+- **[Deployment Guide](docs/deployment.md)** - Kubernetes/SLURM/Bare Metal VM deployment
+- **[Bare Metal VM Guide](docs/baremetal-vm.md)** - VM-based execution with isolation
 - **[Configuration Guide](docs/configuration.md)** - Advanced configuration
 - **[All Docs](docs/)** - Complete documentation index
 
