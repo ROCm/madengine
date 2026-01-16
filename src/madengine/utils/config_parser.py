@@ -3,6 +3,10 @@
 This module provides utilities to parse configuration files from model arguments
 and load them in various formats (CSV, JSON, YAML).
 
+Handles multiple repository patterns:
+- Standalone repos (MAD, MAD-private): ./scripts/model/configs/
+- Submodule in MAD-internal: ./scripts/{MAD|MAD-private}/model/configs/
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
@@ -29,25 +33,194 @@ class ConfigParser:
     
     This class handles parsing configuration files in various formats
     (CSV, JSON, YAML) that are referenced in model arguments.
+    
+    Supports three usage patterns when run from MAD-internal CI:
+    1. MAD-internal models: ./scripts/model/configs/
+    2. MAD submodule: ./scripts/MAD/model/configs/
+    3. MAD-private submodule: ./scripts/MAD-private/model/configs/
+    
+    Also works when run standalone in MAD or MAD-private repos.
     """
+    
+    # Known repository/submodule names to detect
+    KNOWN_REPOS = ['MAD', 'MAD-private', 'MAD-internal']
     
     def __init__(self, scripts_base_dir: typing.Optional[str] = None):
         """Initialize ConfigParser.
         
         Args:
-            scripts_base_dir: Base directory for scripts (e.g., ~/amd/MAD-private/scripts)
+            scripts_base_dir: Base directory for scripts 
+                             (e.g., "scripts/MAD-private/pyt_atom")
         """
         self.scripts_base_dir = scripts_base_dir
+        self._path_cache = {}  # Cache resolved paths
     
-    def parse_config_from_args(self, args_string: str, model_scripts_path: str = None) -> typing.Optional[str]:
-        """Extract config file path from model arguments.
+    def _extract_repo_root(self, path: str) -> typing.Optional[str]:
+        """Extract repository root from a scripts path.
+        
+        Examples:
+            "scripts/MAD-private/pyt_atom" -> "scripts/MAD-private"
+            "scripts/MAD/vllm" -> "scripts/MAD"
+            "scripts/model" -> "scripts"
+            
+        Args:
+            path: Full or partial path containing scripts directory
+            
+        Returns:
+            Repository root path, or None if not identifiable
+        """
+        if not path:
+            return None
+        
+        parts = Path(path).parts
+        
+        # Find 'scripts' in the path
+        try:
+            scripts_idx = parts.index('scripts')
+        except ValueError:
+            return None
+        
+        # Check if next part after 'scripts' is a known repo name
+        if scripts_idx + 1 < len(parts):
+            next_part = parts[scripts_idx + 1]
+            if next_part in self.KNOWN_REPOS:
+                # It's a submodule: scripts/MAD-private or scripts/MAD
+                return os.path.join(*parts[:scripts_idx + 2])
+            else:
+                # It's MAD-internal's own models: scripts/model -> scripts
+                return os.path.join(*parts[:scripts_idx + 1])
+        
+        # Just 'scripts' directory
+        return os.path.join(*parts[:scripts_idx + 1])
+    
+    def _build_candidate_paths(
+        self, 
+        config_path: str, 
+        model_scripts_path: str = None
+    ) -> typing.List[str]:
+        """Build list of candidate paths to try in priority order.
+        
+        Args:
+            config_path: Relative config path (e.g., "configs/default.csv")
+            model_scripts_path: Path to model script file
+            
+        Returns:
+            List of full paths to try, in order of priority
+        """
+        candidates = []
+        
+        # Priority 1: Relative to model's immediate directory
+        # scripts/MAD-private/pyt_atom + configs/default.csv
+        if model_scripts_path:
+            scripts_dir = os.path.dirname(model_scripts_path)
+            if scripts_dir:
+                candidates.append(os.path.join(scripts_dir, config_path))
+        
+        # Priority 2: Relative to scripts_base_dir
+        # scripts/MAD-private/pyt_atom + configs/default.csv
+        if self.scripts_base_dir:
+            candidates.append(os.path.join(self.scripts_base_dir, config_path))
+        
+        # Priority 3: Relative to repository root (for shared configs)
+        # This handles: scripts/MAD-private/pyt_atom -> scripts/MAD-private/configs/
+        if self.scripts_base_dir:
+            repo_root = self._extract_repo_root(self.scripts_base_dir)
+            if repo_root:
+                candidates.append(os.path.join(repo_root, config_path))
+        
+        if model_scripts_path:
+            scripts_dir = os.path.dirname(model_scripts_path)
+            if scripts_dir:
+                repo_root = self._extract_repo_root(scripts_dir)
+                if repo_root:
+                    candidates.append(os.path.join(repo_root, config_path))
+        
+        # Priority 4: Walk up from model's directory
+        # Try parent directories up to repo root
+        if model_scripts_path:
+            scripts_dir = os.path.dirname(model_scripts_path)
+            repo_root = self._extract_repo_root(scripts_dir)
+            if repo_root and scripts_dir:
+                candidates.extend(
+                    self._walk_up_between(config_path, scripts_dir, repo_root)
+                )
+        
+        # Priority 5: Walk up from scripts_base_dir
+        if self.scripts_base_dir:
+            repo_root = self._extract_repo_root(self.scripts_base_dir)
+            if repo_root:
+                candidates.extend(
+                    self._walk_up_between(config_path, self.scripts_base_dir, repo_root)
+                )
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_candidates = []
+        for path in candidates:
+            normalized = os.path.normpath(path)
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_candidates.append(normalized)
+        
+        return unique_candidates
+    
+    def _walk_up_between(
+        self, 
+        config_path: str, 
+        start_dir: str, 
+        stop_dir: str
+    ) -> typing.List[str]:
+        """Generate candidate paths by walking up from start to stop directory.
+        
+        Args:
+            config_path: Relative config path
+            start_dir: Starting directory
+            stop_dir: Stop at this directory (inclusive)
+            
+        Returns:
+            List of candidate paths
+        """
+        candidates = []
+        current = os.path.abspath(start_dir)
+        stop = os.path.abspath(stop_dir)
+        
+        while current.startswith(stop):
+            parent = os.path.dirname(current)
+            if parent == current:  # Reached root
+                break
+            current = parent
+            candidates.append(os.path.join(current, config_path))
+            if current == stop:  # Reached stop directory
+                break
+        
+        return candidates
+    
+    def parse_config_from_args(
+        self, 
+        args_string: str, 
+        model_scripts_path: str = None
+    ) -> typing.Optional[str]:
+        """Extract and resolve config file path from model arguments.
+        
+        Resolution strategy:
+        1. If absolute path -> verify it exists
+        2. Try model's immediate directory
+        3. Try scripts_base_dir
+        4. Try repository root (scripts/MAD-private/, scripts/MAD/, scripts/)
+        5. Walk up from model directory to repo root
+        
+        This handles all cases:
+        - MAD-internal models: scripts/model/configs/default.csv
+        - MAD submodule: scripts/MAD/model/configs/default.csv
+        - MAD-private submodule: scripts/MAD-private/model/configs/default.csv
+        - Shared configs at repo level: scripts/MAD-private/configs/default.csv
         
         Args:
             args_string: The args field from models.json
-            model_scripts_path: Path to the model's script directory
+            model_scripts_path: Path to the model's script file (e.g., run.py)
             
         Returns:
-            Full path to config file, or None if no config found
+            Full path to config file, or None if not found
         """
         if not args_string:
             return None
@@ -59,35 +232,56 @@ class ConfigParser:
         
         config_path = config_match.group(1)
         
-        # If it's already an absolute path, return it
+        # Check cache first
+        cache_key = f"{config_path}::{model_scripts_path}::{self.scripts_base_dir}"
+        if cache_key in self._path_cache:
+            cached_path = self._path_cache[cache_key]
+            if os.path.exists(cached_path):
+                return cached_path
+            else:
+                del self._path_cache[cache_key]
+        
+        # Handle absolute paths
         if os.path.isabs(config_path):
-            return config_path if os.path.exists(config_path) else None
+            if os.path.exists(config_path):
+                self._path_cache[cache_key] = config_path
+                return config_path
+            else:
+                LOGGER.warning(f"Absolute config path does not exist: {config_path}")
+                return None
         
-        # Try to resolve relative path
-        # First, try relative to model scripts directory
-        if model_scripts_path:
-            scripts_dir = os.path.dirname(model_scripts_path)
-            full_path = os.path.join(scripts_dir, config_path)
-            if os.path.exists(full_path):
-                return full_path
+        # Build and try candidate paths
+        candidates = self._build_candidate_paths(config_path, model_scripts_path)
         
-        # Try relative to scripts_base_dir
-        if self.scripts_base_dir:
-            full_path = os.path.join(self.scripts_base_dir, config_path)
-            if os.path.exists(full_path):
-                return full_path
+        for candidate in candidates:
+            LOGGER.debug(f"Trying config path: {candidate}")
+            if os.path.exists(candidate):
+                LOGGER.info(f"Found config file at: {candidate}")
+                self._path_cache[cache_key] = candidate
+                return candidate
         
-        LOGGER.warning(f"Config file not found: {config_path}")
+        # Not found
+        LOGGER.warning(
+            f"Config file not found: {config_path}\n"
+            f"  model_scripts_path: {model_scripts_path}\n"
+            f"  scripts_base_dir: {self.scripts_base_dir}\n"
+            f"  Tried {len(candidates)} locations:\n"
+            + "\n".join(f"    - {c}" for c in candidates[:5])
+            + (f"\n    ... and {len(candidates)-5} more" if len(candidates) > 5 else "")
+        )
         return None
     
-    def load_config_file(self, config_path: str) -> typing.Optional[typing.Union[typing.List[dict], dict]]:
+    def load_config_file(
+        self, 
+        config_path: str
+    ) -> typing.Optional[typing.Union[typing.List[dict], dict]]:
         """Load and parse a configuration file.
         
         Args:
             config_path: Full path to the config file
             
         Returns:
-            For CSV: List of dicts (one per row)
+            For CSV: List of dicts (one per row, excluding empty rows)
             For JSON/YAML: Dict or list as-is from file
             None if file cannot be loaded
         """
@@ -117,13 +311,23 @@ class ConfigParser:
             config_path: Path to CSV file
             
         Returns:
-            List of dicts, one per row
+            List of dicts, one per row (excluding completely empty rows)
         """
         df = pd.read_csv(config_path)
+        
+        # Remove rows that are completely empty (all NaN)
+        # This handles blank lines in CSV files
+        df = df.dropna(how='all')
+        
         # Convert NaN to None for JSON serialization
         df = df.where(pd.notnull(df), None)
+        
         # Convert to list of dicts
-        return df.to_dict(orient='records')
+        configs = df.to_dict(orient='records')
+        
+        LOGGER.info(f"Loaded {len(configs)} config entries from {config_path}")
+        
+        return configs
     
     def _load_json(self, config_path: str) -> typing.Union[dict, list]:
         """Load JSON config file.
@@ -179,10 +383,6 @@ class ConfigParser:
             return configs_list[0]
         
         # For multiple configs, try to match based on common fields
-        # Extract model identifier from result model name
-        # e.g., "pyt_vllm_llama-3.1-8b_perf_meta-llama_Llama-3.1-8B-Instruct" 
-        # should match config with model="meta-llama/Llama-3.1-8B-Instruct"
-        
         for config in configs_list:
             # Try to match on 'model' field if it exists in both
             if 'model' in config and 'model' in result_data:
@@ -212,7 +412,7 @@ class ConfigParser:
         
         Args:
             args_string: The args field from models.json
-            model_scripts_path: Path to the model's script directory
+            model_scripts_path: Path to the model's script file
             
         Returns:
             Config data (list of dicts for CSV, dict for JSON/YAML), or None
@@ -234,4 +434,3 @@ def get_config_parser(scripts_base_dir: typing.Optional[str] = None) -> ConfigPa
         ConfigParser instance
     """
     return ConfigParser(scripts_base_dir=scripts_base_dir)
-
