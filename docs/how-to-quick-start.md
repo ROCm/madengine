@@ -38,13 +38,13 @@ Run LLMs and Deep Learning models on container
 optional arguments:
   -h, --help            show this help message and exit
   --tags TAGS [TAGS ...]
-                        tags to run (can be multiple).
+                        tags to run (space-separated).
   --timeout TIMEOUT     time out for model run in seconds; Overrides per-model timeout if specified or default timeout of 7200 (2 hrs). Timeout
                         of 0 will never timeout.
   --live-output          prints output in real-time directly on STDOUT
   --clean-docker-cache    rebuild docker image without using cache
   --additional-context-file ADDITIONAL_CONTEXT_FILE
-                        additonal context, as json file, to filter behavior of workloads. Overrides detected contexts.
+                        additional context, as json file, to filter behavior of workloads. Overrides detected contexts.
   --additional-context ADDITIONAL_CONTEXT
                         additional context, as string representation of python dict, to filter behavior of workloads. Overrides detected contexts and additional-
                         context-file.
@@ -78,13 +78,13 @@ Commands for generating reports.
 ```shell
 (venv) test-node:~/MAD$ madengine report --help
 usage: madengine report [-h] {update-perf,to-html,to-email} ...
- 
+
 optional arguments:
   -h, --help            show this help message and exit
- 
+
 Report Commands:
   Available commands for generating reports.
- 
+
   {update-perf,to-html,to-email}
     update-perf         Update perf.csv to database
     to-html             Convert CSV to HTML report of models
