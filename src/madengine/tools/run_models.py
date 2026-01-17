@@ -989,11 +989,18 @@ class RunModels:
         # Check if model is deprecated
         if model_info.get("is_deprecated", False):
             print(f"WARNING: Model {model_info['name']} has been deprecated.")
-            if self.args.ignore_deprecated_flag:
-                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")
-            else:
+            if not self.args.ignore_deprecated_flag:
                 print(f"WARNING: Skipping execution. No bypass flags mentioned.")
-                return True  # exit early
+                print(f"Skipping model {model_info['name']} as it has been deprecated.")
+                # add result to output
+                self.return_status = True
+                run_details.status = "SKIPPED"
+                # generate performance entry for CSV update
+                run_details.generate_json("perf_entry.json")
+                update_perf_csv(exception_result="perf_entry.json", perf_csv=self.args.output)
+                return self.return_status  # exit early
+            else:
+                print(f"WARNING: Running deprecated model {model_info['name']} due to --ignore-deprecated-flag.")
 
         # check if model is supported on current gpu architecture, if not skip.
         list_skip_gpu_arch = []
