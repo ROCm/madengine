@@ -196,6 +196,20 @@
     "multiple_results": "perf_dummy.csv"
   },
   {
+    "name": "dummy_perf_super",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_perf_super.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "perf_super_test"
+    ],
+    "args": "--config configs/default.csv",
+    "multiple_results": "perf_dummy_super.csv"
+  },
+  {
     "name": "therock",
     "dockerfile": "docker/therock",
     "scripts": "scripts/therock/run.sh",
