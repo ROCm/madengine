@@ -1,0 +1,4 @@
+# SSH Multi-Node Runner Requirements
+
+# Core SSH functionality
+paramiko>=2.9.0,<4.0.0
