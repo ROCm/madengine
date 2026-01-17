@@ -12,6 +12,14 @@ import typing
 import pandas as pd
 import numpy as np
 
+# MAD Engine modules (dual import for LOGGER)
+try:
+    from madengine.db.logger import setup_logger  # type: ignore
+    LOGGER = setup_logger()
+except ImportError:
+    from logger import setup_logger  # type: ignore
+    LOGGER = setup_logger()
+
 
 def get_env_vars() -> dict:
     """Utility function to get MAD/DLM specific env_vars
@@ -101,7 +109,7 @@ def get_avg_perf(
 
     if perfs:
         avg = mean(perfs)
-        print("{} avg from the last {} entries".format(avg, len(perfs)))
+        LOGGER.debug("{} avg from the last {} entries".format(avg, len(perfs)))
         return avg, perfs
     else:
         return None, None
