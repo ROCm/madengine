@@ -1176,11 +1176,11 @@ class RunModels:
         if host_os.find("HOST_UBUNTU") != -1:
             print(self.console.sh("apt show rocm-libs -a", canFail=True))
         elif host_os.find("HOST_CENTOS") != -1:
-            print(self.console.sh("yum info rocm-libs"))
+            print(self.console.sh("yum info rocm-libs", canFail=True))
         elif host_os.find("HOST_SLES") != -1:
-            print(self.console.sh("zypper info rocm-libs"))
+            print(self.console.sh("zypper info rocm-libs", CanFail=True))
         elif host_os.find("HOST_AZURE") != -1:
-            print(self.console.sh("tdnf info rocm-libs"))
+            print(self.console.sh("tdnf info rocm-libs", canFail=True))
         else:
             print("ERROR: Unable to detect host OS.")
             self.return_status = False
