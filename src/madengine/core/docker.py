@@ -43,9 +43,6 @@ class Docker:
             envVars (dict): The dictionary of environment variables.
             keep_alive (bool): The keep alive flag.
             console (Console): The console object.
-
-        Raises:
-            RuntimeError: If the container name already exists.
         """
         # initialize variables
         self.docker_sha = None
@@ -59,14 +56,26 @@ class Docker:
         container_name_exists = self.console.sh(
             "docker container ps -a | grep " + container_name + " | wc -l"
         )
-        # if container name exists, raise error.
+        # If container name exists, print message then stop/remove the container.
         if container_name_exists != "0":
             raise RuntimeError(
+            msg = (
                 "Container with name, "
                 + container_name
                 + " already exists. "
-                + "Please stop (docker stop --time=1 SHA) and remove this (docker rm -f SHA) to proceed..."
+                 + "Going to stop (docker stop --time=1 SHA) and remove this (docker rm -f SHA) to proceed..."
             )
+            print(msg)
+
+            # Stop/remove by SHA only (ignore failures in case it's already stopped/removed).
+            existing_shas = self.console.sh(
+                'docker ps -aqf "name=' + container_name + '"',
+                canFail=True,
+            )
+            if existing_shas:
+                for sha in existing_shas.splitlines():
+                    self.console.sh("docker stop --timeout=1 " + sha, canFail=True)
+                    self.console.sh("docker rm -f " + sha, canFail=True)
 
         # run docker command
         command = (
