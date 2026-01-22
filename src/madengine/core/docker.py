@@ -58,7 +58,6 @@ class Docker:
         )
         # If container name exists, print message then stop/remove the container.
         if container_name_exists != "0":
-            raise RuntimeError(
             msg = (
                 "Container with name, "
                 + container_name
