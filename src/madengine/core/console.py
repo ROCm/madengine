@@ -61,35 +61,40 @@ class Console:
         # Print the command if shellVerbose is True
         if self.shellVerbose and not secret:
             print("> " + command, flush=True)
-
-        # Run the shell command
+    
+        # Run the shell command in BINARY mode to handle UTF-8 safely
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             shell=True,
-            universal_newlines=True,
-            bufsize=1,
+            universal_newlines=False,  # Binary mode
+            bufsize=0,  # Unbuffered for binary
             env=env,
         )
-
-        # Get the output of the shell command, and check for failure, and return the output.
+    
+        # Get the output of the shell command
         try:
             if not self.live_output:
-                outs, errs = proc.communicate(timeout=timeout)
+                raw_outs, errs = proc.communicate(timeout=timeout)
+                # Decode with error handling
+                outs = raw_outs.decode('utf-8', errors='replace')
             else:
                 outs = []
-                for stdout_line in iter(lambda: proc.stdout.readline().encode('utf-8', errors='replace').decode('utf-8', errors='replace'), ""):
-                    print(prefix + stdout_line, end="")
-                    outs.append(stdout_line)
+                # Read binary lines and decode safely
+                for raw_line in iter(proc.stdout.readline, b''):  # b'' for binary
+                    # Decode with error handling - replaces bad bytes with �
+                    line = raw_line.decode('utf-8', errors='replace')
+                    print(prefix + line, end="")
+                    outs.append(line)
                 outs = "".join(outs)
                 proc.stdout.close()
                 proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             raise RuntimeError("Console script timeout") from exc
-        
+    
         # Check for failure
         if proc.returncode != 0:
             if not canFail:
@@ -107,6 +112,6 @@ class Console:
                         + "' failed with exit code "
                         + str(proc.returncode)
                     )
-                
+    
         # Return the output
         return outs.strip()
