@@ -121,13 +121,26 @@ def handle_multiple_results(
         else:
             row["status"] = "FAILURE"
 
+        # Ensure all values are scalars (convert lists to strings)
+        for key, value in row.items():
+            if isinstance(value, (list, tuple)):
+                row[key] = ",".join(str(v) for v in value)
+        
+        # Create a single-row DataFrame from the row dict
+        row_df = pd.DataFrame([row])
         final_multiple_results_df = pd.concat(
-            [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
+            [final_multiple_results_df, row_df], ignore_index=True
         )
-        # Reorder columns according to existing perf csv
+
+    # Reorder columns according to existing perf csv (do this once after loop)
+    if not perf_csv_df.empty:
         columns = perf_csv_df.columns.tolist()
-        # Add any additional columns to the end
+        # Add any additional columns from final_multiple_results_df to the end
         columns = columns + [col for col in final_multiple_results_df.columns if col not in columns]
+        # Reorder final_multiple_results_df to match
+        for col in columns:
+            if col not in final_multiple_results_df.columns:
+                final_multiple_results_df[col] = ""
         final_multiple_results_df = final_multiple_results_df[columns]
 
     perf_entry_df_to_csv(final_multiple_results_df)
@@ -167,8 +180,16 @@ def handle_single_result(perf_csv_df: pd.DataFrame, single_result: str) -> pd.Da
     perf_entry_dict_to_csv(single_result_json)
     single_result_df = pd.DataFrame(single_result_json, index=[0])
     if perf_csv_df.empty:
+        # If perf_csv_df is empty but has columns, fill missing columns with empty strings
+        for col in perf_csv_df.columns:
+            if col not in single_result_df.columns:
+                single_result_df[col] = ""
         perf_csv_df = single_result_df[perf_csv_df.columns]
     else:
+        # Add missing columns to single_result_df before concatenation
+        for col in perf_csv_df.columns:
+            if col not in single_result_df.columns:
+                single_result_df[col] = ""
         perf_csv_df = pd.concat([perf_csv_df, single_result_df], ignore_index=True)
 
     return perf_csv_df
@@ -193,8 +214,16 @@ def handle_exception_result(
     perf_entry_dict_to_csv(exception_result_json)
     exception_result_df = pd.DataFrame(exception_result_json, index=[0])
     if perf_csv_df.empty:
+        # If perf_csv_df is empty but has columns, fill missing columns with empty strings
+        for col in perf_csv_df.columns:
+            if col not in exception_result_df.columns:
+                exception_result_df[col] = ""
         perf_csv_df = exception_result_df[perf_csv_df.columns]
     else:
+        # Add missing columns to exception_result_df before concatenation
+        for col in perf_csv_df.columns:
+            if col not in exception_result_df.columns:
+                exception_result_df[col] = ""
         perf_csv_df = pd.concat([perf_csv_df, exception_result_df], ignore_index=True)
 
     return perf_csv_df

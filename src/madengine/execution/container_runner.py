@@ -1091,19 +1091,27 @@ class ContainerRunner:
 
                             if multiple_results:
                                 run_results["performance"] = multiple_results
-                                # Validate multiple results file format
+                                # Validate multiple results file format using proper CSV parsing
                                 try:
+                                    import csv
                                     with open(multiple_results, "r") as f:
-                                        header = f.readline().strip().split(",")
-                                        for line in f:
-                                            row = line.strip().split(",")
-                                            for col in row:
-                                                if col == "":
-                                                    run_results["performance"] = None
-                                                    print(
-                                                        "Error: Performance metric is empty in multiple results file."
-                                                    )
+                                        csv_reader = csv.DictReader(f)
+                                        
+                                        # Check if 'performance' column exists
+                                        if 'performance' not in csv_reader.fieldnames:
+                                            print("Error: 'performance' column not found in multiple results file.")
+                                            run_results["performance"] = None
+                                        else:
+                                            # Check if at least one row has a non-empty performance value
+                                            has_valid_perf = False
+                                            for row in csv_reader:
+                                                if row.get('performance', '').strip():
+                                                    has_valid_perf = True
                                                     break
+                                            
+                                            if not has_valid_perf:
+                                                run_results["performance"] = None
+                                                print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
                                         f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
