@@ -162,7 +162,7 @@
     "name": "dummy_prof",
     "dockerfile": "docker/dummy",
     "scripts": "scripts/dummy/run_prof.sh",
-    "n_gpus": "1",
+    "n_gpus": "-1",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
@@ -194,6 +194,20 @@
     ],
     "args": "",
     "multiple_results": "perf_dummy.csv"
+  },
+  {
+    "name": "dummy_superset",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_multi.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "perf_super_test"
+    ],
+    "args": "--config configs/default.csv",
+    "multiple_results": "perf_dummy_super.csv"
   },
   {
     "name": "dummy_data_aws",
