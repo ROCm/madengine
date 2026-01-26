@@ -39,6 +39,10 @@ spec:
       hostIPC: true
       {% endif %}
       
+      # Image pull secrets for private registries
+      imagePullSecrets:
+      - name: dockerhub-creds
+      
       # Init container extracts madengine scripts from package
       initContainers:
       - name: extract-scripts

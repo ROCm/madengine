@@ -2184,6 +2184,22 @@ torchrun \\
                 if e.status != 404:
                     pass
         
+        # Delete existing collector pod (must be done before PVC to allow PVC deletion)
+        collector_pod_name = f"collector-{self.job_name}"
+        try:
+            self.core_v1.delete_namespaced_pod(
+                name=collector_pod_name,
+                namespace=self.namespace,
+                grace_period_seconds=0
+            )
+            self.console.print(f"[dim]Deleted existing collector pod: {collector_pod_name}[/dim]")
+            # Wait a moment for pod to release the PVC
+            import time
+            time.sleep(2)
+        except ApiException as e:
+            if e.status != 404:
+                pass
+        
         # Delete existing PVC
         pvc_name = f"{self.job_name}-results"
         try:
@@ -2192,13 +2208,29 @@ torchrun \\
                 namespace=self.namespace
             )
             self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
+            
+            # Wait for PVC to be fully deleted (not just marked for deletion)
+            import time
+            max_wait = 30  # Maximum 30 seconds
+            wait_interval = 1  # Check every 1 second
+            for i in range(max_wait):
+                try:
+                    self.core_v1.read_namespaced_persistent_volume_claim(
+                        name=pvc_name,
+                        namespace=self.namespace
+                    )
+                    time.sleep(wait_interval)
+                except ApiException as e:
+                    if e.status == 404:
+                        # PVC is fully deleted
+                        break
         except ApiException as e:
             if e.status != 404:
                 pass
         
-        # Wait a moment for resources to be deleted
+        # Wait a moment for other resources to be deleted
         import time
-        time.sleep(2)  # Increased to allow PVC deletion
+        time.sleep(1)
 
     def deploy(self) -> DeploymentResult:
         """Apply rendered manifests using kubernetes Python client."""
@@ -2860,6 +2892,7 @@ torchrun \\
                 "metadata": {"name": collector_pod_name, "namespace": self.namespace},
                 "spec": {
                     "restartPolicy": "Never",
+                    "imagePullSecrets": [{"name": "dockerhub-creds"}],
                     "containers": [{
                         "name": "collector",
                         "image": "busybox:latest",
