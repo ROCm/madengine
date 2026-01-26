@@ -73,7 +73,7 @@ class Docker:
             )
             if existing_shas:
                 for sha in existing_shas.splitlines():
-                    self.console.sh("docker stop --timeout=1 " + sha, canFail=True)
+                    self.console.sh("docker stop -t=1 " + sha, canFail=True)
                     self.console.sh("docker rm -f " + sha, canFail=True)
 
         # run docker command
