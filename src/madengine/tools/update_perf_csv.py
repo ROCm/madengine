@@ -73,18 +73,7 @@ def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
         perf_entry: The performance entry dictionary.
     """
     flatten_tags(perf_entry)
-    
-    # Convert any non-scalar values (list/dict) to JSON strings
-    # to avoid DataFrame creation errors when values don't match index length
-    perf_entry_safe = {}
-    for key, value in perf_entry.items():
-        if isinstance(value, (list, dict)):
-            # Convert lists and dicts to JSON strings
-            perf_entry_safe[key] = json.dumps(value) if value is not None else None
-        else:
-            perf_entry_safe[key] = value
-    
-    js_df = pd.DataFrame(perf_entry_safe, index=[0])
+    js_df = pd.DataFrame(perf_entry, index=[0])
     perf_entry_df_to_csv(js_df)
 
 
@@ -138,18 +127,8 @@ def handle_multiple_results(
         else:
             row["status"] = "FAILURE"
 
-        # Convert any non-scalar values (list/dict) to JSON strings
-        # to avoid DataFrame creation errors when values don't match index length
-        row_safe = {}
-        for key, value in row.items():
-            if isinstance(value, (list, dict)):
-                # Convert lists and dicts to JSON strings
-                row_safe[key] = json.dumps(value) if value is not None else None
-            else:
-                row_safe[key] = value
-
         final_multiple_results_df = pd.concat(
-            [final_multiple_results_df, pd.DataFrame(row_safe, index=[0])], ignore_index=True
+            [final_multiple_results_df, pd.DataFrame(row, index=[0])], ignore_index=True
         )
 
     # Reorder columns according to existing perf csv (moved outside loop for efficiency)

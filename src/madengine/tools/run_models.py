@@ -50,10 +50,8 @@ from madengine.core.constants import MAD_MINIO, MAD_AWS_S3
 from madengine.core.constants import MODEL_DIR, PUBLIC_GITHUB_ROCM_KEY
 from madengine.core.timeout import Timeout
 from madengine.tools.update_perf_csv import update_perf_csv
-from madengine.tools.update_perf_super import update_perf_super_json
 from madengine.tools.csv_to_html import convert_csv_to_html
 from madengine.tools.discover_models import DiscoverModels
-from madengine.utils.config_parser import ConfigParser
 
 
 class RunDetails:
@@ -85,7 +83,6 @@ class RunDetails:
         data_download_duration (str): The duration of data download.
         build_number (str): The CI build number.
         additional_docker_run_options (str): The additional options used for docker run.
-        configs (dict or list or None): The configuration data from config files.
     """
 
     # Avoiding @property for ease of code, add if needed.
@@ -115,7 +112,6 @@ class RunDetails:
         self.data_download_duration = ""
         self.build_number = ""
         self.additional_docker_run_options = ""
-        self.configs = None
 
     def print_perf(self):
         """Print the performance results of a model.
@@ -137,37 +133,13 @@ class RunDetails:
         Raises:
             Exception: An error occurred while generating JSON file for performance results of a model.
         """
-        # Exclude configs from CSV workflow as it can contain list/dict values
-        # that cause issues with pandas DataFrame creation
-        keys_to_exclude = (
-            {"model", "performance", "metric", "status", "configs"} if multiple_results 
-            else {"configs"}
-        )
-        attributes = vars(self)
-        output_dict = {x: attributes[x] for x in attributes if x not in keys_to_exclude}
-        with open(json_name, "w") as outfile:
-            json.dump(output_dict, outfile)
-    
-    def generate_super_json(self, json_name: str, multiple_results: bool = False) -> None:
-        """Generate enhanced JSON file with config data for performance results.
-
-        This method is similar to generate_json but includes the configs field
-        for perf_entry_super.json generation.
-
-        Args:
-            json_name (str): The name of the JSON file.
-            multiple_results (bool): The status of multiple results. Default is False.
-
-        Raises:
-            Exception: An error occurred while generating JSON file for performance results of a model.
-        """
         keys_to_exclude = (
             {"model", "performance", "metric", "status"} if multiple_results else {}
         )
         attributes = vars(self)
         output_dict = {x: attributes[x] for x in attributes if x not in keys_to_exclude}
         with open(json_name, "w") as outfile:
-            json.dump(output_dict, outfile, indent=2)
+            json.dump(output_dict, outfile)
 
 
 class RunModels:
@@ -1006,17 +978,6 @@ class RunModels:
         # Taking gpu arch from context assumes the host image and container have the same gpu arch.
         # Environment variable updates for MAD Public CI
         run_details.gpu_architecture = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
-        
-        # Parse and load config file if present in args for perf_entry_super.json
-        try:
-            config_parser = ConfigParser(scripts_base_dir=os.path.dirname(model_info.get("scripts", "")))
-            run_details.configs = config_parser.parse_and_load(
-                model_info["args"],
-                model_info.get("scripts", "")
-            )
-        except Exception as e:
-            print(f"Warning: Could not parse config file: {e}")
-            run_details.configs = None
 
         # Check the setting of shared memory size
         if "SHM_SIZE" in self.context.ctx:
@@ -1057,15 +1018,6 @@ class RunModels:
             # generate exception for testing
             run_details.generate_json("perf_entry.json")
             update_perf_csv(exception_result="perf_entry.json", perf_csv=self.args.output)
-            
-            # Generate perf_entry_super.json
-            run_details.generate_super_json("perf_entry_super.json")
-            update_perf_super_json(
-                exception_result="perf_entry_super.json",
-                perf_super_json="perf_entry_super.json",
-                cumulative_json="perf_super.json",
-                scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
-            )
         else:
             print(
                 f"Running model {run_details.model} on {run_details.gpu_architecture} architecture."
@@ -1167,31 +1119,11 @@ class RunModels:
                                 model_name=run_details.model,
                                 common_info="common_info.json",
                             )
-                            
-                            # Generate perf_entry_super.json
-                            run_details.generate_super_json("common_info_super.json", multiple_results=True)
-                            update_perf_super_json(
-                                multiple_results=model_info['multiple_results'],
-                                perf_super_json="perf_entry_super.json",
-                                model_name=run_details.model,
-                                common_info="common_info_super.json",
-                                cumulative_json="perf_super.json",
-                                scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
-                            )
                         else:
                             run_details.generate_json("perf_entry.json")
                             update_perf_csv(
                                 single_result="perf_entry.json",
                                 perf_csv=self.args.output,
-                            )
-                            
-                            # Generate perf_entry_super.json
-                            run_details.generate_super_json("perf_entry_super.json")
-                            update_perf_super_json(
-                                single_result="perf_entry_super.json",
-                                perf_super_json="perf_entry_super.json",
-                                cumulative_json="perf_super.json",
-                                scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
                             )
 
                         self.return_status &= (run_details.status == 'SUCCESS')
@@ -1209,14 +1141,6 @@ class RunModels:
                             exception_result="perf_entry.json",
                             perf_csv=self.args.output,
                         )
-                        
-                        # Generate perf_entry_super.json
-                        run_details.generate_super_json("perf_entry_super.json")
-                        update_perf_super_json(
-                            exception_result="perf_entry_super.json",
-                            perf_super_json="perf_entry_super.json",
-                            scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
-                        )
 
             except Exception as e:
                 self.return_status = False
@@ -1230,14 +1154,6 @@ class RunModels:
                 update_perf_csv(
                     exception_result="perf_entry.json",
                     perf_csv=self.args.output,
-                )
-                
-                # Generate perf_entry_super.json
-                run_details.generate_super_json("perf_entry_super.json")
-                update_perf_super_json(
-                    exception_result="perf_entry_super.json",
-                    perf_super_json="perf_entry_super.json",
-                    scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
                 )
 
         return self.return_status
