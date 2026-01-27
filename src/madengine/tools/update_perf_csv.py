@@ -128,12 +128,12 @@ def handle_multiple_results(
         model = r.pop("model")
         row["model"] = model_name + "_" + str(model)
         
-        # Only extract essential result columns for perf.csv
-        # The full details with all metrics are preserved in perf_entry_super.json
-        row["performance"] = r.get("performance")
-        row["metric"] = r.get("metric")
+        # Extract all columns from CSV result to ensure proper column alignment
+        # This ensures all result columns (benchmark, tp, inp, out, dtype, etc.) are captured
+        for key, value in r.items():
+            row[key] = value
 
-        if row["performance"] is not None and pd.notna(row["performance"]):
+        if row.get("performance") is not None and pd.notna(row.get("performance")):
             row["status"] = "SUCCESS"
         else:
             row["status"] = "FAILURE"
@@ -151,11 +151,15 @@ def handle_multiple_results(
         final_multiple_results_df = pd.concat(
             [final_multiple_results_df, pd.DataFrame(row_safe, index=[0])], ignore_index=True
         )
-        # Reorder columns according to existing perf csv
-        columns = perf_csv_df.columns.tolist()
-        # Add any additional columns to the end
-        columns = columns + [col for col in final_multiple_results_df.columns if col not in columns]
-        final_multiple_results_df = final_multiple_results_df[columns]
+
+    # Reorder columns according to existing perf csv (moved outside loop for efficiency)
+    if not final_multiple_results_df.empty:
+        desired_columns = perf_csv_df.columns.tolist()
+        # Add any additional columns from final_multiple_results_df
+        desired_columns = desired_columns + [col for col in final_multiple_results_df.columns if col not in desired_columns]
+        # Only select columns that actually exist in final_multiple_results_df to avoid KeyError
+        available_columns = [col for col in desired_columns if col in final_multiple_results_df.columns]
+        final_multiple_results_df = final_multiple_results_df[available_columns]
 
     perf_entry_df_to_csv(final_multiple_results_df)
     if perf_csv_df.empty:

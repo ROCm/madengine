@@ -1063,6 +1063,7 @@ class RunModels:
             update_perf_super_json(
                 exception_result="perf_entry_super.json",
                 perf_super_json="perf_entry_super.json",
+                cumulative_json="perf_super.json",
                 scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
             )
         else:
@@ -1174,6 +1175,7 @@ class RunModels:
                                 perf_super_json="perf_entry_super.json",
                                 model_name=run_details.model,
                                 common_info="common_info_super.json",
+                                cumulative_json="perf_super.json",
                                 scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
                             )
                         else:
@@ -1188,6 +1190,7 @@ class RunModels:
                             update_perf_super_json(
                                 single_result="perf_entry_super.json",
                                 perf_super_json="perf_entry_super.json",
+                                cumulative_json="perf_super.json",
                                 scripts_base_dir=os.path.dirname(model_info.get("scripts", "")),
                             )
 
