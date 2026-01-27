@@ -70,7 +70,7 @@ def train_epoch(model_engine, criterion, epoch):
     start_time = time.time()
     total_loss = 0
     
-    rank = model_engine.local_rank
+    local_rank = model_engine.local_rank
     micro_batch_size = model_engine.train_micro_batch_size_per_gpu()
     
     for batch_idx in range(NUM_BATCHES):
@@ -94,19 +94,25 @@ def train_epoch(model_engine, criterion, epoch):
         
         total_loss += loss.item()
         
-        if rank == 0 and (batch_idx + 1) % 10 == 0:
+        if local_rank == 0 and (batch_idx + 1) % 10 == 0:
             print(f"Epoch [{epoch+1}] Batch [{batch_idx+1}/{NUM_BATCHES}] Loss: {loss.item():.4f}")
     
     epoch_time = time.time() - start_time
     avg_loss = total_loss / NUM_BATCHES
     
-    # Calculate throughput
-    world_size = model_engine.world_size
-    throughput = (NUM_BATCHES * micro_batch_size * world_size) / epoch_time
+    # Calculate node-local throughput
+    # Get local world size (GPUs per node)
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
     
-    return avg_loss, throughput
+    # Node throughput = samples processed by all GPUs on this node
+    node_throughput = (NUM_BATCHES * micro_batch_size * local_world_size) / epoch_time
+    
+    return avg_loss, node_throughput
 
 def main():
+    # Start timer for total test duration
+    test_start_time = time.time()
+    
     # Parse DeepSpeed args
     parser = argparse.ArgumentParser()
     # local_rank default should come from environment (set by torchrun)
@@ -189,27 +195,47 @@ def main():
         print(f"  Gradient Accumulation: {model_engine.gradient_accumulation_steps()}")
         print(f"\nStarting training...\n")
     
+    # Get topology information
+    rank = int(os.environ.get("RANK", 0))
+    local_rank = model_engine.local_rank
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    world_size = model_engine.world_size
+    node_rank = rank // local_world_size if local_world_size > 0 else 0
+    
     # Training loop
     all_throughputs = []
     for epoch in range(NUM_EPOCHS):
-        avg_loss, throughput = train_epoch(model_engine, criterion, epoch)
-        all_throughputs.append(throughput)
+        avg_loss, node_throughput = train_epoch(model_engine, criterion, epoch)
+        all_throughputs.append(node_throughput)
         
-        if rank == 0:
-            print(f"\nEpoch {epoch+1} Complete: Loss={avg_loss:.4f}, Throughput={throughput:.2f} samples/sec\n")
+        if local_rank == 0:
+            print(f"\n[Node {node_rank}] Epoch {epoch+1} Complete: Loss={avg_loss:.4f}, Node Throughput={node_throughput:.2f} samples/sec\n")
     
-    if rank == 0:
-        avg_throughput = sum(all_throughputs) / len(all_throughputs)
+    # ========================================================================
+    # Node-Local Performance Reporting (NEW - Best Practice)
+    # Each node reports its OWN performance
+    # ========================================================================
+    if local_rank == 0:
+        avg_node_throughput = sum(all_throughputs) / len(all_throughputs)
         print(f"{'='*70}")
-        print(f"DeepSpeed Training Complete")
-        print(f"  Average Throughput: {avg_throughput:.2f} samples/sec")
-        print(f"  ZeRO Stage: {model_engine.zero_optimization_stage()}")
-        print(f"  World Size: {model_engine.world_size}")
+        print("Node Performance Summary")
+        print(f"{'='*70}")
+        print(f"Node ID: {node_rank}")
+        print(f"Node Hostname: {socket.gethostname()}")
+        print(f"Local GPUs: {local_world_size}")
+        print(f"Node Throughput: {avg_node_throughput:.2f} samples_per_second")
+        print(f"ZeRO Stage: {model_engine.zero_optimization_stage()}")
         print(f"{'='*70}")
         
-        # madengine output format
-        print(f"\nperformance: {avg_throughput:.2f} samples_per_second")
+        # CRITICAL: Standard output format for madengine parsing
+        print(f"\nperformance: {avg_node_throughput:.2f} samples_per_second")
+        print(f"node_id: {node_rank}")
+        print(f"local_gpus: {local_world_size}")
         print(f"deepspeed_config: ZeRO_stage={model_engine.zero_optimization_stage()}")
+        
+        # Calculate and print test duration
+        test_duration = time.time() - test_start_time
+        print(f"test_duration: {test_duration:.2f}s")
     
     return 0
 

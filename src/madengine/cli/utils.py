@@ -101,18 +101,51 @@ def save_summary_with_feedback(
 
 
 def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False) -> None:
-    """Display results in a formatted table with each model as a separate row."""
-    table = Table(title=title, show_header=True, header_style="bold magenta")
-    table.add_column("Index", justify="right", style="dim")
-    table.add_column("Status", style="bold")
-    table.add_column("Model", style="cyan")
+    """
+    Display results in a formatted table.
+    
+    Automatically detects:
+    - BUILD results: Simple format (no nodes/performance)
+    - RUN results with nodes: Enhanced per-node breakdown
+    """
+    successful = summary.get("successful_builds", summary.get("successful_runs", []))
+    failed = summary.get("failed_builds", summary.get("failed_runs", []))
+    
+    # Detect if this is a RUN result with per-node data (vs BUILD result)
+    has_node_data = False
+    for item in successful + failed:
+        if isinstance(item, dict) and ("nodes" in item or "perf_data" in item):
+            has_node_data = True
+            break
+    
+    # Create table with appropriate columns based on result type
+    if has_node_data:
+        # RUN results - enhanced format with per-node breakdown
+        table = Table(
+            title=f"⚡ {title} (Per-Node Breakdown)", 
+            show_header=True, 
+            header_style="bold magenta"
+        )
+        table.add_column("Index", justify="right", style="dim")
+        table.add_column("Status", style="bold")
+        table.add_column("Model", style="cyan")
+        table.add_column("Node", style="yellow")
+        table.add_column("Performance", justify="right", style="green")
+        table.add_column("Metric", style="green")
+    else:
+        # BUILD results - simple format (no per-node data)
+        table = Table(
+            title=f"⚡ {title}", 
+            show_header=True, 
+            header_style="bold magenta"
+        )
+        table.add_column("Index", justify="right", style="dim")
+        table.add_column("Status", style="bold")
+        table.add_column("Model", style="cyan")
     
     # Add GPU Architecture column if multi-arch build was used
     if show_gpu_arch:
-        table.add_column("GPU Architecture", style="yellow")
-
-    successful = summary.get("successful_builds", summary.get("successful_runs", []))
-    failed = summary.get("failed_builds", summary.get("failed_runs", []))
+        table.add_column("GPU Architecture", style="blue")
 
     # Helper function to extract model name from build result
     def extract_model_name(item):
@@ -125,62 +158,174 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
             # Fallback to extracting from docker_image for backward compatibility
             elif "docker_image" in item:
                 # Extract model name from docker image name
-                # e.g., "ci-dummy_dummy.ubuntu.amd" -> "dummy"
-                # e.g., "ci-dummy_dummy.ubuntu.amd_gfx908" -> "dummy"
                 docker_image = item["docker_image"]
                 if docker_image.startswith("ci-"):
-                    # Remove ci- prefix and extract model name
                     parts = docker_image[3:].split("_")
-                    if len(parts) >= 2:
-                        model_name = parts[0]  # First part is the model name
-                    else:
-                        model_name = parts[0] if parts else docker_image
+                    model_name = parts[0] if len(parts) >= 2 else (parts[0] if parts else docker_image)
                 else:
                     model_name = docker_image
                 return model_name
-        return str(item)[:20]  # Fallback
+        return str(item)[:20]
 
-    # Helper function to extract GPU architecture
-    def extract_gpu_arch(item):
-        if isinstance(item, dict) and "gpu_architecture" in item:
-            return item["gpu_architecture"]
-        return "N/A"
+    # Helper function to format numbers
+    def format_number(value):
+        if value is None or value == "-":
+            return "-"
+        try:
+            return f"{float(value):,.0f}"
+        except (ValueError, TypeError):
+            return str(value)
 
     # Add successful builds/runs
     row_index = 1
+    job_summaries = []  # For final summary line
+    
     for item in successful:
-        model_name = extract_model_name(item)
-        if show_gpu_arch:
-            gpu_arch = extract_gpu_arch(item)
-            table.add_row(str(row_index), "✅ Success", model_name, gpu_arch)
+        if isinstance(item, dict):
+            model_name = extract_model_name(item)
+            nodes = item.get("nodes", [])
+            perf_data = item.get("perf_data", {})
+            
+            if has_node_data:
+                # RUN results - show per-node breakdown
+                if not nodes:
+                    # Single-node or old format - show one row
+                    status = "✅ Success"
+                    node_str = "node-0"
+                    perf = perf_data.get("performance", "-")
+                    metric = perf_data.get("metric", "-")
+                    
+                    row = [str(row_index), status, model_name, node_str, format_number(perf), metric]
+                    if show_gpu_arch:
+                        row.append(perf_data.get("gpu_architecture", "N/A"))
+                    table.add_row(*row)
+                    row_index += 1
+                    
+                    job_summaries.append({
+                        "model": model_name,
+                        "nodes_succeeded": 1,
+                        "nodes_total": 1,
+                        "aggregated_perf": perf,
+                        "metric": metric
+                    })
+                else:
+                    # Multi-node - show all nodes
+                    aggregated_perf = perf_data.get("performance")
+                    aggregated_metric = perf_data.get("metric")
+                    
+                    nodes_succeeded = sum(1 for n in nodes if n.get("status") == "SUCCESS")
+                    
+                    for node in nodes:
+                        status_icon = "✅" if node.get("status") == "SUCCESS" else "❌"
+                        status = f"{status_icon} {node.get('status')}"
+                        node_str = f"node-{node['node_id']}"
+                        
+                        # Show node-local performance
+                        perf = node.get("performance", "-")
+                        metric = node.get("metric", "-")
+                        
+                        row = [str(row_index), status, model_name, node_str, format_number(perf) if perf != "-" else "-", metric if metric else "-"]
+                        if show_gpu_arch:
+                            row.append(perf_data.get("gpu_architecture", "N/A"))
+                        table.add_row(*row)
+                        row_index += 1
+                    
+                    job_summaries.append({
+                        "model": model_name,
+                        "nodes_succeeded": nodes_succeeded,
+                        "nodes_total": len(nodes),
+                        "aggregated_perf": aggregated_perf,
+                        "metric": aggregated_metric
+                    })
+            else:
+                # BUILD results - simple format (no node/performance columns)
+                status = "✅ Success"
+                row = [str(row_index), status, model_name]
+                if show_gpu_arch:
+                    row.append(item.get("architecture", "N/A"))
+                table.add_row(*row)
+                row_index += 1
         else:
-            table.add_row(str(row_index), "✅ Success", model_name)
-        row_index += 1
+            # Fallback for non-dict items
+            model_name = str(item)[:20]
+            if has_node_data:
+                row = [str(row_index), "✅ Success", model_name, "node-0", "-", "-"]
+            else:
+                row = [str(row_index), "✅ Success", model_name]
+            if show_gpu_arch:
+                row.append("N/A")
+            table.add_row(*row)
+            row_index += 1
 
     # Add failed builds/runs
     for item in failed:
         if isinstance(item, dict):
             model_name = item.get("model", "Unknown")
-            if show_gpu_arch:
-                gpu_arch = item.get("architecture", "N/A")
-                table.add_row(str(row_index), "❌ Failed", model_name, gpu_arch)
+            nodes = item.get("nodes", [])
+            
+            if has_node_data:
+                # RUN results - show per-node failures
+                if not nodes:
+                    # Single failure
+                    row = [str(row_index), "❌ Failed", model_name, "node-0", "-", item.get("error", "Unknown")]
+                    if show_gpu_arch:
+                        row.append(item.get("architecture", "N/A"))
+                    table.add_row(*row)
+                    row_index += 1
+                else:
+                    # Multi-node failure
+                    for node in nodes:
+                        status_icon = "❌"
+                        status = f"{status_icon} {node.get('status', 'FAILED')}"
+                        node_str = f"node-{node['node_id']}"
+                        error = node.get("error", "-")
+                        row = [str(row_index), status, model_name, node_str, "-", error if error else "-"]
+                        if show_gpu_arch:
+                            row.append("N/A")
+                        table.add_row(*row)
+                        row_index += 1
             else:
-                table.add_row(str(row_index), "❌ Failed", model_name)
+                # BUILD results - simple format
+                row = [str(row_index), "❌ Failed", model_name]
+                if show_gpu_arch:
+                    row.append(item.get("architecture", "N/A"))
+                table.add_row(*row)
+                row_index += 1
         else:
-            if show_gpu_arch:
-                table.add_row(str(row_index), "❌ Failed", str(item), "N/A")
+            if has_node_data:
+                row = [str(row_index), "❌ Failed", str(item), "node-0", "-", "-"]
             else:
-                table.add_row(str(row_index), "❌ Failed", str(item))
-        row_index += 1
+                row = [str(row_index), "❌ Failed", str(item)]
+            if show_gpu_arch:
+                row.append("N/A")
+            table.add_row(*row)
+            row_index += 1
 
     # Show empty state if no results
     if not successful and not failed:
-        if show_gpu_arch:
-            table.add_row("1", "ℹ️ No items", "", "")
+        if has_node_data:
+            row = ["1", "ℹ️ No items", "", "", "", ""]
         else:
-            table.add_row("1", "ℹ️ No items", "")
+            row = ["1", "ℹ️ No items", ""]
+        if show_gpu_arch:
+            row.append("")
+        table.add_row(*row)
 
     console.print(table)
+    
+    # Print job-level summaries for multi-node jobs (RUN results only)
+    if has_node_data and job_summaries:
+        console.print("\n💡 [bold]Job Summary:[/bold]")
+        for js in job_summaries:
+            if js["nodes_total"] > 1:
+                console.print(
+                    f"  • {js['model']}: {js['nodes_succeeded']}/{js['nodes_total']} nodes succeeded | "
+                    f"Aggregated Performance: {format_number(js['aggregated_perf'])} {js['metric']}"
+                )
+            else:
+                console.print(
+                    f"  • {js['model']}: Single-node | Performance: {format_number(js['aggregated_perf'])} {js['metric']}"
+                )
 
 
 def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row: int = None) -> None:
