@@ -101,7 +101,7 @@ def generate_synthetic_batch(batch_size, device):
 
 
 def train_epoch(model, optimizer, criterion, epoch, device):
-    """Train for one epoch with accurate distributed throughput measurement"""
+    """Train for one epoch with node-local throughput measurement"""
     model.train()
     epoch_start = time.time()
     total_samples = 0
@@ -128,66 +128,38 @@ def train_epoch(model, optimizer, criterion, epoch, device):
         total_samples += BATCH_SIZE
         total_loss += loss.item()
         
-        # Print progress from rank 0
-        if rank == 0 and (batch_idx + 1) % 20 == 0:
+        # Print progress from local rank 0 on each node
+        if local_rank == 0 and (batch_idx + 1) % 20 == 0:
             avg_loss = total_loss / (batch_idx + 1)
-            throughput = BATCH_SIZE * world_size / batch_time
+            throughput = BATCH_SIZE / batch_time  # Local throughput
             print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] "
                   f"Batch [{batch_idx+1}/{NUM_BATCHES}] "
                   f"Loss: {loss.item():.4f} "
-                  f"Throughput: {throughput:.2f} samples/sec")
+                  f"Throughput: {throughput:.2f} samples/sec (local)")
     
     epoch_time = time.time() - epoch_start
     avg_loss = total_loss / NUM_BATCHES
     
     # ========================================================================
-    # Accurate Distributed Throughput Measurement (Best Practice)
+    # Node-Local Throughput Measurement
     # ========================================================================
-    # Calculate local throughput for this rank
+    # Calculate throughput for ALL GPUs on THIS NODE
     local_samples = NUM_BATCHES * BATCH_SIZE
-    local_throughput = local_samples / epoch_time
+    local_gpu_throughput = local_samples / epoch_time
     
-    # Aggregate metrics across all ranks using all_reduce
-    if world_size > 1:
-        # Convert to tensors for all_reduce
-        local_throughput_tensor = torch.tensor([local_throughput], device=device)
-        epoch_time_tensor = torch.tensor([epoch_time], device=device)
-        
-        # Sum all local throughputs to get true global throughput
-        global_throughput_tensor = local_throughput_tensor.clone()
-        dist.all_reduce(global_throughput_tensor, op=dist.ReduceOp.SUM)
-        
-        # Get max epoch time (slowest node determines overall speed)
-        max_epoch_time_tensor = epoch_time_tensor.clone()
-        dist.all_reduce(max_epoch_time_tensor, op=dist.ReduceOp.MAX)
-        
-        # Get min epoch time (fastest node)
-        min_epoch_time_tensor = epoch_time_tensor.clone()
-        dist.all_reduce(min_epoch_time_tensor, op=dist.ReduceOp.MIN)
-        
-        global_throughput = global_throughput_tensor.item()
-        max_epoch_time = max_epoch_time_tensor.item()
-        min_epoch_time = min_epoch_time_tensor.item()
-        
-        # Calculate load imbalance
-        time_imbalance = ((max_epoch_time - min_epoch_time) / max_epoch_time) * 100 if max_epoch_time > 0 else 0.0
-        
-    else:
-        # Single GPU
-        global_throughput = local_throughput
-        max_epoch_time = epoch_time
-        min_epoch_time = epoch_time
-        time_imbalance = 0.0
+    # Get local world size (GPUs per node)
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    
+    # Node throughput = sum of all local GPUs on this node
+    # In data parallel, each GPU processes the same throughput
+    node_throughput = local_gpu_throughput * local_world_size
     
     # Return metrics dictionary
     metrics = {
         'avg_loss': avg_loss,
-        'local_throughput': local_throughput,
-        'global_throughput': global_throughput,
+        'node_throughput': node_throughput,
         'epoch_time': epoch_time,
-        'max_epoch_time': max_epoch_time,
-        'min_epoch_time': min_epoch_time,
-        'time_imbalance': time_imbalance
+        'local_world_size': local_world_size
     }
     
     return metrics
@@ -195,6 +167,9 @@ def train_epoch(model, optimizer, criterion, epoch, device):
 
 def main():
     """Main training function"""
+    # Start timer for total test duration
+    test_start_time = time.time()
+    
     print_header()
     
     # Create per-process MIOpen cache directory to avoid database conflicts
@@ -269,9 +244,13 @@ def main():
         # Best practice: Specify device to avoid warnings
         dist.barrier(device_ids=[local_rank])
     
-    if rank == 0:
+    # Get topology information early (needed for logging)
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    node_rank = rank // local_world_size if local_world_size > 0 else 0
+    
+    if local_rank == 0:
         print(f"\n{'='*70}")
-        print("Starting Training")
+        print(f"[Node {node_rank}] Starting Training")
         print(f"{'='*70}")
     
     # Training loop
@@ -282,82 +261,48 @@ def main():
         )
         all_metrics.append(metrics)
         
-        if rank == 0:
-            print(f"\nEpoch [{epoch+1}/{NUM_EPOCHS}] Complete:")
+        if local_rank == 0:
+            print(f"\n[Node {node_rank}] Epoch [{epoch+1}/{NUM_EPOCHS}] Complete:")
             print(f"  Average Loss: {metrics['avg_loss']:.4f}")
-            print(f"  Global Throughput: {metrics['global_throughput']:.2f} samples/sec")
-            print(f"  Images/sec: {metrics['global_throughput']:.2f}")
+            print(f"  Node Throughput: {metrics['node_throughput']:.2f} samples/sec")
+            print(f"  Local GPUs: {metrics['local_world_size']}")
     
-            # Show load imbalance warning if significant
-            if metrics['time_imbalance'] > 5.0:
-                print(f"  ⚠️  Load Imbalance: {metrics['time_imbalance']:.1f}%")
+    # Calculate average node throughput across all epochs
+    avg_node_throughput = sum(m['node_throughput'] for m in all_metrics) / len(all_metrics)
+    avg_epoch_time = sum(m['epoch_time'] for m in all_metrics) / len(all_metrics)
     
-    # Calculate average metrics across all epochs
-    avg_global_throughput = sum(m['global_throughput'] for m in all_metrics) / len(all_metrics)
-    avg_local_throughput = sum(m['local_throughput'] for m in all_metrics) / len(all_metrics)
-    avg_time_imbalance = sum(m['time_imbalance'] for m in all_metrics) / len(all_metrics)
-    
-    # Get topology information
-    nproc_per_node = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
-    num_nodes = (world_size + nproc_per_node - 1) // nproc_per_node if nproc_per_node > 0 else 1
-    node_rank = rank // nproc_per_node if nproc_per_node > 0 else 0
+    # Calculate num_nodes for reference
+    num_nodes = (world_size + local_world_size - 1) // local_world_size if local_world_size > 0 else 1
     
     # Synchronize before final output
     if world_size > 1:
         dist.barrier(device_ids=[local_rank])
     
-    # Each node's rank 0 reports local performance
+    # ========================================================================
+    # Node-Local Performance Reporting (NEW - Best Practice)
+    # Each node reports its OWN performance
+    # Madengine will collect from ALL nodes and aggregate
+    # ========================================================================
     if local_rank == 0:
-        print(f"\n[Node {node_rank}] Local Performance Summary:")
-        print(f"  Node Throughput: {avg_local_throughput * nproc_per_node:.2f} samples/sec")
-        print(f"  GPUs on Node: {nproc_per_node}")
-        print(f"  Avg Time per Epoch: {all_metrics[-1]['epoch_time']:.2f}s")
-    
-    # Synchronize again before global rank 0 output
-    if world_size > 1:
-        dist.barrier(device_ids=[local_rank])
-    
-    # Global rank 0 reports aggregated performance
-    if rank == 0:
         print(f"\n{'='*70}")
-        print("Training Complete - GLOBAL METRICS")
+        print("Node Performance Summary")
         print(f"{'='*70}")
-        print(f"Topology: {num_nodes} nodes × {nproc_per_node} GPUs/node = {world_size} total GPUs")
-        print(f"Global Throughput: {avg_global_throughput:.2f} samples/sec")
-        print(f"Per-GPU Throughput: {avg_global_throughput/world_size:.2f} samples/sec")
-        print(f"Global Batch Size: {BATCH_SIZE * world_size}")
-        
-        # Calculate scaling efficiency
-        # Ideal throughput = single GPU throughput * number of GPUs
-        ideal_single_gpu_throughput = avg_global_throughput / world_size
-        ideal_throughput = ideal_single_gpu_throughput * world_size
-        scaling_efficiency = (avg_global_throughput / ideal_throughput) * 100 if ideal_throughput > 0 else 100.0
-        print(f"Scaling Efficiency: {scaling_efficiency:.1f}%")
-        
-        if avg_time_imbalance > 5.0:
-            print(f"Average Load Imbalance: {avg_time_imbalance:.1f}%")
-        
+        print(f"Node ID: {node_rank}")
+        print(f"Node Hostname: {socket.gethostname()}")
+        print(f"Local GPUs: {local_world_size}")
+        print(f"Node Throughput: {avg_node_throughput:.2f} samples_per_second")
+        print(f"Avg Time per Epoch: {avg_epoch_time:.2f}s")
         print(f"{'='*70}")
         
-        # Save results with topology information
-        with open("training_results.txt", "w") as f:
-            f.write(f"Training Results\n")
-            f.write(f"================\n")
-            f.write(f"Hostname: {socket.gethostname()}\n")
-            f.write(f"Topology: {num_nodes} nodes × {nproc_per_node} GPUs/node\n")
-            f.write(f"World Size: {world_size}\n")
-            f.write(f"Global Batch Size: {BATCH_SIZE * world_size}\n")
-            f.write(f"Epochs: {NUM_EPOCHS}\n")
-            f.write(f"Global Throughput: {avg_global_throughput:.2f} samples/sec\n")
-            f.write(f"Scaling Efficiency: {scaling_efficiency:.1f}%\n")
+        # CRITICAL: Standard output format for madengine parsing
+        print(f"performance: {avg_node_throughput:.2f} samples_per_second", flush=True)
+        print(f"node_id: {node_rank}", flush=True)
+        print(f"local_gpus: {local_world_size}", flush=True)
         
-        # Output performance metric for madengine (REQUIRED FORMAT)
-        # Use GLOBAL throughput (sum of all nodes - accurate measurement)
-        print(f"\nperformance: {avg_global_throughput:.2f} samples_per_second")
-        
-        # Output topology metadata for parsing
-        print(f"topology: {num_nodes} nodes {nproc_per_node} gpus_per_node {world_size} total_gpus")
-        print(f"scaling_efficiency: {scaling_efficiency:.2f}")
+        # Calculate and print test duration
+        test_duration = time.time() - test_start_time
+        print(f"test_duration: {test_duration:.2f}s", flush=True)
+        sys.stdout.flush()
 
     
     # Cleanup

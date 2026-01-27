@@ -424,6 +424,7 @@ class TestProfilingFunctionality:
         default behavior of a profiling tool can be changed from additional-context
         """
         # Test overriding with --sys-trace (works with both rocprof and rocprofv3)
+        # Note: The '--' separator is required for rocprofv3 to distinguish between profiler options and the application command
         # canFail is set to True because rocProf is failing; this test will test if the correct output files are generated
         global_data["console"].sh(
             "cd "
@@ -432,7 +433,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\", \"cmd\": \"bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace\"}]}' ",
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\", \"cmd\": \"bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --\"}]}' ",
             canFail=True,
         )
 

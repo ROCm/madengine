@@ -104,8 +104,8 @@ class SimpleMegatronModel(nn.Module):
         x = x.mean(dim=1)  # Global pooling
         return self.classifier(x)
 
-def train_epoch(model, optimizer, criterion, epoch, device, dp_size):
-    """Training loop for one epoch"""
+def train_epoch(model, optimizer, criterion, epoch, device, local_dp_size):
+    """Training loop for one epoch with node-local throughput"""
     model.train()
     start_time = time.time()
     total_loss = 0
@@ -128,8 +128,8 @@ def train_epoch(model, optimizer, criterion, epoch, device, dp_size):
         
         total_loss += loss.item()
         
-        # Log progress from rank 0
-        if rank == 0 and (batch_idx + 1) % 10 == 0:
+        # Log progress from local_rank 0
+        if local_rank == 0 and (batch_idx + 1) % 10 == 0:
             print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] "
                   f"Batch [{batch_idx+1}/{NUM_BATCHES}] "
                   f"Loss: {loss.item():.4f}")
@@ -137,13 +137,16 @@ def train_epoch(model, optimizer, criterion, epoch, device, dp_size):
     epoch_time = time.time() - start_time
     avg_loss = total_loss / NUM_BATCHES
     
-    # Calculate throughput (samples per second across all data parallel ranks)
-    throughput = (NUM_BATCHES * BATCH_SIZE * dp_size) / epoch_time
+    # Calculate node-local throughput
+    # local_dp_size = data parallel size on this node
+    node_throughput = (NUM_BATCHES * BATCH_SIZE * local_dp_size) / epoch_time
     
-    return avg_loss, throughput
+    return avg_loss, node_throughput
 
 def main():
     """Main training function using Megatron-Core"""
+    # Start timer for total test duration
+    test_start_time = time.time()
     
     # Set device
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -206,48 +209,67 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     criterion = nn.CrossEntropyLoss()
     
+    # Get local world size and node rank
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    node_rank = rank // local_world_size if local_world_size > 0 else 0
+    
+    # Calculate local data parallel size (DP ranks on this node)
+    # In Megatron: DP = world_size / (TP * PP * CP)
+    # For simplicity, assume local_dp_size proportional to local_world_size
+    local_dp_size = dp_size // (world_size // local_world_size) if (world_size // local_world_size) > 0 else dp_size
+    if local_dp_size < 1:
+        local_dp_size = 1
+    
     # Synchronize before training
     if world_size > 1:
         torch.distributed.barrier()
     
-    if rank == 0:
+    if local_rank == 0:
         print(f"\n{'='*70}")
-        print("Starting Training")
+        print(f"[Node {node_rank}] Starting Training")
         print(f"{'='*70}\n")
     
     # Training loop
     all_throughputs = []
     for epoch in range(NUM_EPOCHS):
-        avg_loss, throughput = train_epoch(
-            model, optimizer, criterion, epoch, device, dp_size
+        avg_loss, node_throughput = train_epoch(
+            model, optimizer, criterion, epoch, device, local_dp_size
         )
-        all_throughputs.append(throughput)
+        all_throughputs.append(node_throughput)
         
-        if rank == 0:
-            print(f"\nEpoch {epoch+1}/{NUM_EPOCHS} Complete:")
+        if local_rank == 0:
+            print(f"\n[Node {node_rank}] Epoch {epoch+1}/{NUM_EPOCHS} Complete:")
             print(f"  Loss: {avg_loss:.4f}")
-            print(f"  Throughput: {throughput:.2f} samples/sec\n")
+            print(f"  Node Throughput: {node_throughput:.2f} samples/sec\n")
     
-    # Final results
-    if rank == 0:
-        avg_throughput = sum(all_throughputs) / len(all_throughputs)
+    # ========================================================================
+    # Node-Local Performance Reporting (NEW - Best Practice)
+    # ========================================================================
+    if local_rank == 0:
+        avg_node_throughput = sum(all_throughputs) / len(all_throughputs)
         print(f"{'='*70}")
-        print(f"ROCm/Megatron-LM Training Complete")
+        print("Node Performance Summary")
         print(f"{'='*70}")
-        print(f"Configuration:")
+        print(f"Node ID: {node_rank}")
+        print(f"Node Hostname: {socket.gethostname()}")
+        print(f"Local GPUs: {local_world_size}")
+        print(f"Node Throughput: {avg_node_throughput:.2f} samples_per_second")
+        print(f"\nMegatron Configuration:")
         print(f"  Tensor Parallel (TP): {tp_size}")
         print(f"  Pipeline Parallel (PP): {pp_size}")
         print(f"  Context Parallel (CP): {context_parallel_size}")
         print(f"  Data Parallel (DP): {dp_size}")
-        print(f"  World Size: {world_size}")
-        print(f"\nPerformance:")
-        print(f"  Average Throughput: {avg_throughput:.2f} samples/sec")
-        print(f"  Per-GPU Throughput: {avg_throughput/world_size:.2f} samples/sec")
         print(f"{'='*70}")
         
-        # madengine output format
-        print(f"\nperformance: {avg_throughput:.2f} samples_per_second")
+        # CRITICAL: Standard output format for madengine parsing
+        print(f"\nperformance: {avg_node_throughput:.2f} samples_per_second")
+        print(f"node_id: {node_rank}")
+        print(f"local_gpus: {local_world_size}")
         print(f"megatron_config: TP={tp_size} PP={pp_size} CP={context_parallel_size} DP={dp_size}")
+        
+        # Calculate and print test duration
+        test_duration = time.time() - test_start_time
+        print(f"test_duration: {test_duration:.2f}s")
     
     # Cleanup
     if MEGATRON_AVAILABLE and world_size > 1:

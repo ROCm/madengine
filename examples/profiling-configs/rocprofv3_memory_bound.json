@@ -1,0 +1,17 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocprofv3_memory",
+      "env_vars": {}
+    },
+    {
+      "name": "gpu_info_vram_profiler",
+      "env_vars": {
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.1"
+      }
+    }
+  ]
+}

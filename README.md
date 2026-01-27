@@ -34,7 +34,8 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
-- **📊 Performance Tools** - Integrated profiling with rocprof, rocblas, MIOpen, RCCL tracing
+- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, rocblas, MIOpen, RCCL tracing
+- **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
 
@@ -426,6 +427,14 @@ madengine run --tags model \
     "tools": [{"name": "rocprof"}]
   }'
 
+# ROCprofv3 (ROCm 7.0+) - Advanced profiling with pre-configured profiles
+madengine run --tags model \
+  --additional-context '{"tools": [{"name": "rocprofv3_compute"}]}'
+
+# Use configuration files for complex setups
+madengine run --tags model \
+  --additional-context-file examples/profiling-configs/rocprofv3_multi_gpu.json
+
 # Library tracing (rocBLAS, MIOpen, Tensile, RCCL)
 madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
@@ -440,7 +449,7 @@ madengine run --tags model \
 # Multiple tools (stackable)
 madengine run --tags model \
   --additional-context '{"tools": [
-    {"name": "rocprof"},
+    {"name": "rocprofv3_memory"},
     {"name": "rocblas_trace"},
     {"name": "gpu_info_power_profiler"}
   ]}'
@@ -451,6 +460,10 @@ madengine run --tags model \
 | Tool | Purpose | Output |
 |------|---------|--------|
 | `rocprof` | GPU kernel profiling | Kernel timings, occupancy |
+| `rocprofv3_compute` | Compute-bound analysis (ROCm 7.0+) | ALU metrics, wave execution |
+| `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
+| `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
+| `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
 | `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
 | `miopen_trace` | MIOpen library calls | Conv/pooling operations |
 | `tensile_trace` | Tensile GEMM library | Matrix multiply details |
@@ -458,6 +471,21 @@ madengine run --tags model \
 | `gpu_info_power_profiler` | GPU power consumption | Power usage over time |
 | `gpu_info_vram_profiler` | GPU memory usage | VRAM utilization |
 | `therock_check` | TheRock ROCm validation | Installation detection |
+
+**ROCprofv3 Profiles** (ROCm 7.0+):
+
+madengine provides 8 pre-configured ROCprofv3 profiles for different bottleneck scenarios:
+
+- `rocprofv3_compute` - Compute-bound workloads (transformers, dense ops)
+- `rocprofv3_memory` - Memory-bound workloads (large batches, high-res)
+- `rocprofv3_communication` - Multi-GPU distributed training
+- `rocprofv3_full` - Comprehensive profiling (all metrics, high overhead)
+- `rocprofv3_lightweight` - Minimal overhead (production-friendly)
+- `rocprofv3_perfetto` - Perfetto UI compatible traces
+- `rocprofv3_api_overhead` - API call timing analysis
+- `rocprofv3_pc_sampling` - Kernel hotspot identification
+
+See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-use configuration files.
 
 **TheRock Validation:**
 

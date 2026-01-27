@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **ROCprofv3 Argument Parsing**: Fixed rocprof_wrapper.sh argument parsing with custom commands
+  - Test `test_can_change_default_behavior_of_profiling_tool_with_additionalContext` now includes required `--` separator
+  - Without `--`, rocprofv3 would incorrectly parse application command as profiler boolean option
+  - Error manifested as: `ValueError: invalid truth value bash (type=str)`
+  - Fix ensures compatibility with both rocprof (legacy) and rocprofv3 (ROCm >= 7.0)
 - **Error Pattern Detection**: Fixed false failure detection in HuggingFace GPT2/BERT models
   - ROCProf logging messages (E20251230/W20251230 prefixes) no longer trigger false failures
   - Added benign pattern list to exclude profiling tool output from error detection
@@ -17,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed stale compiled Python file (`__init__.pyc`) from source tree
 - Cleaned up unused `typing_extensions` import in `core/console.py`
 - Improved type hint accuracy in `Console.sh()` method docstring
+
+### Documentation
+- **ROCprofv3 Usage Guide**: Enhanced documentation for custom profiling commands
+  - Added section in `docs/profiling.md` explaining the `--` separator requirement
+  - Added "Best Practices" section in `examples/profiling-configs/README.md`
+  - Enhanced `rocprof_wrapper.sh` header comments with usage examples
+  - Clarified that `--` must always be included when using custom rocprof commands
+  - Documented auto-detection behavior between rocprof (legacy) and rocprofv3
 
 ### Breaking Changes
 - **CLI Unification**: Simplified command-line interface
@@ -42,6 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `console.py`: Replaced with specific exception types (`OSError`, `ValueError`) for resource cleanup
 
 ### Added
+- **ROCprofv3 Profiling Suite** (ROCm 7.0+): 8 pre-configured profiling profiles for AI model benchmarking
+  - `rocprofv3_compute` - Compute-bound analysis (VALU/SALU instructions, wave execution)
+  - `rocprofv3_memory` - Memory-bound analysis (cache metrics, memory bandwidth)
+  - `rocprofv3_communication` - Multi-GPU communication analysis (RCCL traces, inter-GPU transfers)
+  - `rocprofv3_full` - Comprehensive profiling with all metrics (high overhead)
+  - `rocprofv3_lightweight` - Minimal overhead profiling (production-friendly)
+  - `rocprofv3_perfetto` - Perfetto UI compatible trace generation
+  - `rocprofv3_api_overhead` - API call timing analysis (HIP/HSA/marker traces)
+  - `rocprofv3_pc_sampling` - Kernel hotspot identification (PC sampling at 1000 Hz)
+- **Hardware Counter Definitions**: 4 counter files for targeted profiling scenarios
+  - `compute_bound.txt` - Wave execution, ALU instructions, wait states
+  - `memory_bound.txt` - Cache hit rates, memory controller traffic, LDS usage
+  - `communication_bound.txt` - PCIe traffic, atomic operations, synchronization
+  - `full_profile.txt` - Comprehensive metrics for complete analysis
+- **Profiling Configuration Examples**: 6 ready-to-use JSON configs in `examples/profiling-configs/`
+  - Single-GPU profiles (compute, memory, lightweight)
+  - Multi-GPU distributed training profile
+  - Comprehensive full-stack profiling
+  - Multi-node SLURM deployment config
 - **Comprehensive Launcher Support**: Full K8s and SLURM support for 6 distributed frameworks
   - TorchTitan: LLM pre-training with FSDP2+TP+PP+CP parallelism
   - vLLM: High-throughput LLM inference with continuous batching

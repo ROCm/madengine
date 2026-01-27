@@ -72,6 +72,42 @@ Profile GPU kernels and HIP API calls:
 }
 ```
 
+#### ROCm Profiler Version Compatibility
+
+madengine uses `rocprof_wrapper.sh` to automatically handle the transition between rocprof (legacy) and rocprofv3:
+
+| ROCm Version | Profiler Used | Command Syntax |
+|--------------|---------------|----------------|
+| ROCm < 7.0   | rocprof (legacy) | `rocprof [options] <app>` |
+| ROCm >= 7.0  | rocprofv3 (preferred) | `rocprofv3 [options] -- <app>` |
+
+**Key Points:**
+
+1. **Automatic Detection:** The wrapper detects which profiler is available and uses the appropriate syntax
+2. **Separator Requirement:** When using custom commands with `rocprof_wrapper.sh`, always include the trailing `--`:
+   ```json
+   {
+     "name": "rocprof",
+     "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --"
+   }
+   ```
+3. **Backward Compatibility:** The `--` works with both rocprof and rocprofv3, ensuring your configurations work across ROCm versions
+
+**Example - Custom Command with Wrapper:**
+```json
+{
+  "tools": [
+    {
+      "name": "rocprof",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --sys-trace --",
+      "env_vars": {
+        "HSA_ENABLE_SDMA": "0"
+      }
+    }
+  ]
+}
+```
+
 ### rpd - ROCm Profiler Data
 
 Collect comprehensive ROCm profiling data:
@@ -85,6 +121,187 @@ Collect comprehensive ROCm profiling data:
 ```
 
 **Output:** ROCm profiler data files
+
+### ROCprofv3 - Advanced GPU Profiling
+
+ROCprofv3 is the next-generation profiler for ROCm 7.0+ with enhanced features and better performance. madengine provides pre-configured profiles for common bottleneck scenarios.
+
+#### Available ROCprofv3 Profiles
+
+**Compute-Bound Analysis:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_compute"}
+  ]
+}
+```
+- **Use Case**: Models bottlenecked by ALU operations
+- **Metrics**: Wave execution, VALU/SALU instructions, wait states
+- **Output Format**: Perfetto trace with hardware counters
+
+**Memory-Bound Analysis:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_memory"}
+  ]
+}
+```
+- **Use Case**: Models bottlenecked by memory bandwidth
+- **Metrics**: Cache hits/misses, memory transfers, LDS usage
+- **Output Format**: Perfetto trace with memory counters
+
+**Communication-Bound Analysis (Multi-GPU):**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_communication"}
+  ]
+}
+```
+- **Use Case**: Multi-GPU distributed training
+- **Metrics**: RCCL traces, inter-GPU transfers, synchronization
+- **Output Format**: Perfetto trace with RCCL data
+
+**Comprehensive Profiling:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_full"}
+  ]
+}
+```
+- **Use Case**: Complete analysis with all metrics (high overhead)
+- **Metrics**: All traces + counters + stats
+- **Output Format**: Perfetto trace with full instrumentation
+
+**Lightweight Profiling:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_lightweight"}
+  ]
+}
+```
+- **Use Case**: Production-like profiling with minimal overhead
+- **Metrics**: HIP and kernel traces only
+- **Output Format**: JSON (compact)
+
+**Perfetto Visualization:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_perfetto"}
+  ]
+}
+```
+- **Use Case**: Generate Perfetto-compatible traces
+- **Metrics**: HIP, kernel, memory traces
+- **Output Format**: Perfetto trace file (`.pftrace`)
+- **View at**: https://ui.perfetto.dev/
+
+**API Overhead Analysis:**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_api_overhead"}
+  ]
+}
+```
+- **Use Case**: Analyze HIP/HSA API call overhead
+- **Metrics**: API call timing and statistics
+- **Output Format**: JSON with stats
+
+**PC Sampling (Hotspot Analysis):**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_pc_sampling"}
+  ]
+}
+```
+- **Use Case**: Identify kernel hotspots
+- **Metrics**: Program counter sampling at 1000 Hz
+- **Output Format**: Perfetto trace with PC samples
+
+#### Using Pre-Configured Profiles
+
+madengine provides ready-to-use configuration files in `examples/profiling-configs/`:
+
+```bash
+# Compute-bound profiling
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocprofv3_compute_bound.json
+
+# Memory-bound profiling
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocprofv3_memory_bound.json
+
+# Multi-GPU profiling
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocprofv3_multi_gpu.json
+
+# Comprehensive profiling
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocprofv3_comprehensive.json
+```
+
+See `examples/profiling-configs/README.md` for complete documentation.
+
+#### Custom ROCprofv3 Commands
+
+For advanced users, customize rocprofv3 invocation:
+
+```json
+{
+  "tools": [
+    {
+      "name": "rocprof",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --rccl-trace --counter-collection -i custom_counters.txt --output-format pftrace --stats -d ./my_output --",
+      "env_vars": {
+        "RCCL_DEBUG": "TRACE",
+        "HSA_ENABLE_SDMA": "0"
+      }
+    }
+  ]
+}
+```
+
+**Important:** The `--` separator at the end of the `cmd` string is **required** when using `rocprof_wrapper.sh`. This separator distinguishes between profiler options and the application command:
+
+- **rocprofv3 (ROCm >= 7.0):** Requires `--` separator → `rocprofv3 [options] -- <app>`
+- **rocprof (legacy):** Works with or without `--` → `rocprof [options] <app>`
+
+The wrapper auto-detects which profiler is available and formats arguments correctly. Always include the trailing `--` in your custom commands to ensure compatibility with both versions.
+
+#### Hardware Counter Collection
+
+Custom counter files are in `scripts/common/tools/counters/`:
+- `compute_bound.txt` - ALU and execution metrics
+- `memory_bound.txt` - Cache and memory metrics
+- `communication_bound.txt` - PCIe and synchronization metrics
+- `full_profile.txt` - Comprehensive metrics
+
+Create your own counter file:
+```text
+# my_counters.txt
+pmc: SQ_WAVES
+pmc: SQ_INSTS_VALU
+pmc: L2CacheHit
+pmc: TCC_HIT_sum
+```
+
+Then use it:
+```bash
+madengine run --tags your_model \
+  --additional-context '{
+    "tools": [{
+      "name": "rocprof",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --counter-collection -i my_counters.txt --output-format pftrace -d ./output --"
+    }]
+  }'
+```
 
 ### rocblas_trace - rocBLAS Library Tracing
 

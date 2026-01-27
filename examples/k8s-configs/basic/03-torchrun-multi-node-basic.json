@@ -44,6 +44,7 @@
     "MIOPEN_FIND_MODE": "1",
     "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
     "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_NO_SCRATCH_RECLAIM": "1",
     "RCCL_ENABLE_HIPGRAPH": "0"
   },
   

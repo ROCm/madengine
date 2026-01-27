@@ -1,0 +1,31 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "docker_gpus": "0,1,2,3",
+  "distributed": {
+    "launcher": "torchrun",
+    "nproc_per_node": 4
+  },
+  "tools": [
+    {
+      "name": "rocprofv3_communication",
+      "env_vars": {
+        "RCCL_DEBUG": "INFO"
+      }
+    },
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1"
+      }
+    },
+    {
+      "name": "gpu_info_vram_profiler",
+      "env_vars": {
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.1"
+      }
+    }
+  ]
+}

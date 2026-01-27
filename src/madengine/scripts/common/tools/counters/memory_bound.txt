@@ -1,0 +1,28 @@
+# Memory-bound profiling counters
+# For models bottlenecked by memory bandwidth
+
+# L2 Cache metrics
+pmc: L2CacheHit
+pmc: L2CacheMiss
+pmc: L2CacheHitRate
+
+# TCP (L1 cache) to TCC (L2 cache) traffic
+pmc: TCP_TCC_READ_REQ_sum
+pmc: TCP_TCC_WRITE_REQ_sum
+pmc: TCP_TCC_ATOMIC_REQ_sum
+
+# TCC (L2) hits and misses
+pmc: TCC_HIT_sum
+pmc: TCC_MISS_sum
+pmc: TCC_EA_RDREQ_32B_sum
+pmc: TCC_EA_WRREQ_64B_sum
+
+# Memory controller traffic
+pmc: TCC_EA_RDREQ_LEVEL_sum
+pmc: TCC_EA_WRREQ_LEVEL_sum
+
+# Scalar cache
+pmc: SQ_INSTS_SMEM
+
+# LDS (Local Data Share) usage
+pmc: SQ_LDS_BANK_CONFLICT

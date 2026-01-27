@@ -22,6 +22,185 @@ from .base import BaseDeployment, DeploymentConfig, DeploymentResult, Deployment
 from .config_loader import ConfigLoader
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from typing import Optional
+
+
+# Valid distributed launchers
+VALID_LAUNCHERS = [
+    "torchrun",
+    "torchtitan",
+    "deepspeed",
+    "megatron-lm",
+    "vllm",
+    "sglang",
+    "sglang-disagg"
+]
+
+
+def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> str:
+    """
+    Normalize launcher field based on deployment type and launcher value.
+    
+    Logic:
+    - If launcher is in VALID_LAUNCHERS: keep as-is
+    - If launcher is None/empty/invalid:
+        * local → "docker" (runs in Docker container)
+        * slurm → "docker" (typically uses containers on compute nodes)
+        * kubernetes → "native" (pod itself is the container)
+    
+    Args:
+        launcher_type: Raw launcher type from config (may be None)
+        deployment_type: "local", "slurm", or "kubernetes"
+        
+    Returns:
+        Normalized launcher string
+    """
+    # If launcher is valid, keep it
+    if launcher_type and launcher_type in VALID_LAUNCHERS:
+        return launcher_type
+    
+    # Otherwise, default based on deployment type
+    if deployment_type == "local":
+        return "docker"
+    elif deployment_type == "slurm":
+        return "docker"
+    elif deployment_type == "kubernetes":
+        return "native"
+    else:
+        # Fallback for unknown deployment types
+        return "docker"
+
+
+def is_rocprofv3_available() -> bool:
+    """
+    Check if rocprofv3 is available on the system.
+    
+    rocprofv3 is required for multi-node profiling with MPI support.
+    It's part of rocprofiler-sdk package in ROCm >= 6.4.1.
+    
+    Returns:
+        True if rocprofv3 is available and executable, False otherwise
+    """
+    try:
+        # Note: rocprofv3 doesn't support --version, use --help instead
+        result = subprocess.run(
+            ["rocprofv3", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def configure_multi_node_profiling(
+    nnodes: int,
+    tools_config: list,
+    logger
+) -> Dict[str, Any]:
+    """
+    Configure profiling for multi-node SLURM runs with rocprofv3 support.
+    
+    Industry best practice for multi-node profiling:
+    - Profile ALL nodes to detect stragglers, load imbalances, and communication bottlenecks
+    - Use rocprofv3 (MPI-aware) for distributed profiling
+    - Collect per-node outputs for detailed analysis
+    
+    Logic:
+    1. Single node (nnodes == 1): Use existing tool behavior
+    2. Multi-node (nnodes > 1):
+       a. Check if rocprofv3 is available
+       b. If available: Enable per-node profiling, upgrade "rocprof" to "rocprofv3"
+       c. If not available: Log warning and skip profiling
+    
+    Args:
+        nnodes: Number of nodes in the SLURM deployment
+        tools_config: List of tool configurations from user
+        logger: Logger instance for messages
+        
+    Returns:
+        Dictionary with profiling configuration:
+        - enabled: bool - Whether profiling is enabled
+        - mode: str - "single_node", "multi_node", or "multi_node_unsupported"
+        - tools: list - Processed tool configurations
+        - per_node_collection: bool - Whether to collect from all nodes
+    """
+    if nnodes == 1:
+        # Single node - existing behavior works fine
+        return {
+            "enabled": True,
+            "mode": "single_node",
+            "tools": tools_config,
+            "per_node_collection": False
+        }
+    
+    # Multi-node case - check rocprofv3 availability
+    if not is_rocprofv3_available():
+        logger.warning(
+            "╔════════════════════════════════════════════════════════════════════════════╗\n"
+            "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
+            "╠════════════════════════════════════════════════════════════════════════════╣\n"
+            "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
+            "║                                                                            ║\n"
+            "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
+            "║                                                                            ║\n"
+            "║ Profiling will be SKIPPED for this multi-node run.                        ║\n"
+            "║                                                                            ║\n"
+            "║ To enable multi-node profiling:                                           ║\n"
+            "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
+            "║   • Command: apt install rocprofiler-sdk                                  ║\n"
+            "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
+            "║                                                                            ║\n"
+            "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
+            "╚════════════════════════════════════════════════════════════════════════════╝"
+        )
+        return {
+            "enabled": False,
+            "mode": "multi_node_unsupported",
+            "tools": [],
+            "per_node_collection": False
+        }
+    
+    # rocprofv3 is available - enable full multi-node profiling
+    logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
+    
+    # Upgrade "rocprof" tools to "rocprofv3" for multi-node compatibility
+    upgraded_tools = []
+    rocprof_upgraded = False
+    
+    for tool in tools_config:
+        tool_name = tool.get("name") if isinstance(tool, dict) else None
+        
+        if tool_name == "rocprof":
+            # Upgrade to rocprofv3 for multi-node MPI support
+            logger.info(
+                f"  → Upgrading 'rocprof' to 'rocprofv3' for multi-node MPI compatibility"
+            )
+            upgraded_tool = tool.copy() if isinstance(tool, dict) else {"name": "rocprofv3"}
+            upgraded_tool["name"] = "rocprofv3"
+            upgraded_tools.append(upgraded_tool)
+            rocprof_upgraded = True
+        else:
+            upgraded_tools.append(tool)
+    
+    # Log profiling tools being used
+    if upgraded_tools:
+        tool_names = [t.get("name") if isinstance(t, dict) else str(t) for t in upgraded_tools]
+        logger.info(f"  → Multi-node profiling tools: {', '.join(filter(None, tool_names))}")
+        
+        # Highlight RCCL trace if present (critical for multi-node communication)
+        if "rccl_trace" in tool_names:
+            logger.info("  → ✓ rccl_trace enabled (critical for multi-node communication profiling)")
+    
+    return {
+        "enabled": True,
+        "mode": "multi_node",
+        "tools": upgraded_tools,
+        "per_node_collection": True,
+        "profiler": "rocprofv3",
+        "wrapper_mode": "launcher"
+    }
 
 
 class SlurmDeployment(BaseDeployment):
@@ -230,9 +409,43 @@ class SlurmDeployment(BaseDeployment):
         
         # Extract launcher configuration
         launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
+        
+        # Normalize launcher based on deployment type and validity
+        launcher_type = normalize_launcher(launcher_type, "slurm")
+        
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
         master_port = self.distributed_config.get("port", 29500)
+        
+        # Apply multi-node profiling logic if tools are configured
+        tools = additional_context.get("tools", [])
+        if nnodes > 1 and tools:
+            # Configure multi-node profiling (handles rocprofv3 detection and tool upgrades)
+            # Create a simple logger wrapper for configure_multi_node_profiling
+            class ConsoleLogger:
+                def __init__(self, console):
+                    self.console = console
+                def info(self, msg):
+                    self.console.print(f"[cyan]{msg}[/cyan]")
+                def warning(self, msg):
+                    self.console.print(f"[yellow]{msg}[/yellow]")
+                def debug(self, msg):
+                    pass  # Skip debug messages in console
+            
+            profiling_config = configure_multi_node_profiling(
+                nnodes=nnodes,
+                tools_config=tools,
+                logger=ConsoleLogger(self.console)
+            )
+            
+            if profiling_config["enabled"]:
+                tools = profiling_config["tools"]
+            else:
+                # rocprofv3 not available - skip profiling for multi-node
+                tools = []
+            
+            # Update tools in additional_context
+            additional_context["tools"] = tools
         
         # Generate launcher-specific command
         launcher_command = self._generate_launcher_command(
@@ -275,6 +488,8 @@ class SlurmDeployment(BaseDeployment):
             "launcher_command": launcher_command,
             "nnodes": nnodes,
             "nproc_per_node": nproc_per_node,
+            # Profiling tools (processed for multi-node compatibility)
+            "tools": tools,
         }
 
     def _generate_launcher_command(
@@ -922,6 +1137,14 @@ export MASTER_PORT={master_port}
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
+        
+        NOTE: Current implementation works with single-node jobs where perf.csv
+        is written to shared storage. For multi-node jobs with per-node metrics,
+        this would need enhancement to:
+        1. Read all node output files (madengine-*_jobid_noderank.out)
+        2. Parse per-node metrics from each file
+        3. Aggregate using _aggregate_node_metrics() (similar to kubernetes.py)
+        4. Write aggregated result to perf.csv
         
         Args:
             deployment_id: SLURM job ID

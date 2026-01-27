@@ -530,6 +530,10 @@ class ContainerRunner:
         with open(tools_json_file) as f:
             tool_file = json.load(f)
 
+        # Track commands that have been added to avoid duplicates
+        # Some tools (like trace tools) share the same wrapper script
+        added_cmds = set()
+
         # Iterate over tools in context, apply tool settings
         for ctx_tool_config in self.context.ctx["tools"]:
             tool_name = ctx_tool_config["name"]
@@ -557,16 +561,24 @@ class ContainerRunner:
                 pre_encapsulate_post_scripts["post_scripts"] += tool_config[
                     "post_scripts"
                 ]
-            # Update environment variables
+            # Update environment variables (always apply, even if cmd is duplicate)
             if "env_vars" in tool_config:
                 run_env.update(tool_config["env_vars"])
+            
+            # Only add cmd if it hasn't been added yet
+            # This prevents duplicate wrappers like get_library_trace.py
             if "cmd" in tool_config:
-                # Prepend encapsulate cmd
-                pre_encapsulate_post_scripts["encapsulate_script"] = (
-                    tool_config["cmd"]
-                    + " "
-                    + pre_encapsulate_post_scripts["encapsulate_script"]
-                )
+                cmd = tool_config["cmd"]
+                if cmd not in added_cmds:
+                    # Prepend encapsulate cmd
+                    pre_encapsulate_post_scripts["encapsulate_script"] = (
+                        cmd
+                        + " "
+                        + pre_encapsulate_post_scripts["encapsulate_script"]
+                    )
+                    added_cmds.add(cmd)
+                else:
+                    print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
@@ -1079,19 +1091,27 @@ class ContainerRunner:
 
                             if multiple_results:
                                 run_results["performance"] = multiple_results
-                                # Validate multiple results file format
+                                # Validate multiple results file format using proper CSV parsing
                                 try:
+                                    import csv
                                     with open(multiple_results, "r") as f:
-                                        header = f.readline().strip().split(",")
-                                        for line in f:
-                                            row = line.strip().split(",")
-                                            for col in row:
-                                                if col == "":
-                                                    run_results["performance"] = None
-                                                    print(
-                                                        "Error: Performance metric is empty in multiple results file."
-                                                    )
+                                        csv_reader = csv.DictReader(f)
+                                        
+                                        # Check if 'performance' column exists
+                                        if 'performance' not in csv_reader.fieldnames:
+                                            print("Error: 'performance' column not found in multiple results file.")
+                                            run_results["performance"] = None
+                                        else:
+                                            # Check if at least one row has a non-empty performance value
+                                            has_valid_perf = False
+                                            for row in csv_reader:
+                                                if row.get('performance', '').strip():
+                                                    has_valid_perf = True
                                                     break
+                                            
+                                            if not has_valid_perf:
+                                                run_results["performance"] = None
+                                                print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
                                         f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"

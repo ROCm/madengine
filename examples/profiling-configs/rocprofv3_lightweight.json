@@ -1,0 +1,10 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocprofv3_lightweight",
+      "env_vars": {}
+    }
+  ]
+}
