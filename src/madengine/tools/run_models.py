@@ -1174,17 +1174,21 @@ class RunModels:
         host_os = self.context.ctx["host_os"]
 
         if host_os.find("HOST_UBUNTU") != -1:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            # Check if ROCm is installed via pip (therock images) or via apt
+            rocm_pip_check = self.console.sh("pip show rocm 2>/dev/null | head -1", canFail=True)
+            if rocm_pip_check and "Name: rocm" in rocm_pip_check:
+                print("ROCm installed via pip (therock image detected)")
+                print(self.console.sh("pip show rocm", canFail=True))
+            else:
+                print(self.console.sh("apt show rocm-libs -a", canFail=True))
         elif host_os.find("HOST_CENTOS") != -1:
-            print(self.console.sh("yum info rocm-libs"))
+            print(self.console.sh("yum info rocm-libs", canFail=True))
         elif host_os.find("HOST_SLES") != -1:
-            print(self.console.sh("zypper info rocm-libs"))
+            print(self.console.sh("zypper info rocm-libs", canFail=True))
         elif host_os.find("HOST_AZURE") != -1:
-            print(self.console.sh("tdnf info rocm-libs"))
+            print(self.console.sh("tdnf info rocm-libs", canFail=True))
         else:
-            print("ERROR: Unable to detect host OS.")
-            self.return_status = False
-            return self.return_status
+            print("WARNING: Unable to detect host OS, skipping ROCm info check.")
 
         # get credentials
         try:
