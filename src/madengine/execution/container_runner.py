@@ -13,6 +13,16 @@ import json
 import typing
 import warnings
 import re
+import subprocess
+
+# Launchers that should run directly on baremetal (not inside Docker)
+# These launchers manage their own Docker containers via SLURM srun commands
+BAREMETAL_LAUNCHERS = [
+    "sglang-disagg",
+    "sglang_disagg", 
+    "vllm-disagg",
+    "vllm_disagg",
+]
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
@@ -580,6 +590,151 @@ class ContainerRunner:
                 else:
                     print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
+    def _run_on_baremetal(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        log_file_path: str,
+        timeout: int,
+        run_results: typing.Dict,
+        pre_encapsulate_post_scripts: typing.Dict,
+        run_env: typing.Dict,
+    ) -> typing.Dict:
+        """
+        Run script directly on baremetal (not inside Docker).
+        
+        Used for launchers like sglang-disagg that manage their own Docker containers
+        via SLURM srun commands. The script is executed directly on the node.
+        
+        Args:
+            model_info: Model configuration from manifest
+            build_info: Build information from manifest
+            log_file_path: Path to log file
+            timeout: Execution timeout in seconds
+            run_results: Dictionary to store run results
+            pre_encapsulate_post_scripts: Pre/post script configuration
+            run_env: Environment variables for the script
+            
+        Returns:
+            Dictionary with run results
+        """
+        import shutil
+        
+        self.rich_console.print(f"[dim]{'='*80}[/dim]")
+        
+        # Prepare script path
+        scripts_arg = model_info["scripts"]
+        
+        # Get the current working directory (might be temp workspace)
+        cwd = os.getcwd()
+        print(f"📂 Current directory: {cwd}")
+        
+        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+            script_path = scripts_arg
+            script_name = os.path.basename(scripts_arg)
+        elif scripts_arg.endswith(".py"):
+            script_path = scripts_arg
+            script_name = os.path.basename(scripts_arg)
+        else:
+            # Directory specified - look for run.sh
+            script_path = os.path.join(scripts_arg, "run.sh")
+            script_name = "run.sh"
+        
+        # If script path is relative, make it absolute from cwd
+        if not os.path.isabs(script_path):
+            script_path = os.path.join(cwd, script_path)
+        
+        # Check script exists
+        if not os.path.exists(script_path):
+            print(f"⚠️ Script not found at: {script_path}")
+            # Try alternative locations
+            alt_path = os.path.join(cwd, os.path.basename(scripts_arg))
+            if os.path.exists(alt_path):
+                script_path = alt_path
+                print(f"✓ Found at alternative location: {script_path}")
+            else:
+                raise FileNotFoundError(f"Script not found: {script_path}")
+        
+        script_dir = os.path.dirname(script_path) or cwd
+        print(f"📜 Script: {script_path}")
+        print(f"📁 Working directory: {script_dir}")
+        
+        # Prepare model arguments
+        model_args = self.context.ctx.get("model_args", model_info.get("args", ""))
+        print(f"📝 Arguments: {model_args}")
+        
+        # Build command
+        if script_path.endswith(".py"):
+            cmd = f"python3 {script_path} {model_args}"
+        else:
+            cmd = f"bash {script_path} {model_args}"
+        
+        print(f"🔧 Command: {cmd}")
+        
+        # Prepare environment
+        env = os.environ.copy()
+        env.update(run_env)
+        
+        # Add model-specific env vars from model_info
+        if "env_vars" in model_info and model_info["env_vars"]:
+            for key, value in model_info["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}={value}")
+        
+        # Add env vars from additional_context
+        if self.additional_context and "env_vars" in self.additional_context:
+            for key, value in self.additional_context["env_vars"].items():
+                env[key] = str(value)
+        
+        # Run script with logging
+        test_start_time = time.time()
+        self.rich_console.print("\n[bold blue]Running script on baremetal...[/bold blue]")
+        
+        try:
+            with open(log_file_path, mode="w", buffering=1) as outlog:
+                with redirect_stdout(
+                    PythonicTee(outlog, self.live_output)
+                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                    print(f"⏰ Setting timeout to {timeout} seconds.")
+                    print(f"🚀 Executing: {cmd}")
+                    print(f"📂 Working directory: {script_dir}")
+                    print(f"{'='*80}")
+                    
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        cwd=script_dir,
+                        env=env,
+                        timeout=timeout if timeout > 0 else None,
+                    )
+                    
+                    run_results["test_duration"] = time.time() - test_start_time
+                    print(f"\n{'='*80}")
+                    print(f"⏱️ Test Duration: {run_results['test_duration']:.2f} seconds")
+                    
+                    if result.returncode == 0:
+                        run_results["status"] = "SUCCESS"
+                        self.rich_console.print("[bold green]✓ Script completed successfully[/bold green]")
+                    else:
+                        run_results["status"] = "FAILURE"
+                        run_results["status_detail"] = f"Exit code {result.returncode}"
+                        self.rich_console.print(f"[bold red]✗ Script failed with exit code {result.returncode}[/bold red]")
+                        raise subprocess.CalledProcessError(result.returncode, cmd)
+                        
+        except subprocess.TimeoutExpired:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = f"Timeout after {timeout}s"
+            run_results["test_duration"] = time.time() - test_start_time
+            self.rich_console.print(f"[bold red]✗ Script timed out after {timeout}s[/bold red]")
+            raise
+        except Exception as e:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = str(e)
+            run_results["test_duration"] = time.time() - test_start_time
+            raise
+        
+        return run_results
+
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
     ) -> None:
@@ -813,6 +968,15 @@ class ContainerRunner:
             if merged_count > 0:
                 print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
+        # Merge env_vars from model_info (models.json) into docker_env_vars
+        if "env_vars" in model_info and model_info["env_vars"]:
+            model_env_count = 0
+            for key, value in model_info["env_vars"].items():
+                self.context.ctx["docker_env_vars"][key] = str(value)
+                model_env_count += 1
+            if model_env_count > 0:
+                print(f"ℹ️  Merged {model_env_count} environment variables from model_info (models.json)")
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
@@ -873,6 +1037,44 @@ class ContainerRunner:
             container_name = base_container_name
 
         print(f"Docker options: {docker_options}")
+
+        # ========== CHECK FOR BAREMETAL LAUNCHERS ==========
+        # Launchers like sglang-disagg run scripts directly on baremetal,
+        # not inside Docker. The script itself manages Docker containers via srun.
+        launcher = ""
+        
+        # Debug: Print all sources
+        print(f"🔍 Baremetal check - looking for launcher...")
+        print(f"   MAD_LAUNCHER_TYPE env: {os.environ.get('MAD_LAUNCHER_TYPE', '<not set>')}")
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+            print(f"   additional_context.distributed.launcher: {launcher or '<not set>'}")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+            print(f"   model_info.distributed.launcher: {launcher or '<not set>'}")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+            print(f"   Fallback to MAD_LAUNCHER_TYPE: {launcher or '<not set>'}")
+        
+        print(f"   Final launcher detected: {launcher or '<none>'}")
+        
+        # Normalize launcher name (replace underscores with hyphens)
+        launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
+        
+        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in BAREMETAL_LAUNCHERS]:
+            self.rich_console.print(f"\n[bold cyan]🖥️ Running on BAREMETAL (launcher: {launcher})[/bold cyan]")
+            self.rich_console.print(f"[dim]Script will manage its own Docker containers via SLURM[/dim]")
+            return self._run_on_baremetal(
+                model_info=model_info,
+                build_info=build_info,
+                log_file_path=log_file_path,
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
+                run_env=run_env,
+            )
+        # ========== END BAREMETAL CHECK ==========
 
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")
@@ -992,8 +1194,8 @@ class ContainerRunner:
 
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
-                        if scripts_arg.endswith(".sh"):
-                            # Shell script specified directly
+                        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+                            # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):

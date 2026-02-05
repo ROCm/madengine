@@ -55,6 +55,20 @@ def build(
             "--batch-manifest", help="Input batch.json file for batch build mode"
         ),
     ] = None,
+    use_image: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-image",
+            help="Skip Docker build and use pre-built image (e.g., lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x)"
+        ),
+    ] = None,
+    build_on_compute: Annotated[
+        bool,
+        typer.Option(
+            "--build-on-compute",
+            help="Build Docker images on SLURM compute node instead of login node"
+        ),
+    ] = False,
     additional_context: Annotated[
         str,
         typer.Option(
@@ -183,6 +197,8 @@ def build(
             verbose=verbose,
             _separate_phases=True,
             batch_build_metadata=batch_build_metadata if batch_build_metadata else None,
+            use_image=use_image,
+            build_on_compute=build_on_compute,
         )
 
         # Initialize orchestrator in build-only mode
@@ -203,6 +219,8 @@ def build(
                 clean_cache=clean_docker_cache,
                 manifest_output=manifest_output,
                 batch_build_metadata=batch_build_metadata,
+                use_image=use_image,
+                build_on_compute=build_on_compute,
             )
             
             # Load build summary for display
