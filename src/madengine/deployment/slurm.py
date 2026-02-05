@@ -68,6 +68,7 @@ class SlurmDeployment(BaseDeployment):
         self.gpus_per_node = self.slurm_config.get("gpus_per_node", 8)
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
+        self.reservation = self.slurm_config.get("reservation", None)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -75,6 +76,115 @@ class SlurmDeployment(BaseDeployment):
 
         # Generated script path
         self.script_path = None
+
+        # ========== OPTION 2: Detect existing SLURM allocation ==========
+        # If SLURM_JOB_ID exists, we're inside an salloc allocation
+        self.inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
+        self.existing_job_id = os.environ.get("SLURM_JOB_ID", "")
+        self.allocation_nodes = self._get_allocation_node_count()
+        
+        if self.inside_allocation:
+            self.console.print(
+                f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
+            )
+            self.console.print(
+                f"  Allocation has {self.allocation_nodes} nodes available"
+            )
+
+    def _get_allocation_node_count(self) -> int:
+        """
+        Get number of nodes in current SLURM allocation.
+        
+        Note: SLURM_NNODES reflects the current job step, not the full allocation.
+        We query the job directly using scontrol to get the actual node count.
+        """
+        if not self.inside_allocation:
+            return 0
+        
+        job_id = self.existing_job_id
+        
+        # Query the actual job's node count using scontrol (most accurate)
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "job", job_id],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                # Parse NumNodes=X from output
+                for line in result.stdout.split("\n"):
+                    if "NumNodes=" in line:
+                        # Format: "NumNodes=3 NumCPUs=..."
+                        for part in line.split():
+                            if part.startswith("NumNodes="):
+                                try:
+                                    return int(part.split("=")[1])
+                                except (ValueError, IndexError):
+                                    pass
+        except Exception:
+            pass
+        
+        # Fallback: Try SLURM_JOB_NUM_NODES (full job node count, if set)
+        job_num_nodes = os.environ.get("SLURM_JOB_NUM_NODES")
+        if job_num_nodes:
+            try:
+                return int(job_num_nodes)
+            except ValueError:
+                pass
+        
+        # Fallback: SLURM_NNODES (may be step-specific, not full allocation)
+        nnodes = os.environ.get("SLURM_NNODES")
+        if nnodes:
+            try:
+                return int(nnodes)
+            except ValueError:
+                pass
+        
+        # Last resort: count nodes in SLURM_NODELIST
+        nodelist = os.environ.get("SLURM_NODELIST")
+        if nodelist:
+            try:
+                result = subprocess.run(
+                    ["scontrol", "show", "hostname", nodelist],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    return len(result.stdout.strip().split("\n"))
+            except Exception:
+                pass
+        
+        return 0
+
+    def _validate_allocation_nodes(self) -> tuple[bool, str]:
+        """
+        Validate that existing allocation has enough nodes for the job.
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not self.inside_allocation:
+            return True, ""
+        
+        requested_nodes = self.nodes
+        available_nodes = self.allocation_nodes
+        
+        if available_nodes < requested_nodes:
+            return False, (
+                f"Insufficient nodes in current allocation. "
+                f"Requested: {requested_nodes}, Available: {available_nodes}. "
+                f"Either reduce nodes in config or use a larger allocation."
+            )
+        
+        if available_nodes > requested_nodes:
+            self.console.print(
+                f"[yellow]⚠ Note: Using {requested_nodes} of {available_nodes} "
+                f"available nodes in allocation[/yellow]"
+            )
+        
+        return True, ""
 
     def validate(self) -> bool:
         """Validate SLURM commands are available locally."""
@@ -177,11 +287,6 @@ class SlurmDeployment(BaseDeployment):
         """Generate sbatch script from template."""
         # Validate environment BEFORE generating job scripts
         self.console.print("\n[bold]Validating submission environment...[/bold]")
-        if not self._validate_cli_availability():
-            self.console.print(
-                "\n[yellow]⚠ Tip: Compute nodes inherit your submission environment[/yellow]"
-            )
-            return False
         
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,6 +298,23 @@ class SlurmDeployment(BaseDeployment):
 
             model_key = model_keys[0]
             model_info = self.manifest["built_models"][model_key]
+
+            # Check if this is a baremetal launcher (sglang-disagg, vllm-disagg)
+            launcher_type = self.distributed_config.get("launcher", "torchrun")
+            launcher_normalized = launcher_type.lower().replace("_", "-")
+            
+            if launcher_normalized in ["sglang-disagg", "vllm-disagg"]:
+                # For disagg launchers, generate simple wrapper script
+                # that runs the model's .slurm script directly on baremetal
+                self.console.print(f"[cyan]Detected baremetal launcher: {launcher_type}[/cyan]")
+                return self._prepare_baremetal_script(model_info)
+            
+            # Standard flow: validate madengine availability for complex job template
+            if not self._validate_cli_availability():
+                self.console.print(
+                    "\n[yellow]⚠ Tip: Compute nodes inherit your submission environment[/yellow]"
+                )
+                return False
 
             # Prepare template context
             context = self._prepare_template_context(model_info)
@@ -222,6 +344,114 @@ class SlurmDeployment(BaseDeployment):
             return None
         return ",".join(n.strip() for n in nodelist.split(",") if n.strip())
 
+    def _prepare_baremetal_script(self, model_info: Dict) -> bool:
+        """
+        Generate a simple wrapper script for baremetal launchers (sglang-disagg, vllm-disagg).
+        
+        These launchers run the model's .slurm script directly on baremetal,
+        which then manages Docker containers via srun. No madengine wrapper needed.
+        """
+        # Get the model's script path
+        model_script = model_info.get("scripts", "")
+        if not model_script:
+            self.console.print("[red]✗ No scripts defined in model_info[/red]")
+            return False
+        
+        # Get manifest directory (where the model script is relative to)
+        manifest_dir = Path(self.config.manifest_file).parent.absolute()
+        model_script_path = manifest_dir / model_script
+        
+        if not model_script_path.exists():
+            self.console.print(f"[red]✗ Model script not found: {model_script_path}[/red]")
+            return False
+        
+        # Get environment variables
+        env_vars = {}
+        
+        # From model_info.env_vars
+        if "env_vars" in model_info:
+            env_vars.update(model_info["env_vars"])
+        
+        # From additional_context.env_vars
+        if "env_vars" in self.config.additional_context:
+            env_vars.update(self.config.additional_context["env_vars"])
+        
+        # From distributed config
+        sglang_disagg_config = self.distributed_config.get("sglang_disagg", {})
+        if sglang_disagg_config:
+            env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
+            env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
+        
+        # Get model args
+        model_args = model_info.get("args", "")
+        
+        # Generate simple wrapper script
+        # IMPORTANT: SBATCH directives MUST be at the top, right after #!/bin/bash
+        script_lines = [
+            "#!/bin/bash",
+            f"#SBATCH --job-name=madengine-{model_info['name']}",
+            f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j.out",
+            f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j.err",
+            f"#SBATCH --partition={self.partition}",
+            f"#SBATCH --nodes={self.nodes}",
+            f"#SBATCH --ntasks={self.nodes}",
+            f"#SBATCH --gpus-per-node={self.gpus_per_node}",
+            f"#SBATCH --time={self.time_limit}",
+            "#SBATCH --exclusive",
+        ]
+        
+        # Add reservation if specified
+        if self.reservation:
+            script_lines.append(f"#SBATCH --reservation={self.reservation}")
+        
+        script_lines.extend([
+            "",
+            f"# Baremetal launcher script for {model_info['name']}",
+            f"# Generated by madengine for sglang-disagg",
+            "",
+            "set -e",
+            "",
+            "# Environment variables",
+        ])
+        
+        for key, value in env_vars.items():
+            script_lines.append(f"export {key}=\"{value}\"")
+        
+        script_lines.append("")
+        script_lines.extend([
+            "echo '=========================================='",
+            "echo 'Baremetal Launcher - SGLang Disaggregated'",
+            "echo '=========================================='",
+            f"echo 'Model: {model_info['name']}'",
+            f"echo 'Script: {model_script_path}'",
+            "echo 'SLURM_JOB_ID:' $SLURM_JOB_ID",
+            "echo 'SLURM_NNODES:' $SLURM_NNODES",
+            "echo 'SLURM_NODELIST:' $SLURM_NODELIST",
+            "echo ''",
+            "",
+            "# Change to script directory",
+            f"cd {model_script_path.parent}",
+            "",
+            "# Run the model script directly on baremetal",
+            f"echo 'Executing: bash {model_script_path.name} {model_args}'",
+            f"bash {model_script_path.name} {model_args}",
+            "",
+            "echo ''",
+            "echo 'Script completed.'",
+        ])
+        
+        script_content = "\n".join(script_lines)
+        
+        # Save script
+        self.script_path = self.output_dir / f"madengine_{model_info['name']}.sh"
+        self.script_path.write_text(script_content)
+        self.script_path.chmod(0o755)
+        
+        self.console.print(f"[green]✓ Generated baremetal script: {self.script_path}[/green]")
+        self.console.print(f"  Model script: {model_script_path}")
+        self.console.print(f"  Environment: {len(env_vars)} variables")
+        
+        return True
     def _prepare_template_context(self, model_info: Dict) -> Dict[str, Any]:
         """Prepare context for Jinja2 template rendering."""
         # Use hierarchical GPU resolution: runtime > deployment > model > default
@@ -661,7 +891,12 @@ export MASTER_PORT={master_port}
 # Model script should handle launcher invocation'''
 
     def deploy(self) -> DeploymentResult:
-        """Submit sbatch script to SLURM scheduler (locally)."""
+        """
+        Deploy to SLURM - either via sbatch (new job) or bash (existing allocation).
+        
+        If SLURM_JOB_ID is set (inside salloc), runs script directly with bash.
+        Otherwise, submits a new job via sbatch.
+        """
         if not self.script_path or not self.script_path.exists():
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
@@ -669,6 +904,85 @@ export MASTER_PORT={master_port}
                 message="Script not generated. Run prepare() first.",
             )
 
+        # ========== BRANCH: Inside allocation vs new job ==========
+        if self.inside_allocation:
+            return self._run_inside_existing_allocation()
+        else:
+            return self._submit_new_job()
+
+    def _run_inside_existing_allocation(self) -> DeploymentResult:
+        """
+        Run script directly inside existing salloc allocation using bash.
+        
+        The script will use the nodes already allocated to the current job.
+        SLURM environment variables (SLURM_NODELIST, etc.) are inherited.
+        """
+        # Validate node count before running
+        is_valid, error_msg = self._validate_allocation_nodes()
+        if not is_valid:
+            return DeploymentResult(
+                status=DeploymentStatus.FAILED,
+                deployment_id=self.existing_job_id,
+                message=error_msg,
+            )
+        
+        self.console.print(
+            f"\n[bold cyan]Running inside existing SLURM allocation[/bold cyan]"
+        )
+        self.console.print(f"  Job ID: {self.existing_job_id}")
+        self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
+        self.console.print(f"  GPUs per node: {self.gpus_per_node}")
+        self.console.print(f"  Script: {self.script_path}")
+        self.console.print(f"\n[dim]Executing: bash {self.script_path}[/dim]\n")
+        
+        try:
+            # Run script directly with bash (synchronous, blocks until done)
+            # Don't capture output - let it stream directly to console
+            result = subprocess.run(
+                ["bash", str(self.script_path)],
+                timeout=self.config.timeout if self.config.timeout > 0 else None,
+            )
+            
+            if result.returncode == 0:
+                self.console.print(
+                    f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
+                )
+                return DeploymentResult(
+                    status=DeploymentStatus.SUCCESS,
+                    deployment_id=self.existing_job_id,
+                    message=f"Completed inside existing allocation {self.existing_job_id}",
+                    logs_path=str(self.output_dir),
+                )
+            else:
+                self.console.print(
+                    f"\n[red]✗ Script failed with exit code {result.returncode}[/red]"
+                )
+                return DeploymentResult(
+                    status=DeploymentStatus.FAILED,
+                    deployment_id=self.existing_job_id,
+                    message=f"Script failed with exit code {result.returncode}",
+                    logs_path=str(self.output_dir),
+                )
+                
+        except subprocess.TimeoutExpired:
+            self.console.print(
+                f"\n[red]✗ Script timed out after {self.config.timeout}s[/red]"
+            )
+            return DeploymentResult(
+                status=DeploymentStatus.FAILED,
+                deployment_id=self.existing_job_id,
+                message=f"Script timed out after {self.config.timeout}s",
+            )
+        except Exception as e:
+            self.console.print(f"\n[red]✗ Execution error: {e}[/red]")
+            return DeploymentResult(
+                status=DeploymentStatus.FAILED,
+                deployment_id=self.existing_job_id,
+                message=f"Execution error: {str(e)}",
+            )
+
+    def _submit_new_job(self) -> DeploymentResult:
+        """Submit new SLURM job via sbatch (original behavior)."""
         # ==================== PREFLIGHT NODE SELECTION ====================
         # For single- and multi-node jobs, check for clean nodes and exclude bad ones.
         # Single-node: we still run the check so bad nodes (e.g. Docker broken) get excluded;
@@ -780,6 +1094,15 @@ export MASTER_PORT={master_port}
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """Check SLURM job status (locally)."""
+        # If we ran inside an existing allocation, script already completed synchronously
+        # No need to poll - just return success (deploy() already handled the result)
+        if self.inside_allocation:
+            return DeploymentResult(
+                status=DeploymentStatus.SUCCESS,
+                deployment_id=deployment_id,
+                message=f"Completed (ran inside existing allocation {deployment_id})",
+            )
+        
         try:
             # Query job status using squeue (runs locally)
             result = subprocess.run(
@@ -1482,6 +1805,14 @@ export MASTER_PORT={master_port}
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
+        # CRITICAL: Never cancel an existing allocation we're running inside!
+        # The user's salloc session should not be terminated by madengine
+        if self.inside_allocation:
+            self.console.print(
+                f"[dim]Skipping cleanup - running inside existing allocation {deployment_id}[/dim]"
+            )
+            return True
+        
         try:
             subprocess.run(
                 ["scancel", deployment_id], capture_output=True, timeout=10

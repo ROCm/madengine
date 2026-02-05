@@ -236,6 +236,8 @@ class BuildOrchestrator:
         clean_cache: bool = False,
         manifest_output: str = "build_manifest.json",
         batch_build_metadata: Optional[Dict] = None,
+        use_image: Optional[str] = None,
+        build_on_compute: bool = False,
     ) -> str:
         """
         Execute build workflow.
@@ -245,6 +247,8 @@ class BuildOrchestrator:
             clean_cache: Whether to use --no-cache for Docker builds
             manifest_output: Output file for build manifest
             batch_build_metadata: Optional batch build metadata
+            use_image: Pre-built Docker image to use (skip Docker build)
+            build_on_compute: Build on SLURM compute node instead of login node
 
         Returns:
             Path to generated build_manifest.json
@@ -253,6 +257,21 @@ class BuildOrchestrator:
             DiscoveryError: If model discovery fails
             BuildError: If Docker build fails
         """
+        # Handle pre-built image mode
+        if use_image:
+            return self._execute_with_prebuilt_image(
+                use_image=use_image,
+                manifest_output=manifest_output,
+            )
+        
+        # Handle build-on-compute mode
+        if build_on_compute:
+            return self._execute_build_on_compute(
+                registry=registry,
+                clean_cache=clean_cache,
+                manifest_output=manifest_output,
+                batch_build_metadata=batch_build_metadata,
+            )
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print("[bold blue]🔨 BUILD PHASE[/bold blue]")
         self.rich_console.print("[yellow](Build-only mode - no GPU detection)[/yellow]")
@@ -464,4 +483,268 @@ class BuildOrchestrator:
         except Exception as e:
             # Non-fatal - just warn
             self.rich_console.print(f"[yellow]Warning: Could not save deployment config: {e}[/yellow]")
+
+    def _execute_with_prebuilt_image(
+        self,
+        use_image: str,
+        manifest_output: str = "build_manifest.json",
+    ) -> str:
+        """
+        Generate manifest for a pre-built Docker image (skip Docker build).
+        
+        This is useful when using external images like:
+        - lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x
+        - nvcr.io/nvidia/pytorch:24.01-py3
+        
+        Args:
+            use_image: Pre-built Docker image name
+            manifest_output: Output file for build manifest
+            
+        Returns:
+            Path to generated build_manifest.json
+        """
+        self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
+        self.rich_console.print("[bold blue]🔨 BUILD PHASE (Pre-built Image Mode)[/bold blue]")
+        self.rich_console.print(f"[cyan]Using pre-built image: {use_image}[/cyan]")
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+        try:
+            # Step 1: Discover models
+            self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
+            discover_models = DiscoverModels(args=self.args)
+            models = discover_models.run()
+
+            if not models:
+                raise DiscoveryError(
+                    "No models discovered",
+                    context=create_error_context(
+                        operation="discover_models",
+                        component="BuildOrchestrator",
+                    ),
+                    suggestions=[
+                        "Check if models.json exists",
+                        "Verify --tags parameter is correct",
+                    ],
+                )
+
+            self.rich_console.print(f"[green]✓ Found {len(models)} models[/green]\n")
+
+            # Step 2: Generate manifest with pre-built image
+            self.rich_console.print("[bold cyan]📄 Generating manifest for pre-built image...[/bold cyan]")
+            
+            manifest = {
+                "built_images": {
+                    use_image: {
+                        "image_name": use_image,
+                        "dockerfile": "",
+                        "build_time": 0,
+                        "prebuilt": True,
+                    }
+                },
+                "built_models": {},
+                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "credentials_required": [],
+                "summary": {
+                    "successful_builds": [],
+                    "failed_builds": [],
+                    "total_build_time": 0,
+                    "successful_pushes": [],
+                    "failed_pushes": [],
+                },
+            }
+
+            # Add each discovered model with the pre-built image
+            for model in models:
+                model_name = model.get("name", "unknown")
+                manifest["built_models"][model_name] = {
+                    "name": model_name,
+                    "image": use_image,
+                    "dockerfile": model.get("dockerfile", ""),
+                    "scripts": model.get("scripts", ""),
+                    "data": model.get("data", ""),
+                    "n_gpus": model.get("n_gpus", "8"),
+                    "owner": model.get("owner", ""),
+                    "training_precision": model.get("training_precision", ""),
+                    "multiple_results": model.get("multiple_results", ""),
+                    "tags": model.get("tags", []),
+                    "timeout": model.get("timeout", -1),
+                    "args": model.get("args", ""),
+                    "slurm": model.get("slurm", {}),
+                    "distributed": model.get("distributed", {}),
+                    "env_vars": model.get("env_vars", {}),
+                    "prebuilt": True,
+                }
+                manifest["summary"]["successful_builds"].append(model_name)
+
+            # Save manifest
+            with open(manifest_output, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            # Save deployment config
+            self._save_deployment_config(manifest_output)
+
+            self.rich_console.print(f"[green]✓ Generated manifest: {manifest_output}[/green]")
+            self.rich_console.print(f"  Pre-built image: {use_image}")
+            self.rich_console.print(f"  Models: {len(models)}")
+            self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+            return manifest_output
+
+        except (DiscoveryError, BuildError):
+            raise
+        except Exception as e:
+            raise BuildError(
+                f"Failed to generate manifest for pre-built image: {e}",
+                context=create_error_context(
+                    operation="prebuilt_manifest",
+                    component="BuildOrchestrator",
+                ),
+            ) from e
+
+    def _execute_build_on_compute(
+        self,
+        registry: Optional[str] = None,
+        clean_cache: bool = False,
+        manifest_output: str = "build_manifest.json",
+        batch_build_metadata: Optional[Dict] = None,
+    ) -> str:
+        """
+        Execute Docker build on a SLURM compute node instead of login node.
+        
+        This submits a SLURM job that runs the Docker build on a compute node,
+        which is useful when:
+        - Login node has limited disk space
+        - Login node shouldn't run heavy workloads
+        - Compute nodes have faster storage/network
+        
+        Args:
+            registry: Optional registry to push images to
+            clean_cache: Whether to use --no-cache for Docker builds
+            manifest_output: Output file for build manifest
+            batch_build_metadata: Optional batch build metadata
+            
+        Returns:
+            Path to generated build_manifest.json
+        """
+        import subprocess
+        import os
+        
+        self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
+        self.rich_console.print("[bold blue]🔨 BUILD PHASE (Compute Node Mode)[/bold blue]")
+        self.rich_console.print("[cyan]Building on SLURM compute node...[/cyan]")
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+        # Check if we're inside an existing allocation
+        inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
+        existing_job_id = os.environ.get("SLURM_JOB_ID", "")
+
+        # Get SLURM config from additional_context
+        slurm_config = self.additional_context.get("slurm", {})
+        partition = slurm_config.get("partition", "gpu")
+        reservation = slurm_config.get("reservation", "")
+        time_limit = slurm_config.get("time", "02:00:00")
+
+        # Build the madengine build command (without --build-on-compute to avoid recursion)
+        tags = getattr(self.args, 'tags', [])
+        tags_str = " ".join([f"-t {tag}" for tag in tags]) if tags else ""
+        
+        additional_context_str = ""
+        if self.additional_context:
+            # Serialize additional context for the compute node
+            import json
+            ctx_json = json.dumps(self.additional_context)
+            additional_context_str = f"--additional-context '{ctx_json}'"
+
+        build_cmd = f"madengine build {tags_str} {additional_context_str} --manifest-output {manifest_output}"
+        if registry:
+            build_cmd += f" --registry {registry}"
+        if clean_cache:
+            build_cmd += " --clean-docker-cache"
+
+        if inside_allocation:
+            # Run build on compute node via srun
+            self.rich_console.print(f"[cyan]Running build via srun (inside allocation {existing_job_id})...[/cyan]")
+            cmd = ["srun", "-N1", "--ntasks=1", "bash", "-c", build_cmd]
+        else:
+            # Generate and submit build script
+            self.rich_console.print("[cyan]Submitting build job via sbatch...[/cyan]")
+            
+            build_script_content = f"""#!/bin/bash
+#SBATCH --job-name=madengine-build
+#SBATCH --partition={partition}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time={time_limit}
+{f'#SBATCH --reservation={reservation}' if reservation else ''}
+#SBATCH --output=madengine_build_%j.out
+#SBATCH --error=madengine_build_%j.err
+
+echo "=== Building on compute node: $(hostname) ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Build command: {build_cmd}"
+echo ""
+
+# Activate virtual environment if available
+if [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate
+fi
+
+# Run the build
+{build_cmd}
+
+echo ""
+echo "=== Build completed ==="
+"""
+            build_script_path = Path("madengine_build_job.sh")
+            build_script_path.write_text(build_script_content)
+            build_script_path.chmod(0o755)
+            
+            self.rich_console.print(f"  Build script: {build_script_path}")
+            cmd = ["sbatch", "--wait", str(build_script_path)]
+
+        # Execute the build
+        self.rich_console.print(f"  Command: {' '.join(cmd)}")
+        self.rich_console.print("")
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=False,  # Let output flow to console
+                text=True,
+            )
+            
+            if result.returncode != 0:
+                raise BuildError(
+                    f"Build on compute node failed with exit code {result.returncode}",
+                    context=create_error_context(
+                        operation="build_on_compute",
+                        component="BuildOrchestrator",
+                    ),
+                    suggestions=[
+                        "Check the build log files (madengine_build_*.out/err)",
+                        "Verify SLURM partition and reservation settings",
+                        "Ensure Docker is available on compute nodes",
+                    ],
+                )
+            
+            self.rich_console.print(f"[green]✓ Build completed on compute node[/green]")
+            self.rich_console.print(f"[green]✓ Manifest: {manifest_output}[/green]")
+            return manifest_output
+            
+        except subprocess.TimeoutExpired:
+            raise BuildError(
+                "Build on compute node timed out",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                ),
+            )
+        except Exception as e:
+            raise BuildError(
+                f"Failed to build on compute node: {e}",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                ),
+            ) from e
 
