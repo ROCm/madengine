@@ -485,14 +485,17 @@ class SlurmDeployment(BaseDeployment):
             model_info = self.manifest["built_models"][model_key]
 
             # Check if this is a baremetal launcher (sglang-disagg, vllm-disagg)
-            launcher_type = self.distributed_config.get("launcher", "torchrun")
+            # Priority: model_info.distributed.launcher > additional_context.distributed.launcher
+            model_distributed = model_info.get("distributed", {})
+            launcher_type = model_distributed.get("launcher") or self.distributed_config.get("launcher", "torchrun")
             launcher_normalized = launcher_type.lower().replace("_", "-")
             
             if launcher_normalized in ["sglang-disagg", "vllm-disagg"]:
                 # For disagg launchers, generate simple wrapper script
                 # that runs the model's .slurm script directly on baremetal
                 self.console.print(f"[cyan]Detected baremetal launcher: {launcher_type}[/cyan]")
-                return self._prepare_baremetal_script(model_info)
+                # Pass model_key as docker_image_name (for manifests, the key IS the built image name)
+                return self._prepare_baremetal_script(model_info, docker_image_name=model_key)
             
             # Standard flow: validate madengine availability for complex job template
             if not self._validate_cli_availability():
@@ -522,12 +525,16 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(f"[red]✗ Failed to generate script: {e}[/red]")
             return False
 
-    def _prepare_baremetal_script(self, model_info: Dict) -> bool:
+    def _prepare_baremetal_script(self, model_info: Dict, docker_image_name: str = None) -> bool:
         """
         Generate a simple wrapper script for baremetal launchers (sglang-disagg, vllm-disagg).
         
         These launchers run the model's .slurm script directly on baremetal,
         which then manages Docker containers via srun. No madengine wrapper needed.
+        
+        Args:
+            model_info: Model configuration from manifest
+            docker_image_name: The built Docker image name from manifest key
         """
         # Get the model's script path
         model_script = model_info.get("scripts", "")
@@ -554,11 +561,29 @@ class SlurmDeployment(BaseDeployment):
         if "env_vars" in self.config.additional_context:
             env_vars.update(self.config.additional_context["env_vars"])
         
-        # From distributed config
-        sglang_disagg_config = self.distributed_config.get("sglang_disagg", {})
+        # From distributed config (model's distributed section)
+        model_distributed = model_info.get("distributed", {})
+        sglang_disagg_config = model_distributed.get("sglang_disagg", {}) or self.distributed_config.get("sglang_disagg", {})
         if sglang_disagg_config:
             env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
             env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
+        
+        # Override DOCKER_IMAGE_NAME with the built image from manifest
+        # This ensures the run uses the freshly built image, not the base image
+        # Priority: docker_image_name param > model_info.docker_image > env_vars.DOCKER_IMAGE_NAME
+        if docker_image_name and docker_image_name.startswith("ci-"):
+            # The manifest key IS the built image name for madengine-built images
+            self.console.print(f"[cyan]Using built Docker image: {docker_image_name}[/cyan]")
+            env_vars["DOCKER_IMAGE_NAME"] = docker_image_name
+        elif "docker_image" in model_info:
+            built_image = model_info["docker_image"]
+            self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
+            env_vars["DOCKER_IMAGE_NAME"] = built_image
+        elif "image" in model_info:
+            # Fallback to 'image' field
+            built_image = model_info["image"]
+            self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
+            env_vars["DOCKER_IMAGE_NAME"] = built_image
         
         # Get model args
         model_args = model_info.get("args", "")
@@ -1170,6 +1195,7 @@ export MASTER_PORT={master_port}
                     console=self.console,
                     auto_cleanup=auto_cleanup,
                     verbose=self.slurm_config.get("verbose_node_check", False),
+                    reservation=self.reservation,
                 )
                 
                 # Select clean nodes and get updated exclude list

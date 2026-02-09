@@ -71,6 +71,7 @@ class SlurmNodeSelector:
         auto_cleanup: bool = False,
         verbose: bool = False,
         timeout: int = 30,
+        reservation: Optional[str] = None,
     ):
         """
         Initialize node selector.
@@ -80,11 +81,13 @@ class SlurmNodeSelector:
             auto_cleanup: Automatically clean dirty nodes
             verbose: Enable verbose logging
             timeout: Timeout for srun commands (seconds)
+            reservation: SLURM reservation name for reserved nodes
         """
         self.console = console or Console()
         self.auto_cleanup = auto_cleanup
         self.verbose = verbose
         self.timeout = timeout
+        self.reservation = reservation
     
     def get_candidate_nodes(
         self,
@@ -199,16 +202,20 @@ echo "===END_PROCESSES==="
         
         try:
             # Use srun to execute check on specific node
+            srun_cmd = [
+                "srun",
+                f"--nodelist={node}",
+                "--ntasks=1",
+                "--time=00:01:00",
+                "--overlap",  # Allow overlap with running jobs
+                "--quiet",
+            ]
+            if self.reservation:
+                srun_cmd.append(f"--reservation={self.reservation}")
+            srun_cmd.extend(["bash", "-c", check_script])
+            
             result = subprocess.run(
-                [
-                    "srun",
-                    f"--nodelist={node}",
-                    "--ntasks=1",
-                    "--time=00:01:00",
-                    "--overlap",  # Allow overlap with running jobs
-                    "--quiet",
-                    "bash", "-c", check_script
-                ],
+                srun_cmd,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -309,16 +316,20 @@ echo "CLEANUP_OK"
 """
         
         try:
+            srun_cmd = [
+                "srun",
+                f"--nodelist={node}",
+                "--ntasks=1",
+                "--time=00:01:00",
+                "--overlap",
+                "--quiet",
+            ]
+            if self.reservation:
+                srun_cmd.append(f"--reservation={self.reservation}")
+            srun_cmd.extend(["bash", "-c", cleanup_script])
+            
             result = subprocess.run(
-                [
-                    "srun",
-                    f"--nodelist={node}",
-                    "--ntasks=1",
-                    "--time=00:01:00",
-                    "--overlap",
-                    "--quiet",
-                    "bash", "-c", cleanup_script
-                ],
+                srun_cmd,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
