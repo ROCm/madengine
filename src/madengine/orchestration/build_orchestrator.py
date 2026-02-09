@@ -536,6 +536,7 @@ class BuildOrchestrator:
                 "built_images": {
                     use_image: {
                         "image_name": use_image,
+                        "docker_image": use_image,
                         "dockerfile": "",
                         "build_time": 0,
                         "prebuilt": True,
@@ -554,11 +555,16 @@ class BuildOrchestrator:
             }
 
             # Add each discovered model with the pre-built image
+            # Use the image name as the key (matches how madengine build does it)
             for model in models:
                 model_name = model.get("name", "unknown")
-                manifest["built_models"][model_name] = {
+                model_distributed = model.get("distributed", {})
+                
+                # Use image name as key so slurm.py can find docker_image
+                manifest["built_models"][use_image] = {
                     "name": model_name,
                     "image": use_image,
+                    "docker_image": use_image,
                     "dockerfile": model.get("dockerfile", ""),
                     "scripts": model.get("scripts", ""),
                     "data": model.get("data", ""),
@@ -570,7 +576,7 @@ class BuildOrchestrator:
                     "timeout": model.get("timeout", -1),
                     "args": model.get("args", ""),
                     "slurm": model.get("slurm", {}),
-                    "distributed": model.get("distributed", {}),
+                    "distributed": model_distributed,
                     "env_vars": model.get("env_vars", {}),
                     "prebuilt": True,
                 }
@@ -582,6 +588,28 @@ class BuildOrchestrator:
 
             # Save deployment config
             self._save_deployment_config(manifest_output)
+            
+            # Merge model's distributed config (especially launcher) into deployment_config
+            # This ensures sglang-disagg launcher is in deployment_config even if not in additional-context
+            if models and models[0].get("distributed"):
+                with open(manifest_output, "r") as f:
+                    saved_manifest = json.load(f)
+                
+                model_distributed = models[0].get("distributed", {})
+                if "deployment_config" not in saved_manifest:
+                    saved_manifest["deployment_config"] = {}
+                
+                # Merge model's distributed into deployment_config.distributed
+                if "distributed" not in saved_manifest["deployment_config"]:
+                    saved_manifest["deployment_config"]["distributed"] = {}
+                
+                # Copy launcher and other critical fields from model config
+                for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg"]:
+                    if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
+                        saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
+                
+                with open(manifest_output, "w") as f:
+                    json.dump(saved_manifest, f, indent=2)
 
             self.rich_console.print(f"[green]✓ Generated manifest: {manifest_output}[/green]")
             self.rich_console.print(f"  Pre-built image: {use_image}")
@@ -643,23 +671,36 @@ class BuildOrchestrator:
         partition = slurm_config.get("partition", "gpu")
         reservation = slurm_config.get("reservation", "")
         time_limit = slurm_config.get("time", "02:00:00")
+        # Get number of nodes - build on ALL nodes so image is available everywhere
+        nodes = slurm_config.get("nodes", 1)
 
         # Build the madengine build command (without --build-on-compute to avoid recursion)
         tags = getattr(self.args, 'tags', [])
         tags_str = " ".join([f"-t {tag}" for tag in tags]) if tags else ""
         
+        # Write additional context to a file to avoid shell quoting issues
+        context_file_path = None
         additional_context_str = ""
         if self.additional_context:
-            # Serialize additional context for the compute node
             import json
-            ctx_json = json.dumps(self.additional_context)
-            additional_context_str = f"--additional-context '{ctx_json}'"
+            context_file_path = Path("madengine_build_context.json")
+            with open(context_file_path, 'w') as f:
+                json.dump(self.additional_context, f)
+            self.rich_console.print(f"  Context file: {context_file_path}")
 
-        build_cmd = f"madengine build {tags_str} {additional_context_str} --manifest-output {manifest_output}"
+        # Base build command
+        build_cmd_parts = ["madengine", "build"]
+        if tags_str:
+            build_cmd_parts.extend(tags_str.split())
+        if context_file_path:
+            build_cmd_parts.extend(["--additional-context-file", str(context_file_path)])
+        build_cmd_parts.extend(["--manifest-output", manifest_output])
         if registry:
-            build_cmd += f" --registry {registry}"
+            build_cmd_parts.extend(["--registry", registry])
         if clean_cache:
-            build_cmd += " --clean-docker-cache"
+            build_cmd_parts.append("--clean-docker-cache")
+        
+        build_cmd = " ".join(build_cmd_parts)
 
         if inside_allocation:
             # Run build on compute node via srun
@@ -669,31 +710,117 @@ class BuildOrchestrator:
             # Generate and submit build script
             self.rich_console.print("[cyan]Submitting build job via sbatch...[/cyan]")
             
+            # Get absolute path for context file
+            abs_context_file = str(context_file_path.absolute()) if context_file_path else ""
+            abs_manifest_output = str(Path(manifest_output).absolute())
+            
+            # Rebuild command with absolute paths for sbatch
+            build_cmd_abs = f"madengine build {tags_str}"
+            if abs_context_file:
+                build_cmd_abs += f" --additional-context-file {abs_context_file}"
+            build_cmd_abs += f" --manifest-output {abs_manifest_output}"
+            if registry:
+                build_cmd_abs += f" --registry {registry}"
+            if clean_cache:
+                build_cmd_abs += " --clean-docker-cache"
+            
+            # Discover models to get Dockerfile path
+            discover_models = DiscoverModels(args=self.args)
+            models = discover_models.run()
+            dockerfile_path = ""
+            dockerfile_name = ""
+            if models:
+                dockerfile = models[0].get("dockerfile", "")
+                # Find the actual Dockerfile
+                import glob
+                dockerfile_patterns = [
+                    f"{dockerfile}.ubuntu.amd.Dockerfile",
+                    f"{dockerfile}.Dockerfile",
+                    f"{dockerfile}",
+                ]
+                for pattern in dockerfile_patterns:
+                    matches = glob.glob(pattern)
+                    if matches:
+                        dockerfile_path = matches[0]
+                        dockerfile_name = Path(dockerfile_path).name
+                        break
+            
+            self.rich_console.print(f"  Nodes: {nodes} (building on all nodes)")
+            if dockerfile_path:
+                self.rich_console.print(f"  Dockerfile: {dockerfile_path}")
+            
             build_script_content = f"""#!/bin/bash
 #SBATCH --job-name=madengine-build
 #SBATCH --partition={partition}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
+#SBATCH --nodes={nodes}
+#SBATCH --ntasks={nodes}
 #SBATCH --time={time_limit}
 {f'#SBATCH --reservation={reservation}' if reservation else ''}
 #SBATCH --output=madengine_build_%j.out
 #SBATCH --error=madengine_build_%j.err
 
-echo "=== Building on compute node: $(hostname) ==="
+echo "=== Building on compute nodes ==="
 echo "Job ID: $SLURM_JOB_ID"
-echo "Build command: {build_cmd}"
+echo "Nodes: $SLURM_NNODES"
+echo "Node list: $SLURM_NODELIST"
+echo "Working directory: $(pwd)"
 echo ""
+
+# Change to submission directory
+cd {Path.cwd().absolute()}
 
 # Activate virtual environment if available
-if [ -f "venv/bin/activate" ]; then
-    source venv/bin/activate
+if [ -f "{Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}" ]; then
+    source {Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}
+    echo "Activated virtual environment"
+fi# Step 1: Build Docker image on ALL nodes in parallel
+echo ""
+echo "=== Building Docker image on all $SLURM_NNODES nodes ==="
+DOCKERFILE="{dockerfile_path}"
+if [ -n "$DOCKERFILE" ] && [ -f "$DOCKERFILE" ]; then
+    # Get the image name - must match exactly what madengine generates
+    # Format: ci-<model_name>_<dockerfile_basename_without_.Dockerfile>
+    IMAGE_NAME=$(basename $DOCKERFILE .Dockerfile)
+    FULL_IMAGE_NAME="ci-{models[0].get('name', 'model') if models else 'model'}_$IMAGE_NAME"
+    
+    echo "Dockerfile: $DOCKERFILE"
+    echo "Image name: $FULL_IMAGE_NAME"
+    
+    # Build on all nodes in parallel using srun
+    srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c "
+        echo \\\"[\\$(hostname)] Building Docker image...\\\"
+        cd {Path.cwd().absolute()}
+        docker build --network=host -t $FULL_IMAGE_NAME --pull -f $DOCKERFILE ./docker
+        BUILD_RC=\\$?
+        if [ \\$BUILD_RC -eq 0 ]; then
+            echo \\\"[\\$(hostname)] Docker build SUCCESS\\\"
+        else
+            echo \\\"[\\$(hostname)] Docker build FAILED with exit code \\$BUILD_RC\\\"
+        fi
+        exit \\$BUILD_RC
+    "
+    DOCKER_BUILD_EXIT=$?
+    
+    if [ $DOCKER_BUILD_EXIT -ne 0 ]; then
+        echo "Docker build failed on one or more nodes"
+        exit $DOCKER_BUILD_EXIT
+    fi
+    echo ""
+    echo "=== Docker image built on all nodes ==="
 fi
 
-# Run the build
-{build_cmd}
+# Step 2: Run madengine build on rank 0 to generate manifest
+echo ""
+echo "=== Generating build manifest ==="
+echo "Build command: {build_cmd_abs}"
+echo ""
+
+{build_cmd_abs}
+BUILD_EXIT=$?
 
 echo ""
-echo "=== Build completed ==="
+echo "=== Build completed with exit code: $BUILD_EXIT ==="
+exit $BUILD_EXIT
 """
             build_script_path = Path("madengine_build_job.sh")
             build_script_path.write_text(build_script_content)
@@ -747,4 +874,3 @@ echo "=== Build completed ==="
                     component="BuildOrchestrator",
                 ),
             ) from e
-
