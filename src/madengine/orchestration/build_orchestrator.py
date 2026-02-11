@@ -726,7 +726,9 @@ cd {Path.cwd().absolute()}
 if [ -f "{Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}" ]; then
     source {Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}
     echo "Activated virtual environment"
-fi# Step 1: Build Docker image on ALL nodes in parallel
+fi
+
+# Step 1: Build Docker image on ALL nodes in parallel
 echo ""
 echo "=== Building Docker image on all $SLURM_NNODES nodes ==="
 DOCKERFILE="{dockerfile_path}"
