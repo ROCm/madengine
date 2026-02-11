@@ -328,6 +328,12 @@ spec:
                 cp perf.csv /results/${HOSTNAME}/perf.csv
                 echo "✓ Copied perf.csv"
             fi
+            {% if multiple_results %}
+            if [ -f "{{ multiple_results }}" ]; then
+                cp "{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            fi
+            {% endif %}
             
             # Copy environment details
             if ls *_env.csv 1> /dev/null 2>&1; then
@@ -489,6 +495,12 @@ spec:
                 cp perf.csv /results/${HOSTNAME}/perf.csv
                 echo "✓ Copied perf.csv"
             fi
+            {% if multiple_results %}
+            if [ -f "{{ multiple_results }}" ]; then
+                cp "{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            fi
+            {% endif %}
             
             # Copy environment details
             if ls *_env.csv 1> /dev/null 2>&1; then
