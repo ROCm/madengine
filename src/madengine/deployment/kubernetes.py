@@ -1092,6 +1092,8 @@ class KubernetesDeployment(BaseDeployment):
             "post_scripts": post_scripts,
             # Common script contents for ConfigMap (embedded since madengine not in container)
             "common_script_contents": pre_post_script_contents,
+            # Multiple results file (e.g. perf_dummy.csv) - copied to PVC for K8s result collection
+            "multiple_results": model_info.get("multiple_results") or "",
         }
 
         return context
@@ -2888,6 +2890,9 @@ torchrun \\
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
             )
             
+            # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
+            self._collect_from_pvc(deployment_id, results_dir, results)
+            
             # ========================================================================
             # Aggregate per-node metrics
             # ========================================================================
@@ -2946,25 +2951,47 @@ torchrun \\
                         f"[green]✓ Updated local perf.csv[/green]"
                     )
             else:
-                # All nodes failed or no performance found
-                error_msg = "No performance metrics found from any node"
-                failure_record = self._create_failure_record(
-                    model_info, build_info, deployment_id, error_msg
+                # No performance from log: try multiple_results CSV (same contract as local execution)
+                # Single-node multi-row: write one perf.csv row per CSV row (no multinode aggregation)
+                fallback_metrics = self._parse_multiple_results_from_artifacts(
+                    results_dir, results, model_info, build_info
                 )
-                self._write_to_perf_csv(failure_record)
-                results["failed_runs"].append({
-                    "model": model_info.get("name", "Unknown"),
-                    "error": error_msg,
-                    "nodes": results["nodes"]
-                })
-                self.console.print(
-                    f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
-                )
+                if fallback_metrics:
+                    for item in fallback_metrics:
+                        record = self._create_multiple_result_row_record(
+                            model_info, build_info, deployment_id, item
+                        )
+                        if record:
+                            self._write_to_perf_csv(record)
+                            results["successful_runs"].append({
+                                "model": item["model"],
+                                "perf_data": record,
+                                "nodes": results["nodes"],
+                                "per_node_metrics": [item],
+                            })
+                    self.console.print(
+                        f"[green]✓ Wrote {len(fallback_metrics)} row(s) from multiple_results to perf.csv[/green]"
+                    )
+                    self.console.print(
+                        f"[green]✓ Updated local perf.csv[/green]"
+                    )
+                if not fallback_metrics:
+                    # No log metric and no multiple_results CSV: record failure
+                    error_msg = "No performance metrics found from any node"
+                    failure_record = self._create_failure_record(
+                        model_info, build_info, deployment_id, error_msg
+                    )
+                    self._write_to_perf_csv(failure_record)
+                    results["failed_runs"].append({
+                        "model": model_info.get("name", "Unknown"),
+                        "error": error_msg,
+                        "nodes": results["nodes"]
+                    })
+                    self.console.print(
+                        f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
+                    )
             
-            # 4. Collect all artifacts from PVC
-            self._collect_from_pvc(deployment_id, results_dir, results)
-            
-            # 5. Generate summary
+            # 4. Generate summary
             self._generate_results_summary(results, results_dir)
 
         except Exception as e:
@@ -3382,6 +3409,61 @@ torchrun \\
         
         return result
     
+    def _create_multiple_result_row_record(
+        self,
+        model_info: Dict,
+        build_info: Dict,
+        deployment_id: str,
+        item: Dict,
+    ) -> Dict:
+        """
+        Build one perf.csv row for a single row from a multiple_results CSV.
+        Same shape as _create_failure_record but with SUCCESS and item's performance/metric/model.
+        """
+        import os
+        
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        nnodes = distributed_config.get("nnodes", 1)
+        nproc_per_node = distributed_config.get("nproc_per_node")
+        if nproc_per_node is None:
+            nproc_per_node = int(model_info.get("n_gpus", 1))
+        
+        result = {
+            "model": item.get("model", model_info.get("name", "")),
+            "n_gpus": str(nnodes * nproc_per_node),
+            "nnodes": str(nnodes),
+            "gpus_per_node": str(nproc_per_node),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": os.environ.get("pipeline", ""),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            "git_commit": "",
+            "machine_name": deployment_id,
+            "deployment_type": "kubernetes",
+            "launcher": "native",
+            "gpu_architecture": item.get("gpu_architecture", ""),
+            "performance": str(item.get("performance", "")),
+            "metric": item.get("metric", ""),
+            "relative_change": "",
+            "status": "SUCCESS",
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": item.get("duration", ""),
+            "dataname": model_info.get("data", ""),
+            "data_provider_type": "",
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        if isinstance(result["tags"], list):
+            result["tags"] = ",".join(str(t) for t in result["tags"])
+        return result
+    
     def _parse_node_performance(
         self, 
         log_content: str, 
@@ -3450,6 +3532,83 @@ torchrun \\
             }
         
         return perf_data
+    
+    def _parse_multiple_results_from_artifacts(
+        self,
+        results_dir: Path,
+        results: Dict,
+        model_info: Dict,
+        build_info: Dict,
+    ) -> List[Dict]:
+        """
+        Parse performance from a multiple_results CSV (e.g. perf_dummy.csv) collected from PVC.
+        Used when the model only writes CSV and does not print 'performance: X Y' to the log
+        (same contract as local container_runner multiple_results handling).
+        
+        Returns:
+            List of perf_data dicts (same shape as _parse_node_performance), or empty list.
+        """
+        import csv as csv_module
+        multiple_results_file = model_info.get("multiple_results")
+        if not multiple_results_file:
+            return []
+        filename = Path(multiple_results_file).name
+        # Try to get gpu_architecture from first pod log
+        gpu_arch = "N/A"
+        if results.get("logs"):
+            import re
+            log_content = results["logs"][0].get("log", "")
+            gpu_arch_match = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
+            if gpu_arch_match:
+                gpu_arch = gpu_arch_match.group(1)
+        parsed_list = []
+        for art in results.get("artifacts", []):
+            if art.get("type") != "pvc_collection":
+                continue
+            local_path = Path(art.get("local_path", ""))
+            if not local_path.is_dir():
+                continue
+            csv_path = local_path / filename
+            if not csv_path.is_file():
+                continue
+            try:
+                with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = csv_module.DictReader(f)
+                    if not reader.fieldnames or "performance" not in reader.fieldnames or "metric" not in reader.fieldnames:
+                        continue
+                    for row_idx, row in enumerate(reader):
+                        perf_val = row.get("performance", "").strip()
+                        metric_val = row.get("metric", "").strip()
+                        if not perf_val or not metric_val:
+                            continue
+                        try:
+                            perf_float = float(perf_val)
+                        except (ValueError, TypeError):
+                            continue
+                        # Same model naming as local handle_multiple_results: model_name + "_" + str(model)
+                        row_model = row.get("model", row_idx)
+                        display_model = f"{model_info.get('name')}_{row_model}"
+                        parsed_list.append({
+                            "model": display_model,
+                            "performance": perf_float,
+                            "metric": metric_val,
+                            "node_id": row_idx,
+                            "local_gpus": 1,
+                            "duration": "N/A",
+                            "gpu_architecture": gpu_arch,
+                            "data_name": "N/A",
+                            "data_provider": "N/A",
+                        })
+                if parsed_list:
+                    self.console.print(
+                        f"[green]  ✓ Parsed performance from {filename} ({len(parsed_list)} row(s))[/green]"
+                    )
+                    return parsed_list
+            except Exception as e:
+                self.console.print(
+                    f"[dim]  Could not parse {filename} from PVC: {e}[/dim]"
+                )
+        return []
     
     def _determine_aggregation_method(self, metric_name: str) -> str:
         """
