@@ -1178,7 +1178,7 @@ class RunModels:
         elif host_os.find("HOST_CENTOS") != -1:
             print(self.console.sh("yum info rocm-libs", canFail=True))
         elif host_os.find("HOST_SLES") != -1:
-            print(self.console.sh("zypper info rocm-libs", CanFail=True))
+            print(self.console.sh("zypper info rocm-libs", canFail=True))
         elif host_os.find("HOST_AZURE") != -1:
             print(self.console.sh("tdnf info rocm-libs", canFail=True))
         else:
