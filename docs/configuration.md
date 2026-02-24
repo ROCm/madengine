@@ -313,6 +313,7 @@ Automatically applies:
 - `qos` - Quality of Service
 - `gpus_per_node` - GPUs per node (default: 1)
 - `nodes` - Number of nodes (default: 1)
+- `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
 - `time` - Wall time limit HH:MM:SS (required)
 - `mem` - Memory per node (e.g., "64G")
 - `mail_user` - Email for notifications

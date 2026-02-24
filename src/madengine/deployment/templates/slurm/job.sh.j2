@@ -8,6 +8,9 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node={{ gpus_per_node }}
 #SBATCH --time={{ time_limit }}
+{% if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{% endif %}
 {% if exclude %}
 #SBATCH --exclude={{ exclude }}
 {% endif %}
