@@ -375,6 +375,7 @@ madengine uses intelligent multi-layer configuration merging:
   "slurm": {
     "partition": "amd-rccl",         // SLURM partition name (default: amd-rccl)
     "nodes": 2,                      // Number of nodes
+    "nodelist": "node01,node02",     // Optional: restrict job to these nodes (skips node health preflight)
     "gpus_per_node": 8,             // GPUs per node
     "time": "24:00:00",             // Wall time (HH:MM:SS)
     "output_dir": "./slurm_output", // Local output directory
@@ -388,6 +389,8 @@ madengine uses intelligent multi-layer configuration merging:
   }
 }
 ```
+
+**nodelist**: When set to a comma-separated list of node names (e.g. `"node01,node02"`), the job runs only on those nodes. Automatic node health preflight is skipped when `nodelist` is set.
 
 ### Distributed Execution Section
 

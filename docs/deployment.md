@@ -224,8 +224,11 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `qos`: Quality of Service
 - `gpus_per_node`: Number of GPUs per node
 - `nodes`: Number of nodes (for multi-node)
+- `nodelist`: Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job runs only on these nodes and node health preflight is skipped
 - `time`: Wall time limit (HH:MM:SS)
 - `mem`: Memory per node (e.g., "64G")
+- `mail_user`: Email for job notifications
+- `mail_type`: Notification types (BEGIN, END, FAIL, ALL)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
 
