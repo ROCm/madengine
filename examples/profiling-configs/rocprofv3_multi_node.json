@@ -1,0 +1,56 @@
+{
+  "_comment": "Multi-Node, Multi-GPU (2 Nodes x 4 GPUs) - SLURM Configuration with ROCm Profiling",
+  "_description": "Configuration for distributed training across multiple nodes with ROCm profiling tools on SLURM",
+  "_use_case": "Large-scale multi-node training with communication profiling, power monitoring, and VRAM tracking",
+  "_note": "Using 'amd-rccl' partition. Change to your cluster's partition name if different (e.g., 'gpu', 'compute').",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 4,
+    "time": "04:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 2,
+    "nproc_per_node": 4
+  },
+  
+  "tools": [
+    {
+      "name": "rocprofv3_communication",
+      "env_vars": {
+        "RCCL_DEBUG": "INFO",
+        "NCCL_DEBUG": "INFO"
+      }
+    },
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1"
+      }
+    },
+    {
+      "name": "gpu_info_vram_profiler",
+      "env_vars": {
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.1"
+      }
+    }
+  ],
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_SOCKET_IFNAME": "eth0"
+  },
+  
+  "debug": false
+}

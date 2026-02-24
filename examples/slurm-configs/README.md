@@ -45,6 +45,7 @@ The deployment type is **inferred** from the configuration structure:
 | `01-torchrun-single-node-single-gpu.json` | Single GPU training | 1 | 1 | Quick tests, small models |
 | `02-single-node-multi-gpu.json` | Single node, 8 GPUs | 1 | 8 | Single-node distributed workload |
 | `03-multi-node-basic.json` | 2 nodes, 8 GPUs each | 2 | 16 | Multi-node distributed workload |
+| `03-multi-node-basic-nodelist.json` | Same as 03 with `nodelist` | 2 | 16 | Pin job to specific nodes (e.g. node01,node02) |
 | `04-multi-node-advanced.json` | 4 nodes, advanced features | 4 | 32 | Production-scale training |
 
 ### vLLM Inference Configurations (`basic/`)

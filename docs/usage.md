@@ -315,7 +315,7 @@ ssh user@hpc-login.example.com
 madengine run --manifest-file build_manifest.json
 ```
 
-Deployment target is automatically detected from `slurm` key in configuration.
+Deployment target is automatically detected from `slurm` key in configuration. To run on specific nodes, set `slurm.nodelist` (e.g. `"nodelist": "node01,node02"`); see [Configuration](configuration.md#slurm-deployment) and [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
 
 ## Common Usage Patterns
 
