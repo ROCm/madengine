@@ -131,7 +131,12 @@ rocprof)
 			python3 "$CONVERTER" "$OUTPUT" || true
 		fi
 	fi
-	
+
+	# Thread trace (rocprofv3 --att): collect stats_*.csv into OUTPUT so MAD-agent can parse them directly (no conversion).
+	for f in $(find . -maxdepth 4 -name 'stats_*.csv' -type f 2>/dev/null); do
+		cp -v "$f" "$OUTPUT/" 2>/dev/null || true
+	done
+
 	# Copy output directory (even if empty - non-critical)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;

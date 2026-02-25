@@ -133,9 +133,20 @@
         }
       ]
     },
-    "rocprofv3_agent_full": {
+    "rocprofv3_agent_counter": {
       "pre_scripts": [],
       "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace --stats --kernel-trace --output-format csv -d ./rocprof_output -o rocprofv3_output -i ../scripts/common/tools/counters/instruction_mix.txt --",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
+    "rocprofv3_agent_thread": {
+      "pre_scripts": [],
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --att -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {
