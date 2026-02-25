@@ -111,6 +111,19 @@ rocprof)
 		echo "Collected rocprof CSV trace files from subdirectories"
 	fi
 	
+	# Consolidate rocprofv3 CSV files so MAD-agent finds rocprofv3_output_* names.
+	# rocprofv3 may write agent_info in -o prefix but kernel_trace/stats with PID prefix or under hostname/pid.
+	for base in agent_info domain_stats kernel_stats kernel_trace hip_api_trace; do
+		canonical="${OUTPUT}/rocprofv3_output_${base}.csv"
+		if [ -f "$canonical" ]; then
+			continue
+		fi
+		first=$(find . -maxdepth 4 -name "*${base}.csv" -type f 2>/dev/null | head -1)
+		if [ -n "$first" ]; then
+			cp -v "$first" "$canonical"
+		fi
+	done
+	
 	# Copy output directory (even if empty - non-critical)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;

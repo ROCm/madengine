@@ -124,7 +124,7 @@
     },
     "rocprofv3_agent": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --stats --kernel-trace -f csv -d ./rocprof_output -o rocprofv3_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace --stats --kernel-trace --output-format csv -d ./rocprof_output -o rocprofv3_output --",
       "env_vars": {},
       "post_scripts": [
         {
