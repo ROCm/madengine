@@ -560,6 +560,8 @@ For complex configurations, use JSON files with `--additional-context-file`:
 }
 ```
 
+To run on specific nodes, add `"nodelist": "node01,node02"` to the `slurm` section. When set, the job runs only on those nodes and node health preflight is skipped. See [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
+
 ---
 
 ## Environment Variables

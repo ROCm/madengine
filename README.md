@@ -321,6 +321,8 @@ madengine run --manifest-file build_manifest.json \
   }'
 ```
 
+To run on **specific nodes**, set `nodelist` (comma-separated node names). When set, the job is restricted to those nodes and automatic node health preflight is skipped. Example: `"slurm": { "nodelist": "node01,node02", "nodes": 2, ... }`. See [Configuration](docs/configuration.md#slurm-deployment) and [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
+
 ### Common Workflows
 
 **Development → Testing → Production:**

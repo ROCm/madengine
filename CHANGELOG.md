@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `console.py`: Replaced with specific exception types (`OSError`, `ValueError`) for resource cleanup
 
 ### Added
+- **SLURM nodelist**: Pin jobs to specific nodes via `slurm.nodelist` (comma-separated node names). When set, the job runs only on those nodes and automatic node health preflight is skipped. See [Configuration](docs/configuration.md#slurm-deployment) and [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
 - **ROCprofv3 Profiling Suite** (ROCm 7.0+): 8 pre-configured profiling profiles for AI model benchmarking
   - `rocprofv3_compute` - Compute-bound analysis (VALU/SALU instructions, wave execution)
   - `rocprofv3_memory` - Memory-bound analysis (cache metrics, memory bandwidth)

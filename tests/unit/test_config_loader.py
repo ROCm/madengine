@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for ConfigLoader.
+Unit tests for ConfigLoader and related deployment config (e.g. SLURM nodelist).
 
 Tests the configuration loader's ability to:
 1. Apply proper defaults for minimal configs
@@ -8,6 +8,7 @@ Tests the configuration loader's ability to:
 3. Handle override behavior correctly
 4. Auto-infer deployment types
 5. Detect configuration conflicts
+6. SLURM nodelist: preservation, normalization, job script rendering
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -16,7 +17,10 @@ import json
 import pytest
 from pathlib import Path
 
+from jinja2 import Template
+
 from madengine.deployment.config_loader import ConfigLoader
+from madengine.deployment.slurm import SlurmDeployment
 
 
 # Helper function to get project root
@@ -223,6 +227,41 @@ class TestConfigLoaderSlurmConfigs:
             assert isinstance(result["slurm"]["enable_node_check"], bool)
         if "auto_cleanup_nodes" in result["slurm"]:
             assert isinstance(result["slurm"]["auto_cleanup_nodes"], bool)
+
+
+class TestSlurmNodelist:
+    """SLURM nodelist: config preservation, normalization, and job script rendering."""
+
+    def test_nodelist_preserved(self):
+        """slurm.nodelist is preserved through load_slurm_config."""
+        user_config = {
+            "slurm": {
+                "partition": "gpu",
+                "nodes": 2,
+                "nodelist": "node01,node02",
+                "gpus_per_node": 8,
+                "time": "01:00:00",
+            }
+        }
+        result = ConfigLoader.load_slurm_config(user_config)
+        assert result["slurm"]["nodelist"] == "node01,node02"
+
+    def test_normalize_nodelist(self):
+        """Normalization returns None for empty; otherwise comma-separated without spaces."""
+        assert SlurmDeployment._normalize_nodelist(None) is None
+        assert SlurmDeployment._normalize_nodelist("") is None
+        assert SlurmDeployment._normalize_nodelist("node01,node02") == "node01,node02"
+        assert SlurmDeployment._normalize_nodelist("node01, node02") == "node01,node02"
+
+    def test_job_script_includes_nodelist_when_set(self):
+        """Job script header emits #SBATCH --nodelist when nodelist is set."""
+        header = """#SBATCH --nodes={{ nodes }}
+{% if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{% endif %}
+"""
+        out = Template(header).render(nodes=2, nodelist="node01,node02")
+        assert "#SBATCH --nodelist=node01,node02" in out
 
 
 class TestConfigLoaderDeploymentType:
