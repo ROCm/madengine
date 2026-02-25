@@ -217,7 +217,7 @@ class DiscoverModels:
                         for custom_model in custom_model_list:
                             assert isinstance(
                                 custom_model, CustomModel
-                            ), "Please use or subclass madengine.tools.discover_models.CustomModel to define your custom model."
+                            ), "Please use or subclass madengine.utils.discover_models.CustomModel to define your custom model."
                             # Update model name using backslash-separated path
                             custom_model.name = dirname + "/" + custom_model.name
                             # Defer updating script and dockerfile paths until update_model is called

@@ -122,6 +122,17 @@
         }
       ]
     },
+    "rocprofv3_agent": {
+      "pre_scripts": [],
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --stats --kernel-trace -f csv -d ./rocprof_output -o rocprofv3_output --",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocprof"
+        }
+      ]
+    },
     "rocprofv3_perfetto": {
       "pre_scripts": [],
       "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --output-format pftrace --perfetto-trace-filename model_trace.pftrace -d ./rocprof_output --",
