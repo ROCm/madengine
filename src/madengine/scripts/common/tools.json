@@ -144,17 +144,6 @@
         }
       ]
     },
-    "rocprofv3_agent_thread": {
-      "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --att --att-activity 8 -d ./rocprof_output --",
-      "env_vars": {},
-      "post_scripts": [
-        {
-          "path": "scripts/common/post_scripts/trace.sh",
-          "args": "rocprof"
-        }
-      ]
-    },
     "rocprofv3_perfetto": {
       "pre_scripts": [],
       "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --output-format pftrace --perfetto-trace-filename model_trace.pftrace -d ./rocprof_output --",
@@ -189,23 +178,33 @@
       ]
     },
     "rocblas_trace": {
-      "env_vars": {"ROCBLAS_TRACE": "1"},
+      "env_vars": {
+        "ROCBLAS_TRACE": "1"
+      },
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },
     "hipblaslt_trace": {
-      "env_vars": {"HIPBLASLT_TRACE": "1"},
+      "env_vars": {
+        "HIPBLASLT_TRACE": "1"
+      },
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
-    },    
+    },
     "miopen_trace": {
-      "env_vars": {"MIOPEN_TRACE": "1"},
+      "env_vars": {
+        "MIOPEN_TRACE": "1"
+      },
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },
     "tensile_trace": {
-      "env_vars": {"TENSILE_TRACE": "1"},
+      "env_vars": {
+        "TENSILE_TRACE": "1"
+      },
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },
     "rccl_trace": {
-      "env_vars": {"RCCL_TRACE": "1"},
+      "env_vars": {
+        "RCCL_TRACE": "1"
+      },
       "cmd": "python3 ../scripts/common/tools/get_library_trace.py"
     },
     "test_tools_A": {
@@ -250,7 +249,13 @@
         }
       ],
       "cmd": "",
-      "env_vars": {"POWER_DEVICE":"all", "POWER_SAMPLING_RATE":"0.1", "POWER_MODE":"power", "POWER_DUAL_GCD":"false", "POWER_OUTPUT_FILE":"gpu_info_power_profiler_output.csv"},
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1",
+        "POWER_MODE": "power",
+        "POWER_DUAL_GCD": "false",
+        "POWER_OUTPUT_FILE": "gpu_info_power_profiler_output.csv"
+      },
       "post_scripts": [
         {
           "path": "scripts/common/post_scripts/gpu_info_power_stop.sh"
@@ -271,7 +276,13 @@
         }
       ],
       "cmd": "",
-      "env_vars": {"VRAM_DEVICE":"all", "VRAM_SAMPLING_RATE":"0.1", "VRAM_MODE":"vram", "VRAM_DUAL_GCD":"false", "VRAM_OUTPUT_FILE":"gpu_info_vram_profiler_output.csv"},
+      "env_vars": {
+        "VRAM_DEVICE": "all",
+        "VRAM_SAMPLING_RATE": "0.1",
+        "VRAM_MODE": "vram",
+        "VRAM_DUAL_GCD": "false",
+        "VRAM_OUTPUT_FILE": "gpu_info_vram_profiler_output.csv"
+      },
       "post_scripts": [
         {
           "path": "scripts/common/post_scripts/gpu_info_vram_stop.sh"
