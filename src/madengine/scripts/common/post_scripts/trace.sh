@@ -113,7 +113,7 @@ rocprof)
 	
 	# Consolidate rocprofv3 CSV files so MAD-agent finds rocprofv3_output_* names.
 	# rocprofv3 may write agent_info in -o prefix but kernel_trace/stats with PID prefix or under hostname/pid.
-	for base in agent_info domain_stats kernel_stats kernel_trace hip_api_trace; do
+	for base in agent_info domain_stats kernel_stats kernel_trace hip_api_trace counter_collection; do
 		canonical="${OUTPUT}/rocprofv3_output_${base}.csv"
 		if [ -f "$canonical" ]; then
 			continue
@@ -123,6 +123,14 @@ rocprof)
 			cp -v "$first" "$canonical"
 		fi
 	done
+	
+	# Generate instruction_histogram.json from counter/domain_stats CSV so MAD-agent gets real instruction mix.
+	if [ -f "${OUTPUT}/rocprofv3_output_counter_collection.csv" ] || [ -f "${OUTPUT}/rocprofv3_output_domain_stats.csv" ]; then
+		CONVERTER="$(cd "$(dirname "$0")/../tools" 2>/dev/null && pwd)/rocprof_counter_csv_to_instruction_histogram.py"
+		if [ -n "$CONVERTER" ] && [ -f "$CONVERTER" ]; then
+			python3 "$CONVERTER" "$OUTPUT" || true
+		fi
+	fi
 	
 	# Copy output directory (even if empty - non-critical)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
