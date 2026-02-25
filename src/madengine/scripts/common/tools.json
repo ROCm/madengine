@@ -146,7 +146,7 @@
     },
     "rocprofv3_agent_thread": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --att -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --att --att-activity 8 -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {

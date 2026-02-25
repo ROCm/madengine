@@ -199,6 +199,19 @@ ROCprofv3 is the next-generation profiler for ROCm 7.0+ with enhanced features a
 - **Use Case**: Generate Perfetto-compatible traces
 - **Metrics**: HIP, kernel, memory traces
 - **Output Format**: Perfetto trace file (`.pftrace`)
+
+**Thread Trace (assembly hotspots for MAD-agent):**
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_agent_thread"}
+  ]
+}
+```
+- **Use Case**: Instruction-level assembly analysis; outputs `stats_*.csv` for MAD-agent Assembly Hotspot Agent
+- **Requires**: [ROCprof Trace Decoder](https://github.com/ROCm/rocprof-trace-decoder) installed (or set `ROCPROF_ATT_LIBRARY_PATH` to decoder lib path)
+- **Supported**: AMD Instinct MI200/MI300, AMD Radeon gfx10+
+- **See**: [ROCPROFV3_THREAD_TRACE.md](ROCPROFV3_THREAD_TRACE.md) for the "rocprof-trace-decoder library path not found" error and setup
 - **View at**: https://ui.perfetto.dev/
 
 **API Overhead Analysis:**

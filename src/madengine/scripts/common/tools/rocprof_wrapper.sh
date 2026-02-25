@@ -30,6 +30,10 @@
 #   # Counter collection with output directory
 #   bash rocprof_wrapper.sh --counter-collection -i counters.txt -d ./output -- python train.py
 #
+#   # Thread trace (--att): requires ROCprof Trace Decoder. If not in /opt/rocm/lib, set:
+#   #   export ROCPROF_ATT_LIBRARY_PATH=/path/to/decoder/lib
+#   #   bash rocprof_wrapper.sh --att --att-activity 8 -d ./rocprof_output -- python my_app.py
+#
 
 # Function to detect ROCm version
 get_rocm_version() {
@@ -128,15 +132,17 @@ main() {
             fi
         done
         
-        # Build command with proper argument placement
+        # Build command with proper argument placement.
+        # Filter known-noisy rocprofv3/generateRocpd stderr: "sql text value for value is empty. Using NULL instead"
+        # (ROCm writes this for every empty string->NULL in the SQLite DB; harmless but floods logs.)
         if [ "${#profiler_opts[@]}" -gt 0 ]; then
             # Has profiler options: rocprofv3 <opts> -- <app>
-            rocprofv3 "${profiler_opts[@]}" -- "${app_cmd[@]}"
+            { rocprofv3 "${profiler_opts[@]}" -- "${app_cmd[@]}" 2>&1 1>&3 | grep -v "sql text value for value is empty. Using NULL instead" >&2; } 3>&1
         else
             # No profiler options: rocprofv3 -- <app>
-            rocprofv3 -- "${app_cmd[@]}"
+            { rocprofv3 -- "${app_cmd[@]}" 2>&1 1>&3 | grep -v "sql text value for value is empty. Using NULL instead" >&2; } 3>&1
         fi
-        return $?
+        return ${PIPESTATUS[0]}
     fi
 }
 
