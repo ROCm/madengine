@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from rich.console import Console as RichConsole
+from rich.panel import Panel
 
 from madengine.core.console import Console
 from madengine.core.context import Context
@@ -63,21 +64,21 @@ class RunOrchestrator:
                     # This matches what Context class expects
                     import ast
                     parsed = ast.literal_eval(args.additional_context)
-                    print(f"📝 RunOrchestrator: Parsed additional_context keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not a dict'}")
-                    merged_context = parsed
+                    merged_context = parsed if isinstance(parsed, dict) else {}
                 elif isinstance(args.additional_context, dict):
                     merged_context = args.additional_context
-                    print(f"📝 RunOrchestrator: Got dict additional_context keys: {list(merged_context.keys())}")
             except (ValueError, SyntaxError) as e:
-                print(f"Warning: Could not parse additional_context: {e}")
-                print(f"Raw additional_context: {args.additional_context[:200] if args.additional_context else 'None'}")
+                self.rich_console.print(f"[yellow]Warning: Could not parse additional_context: {e}[/yellow]")
+                if args.additional_context:
+                    self.rich_console.print(f"[dim]Raw (first 200 chars): {str(args.additional_context)[:200]}[/dim]")
                 pass
 
         if additional_context:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
-        print(f"📝 RunOrchestrator: Final additional_context keys: {list(self.additional_context.keys()) if self.additional_context else 'None'}")
+        keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
+        self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
 
         # Track if we copied MODEL_DIR contents (for cleanup)
         self._copied_from_model_dir = False
@@ -222,6 +223,23 @@ class RunOrchestrator:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
+            # Display manifest entries: context (from build) and deployment_config (run/deploy)
+            self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
+            manifest_context = manifest.get("context", {})
+            self.rich_console.print(Panel(
+                json.dumps(manifest_context, indent=2) if manifest_context else "(empty)",
+                title="[bold]Manifest context[/bold] (from build additional context)",
+                border_style="dim",
+                padding=(0, 1),
+            ))
+            self.rich_console.print(Panel(
+                json.dumps(deployment_config, indent=2) if deployment_config else "(empty)",
+                title="[bold]Manifest deployment_config[/bold]",
+                border_style="dim",
+                padding=(0, 1),
+            ))
+            self.rich_console.print()
+
             # Infer deployment target from config structure (Convention over Configuration)
             # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
             target = self._infer_deployment_target(self.additional_context)
