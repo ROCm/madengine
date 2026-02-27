@@ -8,11 +8,12 @@ using pre-built images.
 """
 
 import os
+import re
+import subprocess
 import time
 import json
 import typing
 import warnings
-import re
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
@@ -1186,8 +1187,8 @@ class ContainerRunner:
                                 "AssertionError:",
                                 "ValueError:",
                                 "SystemExit",
-                                "failed \\(exitcode:",  # Escape parenthesis for grep
-                                "Traceback \\(most recent call last\\)",  # Python tracebacks
+                                "failed (exitcode:",  # Literal text in logs
+                                "Traceback (most recent call last)",  # Python tracebacks
                                 "FAILED",
                                 "Exception:",
                                 "ImportError:",
@@ -1216,27 +1217,40 @@ class ContainerRunner:
                                         "rpd_tracer:",                        # ROCProf tracer logs
                                     ]
                                     
-                                    # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns)
+                                    # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns).
+                                    # Use subprocess (not console.sh) so the check runs silently and does not clutter console output.
                                     for pattern in error_patterns:
-                                        # Build exclusion regex: our own commands, output messages, and benign patterns
-                                        exclusions = f"(grep -q.*{pattern}|Found error pattern.*{pattern}"
+                                        # Build exclusion regex: our own commands, output messages, and benign patterns.
+                                        # Use re.escape(pattern) so parentheses and other special chars are safe in grep -E.
+                                        pattern_escaped = re.escape(pattern)
+                                        exclusions = f"(grep -q.*{pattern_escaped}|Found error pattern.*{pattern_escaped}"
                                         for benign in benign_patterns:
                                             # Escape special regex characters in benign patterns
                                             escaped_benign = benign.replace(".", r"\.").replace("(", r"\(").replace(")", r"\)")
                                             exclusions += f"|{escaped_benign}"
                                         exclusions += ")"
-                                        
-                                        # Use grep with -v to exclude false positives
-                                        error_check_cmd = f"grep -v -E '{exclusions}' {log_file_path} | grep -q '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'"
-                                        result = self.console.sh(
-                                            error_check_cmd, canFail=True
-                                        )
-                                        if result.strip() == "FOUND":
-                                            has_errors = True
-                                            print(
-                                                f"Found error pattern '{pattern}' in logs"
+                                        # Match pattern literally in the filtered log (grep -F avoids regex issues)
+                                        error_check_cmd = [
+                                            "sh",
+                                            "-c",
+                                            f"grep -v -E '{exclusions}' {log_file_path} | grep -F -q -- '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'",
+                                        ]
+                                        try:
+                                            proc = subprocess.run(
+                                                error_check_cmd,
+                                                capture_output=True,
+                                                text=True,
+                                                timeout=60,
                                             )
-                                            break
+                                            result = (proc.stdout or "").strip()
+                                            if result == "FOUND":
+                                                has_errors = True
+                                                print(
+                                                    f"Found error pattern '{pattern}' in logs"
+                                                )
+                                                break
+                                        except (subprocess.TimeoutExpired, OSError):
+                                            pass  # Error checking is optional; treat as no match
                                 except Exception:
                                     pass  # Error checking is optional
 
