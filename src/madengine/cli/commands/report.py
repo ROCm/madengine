@@ -37,10 +37,10 @@ report_app = typer.Typer(
 
 @report_app.command("to-html")
 def to_html(
-    csv_file: Annotated[
+    csv_file_path: Annotated[
         str,
         typer.Option(
-            "--csv-file",
+            "--csv-file-path",
             help="Path to the CSV file to convert to HTML"
         ),
     ],
@@ -55,36 +55,36 @@ def to_html(
     useful for viewing performance metrics in a web browser.
     
     Examples:
-        madengine report to-html --csv-file perf_amd.csv
-        madengine report to-html --csv-file results/perf_mi300.csv
+        madengine report to-html --csv-file-path perf_amd.csv
+        madengine report to-html --csv-file-path results/perf_mi300.csv
     """
     setup_logging(verbose)
 
     console.print(
         Panel(
             f"📄 [bold cyan]Converting CSV to HTML[/bold cyan]\n"
-            f"Input file: [yellow]{csv_file}[/yellow]",
+            f"Input file: [yellow]{csv_file_path}[/yellow]",
             title="CSV to HTML Report",
             border_style="blue",
         )
     )
 
     # Validate input
-    if not os.path.exists(csv_file):
-        console.print(f"❌ [bold red]Error: CSV file not found: {csv_file}[/bold red]")
+    if not os.path.exists(csv_file_path):
+        console.print(f"❌ [bold red]Error: CSV file not found: {csv_file_path}[/bold red]")
         raise typer.Exit(ExitCode.FAILURE)
     
-    if not os.path.isfile(csv_file):
-        console.print(f"❌ [bold red]Error: Path is not a file: {csv_file}[/bold red]")
+    if not os.path.isfile(csv_file_path):
+        console.print(f"❌ [bold red]Error: Path is not a file: {csv_file_path}[/bold red]")
         raise typer.Exit(ExitCode.FAILURE)
     
-    if not csv_file.endswith('.csv'):
-        console.print(f"❌ [bold red]Error: File must be a CSV file: {csv_file}[/bold red]")
+    if not csv_file_path.endswith('.csv'):
+        console.print(f"❌ [bold red]Error: File must be a CSV file: {csv_file_path}[/bold red]")
         raise typer.Exit(ExitCode.FAILURE)
 
     try:
         # Create args namespace for compatibility with existing code
-        args = create_args_namespace(csv_file_path=csv_file)
+        args = create_args_namespace(csv_file_path=csv_file_path)
         
         # Use ConvertCsvToHtml class
         converter = ConvertCsvToHtml(args=args)
@@ -92,7 +92,7 @@ def to_html(
         
         if result:
             # Determine output file name
-            output_file = str(Path(csv_file).with_suffix('.html'))
+            output_file = str(Path(csv_file_path).with_suffix('.html'))
             console.print(f"✅ [bold green]Successfully converted to: {output_file}[/bold green]")
         else:
             console.print("❌ [bold red]Conversion failed[/bold red]")
