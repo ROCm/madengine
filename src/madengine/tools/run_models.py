@@ -48,6 +48,7 @@ from madengine.core.docker import Docker
 from madengine.utils.ops import PythonicTee, file_print, substring_found, find_and_replace_pattern
 from madengine.core.constants import MAD_MINIO, MAD_AWS_S3
 from madengine.core.constants import MODEL_DIR, PUBLIC_GITHUB_ROCM_KEY
+from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.tools.update_perf_csv import update_perf_csv
 from madengine.tools.csv_to_html import convert_csv_to_html
@@ -154,9 +155,11 @@ class RunModels:
         self.return_status = True
         self.args = args
         self.console = Console(live_output=True)
+        rocm_path = get_rocm_path(getattr(args, 'rocm_path', None))
         self.context = Context(
             additional_context=args.additional_context,
             additional_context_file=args.additional_context_file,
+            rocm_path=rocm_path,
         )
         # check the data.json file exists
         data_json_file = args.data_config_file_name
@@ -202,7 +205,8 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            self.console.sh("/opt/rocm/bin/amd-smi || true")
+            amd_smi_path = os.path.join(self.context.ctx["rocm_path"], "bin", "amd-smi")
+            self.console.sh(f"{amd_smi_path} || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -789,7 +793,8 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                smi = model_docker.sh("/opt/rocm/bin/amd-smi || true")
+                amd_smi_path = os.path.join(self.context.ctx["rocm_path"], "bin", "amd-smi")
+                smi = model_docker.sh(f"{amd_smi_path} || true")
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
             else:

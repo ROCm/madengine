@@ -15,14 +15,17 @@ import pytest
 # project modules
 from madengine.core.context import Context
 from madengine.core.console import Console
+from madengine.core.constants import get_rocm_path
 
 
 def is_amd_gpu():
     """Check if the system has AMD GPUs."""
     try:
         console = Console()
+        rocm_path = get_rocm_path()
+        amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
         vendor = console.sh(
-            'bash -c \'if [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "OTHER"; fi || true\''
+            f'bash -c \'if [[ -f "{amd_smi_path}" ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "OTHER"; fi || true\''
         )
         return vendor.strip() == "AMD"
     except Exception:
