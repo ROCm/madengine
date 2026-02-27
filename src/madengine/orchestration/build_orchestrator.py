@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from rich.console import Console as RichConsole
+from rich.panel import Panel
 
 from madengine.core.console import Console
 from madengine.core.context import Context
@@ -102,6 +103,15 @@ class BuildOrchestrator:
             except Exception as e:
                 # Other errors during config loading - warn but continue
                 self.rich_console.print(f"[yellow]Warning: Could not apply config defaults: {e}[/yellow]")
+
+        self.rich_console.print("[bold blue]Build additional context[/bold blue]\n")
+        self.rich_console.print(Panel(
+            json.dumps(self.additional_context, indent=2) if self.additional_context else "(empty)",
+            title="[bold]Context[/bold] (from --additional-context / --additional-context-file)",
+            border_style="dim",
+            padding=(0, 1),
+        ))
+        self.rich_console.print()
 
         # Initialize context in build-only mode (no GPU detection)
         # Context expects additional_context as a string representation of Python dict
