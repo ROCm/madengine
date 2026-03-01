@@ -748,7 +748,8 @@ tail -f slurm_output/madengine-*_<job_id>_*.err | grep -i "memory"
 
 ## 📚 Related Documentation
 
-- [How to Run Multi-Node](../../docs/how-to-run-multi-node.md)
+- [Deployment Guide](../../docs/deployment.md) - Kubernetes and SLURM multi-node
+- [Launchers Guide](../../docs/launchers.md) - Distributed training and inference
 - [K8s Configuration Examples](../k8s-configs/)
 - [SLURM Official Documentation](https://slurm.schedmd.com/)
 - [vLLM Documentation](https://docs.vllm.ai/)

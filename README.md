@@ -123,75 +123,42 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 ## 🏗️ Architecture
 
 ```
-                    ┌────────────────────────────────────────┐
-                    │         madengine CLI v2.0             │
-                    │   (Typer + Rich Terminal Interface)    │
-                    └────────────────────────────────────────┘
-                                      │
-        ┌─────────────────────────────┼─────────────────────────────┐
-        │             │               │               │             │
-   ┌────▼────┐    ┌───▼────┐     ┌────▼────┐    ┌────▼─────┐  ┌─────▼─────┐
-   │discover │    │ build  │     │   run   │    │  report  │  │ database  │
-   │         │    │        │     │         │    │          │  │           │
-   └────┬────┘    └───┬────┘     └────┬────┘    └────┬─────┘  └─────┬─────┘
-        │             │               │              │              │
-        │             │               │              │              │
-        ▼             ▼               ▼              │              │
-   ┌────────────────────────────────────┐            │              │
-   │    Model Discovery System          │            │              │
-   │  • Root models (models.json)       │            │              │
-   │  • Directory models (scripts/)     │            │              │
-   │  • Dynamic models (get_models.py)  │            │              │
-   └────────────────────────────────────┘            │              │
-                     │                               │              │
-                     ▼                               │              │
-        ┌────────────────────────┐                   │              │
-        │  Orchestration Layer   │                   │              │
-        │  • BuildOrchestrator   │◄───────────────---┘              │
-        │  • RunOrchestrator     │                                  │
-        └────────┬───────────────┘                                  │
-                 │                                                  │
-        ┌────────┼────────┐                                         │
-        │        │        │                                         │
-   ┌────▼───┐ ┌─▼──────┐ ┌▼─────────┐                               │
-   │ Local  │ │  K8s   │ │  SLURM   │                               │
-   │ Docker │ │  Jobs  │ │  Jobs    │                               │
-   └────┬───┘ └─┬──────┘ └┬─────────┘                               │
-        │       │         │                                         │
-        └───────┼─────────┘                                         │
-                │                                                   │
-        ┌───────┴─────────┐                                         │
-        │   Distributed   │                                         │
-        │    Launchers    │                                         │
-        └───────┬─────────┘                                         │
-                │                                                   │
-     ┌──────────┼──────────┐                                        │
-     │          │          │                                        │
-  ┌──▼───┐  ┌──▼───┐  ┌──▼───┐                                      │
-  │Train │  │Train │  │Infer │                                      │
-  │      │  │      │  │      │                                      │
-  └──┬───┘  └──┬───┘  └──┬───┘                                      │
-     │         │         │                                          │
-  torchrun  DeepSpeed  vLLM                                         │
-  TorchTitan Megatron  SGLang                                       │
-             -LM       (Disagg)                                     │
-                │                                                   │
-                ▼                                                   │
-        ┌────────────────┐                                          │
-        │ Performance    │                                          │
-        │ Output         │                                          │
-        │ (CSV/JSON)     │                                          │
-        └────┬───────────┘                                          │
-             │                                                      │
-             └──────────────┬────────────────────────────────────---┘
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-         ┌────▼─────┐              ┌─────▼──────┐
-         │ Reporting│              │  Database  │
-         │ • to-html│              │  • MongoDB │
-         │ • to-email              │  • Upload  │
-         └──────────┘              └────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+  │  madengine CLI v2.0 (Typer + Rich)                                                      │
+  │  discover │ build │ run │ report │ database                                             │
+  └─────────────────────────────────────────────────────────────────────────────────────────┘
+     │           │        │
+     │           │        ▼
+     │           │  ┌─────────────────────── Orchestration Layer ───────────────────────────┐
+     │           │  │  Model Discovery (models.json / scripts/ get_models)                  │
+     │           │  │  BuildOrchestrator · RunOrchestrator                                  │
+     │           └──│                                                                       |  
+     └──────────────┴───────────────────────────────────────────────────────────────────────┘
+                                    │
+  ┌─────────────────────────────────┼──────────────────── Infrastructure Layer ─────────────┐
+  │              ▼                  ▼                  ▼                                    │
+  │       ┌──────────────┐   ┌──────────────┐   ┌──────────────┐                            │
+  │       │ Local        │   │ Kubernetes   │   │ SLURM        │                            │
+  │       │ Docker       │   │ Jobs         │   │ Jobs         │                            │
+  │       └──────┬───────┘   └──────┬───────┘   └──────┬───────┘                            │
+  │              └──────────────────┼──────────────────┘                                    │
+  └─────────────────────────────────┼───────────────────────────────────────────────────────┘
+                                    ▼
+  ┌──────────────────────────────────── Launcher Layer (Distribution) ──────────────────────┐
+  │  Train: torchrun · DeepSpeed · TorchTitan · Megatron-LM                                 │
+  │  Infer: vLLM · SGLang · SGLang Disagg                                                   │
+  └─────────────────────────────────┬───────────────────────────────────────────────────────┘
+                                    ▼
+                    ┌─────────────────────────────┐
+                    │ Performance (CSV/JSON)      │
+                    └─────────────┬───────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+       ┌───────────────────┐                  ┌──────────────────┐
+       │ report            │                  │ database         │
+       │ to-html, to-email │                  │ MongoDB upload   │
+       └───────────────────┘                  └──────────────────┘
 ```
 
 **Component Flow:**
@@ -222,15 +189,17 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 
 ### Parallelism Capabilities
 
-| Launcher | Data Parallel | Tensor Parallel | Pipeline Parallel | Context Parallel | Ray Cluster | Architecture |
-|----------|--------------|----------------|-------------------|-----------------|-------------|--------------|
-| **torchrun** | ✅ DDP/FSDP | ❌ | ❌ | ❌ | ❌ | Unified |
-| **DeepSpeed** | ✅ ZeRO | ❌ | ✅ | ❌ | ❌ | Unified |
-| **Megatron-LM** | ✅ | ✅ | ✅ | ❌ | ❌ | Unified |
-| **TorchTitan** | ✅ FSDP2 | ✅ | ✅ | ✅ | ❌ | Unified |
-| **vLLM** | ❌ | ✅ | ✅ | ❌ | ✅ Multi-node | Unified |
-| **SGLang** | ❌ | ✅ | ❌ | ❌ | ✅ Multi-node | Unified |
-| **SGLang Disagg** | ❌ | ✅ | ✅ (via disagg) | ❌ | ✅ Multi-node | Disaggregated |
+| Launcher | Tensor Parallel (TP) | Pipeline Parallel (PP) | Data Parallel (DP) | Context Parallel (CP) | FSDP/ZeRO | Expert Parallel (EP) | Primary Use Case |
+|----------|----------------------|------------------------|--------------------|------------------------|-----------|----------------------|------------------|
+| **torchrun** | ❗ Manual | ❌ No | ❗ Manual (DDP) | ❌ No | ❗ Manual (FSDP) | ❌ No | General distributed training |
+| **TorchTitan** | ✅ Auto | ✅ Auto | ✅ Auto (FSDP2) | ❗ Manual | ✅ Auto (FSDP2) | ❌ No | Large-scale LLM pre-training |
+| **DeepSpeed** | ❗ Manual | ❗ Manual | ✅ Auto (ZeRO) | ❌ No | ✅ Auto (ZeRO) | ❌ No | Memory-efficient training |
+| **Megatron-LM** | ✅ Auto | ✅ Auto | ✅ Implicit | ✅ Auto | ❌ No | ❌ No | Large transformer training |
+| **vLLM** | ✅ Auto | SLURM: ✅ Auto (Multi) / K8s: ❗ Disabled | ✅ Auto (Replicas) | ❌ No | ❌ No | ❗ Manual | High-throughput inference |
+| **SGLang** | ✅ Auto | SLURM: ✅ Auto (Multi) / K8s: ❗ Disabled | ❗ Limited | ❌ No | ❌ No | ❌ No | Inference + structured gen |
+| **SGLang PD Disagg** | ✅ Auto | ❌ No | ✅ Role-based | ❌ No | ❌ No | ❌ No | Optimized prefill/decode |
+
+**Legend:** ✅ Auto = supported and configured by madengine; ❗ Manual = supported by launcher but requires user configuration; ❗ Limited / ❗ Disabled = launcher or platform limitation. See [Launchers Guide](docs/launchers.md) and [Configuration](docs/configuration.md) for details.
 
 ### Infrastructure Capabilities
 

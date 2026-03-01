@@ -354,7 +354,7 @@ SGLang Disaggregated separates inference into specialized node pools:
 │  Node 0:        Proxy (Load Balancer)           │
 │  Nodes 1-P:     Prefill Servers (~40%)          │
 │  Nodes P+1-N:   Decode Servers (~60%)           │
-│                                                  │
+│                                                 │
 │  Communication: Mooncake (KV cache transfer)    │
 └─────────────────────────────────────────────────┘
 ```
@@ -527,7 +527,7 @@ madengine run --tags model --config custom-split-config.json
 | **Memory Efficiency** | Medium | High (ZeRO) | High | Very High |
 | **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
 | **Model Size** | Small-Medium | Medium-Large | Very Large | Very Large |
-| **K8s Support** | ✅ | ✅ | ❌ | ✅ |
+| **K8s Support** | ✅ | ✅ | ✅ | ✅ |
 | **SLURM Support** | ✅ | ✅ | ✅ | ✅ |
 
 ### Inference Launchers
@@ -780,9 +780,9 @@ madengine automatically:
 - [SGLang](https://github.com/sgl-project/sglang)
 
 ### madengine Documentation
+- [Deployment Guide](deployment.md) - Kubernetes and SLURM deployment
 - [K8s Configuration Guide](../examples/k8s-configs/README.md)
 - [SLURM Configuration Guide](../examples/slurm-configs/README.md)
-- [How to Run Multi-Node](how-to-run-multi-node.md)
 
 ### Example Configurations
 - [K8s Examples](../examples/k8s-configs/)
