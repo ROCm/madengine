@@ -83,6 +83,8 @@ madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
+**Non-default ROCm location:** If ROCm is not under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip install), set `ROCM_PATH` or use `madengine run --rocm-path /path/to/rocm` so GPU detection and container env use the correct paths.
+
 ### NVIDIA CUDA
 
 ```bash
@@ -137,6 +139,8 @@ rocm-smi
 # Verify devices are accessible
 ls -la /dev/kfd /dev/dri
 ```
+
+If ROCm is installed in a non-default path (e.g. Rock or pip), set `export ROCM_PATH=/path/to/rocm` or use `madengine run --rocm-path /path/to/rocm`.
 
 ### MAD Package Not Found
 

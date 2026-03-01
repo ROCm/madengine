@@ -140,6 +140,13 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
+    rocm_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--rocm-path",
+            help="ROCm installation path (overrides ROCM_PATH env; default: /opt/rocm). Use when ROCm is not under /opt/rocm (e.g. Rock tar/whl).",
+        ),
+    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -199,6 +206,7 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
+                rocm_path=rocm_path,
                 _separate_phases=True,
             )
 
@@ -323,6 +331,7 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
+                rocm_path=rocm_path,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 

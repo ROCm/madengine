@@ -11,24 +11,29 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import logging
 from typing import Dict, Optional
 
+from madengine.core.constants import get_rocm_path
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 from madengine.utils.gpu_validator import GPUVendor, detect_gpu_vendor
 
 logger = logging.getLogger(__name__)
 
-# Singleton instances per vendor
-_manager_instances: Dict[GPUVendor, BaseGPUToolManager] = {}
+# Singleton instances: key = (vendor, rocm_path) for AMD, (vendor, "") for NVIDIA
+_manager_instances: Dict[tuple, BaseGPUToolManager] = {}
 
 
-def get_gpu_tool_manager(vendor: Optional[GPUVendor] = None) -> BaseGPUToolManager:
+def get_gpu_tool_manager(
+    vendor: Optional[GPUVendor] = None,
+    rocm_path: Optional[str] = None,
+) -> BaseGPUToolManager:
     """Get GPU tool manager for the specified vendor.
-    
+
     This function implements the singleton pattern - only one manager instance
-    is created per vendor type and reused across all calls.
-    
+    is created per (vendor, rocm_path) and reused across all calls.
+
     Args:
         vendor: GPU vendor (AMD, NVIDIA, etc.). If None, auto-detects.
-        
+        rocm_path: Optional ROCm root path for AMD (default: ROCM_PATH env or /opt/rocm).
+
     Returns:
         GPU tool manager instance for the specified vendor
         
@@ -49,23 +54,26 @@ def get_gpu_tool_manager(vendor: Optional[GPUVendor] = None) -> BaseGPUToolManag
     """
     # Auto-detect vendor if not specified
     if vendor is None:
-        vendor = detect_gpu_vendor()
+        vendor = detect_gpu_vendor(rocm_path=rocm_path)
         logger.debug(f"Auto-detected GPU vendor: {vendor.value}")
-    
-    # Check if we already have a singleton instance
-    if vendor in _manager_instances:
+
+    # Cache key: (vendor, rocm_path) for AMD so different paths get different managers
+    resolved_rocm = get_rocm_path(rocm_path) if vendor == GPUVendor.AMD else ""
+    cache_key = (vendor, resolved_rocm)
+
+    if cache_key in _manager_instances:
         logger.debug(f"Returning cached {vendor.value} tool manager")
-        return _manager_instances[vendor]
-    
+        return _manager_instances[cache_key]
+
     # Create new manager instance based on vendor
     if vendor == GPUVendor.AMD:
         try:
             from madengine.utils.rocm_tool_manager import ROCmToolManager
-            manager = ROCmToolManager()
+            manager = ROCmToolManager(rocm_path=rocm_path)
             logger.info(f"Created new ROCm tool manager")
         except ImportError as e:
             raise ImportError(f"Failed to import ROCm tool manager: {e}")
-            
+
     elif vendor == GPUVendor.NVIDIA:
         try:
             from madengine.utils.nvidia_tool_manager import NvidiaToolManager
@@ -85,8 +93,8 @@ def get_gpu_tool_manager(vendor: Optional[GPUVendor] = None) -> BaseGPUToolManag
         raise ValueError(f"Unsupported GPU vendor: {vendor.value}")
     
     # Cache the manager instance
-    _manager_instances[vendor] = manager
-    
+    _manager_instances[cache_key] = manager
+
     return manager
 
 
@@ -108,13 +116,14 @@ def clear_manager_cache() -> None:
     logger.debug("Cleared all GPU tool manager instances")
 
 
-def get_cached_managers() -> Dict[GPUVendor, BaseGPUToolManager]:
+def get_cached_managers() -> Dict[tuple, BaseGPUToolManager]:
     """Get dictionary of currently cached manager instances.
-    
+
     Primarily for debugging and testing purposes.
-    
+    Keys are (GPUVendor, rocm_path) for AMD, (GPUVendor, "") for NVIDIA.
+
     Returns:
-        Dictionary mapping GPUVendor to manager instances
+        Dictionary mapping (vendor, rocm_path) to manager instances
     """
     return _manager_instances.copy()
 

@@ -21,6 +21,7 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
+from madengine.core.constants import get_rocm_path
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
@@ -80,6 +81,7 @@ class Context:
         additional_context: str = None,
         additional_context_file: str = None,
         build_only_mode: bool = False,
+        rocm_path: str = None,
     ) -> None:
         """Constructor of the Context class.
 
@@ -87,10 +89,12 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
+            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
         """
+        self._rocm_path = get_rocm_path(rocm_path)
         # Initialize the console
         self.console = Console()
         self._gpu_context_initialized = False
@@ -252,6 +256,9 @@ class Context:
             if "MAD_GPU_VENDOR" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
+            self.ctx["rocm_path"] = self._rocm_path
+            self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
+
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
                     "MAD_SYSTEM_NGPUS"
@@ -337,7 +344,7 @@ class Context:
             else:
                 vendor = None  # Auto-detect
             
-            self._gpu_tool_manager = get_gpu_tool_manager(vendor)
+            self._gpu_tool_manager = get_gpu_tool_manager(vendor, rocm_path=self._rocm_path)
         
         return self._gpu_tool_manager
 
@@ -382,8 +389,11 @@ class Context:
                 print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
-        # Increased timeout to 180s for SLURM compute nodes where GPU initialization may be slow
-        amd_smi_paths = ["/opt/rocm/bin/amd-smi", "/usr/local/bin/amd-smi"]
+        # Use configurable ROCm path (ROCM_PATH / --rocm-path) for non-default installs
+        amd_smi_paths = [
+            os.path.join(self._rocm_path, "bin", "amd-smi"),
+            "/usr/local/bin/amd-smi",
+        ]
         for amd_smi_path in amd_smi_paths:
             if os.path.exists(amd_smi_path):
                 try:
@@ -395,9 +405,10 @@ class Context:
                     print(f"Warning: amd-smi check failed for {amd_smi_path}: {e}")
         
         # Fallback to rocm-smi (PR #54)
-        if os.path.exists("/opt/rocm/bin/rocm-smi"):
+        rocm_smi_path = os.path.join(self._rocm_path, "bin", "rocm-smi")
+        if os.path.exists(rocm_smi_path):
             try:
-                result = self.console.sh("/opt/rocm/bin/rocm-smi --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
+                result = self.console.sh(f"{rocm_smi_path} --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
                 if result and result.strip() == "AMD":
                     return "AMD"
             except Exception as e:
@@ -510,14 +521,15 @@ class Context:
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             try:
-                arch = self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+                rocminfo_path = os.path.join(self._rocm_path, "bin", "rocminfo")
+                arch = self.console.sh(f"{rocminfo_path} |grep -o -m 1 'gfx.*'")
                 if not arch or arch.strip() == "":
                     raise RuntimeError("rocminfo returned empty architecture")
                 return arch
             except Exception as e:
                 raise RuntimeError(
                     f"Unable to determine AMD GPU architecture. "
-                    f"Ensure ROCm is installed and rocminfo is accessible at /opt/rocm/bin/rocminfo. "
+                    f"Ensure ROCm is installed and rocminfo is accessible (ROCM_PATH={self._rocm_path}). "
                     f"Error: {e}"
                 )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
@@ -666,9 +678,10 @@ class Context:
                     raise RuntimeError("Tool manager returned None for ROCm version")
             except Exception as e:
                 # Fallback to direct file read
-                rocm_version_str = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+                version_file = os.path.join(self._rocm_path, ".info", "version")
+                rocm_version_str = self.console.sh(f"cat {version_file} | cut -d'-' -f1")
                 if not rocm_version_str or rocm_version_str.strip() == "":
-                    raise RuntimeError("Failed to retrieve ROCm version from /opt/rocm/.info/version")
+                    raise RuntimeError(f"Failed to retrieve ROCm version from {version_file}")
                 
                 # Parse version safely
                 try:

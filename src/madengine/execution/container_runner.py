@@ -19,6 +19,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker
+from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -907,18 +908,18 @@ class ContainerRunner:
                         # Show GPU info with version-aware tool selection (PR #54)
                         if gpu_vendor.find("AMD") != -1:
                             print(f"🎮 Checking AMD GPU status...")
-                            # Use version-aware SMI tool selection
-                            # Note: Use amd-smi without arguments to show full status table (same as legacy madengine)
+                            rocm_path = self.context.ctx.get("rocm_path") or get_rocm_path()
+                            amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
+                            rocm_smi_path = os.path.join(rocm_path, "bin", "rocm-smi")
                             try:
                                 tool_manager = self.context._get_tool_manager()
                                 preferred_tool = tool_manager.get_preferred_smi_tool()
                                 if preferred_tool == "amd-smi":
-                                    model_docker.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
+                                    model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
                                 else:
-                                    model_docker.sh("/opt/rocm/bin/rocm-smi || /opt/rocm/bin/amd-smi || true")
+                                    model_docker.sh(f"{rocm_smi_path} || {amd_smi_path} || true")
                             except Exception:
-                                # Fallback: try both tools
-                                model_docker.sh("/opt/rocm/bin/amd-smi || /opt/rocm/bin/rocm-smi || true")
+                                model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
                         elif gpu_vendor.find("NVIDIA") != -1:
                             print(f"🎮 Checking NVIDIA GPU status...")
                             model_docker.sh("/usr/bin/nvidia-smi || true")

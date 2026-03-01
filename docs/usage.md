@@ -288,6 +288,22 @@ madengine run --tags model \
 - `gpu_vendor`: "AMD", "NVIDIA"
 - `guest_os`: "UBUNTU", "CENTOS"
 
+### ROCm path (non-default installs)
+
+When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths:
+
+```bash
+# Via environment variable
+export ROCM_PATH=/path/to/rocm
+madengine run --tags model --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Via CLI (overrides ROCM_PATH)
+madengine run --tags model --rocm-path /path/to/rocm \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+```
+
+`--rocm-path` applies only to the **run** command (not build). See [CLI Reference - run](cli-reference.md#run---execute-models).
+
 ### Deploy to Kubernetes
 
 ```bash
@@ -577,6 +593,7 @@ madengine build --tags model --clean-docker-cache --verbose
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `MODEL_DIR` | MAD package directory | `/path/to/MAD` |
+| `ROCM_PATH` | ROCm installation root (used when `--rocm-path` not set). Use when ROCm is not in `/opt/rocm` (e.g. Rock, pip). | `/path/to/rocm` |
 | `MAD_VERBOSE_CONFIG` | Verbose config logging | `"true"` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |

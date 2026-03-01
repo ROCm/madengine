@@ -120,7 +120,9 @@ Collect comprehensive ROCm profiling data:
 }
 ```
 
-**Output:** ROCm profiler data files
+**Output:** ROCm profiler data files (e.g. `rpd_output/trace.rpd`).
+
+**Note:** The rpd pre-script installs build dependencies in the container (e.g. `nlohmann-json3-dev` on Ubuntu) so the rocmProfileData tracer can compile; the first run may take longer while packages are installed.
 
 ### ROCprofv3 - Advanced GPU Profiling
 

@@ -45,6 +45,15 @@ madengine run --tags model --additional-context-file config.json
 - `"UBUNTU"` - Ubuntu Linux
 - `"CENTOS"` - CentOS Linux
 
+### ROCm path (run only)
+
+When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths. Use the **run** command option or environment variable (not JSON context):
+
+- **CLI:** `madengine run --rocm-path /path/to/rocm ...`
+- **Environment:** `export ROCM_PATH=/path/to/rocm`
+
+Resolution order: `--rocm-path` → `ROCM_PATH` → `/opt/rocm`. This applies only to the run phase; build does not perform GPU detection.
+
 ## Build Configuration
 
 ### Batch Manifest
