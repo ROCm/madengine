@@ -34,6 +34,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
+- **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
 - **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, rocblas, MIOpen, RCCL tracing
 - **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
@@ -54,6 +55,14 @@ madengine discover --tags dummy
 # Run locally
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+```
+
+If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
+
+```bash
+madengine run --tags dummy --rocm-path /path/to/rocm \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy ...
 ```
 
 **Results saved to `perf_entry.csv`**
@@ -592,6 +601,8 @@ madengine run --tags model --keep-alive
 # Clean rebuild if build fails
 madengine build --tags model --clean-docker-cache --verbose
 ```
+
+**ROCm not in /opt/rocm:** If you use a custom ROCm location (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set `ROCM_PATH` or pass `--rocm-path` to `madengine run` so GPU detection and container env use the correct paths.
 
 **Common Issues:**
 - **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)
