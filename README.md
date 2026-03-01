@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="madengine.png" alt="madengine Logo" />
+</p>
+
 # madengine
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
