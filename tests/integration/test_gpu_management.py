@@ -292,14 +292,17 @@ class TestGPUToolFactory:
         """Test getting dictionary of cached managers."""
         amd_manager = get_gpu_tool_manager(GPUVendor.AMD)
         nvidia_manager = get_gpu_tool_manager(GPUVendor.NVIDIA)
-        
+
         cached = get_cached_managers()
-        
+
         assert len(cached) == 2
-        assert GPUVendor.AMD in cached
-        assert GPUVendor.NVIDIA in cached
-        assert cached[GPUVendor.AMD] is amd_manager
-        assert cached[GPUVendor.NVIDIA] is nvidia_manager
+        # Cache keys are (vendor, rocm_path): find by vendor
+        amd_keys = [k for k in cached if k[0] == GPUVendor.AMD]
+        nvidia_keys = [k for k in cached if k[0] == GPUVendor.NVIDIA]
+        assert len(amd_keys) == 1
+        assert len(nvidia_keys) == 1
+        assert cached[amd_keys[0]] is amd_manager
+        assert cached[nvidia_keys[0]] is nvidia_manager
 
 
 

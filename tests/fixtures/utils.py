@@ -45,8 +45,11 @@ def has_gpu() -> bool:
         # Ultra-simple file existence check (no subprocess calls)
         # This is safe for pytest collection and avoids hanging
         nvidia_exists = os.path.exists("/usr/bin/nvidia-smi")
-        amd_rocm_exists = os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists(
-            "/usr/local/bin/rocm-smi"
+        from madengine.core.constants import get_rocm_path
+        rocm_path = get_rocm_path()
+        amd_rocm_exists = (
+            os.path.exists(os.path.join(rocm_path, "bin", "rocm-smi"))
+            or os.path.exists("/usr/local/bin/rocm-smi")
         )
 
         _has_gpu_cache = nvidia_exists or amd_rocm_exists

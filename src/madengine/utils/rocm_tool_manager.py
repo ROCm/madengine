@@ -22,6 +22,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+from madengine.core.constants import get_rocm_path
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
 
@@ -43,17 +44,20 @@ class ROCmToolManager(BaseGPUToolManager):
     - ROCm < 6.4.1: Use rocm-smi
     - If both tools fail: Raise error with debugging information
     """
-    
-    # Tool paths
-    AMD_SMI_PATH = "/opt/rocm/bin/amd-smi"
-    ROCM_SMI_PATH = "/opt/rocm/bin/rocm-smi"
-    HIPCONFIG_PATH = "/opt/rocm/bin/hipconfig"
-    ROCMINFO_PATH = "/opt/rocm/bin/rocminfo"
-    ROCM_VERSION_FILE = "/opt/rocm/.info/version"
-    
-    def __init__(self):
-        """Initialize ROCm tool manager."""
+
+    def __init__(self, rocm_path: Optional[str] = None):
+        """Initialize ROCm tool manager.
+
+        Args:
+            rocm_path: Optional ROCm root path (default: ROCM_PATH env or /opt/rocm).
+        """
         super().__init__()
+        self.rocm_path = get_rocm_path(rocm_path)
+        self.AMD_SMI_PATH = os.path.join(self.rocm_path, "bin", "amd-smi")
+        self.ROCM_SMI_PATH = os.path.join(self.rocm_path, "bin", "rocm-smi")
+        self.HIPCONFIG_PATH = os.path.join(self.rocm_path, "bin", "hipconfig")
+        self.ROCMINFO_PATH = os.path.join(self.rocm_path, "bin", "rocminfo")
+        self.ROCM_VERSION_FILE = os.path.join(self.rocm_path, ".info", "version")
         self._log_debug("Initialized ROCm tool manager")
     
     def get_version(self) -> Optional[str]:
@@ -294,7 +298,7 @@ class ROCmToolManager(BaseGPUToolManager):
                 f"Unable to determine number of AMD GPUs.\n"
                 f"Error: {e}\n"
                 f"Suggestions:\n"
-                f"- Verify ROCm installation: ls -la /opt/rocm/bin/\n"
+                f"- Verify ROCm installation: ls -la {self.rocm_path}/bin/\n"
                 f"- Check GPU accessibility: ls -la /dev/kfd /dev/dri\n"
                 f"- Ensure user is in 'video' and 'render' groups\n"
                 f"- See: https://github.com/ROCm/TheRock"
@@ -346,7 +350,7 @@ class ROCmToolManager(BaseGPUToolManager):
                 f"Error: {e}\n"
                 f"Suggestions:\n"
                 f"- Verify GPU {gpu_id} exists: {self.ROCM_SMI_PATH} --showid\n"
-                f"- Check ROCm version: cat /opt/rocm/.info/version\n"
+                f"- Check ROCm version: cat {self.ROCM_VERSION_FILE}\n"
                 f"- For ROCm >= 6.4.1, ensure amd-smi is installed"
             )
     

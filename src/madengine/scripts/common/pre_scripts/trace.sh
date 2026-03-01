@@ -24,9 +24,9 @@ case "$tool" in
 rpd)
 	if [ "$os" == 'ubuntu' ]; then
 		sudo apt update
-		sudo apt install -y sqlite3 libsqlite3-dev libfmt-dev python3-pip
+		sudo apt install -y sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev
 	elif [ "$os" == 'centos' ]; then
-		sudo yum install -y libsqlite3x-devel.x86_64 fmt-devel python3-pip
+		sudo yum install -y libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel
 	else
 		echo "Unable to detect Host OS in trace pre-script"
 	fi
@@ -43,6 +43,10 @@ rpd)
 	
 	# Build RPD tracer locally without system install
 	cd ./rocmProfileData
+	# Workaround for upstream rocmProfileData Makefile typo: UStringTable.o -> StringTable.o
+	if [ -f rpd_tracer/Makefile ]; then
+		sed -i 's/UStringTable\.o/StringTable.o/g' rpd_tracer/Makefile
+	fi
 	make rpd
 	if [ $? -ne 0 ]; then
 		echo "Error: Failed to build RPD tracer"
