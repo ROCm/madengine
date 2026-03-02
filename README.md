@@ -1,8 +1,10 @@
-<p align="center">
-  <img src="madengine.png" alt="madengine Logo" />
-</p>
-
 # madengine
+
+<p align="center">
+<picture>
+  <img src="madengine.png" alt="madengine Logo" />
+</picture>
+</p>
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
