@@ -2963,10 +2963,12 @@ torchrun \\
                         )
                         if record:
                             self._write_to_perf_csv(record)
+                            # Use nodes=[] so display shows perf_data.performance/metric per row
+                            # (not pod-level nodes whose perf came from log and is empty for multiple_results)
                             results["successful_runs"].append({
                                 "model": item["model"],
                                 "perf_data": record,
-                                "nodes": results["nodes"],
+                                "nodes": [],
                                 "per_node_metrics": [item],
                             })
                     self.console.print(
@@ -3779,26 +3781,26 @@ torchrun \\
     def _write_to_perf_csv(self, perf_data: Dict):
         """
         Write performance data to local perf.csv file.
-        
+
         Uses the same format as local execution for consistency.
         Matches the schema from container_runner.py's create_run_details_dict().
+
+        When appending to an existing file, uses the file's existing header so that
+        column order matches (e.g. MAD-private uses a different schema with model/performance
+        in different positions). Values are mapped by column name so model, performance,
+        metric, status etc. always land in the correct columns.
         """
         import csv
         from pathlib import Path
-        
+
         perf_csv_path = Path("perf.csv")
-        
-        # Check if file exists to determine if we need headers
-        file_exists = perf_csv_path.exists()
-        
-        # CSV headers matching local execution format EXACTLY
-        # This is the same order as in container_runner.py line 69
-        # Enhanced with topology fields for multi-node tracking
-        headers = [
+
+        # CSV headers for NEW files (madengine standard order)
+        default_headers = [
             "model",
             "n_gpus",
-            "nnodes",              # NEW: Number of nodes
-            "gpus_per_node",       # NEW: GPUs per node
+            "nnodes",
+            "gpus_per_node",
             "training_precision",
             "pipeline",
             "args",
@@ -3810,7 +3812,7 @@ torchrun \\
             "git_commit",
             "machine_name",
             "deployment_type",
-            "launcher",            # Execution launcher (native, docker, torchrun, etc.)
+            "launcher",
             "gpu_architecture",
             "performance",
             "metric",
@@ -3825,17 +3827,31 @@ torchrun \\
             "build_number",
             "additional_docker_run_options",
         ]
-        
-        # Write to CSV
-        with open(perf_csv_path, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
-            
-            # Write headers if new file
+
+        file_exists = perf_csv_path.exists()
+        existing_header = None
+        if file_exists:
+            # Read existing header so we write in the same column order (fixes MAD-private
+            # and other repos that use a different perf.csv schema with more/different columns)
+            with open(perf_csv_path, "r", newline="", encoding="utf-8", errors="replace") as rf:
+                reader = csv.reader(rf)
+                existing_header = next(reader, None)
+        headers = existing_header if existing_header else default_headers
+        if file_exists and existing_header:
+            # Build row by name so model/performance/metric/status go to correct columns
+            row_by_name = {k: perf_data.get(k, "") for k in headers}
+            row_to_write = [str(row_by_name.get(h, "")) for h in headers]
+        else:
+            row_to_write = perf_data
+
+        with open(perf_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
             if not file_exists:
                 writer.writeheader()
-            
-            # Write data row (only fields in headers will be written)
-            writer.writerow(perf_data)
+            if file_exists and existing_header:
+                csv.writer(f).writerow(row_to_write)
+            else:
+                writer.writerow(row_to_write)
 
     def cleanup(self, deployment_id: str) -> bool:
         """Delete Job, ConfigMap, Service and associated pods."""
