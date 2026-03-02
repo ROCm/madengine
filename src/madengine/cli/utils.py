@@ -169,12 +169,12 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
 
     # Helper function to format numbers
     def format_number(value):
-        if value is None or value == "-":
+        if value is None or value == "-" or value == "":
             return "-"
         try:
             return f"{float(value):,.0f}"
         except (ValueError, TypeError):
-            return str(value)
+            return str(value) if value else "-"
 
     # Add successful builds/runs
     row_index = 1
@@ -424,7 +424,12 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
             is_current_run = (session_start_row is not None and idx >= session_start_row)
             run_marker = "[bold green]➤[/]" if is_current_run else ""  # Arrow marker for current runs
             
-            model = str(row.get("model", "Unknown"))
+            model_val = row.get("model", "Unknown")
+            model = (
+                "Unknown"
+                if (pd.isna(model_val) or model_val == "" or str(model_val).strip() == "nan")
+                else str(model_val)
+            )
             dataname = str(row.get("dataname", "")) if not pd.isna(row.get("dataname")) and row.get("dataname") != "" else "N/A"
             data_provider_type = str(row.get("data_provider_type", "")) if not pd.isna(row.get("data_provider_type")) and row.get("data_provider_type") != "" else "N/A"
             
