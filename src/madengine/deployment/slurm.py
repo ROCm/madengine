@@ -656,6 +656,13 @@ class SlurmDeployment(BaseDeployment):
         
         return True
 
+    @staticmethod
+    def _normalize_nodelist(nodelist: Optional[str]) -> Optional[str]:
+        """Normalize nodelist to comma-separated without spaces for #SBATCH --nodelist."""
+        if not nodelist or not nodelist.strip():
+            return None
+        return ",".join(n.strip() for n in nodelist.split(",") if n.strip())
+
     def _prepare_template_context(self, model_info: Dict) -> Dict[str, Any]:
         """Prepare context for Jinja2 template rendering."""
         # Use hierarchical GPU resolution: runtime > deployment > model > default
@@ -725,6 +732,7 @@ class SlurmDeployment(BaseDeployment):
             "exclusive": self.slurm_config.get("exclusive", True),
             "exclude": self.slurm_config.get("exclude"),
             "constraint": self.slurm_config.get("constraint"),
+            "nodelist": self._normalize_nodelist(self.slurm_config.get("nodelist")),
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
@@ -1189,7 +1197,7 @@ export MASTER_PORT={master_port}
         enable_preflight = self.slurm_config.get("enable_node_check", True)
         auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
         
-        if enable_preflight and self.nodes > 1:
+        if enable_preflight and self.nodes > 1 and not self.slurm_config.get("nodelist"):
             try:
                 selector = SlurmNodeSelector(
                     console=self.console,

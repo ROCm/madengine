@@ -298,7 +298,8 @@ Automatically applies:
     "account": "research_group",
     "qos": "normal",
     "gpus_per_node": 8,
-    "nodes": 1,
+    "nodes": 2,
+    "nodelist": "node01,node02",
     "time": "24:00:00",
     "mem": "64G",
     "mail_user": "user@example.com",
@@ -307,12 +308,15 @@ Automatically applies:
 }
 ```
 
+**Note:** `nodelist` is optional; omit it to let SLURM choose nodes. When set, the job runs only on the listed nodes and node health preflight is skipped.
+
 **SLURM Options:**
 - `partition` - SLURM partition name (required)
 - `account` - Billing account
 - `qos` - Quality of Service
 - `gpus_per_node` - GPUs per node (default: 1)
 - `nodes` - Number of nodes (default: 1)
+- `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
 - `time` - Wall time limit HH:MM:SS (required)
 - `mem` - Memory per node (e.g., "64G")
 - `mail_user` - Email for notifications

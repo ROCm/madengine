@@ -199,7 +199,6 @@ ROCprofv3 is the next-generation profiler for ROCm 7.0+ with enhanced features a
 - **Use Case**: Generate Perfetto-compatible traces
 - **Metrics**: HIP, kernel, memory traces
 - **Output Format**: Perfetto trace file (`.pftrace`)
-- **View at**: https://ui.perfetto.dev/
 
 **API Overhead Analysis:**
 ```json
