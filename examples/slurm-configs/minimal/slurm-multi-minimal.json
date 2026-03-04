@@ -14,7 +14,7 @@
   },
   
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 3,
     "nproc_per_node": 1
   }

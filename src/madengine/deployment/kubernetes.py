@@ -51,7 +51,13 @@ VALID_LAUNCHERS = [
     "megatron-lm",
     "vllm",
     "sglang",
-    "sglang-disagg"
+    "slurm_multi",
+]
+
+# slurm_multi launcher name variants (underscore and hyphen)
+SLURM_MULTI_ALIASES = [
+    "slurm_multi",
+    "slurm-multi",
 ]
 
 
@@ -959,20 +965,20 @@ class KubernetesDeployment(BaseDeployment):
                 model_script=model_info.get("scripts", "run.sh")
             )
 
-        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+        elif launcher_type.lower().replace("_", "-") in [a.lower().replace("_", "-") for a in SLURM_MULTI_ALIASES]:
             if nnodes < 3:
                 raise ValueError(
-                    f"SGLang Disaggregated requires minimum 3 nodes "
+                    f"slurm_multi launcher requires minimum 3 nodes "
                     f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
                 )
             
             # Always create headless service for disaggregated architecture
             create_headless_service = True
-            self.console.print(f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]")
+            self.console.print(f"[dim]slurm_multi: Creating headless service for {nnodes} pods[/dim]")
             self.console.print(f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]")
             
-            # Generate SGLang Disaggregated launcher command
-            launcher_command = self._generate_sglang_disagg_command(
+            # Generate slurm_multi launcher command
+            launcher_command = self._generate_slurm_multi_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
@@ -1631,13 +1637,13 @@ torchrun \\
     --tee=3 \\
     {model_script}"""
     
-    def _generate_sglang_disagg_command(
+    def _generate_slurm_multi_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
         """
-        Generate SGLang Disaggregated launcher command for K8s Indexed Jobs.
+        Generate slurm_multi launcher command for K8s Indexed Jobs.
         
-        SGLang Disaggregated uses separate node pools for:
+        slurm_multi uses separate node pools for:
         - Proxy (index 0): Load balancer and request router
         - Prefill (indices 1 to xP): Prompt processing
         - Decode (indices xP+1 to end): Token generation
@@ -1656,7 +1662,7 @@ torchrun \\
             model_script: Path to model launch script
             
         Returns:
-            Complete disaggregated launch setup
+            Complete multi-node launch setup
             
         Raises:
             ValueError: If nnodes < 3 or invalid parameters
@@ -1664,7 +1670,7 @@ torchrun \\
         # Validate
         if not isinstance(nnodes, int) or nnodes < 3:
             raise ValueError(
-                f"SGLang Disaggregated requires minimum 3 nodes, got {nnodes}"
+                f"slurm_multi requires minimum 3 nodes, got {nnodes}"
             )
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
             raise ValueError(f"nproc_per_node must be >= 1, got {nproc_per_node}")

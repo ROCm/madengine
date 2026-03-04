@@ -364,7 +364,7 @@ SGLang Disaggregated separates inference into specialized node pools:
 ```json
 {
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 5,
     "nproc_per_node": 8,
     "sglang_disagg": {
@@ -403,7 +403,7 @@ Override automatic split based on workload characteristics:
 ```json
 {
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 7,
     "nproc_per_node": 8,
     "sglang_disagg": {
@@ -457,12 +457,12 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 ```
 
 **Examples**:
-- K8s Minimal: `examples/k8s-configs/minimal/sglang-disagg-minimal.json`
-- K8s Basic: `examples/k8s-configs/basic/sglang-disagg-multi-node-basic.json`
-- K8s Custom: `examples/k8s-configs/basic/sglang-disagg-custom-split.json`
-- SLURM Minimal: `examples/slurm-configs/minimal/sglang-disagg-minimal.json`
-- SLURM Basic: `examples/slurm-configs/basic/sglang-disagg-multi-node.json`
-- SLURM Custom: `examples/slurm-configs/basic/sglang-disagg-custom-split.json`
+- K8s Minimal: `examples/k8s-configs/minimal/slurm_multi-minimal.json`
+- K8s Basic: `examples/k8s-configs/basic/slurm_multi-multi-node-basic.json`
+- K8s Custom: `examples/k8s-configs/basic/slurm_multi-custom-split.json`
+- SLURM Minimal: `examples/slurm-configs/minimal/slurm_multi-minimal.json`
+- SLURM Basic: `examples/slurm-configs/basic/slurm_multi-multi-node.json`
+- SLURM Custom: `examples/slurm-configs/basic/slurm_multi-custom-split.json`
 
 **Comparison: SGLang vs SGLang Disaggregated**:
 
@@ -681,7 +681,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `sglang-disagg`
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `slurm_multi`
 
 **2. Multi-Node Communication Fails**
 ```bash

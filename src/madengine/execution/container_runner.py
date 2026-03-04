@@ -17,12 +17,11 @@ import subprocess
 
 # Launchers that should run directly on baremetal (not inside Docker)
 # These launchers manage their own Docker containers via SLURM srun commands
-BAREMETAL_LAUNCHERS = [
-    "sglang-disagg",
-    "sglang_disagg", 
-    "vllm-disagg",
-    "vllm_disagg",
+SLURM_MULTI_ALIASES = [
+    "slurm_multi",
+    "slurm-multi",
 ]
+BAREMETAL_LAUNCHERS = SLURM_MULTI_ALIASES
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
@@ -603,7 +602,7 @@ class ContainerRunner:
         """
         Run script directly on baremetal (not inside Docker).
         
-        Used for launchers like sglang-disagg that manage their own Docker containers
+        Used for slurm_multi launchers that manage their own Docker containers
         via SLURM srun commands. The script is executed directly on the node.
         
         Args:
@@ -1039,7 +1038,7 @@ class ContainerRunner:
         print(f"Docker options: {docker_options}")
 
         # ========== CHECK FOR BAREMETAL LAUNCHERS ==========
-        # Launchers like sglang-disagg run scripts directly on baremetal,
+        # slurm_multi launchers run scripts directly on baremetal,
         # not inside Docker. The script itself manages Docker containers via srun.
         launcher = ""
         
