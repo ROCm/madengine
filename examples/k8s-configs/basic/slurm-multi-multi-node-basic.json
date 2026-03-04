@@ -25,7 +25,7 @@
   },
   
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 5,
     "nproc_per_node": 8,
     "master_port": 29500
