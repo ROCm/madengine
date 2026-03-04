@@ -329,9 +329,26 @@ spec:
                 echo "✓ Copied perf.csv"
             fi
             {% if multiple_results %}
-            if [ -f "{{ multiple_results }}" ]; then
+            # Copy multiple_results CSV (same contract as Docker: file may be in CWD or parent; use absolute paths for reliability)
+            if [ -f "/workspace/{{ multiple_results }}" ]; then
+                cp "/workspace/{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "/workspace/vllm/{{ multiple_results }}" ]; then
+                cp "/workspace/vllm/{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "{{ multiple_results }}" ]; then
                 cp "{{ multiple_results }}" /results/${HOSTNAME}/
                 echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "../{{ multiple_results }}" ]; then
+                cp "../{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }} (from parent dir)"
+            else
+                # Fallback: find anywhere under /workspace (e.g. scripts/dummy/perf_dummy.csv for dummy_multi)
+                SRCFILE=$(find /workspace -maxdepth 4 -name "{{ multiple_results }}" 2>/dev/null | head -1)
+                if [ -n "$SRCFILE" ] && [ -f "$SRCFILE" ]; then
+                    cp "$SRCFILE" /results/${HOSTNAME}/
+                    echo "✓ Copied {{ multiple_results }} (from workspace)"
+                fi
             fi
             {% endif %}
             
@@ -496,9 +513,26 @@ spec:
                 echo "✓ Copied perf.csv"
             fi
             {% if multiple_results %}
-            if [ -f "{{ multiple_results }}" ]; then
+            # Copy multiple_results CSV (same contract as Docker: file may be in CWD or parent; use absolute paths for reliability)
+            if [ -f "/workspace/{{ multiple_results }}" ]; then
+                cp "/workspace/{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "/workspace/vllm/{{ multiple_results }}" ]; then
+                cp "/workspace/vllm/{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "{{ multiple_results }}" ]; then
                 cp "{{ multiple_results }}" /results/${HOSTNAME}/
                 echo "✓ Copied {{ multiple_results }}"
+            elif [ -f "../{{ multiple_results }}" ]; then
+                cp "../{{ multiple_results }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ multiple_results }} (from parent dir)"
+            else
+                # Fallback: find anywhere under /workspace (e.g. scripts/dummy/perf_dummy.csv for dummy_multi)
+                SRCFILE=$(find /workspace -maxdepth 4 -name "{{ multiple_results }}" 2>/dev/null | head -1)
+                if [ -n "$SRCFILE" ] && [ -f "$SRCFILE" ]; then
+                    cp "$SRCFILE" /results/${HOSTNAME}/
+                    echo "✓ Copied {{ multiple_results }} (from workspace)"
+                fi
             fi
             {% endif %}
             
@@ -524,12 +558,6 @@ spec:
                     echo "✓ Copied rocprofv3 directory: $dir"
                 fi
             done
-            
-            # Copy tool-specific outputs
-            if ls -d *_output 1> /dev/null 2>&1; then
-                cp -r *_output /results/${HOSTNAME}/ 2>/dev/null || true
-                echo "✓ Copied tool output directories"
-            fi
             
             # Copy GPU profiler outputs
             if ls gpu_info_*.csv 1> /dev/null 2>&1; then
