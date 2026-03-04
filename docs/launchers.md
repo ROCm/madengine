@@ -457,12 +457,12 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 ```
 
 **Examples**:
-- K8s Minimal: `examples/k8s-configs/minimal/slurm_multi-minimal.json`
-- K8s Basic: `examples/k8s-configs/basic/slurm_multi-multi-node-basic.json`
-- K8s Custom: `examples/k8s-configs/basic/slurm_multi-custom-split.json`
-- SLURM Minimal: `examples/slurm-configs/minimal/slurm_multi-minimal.json`
-- SLURM Basic: `examples/slurm-configs/basic/slurm_multi-multi-node.json`
-- SLURM Custom: `examples/slurm-configs/basic/slurm_multi-custom-split.json`
+- K8s Minimal: `examples/k8s-configs/minimal/slurm-multi-minimal.json`
+- K8s Basic: `examples/k8s-configs/basic/slurm-multi-multi-node-basic.json`
+- K8s Custom: `examples/k8s-configs/basic/slurm-multi-custom-split.json`
+- SLURM Minimal: `examples/slurm-configs/minimal/slurm-multi-minimal.json`
+- SLURM Basic: `examples/slurm-configs/basic/slurm-multi-multi-node.json`
+- SLURM Custom: `examples/slurm-configs/basic/slurm-multi-custom-split.json`
 
 **Comparison: SGLang vs SGLang Disaggregated**:
 

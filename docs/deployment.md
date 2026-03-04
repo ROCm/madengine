@@ -272,6 +272,39 @@ SLURM automatically provides:
 - Network interface configuration
 - Rank assignment via `$SLURM_PROCID`
 
+### SLURM Allocation Detection
+
+madengine automatically detects if you're running inside an existing SLURM allocation (via `salloc`):
+
+```bash
+# Allocate nodes interactively
+salloc -N 3 -p gpu --gpus-per-node=8 -t 04:00:00
+
+# madengine detects the allocation automatically
+madengine run --manifest-file build_manifest.json
+# Output: ✓ Detected existing SLURM allocation: Job 12345
+#         Allocation has 3 nodes available
+```
+
+**Behavior inside allocation:**
+- Uses `srun` directly instead of `sbatch`
+- Validates requested nodes ≤ available nodes
+- Warns if using fewer nodes than allocated
+- Skips job submission (already allocated)
+
+**Build inside allocation:**
+
+```bash
+# Inside salloc session
+madengine build --tags model --build-on-compute
+# Uses srun instead of sbatch --wait
+```
+
+**Environment variables detected:**
+- `SLURM_JOB_ID` - Indicates inside allocation
+- `SLURM_NNODES` - Number of nodes available
+- `SLURM_NODELIST` - List of allocated nodes
+
 ### Monitoring
 
 ```bash
@@ -385,6 +418,43 @@ scancel -u $USER
   }
 }
 ```
+
+### Baremetal Execution (slurm_multi)
+
+For disaggregated inference workloads like SGLang Disaggregated, madengine supports baremetal execution where the model's `.slurm` script manages Docker containers directly:
+
+```json
+{
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "gpus_per_node": 8,
+    "time": "04:00:00"
+  },
+  "distributed": {
+    "launcher": "slurm_multi",
+    "nnodes": 3,
+    "nproc_per_node": 8,
+    "sglang_disagg": {
+      "prefill_nodes": 1,
+      "decode_nodes": 1
+    }
+  }
+}
+```
+
+**How baremetal execution works:**
+1. madengine generates a wrapper script (not a Docker container)
+2. The wrapper runs the model's `.slurm` script directly on baremetal
+3. The `.slurm` script manages Docker containers via `srun`
+4. Environment variables from `models.json` and `additional-context` are passed through
+
+**When to use `slurm_multi`:**
+- SGLang Disaggregated inference (proxy + prefill + decode nodes)
+- Workloads requiring direct SLURM node control
+- Custom Docker orchestration via `.slurm` scripts
+
+See [Launchers Guide](launchers.md#7-sglang-disaggregated-new) for detailed configuration.
 
 ## Troubleshooting
 

@@ -98,6 +98,8 @@ madengine build [OPTIONS]
 | `--target-archs` | `-a` | TEXT | `[]` | Target GPU architectures (e.g., gfx908,gfx90a,gfx942) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
+| `--use-image` | | TEXT | `None` | Skip Docker build, use pre-built image instead |
+| `--build-on-compute` | | FLAG | `False` | Build Docker images on SLURM compute node instead of login node |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
@@ -142,6 +144,16 @@ madengine build --tags model \
 
 # Real-time output with verbose logging
 madengine build --tags model --live-output --verbose
+
+# Use pre-built image (skip Docker build)
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file slurm-config.json
+
+# Build on SLURM compute node instead of login node
+madengine build --tags model \
+  --build-on-compute \
+  --additional-context-file slurm-config.json
 ```
 
 **Default Values:**
@@ -192,6 +204,72 @@ When using `--batch-manifest`, provide a JSON file with selective build configur
 ```
 
 See [Batch Build Guide](batch-build.md) for details.
+
+**Pre-built Image Mode (`--use-image`):**
+
+Skip Docker build and use an existing image from a registry or local Docker cache:
+
+```bash
+# Use image from Docker Hub
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file config.json
+
+# Use image from NGC
+madengine build --tags model \
+  --use-image nvcr.io/nvidia/pytorch:24.01-py3
+
+# Use locally cached image
+madengine build --tags model \
+  --use-image my-local-image:latest
+```
+
+**When to use `--use-image`:**
+- Using official framework images (SGLang, vLLM, etc.)
+- Image is pre-cached on compute nodes
+- Testing without rebuilding
+- CI/CD pipelines with external images
+
+The generated manifest marks the image as `"prebuilt": true` with `build_time: 0`.
+
+**Build on Compute Node (`--build-on-compute`):**
+
+Build Docker images on SLURM compute nodes instead of the login node:
+
+```bash
+# Build on compute node (requires SLURM config)
+madengine build --tags model \
+  --build-on-compute \
+  --additional-context-file slurm-config.json
+```
+
+**slurm-config.json for build-on-compute:**
+```json
+{
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "time": "02:00:00",
+    "reservation": "my-reservation"
+  }
+}
+```
+
+**When to use `--build-on-compute`:**
+- Login node has limited disk space or resources
+- Build requires GPU access (e.g., AOT compilation)
+- Need image available on all compute nodes simultaneously
+- Login node policies prohibit heavy workloads
+
+**How it works:**
+1. Generates `madengine_build_job.sh` sbatch script
+2. Submits via `sbatch --wait`
+3. Runs `docker build` on ALL allocated nodes in parallel via `srun`
+4. Generates manifest on completion
+
+**Inside existing SLURM allocation:**
+
+If you're already inside an `salloc` allocation, `--build-on-compute` uses `srun` directly instead of submitting a new job.
 
 ---
 

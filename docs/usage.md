@@ -279,6 +279,60 @@ madengine build --batch-manifest batch.json \
 ]
 ```
 
+### Pre-built Image Mode
+
+Skip Docker build entirely and use an existing image:
+
+```bash
+# Use external image (e.g., from Docker Hub)
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file slurm-config.json
+
+# Then run normally
+madengine run --manifest-file build_manifest.json
+```
+
+**Use cases:**
+- Official framework images (SGLang, vLLM, PyTorch NGC)
+- Pre-cached images on compute nodes
+- Quick testing without rebuild time
+- CI/CD with external registries
+
+The manifest marks the image as `"prebuilt": true` with zero build time.
+
+### Build on Compute Node
+
+For SLURM environments where login nodes have limited resources:
+
+```bash
+# Build on compute nodes instead of login node
+madengine build --tags model \
+  --build-on-compute \
+  --additional-context-file slurm-config.json
+```
+
+**slurm-config.json:**
+```json
+{
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "time": "02:00:00"
+  }
+}
+```
+
+**How it works:**
+1. Submits `madengine_build_job.sh` via `sbatch --wait`
+2. Builds Docker image on ALL allocated nodes in parallel
+3. Generates manifest after completion
+
+**Benefits:**
+- Offloads heavy build to compute resources
+- Image available on all nodes simultaneously
+- Respects login node resource policies
+
 ## Run Workflow
 
 ### Skip model run after build
