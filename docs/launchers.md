@@ -436,6 +436,18 @@ Override automatic split based on workload characteristics:
 - Ray cluster coordination
 - No torchrun needed (manages own processes)
 
+**Registry Requirement (SLURM)**:
+
+Models using `slurm_multi` launcher **require** `--registry` or `--use-image` during build:
+
+```bash
+madengine build --tags model --registry docker.io/myorg
+# OR
+madengine build --tags model --use-image
+```
+
+This ensures all compute nodes can pull the image in parallel during `madengine run`.
+
 **Environment Variables (K8s)**:
 ```bash
 POD_INDEX=${JOB_COMPLETION_INDEX}  # Pod index for role assignment
