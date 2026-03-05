@@ -240,6 +240,22 @@ class Context:
 
         print("Detecting GPU configuration...")
 
+        # Fast path: skip hardware probes when no GPUs are requested
+        if str(self.ctx.get("MAD_SYSTEM_NGPUS", "")) == "0":
+            print("No GPUs requested (MAD_SYSTEM_NGPUS=0), skipping hardware detection")
+            for _key, _default in (
+                ("MAD_GPU_VENDOR", self.ctx.get("gpu_vendor", "none")),
+                ("MAD_SYSTEM_NGPUS", "0"),
+                ("MAD_SYSTEM_GPU_ARCHITECTURE", self.ctx.get("MAD_SYSTEM_GPU_ARCHITECTURE", "none")),
+                ("MAD_SYSTEM_HIP_VERSION", "0.0"),
+                ("MAD_SYSTEM_GPU_PRODUCT_NAME", "none"),
+            ):
+                self.ctx["docker_env_vars"].setdefault(_key, str(_default))
+            self.ctx.setdefault("docker_gpus", "")
+            self.ctx.setdefault("gpu_renderDs", None)
+            self._gpu_context_initialized = True
+            return
+
         try:
             # GPU vendor detection - only if not provided by user
             if "gpu_vendor" not in self.ctx:
@@ -249,6 +265,14 @@ class Context:
                 print(f"Using provided GPU vendor: {self.ctx['gpu_vendor']}")
 
             # Initialize docker env vars for runtime - only if not already set
+            # Propagate well-known GPU keys from additional_context so user
+            # overrides short-circuit hardware detection on headless nodes.
+            for _key in ("MAD_GPU_VENDOR", "MAD_SYSTEM_NGPUS",
+                         "MAD_SYSTEM_GPU_ARCHITECTURE", "MAD_SYSTEM_HIP_VERSION",
+                         "MAD_SYSTEM_GPU_PRODUCT_NAME"):
+                if _key not in self.ctx["docker_env_vars"] and _key in self.ctx:
+                    self.ctx["docker_env_vars"][_key] = str(self.ctx[_key])
+
             if "MAD_GPU_VENDOR" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 

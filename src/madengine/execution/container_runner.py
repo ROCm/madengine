@@ -16,12 +16,13 @@ import re
 import subprocess
 
 # Launchers that should run directly on baremetal (not inside Docker)
-# These launchers manage their own Docker containers via SLURM srun commands
+# These launchers manage their own containers or run scripts natively
 BAREMETAL_LAUNCHERS = [
     "sglang-disagg",
     "sglang_disagg", 
     "vllm-disagg",
     "vllm_disagg",
+    "native",
 ]
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
@@ -414,6 +415,11 @@ class ContainerRunner:
         Returns:
             str: The GPU arguments.
         """
+        if requested_gpus == "0":
+            self.context.ctx["docker_env_vars"]["MAD_RUNTIME_NGPUS"] = "0"
+            print("ℹ️  No GPUs requested (n_gpus=0), skipping GPU arguments")
+            return ""
+
         gpu_arg = ""
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         n_system_gpus = self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]
