@@ -201,6 +201,10 @@ class BuildOrchestrator:
         """
         # Handle pre-built image mode
         if use_image:
+            # If use_image is "auto", resolve from model card
+            if use_image == "auto":
+                use_image = self._resolve_image_from_model_card()
+            
             return self._execute_with_prebuilt_image(
                 use_image=use_image,
                 manifest_output=manifest_output,
@@ -582,6 +586,86 @@ class BuildOrchestrator:
                 ),
             ) from e
 
+    def _resolve_image_from_model_card(self) -> str:
+        """
+        Resolve Docker image name from model card's DOCKER_IMAGE_NAME env var.
+        
+        This method discovers models and extracts the DOCKER_IMAGE_NAME from
+        env_vars. If multiple models have different images, uses the first
+        and prints a warning.
+        
+        Returns:
+            Docker image name from model card
+            
+        Raises:
+            ConfigurationError: If no DOCKER_IMAGE_NAME found in any model
+        """
+        self.rich_console.print("[bold cyan]🔍 Auto-detecting image from model card...[/bold cyan]")
+        
+        # Discover models to get their env_vars
+        discover_models = DiscoverModels(args=self.args)
+        models = discover_models.run()
+        
+        if not models:
+            raise ConfigurationError(
+                "No models discovered for image auto-detection",
+                context=create_error_context(
+                    operation="resolve_image",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Specify image name explicitly with --use-image <image>",
+                    "Check if models.json exists",
+                    "Verify --tags parameter is correct",
+                ],
+            )
+        
+        # Collect DOCKER_IMAGE_NAME from all models
+        images_found = {}
+        for model in models:
+            model_name = model.get("name", "unknown")
+            env_vars = model.get("env_vars", {})
+            docker_image = env_vars.get("DOCKER_IMAGE_NAME")
+            
+            if docker_image:
+                images_found[model_name] = docker_image
+        
+        if not images_found:
+            model_names = [m.get("name", "unknown") for m in models]
+            raise ConfigurationError(
+                "No DOCKER_IMAGE_NAME found in model card env_vars",
+                context=create_error_context(
+                    operation="resolve_image",
+                    component="BuildOrchestrator",
+                    model_names=model_names,
+                ),
+                suggestions=[
+                    "Add DOCKER_IMAGE_NAME to model's env_vars in models.json",
+                    "Specify image name explicitly with --use-image <image>",
+                    'Example: "env_vars": {"DOCKER_IMAGE_NAME": "myimage:tag"}',
+                ],
+            )
+        
+        # Use first model's image
+        first_model = list(images_found.keys())[0]
+        resolved_image = images_found[first_model]
+        
+        # Warn if multiple models have different images
+        unique_images = set(images_found.values())
+        if len(unique_images) > 1:
+            self.rich_console.print(
+                f"[yellow]⚠️  Warning: Multiple models have different DOCKER_IMAGE_NAME values:[/yellow]"
+            )
+            for model_name, image in images_found.items():
+                self.rich_console.print(f"   - {model_name}: {image}")
+            self.rich_console.print(
+                f"[yellow]   Using image from '{first_model}': {resolved_image}[/yellow]\n"
+            )
+        else:
+            self.rich_console.print(f"[green]✓ Auto-detected image: {resolved_image}[/green]\n")
+        
+        return resolved_image
+
     def _execute_build_on_compute(
         self,
         registry: Optional[str] = None,
@@ -590,16 +674,16 @@ class BuildOrchestrator:
         batch_build_metadata: Optional[Dict] = None,
     ) -> str:
         """
-        Execute Docker build on a SLURM compute node instead of login node.
+        Execute Docker build on a SLURM compute node and push to registry.
         
-        This submits a SLURM job that runs the Docker build on a compute node,
-        which is useful when:
-        - Login node has limited disk space
-        - Login node shouldn't run heavy workloads
-        - Compute nodes have faster storage/network
+        Build workflow:
+        1. Build on 1 compute node only
+        2. Push image to registry
+        3. Store registry image name in manifest
+        4. Run phase will pull image in parallel on all nodes
         
         Args:
-            registry: Optional registry to push images to
+            registry: Registry to push images to (REQUIRED)
             clean_cache: Whether to use --no-cache for Docker builds
             manifest_output: Output file for build manifest
             batch_build_metadata: Optional batch build metadata
@@ -609,189 +693,316 @@ class BuildOrchestrator:
         """
         import subprocess
         import os
+        import glob
         
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print("[bold blue]🔨 BUILD PHASE (Compute Node Mode)[/bold blue]")
-        self.rich_console.print("[cyan]Building on SLURM compute node...[/cyan]")
+        self.rich_console.print("[cyan]Building on 1 compute node, pushing to registry...[/cyan]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
+        # Discover models first to get SLURM config from model card
+        self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
+        discover_models = DiscoverModels(args=self.args)
+        models = discover_models.run()
+        
+        if not models:
+            raise DiscoveryError(
+                "No models discovered for build-on-compute",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Check if models.json exists",
+                    "Verify --tags parameter is correct",
+                ],
+            )
+        
+        model = models[0]
+        model_name = model.get("name", "unknown")
+        self.rich_console.print(f"[green]✓ Found model: {model_name}[/green]\n")
+        
+        # Merge SLURM config: model card (base) + additional-context (override)
+        model_slurm_config = model.get("slurm", {})
+        context_slurm_config = self.additional_context.get("slurm", {})
+        
+        # Start with model card config, then override with command-line context
+        slurm_config = {**model_slurm_config, **context_slurm_config}
+        
+        self.rich_console.print("[bold cyan]📋 SLURM Configuration (merged):[/bold cyan]")
+        if model_slurm_config:
+            self.rich_console.print(f"  [dim]From model card:[/dim] {list(model_slurm_config.keys())}")
+        if context_slurm_config:
+            self.rich_console.print(f"  [dim]From --additional-context (overrides):[/dim] {list(context_slurm_config.keys())}")
+        
+        # Validate required fields
+        partition = slurm_config.get("partition")
+        if not partition:
+            raise ConfigurationError(
+                "Missing required SLURM field: partition",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    'Add "partition" to model card\'s slurm section',
+                    'Or specify via --additional-context \'{"slurm": {"partition": "gpu"}}\'',
+                ],
+            )
+        
+        reservation = slurm_config.get("reservation", "")
+        time_limit = slurm_config.get("time", "02:00:00")
+        
+        self.rich_console.print(f"  Partition: {partition}")
+        self.rich_console.print(f"  Time limit: {time_limit}")
+        if reservation:
+            self.rich_console.print(f"  Reservation: {reservation}")
+        self.rich_console.print("")
+        
+        # Validate registry credentials
+        self.rich_console.print("[bold cyan]🔐 Registry Configuration:[/bold cyan]")
+        self.rich_console.print(f"  Registry: {registry}")
+        
+        # Check for credentials - either from environment or credential.json
+        dockerhub_user = os.environ.get("MAD_DOCKERHUB_USER", "")
+        dockerhub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD", "")
+        
+        # Try to load from credential.json if env vars not set
+        credential_file = Path("credential.json")
+        if not dockerhub_user and credential_file.exists():
+            try:
+                with open(credential_file) as f:
+                    creds = json.load(f)
+                    dockerhub_creds = creds.get("dockerhub", {})
+                    dockerhub_user = dockerhub_creds.get("username", "")
+                    dockerhub_password = dockerhub_creds.get("password", "")
+                    if dockerhub_user:
+                        self.rich_console.print(f"  Credentials: Found in credential.json")
+            except (json.JSONDecodeError, IOError) as e:
+                self.rich_console.print(f"  [yellow]Warning: Could not read credential.json: {e}[/yellow]")
+        elif dockerhub_user:
+            self.rich_console.print(f"  Credentials: Found in environment (MAD_DOCKERHUB_USER)")
+        
+        # Determine if registry requires authentication
+        requires_auth = True
+        public_registries = ["docker.io", "ghcr.io", "gcr.io", "quay.io", "nvcr.io"]
+        registry_lower = registry.lower() if registry else ""
+        
+        # For docker.io pushes, authentication is always required
+        if any(pub_reg in registry_lower for pub_reg in public_registries):
+            if not dockerhub_user or not dockerhub_password:
+                raise ConfigurationError(
+                    f"Registry credentials required for pushing to {registry}",
+                    context=create_error_context(
+                        operation="build_on_compute",
+                        component="BuildOrchestrator",
+                        registry=registry,
+                    ),
+                    suggestions=[
+                        "Set environment variables: MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD",
+                        'Or create credential.json: {"dockerhub": {"username": "...", "password": "..."}}',
+                        "For Docker Hub, use a Personal Access Token (PAT) as password",
+                        f"Example: export MAD_DOCKERHUB_USER=myuser",
+                        f"Example: export MAD_DOCKERHUB_PASSWORD=dckr_pat_xxxxx",
+                    ],
+                )
+            self.rich_console.print(f"  Auth: Will login to registry before push")
+        else:
+            # Private/internal registry - may not need auth
+            self.rich_console.print(f"  Auth: Private registry (auth may not be required)")
+            requires_auth = dockerhub_user and dockerhub_password
+        
+        self.rich_console.print("")
+        
         # Check if we're inside an existing allocation
         inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         existing_job_id = os.environ.get("SLURM_JOB_ID", "")
-
-        # Get SLURM config from additional_context
-        slurm_config = self.additional_context.get("slurm", {})
-        partition = slurm_config.get("partition", "gpu")
-        reservation = slurm_config.get("reservation", "")
-        time_limit = slurm_config.get("time", "02:00:00")
-        # Get number of nodes - build on ALL nodes so image is available everywhere
-        nodes = slurm_config.get("nodes", 1)
-
-        # Build the madengine build command (without --build-on-compute to avoid recursion)
-        tags = getattr(self.args, 'tags', [])
-        tags_str = " ".join([f"-t {tag}" for tag in tags]) if tags else ""
         
-        # Write additional context to a file to avoid shell quoting issues
-        context_file_path = None
-        additional_context_str = ""
-        if self.additional_context:
-            import json
-            context_file_path = Path("madengine_build_context.json")
-            with open(context_file_path, 'w') as f:
-                json.dump(self.additional_context, f)
-            self.rich_console.print(f"  Context file: {context_file_path}")
-
-        # Base build command
-        build_cmd_parts = ["madengine", "build"]
-        if tags_str:
-            build_cmd_parts.extend(tags_str.split())
-        if context_file_path:
-            build_cmd_parts.extend(["--additional-context-file", str(context_file_path)])
-        build_cmd_parts.extend(["--manifest-output", manifest_output])
-        if registry:
-            build_cmd_parts.extend(["--registry", registry])
-        if clean_cache:
-            build_cmd_parts.append("--clean-docker-cache")
+        # Find Dockerfile
+        dockerfile = model.get("dockerfile", "")
+        dockerfile_path = ""
+        dockerfile_patterns = [
+            f"{dockerfile}.ubuntu.amd.Dockerfile",
+            f"{dockerfile}.Dockerfile",
+            f"{dockerfile}",
+        ]
+        for pattern in dockerfile_patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                dockerfile_path = matches[0]
+                break
         
-        build_cmd = " ".join(build_cmd_parts)
-
-        if inside_allocation:
-            # Run build on compute node via srun
-            self.rich_console.print(f"[cyan]Running build via srun (inside allocation {existing_job_id})...[/cyan]")
-            cmd = ["srun", "-N1", "--ntasks=1", "bash", "-c", build_cmd]
+        if not dockerfile_path:
+            raise ConfigurationError(
+                f"Dockerfile not found for model {model_name}",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                    dockerfile=dockerfile,
+                ),
+                suggestions=[
+                    f"Check if {dockerfile}.ubuntu.amd.Dockerfile exists",
+                    "Verify the dockerfile path in models.json",
+                ],
+            )
+        
+        # Generate image name for registry
+        dockerfile_basename = Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
+        local_image_name = f"ci-{model_name}_{dockerfile_basename}"
+        
+        # Determine registry image name based on registry format
+        # docker.io/namespace/repo -> use model name as tag: docker.io/namespace/repo:model_name
+        # docker.io/namespace -> use model name as repo: docker.io/namespace/model_name:latest
+        registry_parts = registry.replace("docker.io/", "").split("/")
+        if len(registry_parts) >= 2:
+            # Registry already includes repo name (e.g., rocm/pytorch-private)
+            # Use model name as tag
+            registry_image_name = f"{registry}:{model_name}"
+            self.rich_console.print(f"  [dim]Registry format: namespace/repo -> using model name as tag[/dim]")
         else:
-            # Generate and submit build script
-            self.rich_console.print("[cyan]Submitting build job via sbatch...[/cyan]")
-            
-            # Get absolute path for context file
-            abs_context_file = str(context_file_path.absolute()) if context_file_path else ""
-            abs_manifest_output = str(Path(manifest_output).absolute())
-            
-            # Rebuild command with absolute paths for sbatch
-            build_cmd_abs = f"madengine build {tags_str}"
-            if abs_context_file:
-                build_cmd_abs += f" --additional-context-file {abs_context_file}"
-            build_cmd_abs += f" --manifest-output {abs_manifest_output}"
-            if registry:
-                build_cmd_abs += f" --registry {registry}"
-            if clean_cache:
-                build_cmd_abs += " --clean-docker-cache"
-            
-            # Discover models to get Dockerfile path
-            discover_models = DiscoverModels(args=self.args)
-            models = discover_models.run()
-            dockerfile_path = ""
-            dockerfile_name = ""
-            if models:
-                dockerfile = models[0].get("dockerfile", "")
-                # Find the actual Dockerfile
-                import glob
-                dockerfile_patterns = [
-                    f"{dockerfile}.ubuntu.amd.Dockerfile",
-                    f"{dockerfile}.Dockerfile",
-                    f"{dockerfile}",
-                ]
-                for pattern in dockerfile_patterns:
-                    matches = glob.glob(pattern)
-                    if matches:
-                        dockerfile_path = matches[0]
-                        dockerfile_name = Path(dockerfile_path).name
-                        break
-            
-            self.rich_console.print(f"  Nodes: {nodes} (building on all nodes)")
-            if dockerfile_path:
-                self.rich_console.print(f"  Dockerfile: {dockerfile_path}")
-            
-            build_script_content = f"""#!/bin/bash
+            # Registry is just namespace (e.g., myuser)
+            # Use model name as repo
+            registry_image_name = f"{registry}/{model_name}:latest"
+            self.rich_console.print(f"  [dim]Registry format: namespace -> using model name as repo[/dim]")
+        
+        self.rich_console.print("[bold cyan]🐳 Docker Configuration:[/bold cyan]")
+        self.rich_console.print(f"  Dockerfile: {dockerfile_path}")
+        self.rich_console.print(f"  Local image: {local_image_name}")
+        self.rich_console.print(f"  Registry image: {registry_image_name}")
+        self.rich_console.print("")
+        
+        # Determine registry host for docker login
+        registry_host = registry.split("/")[0] if "/" in registry else registry
+        
+        # Build script content - builds on 1 node, pushes to registry
+        build_script_content = f"""#!/bin/bash
 #SBATCH --job-name=madengine-build
 #SBATCH --partition={partition}
-#SBATCH --nodes={nodes}
-#SBATCH --ntasks={nodes}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --time={time_limit}
 {f'#SBATCH --reservation={reservation}' if reservation else ''}
 #SBATCH --output=madengine_build_%j.out
 #SBATCH --error=madengine_build_%j.err
 
-echo "=== Building on compute nodes ==="
+echo "============================================================"
+echo "=== MADENGINE BUILD ON COMPUTE NODE ==="
+echo "============================================================"
+echo ""
 echo "Job ID: $SLURM_JOB_ID"
-echo "Nodes: $SLURM_NNODES"
-echo "Node list: $SLURM_NODELIST"
+echo "Build Node: $(hostname)"
 echo "Working directory: $(pwd)"
+echo "Registry: {registry}"
 echo ""
 
 # Change to submission directory
 cd {Path.cwd().absolute()}
 
-# Activate virtual environment if available
-if [ -f "{Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}" ]; then
-    source {Path('/shared_inference/ravgupta/madenginev2_slurm/venv/bin/activate').absolute()}
-    echo "Activated virtual environment"
+# Step 0: Docker login for registry push
+echo "=== Step 0: Docker Registry Authentication ==="
+DOCKER_USER="${{MAD_DOCKERHUB_USER:-}}"
+DOCKER_PASS="${{MAD_DOCKERHUB_PASSWORD:-}}"
+
+# Try credential.json if env vars not set
+if [ -z "$DOCKER_USER" ] && [ -f "credential.json" ]; then
+    echo "Reading credentials from credential.json..."
+    DOCKER_USER=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('username', ''))" 2>/dev/null || echo "")
+    DOCKER_PASS=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('password', ''))" 2>/dev/null || echo "")
 fi
 
-# Step 1: Build Docker image on ALL nodes in parallel
-echo ""
-echo "=== Building Docker image on all $SLURM_NNODES nodes ==="
-DOCKERFILE="{dockerfile_path}"
-if [ -n "$DOCKERFILE" ] && [ -f "$DOCKERFILE" ]; then
-    # Get the image name - must match exactly what madengine generates
-    # Format: ci-<model_name>_<dockerfile_basename_without_.Dockerfile>
-    IMAGE_NAME=$(basename $DOCKERFILE .Dockerfile)
-    FULL_IMAGE_NAME="ci-{models[0].get('name', 'model') if models else 'model'}_$IMAGE_NAME"
-    
-    echo "Dockerfile: $DOCKERFILE"
-    echo "Image name: $FULL_IMAGE_NAME"
-    
-    # Build on all nodes in parallel using srun
-    srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c "
-        echo \\\"[\\$(hostname)] Building Docker image...\\\"
-        cd {Path.cwd().absolute()}
-        docker build --network=host -t $FULL_IMAGE_NAME --pull -f $DOCKERFILE ./docker
-        BUILD_RC=\\$?
-        if [ \\$BUILD_RC -eq 0 ]; then
-            echo \\\"[\\$(hostname)] Docker build SUCCESS\\\"
-        else
-            echo \\\"[\\$(hostname)] Docker build FAILED with exit code \\$BUILD_RC\\\"
-        fi
-        exit \\$BUILD_RC
-    "
-    DOCKER_BUILD_EXIT=$?
-    
-    if [ $DOCKER_BUILD_EXIT -ne 0 ]; then
-        echo "Docker build failed on one or more nodes"
-        exit $DOCKER_BUILD_EXIT
+if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASS" ]; then
+    echo "Logging in to registry as $DOCKER_USER..."
+    echo "$DOCKER_PASS" | docker login {registry_host} -u "$DOCKER_USER" --password-stdin
+    LOGIN_RC=$?
+    if [ $LOGIN_RC -ne 0 ]; then
+        echo ""
+        echo "❌ Docker login FAILED with exit code $LOGIN_RC"
+        echo ""
+        echo "Troubleshooting:"
+        echo "  - Verify MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD are correct"
+        echo "  - For Docker Hub, use a Personal Access Token (PAT) not your password"
+        echo "  - Check if the registry URL is correct: {registry_host}"
+        exit $LOGIN_RC
     fi
+    echo "✅ Docker login SUCCESS"
+else
+    echo "No credentials found - assuming public registry or pre-authenticated"
+fi
+echo ""
+
+# Step 1: Build Docker image
+echo ""
+echo "=== Step 1: Building Docker image ==="
+echo "Dockerfile: {dockerfile_path}"
+echo "Local image name: {local_image_name}"
+echo ""
+
+docker build --network=host -t {local_image_name} {"--no-cache" if clean_cache else ""} --pull -f {dockerfile_path} ./docker
+BUILD_RC=$?
+
+if [ $BUILD_RC -ne 0 ]; then
     echo ""
-    echo "=== Docker image built on all nodes ==="
+    echo "❌ Docker build FAILED on $(hostname) with exit code $BUILD_RC"
+    exit $BUILD_RC
 fi
 
-# Step 2: Run madengine build on rank 0 to generate manifest
 echo ""
-echo "=== Generating build manifest ==="
-echo "Build command: {build_cmd_abs}"
+echo "✅ Docker build SUCCESS on $(hostname)"
 echo ""
 
-{build_cmd_abs}
-BUILD_EXIT=$?
+# Step 2: Tag and push to registry
+echo "=== Step 2: Pushing to registry ==="
+echo "Tagging: {local_image_name} -> {registry_image_name}"
+docker tag {local_image_name} {registry_image_name}
+
+echo "Pushing: {registry_image_name}"
+docker push {registry_image_name}
+PUSH_RC=$?
+
+if [ $PUSH_RC -ne 0 ]; then
+    echo ""
+    echo "❌ Docker push FAILED with exit code $PUSH_RC"
+    echo ""
+    echo "Troubleshooting:"
+    echo "  - Check if you have push access to {registry}"
+    echo "  - Verify credentials are correct (MAD_DOCKERHUB_USER, MAD_DOCKERHUB_PASSWORD)"
+    echo "  - For Docker Hub, ensure the repository exists or you have create permissions"
+    exit $PUSH_RC
+fi
 
 echo ""
-echo "=== Build completed with exit code: $BUILD_EXIT ==="
-exit $BUILD_EXIT
+echo "============================================================"
+echo "✅ BUILD AND PUSH COMPLETE"
+echo "============================================================"
+echo ""
+echo "Build Node: $(hostname)"
+echo "Registry Image: {registry_image_name}"
+echo ""
+echo "Run phase will pull this image in parallel on all nodes."
+echo "============================================================"
+
+exit 0
 """
-            build_script_path = Path("madengine_build_job.sh")
-            build_script_path.write_text(build_script_content)
-            build_script_path.chmod(0o755)
-            
-            self.rich_console.print(f"  Build script: {build_script_path}")
+        
+        build_script_path = Path("madengine_build_job.sh")
+        build_script_path.write_text(build_script_content)
+        build_script_path.chmod(0o755)
+        
+        if inside_allocation:
+            self.rich_console.print(f"[cyan]Running build via srun (inside allocation {existing_job_id})...[/cyan]")
+            cmd = ["srun", "-N1", "--ntasks=1", "bash", str(build_script_path)]
+        else:
+            self.rich_console.print("[cyan]Submitting build job via sbatch...[/cyan]")
             cmd = ["sbatch", "--wait", str(build_script_path)]
-
-        # Execute the build
+        
+        self.rich_console.print(f"  Build script: {build_script_path}")
         self.rich_console.print(f"  Command: {' '.join(cmd)}")
         self.rich_console.print("")
         
         try:
             result = subprocess.run(
                 cmd,
-                capture_output=False,  # Let output flow to console
+                capture_output=False,
                 text=True,
             )
             
@@ -806,11 +1017,64 @@ exit $BUILD_EXIT
                         "Check the build log files (madengine_build_*.out/err)",
                         "Verify SLURM partition and reservation settings",
                         "Ensure Docker is available on compute nodes",
+                        "Verify registry credentials are configured",
                     ],
                 )
             
+            # Generate manifest with registry image name
+            self.rich_console.print(f"\n[bold cyan]📄 Generating manifest...[/bold cyan]")
+            
+            manifest = {
+                "built_images": {
+                    registry_image_name: {
+                        "image_name": registry_image_name,
+                        "docker_image": registry_image_name,
+                        "local_image": local_image_name,
+                        "dockerfile": dockerfile_path,
+                        "build_time": 0,
+                        "built_on_compute": True,
+                        "registry": registry,
+                    }
+                },
+                "built_models": {
+                    registry_image_name: {
+                        "name": model_name,
+                        "image": registry_image_name,
+                        "docker_image": registry_image_name,
+                        "dockerfile": dockerfile_path,
+                        "scripts": model.get("scripts", ""),
+                        "data": model.get("data", ""),
+                        "n_gpus": model.get("n_gpus", "8"),
+                        "tags": model.get("tags", []),
+                        "slurm": slurm_config,
+                        "distributed": model.get("distributed", {}),
+                        "env_vars": model.get("env_vars", {}),
+                        "built_on_compute": True,
+                    }
+                },
+                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "deployment_config": {
+                    "slurm": slurm_config,
+                    "distributed": model.get("distributed", {}),
+                },
+                "credentials_required": [],
+                "summary": {
+                    "successful_builds": [model_name],
+                    "failed_builds": [],
+                    "total_build_time": 0,
+                    "successful_pushes": [registry_image_name],
+                    "failed_pushes": [],
+                },
+            }
+            
+            with open(manifest_output, "w") as f:
+                json.dump(manifest, f, indent=2)
+            
             self.rich_console.print(f"[green]✓ Build completed on compute node[/green]")
+            self.rich_console.print(f"[green]✓ Image pushed: {registry_image_name}[/green]")
             self.rich_console.print(f"[green]✓ Manifest: {manifest_output}[/green]")
+            self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+            
             return manifest_output
             
         except subprocess.TimeoutExpired:
@@ -821,6 +1085,8 @@ exit $BUILD_EXIT
                     component="BuildOrchestrator",
                 ),
             )
+        except (DiscoveryError, ConfigurationError, BuildError):
+            raise
         except Exception as e:
             raise BuildError(
                 f"Failed to build on compute node: {e}",

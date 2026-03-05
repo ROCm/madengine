@@ -632,7 +632,7 @@ class SlurmDeployment(BaseDeployment):
         script_lines.append("")
         script_lines.extend([
             "echo '=========================================='",
-            "echo 'Baremetal Launcher - SGLang Disaggregated'",
+            "echo 'Baremetal Launcher - slurm_multi'",
             "echo '=========================================='",
             f"echo 'Model: {model_info['name']}'",
             f"echo 'Script: {model_script_path}'",
@@ -640,6 +640,47 @@ class SlurmDeployment(BaseDeployment):
             "echo 'SLURM_NNODES:' $SLURM_NNODES",
             "echo 'SLURM_NODELIST:' $SLURM_NODELIST",
             "echo ''",
+        ])
+        
+        # Check if image was built on compute and needs parallel pull
+        built_on_compute = model_info.get("built_on_compute", False)
+        docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
+        
+        if built_on_compute and docker_image:
+            # Add parallel docker pull on all nodes
+            script_lines.extend([
+                "",
+                "# Pull Docker image in parallel on all nodes",
+                "echo '=========================================='",
+                "echo 'Pulling Docker image on all nodes in parallel'",
+                "echo '=========================================='",
+                f"echo 'Image: {docker_image}'",
+                "echo ''",
+                "",
+                f"srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c \"",
+                f"    echo \\\"[\\$(hostname)] Pulling {docker_image}...\\\"",
+                f"    docker pull {docker_image}",
+                "    PULL_RC=\\$?",
+                "    if [ \\$PULL_RC -eq 0 ]; then",
+                "        echo \\\"[\\$(hostname)] Pull SUCCESS\\\"",
+                "    else",
+                "        echo \\\"[\\$(hostname)] Pull FAILED with exit code \\$PULL_RC\\\"",
+                "    fi",
+                "    exit \\$PULL_RC",
+                "\"",
+                "PULL_EXIT=$?",
+                "",
+                "if [ $PULL_EXIT -ne 0 ]; then",
+                "    echo 'Docker pull failed on one or more nodes'",
+                "    exit $PULL_EXIT",
+                "fi",
+                "",
+                "echo ''",
+                "echo 'Docker image pulled on all nodes'",
+                "echo ''",
+            ])
+        
+        script_lines.extend([
             "",
             "# Change to script directory",
             f"cd {model_script_path.parent}",
