@@ -2130,6 +2130,7 @@ torchrun \\
         Prepare environment variables from multiple sources.
         
         Merges env vars from:
+        0. Manifest context docker_env_vars (e.g. MAD_SECRETS_HFTOKEN for gated models)
         1. Base additional_context
         2. Data provider
         3. Tools configuration
@@ -2141,6 +2142,13 @@ torchrun \\
             Merged environment variables dict
         """
         env_vars = {}
+
+        # 0. Manifest context docker_env_vars (build-time vars needed at run for K8s)
+        # e.g. MAD_SECRETS_HFTOKEN for HuggingFace gated model download inside the pod
+        manifest_ctx = self.manifest.get("context", {})
+        docker_env = manifest_ctx.get("docker_env_vars", {})
+        if docker_env:
+            env_vars.update({k: str(v) for k, v in docker_env.items()})
         
         # 1. Base environment variables from additional_context
         base_env = self.config.additional_context.get("env_vars", {})
@@ -3495,6 +3503,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
+            "launcher": self._get_resolved_launcher(),
             "gpu_architecture": "",
             
             # Performance metrics - FAILED
@@ -3540,6 +3549,18 @@ torchrun \\
             perf_csv_path.write_text(self._PERF_CSV_HEADER + "\n", encoding="utf-8")
             self.console.print("[dim]Created perf.csv with standard header[/dim]")
 
+    def _get_resolved_launcher(self) -> str:
+        """Resolve launcher from manifest deployment_config.distributed (or additional_context) and normalize for K8s."""
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        launcher_config = self.config.additional_context.get("launcher", {})
+        launcher_type = (
+            launcher_config.get("type")
+            if launcher_config.get("type") is not None
+            else distributed_config.get("launcher")
+        )
+        return normalize_launcher(launcher_type, "kubernetes")
+
     def _build_common_info_dict(
         self,
         model_info: Dict,
@@ -3576,7 +3597,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": deployment_id,
             "deployment_type": "kubernetes",
-            "launcher": "native",
+            "launcher": self._get_resolved_launcher(),
             "gpu_architecture": gpu_architecture,
             "relative_change": "",
             "build_duration": build_info.get("build_duration", ""),
@@ -3628,7 +3649,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": deployment_id,
             "deployment_type": "kubernetes",
-            "launcher": "native",
+            "launcher": self._get_resolved_launcher(),
             "gpu_architecture": item.get("gpu_architecture", ""),
             "performance": str(item.get("performance", "")),
             "metric": item.get("metric", ""),
