@@ -3469,6 +3469,8 @@ torchrun \\
         nproc_per_node = distributed_config.get("nproc_per_node")
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
+        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
         
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
@@ -3495,6 +3497,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
+            "launcher": launcher,
             "gpu_architecture": "",
             
             # Performance metrics - FAILED
@@ -3561,6 +3564,8 @@ torchrun \\
         total_gpus = nnodes * nproc_per_node
         gpus_per_node = str(nproc_per_node)
         nnodes_str = str(nnodes)
+        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
         result = {
             "n_gpus": str(total_gpus),
             "nnodes": nnodes_str,
@@ -3576,7 +3581,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": deployment_id,
             "deployment_type": "kubernetes",
-            "launcher": "native",
+            "launcher": launcher,
             "gpu_architecture": gpu_architecture,
             "relative_change": "",
             "build_duration": build_info.get("build_duration", ""),
@@ -3612,6 +3617,8 @@ torchrun \\
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
         
+        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
         result = {
             "model": item.get("model", model_info.get("name", "")),
             "n_gpus": str(nnodes * nproc_per_node),
@@ -3628,7 +3635,7 @@ torchrun \\
             "git_commit": "",
             "machine_name": deployment_id,
             "deployment_type": "kubernetes",
-            "launcher": "native",
+            "launcher": launcher,
             "gpu_architecture": item.get("gpu_architecture", ""),
             "performance": str(item.get("performance", "")),
             "metric": item.get("metric", ""),
