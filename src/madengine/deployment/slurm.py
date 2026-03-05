@@ -464,12 +464,14 @@ class SlurmDeployment(BaseDeployment):
             "echo ''",
         ])
         
-        # Check if image was built on compute and needs parallel pull
-        built_on_compute = model_info.get("built_on_compute", False)
+        # Check if image needs parallel pull on all nodes
+        # Pull if: image is from registry (contains / or .) and not a local ci-* build
         docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
+        is_registry_image = docker_image and not docker_image.startswith("ci-") and ("/" in docker_image or "." in docker_image)
         
-        if built_on_compute and docker_image:
+        if is_registry_image:
             # Add parallel docker pull on all nodes
+            # This ensures all nodes have the image before running
             script_lines.extend([
                 "",
                 "# Pull Docker image in parallel on all nodes",
