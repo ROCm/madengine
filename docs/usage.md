@@ -351,6 +351,27 @@ madengine build --tags model \
 - Respects login node resource policies
 - Parallel pull scales to many nodes
 
+### Multi-Node SLURM (slurm_multi)
+
+Models using the `slurm_multi` launcher **require** either `--registry` or `--use-image`:
+
+```bash
+# Option 1: Build and push
+madengine build --tags sglang_model --registry docker.io/myorg
+
+# Option 2: Use pre-built image
+madengine build --tags sglang_model --use-image
+
+# Option 3: Build on compute
+madengine build --tags sglang_model --build-on-compute --registry docker.io/myorg
+```
+
+**Why?** Multi-node jobs run on multiple compute nodes. Each node needs the Docker image, and local builds only exist on the login node.
+
+**Parallel Pull:** During `madengine run`, registry images are automatically pulled in parallel on all nodes before execution.
+
+**Re-using images:** For subsequent runs with the same image, use `--use-image` to skip building.
+
 ## Run Workflow
 
 ### Skip model run after build

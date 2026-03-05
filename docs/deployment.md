@@ -454,6 +454,23 @@ For disaggregated inference workloads like SGLang Disaggregated, madengine suppo
 - Workloads requiring direct SLURM node control
 - Custom Docker orchestration via `.slurm` scripts
 
+**Registry Requirement:**
+
+Models using `slurm_multi` **require** either `--registry` or `--use-image` during build:
+
+```bash
+# Option 1: Build and push to registry
+madengine build --tags model --registry docker.io/myorg
+
+# Option 2: Use pre-built image
+madengine build --tags model --use-image
+
+# Option 3: Build on compute and push
+madengine build --tags model --build-on-compute --registry docker.io/myorg
+```
+
+This ensures all compute nodes can pull the image in parallel during `madengine run`.
+
 See [Launchers Guide](launchers.md#7-sglang-disaggregated-new) for detailed configuration.
 
 ## Troubleshooting
