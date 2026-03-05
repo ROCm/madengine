@@ -284,7 +284,12 @@ madengine build --batch-manifest batch.json \
 Skip Docker build entirely and use an existing image:
 
 ```bash
-# Use external image (e.g., from Docker Hub)
+# Auto-detect image from model card's DOCKER_IMAGE_NAME env var
+madengine build --tags sglang_disagg \
+  --use-image \
+  --additional-context-file slurm-config.json
+
+# Or explicitly specify the image
 madengine build --tags sglang_disagg \
   --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
   --additional-context-file slurm-config.json
@@ -292,6 +297,15 @@ madengine build --tags sglang_disagg \
 # Then run normally
 madengine run --manifest-file build_manifest.json
 ```
+
+**Image Resolution:**
+1. If `--use-image <name>` provided → use that image
+2. If `--use-image` (no value) → auto-detect from model card's `DOCKER_IMAGE_NAME`
+3. If no image found → error with helpful message
+
+**Mutual Exclusivity:**
+- Cannot use with `--registry` (push requires local build)
+- Cannot use with `--build-on-compute` (skip vs. build)
 
 **Use cases:**
 - Official framework images (SGLang, vLLM, PyTorch NGC)
@@ -306,32 +320,36 @@ The manifest marks the image as `"prebuilt": true` with zero build time.
 For SLURM environments where login nodes have limited resources:
 
 ```bash
-# Build on compute nodes instead of login node
+# Build on 1 compute node, push to registry, pull in parallel at runtime
 madengine build --tags model \
   --build-on-compute \
-  --additional-context-file slurm-config.json
+  --registry docker.io/myorg \
+  --additional-context '{"slurm": {"reservation": "my-res"}}'
 ```
 
-**slurm-config.json:**
-```json
-{
-  "slurm": {
-    "partition": "gpu",
-    "nodes": 3,
-    "time": "02:00:00"
-  }
-}
-```
+**Required:** `--registry` must be specified.
+
+**SLURM Config Merging:**
+- Model card's `slurm` section provides base configuration
+- `--additional-context` overrides specific fields
+- Only specify what's missing or needs override
 
 **How it works:**
-1. Submits `madengine_build_job.sh` via `sbatch --wait`
-2. Builds Docker image on ALL allocated nodes in parallel
-3. Generates manifest after completion
+
+*Build Phase:*
+1. Builds Docker image on **1 compute node**
+2. Pushes image to registry
+3. Stores registry image name in manifest
+
+*Run Phase:*
+1. Pulls image **in parallel on ALL nodes** via `srun docker pull`
+2. Executes model script
 
 **Benefits:**
 - Offloads heavy build to compute resources
-- Image available on all nodes simultaneously
+- Build once, distribute via registry pull
 - Respects login node resource policies
+- Parallel pull scales to many nodes
 
 ## Run Workflow
 

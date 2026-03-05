@@ -59,7 +59,9 @@ def build(
         Optional[str],
         typer.Option(
             "--use-image",
-            help="Skip Docker build and use pre-built image (e.g., lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x)"
+            is_flag=False,
+            flag_value="auto",
+            help="Skip Docker build and use pre-built image. Optionally specify image name, or omit to auto-detect from model card's DOCKER_IMAGE_NAME"
         ),
     ] = None,
     build_on_compute: Annotated[
@@ -127,6 +129,31 @@ def build(
     if additional_context_file and additional_context!="{}":
         console.print(
             "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if use_image and registry:
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --use-image and --registry options[/bold red]\n"
+            "[yellow]Use --use-image for pre-built external images.[/yellow]\n"
+            "[yellow]Use --registry to push locally built images.[/yellow]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if use_image and build_on_compute:
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --use-image and --build-on-compute options[/bold red]\n"
+            "[yellow]--use-image skips Docker build entirely.[/yellow]\n"
+            "[yellow]--build-on-compute builds on SLURM compute nodes.[/yellow]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if build_on_compute and not registry:
+        console.print(
+            "❌ [bold red]Error: --build-on-compute requires --registry option[/bold red]\n"
+            "[yellow]Build on compute node pushes image to registry.[/yellow]\n"
+            "[yellow]Run phase will pull image in parallel on all nodes.[/yellow]\n"
+            "[dim]Example: --build-on-compute --registry docker.io/myorg[/dim]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
