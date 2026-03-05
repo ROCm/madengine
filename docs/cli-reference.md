@@ -285,6 +285,58 @@ If required SLURM fields are missing, specific errors are shown:
 
 ---
 
+**Multi-Node SLURM Launcher (`slurm_multi`):**
+
+Models using the `slurm_multi` launcher (for multi-node distributed inference) **require** either `--registry` or `--use-image`:
+
+```bash
+# Option 1: Build and push to registry
+madengine build --tags sglang_model \
+  --registry docker.io/myorg \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Option 2: Use pre-built image from registry
+madengine build --tags sglang_model \
+  --use-image docker.io/myorg/sglang:latest
+
+# Option 3: Build on compute and push
+madengine build --tags sglang_model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context-file config.json
+```
+
+**Why this requirement?**
+
+Multi-node SLURM jobs run on multiple compute nodes. Each node needs access to the Docker image:
+- Local builds only exist on the login/build node
+- Compute nodes cannot access locally built images
+- Registry images enable parallel `docker pull` on all nodes
+
+**Parallel Image Pull:**
+
+During `madengine run`, images from a registry are automatically pulled in parallel on all allocated nodes:
+
+```bash
+srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES docker pull <image>
+```
+
+This ensures fast, consistent image availability across the cluster.
+
+**Re-using Images:**
+
+For subsequent runs with the same image, use `--use-image` to skip building:
+
+```bash
+# First run: build and push
+madengine build --tags model --registry docker.io/myorg
+
+# Subsequent runs: use pre-built image
+madengine build --tags model --use-image docker.io/myorg/model:latest
+```
+
+---
+
 ### `run` - Execute Models
 
 Run models locally or deploy to Kubernetes/SLURM clusters.

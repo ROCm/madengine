@@ -218,6 +218,33 @@ class BuildOrchestrator:
                 manifest_output=manifest_output,
                 batch_build_metadata=batch_build_metadata,
             )
+        
+        # For normal build: check if slurm_multi launcher requires registry
+        # Discover models first to check launcher
+        discover_models = DiscoverModels(args=self.args)
+        discovered_models = discover_models.run()
+        
+        if discovered_models:
+            for model in discovered_models:
+                launcher = model.get("distributed", {}).get("launcher", "")
+                if launcher in ["slurm_multi", "slurm-multi"] and not registry:
+                    model_name = model.get("name", "unknown")
+                    raise ConfigurationError(
+                        f"slurm_multi launcher requires --registry or --use-image",
+                        context=create_error_context(
+                            operation="build",
+                            component="BuildOrchestrator",
+                            model=model_name,
+                            launcher=launcher,
+                        ),
+                        suggestions=[
+                            "Use --registry docker.io/myorg to push image (nodes will pull in parallel)",
+                            "Use --use-image to use a pre-built image from registry",
+                            "Use --build-on-compute --registry to build on compute and push",
+                            "For subsequent runs with same image, use: --use-image",
+                        ],
+                    )
+        
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print("[bold blue]🔨 BUILD PHASE[/bold blue]")
         self.rich_console.print("[yellow](Build-only mode - no GPU detection)[/yellow]")
@@ -517,6 +544,10 @@ class BuildOrchestrator:
                 model_name = model.get("name", "unknown")
                 model_distributed = model.get("distributed", {})
                 
+                # Merge DOCKER_IMAGE_NAME into env_vars for parallel pull in run phase
+                model_env_vars = model.get("env_vars", {}).copy()
+                model_env_vars["DOCKER_IMAGE_NAME"] = use_image
+                
                 # Use image name as key so slurm.py can find docker_image
                 manifest["built_models"][use_image] = {
                     "name": model_name,
@@ -534,7 +565,7 @@ class BuildOrchestrator:
                     "args": model.get("args", ""),
                     "slurm": model.get("slurm", {}),
                     "distributed": model_distributed,
-                    "env_vars": model.get("env_vars", {}),
+                    "env_vars": model_env_vars,
                     "prebuilt": True,
                 }
                 manifest["summary"]["successful_builds"].append(model_name)
@@ -1048,7 +1079,7 @@ exit 0
                         "tags": model.get("tags", []),
                         "slurm": slurm_config,
                         "distributed": model.get("distributed", {}),
-                        "env_vars": model.get("env_vars", {}),
+                        "env_vars": {**model.get("env_vars", {}), "DOCKER_IMAGE_NAME": registry_image_name},
                         "built_on_compute": True,
                     }
                 },

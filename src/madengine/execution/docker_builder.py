@@ -416,6 +416,17 @@ class DockerBuilder:
                     "registry"
                 )
 
+        # Update built_models with registry image name for parallel pull in slurm_multi
+        # Map local image to registry image for env_vars
+        for image_name, build_info in self.built_images.items():
+            registry_image = build_info.get("registry_image")
+            if registry_image and image_name in self.built_models:
+                model_data = self.built_models[image_name]
+                if "env_vars" not in model_data:
+                    model_data["env_vars"] = {}
+                # Set DOCKER_IMAGE_NAME to registry image for parallel pull
+                model_data["env_vars"]["DOCKER_IMAGE_NAME"] = registry_image
+        
         manifest = {
             "built_images": self.built_images,
             "built_models": self.built_models,
