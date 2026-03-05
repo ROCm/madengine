@@ -109,6 +109,12 @@ def build(
             "❌ [bold red]Error: Cannot specify both --batch-manifest and --tags options[/bold red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
+    
+    if additional_context_file and additional_context != "{}":
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
 
     # Process batch manifest if provided
     batch_data = None
