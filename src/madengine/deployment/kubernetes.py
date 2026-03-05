@@ -56,6 +56,7 @@ VALID_LAUNCHERS = [
     "torchtitan",
     "deepspeed",
     "megatron-lm",
+    "primus",
     "vllm",
     "sglang",
     "sglang-disagg"
@@ -873,6 +874,14 @@ class KubernetesDeployment(BaseDeployment):
             
             self.console.print(f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
+        elif launcher_type == "primus":
+            if not isinstance(nnodes, int) or nnodes < 1:
+                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+            if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+            
+            self.console.print(f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+
         # Determine if we need multi-node setup
         create_headless_service = False
         launcher_command = None
@@ -984,6 +993,19 @@ class KubernetesDeployment(BaseDeployment):
             
             # Generate Megatron-LM launcher command
             launcher_command = self._generate_megatron_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh")
+            )
+
+        elif launcher_type == "primus":
+            if nnodes > 1:
+                create_headless_service = True
+                self.console.print(f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]")
+            
+            # Generate Primus launcher command (env-only: PRIMUS_CONFIG_PATH, PRIMUS_CLI_EXTRA)
+            launcher_command = self._generate_primus_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
@@ -2104,7 +2126,30 @@ torchrun \\
     --master_addr=${{MASTER_ADDR}} \\
     --master_port={master_port} \\
     {model_script}"""
-    
+
+    def _generate_primus_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+    ) -> str:
+        """
+        Generate Primus launcher command for K8s Indexed Jobs.
+
+        Primus (Megatron-LM, TorchTitan, Jax/MaxText) runs via model script that calls
+        run_pretrain.sh. We only export PRIMUS_CONFIG_PATH and optional PRIMUS_CLI_EXTRA.
+        NNODES, NODE_RANK, MASTER_ADDR, etc. are set by the job template.
+        """
+        primus_cfg = self.config.additional_context.get("distributed", {}).get("primus", {})
+        config_path = primus_cfg.get("config_path", "exp_pretrain.yaml")
+        cli_extra = primus_cfg.get("cli_extra", "")
+        config_path_quoted = config_path.replace('"', '\\"')
+        lines = [
+            "# Primus launcher (model script runs run_pretrain.sh)",
+            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
+        ]
+        if (cli_extra or "").strip():
+            cli_extra_quoted = cli_extra.replace('"', '\\"')
+            lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
+        return "\n".join(lines)
+
     def _load_k8s_tools(self) -> Dict:
         """
         Load K8s-specific tools configuration.

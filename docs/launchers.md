@@ -16,6 +16,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **DeepSpeed** | Training | ZeRO optimization training | ✅ | ✅ | ✅ |
 | **Megatron-LM** | Training | Large-scale transformer training | ✅ | ✅ | ✅ |
 | **TorchTitan** | Training | LLM pre-training (FSDP2+TP+PP) | ✅ | ✅ | ✅ |
+| **Primus** | Training | Megatron/TorchTitan/Jax via Primus config | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
@@ -223,6 +224,43 @@ TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
 **Examples**:
 - K8s: `examples/k8s-configs/minimal/torchtitan-single-node-minimal.json`
 - SLURM: `examples/slurm-configs/minimal/torchtitan-single-node-minimal.json`
+
+---
+
+### 5b. Primus
+
+**Purpose**: Unified pretrain entry for Megatron-LM, TorchTitan, and Jax/MaxText via Primus experiment YAML.
+
+**When to Use**:
+- Run Primus example configs (e.g. `examples/megatron/configs/MI300X/*.yaml`) via madengine
+- Single image plus config path; scheduling and tools/metrics from madengine
+
+**Configuration**:
+```json
+{
+  "distributed": {
+    "launcher": "primus",
+    "nnodes": 2,
+    "nproc_per_node": 8,
+    "primus": {
+      "config_path": "examples/megatron/configs/MI300X/deepseek_v2_lite-BF16-pretrain.yaml",
+      "cli_extra": ""
+    }
+  }
+}
+```
+
+**Features**:
+- Launcher only sets `PRIMUS_CONFIG_PATH` and optional `PRIMUS_CLI_EXTRA`; no `MAD_MULTI_NODE_RUNNER`
+- Model script (e.g. `run.sh`) sets `EXP` and calls Primus `run_pretrain.sh`
+- NNODES, NODE_RANK, MASTER_ADDR, etc. set by madengine job template
+- Use with MAD-Internal Primus submodule and `scripts/primus_pretrain/run.sh`
+
+**Examples**:
+- SLURM: `examples/slurm-configs/minimal/primus-minimal.json`
+- K8s: `examples/k8s-configs/minimal/primus-minimal.json`
+
+---
 
 **Model Configuration** (TOML):
 ```toml
@@ -519,16 +557,16 @@ madengine run --tags model --config custom-split-config.json
 
 ### Training Launchers
 
-| Feature | torchrun | DeepSpeed | Megatron-LM | TorchTitan |
-|---------|----------|-----------|-------------|------------|
-| **Data Parallel** | ✅ DDP | ✅ ZeRO | ✅ | ✅ FSDP2 |
-| **Tensor Parallel** | ❌ | ❌ | ✅ | ✅ |
-| **Pipeline Parallel** | ❌ | ✅ | ✅ | ✅ |
-| **Memory Efficiency** | Medium | High (ZeRO) | High | Very High |
-| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
-| **Model Size** | Small-Medium | Medium-Large | Very Large | Very Large |
-| **K8s Support** | ✅ | ✅ | ✅ | ✅ |
-| **SLURM Support** | ✅ | ✅ | ✅ | ✅ |
+| Feature | torchrun | DeepSpeed | Megatron-LM | TorchTitan | Primus |
+|---------|----------|-----------|-------------|------------|--------|
+| **Data Parallel** | ✅ DDP | ✅ ZeRO | ✅ | ✅ FSDP2 | via config |
+| **Tensor Parallel** | ❌ | ❌ | ✅ | ✅ | via config |
+| **Pipeline Parallel** | ❌ | ✅ | ✅ | ✅ | via config |
+| **Memory Efficiency** | Medium | High (ZeRO) | High | Very High | config-driven |
+| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **Model Size** | Small-Medium | Medium-Large | Very Large | Very Large | config-driven |
+| **K8s Support** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **SLURM Support** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### Inference Launchers
 
@@ -646,6 +684,13 @@ TORCHTITAN_FSDP_ENABLED=1
 MAD_MULTI_NODE_RUNNER="torchrun ..."
 ```
 
+**Primus**:
+```bash
+PRIMUS_CONFIG_PATH="examples/megatron/configs/MI300X/..."
+PRIMUS_CLI_EXTRA=""   # optional
+# No MAD_MULTI_NODE_RUNNER (model script calls Primus run_pretrain.sh)
+```
+
 **vLLM**:
 ```bash
 VLLM_TENSOR_PARALLEL_SIZE=4
@@ -681,7 +726,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `sglang-disagg`
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`
 
 **2. Multi-Node Communication Fails**
 ```bash
