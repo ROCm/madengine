@@ -1137,33 +1137,37 @@ class ContainerRunner:
                                 multiple_results = multiple_results.strip()
 
                             if multiple_results:
-                                # Validate multiple results file and read performance/metric from CSV
+                                # Validate multiple results file (format: model, performance, metric)
+                                # and set primary performance from tokens_per_second row, else first valid row
                                 try:
                                     import csv
                                     with open(multiple_results, "r") as f:
                                         csv_reader = csv.DictReader(f)
-                                        
-                                        # Check if 'performance' column exists
                                         if csv_reader.fieldnames and 'performance' not in csv_reader.fieldnames:
                                             print("Error: 'performance' column not found in multiple results file.")
                                             run_results["performance"] = None
                                             run_results["metric"] = None
                                         else:
-                                            # Use first row with non-empty performance value
                                             run_results["performance"] = None
                                             run_results["metric"] = None
+                                            first_valid = None
                                             for row in csv_reader:
                                                 perf_val = (row.get('performance') or '').strip()
+                                                metric_val = (row.get('metric') or '').strip()
                                                 if perf_val:
-                                                    run_results["performance"] = perf_val
-                                                    run_results["metric"] = (
-                                                        row.get('metric') or ''
-                                                    ).strip() or "tokens_per_second"
-                                                    print(
-                                                        f"✓ Extracted performance (CSV): {run_results['performance']} {run_results['metric']}"
-                                                    )
-                                                    break
-                                            if not run_results.get("performance"):
+                                                    if first_valid is None:
+                                                        first_valid = (perf_val, metric_val or "tokens_per_second")
+                                                    if metric_val == "tokens_per_second":
+                                                        run_results["performance"] = perf_val
+                                                        run_results["metric"] = "tokens_per_second"
+                                                        break
+                                            if run_results.get("performance") is None and first_valid:
+                                                run_results["performance"], run_results["metric"] = first_valid
+                                            if run_results.get("performance"):
+                                                print(
+                                                    f"✓ Extracted performance (CSV): {run_results['performance']} {run_results['metric']}"
+                                                )
+                                            elif not first_valid:
                                                 print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
