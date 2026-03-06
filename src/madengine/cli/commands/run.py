@@ -165,6 +165,13 @@ def run(
             "❌ [red]Timeout must be -1 (default) or a positive integer[/red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
+    
+    # Validate mutually exclusive options
+    if additional_context_file and additional_context != "{}":
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
 
     # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
     if timeout == -1:
