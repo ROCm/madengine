@@ -1117,40 +1117,60 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
+                        # When model writes performance to a file in run_directory, copy to cwd
+                        # so the host can read it (e.g. bind-mounted workspace) before extraction.
+                        multiple_results_file = (model_info.get("multiple_results") or "").strip()
+                        if multiple_results_file:
+                            try:
+                                model_docker.sh(
+                                    f"cp {model_dir}/{multiple_results_file} . 2>/dev/null || true"
+                                )
+                            except Exception:
+                                pass
+
                         # Extract performance metrics from logs
                         # Look for performance data in the log output similar to original run_models.py
                         try:
                             # Check if multiple results file is specified in model_info
                             multiple_results = model_info.get("multiple_results", None)
+                            if multiple_results:
+                                multiple_results = multiple_results.strip()
 
                             if multiple_results:
-                                run_results["performance"] = multiple_results
-                                # Validate multiple results file format using proper CSV parsing
+                                # Validate multiple results file and read performance/metric from CSV
                                 try:
                                     import csv
                                     with open(multiple_results, "r") as f:
                                         csv_reader = csv.DictReader(f)
                                         
                                         # Check if 'performance' column exists
-                                        if 'performance' not in csv_reader.fieldnames:
+                                        if csv_reader.fieldnames and 'performance' not in csv_reader.fieldnames:
                                             print("Error: 'performance' column not found in multiple results file.")
                                             run_results["performance"] = None
+                                            run_results["metric"] = None
                                         else:
-                                            # Check if at least one row has a non-empty performance value
-                                            has_valid_perf = False
+                                            # Use first row with non-empty performance value
+                                            run_results["performance"] = None
+                                            run_results["metric"] = None
                                             for row in csv_reader:
-                                                if row.get('performance', '').strip():
-                                                    has_valid_perf = True
+                                                perf_val = (row.get('performance') or '').strip()
+                                                if perf_val:
+                                                    run_results["performance"] = perf_val
+                                                    run_results["metric"] = (
+                                                        row.get('metric') or ''
+                                                    ).strip() or "tokens_per_second"
+                                                    print(
+                                                        f"✓ Extracted performance (CSV): {run_results['performance']} {run_results['metric']}"
+                                                    )
                                                     break
-                                            
-                                            if not has_valid_perf:
-                                                run_results["performance"] = None
+                                            if not run_results.get("performance"):
                                                 print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
                                         f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
                                     )
                                     run_results["performance"] = None
+                                    run_results["metric"] = None
                             else:
                                 # Match the actual output format: "performance: 14164 samples_per_second"
                                 # Simple pattern to capture number and metric unit
