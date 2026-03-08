@@ -958,21 +958,14 @@ export MASTER_PORT={master_port}
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
-        
-        NOTE: Current implementation works with single-node jobs where perf.csv
-        is written to shared storage. For multi-node jobs with per-node metrics,
-        this would need enhancement to:
-        1. Read all node output files (madengine-*_jobid_noderank.out)
-        2. Parse per-node metrics from each file
-        3. Aggregate using _aggregate_node_metrics() (similar to kubernetes.py)
-        4. Write aggregated result to perf.csv
-        
-        Args:
-            deployment_id: SLURM job ID
+
+        Single-node: uses perf.csv from shared workspace (written by master).
+        Multi-node: parses performance from each node's .out file, aggregates
+        (e.g. sum for throughput), and writes one job-level row to perf.csv.
         """
         # Get session_start_row from config (passed from orchestrator)
         session_start_row = self.config.additional_context.get("session_start_row")
-        
+
         results = {
             "job_id": deployment_id,
             "nodes": self.nodes,
@@ -985,11 +978,44 @@ export MASTER_PORT={master_port}
         }
 
         try:
-            # Find output files
+            # Find output files (one per node: madengine-*_jobid_node_N.out or *_%t.out)
             output_pattern = f"madengine-*_{deployment_id}_*.out"
-            output_files = list(self.output_dir.glob(output_pattern))
+            output_files = sorted(self.output_dir.glob(output_pattern))
 
             results["logs"] = [str(f) for f in output_files]
+
+            # Multi-node: aggregate per-node metrics from node logs, then write one row
+            if self.nodes > 1 and output_files:
+                model_keys = list(self.manifest.get("built_models") or {})
+                model_name = model_keys[0] if model_keys else "unknown"
+                per_node_metrics = []
+                for out_path in output_files:
+                    try:
+                        content = out_path.read_text(encoding="utf-8", errors="ignore")
+                        perf_data = self._parse_performance_from_log(content, model_name)
+                        if perf_data:
+                            per_node_metrics.append(perf_data)
+                            self.console.print(
+                                f"[dim]  Parsed node: {perf_data.get('performance')} "
+                                f"{perf_data.get('metric', '')} (node_id={perf_data.get('node_id')})[/dim]"
+                            )
+                    except Exception as e:
+                        self.console.print(
+                            f"[yellow]⚠ Could not parse {out_path.name}: {e}[/yellow]"
+                        )
+                if per_node_metrics:
+                    launcher_type = self.distributed_config.get("launcher", "torchrun")
+                    aggregated = self._aggregate_node_metrics(
+                        per_node_metrics, self.nodes, launcher_type
+                    )
+                    if aggregated:
+                        self._ensure_perf_csv_exists()
+                        self._write_to_perf_csv(aggregated)
+                        self.console.print(
+                            f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes "
+                            f"({aggregated.get('aggregation_method', '')}): "
+                            f"{aggregated.get('performance')} {aggregated.get('metric', '')}[/green]"
+                        )
 
             # Find performance CSV files
             # Strategy 1: Check results_dir if configured
@@ -998,9 +1024,8 @@ export MASTER_PORT={master_port}
                 perf_pattern = f"perf_{deployment_id}_*.csv"
                 perf_files = list(results_dir.glob(perf_pattern))
                 results["perf_files"] = [str(f) for f in perf_files]
-            
+
             # Strategy 2: Check shared workspace (NFS) for perf.csv
-            # When using shared storage, perf.csv is written directly to workspace
             if not results["perf_files"]:
                 workspace_perf = Path("perf.csv")
                 if workspace_perf.exists():

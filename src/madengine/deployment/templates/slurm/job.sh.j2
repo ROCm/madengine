@@ -275,6 +275,12 @@ if 'deployment_config' in manifest:
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 
+# Multi-node: skip per-node perf write so collect_results can aggregate from node logs
+if {{ nodes }} > 1:
+    if manifest.get('context') is None:
+        manifest['context'] = {}
+    manifest['context']['skip_perf_collection'] = True
+
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
 print('Created Docker execution manifest for SLURM compute node')
@@ -535,6 +541,12 @@ if 'deployment_config' in manifest:
     
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
+
+# Multi-node: skip per-node perf write so collect_results can aggregate from node logs
+if {{ nodes }} > 1:
+    if manifest.get('context') is None:
+        manifest['context'] = {}
+    manifest['context']['skip_perf_collection'] = True
 
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)

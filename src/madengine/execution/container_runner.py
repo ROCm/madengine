@@ -1525,7 +1525,10 @@ class ContainerRunner:
         # Load deployment_config from manifest for GPU resolution
         if "deployment_config" in manifest and not self.additional_context:
             self.additional_context = {"deployment_config": manifest["deployment_config"]}
-        
+        # Merge manifest context (e.g. skip_perf_collection for multi-node SLURM aggregation)
+        if "context" in manifest and isinstance(manifest["context"], dict):
+            self.additional_context = {**(self.additional_context or {}), **manifest["context"]}
+
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")
             return {"successful_runs": [], "failed_runs": []}
