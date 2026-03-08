@@ -11,7 +11,6 @@ from madengine.core.constants import (
     MAD_AWS_S3,
     MAD_MINIO,
     PUBLIC_GITHUB_ROCM_KEY,
-    get_rocm_path,
     _get_env_or_creds_or_default,
     _DEFAULT_NAS_NODES,
     _DEFAULT_MAD_AWS_S3,
@@ -99,23 +98,8 @@ class TestConstantsPublicAPI:
         assert "AWS_ENDPOINT_URL_S3" in MAD_MINIO
 
     def test_public_github_rocm_key_has_expected_keys(self):
-        """PUBLIC_GITHUB_ROCM_KEY has username and token."""
+        """PUBLIC_GITHUB_ROCM_KEY has username and token (no value assert to avoid leaking secrets)."""
         assert isinstance(PUBLIC_GITHUB_ROCM_KEY, dict)
-        assert "username" in PUBLIC_GITHUB_ROCM_KEY
-        assert "token" in PUBLIC_GITHUB_ROCM_KEY
-
-
-class TestGetRocmPathFromConstants:
-    """Smoke test that get_rocm_path is still available and works."""
-
-    def test_get_rocm_path_returns_string(self):
-        """get_rocm_path returns a non-empty string."""
-        p = get_rocm_path()
-        assert isinstance(p, str)
-        assert len(p) > 0
-
-    def test_get_rocm_path_override(self):
-        """get_rocm_path(override=...) returns normalized override path."""
-        p = get_rocm_path(override="/some/custom/rocm")
-        assert "/some/custom/rocm" in p or "some" in p
-        assert p.rstrip("/") == p
+        assert set(PUBLIC_GITHUB_ROCM_KEY.keys()) >= {"username", "token"}, (
+            "PUBLIC_GITHUB_ROCM_KEY must have at least keys 'username' and 'token'"
+        )

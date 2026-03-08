@@ -29,6 +29,10 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.execution.container_runner_helpers import (
+    make_run_log_file_path,
+    resolve_run_timeout,
+)
 
 
 class ContainerRunner:
@@ -656,34 +660,8 @@ class ContainerRunner:
         """
         self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
 
-        # Apply timeout logic: model timeout can override default timeout
-        # If model has a timeout in models.json and CLI timeout is default (7200), use model's timeout
-        # If CLI timeout is explicitly set (not default), it overrides model timeout
-        if "timeout" in model_info and model_info["timeout"] is not None and model_info["timeout"] > 0 and timeout == 7200:
-            # Model has a timeout and CLI is using default, so use model's timeout
-            timeout = model_info["timeout"]
-
-        # Create log file for this run
-        # Extract dockerfile part from docker image name (remove "ci-" prefix and model name prefix)
-        image_name_without_ci = docker_image.replace("ci-", "")
-        model_name_clean = model_info["name"].replace("/", "_").lower()
-
-        # Remove model name from the beginning to get the dockerfile part
-        if image_name_without_ci.startswith(model_name_clean + "_"):
-            dockerfile_part = image_name_without_ci[len(model_name_clean + "_") :]
-        else:
-            dockerfile_part = image_name_without_ci
-
-        log_file_path = (
-            model_info["name"].replace("/", "_")
-            + "_"
-            + dockerfile_part
-            + phase_suffix
-            + ".live.log"
-        )
-        # Replace / with _ in log file path (already done above, but keeping for safety)
-        log_file_path = log_file_path.replace("/", "_")
-
+        timeout = resolve_run_timeout(model_info, timeout)
+        log_file_path = make_run_log_file_path(model_info, docker_image, phase_suffix)
         print(f"Run log will be written to: {log_file_path}")
 
         # get machine name

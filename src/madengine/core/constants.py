@@ -176,12 +176,21 @@ MAD_MINIO = _get_mad_minio()
 
 
 def _get_public_github_rocm_key():
-    """Initialize PUBLIC_GITHUB_ROCM_KEY configuration."""
-    return _get_env_or_creds_or_default(
+    """Initialize PUBLIC_GITHUB_ROCM_KEY configuration.
+
+    Returned dict always has keys 'username' and 'token' (public API).
+    Credential files may use 'password' for the token; that is normalized to 'token'.
+    """
+    raw = _get_env_or_creds_or_default(
         "PUBLIC_GITHUB_ROCM_KEY",
         "PUBLIC_GITHUB_ROCM_KEY",
         _DEFAULT_PUBLIC_GITHUB_ROCM_KEY,
     )
+    if not isinstance(raw, dict):
+        return dict(_DEFAULT_PUBLIC_GITHUB_ROCM_KEY)
+    # Normalize so public API always has username + token (accept creds that use "password")
+    token = raw.get("token") or raw.get("password")
+    return {"username": raw.get("username"), "token": token}
 
 
 PUBLIC_GITHUB_ROCM_KEY = _get_public_github_rocm_key()
