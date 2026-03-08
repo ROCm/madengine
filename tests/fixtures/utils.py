@@ -4,12 +4,13 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # built-in modules
+import csv
 import os
+import re
+import shutil
+import subprocess
 import sys
 import json
-import subprocess
-import shutil
-import re
 import pytest
 from unittest.mock import MagicMock
 
@@ -305,10 +306,10 @@ def get_num_cpus() -> int:
         int: Number of CPUs present.
     """
     global _num_cpus_cache
-    
+
     if _num_cpus_cache is not None:
         return _num_cpus_cache
-    
+
     try:
         # Lazy import to avoid collection issues
         from madengine.core.console import Console
@@ -319,3 +320,110 @@ def get_num_cpus() -> int:
         # Default to 64 CPUs if detection fails during collection
         _num_cpus_cache = 64
         return _num_cpus_cache
+
+
+# =============================================================================
+# E2E test helpers (run command, perf CSV, log path, timeout from log)
+# =============================================================================
+
+# Default list of perf output files to clean before/after e2e tests.
+DEFAULT_CLEAN_FILES = ["perf.csv", "perf.html"]
+
+
+def build_run_command(tags, extra_args="", output_file=None, additional_context=None):
+    """Build the base shell command for 'madengine run' e2e tests.
+
+    Args:
+        tags: Model tag(s) string, e.g. 'dummy' or 'dummy_ctxtest'.
+        extra_args: Optional CLI args to append (e.g. '--timeout 120').
+        output_file: Optional output CSV path (e.g. 'perf.csv' or 'perf_test.csv').
+        additional_context: Optional dict or JSON-str for --additional-context.
+            If dict, it is json.dumps'd and wrapped in single quotes.
+
+    Returns:
+        str: Full command to run in shell (cd BASE_DIR; MODEL_DIR=... python3 -m ...).
+    """
+    parts = [
+        "cd " + BASE_DIR + ";",
+        "MODEL_DIR=" + MODEL_DIR,
+        "python3 -m madengine.cli.app run --live-output --tags " + tags,
+    ]
+    cmd = " ".join(parts)
+    if output_file:
+        cmd += " -o " + output_file
+    if additional_context is not None:
+        if isinstance(additional_context, dict):
+            ctx_str = json.dumps(additional_context)
+            cmd += ' --additional-context "' + ctx_str.replace('"', '\\"') + '"'
+        else:
+            ctx_str = additional_context
+            cmd += " --additional-context '" + ctx_str.replace("'", "'\"'\"'") + "'"
+    if extra_args:
+        cmd += " " + extra_args.strip()
+    return cmd
+
+
+def assert_model_in_perf_csv(csv_path, model, status="SUCCESS", performance=None):
+    """Assert that a model row exists in perf CSV with given status and optional performance.
+
+    Fails with pytest.fail if no matching row or row does not match expectations.
+
+    Args:
+        csv_path: Path to the perf CSV file.
+        model: Model name to find (e.g. 'dummy_ctxtest' or 'dummy').
+        status: Expected status string (default 'SUCCESS').
+        performance: Optional expected performance value (compared as string to CSV).
+    """
+    if not os.path.exists(csv_path):
+        pytest.fail(f"Perf CSV not found: {csv_path}")
+    with open(csv_path, "r") as csv_file:
+        csv_reader = csv.DictReader(csv_file)
+        for row in csv_reader:
+            if row.get("model") != model:
+                continue
+            if row.get("status") != status:
+                pytest.fail(
+                    f"model {model} in perf CSV did not run successfully (status={row.get('status')})."
+                )
+            if performance is not None and str(row.get("performance", "")) != str(performance):
+                pytest.fail(
+                    f"model {model} expected performance {performance}, got {row.get('performance')}."
+                )
+            return
+    pytest.fail(f"model {model} not found in perf CSV.")
+
+
+def get_run_live_log_path(log_base_name, suffix=".run.live.log"):
+    """Return the path to a run live log file for the given base name and vendor.
+
+    Args:
+        log_base_name: Base name without extension, e.g. 'dummy_dummy' or 'dummy_timeout_dummy'.
+        suffix: Log file suffix (default '.run.live.log').
+
+    Returns:
+        str: Absolute path under BASE_DIR to the log file.
+    """
+    vendor = "amd" if not is_nvidia() else "nvidia"
+    return os.path.join(BASE_DIR, log_base_name + ".ubuntu." + vendor + suffix)
+
+
+def get_timeout_seconds_from_log(log_path, timeout_regex=None):
+    """Read the first 'Setting timeout to N seconds' line from a run log and return N.
+
+    Args:
+        log_path: Path to the run live log file.
+        timeout_regex: Optional compiled regex; default matches '⏰ Setting timeout to ([0-9]*) seconds.'
+
+    Returns:
+        str or None: The timeout seconds string, or None if not found.
+    """
+    if timeout_regex is None:
+        timeout_regex = re.compile(r"⏰ Setting timeout to ([0-9]*) seconds.")
+    if not os.path.exists(log_path):
+        return None
+    with open(log_path, "r") as f:
+        for line in f:
+            match = timeout_regex.search(line)
+            if match:
+                return match.group(1)
+    return None
