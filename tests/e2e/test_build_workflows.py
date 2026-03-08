@@ -24,6 +24,7 @@ import pytest
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from tests.fixtures.utils import generate_additional_context_for_machine
 
 
@@ -163,7 +164,7 @@ class TestDiscover:
     """Test the model discovery feature."""
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_static(self, global_data, clean_test_temp_files):
         """
@@ -189,7 +190,7 @@ class TestDiscover:
             pytest.fail("dummy2/model2 did not run successfully.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_dynamic(self, global_data, clean_test_temp_files):
         """
@@ -215,7 +216,7 @@ class TestDiscover:
             pytest.fail("dummy3/model4 did not run successfully.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_additional_args(self, global_data, clean_test_temp_files):
         """
@@ -245,7 +246,7 @@ class TestDiscover:
             pytest.fail("dummy2/model2:batch-size=32 did not run successfully.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_multiple(self, global_data, clean_test_temp_files):
         """
