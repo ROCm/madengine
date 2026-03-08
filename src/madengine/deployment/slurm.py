@@ -16,10 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
-from jinja2 import Environment, FileSystemLoader
-
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
-from .config_loader import ConfigLoader
+from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from typing import Optional
@@ -232,11 +230,7 @@ class SlurmDeployment(BaseDeployment):
         Args:
             config: Deployment configuration
         """
-        # Apply intelligent defaults using ConfigLoader
-        # This merges built-in presets with user configuration
-        full_config = ConfigLoader.load_slurm_config(config.additional_context)
-        config.additional_context = full_config
-
+        apply_deployment_config(config, ConfigLoader.load_slurm_config)
         super().__init__(config)
 
         # Parse SLURM configuration (now with defaults applied)
@@ -252,11 +246,7 @@ class SlurmDeployment(BaseDeployment):
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
-        self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
-        
-        # Register custom Jinja2 filters
-        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
-        self.jinja_env.filters['basename'] = lambda path: str(Path(path).name)
+        self.jinja_env = create_jinja_env(template_dir)
 
         # Generated script path
         self.script_path = None

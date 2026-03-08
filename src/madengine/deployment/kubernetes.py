@@ -33,14 +33,16 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Template
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
-from .config_loader import ConfigLoader
+from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from .config_loader import ConfigLoader, apply_deployment_config
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
 from madengine.core.errors import ConfigurationError, create_error_context
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
+from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
 try:
     from madengine.reporting.update_perf_csv import update_perf_csv
@@ -271,11 +273,7 @@ class KubernetesDeployment(BaseDeployment):
                 "Install with: pip install pyyaml"
             )
 
-        # Apply intelligent defaults using ConfigLoader
-        # This merges built-in presets with user configuration
-        full_config = ConfigLoader.load_k8s_config(config.additional_context)
-        config.additional_context = full_config
-
+        apply_deployment_config(config, ConfigLoader.load_k8s_config)
         super().__init__(config)
 
         # Parse K8s configuration (now with defaults applied)
@@ -288,11 +286,8 @@ class KubernetesDeployment(BaseDeployment):
 
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
-        self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
-        
-        # Register custom Jinja2 filters
-        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
-        
+        self.jinja_env = create_jinja_env(template_dir)
+
         # Initialize data provider (will be used if models need data)
         self.data = None
         self.context_for_data = None
@@ -454,7 +449,7 @@ class KubernetesDeployment(BaseDeployment):
             return
         
         # Load tools.json to get pre/post script definitions
-        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        tools_json_path = get_madengine_root() / "scripts" / "common" / "tools.json"
         if not tools_json_path.exists():
             return
         
@@ -492,7 +487,7 @@ class KubernetesDeployment(BaseDeployment):
         """
         import os
         script_contents = {}
-        madengine_root = Path(__file__).parent.parent  # Go up to madengine/ directory
+        madengine_root = get_madengine_root()
         
         for script_config in script_list:
             script_path = script_config.get("path", "")
@@ -784,7 +779,7 @@ class KubernetesDeployment(BaseDeployment):
                 data_provider_script = k8s_tools_config["data_providers"][provider_type]
                 
                 # Load K8s data provider script content
-                k8s_script_path = Path(__file__).parent.parent / data_provider_script["script"]
+                k8s_script_path = get_madengine_root() / data_provider_script["script"]
                 if k8s_script_path.exists():
                     with open(k8s_script_path, "r") as f:
                         data_provider_script_content = f.read()
@@ -3012,7 +3007,7 @@ torchrun \\
                         model_name=model_info.get("name", ""),
                     )
                     scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
                     num_entries = update_perf_super_json(
                         perf_super_json="perf_super.json",
                         multiple_results=str(resolved_csv_path),
@@ -3483,48 +3478,44 @@ torchrun \\
             
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
-            
+
             # Build information
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
-            
+
             # Runtime information
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
             "launcher": launcher,
             "gpu_architecture": "",
-            
+
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
-            
+
             # Timing
             "build_duration": build_info.get("build_duration", ""),
             "test_duration": "",
-            
+
             # Data information
             "dataname": model_info.get("data", ""),
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            
+
             # Build tracking
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        
-        # Flatten tags if they are in list format
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(item) for item in result["tags"])
-        
+        flatten_tags_in_place(result)
         return result
 
     # Standard perf.csv header (must match container_runner.ensure_perf_csv_exists)
@@ -3571,7 +3562,7 @@ torchrun \\
             "nnodes": nnodes_str,
             "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3590,11 +3581,10 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
 
     def _create_multiple_result_row_record(
@@ -3625,7 +3615,7 @@ torchrun \\
             "nnodes": str(nnodes),
             "gpus_per_node": str(nproc_per_node),
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3647,11 +3637,10 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
     
     def _parse_node_performance(

@@ -27,6 +27,8 @@ from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
+from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.utils.run_details import get_build_number, get_pipeline
 
 
 class ContainerRunner:
@@ -202,7 +204,7 @@ class ContainerRunner:
             "nnodes": nnodes,
             "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -228,7 +230,7 @@ class ContainerRunner:
             "data_provider_type": run_results.get("data_provider_type", ""),
             "data_size": run_results.get("data_size", ""),
             "data_download_duration": run_results.get("data_download_duration", ""),
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get(
                 "additional_docker_run_options", ""
             ),
@@ -240,7 +242,7 @@ class ContainerRunner:
         # Parse and load config file if present in args for perf_entry_super.json
         try:
             scripts_path = model_info.get("scripts", "")
-            scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
             config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
             run_details["configs"] = config_parser.parse_and_load(
                 model_info.get("args", ""),
@@ -746,7 +748,7 @@ class ContainerRunner:
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
         docker_options += (
-            f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
+            f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
         )
 
         # Gather data and environment
@@ -1353,7 +1355,7 @@ class ContainerRunner:
                                     # Update perf_super.json with multiple results
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
                                         
                                         # Reuse common_info.json for super files (no need for duplicate)
                                         num_entries = update_perf_super_json(
@@ -1395,7 +1397,7 @@ class ContainerRunner:
                                     # Update perf_super.json with single result
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
                                         
                                         # Use perf_entry.json as input (already created above)
                                         if run_results.get("status") == "SUCCESS":
@@ -1480,7 +1482,7 @@ class ContainerRunner:
                 # Update perf_super.json with exception result
                 try:
                     scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
                     
                     # Use perf_entry.json as input (already created above)
                     num_entries = update_perf_super_json(

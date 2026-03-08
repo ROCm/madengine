@@ -14,9 +14,25 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
+
+
+def create_jinja_env(template_dir: Path) -> Environment:
+    """Create a Jinja2 Environment with common filters for deployment templates.
+
+    Args:
+        template_dir: Path to the template directory (e.g. deployment/templates/slurm).
+
+    Returns:
+        Jinja2 Environment with dirname and basename filters registered.
+    """
+    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    env.filters["dirname"] = lambda path: str(Path(path).parent)
+    env.filters["basename"] = lambda path: str(Path(path).name)
+    return env
 
 
 class DeploymentStatus(Enum):

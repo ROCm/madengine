@@ -94,42 +94,66 @@ def _load_credentials():
 
 CREDS = _load_credentials()
 
+# Default value used for NAS_NODES when neither env nor creds provide it.
+_DEFAULT_NAS_NODES = [
+    {
+        "NAME": "DEFAULT",
+        "HOST": "localhost",
+        "PORT": 22,
+        "USERNAME": "username",
+        "PASSWORD": "password",
+    }
+]
+
+# Default value used for MAD_AWS_S3 when neither env nor creds provide it.
+_DEFAULT_MAD_AWS_S3 = {"USERNAME": None, "PASSWORD": None}
+
+# Default value used for MAD_MINIO when neither env nor creds provide it.
+_DEFAULT_MAD_MINIO = {
+    "USERNAME": None,
+    "PASSWORD": None,
+    "MINIO_ENDPOINT": "http://localhost:9000",
+    "AWS_ENDPOINT_URL_S3": "http://localhost:9000",
+}
+
+# Default value used for PUBLIC_GITHUB_ROCM_KEY when neither env nor creds provide it.
+_DEFAULT_PUBLIC_GITHUB_ROCM_KEY = {"username": None, "token": None}
+
+
+def _get_env_or_creds_or_default(env_key: str, creds_key: str, default):
+    """Load config from env (JSON), creds file, or default.
+
+    Priority: 1) environment variable (parsed as JSON), 2) credential file, 3) default.
+    Invalid JSON in env falls back to default with logging.
+
+    Args:
+        env_key: Environment variable name (e.g. "NAS_NODES").
+        creds_key: Key in CREDS dict (e.g. "NAS_NODES").
+        default: Default value if env unset and creds missing or env JSON invalid.
+
+    Returns:
+        Loaded value (same type as default, or from env/creds).
+    """
+    if env_key not in os.environ:
+        _log_config_info(f"{env_key} environment variable is not set.")
+        if creds_key in CREDS:
+            _log_config_info(f"{creds_key} loaded from credentials file.")
+            return CREDS[creds_key]
+        _log_config_info(f"{creds_key} is using default values.")
+        return default
+    _log_config_info(f"{env_key} is loaded from env variables.")
+    try:
+        return json.loads(os.environ[env_key])
+    except json.JSONDecodeError as e:
+        _log_config_info(
+            f"Error parsing {env_key} environment variable: {e}, using defaults"
+        )
+        return default
+
 
 def _get_nas_nodes():
     """Initialize NAS_NODES configuration."""
-    if "NAS_NODES" not in os.environ:
-        _log_config_info("NAS_NODES environment variable is not set.")
-        if "NAS_NODES" in CREDS:
-            _log_config_info("NAS_NODES loaded from credentials file.")
-            return CREDS["NAS_NODES"]
-        else:
-            _log_config_info("NAS_NODES is using default values.")
-            return [
-                {
-                    "NAME": "DEFAULT",
-                    "HOST": "localhost",
-                    "PORT": 22,
-                    "USERNAME": "username",
-                    "PASSWORD": "password",
-                }
-            ]
-    else:
-        _log_config_info("NAS_NODES is loaded from env variables.")
-        try:
-            return json.loads(os.environ["NAS_NODES"])
-        except json.JSONDecodeError as e:
-            _log_config_info(
-                f"Error parsing NAS_NODES environment variable: {e}, using defaults"
-            )
-            return [
-                {
-                    "NAME": "DEFAULT",
-                    "HOST": "localhost",
-                    "PORT": 22,
-                    "USERNAME": "username",
-                    "PASSWORD": "password",
-                }
-            ]
+    return _get_env_or_creds_or_default("NAS_NODES", "NAS_NODES", _DEFAULT_NAS_NODES)
 
 
 NAS_NODES = _get_nas_nodes()
@@ -137,64 +161,15 @@ NAS_NODES = _get_nas_nodes()
 
 def _get_mad_aws_s3():
     """Initialize MAD_AWS_S3 configuration."""
-    if "MAD_AWS_S3" not in os.environ:
-        _log_config_info("MAD_AWS_S3 environment variable is not set.")
-        if "MAD_AWS_S3" in CREDS:
-            _log_config_info("MAD_AWS_S3 loaded from credentials file.")
-            return CREDS["MAD_AWS_S3"]
-        else:
-            _log_config_info("MAD_AWS_S3 is using default values.")
-            return {
-                "USERNAME": None,
-                "PASSWORD": None,
-            }
-    else:
-        _log_config_info("MAD_AWS_S3 is loaded from env variables.")
-        try:
-            return json.loads(os.environ["MAD_AWS_S3"])
-        except json.JSONDecodeError as e:
-            _log_config_info(
-                f"Error parsing MAD_AWS_S3 environment variable: {e}, using defaults"
-            )
-            return {
-                "USERNAME": None,
-                "PASSWORD": None,
-            }
+    return _get_env_or_creds_or_default("MAD_AWS_S3", "MAD_AWS_S3", _DEFAULT_MAD_AWS_S3)
 
 
 MAD_AWS_S3 = _get_mad_aws_s3()
 
 
-# Check the MAD_MINIO environment variable which is a dict.
 def _get_mad_minio():
-    """Initialize MAD_MINIO configuration."""
-    if "MAD_MINIO" not in os.environ:
-        _log_config_info("MAD_MINIO environment variable is not set.")
-        if "MAD_MINIO" in CREDS:
-            _log_config_info("MAD_MINIO loaded from credentials file.")
-            return CREDS["MAD_MINIO"]
-        else:
-            _log_config_info("MAD_MINIO is using default values.")
-            return {
-                "USERNAME": None,
-                "PASSWORD": None,
-                "MINIO_ENDPOINT": "http://localhost:9000",
-                "AWS_ENDPOINT_URL_S3": "http://localhost:9000",
-            }
-    else:
-        _log_config_info("MAD_MINIO is loaded from env variables.")
-        try:
-            return json.loads(os.environ["MAD_MINIO"])
-        except json.JSONDecodeError as e:
-            _log_config_info(
-                f"Error parsing MAD_MINIO environment variable: {e}, using defaults"
-            )
-            return {
-                "USERNAME": None,
-                "PASSWORD": None,
-                "MINIO_ENDPOINT": "http://localhost:9000",
-                "AWS_ENDPOINT_URL_S3": "http://localhost:9000",
-            }
+    """Initialize MAD_MINIO configuration (dict with USERNAME, PASSWORD, MINIO_ENDPOINT, etc.)."""
+    return _get_env_or_creds_or_default("MAD_MINIO", "MAD_MINIO", _DEFAULT_MAD_MINIO)
 
 
 MAD_MINIO = _get_mad_minio()
@@ -202,29 +177,11 @@ MAD_MINIO = _get_mad_minio()
 
 def _get_public_github_rocm_key():
     """Initialize PUBLIC_GITHUB_ROCM_KEY configuration."""
-    if "PUBLIC_GITHUB_ROCM_KEY" not in os.environ:
-        _log_config_info("PUBLIC_GITHUB_ROCM_KEY environment variable is not set.")
-        if "PUBLIC_GITHUB_ROCM_KEY" in CREDS:
-            _log_config_info("PUBLIC_GITHUB_ROCM_KEY loaded from credentials file.")
-            return CREDS["PUBLIC_GITHUB_ROCM_KEY"]
-        else:
-            _log_config_info("PUBLIC_GITHUB_ROCM_KEY is using default values.")
-            return {
-                "username": None,
-                "token": None,
-            }
-    else:
-        _log_config_info("PUBLIC_GITHUB_ROCM_KEY is loaded from env variables.")
-        try:
-            return json.loads(os.environ["PUBLIC_GITHUB_ROCM_KEY"])
-        except json.JSONDecodeError as e:
-            _log_config_info(
-                f"Error parsing PUBLIC_GITHUB_ROCM_KEY environment variable: {e}, using defaults"
-            )
-            return {
-                "username": None,
-                "token": None,
-            }
+    return _get_env_or_creds_or_default(
+        "PUBLIC_GITHUB_ROCM_KEY",
+        "PUBLIC_GITHUB_ROCM_KEY",
+        _DEFAULT_PUBLIC_GITHUB_ROCM_KEY,
+    )
 
 
 PUBLIC_GITHUB_ROCM_KEY = _get_public_github_rocm_key()

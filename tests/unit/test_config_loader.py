@@ -19,7 +19,7 @@ from pathlib import Path
 
 from jinja2 import Template
 
-from madengine.deployment.config_loader import ConfigLoader
+from madengine.deployment.config_loader import ConfigLoader, apply_deployment_config
 from madengine.deployment.slurm import SlurmDeployment
 
 
@@ -154,6 +154,30 @@ class TestConfigLoaderBasics:
         assert result["k8s"]["cpu"] == "8"  # Still has default
         assert "CUSTOM_VAR" in result["env_vars"]
         assert "OMP_NUM_THREADS" in result["env_vars"]  # Default still there
+
+
+class TestApplyDeploymentConfig:
+    """Test apply_deployment_config helper."""
+
+    def test_apply_slurm_config_mutates_and_returns(self):
+        """apply_deployment_config mutates config.additional_context and returns full config."""
+        class FakeConfig:
+            additional_context = {"slurm": {"nodes": 2}}
+        config = FakeConfig()
+        result = apply_deployment_config(config, ConfigLoader.load_slurm_config)
+        assert result is config.additional_context
+        assert "slurm" in result
+        assert result["slurm"]["nodes"] == 2
+
+    def test_apply_k8s_config_mutates_and_returns(self):
+        """apply_deployment_config with load_k8s_config mutates and returns full config."""
+        class FakeConfig:
+            additional_context = {"k8s": {"gpu_count": 1}}
+        config = FakeConfig()
+        result = apply_deployment_config(config, ConfigLoader.load_k8s_config)
+        assert result is config.additional_context
+        assert "k8s" in result
+        assert result["k8s"]["gpu_count"] == 1
 
 
 class TestConfigLoaderK8sConfigs:
