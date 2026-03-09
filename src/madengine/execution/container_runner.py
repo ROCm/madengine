@@ -688,9 +688,14 @@ class ContainerRunner:
                 print(f"  ENV: {key}={value}")
         
         # Add env vars from additional_context
-        if self.additional_context and "env_vars" in self.additional_context:
-            for key, value in self.additional_context["env_vars"].items():
-                env[key] = str(value)
+        if self.additional_context:
+            if "env_vars" in self.additional_context:
+                for key, value in self.additional_context["env_vars"].items():
+                    env[key] = str(value)
+            # Propagate top-level string values as env vars (e.g. KUBECONFIG_PATH)
+            for key, value in self.additional_context.items():
+                if isinstance(value, str) and key not in env:
+                    env[key] = value
         
         # Run script with logging
         test_start_time = time.time()
@@ -863,25 +868,6 @@ class ContainerRunner:
         if build_info:
             run_results.update(build_info)
 
-        # Prepare docker run options
-        gpu_vendor = self.context.ctx["gpu_vendor"]
-        docker_options = ""
-
-        if gpu_vendor.find("AMD") != -1:
-            docker_options = (
-                "--network host -u root --group-add video "
-                "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --device /dev/fuse "
-                "--security-opt seccomp=unconfined --security-opt apparmor=unconfined --ipc=host "
-            )
-        elif gpu_vendor.find("NVIDIA") != -1:
-            docker_options = (
-                "-u root --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
-                "--security-opt seccomp=unconfined --security-opt apparmor=unconfined "
-                "--network host --ipc=host "
-            )
-        else:
-            raise RuntimeError("Unable to determine gpu vendor.")
-
         # Initialize scripts
         pre_encapsulate_post_scripts = {
             "pre_scripts": [],
@@ -901,6 +887,52 @@ class ContainerRunner:
             pre_encapsulate_post_scripts["encapsulate_script"] = self.context.ctx[
                 "encapsulate_script"
             ]
+
+        # ========== EARLY CHECK FOR BAREMETAL LAUNCHERS ==========
+        # Detect launcher before Docker setup so native/baremetal paths
+        # skip gpu_vendor checks and Docker option construction entirely.
+        launcher = ""
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+
+        launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
+
+        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in BAREMETAL_LAUNCHERS]:
+            self.rich_console.print(f"\n[bold cyan]🖥️ Running on BAREMETAL (launcher: {launcher})[/bold cyan]")
+            return self._run_on_baremetal(
+                model_info=model_info,
+                build_info=build_info,
+                log_file_path=log_file_path,
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
+                run_env={},
+            )
+        # ========== END EARLY BAREMETAL CHECK ==========
+
+        # Prepare docker run options
+        gpu_vendor = self.context.ctx["gpu_vendor"]
+        docker_options = ""
+
+        if gpu_vendor.find("AMD") != -1:
+            docker_options = (
+                "--network host -u root --group-add video "
+                "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --device /dev/fuse "
+                "--security-opt seccomp=unconfined --security-opt apparmor=unconfined --ipc=host "
+            )
+        elif gpu_vendor.find("NVIDIA") != -1:
+            docker_options = (
+                "-u root --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
+                "--security-opt seccomp=unconfined --security-opt apparmor=unconfined "
+                "--network host --ipc=host "
+            )
+        else:
+            raise RuntimeError("Unable to determine gpu vendor.")
 
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
@@ -1043,44 +1075,6 @@ class ContainerRunner:
             container_name = base_container_name
 
         print(f"Docker options: {docker_options}")
-
-        # ========== CHECK FOR BAREMETAL LAUNCHERS ==========
-        # Launchers like sglang-disagg run scripts directly on baremetal,
-        # not inside Docker. The script itself manages Docker containers via srun.
-        launcher = ""
-        
-        # Debug: Print all sources
-        print(f"🔍 Baremetal check - looking for launcher...")
-        print(f"   MAD_LAUNCHER_TYPE env: {os.environ.get('MAD_LAUNCHER_TYPE', '<not set>')}")
-        if self.additional_context:
-            distributed_config = self.additional_context.get("distributed", {})
-            launcher = distributed_config.get("launcher", "")
-            print(f"   additional_context.distributed.launcher: {launcher or '<not set>'}")
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-            print(f"   model_info.distributed.launcher: {launcher or '<not set>'}")
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
-            print(f"   Fallback to MAD_LAUNCHER_TYPE: {launcher or '<not set>'}")
-        
-        print(f"   Final launcher detected: {launcher or '<none>'}")
-        
-        # Normalize launcher name (replace underscores with hyphens)
-        launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
-        
-        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in BAREMETAL_LAUNCHERS]:
-            self.rich_console.print(f"\n[bold cyan]🖥️ Running on BAREMETAL (launcher: {launcher})[/bold cyan]")
-            self.rich_console.print(f"[dim]Script will manage its own Docker containers via SLURM[/dim]")
-            return self._run_on_baremetal(
-                model_info=model_info,
-                build_info=build_info,
-                log_file_path=log_file_path,
-                timeout=timeout,
-                run_results=run_results,
-                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
-                run_env=run_env,
-            )
-        # ========== END BAREMETAL CHECK ==========
 
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")

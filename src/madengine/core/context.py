@@ -251,6 +251,7 @@ class Context:
                 ("MAD_SYSTEM_GPU_PRODUCT_NAME", "none"),
             ):
                 self.ctx["docker_env_vars"].setdefault(_key, str(_default))
+            self.ctx.setdefault("gpu_vendor", self.ctx["docker_env_vars"].get("MAD_GPU_VENDOR", "none"))
             self.ctx.setdefault("docker_gpus", "")
             self.ctx.setdefault("gpu_renderDs", None)
             self._gpu_context_initialized = True
