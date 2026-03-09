@@ -624,24 +624,37 @@ class BuildOrchestrator:
             # Save deployment config
             self._save_deployment_config(manifest_output)
             
-            # Merge model's distributed config (especially launcher) into deployment_config
-            # This ensures sglang-disagg launcher is in deployment_config even if not in additional-context
-            if models and models[0].get("distributed"):
+            # Merge model's distributed and slurm config into deployment_config
+            # This ensures launcher and slurm settings are in deployment_config even if not in additional-context
+            if models:
                 with open(manifest_output, "r") as f:
                     saved_manifest = json.load(f)
                 
-                model_distributed = models[0].get("distributed", {})
                 if "deployment_config" not in saved_manifest:
                     saved_manifest["deployment_config"] = {}
                 
-                # Merge model's distributed into deployment_config.distributed
-                if "distributed" not in saved_manifest["deployment_config"]:
-                    saved_manifest["deployment_config"]["distributed"] = {}
+                # Merge model's distributed config
+                model_distributed = models[0].get("distributed", {})
+                if model_distributed:
+                    if "distributed" not in saved_manifest["deployment_config"]:
+                        saved_manifest["deployment_config"]["distributed"] = {}
+                    
+                    # Copy launcher and other critical fields from model config
+                    for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg", "vllm_disagg"]:
+                        if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
+                            saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
                 
-                # Copy launcher and other critical fields from model config
-                for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg"]:
-                    if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
-                        saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
+                # Merge model's slurm config into deployment_config.slurm
+                # This enables run phase to auto-detect SLURM deployment without --additional-context
+                model_slurm = models[0].get("slurm", {})
+                if model_slurm:
+                    if "slurm" not in saved_manifest["deployment_config"]:
+                        saved_manifest["deployment_config"]["slurm"] = {}
+                    
+                    # Copy slurm settings from model config
+                    for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir"]:
+                        if key in model_slurm and key not in saved_manifest["deployment_config"]["slurm"]:
+                            saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
                 
                 with open(manifest_output, "w") as f:
                     json.dump(saved_manifest, f, indent=2)

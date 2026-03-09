@@ -214,9 +214,8 @@ def build(
         )
 
     try:
-        # Validate additional context and merge file + CLI; defaults wired into orchestrator
         validated_context = validate_additional_context(
-            additional_context, additional_context_file
+            additional_context, additional_context_file, use_image
         )
 
         # Create arguments object

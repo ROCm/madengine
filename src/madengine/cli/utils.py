@@ -165,7 +165,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 else:
                     model_name = docker_image
                 return model_name
-        return str(item)[:20]
+        return str(item)
 
     # Helper function to format numbers
     def format_number(value):
@@ -247,7 +247,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 row_index += 1
         else:
             # Fallback for non-dict items
-            model_name = str(item)[:20]
+            model_name = str(item)
             if has_node_data:
                 row = [str(row_index), "✅ Success", model_name, "node-0", "-", "-"]
             else:

@@ -504,6 +504,10 @@ class SlurmDeployment(BaseDeployment):
                 "echo ''",
             ])
         
+        # Create completion marker path for robust completion detection
+        # Use absolute path since script will cd to different directory
+        completion_marker = (self.output_dir / f"madengine_{model_info['name']}.complete").resolve()
+        
         script_lines.extend([
             "",
             "# Change to script directory",
@@ -512,10 +516,21 @@ class SlurmDeployment(BaseDeployment):
             "# Run the model script directly on baremetal",
             f"echo 'Executing: bash {model_script_path.name} {model_args}'",
             f"bash {model_script_path.name} {model_args}",
+            "SCRIPT_EXIT_CODE=$?",
             "",
             "echo ''",
             "echo 'Script completed.'",
+            "",
+            "# Write completion marker for madengine to detect",
+            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker}",
+            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker}",
+            f"echo 'Completion marker written: {completion_marker}'",
+            "",
+            "exit $SCRIPT_EXIT_CODE",
         ])
+        
+        # Store marker path for monitor to check
+        self._completion_marker = completion_marker
         
         script_content = "\n".join(script_lines)
         
@@ -1029,6 +1044,7 @@ export MASTER_PORT={master_port}
                     deployment_id=self.existing_job_id,
                     message=f"Completed inside existing allocation {self.existing_job_id}",
                     logs_path=str(self.output_dir),
+                    skip_monitoring=True,  # Already ran synchronously, no need to poll
                 )
             else:
                 self.console.print(
@@ -1039,6 +1055,7 @@ export MASTER_PORT={master_port}
                     deployment_id=self.existing_job_id,
                     message=f"Script failed with exit code {result.returncode}",
                     logs_path=str(self.output_dir),
+                    skip_monitoring=True,  # Already ran synchronously
                 )
                 
         except subprocess.TimeoutExpired:
@@ -1180,6 +1197,36 @@ export MASTER_PORT={master_port}
                 deployment_id=deployment_id,
                 message=f"Completed (ran inside existing allocation {deployment_id})",
             )
+        
+        # Check for completion marker (robust detection for interactive/salloc jobs)
+        if hasattr(self, '_completion_marker') and self._completion_marker:
+            marker_path = Path(self._completion_marker)
+            if marker_path.exists():
+                # Read exit code from marker
+                try:
+                    content = marker_path.read_text()
+                    exit_code = 0
+                    for line in content.splitlines():
+                        if line.startswith("exit_code="):
+                            exit_code = int(line.split("=")[1])
+                            break
+                    
+                    self.console.print(f"[green]✓ Completion marker found: {marker_path}[/green]")
+                    
+                    if exit_code == 0:
+                        return DeploymentResult(
+                            status=DeploymentStatus.SUCCESS,
+                            deployment_id=deployment_id,
+                            message=f"Script completed successfully (exit code {exit_code})",
+                        )
+                    else:
+                        return DeploymentResult(
+                            status=DeploymentStatus.FAILED,
+                            deployment_id=deployment_id,
+                            message=f"Script failed with exit code {exit_code}",
+                        )
+                except Exception as e:
+                    self.console.print(f"[yellow]Warning: Could not read completion marker: {e}[/yellow]")
         
         try:
             # Query job status using squeue (runs locally)

@@ -67,6 +67,7 @@ class DeploymentResult:
     metrics: Optional[Dict[str, Any]] = None
     logs_path: Optional[str] = None
     artifacts: Optional[List[str]] = None
+    skip_monitoring: bool = False  # Set True for synchronous runs (e.g., inside salloc)
 
     @property
     def is_success(self) -> bool:
@@ -181,7 +182,8 @@ class BaseDeployment(ABC):
                 return result
 
             # Step 4: Monitor (optional)
-            if self.config.monitor:
+            # Skip monitoring if deploy() already ran synchronously (e.g., inside salloc)
+            if self.config.monitor and not result.skip_monitoring:
                 result = self._monitor_until_complete(result.deployment_id)
 
             # Step 5: Collect Results (always collect, even on failure to record failed runs)
