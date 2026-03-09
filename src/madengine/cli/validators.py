@@ -26,6 +26,7 @@ console = Console()
 def validate_additional_context(
     additional_context: str,
     additional_context_file: Optional[str] = None,
+    use_image: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Validate and parse additional context.
@@ -33,6 +34,7 @@ def validate_additional_context(
     Args:
         additional_context: JSON string containing additional context
         additional_context_file: Optional file containing additional context
+        use_image: Optional pre-built image to use (skips required field validation)
 
     Returns:
         Dict containing parsed additional context
@@ -65,6 +67,36 @@ def validate_additional_context(
             console.print("💡 Please provide valid JSON format")
             raise typer.Exit(ExitCode.INVALID_ARGS)
 
+    # When using pre-built image, gpu_vendor and guest_os are optional
+    # They will be extracted from model card env_vars if needed
+    using_prebuilt_image = use_image and use_image.lower() not in ["none", ""]
+    
+    if using_prebuilt_image:
+        # For pre-built images, context is optional - will use model card env_vars
+        if not context:
+            console.print("ℹ️  No additional context provided (using pre-built image)")
+            console.print("💡 gpu_vendor and guest_os will be read from model card env_vars if needed")
+            return {}
+        
+        # If context provided, validate any gpu_vendor/guest_os values present
+        if "gpu_vendor" in context:
+            gpu_vendor = context["gpu_vendor"].upper()
+            if gpu_vendor not in VALID_GPU_VENDORS:
+                console.print(f"❌ Invalid gpu_vendor: [red]{context['gpu_vendor']}[/red]")
+                console.print(f"💡 Supported values: [green]{', '.join(VALID_GPU_VENDORS)}[/green]")
+                raise typer.Exit(ExitCode.INVALID_ARGS)
+        
+        if "guest_os" in context:
+            guest_os = context["guest_os"].upper()
+            if guest_os not in VALID_GUEST_OS:
+                console.print(f"❌ Invalid guest_os: [red]{context['guest_os']}[/red]")
+                console.print(f"💡 Supported values: [green]{', '.join(VALID_GUEST_OS)}[/green]")
+                raise typer.Exit(ExitCode.INVALID_ARGS)
+        
+        console.print("✅ Context validated (pre-built image mode)")
+        return context
+
+    # For Dockerfile builds, require gpu_vendor and guest_os
     if not context:
         console.print("❌ [red]No additional context provided[/red]")
         console.print(
@@ -81,14 +113,17 @@ madengine build --tags dummy --additional-context-file context.json
 
 [bold cyan]Required fields:[/bold cyan]
 • gpu_vendor: [green]AMD[/green], [green]NVIDIA[/green]
-• guest_os: [green]UBUNTU[/green], [green]CENTOS[/green]""",
+• guest_os: [green]UBUNTU[/green], [green]CENTOS[/green]
+
+[bold cyan]Or use a pre-built image:[/bold cyan]
+madengine build --tags dummy --use-image auto""",
             title="Additional Context Help",
             border_style="blue",
         )
         console.print(example_panel)
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
-    # Validate required fields
+    # Validate required fields for Dockerfile builds
     required_fields = ["gpu_vendor", "guest_os"]
     missing_fields = [field for field in required_fields if field not in context]
 
@@ -97,7 +132,10 @@ madengine build --tags dummy --additional-context-file context.json
             f"❌ Missing required fields: [red]{', '.join(missing_fields)}[/red]"
         )
         console.print(
-            "💡 Both gpu_vendor and guest_os are required for build operations"
+            "💡 Both gpu_vendor and guest_os are required for Dockerfile builds"
+        )
+        console.print(
+            "💡 Or use --use-image to skip Dockerfile build"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 

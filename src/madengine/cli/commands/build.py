@@ -208,8 +208,8 @@ def build(
         )
 
     try:
-        # Validate additional context
-        validate_additional_context(additional_context, additional_context_file)
+        # Validate additional context (gpu_vendor/guest_os optional when using pre-built image)
+        validate_additional_context(additional_context, additional_context_file, use_image)
 
         # Create arguments object
         args = create_args_namespace(
