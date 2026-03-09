@@ -379,7 +379,7 @@ madengine uses intelligent multi-layer configuration merging:
     "nodelist": "node01,node02",     // Optional: restrict job to these nodes (skips node health preflight)
     "gpus_per_node": 8,             // GPUs per node
     "time": "24:00:00",             // Wall time (HH:MM:SS)
-    "output_dir": "./slurm_output", // Local output directory
+    "output_dir": "./slurm_results", // Local output directory
     "results_dir": "/shared/results", // Shared results collection
     "shared_workspace": "/shared/workspace", // Shared workspace (NFS/Lustre)
     "exclusive": true,               // Exclusive node access
@@ -584,10 +584,10 @@ squeue -u $USER
 scontrol show job <job_id>
 
 # View output logs (real-time)
-tail -f slurm_output/madengine-*_<job_id>_*.out
+tail -f slurm_results/madengine-*_<job_id>_*.out
 
 # View error logs
-tail -f slurm_output/madengine-*_<job_id>_*.err
+tail -f slurm_results/madengine-*_<job_id>_*.err
 
 # Cancel job if needed
 scancel <job_id>
@@ -600,7 +600,7 @@ scancel <job_id>
 - Check SLURM partition exists: `sinfo`
 - Verify GPU resources available: `sinfo -o "%P %.5a %.10l %.6D %.6t %N %G"`
 - Check SLURM account/QoS settings
-- Review job script: `slurm_output/madengine_*.sh`
+- Review job script: `slurm_results/madengine_*.sh`
 
 ### Out of Memory Errors
 
@@ -715,8 +715,8 @@ MODEL_DIR=models/my-model madengine run \
 watch squeue -u $USER
 
 # 6. Check logs when complete
-ls -lh slurm_output/
-tail -f slurm_output/madengine-*_<job_id>_*.out
+ls -lh slurm_results/
+tail -f slurm_results/madengine-*_<job_id>_*.out
 ```
 
 ### vLLM Inference Workflow
@@ -739,7 +739,7 @@ MODEL_DIR=models/llama2-70b madengine run \
   --manifest-file build_manifest.json
 
 # 5. Monitor for OOM errors
-tail -f slurm_output/madengine-*_<job_id>_*.err | grep -i "memory"
+tail -f slurm_results/madengine-*_<job_id>_*.err | grep -i "memory"
 
 # 6. If OOM occurs, adjust config and rebuild
 # Edit your config file to set VLLM_KV_CACHE_SIZE to 0.6 or 0.7

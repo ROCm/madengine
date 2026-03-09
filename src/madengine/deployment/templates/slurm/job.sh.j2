@@ -375,7 +375,7 @@ fi
 
 # Use submission directory (shared filesystem) for task script
 # /tmp is local to each node and won't be accessible by srun on other nodes
-TASK_SCRIPT="{{ manifest_file | dirname }}/slurm_output/madengine_task_${SLURM_JOB_ID}.sh"
+TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}.sh"
 
 cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
 #!/bin/bash
@@ -459,8 +459,8 @@ rsync -a --quiet \
       --exclude='.venv' \
       --exclude='env' \
       --exclude='.env' \
-      --exclude='slurm_output/*.out' \
-      --exclude='slurm_output/*.log' \
+      --exclude='{{ output_dir }}/*.out' \
+      --exclude='{{ output_dir }}/*.log' \
       "$SUBMISSION_DIR/" "$WORKSPACE/"
 
 echo "  ✓ Project copied to local workspace"
@@ -616,8 +616,8 @@ echo ""
 
 # Create node-specific log files in results directory
 RESULTS_DIR={{ manifest_file | dirname }}
-NODE_LOG_OUT="${RESULTS_DIR}/slurm_output/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/slurm_output/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
 
 echo "Node ${SLURM_PROCID} logs:"
 echo "  stdout: ${NODE_LOG_OUT}"
@@ -645,71 +645,42 @@ echo ""
 echo "Task completed with exit code: $TASK_EXIT"
 
 # =============================================================================
-# Multi-Node Result Collection (Best Practice: Master Node Only)
+# Multi-Node Per-Node Artifact Collection (Option 1: login node builds perf record)
 # =============================================================================
-# For distributed workloads, only the master node (SLURM_PROCID=0) should
-# collect and report performance metrics to avoid:
-# - Duplicate data in perf.csv
-# - Race conditions in metric extraction
-# - Failures from non-master nodes trying to report identical global metrics
-#
-# This follows distributed execution best practices where only rank 0
-# reports final metrics.
+# Every node copies its workspace artifacts to submission dir for collect_results.
+# Do NOT copy perf.csv/perf_entry.json/perf_super.* from nodes; login node will
+# parse logs, aggregate, and run update_perf_csv/update_perf_super at project root.
 # =============================================================================
 
+SUBMISSION_DIR={{ manifest_file | dirname }}
+JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_${SLURM_PROCID}"
+mkdir -p "$NODE_COLLECTION_DIR"
+
 if [ $TASK_EXIT -eq 0 ]; then
-    if [ "${SLURM_PROCID}" = "0" ]; then
-        # Master node: Collect and report results
-        RESULTS_DIR={{ manifest_file | dirname }}
-        echo ""
-        echo "========================================================================"
-        echo "Master Node (SLURM_PROCID=0): Collecting results"
-        echo "========================================================================"
-        echo "Copying results back to: $RESULTS_DIR"
-        
-        # Copy performance results (main metric file)
-        if [ -f "$WORKSPACE/perf.csv" ]; then
-            cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf.csv" 2>/dev/null || true
-            echo "  ✓ Copied: perf.csv (global metrics)"
-        fi
-        
-        # Copy log files
-        for log in "$WORKSPACE"/*.log; do
-            if [ -f "$log" ]; then
-                log_basename=$(basename "$log")
-                cp "$log" "$RESULTS_DIR/${log_basename}" 2>/dev/null || true
-                echo "  ✓ Copied: ${log_basename}"
-            fi
-        done
-        
-        # Copy any workload results files
-        if [ -f "$WORKSPACE/results.txt" ]; then
-            cp "$WORKSPACE/results.txt" "$RESULTS_DIR/" 2>/dev/null || true
-            echo "  ✓ Copied: results.txt"
-        fi
-        # Legacy support for training_results.txt
-        if [ -f "$WORKSPACE/training_results.txt" ]; then
-            cp "$WORKSPACE/training_results.txt" "$RESULTS_DIR/" 2>/dev/null || true
-            echo "  ✓ Copied: training_results.txt"
-        fi
-        
-        echo "  ✓ Master node results collection complete"
-        echo "========================================================================"
-    else
-        # Worker nodes: Exit cleanly without collecting results
-        echo ""
-        echo "========================================================================"
-        echo "Worker Node (SLURM_PROCID=${SLURM_PROCID}): Exiting cleanly"
-        echo "========================================================================"
-        echo "  Note: Performance metrics collected by master node only (best practice)"
-        echo "========================================================================"
-    fi
+    echo ""
+    echo "========================================================================"
+    echo "Node ${SLURM_PROCID}: Copying artifacts to ${NODE_COLLECTION_DIR}"
+    echo "========================================================================"
+    # Copy node stdout/stderr into node dir for collect_results
+    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
+    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+    # Copy env, logs, profiling, multi_results, etc. (not perf.csv/perf_entry/perf_super)
+    for f in "$WORKSPACE"/*_env.csv "$WORKSPACE"/*.log "$WORKSPACE"/multi_results*.csv "$WORKSPACE"/results* "$WORKSPACE"/gpu_info_*.csv "$WORKSPACE"/library_trace.csv; do
+        if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    done
+    if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
+    echo "========================================================================"
 else
     echo ""
     echo "========================================================================"
     echo "Task FAILED with exit code: $TASK_EXIT"
     echo "  Node: SLURM_PROCID=${SLURM_PROCID}"
     echo "========================================================================"
+    # Copy node logs so collect_results can still inspect them
+    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
+    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
 fi
 
 exit $TASK_EXIT
@@ -758,12 +729,10 @@ EXIT_CODE=$?
 # =============================================================================
 # Job Completion
 # =============================================================================
-# Note: For multi-node jobs, only the master node (SLURM_PROCID=0) collects
-# and reports performance metrics. This follows distributed execution best
-# practices where:
-# - Global metrics are identical across all nodes (computed via all_reduce)
-# - Only rank 0 should report to avoid duplicate/conflicting data
-# - Worker nodes exit cleanly after workload completes
+# Note: For multi-node jobs, each node copies its artifacts to slurm_results/
+# <model>/<job_id>/node_<rank>/. The login node runs collect_results to parse
+# logs, aggregate metrics, and update project-root perf.csv/perf_super via
+# the same reporting pipeline as local runs.
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then

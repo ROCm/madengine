@@ -14,14 +14,16 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .common import configure_multi_node_profiling, normalize_launcher
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
-from typing import Optional
+from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.utils.path_utils import scripts_base_dir_from
+import json
 
 
 class SlurmDeployment(BaseDeployment):
@@ -65,7 +67,7 @@ class SlurmDeployment(BaseDeployment):
         self.nodes = self.slurm_config.get("nodes", 1)
         self.gpus_per_node = self.slurm_config.get("gpus_per_node", 8)
         self.time_limit = self.slurm_config.get("time", "24:00:00")
-        self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_output"))
+        self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -817,7 +819,7 @@ export MASTER_PORT={master_port}
             self._output_positions = {}
         
         # Find output file
-        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        output_dir = str(self.output_dir)
         output_pattern = f"{output_dir}/madengine-*_{job_id}_*.out"
         
         try:
@@ -858,7 +860,7 @@ export MASTER_PORT={master_port}
 
     def _show_log_summary(self, job_id: str, success: bool = True):
         """Show a summary with pointers to log files instead of streaming verbose output."""
-        output_dir = self.slurm_config.get("output_dir", "./slurm_output")
+        output_dir = str(self.output_dir)
         
         try:
             import glob
@@ -956,16 +958,85 @@ export MASTER_PORT={master_port}
                 message=f"Job {job_id} completed (status unavailable)",
             )
 
+    def _build_perf_entry_from_aggregated(
+        self,
+        aggregated_record: Dict[str, Any],
+        model_info: Dict[str, Any],
+        build_info: Dict[str, Any],
+        deployment_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Build a full run-details dict (same shape as container_runner create_run_details_dict)
+        from an aggregated multi-node record or single-node parsed record, for use with
+        update_perf_csv and update_perf_super_*.
+        """
+        from madengine.reporting.update_perf_csv import flatten_tags
+        from madengine.utils.config_parser import ConfigParser
+
+        launcher_type = self.distributed_config.get("launcher", "torchrun")
+        launcher = normalize_launcher(launcher_type, "slurm")
+
+        run_details = {
+            "model": aggregated_record.get("model", model_info.get("name", "")),
+            "n_gpus": str(aggregated_record.get("n_gpus", self.nodes * self.gpus_per_node)),
+            "nnodes": str(aggregated_record.get("nnodes", self.nodes)),
+            "gpus_per_node": str(aggregated_record.get("gpus_per_node", self.gpus_per_node)),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            "git_commit": "",
+            "machine_name": deployment_id,
+            "deployment_type": self.DEPLOYMENT_TYPE,
+            "launcher": launcher,
+            "gpu_architecture": aggregated_record.get("gpu_architecture", ""),
+            "performance": str(aggregated_record.get("performance", "")),
+            "metric": aggregated_record.get("metric", ""),
+            "relative_change": "",
+            "status": aggregated_record.get("status", "SUCCESS"),
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": aggregated_record.get("test_duration", ""),
+            "dataname": aggregated_record.get("data_name", ""),
+            "data_provider_type": aggregated_record.get("data_provider", ""),
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        flatten_tags(run_details)
+
+        # Configs for perf_super (optional)
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""), scripts_path
+            )
+        except Exception:
+            run_details["configs"] = None
+
+        return run_details
+
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
 
-        Single-node: uses perf.csv from shared workspace (written by master).
-        Multi-node: parses performance from each node's .out file, aggregates
-        (e.g. sum for throughput), and writes one job-level row to perf.csv.
+        Option (1): slurm_results holds only collected inputs; login node builds one run
+        record and runs the same reporting pipeline as local (perf_entry -> update_perf_csv
+        / update_perf_super_*) so project root has a single cumulative perf for both local
+        and distributed runs.
         """
-        # Get session_start_row from config (passed from orchestrator)
-        session_start_row = self.config.additional_context.get("session_start_row")
+        from madengine.reporting.update_perf_csv import update_perf_csv
+        from madengine.reporting.update_perf_super import (
+            update_perf_super_csv,
+            update_perf_super_json,
+        )
 
+        session_start_row = self.config.additional_context.get("session_start_row")
         results = {
             "job_id": deployment_id,
             "nodes": self.nodes,
@@ -974,117 +1045,232 @@ export MASTER_PORT={master_port}
             "logs": [],
             "successful_runs": [],
             "failed_runs": [],
-            "session_start_row": session_start_row,  # Track for downstream filtering
+            "session_start_row": session_start_row,
         }
 
-        try:
-            # Find output files (one per node: madengine-*_jobid_node_N.out or *_%t.out)
-            output_pattern = f"madengine-*_{deployment_id}_*.out"
-            output_files = sorted(self.output_dir.glob(output_pattern))
+        model_keys = list(self.manifest.get("built_models") or {})
+        model_name = model_keys[0] if model_keys else "unknown"
+        build_info = {}
+        built_images = self.manifest.get("built_images") or {}
+        if built_images:
+            # First image or one keyed by model name
+            if model_name in built_images:
+                build_info = built_images[model_name]
+            else:
+                build_info = next(iter(built_images.values()), {})
 
-            results["logs"] = [str(f) for f in output_files]
+        job_dir = self.output_dir / model_name / deployment_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-            # Multi-node: aggregate per-node metrics from node logs, then write one row
-            if self.nodes > 1 and output_files:
-                model_keys = list(self.manifest.get("built_models") or {})
-                model_name = model_keys[0] if model_keys else "unknown"
-                per_node_metrics = []
-                for out_path in output_files:
-                    try:
-                        content = out_path.read_text(encoding="utf-8", errors="ignore")
-                        perf_data = self._parse_performance_from_log(content, model_name)
-                        if perf_data:
-                            per_node_metrics.append(perf_data)
-                            self.console.print(
-                                f"[dim]  Parsed node: {perf_data.get('performance')} "
-                                f"{perf_data.get('metric', '')} (node_id={perf_data.get('node_id')})[/dim]"
-                            )
-                    except Exception as e:
-                        self.console.print(
-                            f"[yellow]⚠ Could not parse {out_path.name}: {e}[/yellow]"
-                        )
-                if per_node_metrics:
-                    launcher_type = self.distributed_config.get("launcher", "torchrun")
-                    aggregated = self._aggregate_node_metrics(
-                        per_node_metrics, self.nodes, launcher_type
-                    )
-                    if aggregated:
-                        self._ensure_perf_csv_exists()
-                        self._write_to_perf_csv(aggregated)
-                        self.console.print(
-                            f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes "
-                            f"({aggregated.get('aggregation_method', '')}): "
-                            f"{aggregated.get('performance')} {aggregated.get('metric', '')}[/green]"
-                        )
+        # Gather log content per node: from job_dir/node_N/ (new) or flat output_dir .out files
+        per_node_log_contents: List[tuple] = []
+        flat_out_files = sorted(self.output_dir.glob(f"madengine-*_{deployment_id}_*.out"))
+        results["logs"] = [str(f) for f in flat_out_files]
 
-            # Find performance CSV files
-            # Strategy 1: Check results_dir if configured
-            if self.slurm_config.get("results_dir"):
-                results_dir = Path(self.slurm_config["results_dir"])
-                perf_pattern = f"perf_{deployment_id}_*.csv"
-                perf_files = list(results_dir.glob(perf_pattern))
-                results["perf_files"] = [str(f) for f in perf_files]
+        for i, out_path in enumerate(flat_out_files):
+            content = out_path.read_text(encoding="utf-8", errors="ignore")
+            per_node_log_contents.append((i, content))
 
-            # Strategy 2: Check shared workspace (NFS) for perf.csv
-            if not results["perf_files"]:
-                workspace_perf = Path("perf.csv")
-                if workspace_perf.exists():
-                    results["perf_files"] = [str(workspace_perf)]
-                    self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
-            
-            # Parse perf.csv to populate successful_runs and failed_runs
-            # Filter based on session_start_row passed as parameter (no external files!)
-            if results["perf_files"]:
-                perf_file = Path(results["perf_files"][0])
+        # If we have node subdirs (multi-node job script wrote them), prefer stdout.out there
+        for node_dir in sorted(job_dir.glob("node_*")):
+            stdout_path = node_dir / "stdout.out"
+            if stdout_path.exists():
                 try:
-                    import csv
-                    
-                    with open(perf_file, 'r') as f:
-                        reader = csv.DictReader(f)
-                        rows = list(reader)
-                        
-                        # Filter to only include rows from current session if session_start_row provided
-                        if session_start_row is not None and session_start_row < len(rows):
-                            rows = rows[session_start_row:]
-                            self.console.print(f"[cyan]📊 Filtered to current session: {len(rows)} runs (from row {session_start_row} of {len(rows) + session_start_row} total)[/cyan]")
-                        elif session_start_row is not None:
-                            # Session start equals or exceeds current rows - no new runs yet
-                            self.console.print(f"[yellow]⚠️  No new runs in this session (session started at row {session_start_row}, CSV has {len(rows)} rows)[/yellow]")
-                            rows = []
-                        else:
-                            # No session info provided - show all rows (for backward compatibility)
-                            self.console.print(f"[dim]Showing all {len(rows)} runs from perf.csv (no session filtering)[/dim]")
-                        
-                        for row in rows:
-                            run_data = {
-                                "model": row.get("model", ""),
-                                "status": row.get("status", ""),
-                                "performance": row.get("performance", ""),
-                                "metric": row.get("metric", ""),
-                                "duration": row.get("test_duration", ""),
-                                "gpu_arch": row.get("gpu_architecture", ""),
-                                "deployment": row.get("deployment_type", ""),
-                                "machine": row.get("machine_name", ""),
-                            }
-                            
-                            if row.get("status") == "SUCCESS":
-                                results["successful_runs"].append(run_data)
-                            else:
-                                results["failed_runs"].append(run_data)
-                except Exception as parse_error:
-                    import traceback
-                    self.console.print(f"[red]ERROR parsing perf.csv: {parse_error}[/red]")
-                    self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                    idx = int(node_dir.name.replace("node_", ""))
+                    content = stdout_path.read_text(encoding="utf-8", errors="ignore")
+                    # Replace or append for this index
+                    per_node_log_contents = [
+                        (n, c) for n, c in per_node_log_contents if n != idx
+                    ]
+                    per_node_log_contents.append((idx, content))
+                    per_node_log_contents.sort(key=lambda x: x[0])
+                except (ValueError, OSError):
+                    pass
 
+        # Copy flat logs into job_dir/node_<task>/ for consistency if not already there
+        for idx, content in per_node_log_contents:
+            node_subdir = job_dir / f"node_{idx}"
+            node_subdir.mkdir(parents=True, exist_ok=True)
+            if not (node_subdir / "stdout.out").exists():
+                (node_subdir / "stdout.out").write_text(content)
+
+        # Parse performance from each node's log
+        per_node_metrics: List[Dict[str, Any]] = []
+        for idx, content in sorted(per_node_log_contents, key=lambda x: x[0]):
+            perf_data = self._parse_performance_from_log(content, model_name)
+            if perf_data:
+                per_node_metrics.append(perf_data)
+                self.console.print(
+                    f"[dim]  Parsed node: {perf_data.get('performance')} "
+                    f"{perf_data.get('metric', '')} (node_id={perf_data.get('node_id')})[/dim]"
+                )
+
+        run_details_dict: Optional[Dict[str, Any]] = None
+        model_info_for_entry = (self.manifest.get("built_models") or {}).get(
+            model_keys[0], {}
+        ) if model_keys else {}
+
+        if self.nodes > 1 and per_node_metrics:
+            launcher_type = self.distributed_config.get("launcher", "torchrun")
+            aggregated = self._aggregate_node_metrics(
+                per_node_metrics, self.nodes, launcher_type
+            )
+            if aggregated and model_info_for_entry:
+                run_details_dict = self._build_perf_entry_from_aggregated(
+                    aggregated, model_info_for_entry, build_info, deployment_id
+                )
+                self.console.print(
+                    f"[green]✓ Aggregated from {len(per_node_metrics)} nodes "
+                    f"({aggregated.get('aggregation_method', '')}): "
+                    f"{aggregated.get('performance')} {aggregated.get('metric', '')}[/green]"
+                )
+        elif self.nodes == 1 and per_node_metrics and model_info_for_entry:
+            single = per_node_metrics[0]
+            single_record = {
+                "model": single.get("model", model_name),
+                "n_gpus": self.gpus_per_node,
+                "nnodes": 1,
+                "gpus_per_node": self.gpus_per_node,
+                "performance": single.get("performance"),
+                "metric": single.get("metric", ""),
+                "status": "SUCCESS",
+                "test_duration": single.get("test_duration", ""),
+                "gpu_architecture": single.get("gpu_architecture", ""),
+                "data_name": single.get("data_name", ""),
+                "data_provider": single.get("data_provider", ""),
+            }
+            run_details_dict = self._build_perf_entry_from_aggregated(
+                single_record, model_info_for_entry, build_info, deployment_id
+            )
+        elif self.nodes == 1:
+            # Single-node but no parsed metric (e.g. perf already written by container_runner)
+            workspace_perf = Path("perf.csv")
+            if workspace_perf.exists():
+                results["perf_files"] = [str(workspace_perf)]
             self.console.print(
                 f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
                 f"{len(results['logs'])} log files[/green]"
             )
+            self._collect_results_parse_perf_csv(results, session_start_row)
+            return results
+        else:
+            # Multi-node but no metrics parsed - optional failure record
+            if per_node_metrics and model_info_for_entry:
+                launcher_type = self.distributed_config.get("launcher", "torchrun")
+                aggregated = self._aggregate_node_metrics(
+                    per_node_metrics, self.nodes, launcher_type
+                )
+                if aggregated:
+                    aggregated["status"] = "FAILURE"
+                    run_details_dict = self._build_perf_entry_from_aggregated(
+                        aggregated, model_info_for_entry, build_info, deployment_id
+                    )
 
-        except Exception as e:
-            self.console.print(f"[yellow]⚠ Results collection incomplete: {e}[/yellow]")
+        if run_details_dict is not None:
+            perf_entry_path = job_dir / "perf_entry.json"
+            with open(perf_entry_path, "w") as f:
+                json.dump(run_details_dict, f, indent=2)
+            perf_csv_path = "perf.csv"
+            self._ensure_perf_csv_exists()
+            if run_details_dict.get("status") == "SUCCESS":
+                update_perf_csv(perf_csv=perf_csv_path, single_result=str(perf_entry_path))
+            else:
+                update_perf_csv(perf_csv=perf_csv_path, exception_result=str(perf_entry_path))
+            try:
+                scripts_path = model_info_for_entry.get("scripts", "")
+                scripts_base_dir = scripts_base_dir_from(scripts_path)
+                if run_details_dict.get("status") == "SUCCESS":
+                    num_entries = update_perf_super_json(
+                        single_result=str(perf_entry_path),
+                        perf_super_json="perf_super.json",
+                        scripts_base_dir=scripts_base_dir,
+                    )
+                else:
+                    num_entries = update_perf_super_json(
+                        exception_result=str(perf_entry_path),
+                        perf_super_json="perf_super.json",
+                        scripts_base_dir=scripts_base_dir,
+                    )
+                update_perf_super_csv(
+                    perf_super_json="perf_super.json",
+                    perf_super_csv="perf_super.csv",
+                    num_entries=num_entries,
+                )
+            except Exception as e:
+                self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
+            results["perf_files"] = [str(Path(perf_csv_path).resolve())]
+            run_data = {
+                "model": run_details_dict.get("model", ""),
+                "status": run_details_dict.get("status", ""),
+                "performance": str(run_details_dict.get("performance", "")),
+                "metric": run_details_dict.get("metric", ""),
+                "duration": run_details_dict.get("test_duration", ""),
+                "gpu_arch": run_details_dict.get("gpu_architecture", ""),
+                "deployment": run_details_dict.get("deployment_type", ""),
+                "machine": run_details_dict.get("machine_name", ""),
+            }
+            if run_details_dict.get("status") == "SUCCESS":
+                results["successful_runs"].append(run_data)
+            else:
+                results["failed_runs"].append(run_data)
+            summary = {
+                "job_id": deployment_id,
+                "model": model_name,
+                "nodes": self.nodes,
+                "per_node_metrics": per_node_metrics,
+                "final_metric": run_details_dict.get("metric", ""),
+                "final_performance": str(run_details_dict.get("performance", "")),
+                "perf_entry_path": str(perf_entry_path),
+            }
+            (job_dir / "results_summary.json").write_text(
+                json.dumps(summary, indent=2), encoding="utf-8"
+            )
 
+        if not results["perf_files"]:
+            workspace_perf = Path("perf.csv")
+            if workspace_perf.exists():
+                results["perf_files"] = [str(workspace_perf)]
+        self._collect_results_parse_perf_csv(results, session_start_row)
+        self.console.print(
+            f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
+            f"{len(results['logs'])} log files[/green]"
+        )
         return results
+
+    def _collect_results_parse_perf_csv(
+        self, results: Dict[str, Any], session_start_row: Optional[int]
+    ) -> None:
+        """Parse perf.csv to populate results['successful_runs'] and results['failed_runs']."""
+        if not results.get("perf_files"):
+            return
+        import csv
+
+        perf_file = Path(results["perf_files"][0])
+        try:
+            with open(perf_file, "r") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            if session_start_row is not None and session_start_row < len(rows):
+                rows = rows[session_start_row:]
+            elif session_start_row is not None and session_start_row >= len(rows):
+                rows = []
+            for row in rows:
+                run_data = {
+                    "model": row.get("model", ""),
+                    "status": row.get("status", ""),
+                    "performance": row.get("performance", ""),
+                    "metric": row.get("metric", ""),
+                    "duration": row.get("test_duration", ""),
+                    "gpu_arch": row.get("gpu_architecture", ""),
+                    "deployment": row.get("deployment_type", ""),
+                    "machine": row.get("machine_name", ""),
+                }
+                if row.get("status") == "SUCCESS":
+                    results["successful_runs"].append(run_data)
+                else:
+                    results["failed_runs"].append(run_data)
+        except Exception as e:
+            self.console.print(f"[yellow]⚠ Could not parse perf.csv: {e}[/yellow]")
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
