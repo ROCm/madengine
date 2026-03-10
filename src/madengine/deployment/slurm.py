@@ -977,7 +977,7 @@ export MASTER_PORT={master_port}
         launcher = normalize_launcher(launcher_type, "slurm")
 
         run_details = {
-            "model": aggregated_record.get("model", model_info.get("name", "")),
+            "model": model_info.get("name", aggregated_record.get("model", "")),
             "n_gpus": str(aggregated_record.get("n_gpus", self.nodes * self.gpus_per_node)),
             "nnodes": str(aggregated_record.get("nnodes", self.nodes)),
             "gpus_per_node": str(aggregated_record.get("gpus_per_node", self.gpus_per_node)),
@@ -1049,17 +1049,24 @@ export MASTER_PORT={master_port}
         }
 
         model_keys = list(self.manifest.get("built_models") or {})
-        model_name = model_keys[0] if model_keys else "unknown"
+        model_key = model_keys[0] if model_keys else None
+        # Use logical model name for job_dir so it matches the task script (which uses model_info["name"]).
+        # built_models is keyed by image name; value has "name" = logical model name.
+        built_models_dict = self.manifest.get("built_models") or {}
+        model_info_for_path = built_models_dict.get(model_key, {}) if model_key else {}
+        model_name_for_path = model_info_for_path.get("name", model_key or "unknown")
+        model_name = model_key or "unknown"  # image key for build_info / model_info_for_entry lookups
+
         build_info = {}
         built_images = self.manifest.get("built_images") or {}
         if built_images:
-            # First image or one keyed by model name
+            # First image or one keyed by model key (image name)
             if model_name in built_images:
                 build_info = built_images[model_name]
             else:
                 build_info = next(iter(built_images.values()), {})
 
-        job_dir = self.output_dir / model_name / deployment_id
+        job_dir = self.output_dir / model_name_for_path / deployment_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Gather log content per node: from job_dir/node_N/ (new) or flat output_dir .out files
@@ -1107,8 +1114,8 @@ export MASTER_PORT={master_port}
 
         run_details_dict: Optional[Dict[str, Any]] = None
         model_info_for_entry = (self.manifest.get("built_models") or {}).get(
-            model_keys[0], {}
-        ) if model_keys else {}
+            model_key, {}
+        ) if model_key else {}
 
         if self.nodes > 1 and per_node_metrics:
             launcher_type = self.distributed_config.get("launcher", "torchrun")
@@ -1143,16 +1150,35 @@ export MASTER_PORT={master_port}
                 single_record, model_info_for_entry, build_info, deployment_id
             )
         elif self.nodes == 1:
-            # Single-node but no parsed metric (e.g. perf already written by container_runner)
-            workspace_perf = Path("perf.csv")
-            if workspace_perf.exists():
-                results["perf_files"] = [str(workspace_perf)]
-            self.console.print(
-                f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
-                f"{len(results['logs'])} log files[/green]"
-            )
-            self._collect_results_parse_perf_csv(results, session_start_row)
-            return results
+            # Single-node but no parsed metric (log parse failed or run failed before metrics).
+            # In-job run skips perf write (skip_perf_collection); write a FAILURE row so run appears in perf.
+            if model_info_for_entry:
+                single_record = {
+                    "model": model_info_for_entry.get("name", model_name),
+                    "n_gpus": self.gpus_per_node,
+                    "nnodes": 1,
+                    "gpus_per_node": self.gpus_per_node,
+                    "performance": "",
+                    "metric": "",
+                    "status": "FAILURE",
+                    "test_duration": "",
+                    "gpu_architecture": "",
+                    "data_name": "",
+                    "data_provider": "",
+                }
+                run_details_dict = self._build_perf_entry_from_aggregated(
+                    single_record, model_info_for_entry, build_info, deployment_id
+                )
+            else:
+                workspace_perf = Path("perf.csv")
+                if workspace_perf.exists():
+                    results["perf_files"] = [str(workspace_perf)]
+                self.console.print(
+                    f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
+                    f"{len(results['logs'])} log files[/green]"
+                )
+                self._collect_results_parse_perf_csv(results, session_start_row)
+                return results
         else:
             # Multi-node but no metrics parsed - optional failure record
             if per_node_metrics and model_info_for_entry:
@@ -1230,7 +1256,10 @@ export MASTER_PORT={master_port}
             workspace_perf = Path("perf.csv")
             if workspace_perf.exists():
                 results["perf_files"] = [str(workspace_perf)]
-        self._collect_results_parse_perf_csv(results, session_start_row)
+        # When we already appended the current run from run_details_dict, skip re-parsing
+        # the whole perf.csv so Execution Results shows only the current run.
+        if run_details_dict is None:
+            self._collect_results_parse_perf_csv(results, session_start_row)
         self.console.print(
             f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
             f"{len(results['logs'])} log files[/green]"

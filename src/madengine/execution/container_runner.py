@@ -762,6 +762,7 @@ class ContainerRunner:
             'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
             'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
             'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+            'TORCH_ELASTIC_RDZV_TIMEOUT',  # Rendezvous timeout so all nodes can join after pull
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
             'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'

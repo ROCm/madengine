@@ -275,11 +275,10 @@ if 'deployment_config' in manifest:
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 
-# Multi-node: skip per-node perf write so collect_results can aggregate from node logs
-if {{ nodes }} > 1:
-    if manifest.get('context') is None:
-        manifest['context'] = {}
-    manifest['context']['skip_perf_collection'] = True
+# SLURM (single- and multi-node): skip in-job perf write; collect_results will add one record
+if manifest.get('context') is None:
+    manifest['context'] = {}
+manifest['context']['skip_perf_collection'] = True
 
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
@@ -358,6 +357,10 @@ fi
 # =============================================================================
 # Multi-node: Execute with per-task setup
 # =============================================================================
+# PyTorch elastic rendezvous: allow time for all nodes to finish image pull/startup.
+# Default ~900s is too short when each node does a fresh pull; 3600s avoids "Timed out waiting for clients".
+export TORCH_ELASTIC_RDZV_TIMEOUT=3600
+
 # For multi-node distributed execution:
 # 1. Each srun task runs on a separate node with unique SLURM_PROCID
 # 2. All nodes participate in workload via launcher (torchrun/vLLM/SGLang/etc.)
@@ -467,6 +470,15 @@ echo "  ✓ Project copied to local workspace"
 echo ""
 
 # =============================================================================
+# Debug: set node log paths early and trap EXIT so we always see which node failed
+# =============================================================================
+RESULTS_DIR="$SUBMISSION_DIR"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script started" >> "${NODE_LOG_ERR}"
+trap 'ec=$?; echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script exiting with code $ec" >> "${NODE_LOG_ERR}"' EXIT
+
+# =============================================================================
 # Verify madengine Availability
 # =============================================================================
 # Note: We rely on the submission environment being inherited by compute nodes.
@@ -542,11 +554,10 @@ if 'deployment_config' in manifest:
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 
-# Multi-node: skip per-node perf write so collect_results can aggregate from node logs
-if {{ nodes }} > 1:
-    if manifest.get('context') is None:
-        manifest['context'] = {}
-    manifest['context']['skip_perf_collection'] = True
+# SLURM (single- and multi-node): skip in-job perf write; collect_results will add one record
+if manifest.get('context') is None:
+    manifest['context'] = {}
+manifest['context']['skip_perf_collection'] = True
 
 with open(output_file, 'w') as f:
     json.dump(manifest, f, indent=2)
@@ -631,16 +642,21 @@ else
     export MAD_SKIP_PERF_COLLECTION="false"
 fi
 
+# Debug: log immediately before madengine so we know which node reached this point
+echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): about to run madengine" >> "${NODE_LOG_ERR}"
+
 # Run madengine with output redirected to node-specific log files
+# Use append (2>>) for stderr so debug lines written above are not overwritten
 # Environment variables (MASTER_ADDR, MAD_MULTI_NODE_RUNNER, etc.) are inherited
 $MAD_CLI_COMMAND run \
     --manifest-file "$EXEC_MANIFEST" \
     --timeout {{ timeout | default(3600) }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
     {% if live_output %}--live-output{% endif %} \
-    > "${NODE_LOG_OUT}" 2> "${NODE_LOG_ERR}"
+    > "${NODE_LOG_OUT}" 2>> "${NODE_LOG_ERR}"
 
 TASK_EXIT=$?
+echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): madengine exited with code $TASK_EXIT" >> "${NODE_LOG_ERR}"
 echo ""
 echo "Task completed with exit code: $TASK_EXIT"
 
