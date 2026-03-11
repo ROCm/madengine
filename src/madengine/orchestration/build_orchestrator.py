@@ -84,6 +84,7 @@ class BuildOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+        self._original_user_slurm_keys = set(merged_context.get("slurm", {}).keys())
         
         # Apply ConfigLoader to infer deploy type, validate, and apply defaults
         if self.additional_context:
@@ -604,9 +605,13 @@ class BuildOrchestrator:
                     if "slurm" not in saved_manifest["deployment_config"]:
                         saved_manifest["deployment_config"]["slurm"] = {}
                     
-                    # Copy slurm settings from model config
+                    # Copy slurm settings from model config (model card fills in
+                    # values not explicitly set by --additional-context).
+                    # Use _original_user_slurm_keys (captured before ConfigLoader
+                    # applies defaults) so model card values override defaults
+                    # but user's explicit CLI values still win.
                     for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir", "nodelist"]:
-                        if key in model_slurm and key not in saved_manifest["deployment_config"]["slurm"]:
+                        if key in model_slurm and key not in self._original_user_slurm_keys:
                             saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
                 
                 with open(manifest_output, "w") as f:
