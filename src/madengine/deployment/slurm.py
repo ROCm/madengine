@@ -1637,11 +1637,16 @@ export MASTER_PORT={master_port}
             
             # Strategy 2: Check shared workspace (NFS) for perf.csv
             # When using shared storage, perf.csv is written directly to workspace
+            # Retry briefly to allow NFS propagation after job completion
             if not results["perf_files"]:
                 workspace_perf = Path("perf.csv")
-                if workspace_perf.exists():
-                    results["perf_files"] = [str(workspace_perf)]
-                    self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
+                for _attempt in range(6):
+                    if workspace_perf.exists():
+                        results["perf_files"] = [str(workspace_perf)]
+                        self.console.print("[dim]Note: Using perf.csv from shared workspace[/dim]")
+                        break
+                    import time
+                    time.sleep(5)
             
             # Parse perf.csv to populate successful_runs and failed_runs
             # Filter based on session_start_row passed as parameter (no external files!)
