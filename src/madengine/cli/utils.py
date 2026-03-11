@@ -378,7 +378,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
-        perf_table.add_column("Launcher", justify="center", style="magenta")  # Distributed launcher
+        perf_table.add_column("Workload", justify="center", style="magenta")
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
@@ -475,7 +475,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
-                launcher,           # Distributed launcher (docker, torchrun, vllm, etc.)
+                launcher,           # Workload type (sglang-disagg, vllm, torchrun, etc.)
                 deployment_type,
                 gpu_arch,
                 performance,
