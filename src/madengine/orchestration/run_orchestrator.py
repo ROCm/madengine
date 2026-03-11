@@ -230,10 +230,17 @@ class RunOrchestrator:
             if not self.additional_context:
                 self.additional_context = {}
             
-            # Merge deployment_config into additional_context (for deployment layer to use)
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # For dict-valued keys (slurm, k8s, etc.), deep-merge so manifest
+            # values fill in gaps while runtime --additional-context wins on conflicts.
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
-                if key in deployment_config and key not in self.additional_context:
-                    self.additional_context[key] = deployment_config[key]
+                if key in deployment_config:
+                    if key not in self.additional_context:
+                        self.additional_context[key] = deployment_config[key]
+                    elif isinstance(deployment_config[key], dict) and isinstance(self.additional_context[key], dict):
+                        merged = dict(deployment_config[key])
+                        merged.update(self.additional_context[key])
+                        self.additional_context[key] = merged
             
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
@@ -505,10 +512,17 @@ class RunOrchestrator:
             # Merge deployment_config
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
-                # Runtime --additional-context overrides stored config
+                # Runtime --additional-context overrides stored config.
+                # For dict-valued keys, deep-merge so manifest values fill
+                # in gaps (e.g. nodes, time) while runtime values win on conflicts.
                 for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
-                        stored_config[key] = self.additional_context[key]
+                        if key in stored_config and isinstance(stored_config[key], dict) and isinstance(self.additional_context[key], dict):
+                            merged = dict(stored_config[key])
+                            merged.update(self.additional_context[key])
+                            stored_config[key] = merged
+                        else:
+                            stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config
             
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
