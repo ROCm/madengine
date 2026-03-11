@@ -438,6 +438,11 @@ class SlurmDeployment(BaseDeployment):
         if self.reservation:
             script_lines.append(f"#SBATCH --reservation={self.reservation}")
         
+        # Add nodelist if specified (from model card or --additional-context)
+        nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
+        if nodelist:
+            script_lines.append(f"#SBATCH --nodelist={nodelist}")
+        
         script_lines.extend([
             "",
             f"# Baremetal launcher script for {model_info['name']}",

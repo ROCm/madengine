@@ -652,7 +652,7 @@ class BuildOrchestrator:
                         saved_manifest["deployment_config"]["slurm"] = {}
                     
                     # Copy slurm settings from model config
-                    for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir"]:
+                    for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir", "nodelist"]:
                         if key in model_slurm and key not in saved_manifest["deployment_config"]["slurm"]:
                             saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
                 
