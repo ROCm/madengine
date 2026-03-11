@@ -1445,6 +1445,15 @@ class ContainerRunner:
                             # Ignore errors if no profiler/trace output files exist
                             pass
 
+                        # Copy multiple_results CSV to workspace root before run_directory is removed
+                        # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
+                        mult_res = model_info.get("multiple_results")
+                        if mult_res:
+                            try:
+                                model_docker.sh(f"cp {model_dir}/{mult_res} . 2>/dev/null || true")
+                            except Exception:
+                                pass
+
                         # Cleanup if not keeping alive and not keeping model directory
                         if not keep_alive and not keep_model_dir:
                             model_docker.sh(f"rm -rf {model_dir}", timeout=240)
