@@ -265,6 +265,20 @@
     "args": ""
   },
   {
+    "name": "dummy_torchrun_multi",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run_multi.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed"
+    ],
+    "args": "",
+    "multiple_results": "perf_dummy_torchrun.csv"
+  },
+  {
     "name": "dummy_torchrun_helper",
     "dockerfile": "docker/dummy_torchrun",
     "scripts": "scripts/dummy_torchrun/run_with_helper.py",

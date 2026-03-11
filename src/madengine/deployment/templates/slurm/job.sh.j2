@@ -685,6 +685,10 @@ if [ $TASK_EXIT -eq 0 ]; then
     for f in "$WORKSPACE"/*_env.csv "$WORKSPACE"/*.log "$WORKSPACE"/multi_results*.csv "$WORKSPACE"/results* "$WORKSPACE"/gpu_info_*.csv "$WORKSPACE"/library_trace.csv; do
         if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     done
+    {% if multiple_results %}
+    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    {% endif %}
     if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
     echo "========================================================================"
@@ -740,6 +744,18 @@ $MAD_CLI_COMMAND run \
     {% if live_output %}--live-output{% endif %}
 
 EXIT_CODE=$?
+
+# Single-node: copy multiple_results CSV to job collection dir so collect_results finds it
+{% if multiple_results %}
+if [ $EXIT_CODE -eq 0 ]; then
+    SUBMISSION_DIR={{ manifest_file | dirname }}
+    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+    NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_0"
+    mkdir -p "$NODE_COLLECTION_DIR"
+    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+fi
+{% endif %}
 {% endif %}
 
 # =============================================================================

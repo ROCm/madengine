@@ -149,6 +149,7 @@ class BaseDeployment(ABC):
         Returns:
             DeploymentResult with status and metrics
         """
+        result = None
         try:
             # Step 1: Validate
             self.console.print(
@@ -195,6 +196,11 @@ class BaseDeployment(ABC):
 
             return result
 
+        except KeyboardInterrupt:
+            if result is not None and getattr(result, "deployment_id", None):
+                self.cleanup(result.deployment_id)
+                self.console.print("\n[yellow]Cancelled deployment and cleaned up resources.[/yellow]")
+            raise
         except Exception as e:
             self.console.print(f"[red]Deployment error: {e}[/red]")
             return DeploymentResult(
@@ -374,7 +380,13 @@ class BaseDeployment(ABC):
 
         duration_pattern = r"test_duration:\s*([\d.]+)s"
         duration_match = re.search(duration_pattern, log_content)
-        duration = f"{duration_match.group(1)}s" if duration_match else "N/A"
+        if duration_match:
+            duration = f"{duration_match.group(1)}s"
+        else:
+            # Also match container output: "Test Duration: 12.34 seconds"
+            alt_duration_pattern = r"Test Duration:\s*([\d.]+)\s*seconds"
+            alt_match = re.search(alt_duration_pattern, log_content, re.IGNORECASE)
+            duration = f"{alt_match.group(1)}s" if alt_match else "N/A"
 
         gpu_arch_pattern = r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)"
         gpu_arch_match = re.search(gpu_arch_pattern, log_content)

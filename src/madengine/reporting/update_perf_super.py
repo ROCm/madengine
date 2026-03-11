@@ -100,11 +100,11 @@ def handle_multiple_results_super(
     # Parse config file from args if present
     configs_data = None
     if 'args' in common_info_json and common_info_json['args']:
-        # Try to extract config path from args
-        scripts_path = common_info_json.get('pipeline', '')
+        # model_scripts_path: use None so resolution relies on config_parser.scripts_base_dir
+        # (callers pass scripts_base_dir when creating the parser; 'pipeline' is not a path)
         configs_data = config_parser.parse_and_load(
             common_info_json['args'],
-            scripts_path
+            None
         )
     
     # Process each result row

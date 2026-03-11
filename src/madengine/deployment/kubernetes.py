@@ -2792,22 +2792,51 @@ torchrun \\
                     )
                 
                 if aggregated_record:
-                    # Write ONE aggregated row to perf.csv (CRITICAL for database)
+                    # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
                     self._ensure_perf_csv_exists()
-                    self._write_to_perf_csv(aggregated_record)
-                    
+                    run_details_dict = self._build_perf_entry_from_aggregated(
+                        aggregated_record, model_info, build_info, deployment_id
+                    )
+                    perf_entry_path = Path("perf_entry.json")
+                    with open(perf_entry_path, "w", encoding="utf-8") as f:
+                        json.dump(run_details_dict, f, indent=2)
+                    if run_details_dict.get("status") == "SUCCESS":
+                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                    else:
+                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                    scripts_path = model_info.get("scripts", "")
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
+                    try:
+                        if run_details_dict.get("status") == "SUCCESS":
+                            num_entries = update_perf_super_json(
+                                single_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        else:
+                            num_entries = update_perf_super_json(
+                                exception_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        update_perf_super_csv(
+                            perf_super_json="perf_super.json",
+                            perf_super_csv="perf_super.csv",
+                            num_entries=num_entries,
+                        )
+                    except Exception as e:
+                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
                     results["successful_runs"].append({
                         "model": model_info.get("name"),
                         "perf_data": aggregated_record,
-                        "nodes": results["nodes"],  # Include per-node details
-                        "per_node_metrics": per_node_metrics  # For detailed analysis
+                        "nodes": results["nodes"],
+                        "per_node_metrics": per_node_metrics
                     })
-                    
                     self.console.print(
                         f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
                     )
                     self.console.print(
-                        f"[green]✓ Updated local perf.csv[/green]"
+                        f"[green]✓ Updated perf_entry.json, perf.csv, perf_super.* (Docker-compatible)[/green]"
                     )
             else:
                 # No performance from log: try multiple_results CSV (same contract as local Docker)
@@ -3364,6 +3393,67 @@ torchrun \\
         if not perf_csv_path.exists():
             perf_csv_path.write_text(self._PERF_CSV_HEADER + "\n", encoding="utf-8")
             self.console.print("[dim]Created perf.csv with standard header[/dim]")
+
+    def _build_perf_entry_from_aggregated(
+        self,
+        aggregated_record: Dict[str, Any],
+        model_info: Dict[str, Any],
+        build_info: Dict[str, Any],
+        deployment_id: str,
+    ) -> Dict[str, Any]:
+        """Build full run_details dict from aggregated record for perf_entry and update_* pipeline."""
+        from madengine.utils.config_parser import ConfigParser
+
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        nnodes = distributed_config.get("nnodes", 1)
+        nproc_per_node = distributed_config.get("nproc_per_node")
+        if nproc_per_node is None:
+            nproc_per_node = int(model_info.get("n_gpus", 1))
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
+        run_details = {
+            "model": model_info.get("name", aggregated_record.get("model", "")),
+            "n_gpus": str(aggregated_record.get("n_gpus", nnodes * nproc_per_node)),
+            "nnodes": str(aggregated_record.get("nnodes", nnodes)),
+            "gpus_per_node": str(aggregated_record.get("gpus_per_node", nproc_per_node)),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            "git_commit": "",
+            "machine_name": deployment_id,
+            "deployment_type": "kubernetes",
+            "launcher": launcher,
+            "gpu_architecture": aggregated_record.get("gpu_architecture", ""),
+            "performance": str(aggregated_record.get("performance", "")),
+            "metric": aggregated_record.get("metric", ""),
+            "relative_change": "",
+            "status": aggregated_record.get("status", "SUCCESS"),
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": test_duration,
+            "dataname": aggregated_record.get("data_name", model_info.get("data", "")),
+            "data_provider_type": aggregated_record.get("data_provider", ""),
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        flatten_tags_in_place(run_details)
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""), scripts_path
+            )
+        except Exception:
+            run_details["configs"] = None
+        return run_details
 
     def _build_common_info_dict(
         self,

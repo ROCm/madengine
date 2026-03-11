@@ -35,6 +35,18 @@ from madengine.execution.container_runner_helpers import (
 )
 
 
+def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
+    """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
+    if not multiple_results:
+        return None
+    if os.path.isfile(multiple_results):
+        return multiple_results
+    path_in_model_dir = os.path.join(model_dir, multiple_results)
+    if os.path.isfile(path_in_model_dir):
+        return path_in_model_dir
+    return None
+
+
 class ContainerRunner:
     """Class responsible for running Docker containers with models."""
 
@@ -1052,11 +1064,14 @@ class ContainerRunner:
                             f"cd {model_dir} && {script_name} {model_args}",
                             timeout=timeout,
                         )
-                        # Print output to ensure it gets captured in log file
-                        print(model_output)
+                        # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
+                        if not self.live_output:
+                            print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
+                        # Parser-friendly line for SLURM log collection (test_duration: Xs)
+                        print(f"test_duration: {run_results['test_duration']:.2f}s")
 
                         # Run post-scripts
                         if pre_encapsulate_post_scripts["post_scripts"]:
@@ -1073,33 +1088,43 @@ class ContainerRunner:
                             multiple_results = model_info.get("multiple_results", None)
 
                             if multiple_results:
-                                run_results["performance"] = multiple_results
-                                # Validate multiple results file format using proper CSV parsing
-                                try:
-                                    import csv
-                                    with open(multiple_results, "r") as f:
-                                        csv_reader = csv.DictReader(f)
-                                        
-                                        # Check if 'performance' column exists
-                                        if 'performance' not in csv_reader.fieldnames:
-                                            print("Error: 'performance' column not found in multiple results file.")
-                                            run_results["performance"] = None
-                                        else:
-                                            # Check if at least one row has a non-empty performance value
-                                            has_valid_perf = False
-                                            for row in csv_reader:
-                                                if row.get('performance', '').strip():
-                                                    has_valid_perf = True
-                                                    break
-                                            
-                                            if not has_valid_perf:
-                                                run_results["performance"] = None
-                                                print("Error: Performance metric is empty in all rows of multiple results file.")
-                                except Exception as e:
+                                resolved_path = _resolve_multiple_results_path(
+                                    multiple_results, model_dir
+                                )
+                                if not resolved_path:
                                     self.rich_console.print(
-                                        f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                        f"[yellow]Warning: Could not find multiple results file "
+                                        f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
                                     )
                                     run_results["performance"] = None
+                                else:
+                                    run_results["performance"] = resolved_path
+                                    # Validate multiple results file format using proper CSV parsing
+                                    try:
+                                        import csv
+                                        with open(resolved_path, "r") as f:
+                                            csv_reader = csv.DictReader(f)
+                                            
+                                            # Check if 'performance' column exists
+                                            if 'performance' not in csv_reader.fieldnames:
+                                                print("Error: 'performance' column not found in multiple results file.")
+                                                run_results["performance"] = None
+                                            else:
+                                                # Check if at least one row has a non-empty performance value
+                                                has_valid_perf = False
+                                                for row in csv_reader:
+                                                    if row.get('performance', '').strip():
+                                                        has_valid_perf = True
+                                                        break
+                                                
+                                                if not has_valid_perf:
+                                                    run_results["performance"] = None
+                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
+                                    except Exception as e:
+                                        self.rich_console.print(
+                                            f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                        )
+                                        run_results["performance"] = None
                             else:
                                 # Match the actual output format: "performance: 14164 samples_per_second"
                                 # Simple pattern to capture number and metric unit
@@ -1307,8 +1332,13 @@ class ContainerRunner:
 
                                 # Handle multiple results if specified
                                 multiple_results = model_info.get("multiple_results", None)
+                                resolved_multiple_results = (
+                                    _resolve_multiple_results_path(multiple_results, model_dir)
+                                    if multiple_results
+                                    else None
+                                )
                                 if (
-                                    multiple_results
+                                    resolved_multiple_results
                                     and run_results.get("status") == "SUCCESS"
                                 ):
                                     # Generate common info JSON for multiple results
@@ -1322,7 +1352,7 @@ class ContainerRunner:
 
                                     # Update perf.csv with multiple results
                                     update_perf_csv(
-                                        multiple_results=multiple_results,
+                                        multiple_results=resolved_multiple_results,
                                         perf_csv=self.perf_csv_path,
                                         model_name=run_details_dict["model"],
                                         common_info="common_info.json",
@@ -1338,7 +1368,7 @@ class ContainerRunner:
                                         
                                         # Reuse common_info.json for super files (no need for duplicate)
                                         num_entries = update_perf_super_json(
-                                            multiple_results=multiple_results,
+                                            multiple_results=resolved_multiple_results,
                                             perf_super_json="perf_super.json",
                                             model_name=run_details_dict["model"],
                                             common_info="common_info.json",
