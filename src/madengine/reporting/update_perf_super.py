@@ -118,7 +118,10 @@ def handle_multiple_results_super(
         # Extract standard performance/metric columns
         record["performance"] = result_row.pop("performance")
         record["metric"] = result_row.pop("metric")
-        
+        # test_duration for Duration column in reports (avoid N/A when CSV has it)
+        _td = result_row.pop("test_duration", "")
+        record["test_duration"] = "" if (_td is None or _td == "" or pd.isna(_td)) else str(_td)
+
         # Put remaining metrics into multi_results
         # Exclude internal fields that shouldn't be in multi_results
         extra_metrics = {k: v for k, v in result_row.items() 

@@ -3,7 +3,7 @@
 PyTorch Distributed Training Benchmark for madengine (multiple_results variant)
 
 Same as run_torchrun.py but writes a CSV file for multiple_results collection:
-- perf_dummy_torchrun.csv with columns: model,temperature,performance,metric
+- perf_dummy_torchrun.csv with columns: model,temperature,performance,metric,test_duration
 - Compatible with madengine multiple_results aggregation
 
 Usage:
@@ -265,17 +265,19 @@ def main():
         print(f"test_duration: {test_duration:.2f}s", flush=True)
         sys.stdout.flush()
 
-        # Write multiple_results CSV (same format as dummy_multi: model,temperature,performance,metric)
+        # Write multiple_results CSV (model,temperature,performance,metric,test_duration for duration in reports)
         with open(MULTI_RESULTS_CSV, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["model", "temperature", "performance", "metric"])
+            writer.writerow(["model", "temperature", "performance", "metric", "test_duration"])
+            test_dur_str = f"{test_duration:.2f}s"
             for i in range(4):
                 # Vary temperature for multiple rows; use throughput for performance
                 writer.writerow([
                     i + 1,
                     20 + i * 5,
                     f"{avg_node_throughput:.2f}",
-                    "samples_per_sec"
+                    "samples_per_sec",
+                    test_dur_str,
                 ])
         print(f"Wrote {MULTI_RESULTS_CSV} for multiple_results collection", flush=True)
     
