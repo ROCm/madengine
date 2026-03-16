@@ -130,6 +130,7 @@ venv/
 # model relatives
 docker/
 scripts/
+*.json
 .*_env/
 .vscode/
 
