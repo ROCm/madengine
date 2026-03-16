@@ -213,7 +213,8 @@ fi
 echo ""
 echo "Verifying madengine availability..."
 if command -v madengine >/dev/null 2>&1; then
-    MAD_CLI_VERSION=$(madengine --version 2>&1 | head -n1 || echo "unknown")
+    # MODEL_DIR can trigger side effects in madengine startup; unset it for preflight probes only.
+    MAD_CLI_VERSION=$(env -u MODEL_DIR madengine --version 2>&1 | head -n1 || echo "unknown")
     MAD_CLI_PATH=$(which madengine 2>/dev/null || echo "unknown")
     
     echo "  ✓ madengine available"
@@ -221,7 +222,7 @@ if command -v madengine >/dev/null 2>&1; then
     echo "  Path: $MAD_CLI_PATH"
     
     # Verify it's executable
-    if madengine --help >/dev/null 2>&1; then
+    if env -u MODEL_DIR madengine --help >/dev/null 2>&1; then
         export MAD_CLI_COMMAND="madengine"
     else
         echo "  ❌ ERROR: madengine found but not functional!"
@@ -470,7 +471,10 @@ echo ""
 echo "Verifying madengine availability..."
 
 if command -v madengine >/dev/null 2>&1; then
-    MAD_CLI_VERSION=$(madengine --version 2>&1 | head -n1 || echo "unknown")
+    set +e
+    MAD_VERSION_RAW_SANITIZED=$(env -u MODEL_DIR madengine --version 2>&1)
+    set -e
+    MAD_CLI_VERSION=$(printf "%s" "$MAD_VERSION_RAW_SANITIZED" | head -n1 || echo "unknown")
     MAD_CLI_PATH=$(which madengine 2>/dev/null || echo "unknown")
     
     echo "✓ madengine available"
@@ -478,7 +482,12 @@ if command -v madengine >/dev/null 2>&1; then
     echo "  Path: $MAD_CLI_PATH"
     
     # Verify it's executable
-    if madengine --help >/dev/null 2>&1; then
+    set +e
+    MAD_HELP_RAW_SANITIZED=$(env -u MODEL_DIR madengine --help 2>&1)
+    MAD_HELP_EXIT_SANITIZED=$?
+    set -e
+
+    if [ "${MAD_HELP_EXIT_SANITIZED}" -eq 0 ]; then
         echo "  ✓ Verified: madengine is functional"
         MAD_CLI_COMMAND="madengine"
     else
@@ -660,6 +669,15 @@ if [ $TASK_EXIT -eq 0 ]; then
             cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf.csv" 2>/dev/null || true
             echo "  ✓ Copied: perf.csv (global metrics)"
         fi
+
+        # Copy workload-level CSV artifacts (supports both perf_*.csv and perf-*.csv naming)
+        for csv in "$WORKSPACE"/perf_*.csv "$WORKSPACE"/perf-*.csv; do
+            if [ -f "$csv" ]; then
+                csv_basename=$(basename "$csv")
+                cp "$csv" "$RESULTS_DIR/${csv_basename}" 2>/dev/null || true
+                echo "  ✓ Copied: ${csv_basename}"
+            fi
+        done
         
         # Copy log files
         for log in "$WORKSPACE"/*.log; do
@@ -698,6 +716,16 @@ else
     echo "Task FAILED with exit code: $TASK_EXIT"
     echo "  Node: SLURM_PROCID=${SLURM_PROCID}"
     echo "========================================================================"
+    # Preserve diagnostic artifacts even when the task fails.
+    RESULTS_DIR={{ manifest_file | dirname }}
+    if [ "${SLURM_PROCID}" = "0" ]; then
+        for f in "$WORKSPACE"/*.log "$WORKSPACE"/perf_*.csv "$WORKSPACE"/perf-*.csv "$WORKSPACE"/benchmark_*_CONCURRENCY.log; do
+            if [ -f "$f" ]; then
+                cp "$f" "$RESULTS_DIR/" 2>/dev/null || true
+                echo "  ✓ Copied failure artifact: $(basename "$f")"
+            fi
+        done
+    fi
 fi
 
 exit $TASK_EXIT
