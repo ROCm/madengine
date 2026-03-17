@@ -23,7 +23,11 @@ from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
-from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.reporting.update_perf_csv import (
+    PERF_CSV_HEADER,
+    update_perf_csv,
+    flatten_tags,
+)
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
@@ -92,7 +96,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,launcher,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                PERF_CSV_HEADER,
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -269,6 +273,68 @@ class ContainerRunner:
             run_details["configs"] = None
 
         return run_details
+
+    def _create_setup_failure_perf_entry(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        image_name: str,
+        error_message: str,
+    ) -> typing.Dict:
+        """Build a minimal perf entry for failures that occur before run_container (e.g. pull failed).
+
+        Used so that every failed model is recorded in the performance table with status FAILURE.
+        """
+        machine_name = ""
+        if self.console:
+            try:
+                machine_name = self.console.sh("hostname")
+            except Exception:
+                pass
+
+        tags = model_info.get("tags", "")
+        if isinstance(tags, list):
+            tags = ",".join(str(t) for t in tags)
+
+        return {
+            "model": model_info.get("name", image_name),
+            "n_gpus": str(model_info.get("n_gpus", "1")),
+            "nnodes": "1",
+            "gpus_per_node": str(model_info.get("n_gpus", "1")),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": tags,
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", image_name),
+            "git_commit": "",
+            "machine_name": machine_name,
+            "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),
+            "launcher": "",
+            "gpu_architecture": (
+                self.context.ctx.get("docker_env_vars", {}).get(
+                    "MAD_SYSTEM_GPU_ARCHITECTURE", ""
+                )
+                if self.context
+                else ""
+            ),
+            "performance": "",
+            "metric": "",
+            "relative_change": "",
+            "status": "FAILURE",
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": "",
+            "dataname": "",
+            "data_provider_type": "",
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
+        }
 
     def load_build_manifest(
         self, manifest_file: str = "build_manifest.json"
@@ -1662,11 +1728,41 @@ class ContainerRunner:
                 
             except Exception as e:
                 self.rich_console.print(f"[red]❌ Failed to run {model_info['name']}: {e}[/red]")
+                error_msg = str(e)
                 failed_runs.append({
                     "model": model_info.get("name", image_name),
                     "image": image_name,
-                    "error": str(e),
+                    "error": error_msg,
                 })
+                # Record failure in performance table so status is consistent and table is complete
+                try:
+                    import tempfile
+                    self.ensure_perf_csv_exists()
+                    perf_entry = self._create_setup_failure_perf_entry(
+                        model_info=model_info,
+                        build_info=build_info,
+                        image_name=image_name,
+                        error_message=error_msg,
+                    )
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".json", delete=False
+                    ) as f:
+                        json.dump(perf_entry, f)
+                        temp_path = f.name
+                    try:
+                        update_perf_csv(
+                            exception_result=temp_path,
+                            perf_csv=self.perf_csv_path,
+                        )
+                        print(
+                            f"Updated perf.csv with setup failure for {model_info.get('name', image_name)}"
+                        )
+                    finally:
+                        os.unlink(temp_path)
+                except Exception as csv_e:
+                    self.rich_console.print(
+                        f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
+                    )
         
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")

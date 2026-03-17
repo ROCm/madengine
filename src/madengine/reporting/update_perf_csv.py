@@ -6,12 +6,22 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # build-in imports
-import json
 import argparse
+import json
+import os
 import typing
 
 # third-party imports
 import pandas as pd
+
+# Standard header for perf CSV; must match ContainerRunner.ensure_perf_csv_exists()
+PERF_CSV_HEADER = (
+    "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,"
+    "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
+    "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
+    "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
+    "data_download_duration,build_number,additional_docker_run_options"
+)
 
 
 def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -37,7 +47,8 @@ def read_json(js: str) -> dict:
         The JSON dictionary.
     """
     # Input to this function should always be a path
-    js_dict = json.load(open(js))
+    with open(js) as f:
+        js_dict = json.load(f)
     return js_dict
 
 
@@ -242,6 +253,14 @@ def update_perf_csv(
     print("📈 ATTACHING PERFORMANCE METRICS TO DATABASE")
     print("=" * 80)
     print(f"📂 Target file: {perf_csv}")
+
+    # If file does not exist but we have a result to append, create it with headers first
+    if not os.path.exists(perf_csv) and (
+        multiple_results or single_result or exception_result
+    ):
+        with open(perf_csv, "w") as f:
+            f.write(PERF_CSV_HEADER + "\n")
+        print(f"Created performance CSV file: {perf_csv}")
 
     # read perf.csv
     perf_csv_df = df_strip_columns(pd.read_csv(perf_csv))

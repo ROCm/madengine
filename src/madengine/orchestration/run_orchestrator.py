@@ -24,6 +24,7 @@ from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.errors import (
+    BuildError,
     ConfigurationError,
     RuntimeError as MADRuntimeError,
     create_error_context,
@@ -288,7 +289,7 @@ class RunOrchestrator:
                 self._cleanup_model_dir_copies()
                 raise
 
-        except (ConfigurationError, MADRuntimeError):
+        except (ConfigurationError, MADRuntimeError, BuildError):
             raise
         except Exception as e:
             context = create_error_context(
