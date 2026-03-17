@@ -30,6 +30,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - [Reporting and Database](#-reporting-and-database)
 - [Installation](#-installation)
 - [Tips & Best Practices](#-tips--best-practices)
+  - [Exit codes and CI](#exit-codes-and-ci)
 - [Contributing](#-contributing)
 - [License](#-license)
 - [Links & Resources](#-links--resources)
@@ -71,7 +72,7 @@ madengine run --tags dummy --rocm-path /path/to/rocm \
 # or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy ...
 ```
 
-**Results saved to `perf_entry.csv`**
+**Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
 
 ## 📋 Commands
 
@@ -560,6 +561,10 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 - **Use profiling tools** to identify bottlenecks
 - **Monitor GPU utilization** with `gpu_info_power_profiler`
 - **Profile library calls** with rocBLAS/MIOpen tracing
+
+### Exit codes and CI
+
+madengine uses consistent exit codes for scripts and CI (e.g. Jenkins): `0` = success, `1` = general failure, `2` = build failure, `3` = one or more run failures, `4` = invalid arguments. Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](docs/cli-reference.md#exit-codes) for the full table and examples.
 
 ### Troubleshooting
 
