@@ -241,8 +241,12 @@ class LibraryFilter(object):
             m_match = process_miopen_trace(data.splitlines())
             matched |= m_match
 
-        if self.stdio and (self.printConfigs or (not matched)):
-            self.stdio.write(data)
+        if self.stdio:
+            # Always print non-matching lines (like performance output)
+            # Only suppress matching trace lines if printConfigs is False
+            if self.printConfigs or (not matched):
+                self.stdio.write(data)
+                self.stdio.flush()  # Ensure output is immediately available, not buffered
         # else: #debug
         #    self.stdio.write( "$(%s,%s,%s) " % (r_match, t_match, m_match) + data )
 
@@ -271,11 +275,25 @@ def run_command(
     modified_env = os.environ.copy()
     modified_env.update(request_env)
 
-    with redirect_stdout(outlog), redirect_stderr(outlog):
-        process = subprocess.Popen(commandstring, shell=True, env=modified_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
-        outlog.write(stdout.decode())
-        outlog.write(stderr.decode())
+    # Run subprocess with STDOUT (not PIPE) so output goes directly to our stdout
+    # This avoids buffering issues with nested processes
+    process = subprocess.Popen(
+        commandstring, 
+        shell=True, 
+        env=modified_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # Merge stderr into stdout
+        universal_newlines=True,
+        bufsize=1  # Line buffered
+    )
+    
+    # Stream output line by line
+    for line in process.stdout:
+        outlog.write(line)
+        outlog.flush()
+    
+    # Wait for process to complete
+    process.wait()
 
 
 def main():
@@ -289,7 +307,7 @@ def main():
 
     # WORKAROUND: This command does not stack
     # calling multiple get_library_trace calls in a chain is equivalent to calling it once
-    commandstring = re.sub("([~ ]|^).*get_library_trace ", "", commandstring)
+    commandstring = re.sub("([~ ]|^).*get_library_trace\\.py ", "", commandstring)
 
     request_env = {}
     if "rocblas_trace" in mode:
@@ -318,7 +336,7 @@ def main():
     date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Write the library trace information to the CSV file
-    filename = "/myworkspace/library_trace.csv"
+    filename = os.environ.get("OUTPUT_FILE", "library_trace.csv")
     fields = ["jobid", "created_date", "model", "library", "config", "calls"]
     with open(filename, "w") as csvfile:
         csvwriter = csv.writer(csvfile)

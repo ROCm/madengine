@@ -1,0 +1,56 @@
+{
+  "_comment": "SGLang Disaggregated Multi-Node - Distributed Inference Configuration",
+  "_description": "SGLang disaggregated inference with specialized prefill/decode clusters",
+  "_use_case": "Large-scale LLM inference requiring disaggregated prefill/decode",
+  "_architecture": {
+    "proxy": "Node 0 (Load Balancer)",
+    "prefill": "Nodes 1-2 (2 nodes, ~40% of workers)",
+    "decode": "Nodes 3-4 (2 nodes, ~60% of workers)",
+    "total": "5 nodes total",
+    "tensor_parallel": "8 GPUs per node"
+  },
+  "_note": "SGLang Disaggregated separates prefill and decode into specialized clusters connected via Mooncake",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 5,
+    "gpus_per_node": 8,
+    "time": "04:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 5,
+    "nproc_per_node": 8,
+    "backend": "nccl",
+    "port": 29500
+  },
+  
+  "env_vars": {
+    "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "SGLANG_USE_MODELSCOPE": "False",
+    "SGLANG_ENABLE_RADIX_CACHE": "1",
+    "SGLANG_RADIX_CACHE_SIZE": "0.9",
+    "SGLANG_LOGGING_LEVEL": "INFO",
+    "SGLANG_DISAGG_TRANSFER_BACKEND": "mooncake",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_ENABLE_SDMA": "0",
+    "GPU_MAX_HW_QUEUES": "2",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "NCCL_MIN_NCHANNELS": "16",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "mlx5_0",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "RAY_DEDUP_LOGS": "1",
+    "RAY_BACKEND_LOG_LEVEL": "warning",
+    "MOONCAKE_TEST_MODE": "0"
+  }
+}
+

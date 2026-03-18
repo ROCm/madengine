@@ -1,10 +1,10 @@
 """Model template for dummy3 model.
 
-This model is used to test the dynamic model discovery feature of MADEngine.
+This model is used to test the dynamic model discovery feature of madengine.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-from madengine.tools.discover_models import CustomModel
+from madengine.utils.discover_models import CustomModel
 
 Model3Data = CustomModel(
     name="model3",

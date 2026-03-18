@@ -1,0 +1,71 @@
+{
+  "_comment": "Multi-Node (4 nodes, 8 GPUs each) - Advanced SLURM Configuration",
+  "_description": "Configuration for large-scale distributed workloads with advanced options",
+  "_use_case": "Production-scale multi-node training with custom workspace and results collection",
+  "_note": "Using 'amd-rccl' partition. Adjust for your cluster if needed.",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "48:00:00",
+    "output_dir": "./slurm_output",
+    "results_dir": "/shared/results",
+    "shared_workspace": "/shared/workspace",
+    "exclusive": true,
+    "qos": "high",
+    "account": "research-project",
+    "network_interface": "ib0",
+    "modules": [
+      "rocm/5.7.0",
+      "gcc/11.2.0",
+      "openmpi/4.1.4"
+    ]
+  },
+  
+  "distributed": {
+    "launcher": "torchrun",
+    "backend": "nccl",
+    "port": 29500,
+    "nnodes": 4,
+    "nproc_per_node": 8
+  },
+  
+  "env_vars": {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "mlx5_0:1,mlx5_1:1",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "2",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_TIMEOUT": "1200",
+    "HSA_ENABLE_SDMA": "0",
+    "OMP_NUM_THREADS": "16",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0",
+    "NCCL_BUFFSIZE": "8388608",
+    "NCCL_P2P_LEVEL": "NVL"
+  },
+  
+  "shared_data": "/shared/datasets",
+  
+  "_notes": {
+    "description": "Advanced configuration with InfiniBand, shared storage, and custom SLURM settings",
+    "modules": "Load required environment modules before job execution",
+    "qos": "Quality of Service level for job priority",
+    "account": "SLURM account for resource allocation tracking",
+    "results_dir": "Shared directory for collecting results from all nodes",
+    "shared_workspace": "Shared filesystem for job execution (NFS/Lustre)",
+    "shared_data": "Shared dataset location accessible from all nodes"
+  },
+  
+  "debug": false
+}
+

@@ -1,0 +1,41 @@
+{
+  "_comment": "SGLang Single Node Multi-GPU - Inference Configuration",
+  "_description": "SGLang inference with tensor parallelism on single node",
+  "_use_case": "High-throughput LLM inference on single node with multiple GPUs",
+  "_note": "SGLang uses tensor parallelism to split model across GPUs",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 4,
+    "time": "02:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true
+  },
+  
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  },
+  
+  "env_vars": {
+    "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
+    "SGLANG_USE_MODELSCOPE": "False",
+    "SGLANG_ENABLE_FLASHINFER": "1",
+    "SGLANG_ENABLE_RADIX_CACHE": "1",
+    "SGLANG_RADIX_CACHE_SIZE": "0.9",
+    "SGLANG_LOGGING_LEVEL": "INFO",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "HSA_ENABLE_SDMA": "0",
+    "GPU_MAX_HW_QUEUES": "2",
+    "NCCL_DEBUG": "WARN",
+    "NCCL_MIN_NCHANNELS": "16",
+    "RAY_DEDUP_LOGS": "1",
+    "RAY_BACKEND_LOG_LEVEL": "warning"
+  }
+}
+

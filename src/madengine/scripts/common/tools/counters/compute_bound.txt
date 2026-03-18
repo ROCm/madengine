@@ -1,0 +1,25 @@
+# Compute-bound profiling counters
+# For models bottlenecked by ALU operations
+
+# Wave execution
+pmc: SQ_WAVES
+pmc: SQ_WAVE_CYCLES
+
+# VALU instructions (vector ALU)
+pmc: SQ_INSTS_VALU
+pmc: SQ_ACTIVE_INST_VALU
+pmc: SQ_INSTS_VALU_ADD_F32
+pmc: SQ_INSTS_VALU_MUL_F32
+pmc: SQ_INSTS_VALU_FMA_F32
+pmc: SQ_INSTS_VALU_TRANS_F32
+
+# SALU instructions (scalar ALU)
+pmc: SQ_INSTS_SALU
+
+# Memory instructions
+pmc: SQ_INSTS_VMEM_RD
+pmc: SQ_INSTS_VMEM_WR
+
+# Wait states
+pmc: SQ_WAIT_INST_ANY
+# Note: SQ_WAIT_INST_VALU not available on gfx942 (MI300X)

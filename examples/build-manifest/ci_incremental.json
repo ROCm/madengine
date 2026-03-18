@@ -1,0 +1,23 @@
+[
+  {
+    "model_name": "changed_model_1",
+    "build_new": true
+  },
+  {
+    "model_name": "changed_model_2",
+    "build_new": true
+  },
+  {
+    "model_name": "stable_model_1",
+    "build_new": false
+  },
+  {
+    "model_name": "stable_model_2",
+    "build_new": false
+  },
+  {
+    "model_name": "stable_model_3",
+    "build_new": false
+  }
+]
+

@@ -14,6 +14,8 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+from madengine.core.constants import get_rocm_path
+
 
 class GPUVendor(Enum):
     """Supported GPU vendors"""
@@ -42,34 +44,33 @@ class GPUValidationResult:
 
 
 class ROCmValidator:
-    """Validator for AMD ROCm installation"""
-    
-    # Essential ROCm components to check
-    ESSENTIAL_PATHS = {
-        'rocm_root': '/opt/rocm',
-        'hip_path': '/opt/rocm/bin/hipconfig',
-        'rocminfo': '/opt/rocm/bin/rocminfo',
-    }
-    
-    # Optional but recommended components
-    RECOMMENDED_PATHS = {
-        'amd_smi': '/opt/rocm/bin/amd-smi',
-        'rocm_smi': '/opt/rocm/bin/rocm-smi',
-    }
-    
-    # KFD (Kernel Fusion Driver) paths
+    """Validator for AMD ROCm installation with tool manager integration"""
+
+    # KFD (Kernel Fusion Driver) paths - not under ROCm install
     KFD_PATHS = {
         'kfd_device': '/dev/kfd',
         'kfd_topology': '/sys/devices/virtual/kfd/kfd/topology/nodes',
     }
-    
-    def __init__(self, verbose: bool = False):
+
+    def __init__(self, verbose: bool = False, rocm_path: Optional[str] = None):
         """Initialize ROCm validator
-        
+
         Args:
             verbose: If True, print detailed validation progress
+            rocm_path: Optional ROCm root path (default: ROCM_PATH env or /opt/rocm)
         """
         self.verbose = verbose
+        self.rocm_path = get_rocm_path(rocm_path)
+        self.ESSENTIAL_PATHS = {
+            'rocm_root': self.rocm_path,
+            'hip_path': os.path.join(self.rocm_path, 'bin', 'hipconfig'),
+            'rocminfo': os.path.join(self.rocm_path, 'bin', 'rocminfo'),
+        }
+        self.RECOMMENDED_PATHS = {
+            'amd_smi': os.path.join(self.rocm_path, 'bin', 'amd-smi'),
+            'rocm_smi': os.path.join(self.rocm_path, 'bin', 'rocm-smi'),
+        }
+        self._tool_manager = None  # Lazy initialization
         
     def _run_command(self, cmd: List[str], timeout: int = 10) -> Tuple[bool, str, str]:
         """Run a command and return success status and output
@@ -100,19 +101,46 @@ class ROCmValidator:
         """Check if a path exists"""
         return os.path.exists(path)
     
+    def _get_tool_manager(self):
+        """Get or create ROCm tool manager instance
+        
+        Returns:
+            ROCmToolManager instance
+        """
+        if self._tool_manager is None:
+            try:
+                from madengine.utils.rocm_tool_manager import ROCmToolManager
+                self._tool_manager = ROCmToolManager(rocm_path=self.rocm_path)
+            except ImportError as e:
+                if self.verbose:
+                    print(f"Warning: Could not import ROCmToolManager: {e}")
+                return None
+        return self._tool_manager
+    
     def _get_rocm_version(self) -> Optional[str]:
-        """Get ROCm version from system
+        """Get ROCm version from system using tool manager
         
         Returns:
             ROCm version string or None if not found
+            
+        Enhancement:
+            Uses ROCmToolManager for robust multi-method version detection.
         """
-        # Try hipconfig first
+        # Try tool manager first (most robust)
+        tool_manager = self._get_tool_manager()
+        if tool_manager:
+            try:
+                return tool_manager.get_version()
+            except Exception:
+                pass  # Fallback to direct methods
+        
+        # Fallback: Try hipconfig first
         success, stdout, _ = self._run_command(['hipconfig', '--version'])
         if success and stdout:
             return stdout.split('-')[0]  # Remove build suffix
         
         # Try version file
-        version_file = '/opt/rocm/.info/version'
+        version_file = os.path.join(self.rocm_path, '.info', 'version')
         if os.path.exists(version_file):
             try:
                 with open(version_file, 'r') as f:
@@ -124,12 +152,27 @@ class ROCmValidator:
         return None
     
     def _check_gpu_accessible(self) -> Tuple[bool, str]:
-        """Check if GPUs are accessible
+        """Check if GPUs are accessible using version-aware tool selection
         
         Returns:
             Tuple of (accessible, message)
+            
+        Enhancement:
+            Uses tool manager to prefer correct tool based on ROCm version (PR #54).
         """
-        # Try rocminfo first
+        # Try using tool manager first (version-aware)
+        tool_manager = self._get_tool_manager()
+        if tool_manager:
+            try:
+                count = tool_manager.get_gpu_count()
+                if count > 0:
+                    version = tool_manager.get_rocm_version()
+                    preferred_tool = tool_manager.get_preferred_smi_tool()
+                    return True, f"GPUs accessible via tool manager ({preferred_tool}, ROCm {version})"
+            except Exception:
+                pass  # Fall back to direct checks
+        
+        # Fallback: Try rocminfo first (most reliable for detection)
         success, stdout, stderr = self._run_command(['rocminfo'])
         if success:
             # Check if any GPU agents are listed
@@ -305,9 +348,10 @@ class ROCmValidator:
         
         # Generate suggestions based on issues
         if result.issues:
-            if not self._check_path_exists('/opt/rocm'):
+            if not self._check_path_exists(self.rocm_path):
                 result.suggestions.append(
-                    "ROCm does not appear to be installed. Install ROCm: "
+                    f"ROCm does not appear to be installed at {self.rocm_path}. "
+                    "Set ROCM_PATH if using a non-default install, or install ROCm: "
                     "https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html"
                 )
             
@@ -552,39 +596,50 @@ class NVIDIAValidator:
         return result
 
 
-def detect_gpu_vendor() -> GPUVendor:
+def detect_gpu_vendor(rocm_path: Optional[str] = None) -> GPUVendor:
     """Detect which GPU vendor is present on the system
-    
+
+    Args:
+        rocm_path: Optional ROCm root path (default: ROCM_PATH env or /opt/rocm)
+
     Returns:
         GPUVendor enum value
     """
     if os.path.exists("/usr/bin/nvidia-smi"):
         return GPUVendor.NVIDIA
-    elif os.path.exists("/opt/rocm/bin/rocm-smi") or os.path.exists("/opt/rocm/bin/amd-smi"):
+    rocm = get_rocm_path(rocm_path)
+    if os.path.exists(os.path.join(rocm, "bin", "rocm-smi")) or os.path.exists(os.path.join(rocm, "bin", "amd-smi")):
         return GPUVendor.AMD
-    else:
-        return GPUVendor.UNKNOWN
+    if os.path.exists("/usr/local/bin/amd-smi"):
+        return GPUVendor.AMD
+    return GPUVendor.UNKNOWN
 
 
-def validate_gpu_installation(vendor: Optional[GPUVendor] = None, verbose: bool = False, raise_on_error: bool = True) -> GPUValidationResult:
+def validate_gpu_installation(
+    vendor: Optional[GPUVendor] = None,
+    verbose: bool = False,
+    raise_on_error: bool = True,
+    rocm_path: Optional[str] = None,
+) -> GPUValidationResult:
     """Validate GPU installation on the current node
-    
+
     Args:
         vendor: GPU vendor to validate (auto-detected if None)
         verbose: Print detailed validation progress
         raise_on_error: Raise GPUInstallationError if validation fails
-        
+        rocm_path: Optional ROCm root path for AMD (default: ROCM_PATH env or /opt/rocm)
+
     Returns:
         GPUValidationResult
-        
+
     Raises:
         GPUInstallationError: If validation fails and raise_on_error is True
     """
     if vendor is None:
-        vendor = detect_gpu_vendor()
-    
+        vendor = detect_gpu_vendor(rocm_path=rocm_path)
+
     if vendor == GPUVendor.AMD:
-        validator = ROCmValidator(verbose=verbose)
+        validator = ROCmValidator(verbose=verbose, rocm_path=rocm_path)
         rocm_result = validator.validate()
         # Convert ROCmValidationResult to GPUValidationResult
         result = GPUValidationResult(
@@ -666,20 +721,27 @@ ROCmValidationResult = GPUValidationResult  # For backwards compatibility
 ROCmInstallationError = GPUInstallationError  # For backwards compatibility
 
 
-def validate_rocm_installation(verbose: bool = False, raise_on_error: bool = True) -> GPUValidationResult:
+def validate_rocm_installation(
+    verbose: bool = False,
+    raise_on_error: bool = True,
+    rocm_path: Optional[str] = None,
+) -> GPUValidationResult:
     """Validate ROCm installation on the current node (backwards compatibility wrapper)
-    
+
     Args:
         verbose: Print detailed validation progress
         raise_on_error: Raise GPUInstallationError if validation fails
-        
+        rocm_path: Optional ROCm root path (default: ROCM_PATH env or /opt/rocm)
+
     Returns:
         GPUValidationResult
-        
+
     Raises:
         GPUInstallationError: If validation fails and raise_on_error is True
     """
-    return validate_gpu_installation(vendor=GPUVendor.AMD, verbose=verbose, raise_on_error=raise_on_error)
+    return validate_gpu_installation(
+        vendor=GPUVendor.AMD, verbose=verbose, raise_on_error=raise_on_error, rocm_path=rocm_path
+    )
 
 
 if __name__ == "__main__":

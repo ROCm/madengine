@@ -12,7 +12,7 @@ tool=$1
 OUTPUT=${tool}_output
 SAVESPACE=/myworkspace/
 
-mkdir "$OUTPUT"
+mkdir -p "$OUTPUT"
 
 case "$tool" in
 
@@ -54,8 +54,86 @@ rpd)
 	;;
 
 rocprof)
-	mv results* "$OUTPUT"
-	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE"
+	# Handle both legacy rocprof (results*) and rocprofv3 (different output format)
+	echo "ROCprof post-script: Collecting profiling output..."
+	
+	# Check for legacy rocprof results files
+	if ls results* 1> /dev/null 2>&1; then
+		echo "Found rocprof results files"
+		mv results* "$OUTPUT" 2>/dev/null || true
+	else
+		echo "No rocprof results* files found (may be using rocprofv3)"
+	fi
+	
+	# Check for rocprofv3 output directories (UUID pattern like 1e4d92661463/)
+	# rocprofv3 creates directories with hex UUIDs containing .db files
+	found_rocprofv3_output=false
+	for dir in */; do
+		# Check if directory exists and contains .db files
+		if [ -d "$dir" ]; then
+			# Use proper glob expansion to check for any .db file
+			if compgen -G "${dir}*_results.db" > /dev/null; then
+				echo "Found rocprofv3 output directory: $dir"
+				mv "$dir" "$OUTPUT/" 2>/dev/null || true
+				found_rocprofv3_output=true
+			fi
+		fi
+	done
+	
+	# Also check for other rocprofv3 output patterns
+	if ls rocprofv3-* 1> /dev/null 2>&1; then
+		echo "Found rocprofv3-* files"
+		mv rocprofv3-* "$OUTPUT" 2>/dev/null || true
+		found_rocprofv3_output=true
+	fi
+	
+	if [ "$found_rocprofv3_output" = true ]; then
+		echo "Collected rocprofv3 profiling data"
+	fi
+	
+	# Check for CSV trace files in subdirectories (rocprof can create hostname subdirectories)
+	# Look for patterns like: hostname/pid_kernel_trace.csv, hostname/pid_hip_api_trace.csv, etc.
+	csv_found=false
+	for dir in */; do
+		if [ -d "$dir" ]; then
+			# Check for CSV files matching rocprof patterns
+			if compgen -G "${dir}*_trace.csv" > /dev/null || compgen -G "${dir}*_api_trace.csv" > /dev/null; then
+				echo "Found rocprof CSV files in directory: $dir"
+				# Copy CSV files to output directory, preserving subdirectory structure
+				mkdir -p "$OUTPUT/$dir"
+				cp -v "${dir}"*.csv "$OUTPUT/$dir/" 2>/dev/null || true
+				csv_found=true
+			fi
+		fi
+	done
+	
+	if [ "$csv_found" = true ]; then
+		echo "Collected rocprof CSV trace files from subdirectories"
+	fi
+	
+	# Consolidate rocprofv3 CSV files so MAD-agent finds rocprofv3_output_* names.
+	# rocprofv3 may write agent_info in -o prefix but kernel_trace/stats with PID prefix or under hostname/pid.
+	for base in agent_info domain_stats kernel_stats kernel_trace hip_api_trace counter_collection; do
+		canonical="${OUTPUT}/rocprofv3_output_${base}.csv"
+		if [ -f "$canonical" ]; then
+			continue
+		fi
+		first=$(find . -maxdepth 4 -name "*${base}.csv" -type f 2>/dev/null | head -1)
+		if [ -n "$first" ]; then
+			cp -v "$first" "$canonical"
+		fi
+	done
+	
+	# Generate instruction_histogram.json from counter/domain_stats CSV so MAD-agent gets real instruction mix.
+	if [ -f "${OUTPUT}/rocprofv3_output_counter_collection.csv" ] || [ -f "${OUTPUT}/rocprofv3_output_domain_stats.csv" ]; then
+		CONVERTER="$(cd "$(dirname "$0")/../tools" 2>/dev/null && pwd)/rocprof_counter_csv_to_instruction_histogram.py"
+		if [ -n "$CONVERTER" ] && [ -f "$CONVERTER" ]; then
+			python3 "$CONVERTER" "$OUTPUT" || true
+		fi
+	fi
+
+	# Copy output directory (even if empty - non-critical)
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;
 
 esac

@@ -1,0 +1,17 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocprofv3_compute",
+      "env_vars": {}
+    },
+    {
+      "name": "gpu_info_power_profiler",
+      "env_vars": {
+        "POWER_DEVICE": "all",
+        "POWER_SAMPLING_RATE": "0.1"
+      }
+    }
+  ]
+}

@@ -12,16 +12,14 @@ import typing
 
 class Timeout:
     """Class to handle timeouts.
-    
+
     Attributes:
         seconds (int): The timeout in seconds.
     """
-    def __init__(
-            self, 
-            seconds: int=15
-        ) -> None:
+
+    def __init__(self, seconds: int = 15) -> None:
         """Constructor of the Timeout class.
-        
+
         Args:
             seconds (int): The timeout in seconds.
         """
@@ -29,14 +27,14 @@ class Timeout:
 
     def handle_timeout(self, signum, frame) -> None:
         """Handle timeout.
-        
+
         Args:
             signum: The signal number.
             frame: The frame.
 
         Returns:
             None
-        
+
         Raises:
             TimeoutError: If the program times out.
         """

@@ -1,426 +1,663 @@
 # madengine
-Set of interfaces to run various AI models from public MAD.
 
-# What is madengine?
+<p align="center">
+<picture>
+  <img src="madengine.png" alt="madengine Logo" />
+</picture>
+</p>
+
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
+[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Version](https://img.shields.io/badge/version-2.0-brightgreen.svg)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> **AI model automation and benchmarking platform for local and distributed execution**
+
+madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep Learning models across local and distributed environments. Built for the [MAD (Model Automation and Dashboarding)](https://github.com/ROCm/MAD) ecosystem, it provides seamless execution from single GPUs to multi-node clusters.
+
+## 📖 Table of Contents
+
+- [Key Features](#-key-features)
+- [Quick Start](#-quick-start)
+- [Commands](#-commands)
+- [Documentation](#-documentation)
+- [Architecture](#-architecture)
+- [Feature Matrix](#-feature-matrix)
+- [Usage Examples](#-usage-examples)
+- [Model Discovery](#-model-discovery)
+- [Performance Profiling](#-performance-profiling)
+- [Reporting and Database](#-reporting-and-database)
+- [Installation](#-installation)
+- [Tips & Best Practices](#-tips--best-practices)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Links & Resources](#-links--resources)
+
+## ✨ Key Features
+
+- **🚀 Modern CLI** - Rich terminal output with Typer and Rich
+- **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
+- **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
+- **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
+- **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
+- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, rocblas, MIOpen, RCCL tracing
+- **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
+- **🔍 Environment Validation** - TheRock ROCm detection and validation tools
+- **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
+
+## 🚀 Quick Start
 
-An AI Models automation and dashboarding command-line tool to run LLMs and Deep Learning models locally or remotelly with CI. 
-
-The madengine library is to support AI automation having following features:
-- AI Models run reliably on supported platforms and drive software quality
-- Simple, minimalistic, out-of-the-box solution that enable confidence on hardware and software stack
-- Real-time, audience-relevant AI Models performance metrics tracking, presented in clear, intuitive manner
-- Best-practices for handling internal projects and external open-source projects
-
-# Installation
-
-madengine is meant to be used in conjunction with [MAD](https://github.com/ROCm/MAD). Below are the steps to set it up and run it using the command line interface (CLI).
-
-## Clone MAD
-```
-git clone git@github.com:ROCm/MAD.git
-cd MAD
-```
-
-## Install madengine
-
-### Install from source
-
-```
-# Create virtual environment if necessary
-python3 -m venv venv
-
-# Active the virtual environment venv
-source venv/bin/activate
-
-# Clone madengine
-git clone git@github.com:ROCm/madengine.git
-
-# Change current working directory to madengine
-cd madengine
-
-# Install madengine from source:
-pip install .
-
-```
-
-### Install from repo
-
-You can also install the madengine library directly from the Github repository.
-
-```
-pip install git+https://github.com/ROCm/madengine.git@main
-```
-
-## Clone 
-
-# Run madengine CLI
-
-How to run madengine CLI on your local machine.
-
-```shell
-(venv) test-node:~/MAD$ madengine --help
-usage: madengine [-h] [-v] {run,discover,report,database} ...
-
-A Model automation and dashboarding command-line tool to run LLMs and Deep Learning models locally.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -v, --version         show program's version number and exit
-
-Commands:
-  Available commands for running models, generating reports, and toolings.
-
-  {run,discover,report,database}
-    run                 Run models on container
-    discover            Discover the models
-    report              Generate report of models
-    database            CRUD for database
-```
-
-## Run models locally
-
-Command to run LLMs and Deep Learning Models on container.
-
-```
-# An example CLI command to run a model
-madengine run --tags pyt_huggingface_bert --live-output --additional-context "{'guest_os': 'UBUNTU'}"
-```
-
-```shell
-(venv) test-node:~/MAD$ madengine run --help
-usage: madengine run [-h] [--tags TAGS [TAGS ...]] [--timeout TIMEOUT] [--live-output] [--clean-docker-cache] [--additional-context-file ADDITIONAL_CONTEXT_FILE]
-                     [--additional-context ADDITIONAL_CONTEXT] [--data-config-file-name DATA_CONFIG_FILE_NAME] [--tools-json-file-name TOOLS_JSON_FILE_NAME]
-                     [--generate-sys-env-details GENERATE_SYS_ENV_DETAILS] [--force-mirror-local FORCE_MIRROR_LOCAL] [--keep-alive] [--keep-model-dir]
-                     [--skip-model-run] [--disable-skip-gpu-arch] [-o OUTPUT]
-
-Run LLMs and Deep Learning models on container
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --tags TAGS [TAGS ...]
-                        tags to run (can be multiple).
-  --timeout TIMEOUT     time out for model run in seconds; Overrides per-model timeout if specified or default timeout of 7200 (2 hrs). Timeout of 0 will never
-                        timeout.
-  --live-output         prints output in real-time directly on STDOUT
-  --clean-docker-cache  rebuild docker image without using cache
-  --additional-context-file ADDITIONAL_CONTEXT_FILE
-                        additonal context, as json file, to filter behavior of workloads. Overrides detected contexts.
-  --additional-context ADDITIONAL_CONTEXT
-                        additional context, as string representation of python dict, to filter behavior of workloads. Overrides detected contexts and additional-
-                        context-file.
-  --data-config-file-name DATA_CONFIG_FILE_NAME
-                        custom data configuration file.
-  --tools-json-file-name TOOLS_JSON_FILE_NAME
-                        custom tools json configuration file.
-  --generate-sys-env-details GENERATE_SYS_ENV_DETAILS
-                        generate system config env details by default
-  --force-mirror-local FORCE_MIRROR_LOCAL
-                        Path to force all relevant dataproviders to mirror data locally on.
-  --keep-alive          keep Docker container alive after run; will keep model directory after run
-  --keep-model-dir      keep model directory after run
-  --skip-model-run      skips running the model; will not keep model directory after run unless specified through keep-alive or keep-model-dir
-  --disable-skip-gpu-arch
-                        disables skipping model based on gpu architecture
-  -o OUTPUT, --output OUTPUT
-                        output file
-```
-
-For each model in models.json, the script
-- builds docker images associated with each model. The images are named 'ci-$(model_name)', and are not removed after the script completes.
-- starts the docker container, with name, 'container_$(model_name)'. The container should automatically be stopped and removed whenever the script exits. 
-- clones the git 'url', and runs the 'script' 
-- compiles the final perf.csv and perf.html
-
-### Tag functionality for running model
-
-With the tag functionality, the user can select a subset of the models, that have the corresponding tags matching user specified tags, to be run. User specified tags can be specified with the `--tags` argument. If multiple tags are specified, all models that match any tag is selected.
-Each model name in models.json is automatically a tag that can be used to run that model. Tags are also supported in comma-separated form as a Jenkins parameter.
-
-
-#### Search models with tags
-
-Use cases of running models with static and dynamic search. Tags option supports searching models in models.json, scripts/model_dir/models.json, and scripts/model_dir/get_models_json.py. A user can add new models not only to the models.json file of DLM but also to the model folder in Flexible. To do this, the user needs to follow these steps:
-
-Update models.json: Add the new model's configuration details to the models.json file. This includes specifying the model's name, version, and any other relevant metadata.
-Place Model Files: Copy the model files into the appropriate directory within the model folder in Flexible. Ensure that the folder structure and file naming conventions match the expected format.
-
-```
-# 1. run models in ~/MAD/models.json
-(venv) test-node:~/MAD$ madengine run --tags dummy --live-output
-
-# 2. run model in ~/MAD/scripts/dummy2/models.json
-(venv) test-node:~/MAD$ madengine run --tags dummy2:dummy_2 --live-output
-
-# 3. run model in ~/MAD/scripts/dummy3/get_models_json.py
-(venv) test-node:~/MAD$ madengine run --tags dummy3:dummy_3 --live-output
-
-# 4. run model with configurations
-(venv) test-node:~/MAD$ madengine run --tags dummy2:dummy_2:batch_size=512:in=32:out=16 --live-output
-
-# 5. run model with configurations
-(venv) test-node:~/MAD$ madengine run --tags dummy3:dummy_3:batch_size=512:in=32:out=16 --live-output
-```
-
-The configs of batch_size512:in32:out16 will be pass to environment variables and build arguments of docker.
-
-### Custom timeouts
-The default timeout for model run is 2 hrs. This can be overridden if the model in models.json contains a `'timeout' : TIMEOUT` entry. Both the default timeout and/or timeout specified in models.json can be overridden using `--timeout TIMEOUT` command line argument. Having `TIMEOUT` set to 0 means that the model run will never timeout.
-
-### Live output functionality 
-By default, `madengine` is silent. The output is piped into log files. By specifying `--live-output`, the output is printed in real-time to STDOUT. 
-
-### Contexts
-Contexts are run-time parameters that change how the model is executed. Some contexts are auto-detected. Detected contexts may be over-ridden. Contexts are also used to filter Dockerfile used in model.  
-
-For more details, see [How to provide contexts](docs/how-to-provide-contexts.md)
-
-### Credentials
-Credentials to clone model git urls are provided in a centralized `credential.json` file. Models that require special credentials for cloning have a special `cred` field in the model definition in `models.json`. This field denotes the specific credential in `credential.json` to use. Public models repositories can skip the `cred` field. 
-
-There are several types of credentials supported. 
-
-1. For HTTP/HTTPS git urls, `username` and `password` should be provided in the credential. For Source Code Management(SCM) systems that support Access Tokens, the token can be substituted for the `password` field. The `username` and `password` will be passed as a docker build argument and a container environment variable in the docker build and run steps. Fore example, for `"cred":"AMD_GITHUB"` field in `models.json` and entry `"AMD_GITHUB": { "username": "github_username", "password":"pass" }` in `credential.json` the following docker build arguments and container environment variables will be added: `AMD_GITHUB_USERNAME="github_username"` and `AMD_GITHUB_PASSWORD="pass"`. 
-      
-2. For SSH git urls, `username` and `ssh_key_file` should be provided in the credential. The `username` is the SSH username, and `ssh_key_file` is the private ssh key, that has been registed with the SCM system. 
-Due to legal requirements, the Credentials to access all models is not provided by default in DLM. Please contact the model owner if you wish to access and run the model. 
-
-3. For NAS urls, `HOST`, `PORT`, `USERNAME`, and `PASSWORD` should be provided in the credential. Please check env variables starting with NAS in [Environment Variables] (https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
-
-3. For AWS S3 urls, `USERNAME`, and `PASSWORD` should be provided in the credential with var name as MAD_AWS_S3 as mentioned in [Environment Variables] (https://github.com/ROCm/madengine/blob/main/README.md#environment-variables)
-
-
-### Local data provider
-The DLM user may wish to run a model locally multiple times, with the input data downloaded once, and reused subsquently. This functionality is only supported on models that support the Data Provider functionality. That is, the model specification in `models.json` have the `data` field, which points to a data specification in `data.json`.
-
-To use existing data on a local path, add to the data specification, using a `local` field within `data.json`. By default, this path is mounted read-only. To change this path to read-write, specify the `readwrite` field to `'true'` in the data configuration.
-
-If no data exists in local path, a local copy of data can be downloaded using by setting the `mirrorlocal` field in data specification in `data.json`. Not all providers support `mirrorlocal`. For the ones that do support this feature, the remote data is mirrored on this host path during the first run. In subsequent runs, the data may be reused through synchronization mechanisms. If the user wishes to skip the remote synchronization, the same location can be set as a `local` data provider in data.json, with higher precedence, or as the only provider for the data, by locally editing `data.json`. 
-
-Alternatively, the command-line argument, `--force-mirror-local` forces local mirroring on *all* workloads, to the provided FORCEMIRRORLOCAL path.
-
-## Discover models
-
-Commands for discovering models through models.json, scripts/{model_dir}/models.json, or scripts/{model_dir}/get_models_json.py
-
-```
-(venv) test-node:~/MAD$ madengine discover --help
-usage: madengine discover [-h] [--tags TAGS [TAGS ...]]
-
-Discover the models
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --tags TAGS [TAGS ...]
-                        tags to discover models (can be multiple).
-```
-
-Use cases about how to discover models:
-
-```
-# 1 discover all models in DLM
-(venv) test-node:~/MAD$ madengine discover  
-
-# 2. discover specified model using tags in models.json of DLM
-(venv) test-node:~/MAD$ madengine discover --tags dummy
-
-# 3. discover specified model using tags in scripts/{model_dir}/models.json with static search i.e. models.json
-(venv) test-node:~/MAD$ madengine discover --tags dummy2/dummy_2
-
-# 4. discover specified model using tags in scripts/{model_dir}/get_models_json.py with dynamic search i.e. get_models_json.py
-(venv) test-node:~/MAD$ madengine discover --tags dummy3/dummy_3
-
-# 5. pass additional args to your model script from CLI
-(venv) test-node:~/MAD$ madengine discover --tags dummy3/dummy_3:bs16
-
-# 6. get multiple models using tags
-(venv) test-node:~/MAD$ madengine discover --tags pyt_huggingface_bert pyt_huggingface_gpt2
-```
-
-Note: You cannot use a backslash '/' or a colon ':' in a model name or a tag for a model in `models.json` or `get_models_json.py`
-
-## Generate reports
-
-Commands for generating reports.
-
-```
-(venv) test-node:~/MAD$ madengine report --help
-usage: madengine report [-h] {update-perf,to-html,to-email} ...
-
-optional arguments:
-  -h, --help            show this help message and exit
-
-Report Commands:
-  Available commands for generating reports.
-
-  {update-perf,to-html,to-email}
-    update-perf         Update perf.csv to database
-    to-html             Convert CSV to HTML report of models
-    to-email            Convert CSV to Email of models
-```
-
-### Report command - Update perf CSV to database
-
-Update perf.csv to database
-
-```
-(venv) test-node:~/MAD$ madengine report update-perf --help
-usage: madengine report update-perf [-h] [--single_result SINGLE_RESULT] [--exception-result EXCEPTION_RESULT] [--failed-result FAILED_RESULT]
-                                    [--multiple-results MULTIPLE_RESULTS] [--perf-csv PERF_CSV] [--model-name MODEL_NAME] [--common-info COMMON_INFO]
-
-Update performance metrics of models perf.csv to database.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --single_result SINGLE_RESULT
-                        path to the single result json
-  --exception-result EXCEPTION_RESULT
-                        path to the single result json
-  --failed-result FAILED_RESULT
-                        path to the single result json
-  --multiple-results MULTIPLE_RESULTS
-                        path to the results csv
-  --perf-csv PERF_CSV
-  --model-name MODEL_NAME
-  --common-info COMMON_INFO
-```
-
-### Report command - Convert CSV to HTML
-
-Convert CSV to HTML report of models
-
-```
-(venv) test-node:~/MAD$ madengine report to-html --help
-usage: madengine report to-html [-h] [--csv-file-path CSV_FILE_PATH]
-
-Convert CSV to HTML report of models.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --csv-file-path CSV_FILE_PATH
-```
-
-### Report command - Convert CSV to Email
-
-Convert CSV to Email report of models
-
-```
-(venv) test-node:~/MAD$ madengine report to-email --help
-usage: madengine report to-email [-h] [--csv-file-path CSV_FILE_PATH]
-
-Convert CSV to Email of models.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --csv-file-path CSV_FILE_PATH
-                        Path to the directory containing the CSV files.
-```
-
-## Database
-
-Commands for database, such as create and update table of DB.
-
-```
-(venv) test-node:~/MAD$ madengine database --help
-usage: madengine database [-h] {create-table,update-table,upload-mongodb} ...
-
-optional arguments:
-  -h, --help            show this help message and exit
-
-Database Commands:
-  Available commands for database, such as creating and updating table in DB.
-
-  {create-table,update-table,upload-mongodb}
-    create-table        Create table in DB
-    update-table        Update table in DB
-    upload-mongodb      Update table in DB
-```
-
-### Database - Create Table
-```
-(venv) test-node:~/MAD$ madengine database create-table --help
-usage: madengine database create-table [-h] [-v]
-
-Create table in DB.
-
-optional arguments:
-  -h, --help     show this help message and exit
-  -v, --verbose  verbose output
-```
-
-### Database - Update Table
-```
-(venv) test-node:~/MAD$ madengine database update-table --help
-usage: madengine database update-table [-h] [--csv-file-path CSV_FILE_PATH] [--model-json-path MODEL_JSON_PATH]
-
-Update table in DB.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --csv-file-path CSV_FILE_PATH
-                        Path to the csv file
-  --model-json-path MODEL_JSON_PATH
-                        Path to the model json file
-```
-
-### Database - Upload MongoDB
-
-```
-(venv) test-node:~/MAD$ madengine database upload-mongodb --help
-usage: madengine database upload-mongodb [-h] [--type TYPE] [--file-path FILE_PATH] [--name NAME]
-
-Update table in DB.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --type TYPE           type of document to upload: job or run
-  --file-path FILE_PATH
-                        total path to directory where perf_entry.csv, *env.csv, and *.log are stored
-  --name NAME           name of model to upload
-```
-
-## Tools in madengine
-
-There are some tools distributed with madengine together. They work with madengine CLI to profile GPU and get trace of ROCm libraries.
-
-### Tools - GPU Info Profile
-
-Profile GPU usage of running LLMs and Deep Learning models.
-
-```
-(venv) test-node:~/MAD$ madengine run --tags pyt_huggingface_bert --additional-context "{'guest_os': 'UBUNTU','tools': [{'name':'rocprof'}]}"
-```
-
-### Tools - Trace Libraries of ROCm
-
-Trace library usage of running LLMs and Deep Learning models. A demo of running model with tracing rocBlas.
-
-```
-(venv) test-node:~/MAD$ madengine run --tags pyt_huggingface_bert --additional-context "{'guest_os': 'UBUNTU','tools': [{'name':'rocblas_trace'}]}"
-```
-
-## Environment Variables
-
-Madengine also exposes environment variables to allow for models location setting or data loading at DLM/MAD runtime.
-
-| Field                       | Description                                                                       |
-|-----------------------------| ----------------------------------------------------------------------------------|
-| MODEL_DIR                   | the location of models dir                                                        |
-| PUBLIC_GITHUB_ROCM_KEY           | username and token of GitHub                                                      |
-| MAD_AWS_S3                  | the username and password of AWS S3                                               |
-| NAS_NODES                   | the list of credentials of NAS Nodes                                              |
-
-Examples for running models using environment variables.
 ```bash
-# Apply AWS S3
-MAD_AWS_S3='{"USERNAME":"username","PASSWORD":"password"}' madengine run --tags dummy_data_aws --live-output
+# Install madengine
+pip install git+https://github.com/ROCm/madengine.git
 
-# Apply customized NAS
-NAS_NODES=[{"HOST":"hostname","PORT":"22","USERNAME":"username","PASSWORD":"password"}] madengine run --tags dummy_data_austin_nas --live-output
+# Clone MAD package (required for models)
+git clone https://github.com/ROCm/MAD.git && cd MAD
+
+# Discover available models
+madengine discover --tags dummy
+
+# Run locally
+madengine run --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
-## Unit Test
-Run pytest to validate unit tests of MAD Engine.
+If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
+
+```bash
+madengine run --tags dummy --rocm-path /path/to/rocm \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy ...
+```
+
+**Results saved to `perf_entry.csv`**
+
+## 📋 Commands
+
+madengine provides five main commands for model automation and benchmarking:
+
+| Command | Description | Use Case |
+|---------|-------------|----------|
+| **[discover](#-model-discovery)** | Find available models | Model exploration and validation |
+| **[build](#building-images)** | Build Docker images | Create containerized models |
+| **[run](#-usage-examples)** | Execute models | Local and distributed execution |
+| **[report](docs/cli-reference.md#report---generate-reports)** | Generate HTML reports | Convert CSV to viewable reports |
+| **[database](docs/cli-reference.md#database---upload-to-mongodb)** | Upload to MongoDB | Store results in database |
+
+**Quick Start:**
+
+```bash
+# Discover models
+madengine discover --tags dummy
+
+# Build image
+madengine build --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Run model
+madengine run --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Generate report
+madengine report to-html --csv-file perf_entry.csv
+
+# Upload results
+madengine database --csv-file perf_entry.csv --db mydb --collection results
+```
+
+For detailed command options, see the **[CLI Command Reference](docs/cli-reference.md)**.
+
+## 📚 Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Installation](docs/installation.md) | Complete installation instructions |
+| [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
+| **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
+| [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
+| [Configuration](docs/configuration.md) | Advanced configuration options |
+| [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
+| [Launchers](docs/launchers.md) | Distributed training frameworks |
+| [Profiling](docs/profiling.md) | Performance analysis tools |
+| [Contributing](docs/contributing.md) | How to contribute |
+
+## 🏗️ Architecture
 
 ```
-pytest -v -s
+  ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+  │  madengine CLI v2.0 (Typer + Rich)                                                      │
+  │  discover │ build │ run │ report │ database                                             │
+  └─────────────────────────────────────────────────────────────────────────────────────────┘
+     │           │        │
+     │           │        ▼
+     │           │  ┌─────────────────────── Orchestration Layer ───────────────────────────┐
+     │           │  │  Model Discovery (models.json / scripts/ get_models)                  │
+     │           │  │  BuildOrchestrator · RunOrchestrator                                  │
+     │           └──│                                                                       |  
+     └──────────────┴───────────────────────────────────────────────────────────────────────┘
+                                    │
+  ┌─────────────────────────────────┼──────────────────── Infrastructure Layer ─────────────┐
+  │              ▼                  ▼                  ▼                                    │
+  │       ┌──────────────┐   ┌──────────────┐   ┌──────────────┐                            │
+  │       │ Local        │   │ Kubernetes   │   │ SLURM        │                            │
+  │       │ Docker       │   │ Jobs         │   │ Jobs         │                            │
+  │       └──────┬───────┘   └──────┬───────┘   └──────┬───────┘                            │
+  │              └──────────────────┼──────────────────┘                                    │
+  └─────────────────────────────────┼───────────────────────────────────────────────────────┘
+                                    ▼
+  ┌──────────────────────────────────── Launcher Layer (Distribution) ──────────────────────┐
+  │  Train: torchrun · DeepSpeed · TorchTitan · Megatron-LM                                 │
+  │  Infer: vLLM · SGLang · SGLang Disagg                                                   │
+  └─────────────────────────────────┬───────────────────────────────────────────────────────┘
+                                    ▼
+                    ┌─────────────────────────────┐
+                    │ Performance (CSV/JSON)      │
+                    └─────────────┬───────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+       ┌───────────────────┐                  ┌──────────────────┐
+       │ report            │                  │ database         │
+       │ to-html, to-email │                  │ MongoDB upload   │
+       └───────────────────┘                  └──────────────────┘
 ```
+
+**Component Flow:**
+
+1. **CLI Layer** - User interface with 5 commands (discover, build, run, report, database)
+2. **Model Discovery** - Find and validate models from MAD package
+3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
+4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
+5. **Distributed Launchers** - Training (torchrun, DeepSpeed, TorchTitan, Megatron-LM) and Inference (vLLM, SGLang)
+6. **Performance Output** - CSV/JSON results with metrics
+7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
+
+## 🎯 Feature Matrix
+
+### Supported Launchers & Infrastructure
+
+| Launcher | Local | Kubernetes | SLURM | Type | Key Features |
+|----------|-------|-----------|-------|------|--------------|
+| **torchrun** | ✅ | ✅ | ✅ | Training | PyTorch DDP/FSDP, elastic training |
+| **DeepSpeed** | ✅ | ✅ | ✅ | Training | ZeRO optimization, pipeline parallelism |
+| **Megatron-LM** | ✅ | ✅ | ✅ | Training | Tensor+Pipeline parallel, large transformers |
+| **TorchTitan** | ✅ | ✅ | ✅ | Training | FSDP2+TP+PP+CP, Llama 3.1 (8B-405B) |
+| **vLLM** | ✅ | ✅ | ✅ | Inference | v1 engine, PagedAttention, Ray cluster |
+| **SGLang** | ✅ | ✅ | ✅ | Inference | RadixAttention, structured generation |
+| **SGLang Disagg** | ❌ | ✅ | ✅ | Inference | Disaggregated prefill/decode, Mooncake, 3+ nodes |
+
+**Note:** All launchers support single-GPU, multi-GPU (single node), and multi-node (where infrastructure allows). See [Launchers Guide](docs/launchers.md) for details.
+
+### Parallelism Capabilities
+
+| Launcher | Tensor Parallel (TP) | Pipeline Parallel (PP) | Data Parallel (DP) | Context Parallel (CP) | FSDP/ZeRO | Expert Parallel (EP) | Primary Use Case |
+|----------|----------------------|------------------------|--------------------|------------------------|-----------|----------------------|------------------|
+| **torchrun** | ❗Manual | ❌No | ❗Manual (DDP) | ❌No | ❗Manual (FSDP) | ❌No | General distributed training |
+| **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
+| **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
+| **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
+| **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
+| **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |
+
+**Legend:** ✅Auto = supported and configured by madengine; ❗Manual = supported by launcher but requires user configuration; ❗Limited / ❗Disabled = launcher or platform limitation. See [Launchers Guide](docs/launchers.md) and [Configuration](docs/configuration.md) for details.
+
+### Infrastructure Capabilities
+
+| Feature | Local | Kubernetes | SLURM |
+|---------|-------|-----------|-------|
+| **Execution** | Docker containers | K8s Jobs | SLURM jobs |
+| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays |
+| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler |
+| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol |
+| **Auto-scaling** | ❌ | ✅ | ❌ |
+| **Network** | Host | CNI plugin | InfiniBand/Ethernet |
+
+## 💻 Usage Examples
+
+### Local Execution
+
+```bash
+# Single GPU
+madengine run --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Multi-GPU with torchrun (DDP/FSDP)
+madengine run --tags model \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "docker_gpus": "0,1,2,3",
+    "distributed": {
+      "launcher": "torchrun",
+      "nproc_per_node": 4
+    }
+  }'
+
+# With DeepSpeed (ZeRO optimization)
+madengine run --tags model \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "docker_gpus": "all",
+    "distributed": {
+      "launcher": "deepspeed",
+      "nproc_per_node": 8
+    }
+  }'
+```
+
+### Kubernetes Deployment
+
+```bash
+# Minimal config (auto-defaults applied)
+madengine run --tags model \
+  --additional-context '{"k8s": {"gpu_count": 2}}'
+
+# Multi-node inference with vLLM
+madengine run --tags model \
+  --additional-context '{
+    "k8s": {
+      "namespace": "ml-team",
+      "gpu_count": 8
+    },
+    "distributed": {
+      "launcher": "vllm",
+      "nnodes": 2,
+      "nproc_per_node": 4
+    }
+  }'
+
+# SGLang with structured generation
+madengine run --tags model \
+  --additional-context '{
+    "k8s": {"gpu_count": 4},
+    "distributed": {
+      "launcher": "sglang",
+      "nproc_per_node": 4
+    }
+  }'
+```
+
+### SLURM Deployment
+
+```bash
+# Build phase (local or CI)
+madengine build --tags model \
+  --registry gcr.io/myproject \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Deploy phase (on SLURM login node)
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {
+      "partition": "gpu",
+      "nodes": 4,
+      "gpus_per_node": 8,
+      "time": "24:00:00"
+    },
+    "distributed": {
+      "launcher": "torchtitan",
+      "nnodes": 4,
+      "nproc_per_node": 8
+    }
+  }'
+```
+
+To run on **specific nodes**, set `nodelist` (comma-separated node names). When set, the job is restricted to those nodes and automatic node health preflight is skipped. Example: `"slurm": { "nodelist": "node01,node02", "nodes": 2, ... }`. See [Configuration](docs/configuration.md#slurm-deployment) and [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
+
+### Common Workflows
+
+**Development → Testing → Production:**
+
+```bash
+# 1. Develop locally with single GPU
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# 2. Test multi-GPU locally
+madengine run --tags model \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "docker_gpus": "0,1",
+    "distributed": {"launcher": "torchrun", "nproc_per_node": 2}
+  }'
+
+# 3. Build and push to registry
+madengine build --tags model \
+  --registry docker.io/myorg \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# 4. Deploy to Kubernetes
+madengine run --manifest-file build_manifest.json
+```
+
+**CI/CD Pipeline:**
+
+```bash
+# Batch build (selective rebuilds)
+madengine build --batch-manifest batch.json \
+  --registry docker.io/myorg
+
+# Run tests
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{"k8s": {"namespace": "ci-test"}}'
+
+# Generate and email reports
+madengine report to-email --directory ./results --output ci_report.html
+
+# Upload to database
+madengine database --csv-file perf_entry.csv \
+  --database-name ci_db --collection-name test_results
+```
+
+See [Usage Guide](docs/usage.md), [Configuration Guide](docs/configuration.md), and [CLI Reference](docs/cli-reference.md) for more examples.
+
+### Building Images
+
+```bash
+# Build single model
+madengine build --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Build with registry (for distributed deployment)
+madengine build --tags model1 model2 \
+  --registry localhost:5000 \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Build for multiple GPU architectures
+madengine build --tags model \
+  --target-archs gfx908 gfx90a gfx942 \
+  --registry gcr.io/myproject
+
+# Batch build mode (selective builds for CI/CD)
+madengine build --batch-manifest examples/build-manifest/batch.json \
+  --registry docker.io/myorg
+
+# Clean rebuild (no Docker cache)
+madengine build --tags model --clean-docker-cache \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+```
+
+**Output:** Creates `build_manifest.json` with built image names and configurations.
+
+See [Batch Build Guide](docs/batch-build.md) and examples in [`examples/build-manifest/`](examples/build-manifest/).
+
+## 🔍 Model Discovery
+
+madengine discovers models from the MAD package using three methods:
+
+```bash
+# Root models (models.json)
+madengine discover --tags pyt_huggingface_bert
+
+# Directory-specific (scripts/{dir}/models.json)
+madengine discover --tags dummy2:dummy_2
+
+# Dynamic with parameters (scripts/{dir}/get_models_json.py)
+madengine discover --tags dummy3:dummy_3:batch_size=512
+```
+
+## 📊 Performance Profiling
+
+madengine includes integrated profiling tools for AMD ROCm:
+
+```bash
+# GPU profiling with rocprof
+madengine run --tags model \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "tools": [{"name": "rocprof"}]
+  }'
+
+# ROCprofv3 (ROCm 7.0+) - Advanced profiling with pre-configured profiles
+madengine run --tags model \
+  --additional-context '{"tools": [{"name": "rocprofv3_compute"}]}'
+
+# Use configuration files for complex setups
+madengine run --tags model \
+  --additional-context-file examples/profiling-configs/rocprofv3_multi_gpu.json
+
+# Library tracing (rocBLAS, MIOpen, Tensile, RCCL)
+madengine run --tags model \
+  --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
+
+# Power and VRAM monitoring
+madengine run --tags model \
+  --additional-context '{"tools": [
+    {"name": "gpu_info_power_profiler"},
+    {"name": "gpu_info_vram_profiler"}
+  ]}'
+
+# Multiple tools (stackable)
+madengine run --tags model \
+  --additional-context '{"tools": [
+    {"name": "rocprofv3_memory"},
+    {"name": "rocblas_trace"},
+    {"name": "gpu_info_power_profiler"}
+  ]}'
+```
+
+**Available Tools:**
+
+| Tool | Purpose | Output |
+|------|---------|--------|
+| `rocprof` | GPU kernel profiling | Kernel timings, occupancy |
+| `rocprofv3_compute` | Compute-bound analysis (ROCm 7.0+) | ALU metrics, wave execution |
+| `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
+| `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
+| `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
+| `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
+| `miopen_trace` | MIOpen library calls | Conv/pooling operations |
+| `tensile_trace` | Tensile GEMM library | Matrix multiply details |
+| `rccl_trace` | RCCL collective ops | Communication patterns |
+| `gpu_info_power_profiler` | GPU power consumption | Power usage over time |
+| `gpu_info_vram_profiler` | GPU memory usage | VRAM utilization |
+| `therock_check` | TheRock ROCm validation | Installation detection |
+
+**ROCprofv3 Profiles** (ROCm 7.0+):
+
+madengine provides 8 pre-configured ROCprofv3 profiles for different bottleneck scenarios:
+
+- `rocprofv3_compute` - Compute-bound workloads (transformers, dense ops)
+- `rocprofv3_memory` - Memory-bound workloads (large batches, high-res)
+- `rocprofv3_communication` - Multi-GPU distributed training
+- `rocprofv3_full` - Comprehensive profiling (all metrics, high overhead)
+- `rocprofv3_lightweight` - Minimal overhead (production-friendly)
+- `rocprofv3_perfetto` - Perfetto UI compatible traces
+- `rocprofv3_api_overhead` - API call timing analysis
+- `rocprofv3_pc_sampling` - Kernel hotspot identification
+
+See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-use configuration files.
+
+**TheRock Validation:**
+
+```bash
+# Validate TheRock installation (AMD's pip-based ROCm)
+madengine run --tags dummy_therock \
+  --additional-context '{"tools": [{"name": "therock_check"}]}'
+```
+
+See [Profiling Guide](docs/profiling.md) for detailed usage and analysis.
+
+## 📊 Reporting and Database
+
+### Generate Reports
+
+Convert performance CSV files to HTML reports:
+
+```bash
+# Single CSV to HTML
+madengine report to-html --csv-file perf_entry.csv
+
+# Consolidated email report (all CSVs in directory)
+madengine report to-email --directory ./results --output summary.html
+```
+
+### Upload to Database
+
+Store performance results in MongoDB:
+
+```bash
+# Set MongoDB connection
+export MONGO_HOST=mongodb.example.com
+export MONGO_PORT=27017
+export MONGO_USER=myuser
+export MONGO_PASSWORD=mypassword
+
+# Upload CSV to MongoDB
+madengine database --csv-file perf_entry.csv \
+  --database-name performance_db \
+  --collection-name model_runs
+```
+
+**Use Cases:**
+- Track performance over time
+- Compare results across different configurations
+- Build performance dashboards
+- Automated CI/CD reporting
+
+See [CLI Reference](docs/cli-reference.md) for complete options.
+
+## 📦 Installation
+
+```bash
+# Basic installation
+pip install git+https://github.com/ROCm/madengine.git
+
+# With Kubernetes support
+pip install "madengine[kubernetes] @ git+https://github.com/ROCm/madengine.git"
+
+# Development installation
+git clone https://github.com/ROCm/madengine.git
+cd madengine && pip install -e ".[dev]"
+```
+
+See [Installation Guide](docs/installation.md) for detailed instructions.
+
+## 💡 Tips & Best Practices
+
+### General Usage
+
+- **Use configuration files** for complex setups instead of long command lines
+- **Test locally first** with single GPU before scaling to multi-node
+- **Enable verbose logging** (`--verbose`) when debugging issues
+- **Use `--live-output`** for real-time monitoring of long-running operations
+
+### Build & Deployment
+
+- **Separate build and run phases** for distributed deployments
+- **Use registries** for multi-node execution (K8s/SLURM)
+- **Use batch build mode** for CI/CD to optimize build times
+- **Specify `--target-archs`** when building for multiple GPU architectures
+
+### Performance
+
+- **Start with small timeouts** and increase as needed
+- **Use profiling tools** to identify bottlenecks
+- **Monitor GPU utilization** with `gpu_info_power_profiler`
+- **Profile library calls** with rocBLAS/MIOpen tracing
+
+### Troubleshooting
+
+```bash
+# Check model is available
+madengine discover --tags your_model
+
+# Verbose output for debugging
+madengine run --tags model --verbose --live-output
+
+# Keep container alive for inspection
+madengine run --tags model --keep-alive
+
+# Clean rebuild if build fails
+madengine build --tags model --clean-docker-cache --verbose
+```
+
+**ROCm not in /opt/rocm:** If you use a custom ROCm location (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set `ROCM_PATH` or pass `--rocm-path` to `madengine run` so GPU detection and container env use the correct paths.
+
+**Common Issues:**
+- **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)
+- **ROCProf log errors**: Messages like `E20251230` are informational logs, not errors (fixed in v2.0+)
+- **Configuration errors**: Validate JSON with `python -m json.tool your-config.json`
+
+## 🤝 Contributing
+
+We welcome contributions! See [Contributing Guide](docs/contributing.md) for details.
+
+```bash
+git clone https://github.com/ROCm/madengine.git
+cd madengine
+python3 -m venv venv && source venv/bin/activate
+pip install -e ".[dev]"
+
+# Run all tests
+pytest
+
+# Run specific test module
+pytest tests/unit/test_error_handling.py -v
+
+# Run error pattern tests
+pytest tests/unit/test_error_handling.py::TestErrorPatternMatching -v
+```
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## 🔗 Links & Resources
+
+### Documentation
+- **[CLI Reference](docs/cli-reference.md)** - Complete command options
+- **[Usage Guide](docs/usage.md)** - Workflows and examples
+- **[Deployment Guide](docs/deployment.md)** - Kubernetes/SLURM deployment
+- **[Configuration Guide](docs/configuration.md)** - Advanced configuration
+- **[All Docs](docs/)** - Complete documentation index
+
+### External Resources
+- **MAD Package**: https://github.com/ROCm/MAD
+- **Issues & Support**: https://github.com/ROCm/madengine/issues
+- **ROCm Documentation**: https://rocm.docs.amd.com/
+
+### Getting Help
+
+**Command Help:**
+```bash
+madengine --help                    # Main help
+madengine <command> --help          # Command-specific help
+madengine report --help             # Sub-app help
+madengine report to-html --help     # Sub-command help
+```
+
+**Quick Checks:**
+```bash
+# Verify installation
+madengine --version
+
+# Discover available models
+madengine discover
+
+# Check specific model
+madengine discover --tags your_model --verbose
+```
+
+**Troubleshooting:**
+- Check [CLI Reference](docs/cli-reference.md) for all command options
+- Enable `--verbose` flag for detailed error messages
+- See [Usage Guide](docs/usage.md) troubleshooting section
+- Report issues: https://github.com/ROCm/madengine/issues
+
+---
+
+## ⚠️ Migration Notice (v2.0.0+)
+
+The CLI has been unified! Starting from v2.0.0:
+- ✅ Use `madengine` (unified modern CLI with K8s, SLURM, distributed support)
+- ❌ Legacy v1.x CLI has been removed
+
+---
+
+**Code Quality**: Clean codebase with no dead code, comprehensive test coverage, and following Python best practices.

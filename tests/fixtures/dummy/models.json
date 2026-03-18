@@ -162,7 +162,7 @@
     "name": "dummy_prof",
     "dockerfile": "docker/dummy",
     "scripts": "scripts/dummy/run_prof.sh",
-    "n_gpus": "1",
+    "n_gpus": "-1",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
@@ -196,14 +196,247 @@
     "multiple_results": "perf_dummy.csv"
   },
   {
-    "name": "therock",
-    "dockerfile": "docker/therock",
-    "scripts": "scripts/therock/run.sh",
+    "name": "dummy_superset",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_multi.sh",
     "n_gpus": "1",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
-      "therock"
+      "dummies",
+      "perf_super_test"
+    ],
+    "args": "--config configs/default.csv",
+    "multiple_results": "perf_dummy_super.csv"
+  },
+  {
+    "name": "dummy_data_aws",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_aws.sh",
+    "data": "dummy_data_aws",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_data_minio",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_minio.sh",
+    "data": "dummy_data_minio",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_data_austin_nas",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run_data_nas.sh",
+    "data": "dummy_data_austin_nas",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchrun",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchrun_helper",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run_with_helper.py",
+    "n_gpus": "2",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchrun_data_minio",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run_torchrun_data_minio.py",
+    "data": "dummy_data_minio",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchrun_data_nas",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_torchrun/run_torchrun_data_nas.py",
+    "data": "dummy_data_austin_nas",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_data"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_megatron_lm",
+    "dockerfile": "docker/dummy_megatron_lm",
+    "scripts": "scripts/dummy_megatron_lm/run_megatron.py",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_megatron"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_deepspeed",
+    "dockerfile": "docker/dummy_deepspeed",
+    "scripts": "scripts/dummy_deepspeed/run.sh",
+    "n_gpus": "4",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_deepspeed"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_vllm",
+    "dockerfile": "docker/dummy_vllm",
+    "scripts": "scripts/dummy_vllm/run.sh",
+    "n_gpus": "4",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_vllm",
+      "inference"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_sglang",
+    "dockerfile": "docker/dummy_sglang",
+    "scripts": "scripts/dummy_sglang/run.sh",
+    "n_gpus": "4",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_sglang",
+      "inference"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_sglang_disagg",
+    "dockerfile": "docker/dummy_sglang_disagg",
+    "scripts": "scripts/dummy_sglang_disagg/run.sh",
+    "n_gpus": "3",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_sglang_disagg",
+      "inference",
+      "disaggregated"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_torchtitan",
+    "dockerfile": "docker/dummy_torchtitan",
+    "scripts": "scripts/dummy_torchtitan/run.sh",
+    "n_gpus": "8",
+    "owner": "mad.support@amd.com",
+    "training_precision": "bf16",
+    "tags": [
+      "dummies",
+      "dummy_distributed",
+      "dummy_torchtitan",
+      "llm_training"
+    ],
+    "args": ""
+  },
+  {
+    "name": "pyt_huggingface_gpt2",
+    "url": "https://github.com/huggingface/transformers",
+    "dockerfile": "docker/pyt_huggingface",
+    "scripts": "scripts/pyt_huggingface_gpt2/run.sh",
+    "n_gpus": "-1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "fp16",
+    "tags": [
+      "pyt",
+      "fp16",
+      "gpt2"
+    ],
+    "args": ""
+  },
+  {
+    "name": "pyt_huggingface_bert",
+    "url": "https://github.com/huggingface/transformers",
+    "dockerfile": "docker/pyt_huggingface",
+    "scripts": "scripts/pyt_huggingface_bert/run.sh",
+    "n_gpus": "-1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "pyt",
+      "bert"
+    ],
+    "args": ""
+  },
+  {
+    "name": "dummy_therock",
+    "dockerfile": "docker/dummy_therock",
+    "scripts": "scripts/dummy_therock/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "fp32",
+    "tags": [
+      "dummies",
+      "therock",
+      "pytorch",
+      "rocm"
     ],
     "args": ""
   }

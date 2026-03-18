@@ -13,11 +13,9 @@ import re
 import pytest
 from unittest.mock import MagicMock
 
-
 MODEL_DIR = "tests/fixtures/dummy"
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
 sys.path.insert(1, BASE_DIR)
-print(f'BASE DIR:: {BASE_DIR}')
 
 # Cache variables to avoid repeated system checks during collection
 _gpu_vendor_cache = None
@@ -25,19 +23,89 @@ _gpu_nodeid_map_cache = None
 _num_gpus_cache = None
 _num_cpus_cache = None
 
+# GPU detection cache to avoid multiple expensive calls
+_has_gpu_cache = None
+
+
+def has_gpu() -> bool:
+    """Simple function to check if GPU is available for testing.
+
+    This is the primary function for test skipping decisions.
+    Uses caching to avoid repeated expensive detection calls.
+
+    Returns:
+        bool: True if GPU is available, False if CPU-only machine
+    """
+    global _has_gpu_cache
+
+    if _has_gpu_cache is not None:
+        return _has_gpu_cache
+
+    try:
+        # Ultra-simple file existence check (no subprocess calls)
+        # This is safe for pytest collection and avoids hanging
+        nvidia_exists = os.path.exists("/usr/bin/nvidia-smi")
+        from madengine.core.constants import get_rocm_path
+        rocm_path = get_rocm_path()
+        amd_rocm_exists = (
+            os.path.exists(os.path.join(rocm_path, "bin", "rocm-smi"))
+            or os.path.exists("/usr/local/bin/rocm-smi")
+        )
+
+        _has_gpu_cache = nvidia_exists or amd_rocm_exists
+
+    except Exception:
+        # If file checks fail, assume no GPU (safe default for tests)
+        _has_gpu_cache = False
+
+    return _has_gpu_cache
+
+
+def requires_gpu(reason: str = "test requires GPU functionality"):
+    """Simple decorator to skip tests that require GPU.
+
+    This is the only decorator needed for GPU-dependent tests.
+
+    Args:
+        reason: Custom reason for skipping
+
+    Returns:
+        pytest.mark.skipif decorator
+    """
+    return pytest.mark.skipif(not has_gpu(), reason=reason)
+
 
 @pytest.fixture
 def global_data():
     # Lazy import to avoid collection issues
-    from madengine.core.console import Console
+    if "Console" not in globals():
+        from madengine.core.console import Console
     return {"console": Console(live_output=True)}
 
 
 @pytest.fixture()
 def clean_test_temp_files(request):
+    """
+    Fixture to clean up test temporary files and Docker containers.
+    
+    Cleans up both before (to ensure clean state) and after (to avoid conflicts).
+    """
+    import subprocess
+    
+    # Clean up Docker containers BEFORE test (ensure clean state)
+    try:
+        subprocess.run(
+            "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
+            shell=True,
+            capture_output=True,
+            timeout=30
+        )
+    except:
+        pass  # Ignore cleanup errors before test
 
     yield
 
+    # Clean up files after test
     for filename in request.param:
         file_path = os.path.join(BASE_DIR, filename)
         if os.path.exists(file_path):
@@ -45,6 +113,66 @@ def clean_test_temp_files(request):
                 shutil.rmtree(file_path)
             else:
                 os.remove(file_path)
+    
+    # Clean up Docker containers AFTER test (avoid conflicts with next test)
+    try:
+        subprocess.run(
+            "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
+            shell=True,
+            capture_output=True,
+            timeout=30
+        )
+    except:
+        pass  # Ignore cleanup errors after test
+
+
+def generate_additional_context_for_machine() -> dict:
+    """Generate appropriate additional context based on detected machine capabilities.
+
+    Returns:
+        dict: Additional context with gpu_vendor and guest_os suitable for current machine
+    """
+    if has_gpu():
+        # Simple vendor detection for GPU machines
+        vendor = "NVIDIA" if os.path.exists("/usr/bin/nvidia-smi") else "AMD"
+        return {"gpu_vendor": vendor, "guest_os": "UBUNTU"}
+    else:
+        # On CPU-only machines, use defaults suitable for build-only operations
+        return {
+            "gpu_vendor": "AMD",  # Default for build-only nodes
+            "guest_os": "UBUNTU",  # Default OS
+        }
+
+
+def generate_additional_context_json() -> str:
+    """Generate JSON string of additional context for current machine.
+
+    Returns:
+        str: JSON string representation of additional context
+    """
+    return json.dumps(generate_additional_context_for_machine())
+
+
+def create_mock_args_with_auto_context(**kwargs) -> MagicMock:
+    """Create mock args with automatically generated additional context.
+
+    Args:
+        **kwargs: Additional attributes to set on the mock args
+
+    Returns:
+        MagicMock: Mock args object with auto-generated additional context
+    """
+    mock_args = MagicMock()
+
+    # Set auto-generated context
+    mock_args.additional_context = generate_additional_context_json()
+    mock_args.additional_context_file = None
+
+    # Set any additional attributes
+    for key, value in kwargs.items():
+        setattr(mock_args, key, value)
+
+    return mock_args
 
 
 def is_nvidia() -> bool:
@@ -99,7 +227,7 @@ def get_gpu_nodeid_map() -> dict:
                     gpu_map[unique_id] = gpu_id
         else:
             try:
-                # Try the new amd-smi tool first (ROCm 6.4+)
+                # Try the new amd-smi tool first (ROCm 6.4.1+, PR #54)
                 output = console.sh("amd-smi list --json")
                 gpu_data = json.loads(output)
                 for gpu_info in gpu_data:
@@ -109,16 +237,24 @@ def get_gpu_nodeid_map() -> dict:
             except:
                 # Fall back to older rocm-smi tools
                 try:
-                    rocm_version = console.sh("hipconfig --version")
-                    rocm_version = float(".".join(rocm_version.split(".")[:2]))
+                    rocm_version_str = console.sh("hipconfig --version")
+                    # Parse version as tuple for proper comparison (6.4.1 vs 6.4.0)
+                    version_parts = rocm_version_str.split(".")
+                    if len(version_parts) >= 3:
+                        rocm_version = tuple(int(p.split('-')[0]) for p in version_parts[:3])
+                    else:
+                        # Fallback to float comparison for versions without patch
+                        rocm_version = (int(version_parts[0]), int(version_parts[1]), 0)
+                    
+                    # Use appropriate rocm-smi command based on version (PR #54: threshold is 6.4.1)
                     command = (
-                        "rocm-smi --showuniqueid" if rocm_version < 6.4 else "rocm-smi --showhw"
+                        "rocm-smi --showuniqueid" if rocm_version < (6, 4, 1) else "rocm-smi --showhw"
                     )
                     output = console.sh(command)
                     lines = output.split("\n")
 
                     for line in lines:
-                        if rocm_version < 6.4:
+                        if rocm_version < (6, 4, 1):
                             if "Unique ID:" in line:
                                 gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
                                 unique_id = line.split(":")[2].strip()

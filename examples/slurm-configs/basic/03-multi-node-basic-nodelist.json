@@ -1,0 +1,41 @@
+{
+  "_comment": "Multi-Node (2 nodes) on specific nodes - SLURM with nodelist",
+  "_description": "Same as 03-multi-node-basic but job runs only on the listed nodes (node01, node02). Node health preflight is skipped when nodelist is set.",
+  "_use_case": "Pin multi-node workload to specific nodes; override node01,node02 for your cluster.",
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "nodelist": "node01,node02",
+    "gpus_per_node": 8,
+    "time": "24:00:00",
+    "output_dir": "./slurm_output",
+    "exclusive": true,
+    "network_interface": "eth0"
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "backend": "nccl",
+    "port": 29500,
+    "nnodes": 2,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_DEBUG_SUBSYS": "INIT,NET",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "2",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_TIMEOUT": "600",
+    "HSA_ENABLE_SDMA": "0",
+    "OMP_NUM_THREADS": "8",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  },
+  "debug": false
+}

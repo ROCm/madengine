@@ -1,0 +1,4 @@
+model,benchmark,config_value,batch_size,datatype,max_tokens
+dummy/model-1,throughput,128,8,float16,1024
+dummy/model-2,serving,256,16,float32,2048
+dummy/model-3,latency,512,32,bfloat16,4096
