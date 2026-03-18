@@ -1455,6 +1455,14 @@ class ContainerRunner:
                                     ]:
                                         probe_cmd = f"if [ -f {candidate} ]; then echo EXISTS; else echo MISSING; fi"
                                         container_checks[candidate] = (model_docker.sh(probe_cmd) or "").strip()
+                                    csv_inventory = (
+                                        model_docker.sh(
+                                            f"sh -c 'ls -lah {model_dir}/*.csv 2>/dev/null; "
+                                            f"ls -lah {model_dir}/workdir/*.csv 2>/dev/null; "
+                                            f"ls -lah {model_dir}/benchmark_*_CONCURRENCY.log 2>/dev/null'"
+                                        )
+                                        or ""
+                                    )
                                 except Exception as probe_err:
                                     pass
 
@@ -1500,8 +1508,24 @@ class ContainerRunner:
                                                     pass
                                             
                                             if not has_valid_perf:
-                                                run_results["performance"] = None
-                                                print("Error: Performance metric is empty in all rows of multiple results file.")
+                                                nnodes_env = os.environ.get("NNODES", "1")
+                                                try:
+                                                    nnodes = int(nnodes_env)
+                                                except (TypeError, ValueError):
+                                                    nnodes = 1
+
+                                                if nnodes > 1:
+                                                    # In multi-node runs perf CSV may be populated by another node
+                                                    # moments later (shared workspace race). Keep the path so
+                                                    # downstream aggregation can consume finalized file content.
+                                                    print(
+                                                        "Warning: Performance metric is currently empty in "
+                                                        "multiple results file during multi-node run; "
+                                                        "deferring final decision to aggregation step."
+                                                    )
+                                                else:
+                                                    run_results["performance"] = None
+                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
                                         f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
