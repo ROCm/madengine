@@ -21,6 +21,7 @@ except ImportError:
 
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import (
+    BuildError,
     ConfigurationError,
     RuntimeError as MADRuntimeError,
 )
@@ -419,6 +420,13 @@ def run(
 
     except typer.Exit:
         raise
+    except BuildError as e:
+        console.print(f"🔨 [bold red]Build error: {e}[/bold red]")
+        if hasattr(e, "suggestions") and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.BUILD_FAILURE)
     except MADRuntimeError as e:
         # Runtime execution errors
         console.print(f"💥 [bold red]Runtime error: {e}[/bold red]")

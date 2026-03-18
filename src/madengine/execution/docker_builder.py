@@ -17,19 +17,16 @@ from rich.console import Console as RichConsole
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.utils.ops import PythonicTee
+from madengine.execution.dockerfile_utils import (
+    is_compilation_arch_compatible,
+    is_target_arch_compatible_with_variable,
+    parse_dockerfile_gpu_variables,
+    parse_gpu_variable_value,
+)
 
 
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
-
-    # GPU architecture variables used in MAD/DLM Dockerfiles
-    GPU_ARCH_VARIABLES = [
-        "MAD_SYSTEM_GPU_ARCHITECTURE",
-        "PYTORCH_ROCM_ARCH", 
-        "GPU_TARGETS",
-        "GFX_COMPILATION_ARCH",
-        "GPU_ARCHS"
-    ]
 
     def __init__(
         self, context: Context, console: Console = None, live_output: bool = False
@@ -582,7 +579,7 @@ class DockerBuilder:
                     dockerfile_content = f.read()
                 
                 # Parse GPU architecture variables from Dockerfile
-                dockerfile_gpu_vars = self._parse_dockerfile_gpu_variables(dockerfile_content)
+                dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
                 
                 if dockerfile_gpu_vars:
                     return True, dockerfile_path
@@ -633,7 +630,7 @@ class DockerBuilder:
                     dockerfile_content = f.read()
                 
                 # Parse GPU architecture variables from Dockerfile
-                dockerfile_gpu_vars = self._parse_dockerfile_gpu_variables(dockerfile_content)
+                dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
                 
                 if not dockerfile_gpu_vars:
                     # No GPU variables found - target arch is acceptable
@@ -643,7 +640,7 @@ class DockerBuilder:
                 
                 # Validate target architecture against each GPU variable
                 for var_name, var_values in dockerfile_gpu_vars.items():
-                    if not self._is_target_arch_compatible_with_variable(
+                    if not is_target_arch_compatible_with_variable(
                         var_name, var_values, target_arch
                     ):
                         self.rich_console.print(f"[red]Error: Target architecture '{target_arch}' is not compatible "
@@ -661,119 +658,6 @@ class DockerBuilder:
         except Exception as e:
             self.rich_console.print(f"[yellow]Warning: Error validating target architecture for model {model_info['name']}: {e}[/yellow]")
             return True  # Assume compatible on parsing errors
-
-    def _parse_dockerfile_gpu_variables(self, dockerfile_content: str) -> typing.Dict[str, typing.List[str]]:
-        """Parse GPU architecture variables from Dockerfile content."""
-        gpu_variables = {}
-        
-        for var_name in self.GPU_ARCH_VARIABLES:
-            # Look for ARG declarations
-            arg_pattern = rf"ARG\s+{var_name}=([^\s\n]+)"
-            arg_matches = re.findall(arg_pattern, dockerfile_content, re.IGNORECASE)
-            
-            # Look for ENV declarations  
-            env_pattern = rf"ENV\s+{var_name}[=\s]+([^\s\n]+)"
-            env_matches = re.findall(env_pattern, dockerfile_content, re.IGNORECASE)
-            
-            # Process found values
-            all_matches = arg_matches + env_matches
-            if all_matches:
-                # Take the last defined value (in case of multiple definitions)
-                raw_value = all_matches[-1].strip('"\'')
-                parsed_values = self._parse_gpu_variable_value(var_name, raw_value)
-                if parsed_values:
-                    gpu_variables[var_name] = parsed_values
-        
-        return gpu_variables
-
-    def _parse_gpu_variable_value(self, var_name: str, raw_value: str) -> typing.List[str]:
-        """Parse GPU variable value based on variable type and format."""
-        architectures = []
-        
-        # Handle different variable formats
-        if var_name in ["GPU_TARGETS", "GPU_ARCHS", "PYTORCH_ROCM_ARCH"]:
-            # These often contain multiple architectures separated by semicolons or commas
-            if ";" in raw_value:
-                architectures = [arch.strip() for arch in raw_value.split(";") if arch.strip()]
-            elif "," in raw_value:
-                architectures = [arch.strip() for arch in raw_value.split(",") if arch.strip()]
-            else:
-                architectures = [raw_value.strip()]
-        else:
-            # Single architecture value (MAD_SYSTEM_GPU_ARCHITECTURE, GFX_COMPILATION_ARCH)
-            architectures = [raw_value.strip()]
-        
-        # Normalize architecture names
-        normalized_archs = []
-        for arch in architectures:
-            normalized = self._normalize_architecture_name(arch)
-            if normalized:
-                normalized_archs.append(normalized)
-        
-        return normalized_archs
-
-    def _normalize_architecture_name(self, arch: str) -> str:
-        """Normalize architecture name to standard format."""
-        arch = arch.lower().strip()
-        
-        # Handle common variations and aliases
-        if arch.startswith("gfx"):
-            return arch
-        elif arch in ["mi100", "mi-100"]:
-            return "gfx908"
-        elif arch in ["mi200", "mi-200", "mi210", "mi250"]:
-            return "gfx90a"
-        elif arch in ["mi300", "mi-300", "mi300a"]:
-            return "gfx940"
-        elif arch in ["mi300x", "mi-300x"]:
-            return "gfx942"
-        elif arch.startswith("mi"):
-            # Unknown MI series - return as is for potential future support
-            return arch
-        
-        return arch if arch else None
-
-    def _is_target_arch_compatible_with_variable(
-        self, 
-        var_name: str, 
-        var_values: typing.List[str], 
-        target_arch: str
-    ) -> bool:
-        """
-        Validate that target architecture is compatible with a specific GPU variable.
-        Used during build phase validation.
-        """
-        if var_name == "MAD_SYSTEM_GPU_ARCHITECTURE":
-            # MAD_SYSTEM_GPU_ARCHITECTURE will be overridden by target_arch, so always compatible
-            return True
-        
-        elif var_name in ["PYTORCH_ROCM_ARCH", "GPU_TARGETS", "GPU_ARCHS"]:
-            # Multi-architecture variables - target arch must be in the list
-            return target_arch in var_values
-        
-        elif var_name == "GFX_COMPILATION_ARCH":
-            # Compilation architecture should be compatible with target arch
-            return len(var_values) == 1 and (
-                var_values[0] == target_arch or
-                self._is_compilation_arch_compatible(var_values[0], target_arch)
-            )
-        
-        # Unknown variable - assume compatible
-        return True
-
-    def _is_compilation_arch_compatible(self, compile_arch: str, target_arch: str) -> bool:
-        """Check if compilation architecture is compatible with target architecture."""
-        # Define compatibility rules for compilation
-        compatibility_matrix = {
-            "gfx908": ["gfx908"],  # MI100 - exact match only
-            "gfx90a": ["gfx90a"],  # MI200 - exact match only
-            "gfx940": ["gfx940"],  # MI300A - exact match only
-            "gfx941": ["gfx941"],  # MI300X - exact match only
-            "gfx942": ["gfx942"],  # MI300X - exact match only
-        }
-        
-        compatible_archs = compatibility_matrix.get(compile_arch, [compile_arch])
-        return target_arch in compatible_archs
 
     def _build_model_single_arch(
         self, 
@@ -975,20 +859,6 @@ class DockerBuilder:
                 registry_image = f"{registry}/{docker_image}"
 
         return registry_image
-
-    def _is_compilation_arch_compatible(self, compile_arch: str, target_arch: str) -> bool:
-        """Check if compilation architecture is compatible with target architecture."""
-        # Define compatibility rules for compilation
-        compatibility_matrix = {
-            "gfx908": ["gfx908"],  # MI100 - exact match only
-            "gfx90a": ["gfx90a"],  # MI200 - exact match only
-            "gfx940": ["gfx940"],  # MI300A - exact match only
-            "gfx941": ["gfx941"],  # MI300X - exact match only
-            "gfx942": ["gfx942"],  # MI300X - exact match only
-        }
-        
-        compatible_archs = compatibility_matrix.get(compile_arch, [compile_arch])
-        return target_arch in compatible_archs
 
     def _build_model_for_arch(
         self, 

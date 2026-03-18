@@ -15,6 +15,12 @@ from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
 from tests.fixtures.utils import is_nvidia
 from tests.fixtures.utils import generate_additional_context_for_machine
+from tests.fixtures.utils import (
+    DEFAULT_CLEAN_FILES,
+    build_run_command,
+    get_run_live_log_path,
+    get_timeout_seconds_from_log,
+)
 
 
 
@@ -25,180 +31,35 @@ from tests.fixtures.utils import generate_additional_context_for_machine
 class TestCustomTimeoutsFunctionality:
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
-    def test_default_model_timeout_2hrs(self, global_data, clean_test_temp_files):
-        """
-        default model timeout is 2 hrs
-        This test only checks if the timeout is set; it does not actually time the model.
-        """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy"
-        )
-
-        regexp = re.compile(r"⏰ Setting timeout to ([0-9]*) seconds.")
-        foundTimeout = None
-        with open(
-            os.path.join(
-                BASE_DIR,
-                "dummy_dummy.ubuntu."
-                + ("amd" if not is_nvidia() else "nvidia")
-                + ".run.live.log",
-            ),
-            "r",
-        ) as f:
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                match = regexp.search(line)
-                if match:
-                    foundTimeout = match.groups()[0]
-        if foundTimeout != "7200":
-            pytest.fail("default model timeout is not 2 hrs (" + str(foundTimeout) + "s).")
-
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "tags,log_base_name,expected_seconds,extra_args",
+        [
+            ("dummy", "dummy_dummy", "7200", ""),
+            ("dummy_timeout", "dummy_timeout_dummy", "360", ""),
+            ("dummy", "dummy_dummy", "120", "--timeout 120"),
+            ("dummy_timeout", "dummy_timeout_dummy", "120", "--timeout 120"),
+        ],
     )
-    def test_can_override_timeout_in_model(self, global_data, clean_test_temp_files):
-        """
-        timeout can be overridden in model
-        This test only checks if the timeout is set; it does not actually time the model.
-        """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_timeout"
-        )
-
-        regexp = re.compile(r"⏰ Setting timeout to ([0-9]*) seconds.")
-        foundTimeout = None
-        with open(
-            os.path.join(
-                BASE_DIR,
-                "dummy_timeout_dummy.ubuntu."
-                + ("amd" if not is_nvidia() else "nvidia")
-                + ".run.live.log",
-            ),
-            "r",
-        ) as f:
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                match = regexp.search(line)
-                if match:
-                    foundTimeout = match.groups()[0]
-        if foundTimeout != "360":
-            pytest.fail(
-                "timeout in models.json (360s) could not override actual timeout ("
-                + str(foundTimeout)
-                + "s)."
-            )
-
-    @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
-    )
-    def test_can_override_timeout_in_commandline(
-        self, global_data, clean_test_temp_files
+    def test_timeout_value_in_log(
+        self, global_data, clean_test_temp_files, tags, log_base_name, expected_seconds, extra_args
     ):
         """
-        timeout command-line argument overrides default timeout
-        This test only checks if the timeout is set; it does not actually time the model.
+        Timeout is set as expected (default 2h, model override, CLI override).
+        Only checks the value in the log; does not actually time the model.
         """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy --timeout 120"
-        )
-
-        regexp = re.compile(r"⏰ Setting timeout to ([0-9]*) seconds.")
-        foundTimeout = None
-        with open(
-            os.path.join(
-                BASE_DIR,
-                "dummy_dummy.ubuntu."
-                + ("amd" if not is_nvidia() else "nvidia")
-                + ".run.live.log",
-            ),
-            "r",
-        ) as f:
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                match = regexp.search(line)
-                if match:
-                    foundTimeout = match.groups()[0]
-        if foundTimeout != "120":
+        global_data["console"].sh(build_run_command(tags, extra_args=extra_args))
+        log_path = get_run_live_log_path(log_base_name)
+        found = get_timeout_seconds_from_log(log_path)
+        if found != expected_seconds:
             pytest.fail(
-                "timeout command-line argument (120s) could not override actual timeout ("
-                + foundTimeout
-                + "s)."
-            )
-
-    @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
-    )
-    def test_commandline_timeout_overrides_model_timeout(
-        self, global_data, clean_test_temp_files
-    ):
-        """
-        timeout command-line argument overrides model timeout
-        This test only checks if the timeout is set; it does not actually time the model.
-        """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_timeout --timeout 120"
-        )
-
-        regexp = re.compile(r"⏰ Setting timeout to ([0-9]*) seconds.")
-        foundTimeout = None
-        with open(
-            os.path.join(
-                BASE_DIR,
-                "dummy_timeout_dummy.ubuntu."
-                + ("amd" if not is_nvidia() else "nvidia")
-                + ".run.live.log",
-            ),
-            "r",
-        ) as f:
-            while True:
-                line = f.readline()
-                if not line:
-                    break
-                match = regexp.search(line)
-                if match:
-                    foundTimeout = match.groups()[0]
-        if foundTimeout != "120":
-            pytest.fail(
-                "timeout in command-line argument (360s) could not override model.json timeout ("
-                + foundTimeout
-                + "s)."
+                f"expected timeout {expected_seconds}s in log, got {found}s (log: {log_path})."
             )
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_timeout_in_commandline_timesout_correctly(
@@ -226,7 +87,7 @@ class TestCustomTimeoutsFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_timeout_in_model_timesout_correctly(
@@ -263,7 +124,7 @@ class TestDebuggingFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_keepAlive_keeps_docker_alive(self, global_data, clean_test_temp_files):
@@ -301,7 +162,7 @@ class TestDebuggingFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_no_keepAlive_does_not_keep_docker_alive(
@@ -342,7 +203,7 @@ class TestDebuggingFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_keepAlive_preserves_model_dir(self, global_data, clean_test_temp_files):
@@ -374,7 +235,7 @@ class TestDebuggingFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_keepModelDir_keeps_model_dir(self, global_data, clean_test_temp_files):
@@ -398,7 +259,7 @@ class TestDebuggingFunctionality:
 
     @pytest.mark.parametrize(
         "clean_test_temp_files",
-        [["perf.csv", "perf.html", "run_directory"]],
+        [DEFAULT_CLEAN_FILES + ["run_directory"]],
         indirect=True,
     )
     def test_no_keepModelDir_does_not_keep_model_dir(
@@ -432,7 +293,7 @@ class TestLiveOutputFunctionality:
     """Test the live output functionality."""
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_default_silent_run(self, global_data, clean_test_temp_files):
         """
@@ -458,7 +319,7 @@ class TestLiveOutputFunctionality:
             pytest.fail("default run is not silent")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_liveOutput_prints_output_to_screen(
         self, global_data, clean_test_temp_files

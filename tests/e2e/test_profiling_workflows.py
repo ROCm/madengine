@@ -19,6 +19,7 @@ import pytest
 from tests.fixtures.utils import (
     BASE_DIR,
     MODEL_DIR,
+    DEFAULT_CLEAN_FILES,
     global_data,
     clean_test_temp_files,
     requires_gpu,
@@ -270,7 +271,7 @@ class TestProfilingFunctionality:
 
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_rccl_trace_runs_correctly(self, global_data, clean_test_temp_files):
         """
@@ -311,7 +312,7 @@ class TestProfilingFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_toolA_runs_correctly(self, global_data, clean_test_temp_files):
         """
@@ -357,7 +358,7 @@ class TestProfilingFunctionality:
             pytest.fail("all strings were not matched in toolA test.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_stackable_design_runs_correctly(self, global_data, clean_test_temp_files):
         """
