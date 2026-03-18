@@ -20,6 +20,7 @@ import re
 import typing
 # third-party modules
 from madengine.core.console import Console
+from madengine.core.constants import get_rocm_path
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError
 
 
@@ -65,18 +66,23 @@ class Context:
     def __init__(
             self, 
             additional_context: str=None, 
-            additional_context_file: str=None
+            additional_context_file: str=None,
+            rocm_path: str=None
         ) -> None:
         """Constructor of the Context class.
         
         Args:
             additional_context: The additional context.
             additional_context_file: The additional context file.
+            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
             
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is not detected.
         """
+        # Resolve ROCm path first (used by get_gpu_vendor and others)
+        self._rocm_path = get_rocm_path(rocm_path)
+
         # Initialize the console
         self.console = Console()
 
@@ -99,7 +105,7 @@ class Context:
         # Validate ROCm installation if AMD GPU is detected
         if self.ctx["gpu_vendor"] == "AMD":
             try:
-                validate_rocm_installation(verbose=False, raise_on_error=True)
+                validate_rocm_installation(verbose=False, raise_on_error=True, rocm_path=self._rocm_path)
             except GPUInstallationError as e:
                 print("\n" + "="*70)
                 print("ERROR: ROCm Installation Validation Failed")
@@ -110,6 +116,8 @@ class Context:
 
         # Initialize the docker context
         self.ctx["docker_env_vars"] = {}
+        self.ctx["rocm_path"] = self._rocm_path
+        self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
         self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
         self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
         self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
@@ -190,8 +198,10 @@ class Context:
             - AMD
         """
         # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
+        # ROCM_PATH allows non-default ROCm installs (e.g. Rock tar/whl) when /opt/rocm is not present.
+        rocm_path_escaped = self._rocm_path.replace("'", "'\"'\"'")
         return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
+            f'ROCM_PATH="{rocm_path_escaped}" bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f "${{ROCM_PATH}}/bin/amd-smi" ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
         )
 
     def get_host_os(self) -> str:
@@ -289,14 +299,15 @@ class Context:
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             try:
-                arch = self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
+                rocminfo_path = os.path.join(self._rocm_path, "bin", "rocminfo")
+                arch = self.console.sh(f"{rocminfo_path} |grep -o -m 1 'gfx.*'")
                 if not arch or arch.strip() == "":
                     raise RuntimeError("rocminfo returned empty architecture")
                 return arch
             except Exception as e:
                 raise RuntimeError(
                     f"Unable to determine AMD GPU architecture. "
-                    f"Ensure ROCm is installed and rocminfo is accessible at /opt/rocm/bin/rocminfo. "
+                    f"Ensure ROCm is installed and rocminfo is accessible (ROCM_PATH={self._rocm_path}). "
                     f"Error: {e}"
                 )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
@@ -387,9 +398,10 @@ class Context:
             
         try:
             # Get ROCm version
-            rocm_version_str = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+            version_file = os.path.join(self._rocm_path, ".info", "version")
+            rocm_version_str = self.console.sh(f"cat {version_file} | cut -d'-' -f1")
             if not rocm_version_str or rocm_version_str.strip() == "":
-                raise RuntimeError("Failed to retrieve ROCm version from /opt/rocm/.info/version")
+                raise RuntimeError(f"Failed to retrieve ROCm version from {version_file}")
             
             # Parse version safely
             try:
