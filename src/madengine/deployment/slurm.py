@@ -31,6 +31,7 @@ VALID_LAUNCHERS = [
     "torchtitan",
     "deepspeed",
     "megatron-lm",
+    "primus",
     "vllm",
     "sglang",
     "sglang-disagg"
@@ -531,6 +532,8 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "torchtitan":
             return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
+        elif launcher_type == "primus":
+            return self._generate_primus_command(nnodes, nproc_per_node, master_port)
         else:
             # For unknown launchers, provide basic environment variables
             # and let the model script handle launcher invocation
@@ -818,6 +821,28 @@ export TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
 
 # Use torchrun as launcher (TorchTitan built on top of it)
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{NODE_RANK}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+
+    def _generate_primus_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """
+        Generate Primus launcher environment for SLURM.
+
+        Primus (Megatron-LM, TorchTitan, Jax/MaxText) runs via model script that calls
+        run_pretrain.sh; NNODES, NODE_RANK, MASTER_ADDR, etc. are set by the job script.
+        We only export PRIMUS_CONFIG_PATH and optional PRIMUS_CLI_EXTRA. No MAD_MULTI_NODE_RUNNER.
+        """
+        primus_cfg = self.distributed_config.get("primus", {})
+        config_path = primus_cfg.get("config_path", "exp_pretrain.yaml")
+        cli_extra = primus_cfg.get("cli_extra", "")
+        # Safe shell quoting for config_path and cli_extra
+        config_path_quoted = config_path.replace('"', '\\"')
+        lines = [f'# Primus launcher (model script runs run_pretrain.sh)',
+                 f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"']
+        if (cli_extra or "").strip():
+            cli_extra_quoted = cli_extra.replace('"', '\\"')
+            lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
+        return "\n".join(lines)
 
     def _generate_basic_env_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
