@@ -35,6 +35,11 @@ def discover(
 
     This command discovers all available models in the project based on the
     specified tags. If no tags are provided, all models will be discovered.
+
+    **Scoped tags** (``scope/tag``): exactly one ``/`` and no ``:`` in the tag
+    limits selection to models under ``scripts/<scope>/`` (e.g.
+    ``MAD-private/inference`` → models named ``MAD-private/...`` with tag
+    ``inference``). Use ``scope/all`` for every model in that scope.
     """
     setup_logging(verbose)
 
