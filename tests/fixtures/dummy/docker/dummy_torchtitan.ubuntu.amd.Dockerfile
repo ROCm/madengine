@@ -53,11 +53,19 @@ ENV TORCHTITAN_TENSOR_PARALLEL_SIZE=1 \
     TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
 
 # ============================================================================
-# Verification
+# Verification and backward compatibility
 # ============================================================================
-# Verify TorchTitan installation
+# TorchTitan moved train.py to torchtitan/train.py (repo subfolder). Create symlink
+# at /opt/torchtitan/train.py so scripts expecting the old path still work.
 RUN python3 -c "import torch; print(f'✓ PyTorch version: {torch.__version__}')" && \
-    test -f /opt/torchtitan/train.py && echo "✓ TorchTitan installed" || echo "⚠ TorchTitan not found" && \
+    if [ -f /opt/torchtitan/torchtitan/train.py ]; then \
+        ln -sf /opt/torchtitan/torchtitan/train.py /opt/torchtitan/train.py && echo "✓ TorchTitan installed (torchtitan/train.py)"; \
+    elif [ -f /opt/torchtitan/train.py ]; then \
+        echo "✓ TorchTitan installed (train.py at root)"; \
+    else \
+        echo "⚠ TorchTitan train.py not found"; exit 1; \
+    fi && \
+    test -d /opt/torchtitan/tests/assets/c4_test || (echo "⚠ tests/assets/c4_test not found (llama3_debugmodel needs it)"; exit 1) && \
     rocminfo > /dev/null 2>&1 || echo "ROCm check (OK in build env)"
 
 WORKDIR /workspace

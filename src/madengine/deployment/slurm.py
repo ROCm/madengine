@@ -404,10 +404,11 @@ export VLLM_PIPELINE_PARALLEL_SIZE=1
 export VLLM_DISTRIBUTED_BACKEND="auto"
 # vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
         else:
-            return f'''# vLLM multi-node setup (TP + PP with Ray)
+            # One vLLM serve per node (TP only on that node), no shared Ray = data parallelism
+            return f'''# vLLM multi-node setup (data parallel: one serve per node, TP only)
 export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export VLLM_PIPELINE_PARALLEL_SIZE={nnodes}
-export VLLM_DISTRIBUTED_BACKEND="ray"
+export VLLM_PIPELINE_PARALLEL_SIZE=1
+export VLLM_DISTRIBUTED_BACKEND="none"
 # vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
 
     def _generate_sglang_command(
@@ -432,9 +433,10 @@ export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE=1
 # SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
         else:
-            return f'''# SGLang multi-node setup (TP + PP with Ray)
+            # One SGLang serve per node (TP only on that node), no cross-node coordination = data parallel
+            return f'''# SGLang multi-node setup (data parallel: one serve per node, TP only)
 export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export SGLANG_PIPELINE_PARALLEL_SIZE={nnodes}
+export SGLANG_PIPELINE_PARALLEL_SIZE=1
 # SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
 
     def _generate_sglang_disagg_command(
