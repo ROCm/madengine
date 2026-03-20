@@ -547,6 +547,12 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 - **Enable verbose logging** (`--verbose`) when debugging issues
 - **Use `--live-output`** for real-time monitoring of long-running operations
 
+### CI / Jenkins
+
+- **Exit codes:** The CLI uses fixed exit codes (`ExitCode` in `madengine.cli.constants`, e.g. `SUCCESS=0`, `RUN_FAILURE=3`, `INVALID_ARGS=4`). Pipelines should treat **non-zero** as failure; no log scraping is required for pass/fail.
+- **Streaming:** In Jenkins, avoid redirecting stdout only to a file (`> file`) without `tee` if you want the console to update during the run. Prefer `... 2>&1 | tee madengine.run.log` with `bash -o pipefail` so the step exit code is still from `madengine`.
+- **Unbuffered Python:** If output still appears in chunks, set `PYTHONUNBUFFERED=1` (or `python -u`) for the `madengine` process.
+
 ### Build & Deployment
 
 - **Separate build and run phases** for distributed deployments
