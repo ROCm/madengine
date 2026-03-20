@@ -392,3 +392,33 @@ class TestProcessBatchManifest:
             assert "missing required 'model_name' field" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
+
+
+# ============================================================================
+# CLI `run` command exit codes (CI / Jenkins smoke)
+# ============================================================================
+
+@pytest.fixture
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+class TestRunCommandExitCodes:
+    """Smoke tests: madengine `run` exits with documented ExitCode values.
+
+    Uses Typer CliRunner (in-process); no Docker/GPU required.
+    """
+
+    def test_run_invalid_timeout_exits_invalid_args(self, runner: CliRunner) -> None:
+        """timeout < -1 is rejected before orchestration (ExitCode.INVALID_ARGS)."""
+        result = runner.invoke(
+            app,
+            ["run", "--timeout", "-2"],
+        )
+        assert result.exit_code == ExitCode.INVALID_ARGS
+
+    def test_run_help_exits_zero(self, runner: CliRunner) -> None:
+        """CLI help is reachable in CI without GPU."""
+        result = runner.invoke(app, ["run", "--help"])
+        assert result.exit_code == ExitCode.SUCCESS
+        assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
