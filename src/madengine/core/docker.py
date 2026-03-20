@@ -67,7 +67,7 @@ class Docker:
             )
             # Stop the container (with timeout)
             self.console.sh(
-                f"docker stop --timeout=1 {container_name} 2>/dev/null || true"
+                f"docker stop -t 1 {container_name} 2>/dev/null || true"
             )
             # Remove the container
             self.console.sh(
@@ -132,7 +132,7 @@ class Docker:
         """Destructor of the Docker class."""
         # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
         if not self.keep_alive and self.docker_sha:
-            self.console.sh("docker stop --time=1 " + self.docker_sha)
+            self.console.sh("docker stop -t 1 " + self.docker_sha)
             self.console.sh("docker rm -f " + self.docker_sha)
             return
 
@@ -144,6 +144,6 @@ class Docker:
                 "Open a bash session in container : ",
                 "docker exec -it " + self.docker_sha + " bash",
             )
-            print("Stop container : ", "docker stop --time=1 " + self.docker_sha)
+            print("Stop container : ", "docker stop -t 1 " + self.docker_sha)
             print("Remove container : ", "docker rm -f " + self.docker_sha)
             print("==========================================")

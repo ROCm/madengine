@@ -1,7 +1,7 @@
 """Test the orchestration layer modules.
 
 This module tests the Build and Run orchestrators that coordinate
-the build and execution workflows.
+the build and execution workflows, and batch manifest CLI behavior.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -14,12 +14,48 @@ from unittest.mock import MagicMock, mock_open, patch
 
 # third-party modules
 import pytest
+from typer.testing import CliRunner
 
 # project modules
+from madengine.cli import app
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
 
+
+# ============================================================================
+# Batch manifest (CLI build options)
+# ============================================================================
+
+class TestBatchManifestBuildIntegration:
+    """Batch manifest and --tags are mutually exclusive."""
+
+    def test_batch_manifest_mutually_exclusive_with_tags(self):
+        """--batch-manifest and --tags cannot be used together."""
+        runner = CliRunner()
+        batch_data = [{"model_name": "dummy", "build_new": True}]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(batch_data, f)
+            batch_file = f.name
+        try:
+            result = runner.invoke(
+                app,
+                [
+                    "build",
+                    "--batch-manifest", batch_file,
+                    "--tags", "dummy",
+                    "--additional-context", '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+            assert result.exit_code != 0
+            assert "Cannot specify both --batch-manifest and --tags" in result.output
+        finally:
+            os.unlink(batch_file)
+
+
+# ============================================================================
+# Build orchestrator
+# ============================================================================
 
 class TestBuildOrchestrator:
     """Test the Build Orchestrator module."""

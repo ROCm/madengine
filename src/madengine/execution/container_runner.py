@@ -23,10 +23,32 @@ from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
-from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
+from madengine.reporting.update_perf_csv import (
+    PERF_CSV_HEADER,
+    update_perf_csv,
+    flatten_tags,
+)
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
+from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.execution.container_runner_helpers import (
+    make_run_log_file_path,
+    resolve_run_timeout,
+)
+
+
+def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
+    """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
+    if not multiple_results:
+        return None
+    if os.path.isfile(multiple_results):
+        return multiple_results
+    path_in_model_dir = os.path.join(model_dir, multiple_results)
+    if os.path.isfile(path_in_model_dir):
+        return path_in_model_dir
+    return None
 
 
 class ContainerRunner:
@@ -74,7 +96,7 @@ class ContainerRunner:
         """Ensure the performance CSV file exists with proper headers."""
         if not os.path.exists(self.perf_csv_path):
             file_print(
-                "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,deployment_type,launcher,gpu_architecture,performance,metric,relative_change,status,build_duration,test_duration,dataname,data_provider_type,data_size,data_download_duration,build_number,additional_docker_run_options",
+                PERF_CSV_HEADER,
                 filename=self.perf_csv_path,
                 mode="w",
             )
@@ -202,7 +224,7 @@ class ContainerRunner:
             "nnodes": nnodes,
             "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -228,7 +250,7 @@ class ContainerRunner:
             "data_provider_type": run_results.get("data_provider_type", ""),
             "data_size": run_results.get("data_size", ""),
             "data_download_duration": run_results.get("data_download_duration", ""),
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get(
                 "additional_docker_run_options", ""
             ),
@@ -240,7 +262,7 @@ class ContainerRunner:
         # Parse and load config file if present in args for perf_entry_super.json
         try:
             scripts_path = model_info.get("scripts", "")
-            scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
             config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
             run_details["configs"] = config_parser.parse_and_load(
                 model_info.get("args", ""),
@@ -251,6 +273,68 @@ class ContainerRunner:
             run_details["configs"] = None
 
         return run_details
+
+    def _create_setup_failure_perf_entry(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        image_name: str,
+        error_message: str,
+    ) -> typing.Dict:
+        """Build a minimal perf entry for failures that occur before run_container (e.g. pull failed).
+
+        Used so that every failed model is recorded in the performance table with status FAILURE.
+        """
+        machine_name = ""
+        if self.console:
+            try:
+                machine_name = self.console.sh("hostname")
+            except Exception:
+                pass
+
+        tags = model_info.get("tags", "")
+        if isinstance(tags, list):
+            tags = ",".join(str(t) for t in tags)
+
+        return {
+            "model": model_info.get("name", image_name),
+            "n_gpus": str(model_info.get("n_gpus", "1")),
+            "nnodes": "1",
+            "gpus_per_node": str(model_info.get("n_gpus", "1")),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": tags,
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", image_name),
+            "git_commit": "",
+            "machine_name": machine_name,
+            "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),
+            "launcher": "",
+            "gpu_architecture": (
+                self.context.ctx.get("docker_env_vars", {}).get(
+                    "MAD_SYSTEM_GPU_ARCHITECTURE", ""
+                )
+                if self.context
+                else ""
+            ),
+            "performance": "",
+            "metric": "",
+            "relative_change": "",
+            "status": "FAILURE",
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": "",
+            "dataname": "",
+            "data_provider_type": "",
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
+        }
 
     def load_build_manifest(
         self, manifest_file: str = "build_manifest.json"
@@ -654,34 +738,8 @@ class ContainerRunner:
         """
         self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
 
-        # Apply timeout logic: model timeout can override default timeout
-        # If model has a timeout in models.json and CLI timeout is default (7200), use model's timeout
-        # If CLI timeout is explicitly set (not default), it overrides model timeout
-        if "timeout" in model_info and model_info["timeout"] is not None and model_info["timeout"] > 0 and timeout == 7200:
-            # Model has a timeout and CLI is using default, so use model's timeout
-            timeout = model_info["timeout"]
-
-        # Create log file for this run
-        # Extract dockerfile part from docker image name (remove "ci-" prefix and model name prefix)
-        image_name_without_ci = docker_image.replace("ci-", "")
-        model_name_clean = model_info["name"].replace("/", "_").lower()
-
-        # Remove model name from the beginning to get the dockerfile part
-        if image_name_without_ci.startswith(model_name_clean + "_"):
-            dockerfile_part = image_name_without_ci[len(model_name_clean + "_") :]
-        else:
-            dockerfile_part = image_name_without_ci
-
-        log_file_path = (
-            model_info["name"].replace("/", "_")
-            + "_"
-            + dockerfile_part
-            + phase_suffix
-            + ".live.log"
-        )
-        # Replace / with _ in log file path (already done above, but keeping for safety)
-        log_file_path = log_file_path.replace("/", "_")
-
+        timeout = resolve_run_timeout(model_info, timeout)
+        log_file_path = make_run_log_file_path(model_info, docker_image, phase_suffix)
         print(f"Run log will be written to: {log_file_path}")
 
         # get machine name
@@ -746,7 +804,7 @@ class ContainerRunner:
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
         docker_options += (
-            f"--env JENKINS_BUILD_NUMBER='{os.environ.get('BUILD_NUMBER','0')}' "
+            f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
         )
 
         # Gather data and environment
@@ -782,6 +840,7 @@ class ContainerRunner:
             'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
             'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
             'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+            'TORCH_ELASTIC_RDZV_TIMEOUT',  # Rendezvous timeout so all nodes can join after pull
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
             'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
@@ -1071,11 +1130,14 @@ class ContainerRunner:
                             f"cd {model_dir} && {script_name} {model_args}",
                             timeout=timeout,
                         )
-                        # Print output to ensure it gets captured in log file
-                        print(model_output)
+                        # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
+                        if not self.live_output:
+                            print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
+                        # Parser-friendly line for SLURM log collection (test_duration: Xs)
+                        print(f"test_duration: {run_results['test_duration']:.2f}s")
 
                         # Run post-scripts
                         if pre_encapsulate_post_scripts["post_scripts"]:
@@ -1092,33 +1154,43 @@ class ContainerRunner:
                             multiple_results = model_info.get("multiple_results", None)
 
                             if multiple_results:
-                                run_results["performance"] = multiple_results
-                                # Validate multiple results file format using proper CSV parsing
-                                try:
-                                    import csv
-                                    with open(multiple_results, "r") as f:
-                                        csv_reader = csv.DictReader(f)
-                                        
-                                        # Check if 'performance' column exists
-                                        if 'performance' not in csv_reader.fieldnames:
-                                            print("Error: 'performance' column not found in multiple results file.")
-                                            run_results["performance"] = None
-                                        else:
-                                            # Check if at least one row has a non-empty performance value
-                                            has_valid_perf = False
-                                            for row in csv_reader:
-                                                if row.get('performance', '').strip():
-                                                    has_valid_perf = True
-                                                    break
-                                            
-                                            if not has_valid_perf:
-                                                run_results["performance"] = None
-                                                print("Error: Performance metric is empty in all rows of multiple results file.")
-                                except Exception as e:
+                                resolved_path = _resolve_multiple_results_path(
+                                    multiple_results, model_dir
+                                )
+                                if not resolved_path:
                                     self.rich_console.print(
-                                        f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                        f"[yellow]Warning: Could not find multiple results file "
+                                        f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
                                     )
                                     run_results["performance"] = None
+                                else:
+                                    run_results["performance"] = resolved_path
+                                    # Validate multiple results file format using proper CSV parsing
+                                    try:
+                                        import csv
+                                        with open(resolved_path, "r") as f:
+                                            csv_reader = csv.DictReader(f)
+                                            
+                                            # Check if 'performance' column exists
+                                            if 'performance' not in csv_reader.fieldnames:
+                                                print("Error: 'performance' column not found in multiple results file.")
+                                                run_results["performance"] = None
+                                            else:
+                                                # Check if at least one row has a non-empty performance value
+                                                has_valid_perf = False
+                                                for row in csv_reader:
+                                                    if row.get('performance', '').strip():
+                                                        has_valid_perf = True
+                                                        break
+                                                
+                                                if not has_valid_perf:
+                                                    run_results["performance"] = None
+                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
+                                    except Exception as e:
+                                        self.rich_console.print(
+                                            f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                        )
+                                        run_results["performance"] = None
                             else:
                                 # Match the actual output format: "performance: 14164 samples_per_second"
                                 # Simple pattern to capture number and metric unit
@@ -1326,8 +1398,13 @@ class ContainerRunner:
 
                                 # Handle multiple results if specified
                                 multiple_results = model_info.get("multiple_results", None)
+                                resolved_multiple_results = (
+                                    _resolve_multiple_results_path(multiple_results, model_dir)
+                                    if multiple_results
+                                    else None
+                                )
                                 if (
-                                    multiple_results
+                                    resolved_multiple_results
                                     and run_results.get("status") == "SUCCESS"
                                 ):
                                     # Generate common info JSON for multiple results
@@ -1341,7 +1418,7 @@ class ContainerRunner:
 
                                     # Update perf.csv with multiple results
                                     update_perf_csv(
-                                        multiple_results=multiple_results,
+                                        multiple_results=resolved_multiple_results,
                                         perf_csv=self.perf_csv_path,
                                         model_name=run_details_dict["model"],
                                         common_info="common_info.json",
@@ -1353,11 +1430,11 @@ class ContainerRunner:
                                     # Update perf_super.json with multiple results
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
                                         
                                         # Reuse common_info.json for super files (no need for duplicate)
                                         num_entries = update_perf_super_json(
-                                            multiple_results=multiple_results,
+                                            multiple_results=resolved_multiple_results,
                                             perf_super_json="perf_super.json",
                                             model_name=run_details_dict["model"],
                                             common_info="common_info.json",
@@ -1395,7 +1472,7 @@ class ContainerRunner:
                                     # Update perf_super.json with single result
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
                                         
                                         # Use perf_entry.json as input (already created above)
                                         if run_results.get("status") == "SUCCESS":
@@ -1433,6 +1510,15 @@ class ContainerRunner:
                         except Exception as e:
                             # Ignore errors if no profiler/trace output files exist
                             pass
+
+                        # Copy multiple_results CSV to workspace root before run_directory is removed
+                        # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
+                        mult_res = model_info.get("multiple_results")
+                        if mult_res:
+                            try:
+                                model_docker.sh(f"cp {model_dir}/{mult_res} . 2>/dev/null || true")
+                            except Exception:
+                                pass
 
                         # Cleanup if not keeping alive and not keeping model directory
                         if not keep_alive and not keep_model_dir:
@@ -1480,7 +1566,7 @@ class ContainerRunner:
                 # Update perf_super.json with exception result
                 try:
                     scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
                     
                     # Use perf_entry.json as input (already created above)
                     num_entries = update_perf_super_json(
@@ -1545,7 +1631,10 @@ class ContainerRunner:
         # Load deployment_config from manifest for GPU resolution
         if "deployment_config" in manifest and not self.additional_context:
             self.additional_context = {"deployment_config": manifest["deployment_config"]}
-        
+        # Merge manifest context (e.g. skip_perf_collection for multi-node SLURM aggregation)
+        if "context" in manifest and isinstance(manifest["context"], dict):
+            self.additional_context = {**(self.additional_context or {}), **manifest["context"]}
+
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")
             return {"successful_runs": [], "failed_runs": []}
@@ -1639,11 +1728,41 @@ class ContainerRunner:
                 
             except Exception as e:
                 self.rich_console.print(f"[red]❌ Failed to run {model_info['name']}: {e}[/red]")
+                error_msg = str(e)
                 failed_runs.append({
                     "model": model_info.get("name", image_name),
                     "image": image_name,
-                    "error": str(e),
+                    "error": error_msg,
                 })
+                # Record failure in performance table so status is consistent and table is complete
+                try:
+                    import tempfile
+                    self.ensure_perf_csv_exists()
+                    perf_entry = self._create_setup_failure_perf_entry(
+                        model_info=model_info,
+                        build_info=build_info,
+                        image_name=image_name,
+                        error_message=error_msg,
+                    )
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".json", delete=False
+                    ) as f:
+                        json.dump(perf_entry, f)
+                        temp_path = f.name
+                    try:
+                        update_perf_csv(
+                            exception_result=temp_path,
+                            perf_csv=self.perf_csv_path,
+                        )
+                        print(
+                            f"Updated perf.csv with setup failure for {model_info.get('name', image_name)}"
+                        )
+                    finally:
+                        os.unlink(temp_path)
+                except Exception as csv_e:
+                    self.rich_console.print(
+                        f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
+                    )
         
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")

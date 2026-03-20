@@ -77,6 +77,10 @@ RUN python3 -c "import ray; print(f'✓ Ray: {ray.__version__}')" || \
 # ============================================================================
 # Workspace Setup
 # ============================================================================
+# Ensure stdbuf (coreutils) for line-buffered stdout when run via docker exec (SLURM logs)
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends coreutils 2>/dev/null || true
+RUN command -v stdbuf >/dev/null 2>&1 || (echo "Warning: stdbuf not found; run.sh output may be buffered in SLURM logs" && true)
+
 WORKDIR /workspace
 
 # Print final environment info

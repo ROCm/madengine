@@ -12,7 +12,7 @@
     "nodes": 4,
     "gpus_per_node": 8,
     "time": "48:00:00",
-    "output_dir": "./slurm_output",
+    "output_dir": "./slurm_results",
     "results_dir": "/shared/results",
     "shared_workspace": "/shared/workspace",
     "exclusive": true,

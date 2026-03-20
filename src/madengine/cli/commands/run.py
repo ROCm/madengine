@@ -21,6 +21,7 @@ except ImportError:
 
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import (
+    BuildError,
     ConfigurationError,
     RuntimeError as MADRuntimeError,
 )
@@ -166,6 +167,37 @@ def run(
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
+    # When both --additional-context-file and --additional-context are provided,
+    # load file first then overlay CLI (CLI overrides file).
+    effective_additional_context = additional_context
+    effective_additional_context_file = additional_context_file
+    if additional_context_file and additional_context != "{}":
+        merged = {}
+        if os.path.exists(additional_context_file):
+            try:
+                with open(additional_context_file, "r") as f:
+                    merged = json.load(f)
+            except json.JSONDecodeError:
+                console.print(
+                    f"❌ [red]Invalid JSON format in {additional_context_file}[/red]"
+                )
+                raise typer.Exit(ExitCode.INVALID_ARGS)
+        try:
+            cli_context = (
+                json.loads(additional_context)
+                if additional_context.strip().startswith("{")
+                else ast.literal_eval(additional_context)
+            )
+            if isinstance(cli_context, dict):
+                merged.update(cli_context)
+        except (json.JSONDecodeError, ValueError, SyntaxError):
+            console.print(
+                f"❌ [red]Invalid additional_context format: {additional_context}[/red]"
+            )
+            raise typer.Exit(ExitCode.INVALID_ARGS)
+        effective_additional_context = repr(merged)
+        effective_additional_context_file = None
+
     # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
     if timeout == -1:
         timeout = 7200
@@ -192,8 +224,8 @@ def run(
                 manifest_file=manifest_file,
                 registry=registry,
                 timeout=timeout,
-                additional_context=additional_context,
-                additional_context_file=additional_context_file,
+                additional_context=effective_additional_context,
+                additional_context_file=effective_additional_context_file,
                 keep_alive=keep_alive,
                 keep_model_dir=keep_model_dir,
                 live_output=live_output,
@@ -315,8 +347,8 @@ def run(
                 tags=processed_tags,
                 registry=registry,
                 timeout=timeout,
-                additional_context=additional_context,
-                additional_context_file=additional_context_file,
+                additional_context=effective_additional_context,
+                additional_context_file=effective_additional_context_file,
                 keep_alive=keep_alive,
                 keep_model_dir=keep_model_dir,
                 clean_docker_cache=clean_docker_cache,
@@ -413,6 +445,13 @@ def run(
 
     except typer.Exit:
         raise
+    except BuildError as e:
+        console.print(f"🔨 [bold red]Build error: {e}[/bold red]")
+        if hasattr(e, "suggestions") and e.suggestions:
+            console.print("\n💡 [cyan]Suggestions:[/cyan]")
+            for suggestion in e.suggestions:
+                console.print(f"  • {suggestion}")
+        raise typer.Exit(ExitCode.BUILD_FAILURE)
     except MADRuntimeError as e:
         # Runtime execution errors
         console.print(f"💥 [bold red]Runtime error: {e}[/bold red]")

@@ -33,14 +33,22 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Template
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
-from .config_loader import ConfigLoader
+from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from .common import (
+    VALID_LAUNCHERS,
+    configure_multi_node_profiling,
+    is_rocprofv3_available,
+    normalize_launcher,
+)
+from .config_loader import ConfigLoader, apply_deployment_config
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
 from madengine.core.errors import ConfigurationError, create_error_context
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
+from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
 try:
     from madengine.reporting.update_perf_csv import update_perf_csv
@@ -48,184 +56,6 @@ try:
     REPORTING_AVAILABLE = True
 except ImportError:
     REPORTING_AVAILABLE = False
-
-
-# Valid distributed launchers
-VALID_LAUNCHERS = [
-    "torchrun",
-    "torchtitan",
-    "deepspeed",
-    "megatron-lm",
-    "vllm",
-    "sglang",
-    "sglang-disagg"
-]
-
-
-def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> str:
-    """
-    Normalize launcher field based on deployment type and launcher value.
-    
-    Logic:
-    - If launcher is in VALID_LAUNCHERS: keep as-is
-    - If launcher is None/empty/invalid:
-        * local → "docker" (runs in Docker container)
-        * slurm → "docker" (typically uses containers on compute nodes)
-        * kubernetes → "native" (pod itself is the container)
-    
-    Args:
-        launcher_type: Raw launcher type from config (may be None)
-        deployment_type: "local", "slurm", or "kubernetes"
-        
-    Returns:
-        Normalized launcher string
-    """
-    # If launcher is valid, keep it
-    if launcher_type and launcher_type in VALID_LAUNCHERS:
-        return launcher_type
-    
-    # Otherwise, default based on deployment type
-    if deployment_type == "local":
-        return "docker"
-    elif deployment_type == "slurm":
-        return "docker"
-    elif deployment_type == "kubernetes":
-        return "native"
-    else:
-        # Fallback for unknown deployment types
-        return "docker"
-
-
-def is_rocprofv3_available() -> bool:
-    """
-    Check if rocprofv3 is available on the system.
-    
-    rocprofv3 is required for multi-node profiling with MPI support.
-    It's part of rocprofiler-sdk package in ROCm >= 6.4.1.
-    
-    Returns:
-        True if rocprofv3 is available and executable, False otherwise
-    """
-    try:
-        # Note: rocprofv3 doesn't support --version, use --help instead
-        result = subprocess.run(
-            ["rocprofv3", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
-
-
-def configure_multi_node_profiling(
-    nnodes: int,
-    tools_config: List[Dict],
-    logger
-) -> Dict[str, Any]:
-    """
-    Configure profiling for multi-node runs with rocprofv3 support.
-    
-    Industry best practice for multi-node profiling:
-    - Profile ALL nodes to detect stragglers, load imbalances, and communication bottlenecks
-    - Use rocprofv3 (MPI-aware) for distributed profiling
-    - Collect per-node outputs for detailed analysis
-    
-    Logic:
-    1. Single node (nnodes == 1): Use existing tool behavior
-    2. Multi-node (nnodes > 1):
-       a. Check if rocprofv3 is available
-       b. If available: Enable per-node profiling, upgrade "rocprof" to "rocprofv3"
-       c. If not available: Log warning and skip profiling
-    
-    Args:
-        nnodes: Number of nodes in the deployment
-        tools_config: List of tool configurations from user
-        logger: Logger instance for messages
-        
-    Returns:
-        Dictionary with profiling configuration:
-        - enabled: bool - Whether profiling is enabled
-        - mode: str - "single_node", "multi_node", or "multi_node_unsupported"
-        - tools: List[Dict] - Processed tool configurations
-        - per_node_collection: bool - Whether to collect from all nodes
-    """
-    if nnodes == 1:
-        # Single node - existing behavior works fine
-        return {
-            "enabled": True,
-            "mode": "single_node",
-            "tools": tools_config,
-            "per_node_collection": False
-        }
-    
-    # Multi-node case - check rocprofv3 availability
-    if not is_rocprofv3_available():
-        logger.warning(
-            "╔════════════════════════════════════════════════════════════════════════════╗\n"
-            "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
-            "╠════════════════════════════════════════════════════════════════════════════╣\n"
-            "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
-            "║                                                                            ║\n"
-            "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
-            "║                                                                            ║\n"
-            "║ Profiling will be SKIPPED for this multi-node run.                        ║\n"
-            "║                                                                            ║\n"
-            "║ To enable multi-node profiling:                                           ║\n"
-            "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
-            "║   • Command: apt install rocprofiler-sdk                                  ║\n"
-            "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
-            "║                                                                            ║\n"
-            "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
-            "╚════════════════════════════════════════════════════════════════════════════╝"
-        )
-        return {
-            "enabled": False,
-            "mode": "multi_node_unsupported",
-            "tools": [],
-            "per_node_collection": False
-        }
-    
-    # rocprofv3 is available - enable full multi-node profiling
-    logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
-    
-    # Upgrade "rocprof" tools to "rocprofv3" for multi-node compatibility
-    upgraded_tools = []
-    rocprof_upgraded = False
-    
-    for tool in tools_config:
-        tool_name = tool.get("name")
-        
-        if tool_name == "rocprof":
-            # Upgrade to rocprofv3 for multi-node MPI support
-            logger.info(
-                f"  → Upgrading 'rocprof' to 'rocprofv3' for multi-node MPI compatibility"
-            )
-            upgraded_tool = tool.copy()
-            upgraded_tool["name"] = "rocprofv3"
-            upgraded_tools.append(upgraded_tool)
-            rocprof_upgraded = True
-        else:
-            upgraded_tools.append(tool)
-    
-    # Log profiling tools being used
-    if upgraded_tools:
-        tool_names = [t.get("name") for t in upgraded_tools]
-        logger.info(f"  → Multi-node profiling tools: {', '.join(tool_names)}")
-        
-        # Highlight RCCL trace if present (critical for multi-node communication)
-        if "rccl_trace" in tool_names:
-            logger.info("  → ✓ rccl_trace enabled (critical for multi-node communication profiling)")
-    
-    return {
-        "enabled": True,
-        "mode": "multi_node",
-        "tools": upgraded_tools,
-        "per_node_collection": True,
-        "profiler": "rocprofv3",
-        "wrapper_mode": "launcher"
-    }
 
 
 class KubernetesDeployment(BaseDeployment):
@@ -271,11 +101,7 @@ class KubernetesDeployment(BaseDeployment):
                 "Install with: pip install pyyaml"
             )
 
-        # Apply intelligent defaults using ConfigLoader
-        # This merges built-in presets with user configuration
-        full_config = ConfigLoader.load_k8s_config(config.additional_context)
-        config.additional_context = full_config
-
+        apply_deployment_config(config, ConfigLoader.load_k8s_config)
         super().__init__(config)
 
         # Parse K8s configuration (now with defaults applied)
@@ -288,11 +114,8 @@ class KubernetesDeployment(BaseDeployment):
 
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
-        self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
-        
-        # Register custom Jinja2 filters
-        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
-        
+        self.jinja_env = create_jinja_env(template_dir)
+
         # Initialize data provider (will be used if models need data)
         self.data = None
         self.context_for_data = None
@@ -454,7 +277,7 @@ class KubernetesDeployment(BaseDeployment):
             return
         
         # Load tools.json to get pre/post script definitions
-        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        tools_json_path = get_madengine_root() / "scripts" / "common" / "tools.json"
         if not tools_json_path.exists():
             return
         
@@ -492,7 +315,7 @@ class KubernetesDeployment(BaseDeployment):
         """
         import os
         script_contents = {}
-        madengine_root = Path(__file__).parent.parent  # Go up to madengine/ directory
+        madengine_root = get_madengine_root()
         
         for script_config in script_list:
             script_path = script_config.get("path", "")
@@ -784,7 +607,7 @@ class KubernetesDeployment(BaseDeployment):
                 data_provider_script = k8s_tools_config["data_providers"][provider_type]
                 
                 # Load K8s data provider script content
-                k8s_script_path = Path(__file__).parent.parent / data_provider_script["script"]
+                k8s_script_path = get_madengine_root() / data_provider_script["script"]
                 if k8s_script_path.exists():
                     with open(k8s_script_path, "r") as f:
                         data_provider_script_content = f.read()
@@ -2855,7 +2678,9 @@ torchrun \\
                     })
                     
                     # 2. Parse NODE-LOCAL performance from log
-                    perf_data = self._parse_node_performance(log, model_info, build_info)
+                    perf_data = self._parse_performance_from_log(
+                        log, model_info.get("name", "")
+                    )
                     
                     # Get pod exit status
                     pod_status = pod.status.phase
@@ -2967,21 +2792,51 @@ torchrun \\
                     )
                 
                 if aggregated_record:
-                    # Write ONE aggregated row to perf.csv (CRITICAL for database)
-                    self._write_to_perf_csv(aggregated_record)
-                    
+                    # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
+                    self._ensure_perf_csv_exists()
+                    run_details_dict = self._build_perf_entry_from_aggregated(
+                        aggregated_record, model_info, build_info, deployment_id
+                    )
+                    perf_entry_path = Path("perf_entry.json")
+                    with open(perf_entry_path, "w", encoding="utf-8") as f:
+                        json.dump(run_details_dict, f, indent=2)
+                    if run_details_dict.get("status") == "SUCCESS":
+                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                    else:
+                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                    scripts_path = model_info.get("scripts", "")
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
+                    try:
+                        if run_details_dict.get("status") == "SUCCESS":
+                            num_entries = update_perf_super_json(
+                                single_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        else:
+                            num_entries = update_perf_super_json(
+                                exception_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        update_perf_super_csv(
+                            perf_super_json="perf_super.json",
+                            perf_super_csv="perf_super.csv",
+                            num_entries=num_entries,
+                        )
+                    except Exception as e:
+                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
                     results["successful_runs"].append({
                         "model": model_info.get("name"),
                         "perf_data": aggregated_record,
-                        "nodes": results["nodes"],  # Include per-node details
-                        "per_node_metrics": per_node_metrics  # For detailed analysis
+                        "nodes": results["nodes"],
+                        "per_node_metrics": per_node_metrics
                     })
-                    
                     self.console.print(
                         f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
                     )
                     self.console.print(
-                        f"[green]✓ Updated local perf.csv[/green]"
+                        f"[green]✓ Updated perf_entry.json, perf.csv, perf_super.* (Docker-compatible)[/green]"
                     )
             else:
                 # No performance from log: try multiple_results CSV (same contract as local Docker)
@@ -3012,7 +2867,7 @@ torchrun \\
                         model_name=model_info.get("name", ""),
                     )
                     scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
                     num_entries = update_perf_super_json(
                         perf_super_json="perf_super.json",
                         multiple_results=str(resolved_csv_path),
@@ -3483,48 +3338,44 @@ torchrun \\
             
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
-            
+
             # Build information
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
-            
+
             # Runtime information
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
             "launcher": launcher,
             "gpu_architecture": "",
-            
+
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
-            
+
             # Timing
             "build_duration": build_info.get("build_duration", ""),
             "test_duration": "",
-            
+
             # Data information
             "dataname": model_info.get("data", ""),
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            
+
             # Build tracking
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        
-        # Flatten tags if they are in list format
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(item) for item in result["tags"])
-        
+        flatten_tags_in_place(result)
         return result
 
     # Standard perf.csv header (must match container_runner.ensure_perf_csv_exists)
@@ -3542,6 +3393,67 @@ torchrun \\
         if not perf_csv_path.exists():
             perf_csv_path.write_text(self._PERF_CSV_HEADER + "\n", encoding="utf-8")
             self.console.print("[dim]Created perf.csv with standard header[/dim]")
+
+    def _build_perf_entry_from_aggregated(
+        self,
+        aggregated_record: Dict[str, Any],
+        model_info: Dict[str, Any],
+        build_info: Dict[str, Any],
+        deployment_id: str,
+    ) -> Dict[str, Any]:
+        """Build full run_details dict from aggregated record for perf_entry and update_* pipeline."""
+        from madengine.utils.config_parser import ConfigParser
+
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        nnodes = distributed_config.get("nnodes", 1)
+        nproc_per_node = distributed_config.get("nproc_per_node")
+        if nproc_per_node is None:
+            nproc_per_node = int(model_info.get("n_gpus", 1))
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
+        run_details = {
+            "model": model_info.get("name", aggregated_record.get("model", "")),
+            "n_gpus": str(aggregated_record.get("n_gpus", nnodes * nproc_per_node)),
+            "nnodes": str(aggregated_record.get("nnodes", nnodes)),
+            "gpus_per_node": str(aggregated_record.get("gpus_per_node", nproc_per_node)),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            "git_commit": "",
+            "machine_name": deployment_id,
+            "deployment_type": "kubernetes",
+            "launcher": launcher,
+            "gpu_architecture": aggregated_record.get("gpu_architecture", ""),
+            "performance": str(aggregated_record.get("performance", "")),
+            "metric": aggregated_record.get("metric", ""),
+            "relative_change": "",
+            "status": aggregated_record.get("status", "SUCCESS"),
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": test_duration,
+            "dataname": aggregated_record.get("data_name", model_info.get("data", "")),
+            "data_provider_type": aggregated_record.get("data_provider", ""),
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        flatten_tags_in_place(run_details)
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""), scripts_path
+            )
+        except Exception:
+            run_details["configs"] = None
+        return run_details
 
     def _build_common_info_dict(
         self,
@@ -3571,7 +3483,7 @@ torchrun \\
             "nnodes": nnodes_str,
             "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3590,11 +3502,10 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
 
     def _create_multiple_result_row_record(
@@ -3625,7 +3536,7 @@ torchrun \\
             "nnodes": str(nnodes),
             "gpus_per_node": str(nproc_per_node),
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3647,81 +3558,11 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
-    
-    def _parse_node_performance(
-        self, 
-        log_content: str, 
-        model_info: Dict, 
-        build_info: Dict
-    ) -> Optional[Dict]:
-        """
-        Parse node-local performance from log.
-        
-        Expected format in log (from updated run scripts):
-            performance: <value> <metric>
-            node_id: <id>
-            local_gpus: <num_gpus>
-        
-        Args:
-            log_content: Pod log content
-            model_info: Model information dict
-            build_info: Build information dict
-            
-        Returns:
-            Dict with node performance data, or None if parsing failed
-        """
-        import re
-        
-        perf_data = None
-        
-        # Parse performance line
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
-        match = re.search(perf_pattern, log_content)
-        
-        if match:
-            value = float(match.group(1))
-            metric = match.group(2)
-            
-            # Try to extract node_id for validation
-            node_id_pattern = r"node_id:\s*(\d+)"
-            node_match = re.search(node_id_pattern, log_content)
-            node_id = int(node_match.group(1)) if node_match else None
-            
-            # Try to extract local_gpus
-            local_gpus_pattern = r"local_gpus:\s*(\d+)"
-            gpus_match = re.search(local_gpus_pattern, log_content)
-            local_gpus = int(gpus_match.group(1)) if gpus_match else 1
-            
-            # Extract duration if available
-            duration_pattern = r"test_duration:\s*([\d.]+)s"
-            duration_match = re.search(duration_pattern, log_content)
-            duration = f"{duration_match.group(1)}s" if duration_match else "N/A"
-            
-            # Extract GPU architecture from rocEnvTool runtime detection
-            # Look for pattern: 🔹 Name : gfx942 or Name : gfx942
-            gpu_arch_pattern = r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)"
-            gpu_arch_match = re.search(gpu_arch_pattern, log_content)
-            gpu_arch = gpu_arch_match.group(1) if gpu_arch_match else "N/A"
-            
-            perf_data = {
-                "model": model_info.get("name"),
-                "performance": value,
-                "metric": metric,
-                "node_id": node_id,
-                "local_gpus": local_gpus,
-                "duration": duration,
-                "gpu_architecture": gpu_arch,
-                "data_name": "N/A",
-                "data_provider": "N/A"
-            }
-        
-        return perf_data
     
     def _parse_multiple_results_from_artifacts(
         self,
@@ -3967,247 +3808,6 @@ torchrun \\
         if self._merge_multi_node_multiple_results_csv(csv_paths, merged_path):
             return merged_path
         return csv_paths[0]
-
-    def _determine_aggregation_method(self, metric_name: str) -> str:
-        """
-        Determine how to aggregate a metric based on its name/type.
-        
-        Args:
-            metric_name: Name of the performance metric
-            
-        Returns:
-            "sum", "average", "max", or "unknown"
-        """
-        metric_lower = metric_name.lower()
-        
-        # Throughput metrics - SUM
-        if any(keyword in metric_lower for keyword in [
-            "throughput", "samples_per_second", "tokens_per_second", 
-            "images_per_second", "requests_per_second", "qps",
-            "bandwidth", "ops_per_second", "samples/sec", "tokens/sec"
-        ]):
-            return "sum"
-        
-        # Latency metrics - AVERAGE
-        elif any(keyword in metric_lower for keyword in [
-            "latency", "time", "duration", "milliseconds", "seconds",
-            "ttft", "tpot", "response_time"
-        ]):
-            return "average"
-        
-        # Accuracy metrics - AVERAGE
-        elif any(keyword in metric_lower for keyword in [
-            "accuracy", "precision", "recall", "f1", "loss"
-        ]):
-            return "average"
-        
-        # Memory metrics - MAX
-        elif any(keyword in metric_lower for keyword in [
-            "memory", "bytes", "ram", "vram", "gb", "mb"
-        ]):
-            return "max"
-        
-        else:
-            # Unknown - default to sum for throughput-like metrics (conservative)
-            self.console.print(f"[yellow]⚠ Unknown metric type '{metric_name}', using sum aggregation[/yellow]")
-            return "sum"
-    
-    def _aggregate_node_metrics(
-        self, 
-        per_node_metrics: List[Dict], 
-        nnodes: int,
-        launcher_type: str
-    ) -> Optional[Dict]:
-        """
-        Aggregate per-node metrics into single job-level metric.
-        
-        Aggregation Strategy:
-        - Throughput (samples/sec, tokens/sec, images/sec): SUM
-        - Latency (ms, seconds): AVERAGE
-        - Accuracy (%, ratio): AVERAGE or LAST
-        - Memory (bytes, GB): MAX or SUM
-        
-        Args:
-            per_node_metrics: List of performance dicts from each node
-            nnodes: Number of nodes
-            launcher_type: Type of launcher (torchrun, deepspeed, etc.)
-            
-        Returns:
-            Dict with aggregated performance data for perf.csv
-        """
-        import statistics
-        
-        if not per_node_metrics:
-            return None
-        
-        # Get metric type from first node
-        first_metric = per_node_metrics[0]
-        metric_name = first_metric["metric"]
-        
-        # Determine aggregation strategy based on metric type
-        aggregation_method = self._determine_aggregation_method(metric_name)
-        
-        if aggregation_method == "sum":
-            # Sum throughput metrics
-            aggregated_value = sum(m["performance"] for m in per_node_metrics)
-            method_desc = "sum_across_nodes"
-        elif aggregation_method == "average":
-            # Average latency/accuracy metrics
-            aggregated_value = statistics.mean(m["performance"] for m in per_node_metrics)
-            method_desc = "average_across_nodes"
-        elif aggregation_method == "max":
-            # Max for memory usage
-            aggregated_value = max(m["performance"] for m in per_node_metrics)
-            method_desc = "max_across_nodes"
-        else:
-            # Unknown - conservative sum
-            aggregated_value = sum(m["performance"] for m in per_node_metrics)
-            method_desc = "sum_across_nodes (default)"
-        
-        # Compute statistics for validation
-        perfs = [m["performance"] for m in per_node_metrics]
-        if len(perfs) > 1:
-            statistics_dict = {
-                "mean": statistics.mean(perfs),
-                "std_dev": statistics.stdev(perfs),
-                "min": min(perfs),
-                "max": max(perfs),
-                "coefficient_variation": statistics.stdev(perfs) / statistics.mean(perfs) if statistics.mean(perfs) > 0 else 0
-            }
-        else:
-            statistics_dict = {
-                "mean": perfs[0],
-                "std_dev": 0,
-                "min": perfs[0],
-                "max": perfs[0],
-                "coefficient_variation": 0
-            }
-        
-        # Get GPU architecture from any successful node
-        gpu_arch = "N/A"
-        for m in per_node_metrics:
-            if m.get("gpu_architecture") and m["gpu_architecture"] != "N/A":
-                gpu_arch = m["gpu_architecture"]
-                break
-        
-        # Get duration (use max across nodes - slowest determines job time)
-        durations = [m.get("duration", "N/A") for m in per_node_metrics if m.get("duration") != "N/A"]
-        if durations:
-            # Extract numeric value and find max
-            duration_values = []
-            for d in durations:
-                if isinstance(d, str) and d.endswith("s"):
-                    try:
-                        duration_values.append(float(d[:-1]))
-                    except ValueError:
-                        pass
-            duration = f"{max(duration_values):.2f}s" if duration_values else "N/A"
-        else:
-            duration = "N/A"
-        
-        # Get total GPUs
-        total_gpus = sum(m.get("local_gpus", 1) for m in per_node_metrics)
-        gpus_per_node = per_node_metrics[0].get("local_gpus", 1) if per_node_metrics else 1
-        
-        # Build aggregated record (matches perf.csv schema)
-        aggregated_record = {
-            "model": first_metric["model"],
-            "performance": aggregated_value,
-            "metric": metric_name,
-            "status": "SUCCESS",
-            "topology": f"{nnodes}N×{gpus_per_node}G",
-            "nnodes": nnodes,
-            "launcher": launcher_type or "N/A",
-            "deployment_type": "kubernetes",
-            "gpu_architecture": gpu_arch,
-            "test_duration": duration,  # FIXED: Must match CSV header name
-            "data_name": first_metric.get("data_name", "N/A"),
-            "data_provider": first_metric.get("data_provider", "N/A"),
-            
-            # NEW: Aggregation metadata (for results_summary.json)
-            "aggregation_method": method_desc,
-            "nodes_contributing": len(per_node_metrics),
-            "per_node_mean": statistics_dict["mean"],
-            "per_node_std_dev": statistics_dict["std_dev"],
-            "per_node_cv": statistics_dict["coefficient_variation"]
-        }
-        
-        return aggregated_record
-    
-    def _write_to_perf_csv(self, perf_data: Dict):
-        """
-        Write performance data to local perf.csv file.
-
-        Uses the same format as local execution for consistency.
-        Matches the schema from container_runner.py's create_run_details_dict().
-
-        When appending to an existing file, uses the file's existing header so that
-        column order matches (e.g. MAD-private uses a different schema with model/performance
-        in different positions). Values are mapped by column name so model, performance,
-        metric, status etc. always land in the correct columns.
-        """
-        import csv
-        from pathlib import Path
-
-        perf_csv_path = Path("perf.csv")
-
-        # CSV headers for NEW files (madengine standard order)
-        default_headers = [
-            "model",
-            "n_gpus",
-            "nnodes",
-            "gpus_per_node",
-            "training_precision",
-            "pipeline",
-            "args",
-            "tags",
-            "docker_file",
-            "base_docker",
-            "docker_sha",
-            "docker_image",
-            "git_commit",
-            "machine_name",
-            "deployment_type",
-            "launcher",
-            "gpu_architecture",
-            "performance",
-            "metric",
-            "relative_change",
-            "status",
-            "build_duration",
-            "test_duration",
-            "dataname",
-            "data_provider_type",
-            "data_size",
-            "data_download_duration",
-            "build_number",
-            "additional_docker_run_options",
-        ]
-
-        file_exists = perf_csv_path.exists()
-        existing_header = None
-        if file_exists:
-            # Read existing header so we write in the same column order (fixes MAD-private
-            # and other repos that use a different perf.csv schema with more/different columns)
-            with open(perf_csv_path, "r", newline="", encoding="utf-8", errors="replace") as rf:
-                reader = csv.reader(rf)
-                existing_header = next(reader, None)
-        headers = existing_header if existing_header else default_headers
-        if file_exists and existing_header:
-            # Build row by name so model/performance/metric/status go to correct columns
-            row_by_name = {k: perf_data.get(k, "") for k in headers}
-            row_to_write = [str(row_by_name.get(h, "")) for h in headers]
-        else:
-            row_to_write = perf_data
-
-        with open(perf_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-            if not file_exists:
-                writer.writeheader()
-            if file_exists and existing_header:
-                csv.writer(f).writerow(row_to_write)
-            else:
-                writer.writerow(row_to_write)
 
     def cleanup(self, deployment_id: str) -> bool:
         """Delete Job, ConfigMap, Service and associated pods."""

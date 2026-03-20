@@ -20,10 +20,14 @@ class TestGetRocmPath:
         path = get_rocm_path(None)
         assert path == "/opt/rocm"
 
-    def test_get_rocm_path_override(self):
-        """Override argument takes precedence."""
+    def test_get_rocm_path_override(self, monkeypatch):
+        """Override argument takes precedence over env."""
         path = get_rocm_path("/custom/rocm")
         assert path == os.path.abspath("/custom/rocm").rstrip(os.sep)
+        monkeypatch.setenv("ROCM_PATH", "/env/rocm")
+        path_with_env = get_rocm_path("/cli/rocm")
+        assert path_with_env == os.path.abspath("/cli/rocm").rstrip(os.sep)
+        monkeypatch.delenv("ROCM_PATH", raising=False)
 
     def test_get_rocm_path_env(self, monkeypatch):
         """ROCM_PATH env is used when override is None."""
@@ -31,15 +35,6 @@ class TestGetRocmPath:
         try:
             path = get_rocm_path(None)
             assert path == os.path.abspath("/env/rocm").rstrip(os.sep)
-        finally:
-            monkeypatch.delenv("ROCM_PATH", raising=False)
-
-    def test_get_rocm_path_override_overrides_env(self, monkeypatch):
-        """Override takes precedence over ROCM_PATH env."""
-        monkeypatch.setenv("ROCM_PATH", "/env/rocm")
-        try:
-            path = get_rocm_path("/cli/rocm")
-            assert path == os.path.abspath("/cli/rocm").rstrip(os.sep)
         finally:
             monkeypatch.delenv("ROCM_PATH", raising=False)
 

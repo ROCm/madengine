@@ -21,6 +21,11 @@ from tests.fixtures.utils import get_num_gpus
 from tests.fixtures.utils import get_num_cpus
 from tests.fixtures.utils import requires_gpu
 from tests.fixtures.utils import generate_additional_context_for_machine
+from tests.fixtures.utils import (
+    DEFAULT_CLEAN_FILES,
+    build_run_command,
+    assert_model_in_perf_csv,
+)
 
 from madengine.core.context import Context
 
@@ -32,72 +37,33 @@ from madengine.core.context import Context
 class TestContexts:
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["ctx_test"]],
+        indirect=True,
     )
-    def test_dockerfile_picked_on_detected_context_0(
-        self, global_data, clean_test_temp_files
+    @pytest.mark.parametrize(
+        "ctx_value,expected_performance",
+        [(None, "0"), ("1", "1")],
+    )
+    def test_dockerfile_picked_on_detected_context(
+        self, global_data, clean_test_temp_files, ctx_value, expected_performance
     ):
         """
-        picks dockerfile based on detected context and only those
+        Picks dockerfile based on detected context (no ctx_test file -> 0; ctx_test=1 -> 1).
         """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest "
+        if ctx_value is not None:
+            with open(os.path.join(BASE_DIR, "ctx_test"), "w") as f:
+                print(ctx_value, file=f)
+        global_data["console"].sh(build_run_command("dummy_ctxtest"))
+        assert_model_in_perf_csv(
+            os.path.join(BASE_DIR, "perf.csv"),
+            "dummy_ctxtest",
+            status="SUCCESS",
+            performance=expected_performance,
         )
 
-        success = False
-        with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
-            csv_reader = csv.DictReader(csv_file)
-            for row in csv_reader:
-                if row["model"] == "dummy_ctxtest":
-                    if row["status"] == "SUCCESS" and row["performance"] == "0":
-                        success = True
-                    else:
-                        pytest.fail("model in perf_test.csv did not run successfully.")
-        if not success:
-            pytest.fail("model did not pick correct context.")
-
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html", "ctx_test"]], indirect=True
-    )
-    def test_dockerfile_picked_on_detected_context_1(
-        self, global_data, clean_test_temp_files
-    ):
-        """
-        picks dockerfile based on detected context and only those
-        """
-        with open(os.path.join(BASE_DIR, "ctx_test"), "w") as ctx_test_file:
-            print("1", file=ctx_test_file)
-
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_ctxtest "
-        )
-
-        success = False
-        with open(os.path.join(BASE_DIR, "perf.csv"), "r") as csv_file:
-            csv_reader = csv.DictReader(csv_file)
-            for row in csv_reader:
-                if row["model"] == "dummy_ctxtest":
-                    if row["status"] == "SUCCESS" and row["performance"] == "1":
-                        success = True
-                    else:
-                        pytest.fail("model in perf_test.csv did not run successfully.")
-        if not success:
-            pytest.fail("model did not pick correct context.")
-
-    @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html", "ctx_test"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES + ["ctx_test"]], indirect=True
     )
     def test_all_dockerfiles_matching_context_executed(
         self, global_data, clean_test_temp_files
@@ -146,7 +112,7 @@ class TestContexts:
         pass
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_can_override_context_with_additionalContext_commandline(
         self, global_data, clean_test_temp_files
@@ -245,7 +211,7 @@ class TestContexts:
             pytest.fail("model did not pick correct context.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_base_docker_override(self, global_data, clean_test_temp_files):
         """
@@ -277,7 +243,7 @@ class TestContexts:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_docker_image_override(self, global_data, clean_test_temp_files):
         """
@@ -309,7 +275,7 @@ class TestContexts:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_docker_env_vars_override(self, global_data, clean_test_temp_files):
         """
@@ -340,7 +306,7 @@ class TestContexts:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_docker_mounts_mount_host_paths_in_docker_container(
         self, global_data, clean_test_temp_files
@@ -489,7 +455,7 @@ class TestContexts:
 class TestTagsFunctionality:
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_can_select_model_subset_with_commandline_tag_argument(
         self, global_data, clean_test_temp_files
@@ -516,7 +482,7 @@ class TestTagsFunctionality:
             pytest.fail("dummy2 tag not selected with commandline --tags argument")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_all_models_matching_any_tag_selected_with_multiple_tags(
         self, global_data, clean_test_temp_files
@@ -546,7 +512,7 @@ class TestTagsFunctionality:
             pytest.fail("dummy3 tag not selected with commandline --tags argument")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_model_names_are_automatically_tags(
         self, global_data, clean_test_temp_files

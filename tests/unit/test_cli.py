@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # built-in modules
+import importlib
 import json
 import os
 import sys
@@ -395,7 +396,7 @@ class TestProcessBatchManifest:
 
 
 # ============================================================================
-# CLI `run` command exit codes (CI / Jenkins smoke)
+# CLI exit code and error handling tests (CI / Jenkins smoke)
 # ============================================================================
 
 @pytest.fixture
@@ -403,10 +404,36 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-class TestRunCommandExitCodes:
-    """Smoke tests: madengine `run` exits with documented ExitCode values.
+class TestExitCodeConstants:
+    """Exit codes used by Jenkins/scripts for success and failure."""
 
-    Uses Typer CliRunner (in-process); no Docker/GPU required.
+    def test_build_failure_exit_code(self):
+        """BUILD_FAILURE is 2 for build-only failures."""
+        assert ExitCode.BUILD_FAILURE == 2
+
+    def test_run_failure_exit_code(self):
+        """RUN_FAILURE is 3 when at least one model run fails."""
+        assert ExitCode.RUN_FAILURE == 3
+
+
+class TestCliMainPreservesTyperExit:
+    """cli_main must re-raise typer.Exit so process exit code is correct for Jenkins."""
+
+    def test_typer_exit_preserves_exit_code(self):
+        """When a command raises typer.Exit(3), cli_main re-raises and runner sees exit_code 3."""
+        # Use importlib to get the app module (not the Typer bound as madengine.cli.app)
+        app_module = importlib.import_module("madengine.cli.app")
+        mock_app = MagicMock(side_effect=typer.Exit(ExitCode.RUN_FAILURE))
+        with patch.object(app_module, "app", mock_app):
+            with pytest.raises(typer.Exit) as exc_info:
+                app_module.cli_main()
+            assert exc_info.value.exit_code == ExitCode.RUN_FAILURE
+
+
+class TestRunCommandExitCodes:
+    """Smoke tests and run command exit codes for Jenkins.
+
+    Uses Typer CliRunner (in-process); no Docker/GPU required for timeout/help tests.
     """
 
     def test_run_invalid_timeout_exits_invalid_args(self, runner: CliRunner) -> None:
@@ -422,3 +449,26 @@ class TestRunCommandExitCodes:
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == ExitCode.SUCCESS
         assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
+
+    def test_run_command_build_error_returns_build_failure_exit_code(
+        self, runner: CliRunner
+    ) -> None:
+        """When BuildError is raised (e.g. all builds failed), run command exits with BUILD_FAILURE."""
+        from madengine.core.errors import BuildError
+
+        run_module = importlib.import_module("madengine.cli.commands.run")
+        mock_orch = MagicMock()
+        mock_orch.execute.side_effect = BuildError("All builds failed")
+        with patch.object(run_module, "RunOrchestrator", return_value=mock_orch):
+            result = runner.invoke(
+                app,
+                [
+                    "run",
+                    "--tags",
+                    "some_model",
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert result.exit_code == ExitCode.BUILD_FAILURE

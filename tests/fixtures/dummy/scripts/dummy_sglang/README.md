@@ -11,11 +11,12 @@ This directory contains scripts for running SGLang distributed inference on SLUR
 - **Ray-based coordination**: Automatic distributed inference across nodes
 - **High throughput**: Optimized for both single and multi-node deployments
 
-## Key Difference from vLLM
+## Alignment with dummy_vllm
 
-**SGLang does NOT use torchrun!** It has its own native launcher:
-- **SGLang**: `python3 -m sglang.launch_server` (Ray-based)
-- **vLLM**: Can use `torchrun` or direct Python launch
+This dummy follows the same pattern as **dummy_vllm**:
+- **One serve per node**: Single-node and multi-node both run one SGLang instance per node (TP only on that node). No shared Ray across nodes = data parallelism across nodes.
+- **Pipeline-based tee**: All output is piped through `tee -a sglang_run.log`. If the log consumer (e.g. docker exec / SLURM) closes the pipe, the script exits 0 (SIGPIPE 141 is treated as success) so the job is not reported as failed.
+- **SGLang does NOT use torchrun**; it has its own launcher (`sglang.launch_server` for server mode). For offline benchmarking we use `run_sglang_inference.py` with `--nnodes 1` per node.
 
 ## Files
 
@@ -40,34 +41,29 @@ This directory contains scripts for running SGLang distributed inference on SLUR
 
 **Command**: `python3 -m sglang.launch_server --model-path MODEL --tp 4`
 
-### Multi-Node Multi-GPU (TP + Load Balancing)
+### Multi-Node (Data Parallel: One Serve per Node)
+
+Each node runs one SGLang instance with TP only on that node (no shared Ray across nodes):
 
 ```
 ┌─────────────────────────────────────────┐
-│  Node 1 (TP Group 1)                    │
-│  ┌──────────────────────────────────┐  │
-│  │  GPUs 0-3 (Full Model Copy)     │  │
-│  └──────────────────────────────────┘  │
-└──────────────┬──────────────────────────┘
-               │ Ray Coordination
-┌──────────────┴──────────────────────────┐
-│  Node 2 (TP Group 2)                    │
-│  ┌──────────────────────────────────┐  │
-│  │  GPUs 0-3 (Full Model Copy)     │  │
-│  └──────────────────────────────────┘  │
+│  Node 1 (TP on 4 GPUs)                  │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐  │
+│  │ GPU0 │─│ GPU1 │─│ GPU2 │─│ GPU3 │  │
+│  └──────┘ └──────┘ └──────┘ └──────┘  │
+└─────────────────────────────────────────┘
+
+┌─────────────────────────────────────────┐
+│  Node 2 (TP on 4 GPUs)                  │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐  │
+│  │ GPU0 │─│ GPU1 │─│ GPU2 │─│ GPU3 │  │
+│  └──────┘ └──────┘ └──────┘ └──────┘  │
 └─────────────────────────────────────────┘
 ```
 
-**Commands**:
-```bash
-# Node 1 (rank 0)
-python3 -m sglang.launch_server --model-path MODEL --tp 4 \
-    --nnodes 2 --node-rank 0 --nccl-init-addr MASTER_IP:PORT
+**Offline mode** (default): Each node runs `run_sglang_inference.py` with `--nnodes 1` and `--tp-size <GPUs per node>`.
 
-# Node 2 (rank 1)
-python3 -m sglang.launch_server --model-path MODEL --tp 4 \
-    --nnodes 2 --node-rank 1 --nccl-init-addr MASTER_IP:PORT
-```
+**Server mode**: For a single logical server across nodes, set `SGLANG_EXECUTION_MODE=server` and use `--nnodes` / `--node-rank` with the launcher.
 
 ## Usage
 

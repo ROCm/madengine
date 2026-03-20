@@ -664,6 +664,8 @@ madengine discover --tags model --verbose
 
 ### CI/CD Integration
 
+madengine uses consistent exit codes (0=success, 2=build failure, 3=run failure, 4=invalid args). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
+
 ```bash
 #!/bin/bash
 # Example CI script
@@ -679,19 +681,19 @@ madengine build --batch-manifest batch.json \
 madengine run --manifest-file build_manifest.json \
   --timeout 3600
 
-# Check exit code
+# Check exit code (0=success, 2=build failure, 3=run failure; see CLI Reference)
 if [ $? -eq 0 ]; then
   echo "✅ Tests passed"
   
   # Generate and upload results
   madengine report to-email --output ci_results.html
   madengine database \
-    --csv-file perf_entry.csv \
+    --csv-file perf.csv \
     --db ci_results \
     --collection ${CI_BUILD_ID}
 else
   echo "❌ Tests failed"
-  exit 1
+  exit $?
 fi
 ```
 

@@ -17,6 +17,7 @@ import json
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from tests.fixtures.utils import is_nvidia
 from tests.fixtures.utils import generate_additional_context_for_machine
 
@@ -24,7 +25,7 @@ from tests.fixtures.utils import generate_additional_context_for_machine
 class TestPrePostScriptsFunctionality:
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_pre_scripts_run_before_model(self, global_data, clean_test_temp_files):
         """
@@ -64,7 +65,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_post_scripts_run_after_model(self, global_data, clean_test_temp_files):
         """
@@ -104,7 +105,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_pre_scripts_accept_arguments(self, global_data, clean_test_temp_files):
         """
@@ -144,7 +145,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_post_scripts_accept_arguments(self, global_data, clean_test_temp_files):
         """
@@ -184,7 +185,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_both_pre_and_post_scripts_run_before_and_after_model(
         self, global_data, clean_test_temp_files
@@ -249,7 +250,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_all_pre_scripts_run_in_order(self, global_data, clean_test_temp_files):
         """
@@ -297,7 +298,7 @@ class TestPrePostScriptsFunctionality:
             )
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_all_post_scripts_run_in_order(self, global_data, clean_test_temp_files):
         """

@@ -19,7 +19,7 @@
     "nodes": 5,
     "gpus_per_node": 8,
     "time": "04:00:00",
-    "output_dir": "./slurm_output",
+    "output_dir": "./slurm_results",
     "exclusive": true
   },
   

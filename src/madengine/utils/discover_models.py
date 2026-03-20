@@ -198,6 +198,7 @@ class DiscoverModels:
                             model_dict["scripts"] = os.path.normpath(
                                 os.path.join("scripts", dirname, model_dict["scripts"])
                             )
+                            # Keep tags as-is (do not prefix with dirname); tags are logical names for filtering
                             self.models.append(model_dict)
                             self.model_list.append(model_dict["name"])
 
@@ -229,8 +230,24 @@ class DiscoverModels:
                         )
                         raise
 
+    @staticmethod
+    def _model_entry_has_tag(tags: typing.Any, tag_value: str) -> bool:
+        """True if tag_value is present in tags (list or comma-separated string)."""
+        if tags is None:
+            return False
+        if isinstance(tags, list):
+            return tag_value in tags
+        if isinstance(tags, str):
+            parts = [p.strip() for p in tags.split(",") if p.strip()]
+            return tag_value in parts
+        return False
+
     def select_models(self) -> None:
         """Get the selected models by parsing the --tags argument and expanding custom models.
+
+        Scoped tags: ``scope/tag`` (exactly one ``/``, no ``:``) limits to models under
+        ``scripts/<scope>/`` (names ``scope/...``) and matches by tag, ``all``, or full
+        model short name (e.g. ``MAD-private/inference`` → tag ``inference``).
 
         Raises:
             ValueError: No models found corresponding to the given tags.
@@ -255,34 +272,77 @@ class DiscoverModels:
                 else:
                     extra_args = ""
 
-                for model in self.models:
-                    if (
-                        model["name"] == model_name
-                        or tag in model["tags"]
-                        or tag == "all"
-                    ):
-                        model_dict = model.copy()
-                        model_dict["args"] = model_dict["args"] + extra_args
-                        tag_models.append(model_dict)
+                # scope/tag: restrict to models from scripts/<scope>/ (e.g. MAD-private/inference)
+                scoped: typing.Optional[typing.Tuple[str, str]] = None
+                if tag.count("/") == 1 and ":" not in tag:
+                    scope_part, filter_part = tag.split("/", 1)
+                    if scope_part and filter_part:
+                        scoped = (scope_part, filter_part)
 
-                for custom_model in self.custom_models:
-                    if (
-                        custom_model.name == model_name
-                        or tag in custom_model.tags
-                        or tag == "all"
-                    ):
-                        custom_model.update_model()
-                        # Update relative path for dockerfile and scripts
-                        dirname = custom_model.name.split("/")[0]
-                        custom_model.dockerfile = os.path.normpath(
-                            os.path.join("scripts", dirname, custom_model.dockerfile)
-                        )
-                        custom_model.scripts = os.path.normpath(
-                            os.path.join("scripts", dirname, custom_model.scripts)
-                        )
-                        model_dict = custom_model.to_dict()
-                        model_dict["args"] = model_dict["args"] + extra_args
-                        tag_models.append(model_dict)
+                if scoped:
+                    scope, tag_filter = scoped
+                    prefix = scope + "/"
+                    full_name_match = prefix + tag_filter
+
+                    for model in self.models:
+                        if not model["name"].startswith(prefix):
+                            continue
+                        if (
+                            tag_filter == "all"
+                            or self._model_entry_has_tag(model.get("tags"), tag_filter)
+                            or model["name"] == full_name_match
+                        ):
+                            model_dict = model.copy()
+                            model_dict["args"] = model_dict["args"] + extra_args
+                            tag_models.append(model_dict)
+
+                    for custom_model in self.custom_models:
+                        if not custom_model.name.startswith(prefix):
+                            continue
+                        if (
+                            tag_filter == "all"
+                            or self._model_entry_has_tag(custom_model.tags, tag_filter)
+                            or custom_model.name == full_name_match
+                        ):
+                            custom_model.update_model()
+                            dirname = custom_model.name.split("/")[0]
+                            custom_model.dockerfile = os.path.normpath(
+                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                            )
+                            custom_model.scripts = os.path.normpath(
+                                os.path.join("scripts", dirname, custom_model.scripts)
+                            )
+                            model_dict = custom_model.to_dict()
+                            model_dict["args"] = model_dict["args"] + extra_args
+                            tag_models.append(model_dict)
+                else:
+                    for model in self.models:
+                        if (
+                            model["name"] == model_name
+                            or self._model_entry_has_tag(model.get("tags"), tag)
+                            or tag == "all"
+                        ):
+                            model_dict = model.copy()
+                            model_dict["args"] = model_dict["args"] + extra_args
+                            tag_models.append(model_dict)
+
+                    for custom_model in self.custom_models:
+                        if (
+                            custom_model.name == model_name
+                            or self._model_entry_has_tag(custom_model.tags, tag)
+                            or tag == "all"
+                        ):
+                            custom_model.update_model()
+                            dirname = custom_model.name.split("/")[0]
+                            custom_model.dockerfile = os.path.normpath(
+                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                            )
+                            custom_model.scripts = os.path.normpath(
+                                os.path.join("scripts", dirname, custom_model.scripts)
+                            )
+                            model_dict = custom_model.to_dict()
+                            model_dict["args"] = model_dict["args"] + extra_args
+                            tag_models.append(model_dict)
 
                 if not tag_models:
                     self.rich_console.print(f"[red]❌ No models found corresponding to the given tag: {tag}[/red]")

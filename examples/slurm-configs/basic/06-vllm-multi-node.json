@@ -19,7 +19,7 @@
     "nodes": 2,
     "gpus_per_node": 4,
     "time": "00:45:00",
-    "output_dir": "./slurm_output",
+    "output_dir": "./slurm_results",
     "exclusive": true,
     
     "_comment_node_check": "Preflight GPU health check (helps avoid OOM from stale processes)",
