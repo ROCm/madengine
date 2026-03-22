@@ -183,11 +183,10 @@ def run(
                 )
                 raise typer.Exit(ExitCode.INVALID_ARGS)
         try:
-            cli_context = (
-                json.loads(additional_context)
-                if additional_context.strip().startswith("{")
-                else ast.literal_eval(additional_context)
-            )
+            try:
+                cli_context = json.loads(additional_context)
+            except json.JSONDecodeError:
+                cli_context = ast.literal_eval(additional_context)
             if isinstance(cli_context, dict):
                 merged.update(cli_context)
         except (json.JSONDecodeError, ValueError, SyntaxError):

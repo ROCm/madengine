@@ -174,6 +174,21 @@ Located in [`minimal/`](minimal/) directory:
 
 **See [minimal/README.md](minimal/README.md) for detailed documentation and [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for launcher details.**
 
+### Kubernetes Secrets (`credential.json`)
+
+Registry and runtime credentials are **not** stored in a ConfigMap. By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from your local `credential.json` before creating the Job: a `kubernetes.io/dockerconfigjson` Secret when Docker Hub auth is present, and an opaque Secret with `credential.json` for in-container use. Mount paths match the previous behavior (`/workspace/credential.json`).
+
+- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI).
+- **`omit`**: no Secret creation from the client; optional extra pull secret names only.
+
+To validate rendered YAML after a debug run, install [kubeconform](https://github.com/yannh/kubeconform) and run `./tests/scripts/k8s_validate_manifests.sh ./k8s_manifests` from the madengine repo root (see `docs/deployment.md`).
+
+### Multi-node DNS (PyTorch vs Ray)
+
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+
+For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
+
 ### Full Configs (Reference Examples)
 
 Complete configurations showing all available fields:

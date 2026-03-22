@@ -98,6 +98,20 @@ The deployment target is automatically detected from the `k8s` key in the config
 
 See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
+### Secrets and credentials
+
+By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
+
+### Validating rendered manifests
+
+With `"debug": true` in additional context, `madengine run` writes rendered manifests under `./k8s_manifests` (or the path you configure). To lint those YAML files against the Kubernetes OpenAPI schema, install [kubeconform](https://github.com/yannh/kubeconform) and run from the repository root:
+
+```bash
+./tests/scripts/k8s_validate_manifests.sh ./k8s_manifests
+```
+
+The script exits successfully if `kubeconform` is missing (skip) or if validation passes.
+
 ### Multi-Node Training
 
 For distributed training across multiple nodes:
@@ -145,7 +159,7 @@ kubectl get pods -n your-namespace
 
 ### Cleanup
 
-Jobs are automatically cleaned up after completion (configurable via `ttlSecondsAfterFinished`).
+Finished Jobs are **not** removed unless you set `k8s.ttl_seconds_after_finished` to a positive number of seconds; the Job manifest then includes `ttlSecondsAfterFinished` so the control plane can garbage-collect the Job after it finishes. The deploy step may still delete **Secrets** it created when cleaning up a failed or cancelled deploy—see runtime logs for details.
 
 Manual cleanup:
 

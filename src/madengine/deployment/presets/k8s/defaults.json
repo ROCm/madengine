@@ -8,7 +8,14 @@
     "kubeconfig": "~/.kube/config",
     "namespace": "default",
     "image_pull_policy": "Always",
-    "backoff_limit": 3
+    "backoff_limit": 3,
+    "ttl_seconds_after_finished": null,
+    "allow_privileged_profiling": null,
+    "secrets": {
+      "strategy": "from_local_credentials",
+      "image_pull_secret_names": [],
+      "runtime_secret_name": null
+    }
   },
   
   "env_vars": {
