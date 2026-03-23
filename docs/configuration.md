@@ -231,12 +231,13 @@ madengine run --tags model --force-mirror-local /tmp/mirror
 }
 ```
 
-Automatically applies:
+Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`):
 - Namespace: `default`
 - Resource limits based on GPU count
-- Image pull policy: `IfNotPresent`
+- Image pull policy: `Always` (base default)
 - Service account: `default`
 - GPU vendor detection from context
+- `k8s.secrets` defaults (see below)
 
 ### Full Configuration
 
@@ -252,7 +253,13 @@ Automatically applies:
     "cpu_limit": "32",
     "service_account": "madengine-sa",
     "image_pull_policy": "Always",
-    "image_pull_secrets": ["my-registry-secret"]
+    "ttl_seconds_after_finished": null,
+    "allow_privileged_profiling": null,
+    "secrets": {
+      "strategy": "from_local_credentials",
+      "image_pull_secret_names": ["my-registry-secret"],
+      "runtime_secret_name": null
+    }
   }
 }
 ```
@@ -267,7 +274,11 @@ Automatically applies:
 - `cpu_limit` - CPU cores limit (default: 2× CPU request)
 - `service_account` - Service account name
 - `image_pull_policy` - `Always`, `IfNotPresent`, or `Never`
-- `image_pull_secrets` - List of image pull secrets
+- `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
+- `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
+- `secrets.strategy` - `from_local_credentials` (default): create `Secret` objects from local `credential.json` at deploy time; `existing`: only reference pre-created Secrets; `omit`: no runtime Secret from client
+- `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
+- `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 ### Multi-Node Kubernetes
 
