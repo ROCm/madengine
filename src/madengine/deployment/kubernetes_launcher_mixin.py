@@ -3,6 +3,9 @@
 
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
+from pathlib import Path
+
+
 class KubernetesLauncherMixin:
     def _generate_torchrun_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
@@ -34,8 +37,6 @@ class KubernetesLauncherMixin:
         Raises:
             ValueError: If any parameter is invalid
         """
-        from pathlib import Path
-        
         # Validate inputs (defensive programming)
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")

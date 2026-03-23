@@ -54,7 +54,7 @@ from .k8s_secrets import (
     merge_secrets_config,
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
-    _build_registry_secret_data,
+    build_registry_secret_data,
 )
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
@@ -876,7 +876,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if cred_exists and strategy == SECRETS_STRATEGY_FROM_LOCAL:
             try:
                 parsed = json.loads(cred_path.read_text(encoding="utf-8"))
-                if _build_registry_secret_data(parsed):
+                if build_registry_secret_data(parsed):
                     created_pull_preview.append(f"{self.job_name}-registry-pull")
             except (json.JSONDecodeError, OSError):
                 pass

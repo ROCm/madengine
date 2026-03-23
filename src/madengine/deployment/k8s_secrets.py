@@ -54,8 +54,12 @@ def _dockerconfig_json_for_dockerhub(username: str, password: str) -> str:
     return json.dumps(cfg)
 
 
-def _build_registry_secret_data(creds: Dict[str, Any]) -> Optional[bytes]:
-    """Return dockerconfigjson bytes if credentials contain usable Docker Hub auth."""
+def build_registry_secret_data(creds: Dict[str, Any]) -> Optional[bytes]:
+    """Return dockerconfigjson bytes if credentials contain usable Docker Hub auth.
+
+    Public API for callers that need to preview or validate registry auth (e.g. dry-run
+    manifests) without creating Kubernetes Secrets.
+    """
     dh = creds.get("dockerhub")
     if not isinstance(dh, dict):
         return None
@@ -102,7 +106,7 @@ def create_or_update_secrets_from_credentials(
     creds = json.loads(raw)
 
     pull_names: List[str] = []
-    reg_data = _build_registry_secret_data(creds)
+    reg_data = build_registry_secret_data(creds)
     if reg_data:
         reg_name = f"{job_name}-registry-pull"
         reg_body = client.V1Secret(

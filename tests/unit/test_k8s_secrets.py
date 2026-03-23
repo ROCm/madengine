@@ -9,7 +9,7 @@ from madengine.deployment.k8s_secrets import (
     merge_secrets_config,
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
-    _build_registry_secret_data,
+    build_registry_secret_data,
 )
 
 
@@ -48,7 +48,7 @@ def test_resolve_image_pull_omit_extra_only():
 
 def test_dockerhub_registry_payload():
     creds = {"dockerhub": {"username": "u", "password": "p"}}
-    assert _build_registry_secret_data(creds) is not None
+    assert build_registry_secret_data(creds) is not None
 
 
 def test_estimate_configmap_payload_bytes():
