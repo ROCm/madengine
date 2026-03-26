@@ -15,16 +15,17 @@ from rich.console import Console
 from rich.panel import Panel
 
 from madengine.utils.discover_models import DiscoverModels
+from madengine.core.additional_context_defaults import (
+    DEFAULT_GPU_VENDOR,
+    DEFAULT_GUEST_OS,
+    apply_build_context_defaults,
+)
 from .constants import ExitCode, VALID_GPU_VENDORS, VALID_GUEST_OS
 from .utils import create_args_namespace
 
 
 # Initialize Rich console
 console = Console()
-
-# Default values for build configuration
-DEFAULT_GPU_VENDOR = "AMD"
-DEFAULT_GUEST_OS = "UBUNTU"
 
 
 def validate_additional_context(
@@ -69,15 +70,14 @@ def validate_additional_context(
             console.print("💡 Please provide valid JSON format")
             raise typer.Exit(ExitCode.INVALID_ARGS)
 
-    # Apply defaults if needed
+    # Apply defaults if needed (single source of truth with BuildOrchestrator)
+    missing_gpu = "gpu_vendor" not in context
+    missing_guest = "guest_os" not in context
+    apply_build_context_defaults(context)
     defaults_applied = []
-
-    if "gpu_vendor" not in context:
-        context["gpu_vendor"] = DEFAULT_GPU_VENDOR
+    if missing_gpu:
         defaults_applied.append(("gpu_vendor", DEFAULT_GPU_VENDOR))
-
-    if "guest_os" not in context:
-        context["guest_os"] = DEFAULT_GUEST_OS
+    if missing_guest:
         defaults_applied.append(("guest_os", DEFAULT_GUEST_OS))
 
     # Inform user about defaults

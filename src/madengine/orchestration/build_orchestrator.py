@@ -19,6 +19,7 @@ from rich.panel import Panel
 
 from madengine.core.console import Console
 from madengine.core.context import Context
+from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -84,6 +85,9 @@ class BuildOrchestrator:
         if additional_context:
             merged_context.update(additional_context)
 
+        # Match CLI validate_additional_context: defaults so Context.filter() can select Dockerfiles
+        apply_build_context_defaults(merged_context)
+
         self.additional_context = merged_context
         
         # Apply ConfigLoader to infer deploy type, validate, and apply defaults
@@ -116,7 +120,8 @@ class BuildOrchestrator:
         # Initialize context in build-only mode (no GPU detection)
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
-        context_string = repr(merged_context) if merged_context else None
+        # Use self.additional_context (post-ConfigLoader), not pre-defaults merged_context
+        context_string = repr(self.additional_context)
         self.context = Context(
             additional_context=context_string,
             build_only_mode=True,
