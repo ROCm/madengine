@@ -59,17 +59,21 @@ git clone https://github.com/ROCm/MAD.git && cd MAD
 # Discover available models
 madengine discover --tags dummy
 
-# Run locally
+# Run locally (defaults to AMD/UBUNTU configuration)
+madengine run --tags dummy
+
+# Or with explicit configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
+> **Note**: For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified. For production deployments or non-AMD/Ubuntu environments, explicitly specify these values.
+
 If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
 
 ```bash
-madengine run --tags dummy --rocm-path /path/to/rocm \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy ...
+madengine run --tags dummy --rocm-path /path/to/rocm
+# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy
 ```
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
@@ -92,13 +96,14 @@ madengine provides five main commands for model automation and benchmarking:
 # Discover models
 madengine discover --tags dummy
 
-# Build image
-madengine build --tags dummy \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Build image (uses AMD/UBUNTU defaults)
+madengine build --tags dummy
 
 # Run model
-madengine run --tags dummy \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+madengine run --tags dummy
+
+# For non-AMD/Ubuntu environments, specify explicitly:
+# madengine build --tags dummy --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate report
 madengine report to-html --csv-file perf_entry.csv

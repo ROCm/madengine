@@ -24,10 +24,15 @@ pip install git+https://github.com/ROCm/madengine.git
 # Discover models
 madengine discover --tags dummy
 
-# Run locally
+# Run locally (uses default AMD/UBUNTU configuration)
+madengine run --tags dummy
+
+# Or with explicit configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
+
+> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
 
 Results are saved to `perf_entry.csv`.
 
@@ -51,13 +56,14 @@ For complete command options and detailed examples, see **[CLI Command Reference
 # Discover models
 madengine discover --tags dummy
 
-# Build image
-madengine build --tags model \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Build image (uses AMD/UBUNTU defaults)
+madengine build --tags model
 
 # Run model
-madengine run --tags model \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+madengine run --tags model
+
+# For NVIDIA or other configurations, specify explicitly:
+# madengine build --tags model --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate HTML report
 madengine report to-html --csv-file perf_entry.csv

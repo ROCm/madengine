@@ -144,7 +144,30 @@ madengine build --tags model \
 madengine build --tags model --live-output --verbose
 ```
 
-**Required Context for Build:**
+**Default Values:**
+
+The build command applies the following defaults if not specified:
+
+- **gpu_vendor**: `AMD`
+- **guest_os**: `UBUNTU`
+
+Example with defaults:
+```bash
+# Equivalent to providing {"gpu_vendor": "AMD", "guest_os": "UBUNTU"}
+madengine build --tags dummy
+```
+
+You will see a message indicating which defaults were applied:
+
+```
+ℹ️  Using default values for build configuration:
+   • gpu_vendor: AMD (default)
+   • guest_os: UBUNTU (default)
+
+💡 To customize, use --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
+```
+
+**Supported Values:**
 
 - `gpu_vendor`: `"AMD"` or `"NVIDIA"`
 - `guest_os`: `"UBUNTU"` or `"CENTOS"`

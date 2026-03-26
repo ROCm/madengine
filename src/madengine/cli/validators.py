@@ -22,6 +22,10 @@ from .utils import create_args_namespace
 # Initialize Rich console
 console = Console()
 
+# Default values for build configuration
+DEFAULT_GPU_VENDOR = "AMD"
+DEFAULT_GUEST_OS = "UBUNTU"
+
 
 def validate_additional_context(
     additional_context: str,
@@ -65,41 +69,26 @@ def validate_additional_context(
             console.print("💡 Please provide valid JSON format")
             raise typer.Exit(ExitCode.INVALID_ARGS)
 
-    if not context:
-        console.print("❌ [red]No additional context provided[/red]")
+    # Apply defaults if needed
+    defaults_applied = []
+
+    if "gpu_vendor" not in context:
+        context["gpu_vendor"] = DEFAULT_GPU_VENDOR
+        defaults_applied.append(("gpu_vendor", DEFAULT_GPU_VENDOR))
+
+    if "guest_os" not in context:
+        context["guest_os"] = DEFAULT_GUEST_OS
+        defaults_applied.append(("guest_os", DEFAULT_GUEST_OS))
+
+    # Inform user about defaults
+    if defaults_applied:
+        console.print("\nℹ️  [cyan]Using default values for build configuration:[/cyan]")
+        for field, value in defaults_applied:
+            console.print(f"   • {field}: [green]{value}[/green] (default)")
         console.print(
-            "💡 For build operations, you must provide additional context with gpu_vendor and guest_os"
+            "\n💡 [dim]To customize, use --additional-context "
+            '\'{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}\'[/dim]\n'
         )
-
-        # Show example usage
-        example_panel = Panel(
-            """[bold cyan]Example usage:[/bold cyan]
-madengine build --tags dummy --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-
-[bold cyan]Or using a file:[/bold cyan]
-madengine build --tags dummy --additional-context-file context.json
-
-[bold cyan]Required fields:[/bold cyan]
-• gpu_vendor: [green]AMD[/green], [green]NVIDIA[/green]
-• guest_os: [green]UBUNTU[/green], [green]CENTOS[/green]""",
-            title="Additional Context Help",
-            border_style="blue",
-        )
-        console.print(example_panel)
-        raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    # Validate required fields
-    required_fields = ["gpu_vendor", "guest_os"]
-    missing_fields = [field for field in required_fields if field not in context]
-
-    if missing_fields:
-        console.print(
-            f"❌ Missing required fields: [red]{', '.join(missing_fields)}[/red]"
-        )
-        console.print(
-            "💡 Both gpu_vendor and guest_os are required for build operations"
-        )
-        raise typer.Exit(ExitCode.INVALID_ARGS)
 
     # Validate gpu_vendor
     gpu_vendor = context["gpu_vendor"].upper()
@@ -251,7 +240,11 @@ def process_batch_manifest_entries(
                                 f"No Dockerfile found for {dockerfile_specified}"
                             )
                         else:
-                            dockerfile_matched = dockerfile_matched_list[0].split("/")[-1].replace(".Dockerfile", "")
+                            dockerfile_matched = (
+                                dockerfile_matched_list[0]
+                                .split("/")[-1]
+                                .replace(".Dockerfile", "")
+                            )
 
                         # Create a synthetic image name for this model
                         synthetic_image_name = f"ci-{model_name}_{dockerfile_matched}"
@@ -275,12 +268,16 @@ def process_batch_manifest_entries(
                         }
 
                         # Add to built_models - include all discovered model fields
-                        model_entry = model_info.copy()  # Start with all fields from discovered model
+                        model_entry = (
+                            model_info.copy()
+                        )  # Start with all fields from discovered model
 
                         # Ensure minimum required fields have fallback values
                         model_entry.setdefault("name", model_name)
                         model_entry.setdefault("dockerfile", f"docker/{model_name}")
-                        model_entry.setdefault("scripts", f"scripts/{model_name}/run.sh")
+                        model_entry.setdefault(
+                            "scripts", f"scripts/{model_name}/run.sh"
+                        )
                         model_entry.setdefault("n_gpus", "1")
                         model_entry.setdefault("owner", "")
                         model_entry.setdefault("training_precision", "")
@@ -288,7 +285,9 @@ def process_batch_manifest_entries(
                         model_entry.setdefault("args", "")
                         model_entry.setdefault("cred", "")
 
-                        build_manifest["built_models"][synthetic_image_name] = model_entry
+                        build_manifest["built_models"][
+                            synthetic_image_name
+                        ] = model_entry
                         break
 
             except Exception as e:
@@ -324,4 +323,3 @@ def process_batch_manifest_entries(
     console.print(
         f"✅ Added entries for all models from batch manifest to {manifest_output}"
     )
-
