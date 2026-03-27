@@ -170,10 +170,7 @@ class Context:
 
         # Don't detect GPU-specific contexts in build-only mode
         # These should be provided via additional_context if needed for build args
-        if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get("docker_build_arg", {}):
-            print(
-                "Info: MAD_SYSTEM_GPU_ARCHITECTURE not provided - should be set via --additional-context for GPU-specific builds"
-            )
+        # (GPU arch guidance is emitted in BuildOrchestrator after model/Dockerfile discovery.)
 
         # Don't initialize NUMA balancing check for build-only nodes
         # This is runtime-specific and should be handled on execution nodes

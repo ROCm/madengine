@@ -12,11 +12,11 @@ from unittest.mock import patch, MagicMock
 import pytest
 import typer
 
-from madengine.cli.validators import (
-    validate_additional_context,
+from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
     DEFAULT_GUEST_OS,
 )
+from madengine.cli.validators import validate_additional_context
 from madengine.cli.constants import ExitCode
 
 
@@ -167,3 +167,32 @@ class TestValidateAdditionalContext:
             )
 
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_docker_build_arg_must_be_object(self):
+        bad = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "docker_build_arg": "oops"}'
+
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_nested_docker_build_arg_ok(self):
+        ctx = (
+            '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", '
+            '"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}}'
+        )
+        result = validate_additional_context(additional_context=ctx)
+        assert result["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] == "gfx942"
+
+    def test_validate_additional_context_tools_must_be_list(self):
+        bad = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": {}}'
+
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_tools_list_ok(self):
+        ctx = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": []}'
+        result = validate_additional_context(additional_context=ctx)
+        assert result["tools"] == []

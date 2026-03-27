@@ -230,18 +230,22 @@ class TestValidateAdditionalContext:
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
             mock_console.print.assert_called()
 
-    def test_validate_additional_context_missing_required_fields(self):
-        """Test validation with missing required fields."""
-        with patch("madengine.cli.validators.console") as mock_console:
-            # Missing gpu_vendor
-            with pytest.raises(typer.Exit) as exc_info:
-                validate_additional_context('{"guest_os": "UBUNTU"}')
-            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+    def test_validate_additional_context_defaults_fill_partial_fields(self):
+        """Missing gpu_vendor or guest_os is filled from defaults (no error)."""
+        from madengine.core.additional_context_defaults import (
+            DEFAULT_GPU_VENDOR,
+            DEFAULT_GUEST_OS,
+        )
 
-            # Missing guest_os
-            with pytest.raises(typer.Exit) as exc_info:
-                validate_additional_context('{"gpu_vendor": "AMD"}')
-            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+        with patch("madengine.cli.validators.console") as mock_console:
+            r1 = validate_additional_context('{"guest_os": "UBUNTU"}')
+            assert r1["gpu_vendor"] == DEFAULT_GPU_VENDOR
+            assert r1["guest_os"] == "UBUNTU"
+
+            r2 = validate_additional_context('{"gpu_vendor": "AMD"}')
+            assert r2["gpu_vendor"] == "AMD"
+            assert r2["guest_os"] == DEFAULT_GUEST_OS
+            mock_console.print.assert_called()
 
     def test_validate_additional_context_invalid_values(self):
         """Test validation with invalid field values."""

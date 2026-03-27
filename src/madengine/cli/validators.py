@@ -5,10 +5,11 @@ Validation functions for madengine CLI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import ast
 import glob
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -27,11 +28,232 @@ from .utils import create_args_namespace
 # Initialize Rich console
 console = Console()
 
+_EXAMPLE_ADDITIONAL_CONTEXT = (
+    '--additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}}\''
+)
+
+
+def parse_additional_context_cli_string(additional_context: str) -> Dict[str, Any]:
+    """
+    Parse --additional-context string: JSON first, then Python literal (single-quoted dicts).
+    """
+    if not additional_context or additional_context.strip() == "{}":
+        return {}
+    try:
+        parsed = json.loads(additional_context)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(additional_context)
+        except (ValueError, SyntaxError) as e:
+            console.print(
+                f"❌ Invalid additional_context format: [red]{e}[/red]"
+            )
+            console.print(
+                "💡 Use JSON or a Python dict literal, e.g. "
+                + _EXAMPLE_ADDITIONAL_CONTEXT
+            )
+            raise typer.Exit(ExitCode.INVALID_ARGS)
+    if not isinstance(parsed, dict):
+        console.print(
+            "❌ additional_context must be a JSON object at the top level, not a list or scalar."
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+    return parsed
+
+
+def merge_additional_context_from_sources(
+    additional_context: str,
+    additional_context_file: Optional[str],
+) -> Tuple[Dict[str, Any], bool]:
+    """
+    Load file first, then overlay CLI string (CLI wins).
+
+    Returns:
+        (merged dict, loaded_from_cli_non_empty) for messaging.
+    """
+    context: Dict[str, Any] = {}
+    if additional_context_file:
+        try:
+            with open(additional_context_file, "r") as f:
+                context = json.load(f)
+            if not isinstance(context, dict):
+                console.print(
+                    "❌ additional-context file must contain a JSON object at the top level."
+                )
+                raise typer.Exit(ExitCode.INVALID_ARGS)
+            console.print(
+                f"✅ Loaded additional context from file: [cyan]{additional_context_file}[/cyan]"
+            )
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            console.print(f"❌ Failed to load additional context file: [red]{e}[/red]")
+            raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    cli_non_empty = bool(additional_context and additional_context.strip() != "{}")
+    if cli_non_empty:
+        string_context = parse_additional_context_cli_string(additional_context)
+        context.update(string_context)
+        console.print("✅ Loaded additional context from command line")
+
+    return context, cli_non_empty
+
+
+def _fail_structure(key: str, expected: str) -> None:
+    console.print(
+        f"❌ Invalid additional context: key [red]{key}[/red] must be {expected}."
+    )
+    console.print(f"💡 Example: {_EXAMPLE_ADDITIONAL_CONTEXT}")
+    raise typer.Exit(ExitCode.INVALID_ARGS)
+
+
+def validate_additional_context_structure(context: Dict[str, Any]) -> None:
+    """Validate types of known keys after defaults are applied."""
+    if "docker_build_arg" in context:
+        v = context["docker_build_arg"]
+        if not isinstance(v, dict):
+            _fail_structure("docker_build_arg", "an object (string values)")
+        for bk, bv in v.items():
+            if not isinstance(bk, str):
+                _fail_structure("docker_build_arg", "an object with string keys")
+            if not isinstance(bv, (str, int, float, bool)):
+                _fail_structure(
+                    f"docker_build_arg['{bk}']",
+                    "a string, number, or boolean (Docker build-arg values)",
+                )
+
+    if "docker_env_vars" in context and not isinstance(
+        context["docker_env_vars"], dict
+    ):
+        _fail_structure("docker_env_vars", "an object")
+
+    if "docker_mounts" in context and not isinstance(context["docker_mounts"], dict):
+        _fail_structure("docker_mounts", "an object")
+
+    if "env_vars" in context and not isinstance(context["env_vars"], dict):
+        _fail_structure("env_vars", "an object")
+
+    if "tools" in context and not isinstance(context["tools"], list):
+        _fail_structure("tools", "an array")
+
+    if "pre_scripts" in context and not isinstance(context["pre_scripts"], list):
+        _fail_structure("pre_scripts", "an array")
+
+    for nest in (
+        "k8s",
+        "slurm",
+        "kubernetes",
+        "distributed",
+        "vllm",
+        "deployment_config",
+        "deploy",
+    ):
+        if nest in context and not isinstance(context[nest], dict):
+            _fail_structure(nest, "an object")
+
+    if "docker_gpus" in context and not isinstance(context["docker_gpus"], str):
+        _fail_structure("docker_gpus", "a string")
+
+    if "MAD_CONTAINER_IMAGE" in context and not isinstance(
+        context["MAD_CONTAINER_IMAGE"], str
+    ):
+        _fail_structure("MAD_CONTAINER_IMAGE", "a string")
+
+    if "timeout" in context and not isinstance(
+        context["timeout"], (int, float, type(None))
+    ):
+        _fail_structure("timeout", "a number")
+
+    if "debug" in context and not isinstance(context["debug"], (bool, type(None))):
+        _fail_structure("debug", "a boolean")
+
+    if "gpu_vendor" in context and not isinstance(context["gpu_vendor"], str):
+        _fail_structure("gpu_vendor", "a string")
+
+    if "guest_os" in context and not isinstance(context["guest_os"], str):
+        _fail_structure("guest_os", "a string")
+
+
+def _normalize_docker_build_arg_values(context: Dict[str, Any]) -> None:
+    dba = context.get("docker_build_arg")
+    if not isinstance(dba, dict):
+        return
+    for k in list(dba.keys()):
+        v = dba[k]
+        if not isinstance(v, str):
+            dba[k] = str(v)
+
+
+def _validate_gpu_vendor_guest_after_defaults(context: Dict[str, Any]) -> None:
+    """Validate gpu_vendor / guest_os enums (expects keys present after defaults)."""
+    gpu_vendor = context["gpu_vendor"].upper()
+    if gpu_vendor not in VALID_GPU_VENDORS:
+        console.print(f"❌ Invalid gpu_vendor: [red]{context['gpu_vendor']}[/red]")
+        console.print(
+            f"💡 Supported values: [green]{', '.join(VALID_GPU_VENDORS)}[/green]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    guest_os = context["guest_os"].upper()
+    if guest_os not in VALID_GUEST_OS:
+        console.print(f"❌ Invalid guest_os: [red]{context['guest_os']}[/red]")
+        console.print(
+            f"💡 Supported values: [green]{', '.join(VALID_GUEST_OS)}[/green]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    console.print(
+        f"✅ Context validated: [green]{gpu_vendor}[/green] + [green]{guest_os}[/green]"
+    )
+
+
+def finalize_additional_context_dict(
+    context: Dict[str, Any],
+    *,
+    print_defaults_banner: bool = True,
+) -> Dict[str, Any]:
+    """
+    Apply gpu_vendor/guest_os defaults, validate structure and enums.
+    Mutates context in place.
+    """
+    missing_gpu = "gpu_vendor" not in context
+    missing_guest = "guest_os" not in context
+    apply_build_context_defaults(context)
+    defaults_applied = []
+    if missing_gpu:
+        defaults_applied.append(("gpu_vendor", DEFAULT_GPU_VENDOR))
+    if missing_guest:
+        defaults_applied.append(("guest_os", DEFAULT_GUEST_OS))
+
+    if print_defaults_banner and defaults_applied:
+        console.print("\nℹ️  [cyan]Using default values for build configuration:[/cyan]")
+        for field, value in defaults_applied:
+            console.print(f"   • {field}: [green]{value}[/green] (default)")
+        console.print(
+            "\n💡 [dim]To customize, use --additional-context "
+            '\'{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}\'[/dim]\n'
+        )
+
+    validate_additional_context_structure(context)
+    _normalize_docker_build_arg_values(context)
+    _validate_gpu_vendor_guest_after_defaults(context)
+    return context
+
+
+def additional_context_needs_cli_validation(
+    additional_context: str,
+    additional_context_file: Optional[str],
+) -> bool:
+    """True when the user supplied a non-empty context (file and/or CLI string)."""
+    if additional_context_file:
+        return True
+    if additional_context and additional_context.strip() != "{}":
+        return True
+    return False
+
 
 def validate_additional_context(
     additional_context: str,
     additional_context_file: Optional[str] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Validate and parse additional context.
 
@@ -45,72 +267,10 @@ def validate_additional_context(
     Raises:
         typer.Exit: If validation fails
     """
-    context = {}
-
-    # Load from file first
-    if additional_context_file:
-        try:
-            with open(additional_context_file, "r") as f:
-                context = json.load(f)
-            console.print(
-                f"✅ Loaded additional context from file: [cyan]{additional_context_file}[/cyan]"
-            )
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            console.print(f"❌ Failed to load additional context file: [red]{e}[/red]")
-            raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    # Parse string context (overrides file)
-    if additional_context and additional_context != "{}":
-        try:
-            string_context = json.loads(additional_context)
-            context.update(string_context)
-            console.print("✅ Loaded additional context from command line")
-        except json.JSONDecodeError as e:
-            console.print(f"❌ Invalid JSON in additional context: [red]{e}[/red]")
-            console.print("💡 Please provide valid JSON format")
-            raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    # Apply defaults if needed (single source of truth with BuildOrchestrator)
-    missing_gpu = "gpu_vendor" not in context
-    missing_guest = "guest_os" not in context
-    apply_build_context_defaults(context)
-    defaults_applied = []
-    if missing_gpu:
-        defaults_applied.append(("gpu_vendor", DEFAULT_GPU_VENDOR))
-    if missing_guest:
-        defaults_applied.append(("guest_os", DEFAULT_GUEST_OS))
-
-    # Inform user about defaults
-    if defaults_applied:
-        console.print("\nℹ️  [cyan]Using default values for build configuration:[/cyan]")
-        for field, value in defaults_applied:
-            console.print(f"   • {field}: [green]{value}[/green] (default)")
-        console.print(
-            "\n💡 [dim]To customize, use --additional-context "
-            '\'{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}\'[/dim]\n'
-        )
-
-    # Validate gpu_vendor
-    gpu_vendor = context["gpu_vendor"].upper()
-    if gpu_vendor not in VALID_GPU_VENDORS:
-        console.print(f"❌ Invalid gpu_vendor: [red]{context['gpu_vendor']}[/red]")
-        console.print(
-            f"💡 Supported values: [green]{', '.join(VALID_GPU_VENDORS)}[/green]"
-        )
-        raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    # Validate guest_os
-    guest_os = context["guest_os"].upper()
-    if guest_os not in VALID_GUEST_OS:
-        console.print(f"❌ Invalid guest_os: [red]{context['guest_os']}[/red]")
-        console.print(
-            f"💡 Supported values: [green]{', '.join(VALID_GUEST_OS)}[/green]"
-        )
-        raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    console.print(
-        f"✅ Context validated: [green]{gpu_vendor}[/green] + [green]{guest_os}[/green]"
+    context, _ = merge_additional_context_from_sources(
+        additional_context, additional_context_file
     )
+    finalize_additional_context_dict(context)
     return context
 
 

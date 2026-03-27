@@ -5,7 +5,6 @@ Run command for madengine CLI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import ast
 import json
 import os
 from typing import List, Optional
@@ -42,6 +41,11 @@ from ..utils import (
     save_summary_with_feedback,
     display_results_table,
     display_performance_table,
+)
+from ..validators import (
+    additional_context_needs_cli_validation,
+    finalize_additional_context_dict,
+    merge_additional_context_from_sources,
 )
 
 
@@ -167,33 +171,16 @@ def run(
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
-    # When both --additional-context-file and --additional-context are provided,
-    # load file first then overlay CLI (CLI overrides file).
+    # Merge file + CLI (CLI wins), then validate (same rules as `build`) when non-empty.
     effective_additional_context = additional_context
     effective_additional_context_file = additional_context_file
-    if additional_context_file and additional_context != "{}":
-        merged = {}
-        if os.path.exists(additional_context_file):
-            try:
-                with open(additional_context_file, "r") as f:
-                    merged = json.load(f)
-            except json.JSONDecodeError:
-                console.print(
-                    f"❌ [red]Invalid JSON format in {additional_context_file}[/red]"
-                )
-                raise typer.Exit(ExitCode.INVALID_ARGS)
-        try:
-            try:
-                cli_context = json.loads(additional_context)
-            except json.JSONDecodeError:
-                cli_context = ast.literal_eval(additional_context)
-            if isinstance(cli_context, dict):
-                merged.update(cli_context)
-        except (json.JSONDecodeError, ValueError, SyntaxError):
-            console.print(
-                f"❌ [red]Invalid additional_context format: {additional_context}[/red]"
-            )
-            raise typer.Exit(ExitCode.INVALID_ARGS)
+    if additional_context_needs_cli_validation(
+        additional_context, additional_context_file
+    ):
+        merged, _ = merge_additional_context_from_sources(
+            additional_context, additional_context_file
+        )
+        finalize_additional_context_dict(merged)
         effective_additional_context = repr(merged)
         effective_additional_context_file = None
 
@@ -296,34 +283,7 @@ def run(
                 raise typer.Exit(ExitCode.RUN_FAILURE)
 
         else:
-            # Check if MAD_CONTAINER_IMAGE is provided - this enables local image mode
-            additional_context_dict = {}
-            try:
-                if additional_context and additional_context != "{}":
-                    additional_context_dict = json.loads(additional_context)
-            except json.JSONDecodeError:
-                try:
-                    # Try parsing as Python dict literal
-                    additional_context_dict = ast.literal_eval(additional_context)
-                except (ValueError, SyntaxError):
-                    console.print(
-                        f"❌ [red]Invalid additional_context format: {additional_context}[/red]"
-                    )
-                    raise typer.Exit(ExitCode.INVALID_ARGS)
-            
-            # Load additional context from file if provided
-            if additional_context_file and os.path.exists(additional_context_file):
-                try:
-                    with open(additional_context_file, 'r') as f:
-                        file_context = json.load(f)
-                        additional_context_dict.update(file_context)
-                except json.JSONDecodeError:
-                    console.print(
-                        f"❌ [red]Invalid JSON format in {additional_context_file}[/red]"
-                    )
-                    raise typer.Exit(ExitCode.INVALID_ARGS)
-
-            # MAD_CONTAINER_IMAGE handling is now done in RunOrchestrator
+            # MAD_CONTAINER_IMAGE handling is done in RunOrchestrator
             # Full workflow (may include MAD_CONTAINER_IMAGE mode)
             if manifest_file:
                 console.print(
