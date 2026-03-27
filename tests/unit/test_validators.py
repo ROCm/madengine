@@ -7,7 +7,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import tempfile
-from unittest.mock import patch, MagicMock
 
 import pytest
 import typer
@@ -98,13 +97,12 @@ class TestValidateAdditionalContext:
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
 
     def test_validate_additional_context_case_insensitive(self):
-        """Test that case normalization still works with lowercase input"""
+        """Lowercase gpu_vendor/guest_os are accepted and normalized to canonical uppercase."""
         lowercase_context = '{"gpu_vendor": "amd", "guest_os": "ubuntu"}'
         result = validate_additional_context(additional_context=lowercase_context)
 
-        # Values should be uppercased by existing validation logic
-        assert result["gpu_vendor"] == "amd"  # Input preserved, uppercase in validation
-        assert result["guest_os"] == "ubuntu"
+        assert result["gpu_vendor"] == "AMD"
+        assert result["guest_os"] == "UBUNTU"
 
     def test_validate_additional_context_file_and_cli_merge_with_defaults(self):
         """Test that file + CLI merge works and defaults fill gaps"""

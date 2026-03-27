@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
 
 from madengine.utils.discover_models import DiscoverModels
 from madengine.core.additional_context_defaults import (
@@ -199,6 +198,10 @@ def _validate_gpu_vendor_guest_after_defaults(context: Dict[str, Any]) -> None:
             f"💡 Supported values: [green]{', '.join(VALID_GUEST_OS)}[/green]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    # Canonical form for Context.filter() and downstream (exact string match)
+    context["gpu_vendor"] = gpu_vendor
+    context["guest_os"] = guest_os
 
     console.print(
         f"✅ Context validated: [green]{gpu_vendor}[/green] + [green]{guest_os}[/green]"
