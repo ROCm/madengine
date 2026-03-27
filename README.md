@@ -59,7 +59,7 @@ git clone https://github.com/ROCm/MAD.git && cd MAD
 # Discover available models
 madengine discover --tags dummy
 
-# Run locally (defaults to AMD/UBUNTU configuration)
+# Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
 # Or with explicit configuration
