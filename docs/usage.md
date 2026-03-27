@@ -24,7 +24,7 @@ pip install git+https://github.com/ROCm/madengine.git
 # Discover models
 madengine discover --tags dummy
 
-# Run locally (uses default AMD/UBUNTU configuration)
+# Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
 # Or with explicit configuration
