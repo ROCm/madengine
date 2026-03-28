@@ -52,4 +52,19 @@ class TestBuildArgGeneration:
         assert context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] == "gfx90a"
 
 
+@pytest.mark.unit
+class TestBuildOnlyContextMessages:
+    """Build-only context should not emit duplicate MAD_SYSTEM_GPU_ARCHITECTURE info."""
+
+    @patch.object(Context, "get_ctx_test", return_value="test")
+    @patch.object(Context, "get_host_os", return_value="linux")
+    def test_build_only_no_mad_arch_info_line(self, mock_host, mock_ctx):
+        from unittest.mock import patch
+
+        with patch("builtins.print") as p:
+            Context(additional_context="{}", build_only_mode=True)
+        msgs = [str(c.args[0]) for c in p.call_args_list if c.args]
+        assert not any("MAD_SYSTEM_GPU_ARCHITECTURE" in m for m in msgs)
+
+
 # Total: 5 unit tests

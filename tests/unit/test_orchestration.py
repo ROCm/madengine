@@ -7,6 +7,10 @@ from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility,
     filter_images_by_skip_gpu_arch,
 )
+from madengine.core.additional_context_defaults import (
+    DEFAULT_GPU_VENDOR,
+    DEFAULT_GUEST_OS,
+)
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import ConfigurationError
@@ -111,28 +115,37 @@ class TestBuildOrchestratorInit:
     @patch("madengine.orchestration.build_orchestrator.Context")
     @patch("os.path.exists", return_value=False)
     def test_initializes_with_minimal_args(self, mock_exists, mock_context):
-        """Should initialize with minimal arguments."""
+        """Should initialize with minimal arguments and build defaults for Dockerfile filtering."""
         mock_args = MagicMock()
         mock_args.additional_context = None
+        mock_args.additional_context_file = None
         mock_args.live_output = True
 
         orchestrator = BuildOrchestrator(mock_args)
 
         assert orchestrator.args == mock_args
-        assert orchestrator.additional_context == {}
+        assert orchestrator.additional_context == {
+            "gpu_vendor": DEFAULT_GPU_VENDOR,
+            "guest_os": DEFAULT_GUEST_OS,
+        }
         assert orchestrator.credentials is None
 
     @patch("madengine.orchestration.build_orchestrator.Context")
     @patch("os.path.exists", return_value=False)
     def test_parses_additional_context_json(self, mock_exists, mock_context):
-        """Should parse JSON additional context."""
+        """Should parse JSON additional context and merge build defaults."""
         mock_args = MagicMock()
         mock_args.additional_context = '{"key": "value"}'
+        mock_args.additional_context_file = None
         mock_args.live_output = True
 
         orchestrator = BuildOrchestrator(mock_args)
 
-        assert orchestrator.additional_context == {"key": "value"}
+        assert orchestrator.additional_context == {
+            "key": "value",
+            "gpu_vendor": DEFAULT_GPU_VENDOR,
+            "guest_os": DEFAULT_GUEST_OS,
+        }
 
 
 @pytest.mark.unit

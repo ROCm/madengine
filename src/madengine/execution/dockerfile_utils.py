@@ -100,6 +100,55 @@ def is_target_arch_compatible_with_variable(
     return True
 
 
+def dockerfile_requires_explicit_mad_arch_build_arg(dockerfile_content: str) -> bool:
+    """
+    True when the Dockerfile declares ARG MAD_SYSTEM_GPU_ARCHITECTURE without a
+    non-empty default (user must pass --build-arg or rely on a non-empty ARG/ENV default).
+
+    If the variable is not declared as ARG, returns False. If any ARG line gives a
+    non-empty default, returns False (Dockerfile supplies a default).
+    """
+    found_arg = False
+    has_nonempty_default = False
+    has_bare_or_empty_default = False
+    for raw_line in dockerfile_content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        upper = line.upper()
+        if not upper.startswith("ARG") or "MAD_SYSTEM_GPU_ARCHITECTURE" not in upper:
+            continue
+        found_arg = True
+        m = re.match(
+            r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE\s*=\s*(\S+)",
+            line,
+            re.IGNORECASE,
+        )
+        if m and m.group(1).strip("\"'"):
+            has_nonempty_default = True
+            continue
+        m_bare = re.match(
+            r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if m_bare:
+            has_bare_or_empty_default = True
+            continue
+        m_empty = re.match(
+            r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE\s*=\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if m_empty:
+            has_bare_or_empty_default = True
+    if not found_arg:
+        return False
+    if has_nonempty_default:
+        return False
+    return has_bare_or_empty_default
+
+
 def is_compilation_arch_compatible(compile_arch: str, target_arch: str) -> bool:
     """Check if compilation architecture is compatible with target architecture."""
     compatibility_matrix = {

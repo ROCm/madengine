@@ -65,6 +65,7 @@ class TestBuildOrchestrator:
         """Test orchestrator initialization with minimal args."""
         mock_args = MagicMock()
         mock_args.additional_context = None
+        mock_args.additional_context_file = None
         mock_args.live_output = True
 
         mock_context_instance = MagicMock()
@@ -75,7 +76,10 @@ class TestBuildOrchestrator:
 
         assert orchestrator.args == mock_args
         assert orchestrator.context == mock_context_instance
-        assert orchestrator.additional_context == {}
+        assert orchestrator.additional_context == {
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+        }
         assert orchestrator.credentials is None
 
     @patch(

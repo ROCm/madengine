@@ -19,6 +19,7 @@ from rich.panel import Panel
 
 from madengine.core.console import Console
 from madengine.core.context import Context
+from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -28,6 +29,9 @@ from madengine.core.errors import (
 )
 from madengine.utils.discover_models import DiscoverModels
 from madengine.execution.docker_builder import DockerBuilder
+from madengine.execution.dockerfile_utils import (
+    dockerfile_requires_explicit_mad_arch_build_arg,
+)
 
 
 class BuildOrchestrator:
@@ -84,6 +88,9 @@ class BuildOrchestrator:
         if additional_context:
             merged_context.update(additional_context)
 
+        # Match CLI validate_additional_context: defaults so Context.filter() can select Dockerfiles
+        apply_build_context_defaults(merged_context)
+
         self.additional_context = merged_context
         
         # Apply ConfigLoader to infer deploy type, validate, and apply defaults
@@ -116,7 +123,8 @@ class BuildOrchestrator:
         # Initialize context in build-only mode (no GPU detection)
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
-        context_string = repr(merged_context) if merged_context else None
+        # Use self.additional_context (post-ConfigLoader), not pre-defaults merged_context
+        context_string = repr(self.additional_context)
         self.context = Context(
             additional_context=context_string,
             build_only_mode=True,
@@ -182,6 +190,46 @@ class BuildOrchestrator:
         # No-op: This method is deprecated and should not be called
         pass
 
+    def _warn_if_mad_arch_unresolved_for_dockerfiles(
+        self, models: List[Dict], builder: DockerBuilder
+    ) -> None:
+        """Warn when a selected Dockerfile needs MAD_SYSTEM_GPU_ARCHITECTURE and none is resolved."""
+        from collections import defaultdict
+
+        by_dockerfile: Dict[str, List[str]] = defaultdict(list)
+        for model in models:
+            for dockerfile in builder._get_dockerfiles_for_model(model):
+                arch = builder._get_effective_gpu_architecture(model, dockerfile)
+                if arch is not None:
+                    continue
+                try:
+                    with open(dockerfile, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                except OSError:
+                    continue
+                if dockerfile_requires_explicit_mad_arch_build_arg(content):
+                    by_dockerfile[dockerfile].append(model["name"])
+
+        if not by_dockerfile:
+            return
+
+        self.rich_console.print(
+            "[yellow]⚠️  Warning: MAD_SYSTEM_GPU_ARCHITECTURE is required for some "
+            "Dockerfile(s) but was not set in additional context and has no default "
+            "in the Dockerfile[/yellow]"
+        )
+        for df_path in sorted(by_dockerfile.keys()):
+            names = ", ".join(sorted(set(by_dockerfile[df_path])))
+            self.rich_console.print(f"  [dim]• models:[/dim] [cyan]{names}[/cyan]")
+            self.rich_console.print(f"    [dim]Dockerfile:[/dim] {df_path}")
+        self.rich_console.print(
+            "[dim]  Provide GPU architecture via --additional-context, e.g.[/dim]"
+        )
+        self.rich_console.print(
+            '[dim]  --additional-context \'{"docker_build_arg": '
+            '{"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}}\'[/dim]\n'
+        )
+
     def execute(
         self,
         registry: Optional[str] = None,
@@ -232,27 +280,16 @@ class BuildOrchestrator:
 
             self.rich_console.print(f"[green]✓ Found {len(models)} models[/green]\n")
 
-            # Step 2: Validate build context (scripts not needed for build phase)
-            # Build phase only creates Docker images - script execution happens in run phase
-            # Note: K8s and Slurm have their own script management mechanisms
-            if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.context.ctx["docker_build_arg"]:
-                self.rich_console.print(
-                    "[yellow]⚠️  Warning: MAD_SYSTEM_GPU_ARCHITECTURE not provided[/yellow]"
-                )
-                self.rich_console.print(
-                    "[dim]  Provide GPU architecture via --additional-context:[/dim]"
-                )
-                self.rich_console.print(
-                    '[dim]  --additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}\'[/dim]\n'
-                )
-
-            # Step 3: Build Docker images
-            self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
+            # Step 2: Per-model / per-Dockerfile MAD_SYSTEM_GPU_ARCHITECTURE hint (after discovery)
             builder = DockerBuilder(
                 self.context,
                 self.console,
                 live_output=getattr(self.args, "live_output", False),
             )
+            self._warn_if_mad_arch_unresolved_for_dockerfiles(models, builder)
+
+            # Step 3: Build Docker images
+            self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
 
             # Determine phase suffix for log files
             # Build phase always uses .build suffix to avoid conflicts with run logs
