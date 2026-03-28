@@ -693,7 +693,11 @@ class DockerBuilder:
             if registry:
                 try:
                     registry_image = self._create_registry_image_name(
-                        build_info["docker_image"], registry, batch_build_metadata, model_info
+                        build_info["docker_image"],
+                        registry,
+                        batch_build_metadata,
+                        model_info,
+                        credentials,
                     )
                     self.push_image(build_info["docker_image"], registry, credentials, registry_image)
                     build_info["registry_image"] = registry_image
@@ -780,28 +784,29 @@ class DockerBuilder:
         return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
 
     def _create_registry_image_name(
-        self, 
-        image_name: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create registry image name."""
         if batch_build_metadata and model_info["name"] in batch_build_metadata:
             meta = batch_build_metadata[model_info["name"]]
             if meta.get("registry_image"):
                 return meta["registry_image"]
-        
-        # Default registry naming
-        return self._determine_registry_image_name(image_name, registry)
+
+        return self._determine_registry_image_name(image_name, registry, credentials)
 
     def _create_arch_registry_image_name(
-        self, 
-        image_name: str, 
-        gpu_arch: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        gpu_arch: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create architecture-specific registry image name."""
         # For multi-arch builds, add architecture to the tag
@@ -810,9 +815,10 @@ class DockerBuilder:
             if meta.get("registry_image"):
                 # Append architecture to existing registry image
                 return f"{meta['registry_image']}_{gpu_arch}"
-        
-        # Default arch-specific registry naming
-        base_registry_name = self._determine_registry_image_name(image_name, registry)
+
+        base_registry_name = self._determine_registry_image_name(
+            image_name, registry, credentials
+        )
         return f"{base_registry_name}"  # Architecture already in image_name
 
     def _determine_registry_image_name(
