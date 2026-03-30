@@ -146,44 +146,10 @@ class ContainerRunner:
         if nnodes <= 1:
             return
 
-        sync_root = os.environ.get(
-            "PD_SYNC_ROOT",
-            f"/home/{os.environ.get('USER', 'user')}/.madengine_vllm_disagg_sync",
-        )
-        job_id = os.environ.get("SLURM_JOB_ID", "0")
-        image_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", run_image)
-        barrier_dir = os.path.join(sync_root, f"{job_id}_image_ready_{image_key}")
-        os.makedirs(barrier_dir, exist_ok=True)
-
-        if node_rank == "0":
-            for name in os.listdir(barrier_dir):
-                if name.startswith("ready_"):
-                    try:
-                        os.remove(os.path.join(barrier_dir, name))
-                    except OSError:
-                        pass
-
-        ready_file = os.path.join(barrier_dir, f"ready_{node_rank}.txt")
-        with open(ready_file, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
-
-
-        start = time.time()
-        ready_count = 0
-        fs_barrier_timeout_s = min(timeout_s, 20)
-        while time.time() - start < fs_barrier_timeout_s:
-            try:
-                ready_count = len([n for n in os.listdir(barrier_dir) if n.startswith("ready_")])
-            except FileNotFoundError:
-                ready_count = 0
-            if ready_count >= nnodes:
-                return
-            time.sleep(2)
-
         self._tcp_image_ready_barrier(
             nnodes=nnodes,
             node_rank=node_rank,
-            timeout_s=max(1, int(timeout_s - (time.time() - start))),
+            timeout_s=timeout_s,
         )
         return
 
