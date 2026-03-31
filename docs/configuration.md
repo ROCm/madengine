@@ -26,16 +26,65 @@ madengine run --tags model --additional-context-file config.json
 }
 ```
 
-## Basic Configuration
+## Default Configuration Values
 
-### Required for Local Execution
+madengine provides sensible defaults for common AMD/Ubuntu workflows:
 
-```json
-{
-  "gpu_vendor": "AMD",
-  "guest_os": "UBUNTU"
-}
+| Field | Default Value | Customization |
+|-------|---------------|---------------|
+| `gpu_vendor` | `AMD` | Set to `NVIDIA` for NVIDIA GPUs |
+| `guest_os` | `UBUNTU` | Set to `CENTOS` for CentOS containers |
+
+### When Defaults Apply
+
+Defaults are applied during the **build** command when fields are not explicitly provided:
+
+```bash
+# Uses defaults: {"gpu_vendor": "AMD", "guest_os": "UBUNTU"}
+madengine build --tags model
+
+# Explicit override
+madengine build --tags model \
+  --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 ```
+
+When defaults are applied, you'll see an informative message:
+
+```
+ℹ️  Using default values for build configuration:
+   • gpu_vendor: AMD (default)
+   • guest_os: UBUNTU (default)
+
+💡 To customize, use --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
+```
+
+### Partial Configuration
+
+You can provide one field and let the other default:
+
+```bash
+# Override only gpu_vendor (guest_os defaults to UBUNTU)
+madengine build --tags model \
+  --additional-context '{"gpu_vendor": "NVIDIA"}'
+
+# Override only guest_os (gpu_vendor defaults to AMD)
+madengine build --tags model \
+  --additional-context '{"guest_os": "CENTOS"}'
+```
+
+### Production Recommendations
+
+For production deployments:
+- ✅ **DO** explicitly specify all configuration values
+- ✅ **DO** use configuration files for reproducibility
+- ⚠️ **AVOID** relying on defaults in automated workflows
+
+### Run Command Behavior
+
+The **run** command does NOT require these values because it can detect GPU vendor at runtime.
+Defaults only apply to the **build** command where Dockerfile selection requires them.
+
+## Basic Configuration
 
 **gpu_vendor** (case-insensitive):
 - `"AMD"` - AMD ROCm GPUs

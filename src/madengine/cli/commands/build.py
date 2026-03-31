@@ -173,16 +173,18 @@ def build(
         )
 
     try:
-        # Validate additional context
-        validate_additional_context(additional_context, additional_context_file)
+        # Validate additional context and merge file + CLI; defaults wired into orchestrator
+        validated_context = validate_additional_context(
+            additional_context, additional_context_file
+        )
 
         # Create arguments object
         args = create_args_namespace(
             tags=effective_tags,
             target_archs=target_archs,
             registry=registry,
-            additional_context=additional_context,
-            additional_context_file=additional_context_file,
+            additional_context=repr(validated_context),
+            additional_context_file=None,
             clean_docker_cache=clean_docker_cache,
             manifest_output=manifest_output,
             live_output=live_output,
@@ -221,15 +223,8 @@ def build(
         # Handle batch manifest post-processing
         if batch_data:
             with console.status("Processing batch manifest..."):
-                additional_context_dict = getattr(args, "additional_context", None)
-                if isinstance(additional_context_dict, str):
-                    additional_context_dict = json.loads(additional_context_dict)
-                guest_os = (
-                    additional_context_dict.get("guest_os") if additional_context_dict else None
-                )
-                gpu_vendor = (
-                    additional_context_dict.get("gpu_vendor") if additional_context_dict else None
-                )
+                guest_os = validated_context.get("guest_os")
+                gpu_vendor = validated_context.get("gpu_vendor")
                 process_batch_manifest_entries(
                     batch_data, manifest_output, registry, guest_os, gpu_vendor
                 )

@@ -693,7 +693,11 @@ class DockerBuilder:
             if registry:
                 try:
                     registry_image = self._create_registry_image_name(
-                        build_info["docker_image"], registry, batch_build_metadata, model_info
+                        build_info["docker_image"],
+                        registry,
+                        batch_build_metadata,
+                        model_info,
+                        credentials,
                     )
                     self.push_image(build_info["docker_image"], registry, credentials, registry_image)
                     build_info["registry_image"] = registry_image
@@ -780,28 +784,29 @@ class DockerBuilder:
         return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
 
     def _create_registry_image_name(
-        self, 
-        image_name: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create registry image name."""
         if batch_build_metadata and model_info["name"] in batch_build_metadata:
             meta = batch_build_metadata[model_info["name"]]
             if meta.get("registry_image"):
                 return meta["registry_image"]
-        
-        # Default registry naming
-        return self._determine_registry_image_name(image_name, registry)
+
+        return self._determine_registry_image_name(image_name, registry, credentials)
 
     def _create_arch_registry_image_name(
-        self, 
-        image_name: str, 
-        gpu_arch: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        gpu_arch: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create architecture-specific registry image name."""
         # For multi-arch builds, add architecture to the tag
@@ -810,9 +815,10 @@ class DockerBuilder:
             if meta.get("registry_image"):
                 # Append architecture to existing registry image
                 return f"{meta['registry_image']}_{gpu_arch}"
-        
-        # Default arch-specific registry naming
-        base_registry_name = self._determine_registry_image_name(image_name, registry)
+
+        base_registry_name = self._determine_registry_image_name(
+            image_name, registry, credentials
+        )
         return f"{base_registry_name}"  # Architecture already in image_name
 
     def _determine_registry_image_name(
@@ -913,74 +919,3 @@ class DockerBuilder:
             arch_results.append(build_info)
         
         return arch_results
-
-    def _build_model_single_arch(
-        self, 
-        model_info: typing.Dict,
-        credentials: typing.Dict,
-        clean_cache: bool,
-        registry: str,
-        phase_suffix: str,
-        batch_build_metadata: typing.Optional[dict]
-    ) -> typing.List[typing.Dict]:
-        """Build model using existing single architecture flow."""
-        
-        # Find dockerfiles for this model
-        dockerfiles = self._get_dockerfiles_for_model(model_info)
-
-        results = []
-        for dockerfile in dockerfiles:
-            build_info = self.build_image(
-                model_info, 
-                dockerfile, 
-                credentials,
-                clean_cache, 
-                phase_suffix
-            )
-            
-            # Extract GPU architecture from build args or context for manifest
-            gpu_arch = self._get_effective_gpu_architecture(model_info, dockerfile)
-            if gpu_arch:
-                build_info["gpu_architecture"] = gpu_arch
-            
-            # Handle registry push (existing logic)
-            if registry:
-                registry_image = self._determine_registry_image_name(
-                    build_info["docker_image"], registry, credentials
-                )
-                try:
-                    self.push_image(build_info["docker_image"], registry, credentials, registry_image)
-                    build_info["registry_image"] = registry_image
-                except Exception as e:
-                    build_info["push_error"] = str(e)
-            
-            results.append(build_info)
-        
-        return results
-
-    def _get_effective_gpu_architecture(self, model_info: typing.Dict, dockerfile_path: str) -> str:
-        """Get effective GPU architecture for single arch builds."""
-        # Check if MAD_SYSTEM_GPU_ARCHITECTURE is in build args from additional_context
-        if ("docker_build_arg" in self.context.ctx and 
-            "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_build_arg"]):
-            return self.context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
-        
-        # Try to extract from Dockerfile defaults
-        try:
-            with open(dockerfile_path, 'r') as f:
-                content = f.read()
-            
-            # Look for ARG or ENV declarations
-            patterns = [
-                r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)",
-                r"ENV\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)"
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, content, re.IGNORECASE)
-                if match:
-                    return match.group(1).strip('"\'')
-        except Exception:
-            pass
-        
-        return None
