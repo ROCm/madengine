@@ -705,7 +705,38 @@ if [ $TASK_EXIT -eq 0 ]; then
 
             for candidate in "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/"${csv_basename}"; do
                 if [ -f "$candidate" ]; then
-                    NON_EMPTY_PERF=$(awk -F, 'NR>1 && $2 != "" {c++} END{print c+0}' "$candidate" 2>/dev/null || echo 0)
+                    # Prefer files that contain the most non-empty performance values.
+                    # This matters for multi-node training where only one node may see
+                    # the final throughput lines and therefore generate valid metrics.
+                    PERF_COL_INDEX=$(
+                        awk -F, '
+                            NR == 1 {
+                                for (i = 1; i <= NF; i++) {
+                                    gsub(/^"|"$/, "", $i)
+                                    if ($i == "performance") {
+                                        print i
+                                        exit
+                                    }
+                                }
+                            }
+                        ' "$candidate" 2>/dev/null
+                    )
+                    if [ -n "$PERF_COL_INDEX" ]; then
+                        NON_EMPTY_PERF=$(
+                            awk -F, -v perf_col="$PERF_COL_INDEX" '
+                                NR > 1 {
+                                    value = $perf_col
+                                    gsub(/^"|"$/, "", value)
+                                    if (value != "") {
+                                        c++
+                                    }
+                                }
+                                END { print c + 0 }
+                            ' "$candidate" 2>/dev/null || echo 0
+                        )
+                    else
+                        NON_EMPTY_PERF=$(awk -F, 'NR>1 && $2 != "" {c++} END{print c+0}' "$candidate" 2>/dev/null || echo 0)
+                    fi
                     TOTAL_ROWS=$(awk 'END{print NR+0}' "$candidate" 2>/dev/null || echo 0)
                     SCORE=$((NON_EMPTY_PERF * 100000 + TOTAL_ROWS))
                     if [ "$SCORE" -gt "$BEST_SCORE" ]; then
