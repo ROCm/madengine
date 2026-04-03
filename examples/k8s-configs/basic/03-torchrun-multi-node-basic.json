@@ -18,7 +18,8 @@
     
     "image_pull_policy": "Always",
     "backoff_limit": 3,
-    "host_ipc": true
+    "host_ipc": true,
+    "recreate_shared_data_pvc": true
   },
   
   "distributed": {

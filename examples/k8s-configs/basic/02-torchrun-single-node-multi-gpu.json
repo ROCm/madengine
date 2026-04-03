@@ -17,7 +17,8 @@
     "cpu_limit": "32",
     
     "image_pull_policy": "Always",
-    "backoff_limit": 3
+    "backoff_limit": 3,
+    "recreate_shared_data_pvc": true
   },
   
   "distributed": {

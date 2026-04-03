@@ -1329,28 +1329,65 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
         )
 
-    def _create_results_pvc(self) -> str:
+    def _k8s_data_storage_class(self) -> Optional[str]:
+        """StorageClass for long-lived ``madengine-shared-data`` (NFS RWX recommended)."""
+        return (
+            self.k8s_config.get("data_storage_class")
+            or self.k8s_config.get("nfs_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _k8s_results_storage_class(self, nnodes: int) -> Optional[str]:
         """
-        Create a PersistentVolumeClaim for results storage.
-        
-        Returns:
-            Name of the created PVC
+        Per-job results: local-path (RWO) for single-node, NFS (RWX) for multi-node.
+
+        Falls back to ``storage_class`` for backward compatibility.
+        """
+        if nnodes > 1:
+            return (
+                self.k8s_config.get("multi_node_results_storage_class")
+                or self.k8s_config.get("nfs_storage_class")
+                or self.k8s_config.get("storage_class")
+            )
+        return (
+            self.k8s_config.get("single_node_results_storage_class")
+            or self.k8s_config.get("local_path_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _create_results_pvc(self, nnodes: int = 1) -> str:
+        """
+        Create a PersistentVolumeClaim for per-job results.
+
+        Single-node uses ReadWriteOnce (typically local-path). Multi-node uses
+        ReadWriteMany (typically nfs-banff or other RWX class).
         """
         pvc_name = f"{self.job_name}-results"
-        
-        # Render PVC template
+        access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
+        storage_class = self._k8s_results_storage_class(nnodes)
+
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
         pvc_template = template_dir / "pvc.yaml.j2"
-        
+
         with open(pvc_template, "r") as f:
             pvc_template_str = f.read()
-        
+
         template = Template(pvc_template_str)
+        self.console.print(
+            f"[dim]  Results PVC: access={access_mode}, "
+            f"storageClass={storage_class or '(cluster default)'}[/dim]"
+        )
+        if nnodes > 1 and not storage_class:
+            self.console.print(
+                "[yellow]⚠️  Multi-node: set k8s.nfs_storage_class or "
+                "multi_node_results_storage_class to an RWX class (e.g. nfs-banff).[/yellow]"
+            )
         pvc_yaml = template.render(
             pvc_name=pvc_name,
             namespace=self.namespace,
+            access_mode=access_mode,
             storage_size=self.k8s_config.get("results_storage_size", "10Gi"),
-            storage_class=self.k8s_config.get("storage_class")
+            storage_class=storage_class,
         )
         
         # Create PVC (retry on 409 "object is being deleted" until it is gone)
@@ -1375,98 +1412,129 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 else:
                     raise
     
+    def _wait_for_pvc_deleted(self, pvc_name: str, max_wait: int = 90) -> None:
+        """Block until the PVC is fully removed (or timeout)."""
+        for i in range(max_wait):
+            try:
+                self.core_v1.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
+                )
+                if i > 0 and i % 10 == 0:
+                    self.console.print(
+                        f"[dim]Waiting for PVC {pvc_name} to be removed... ({i}s)[/dim]"
+                    )
+                time.sleep(1)
+            except ApiException as e:
+                if e.status == 404:
+                    return
+                raise
+
     def _create_or_get_data_pvc(self, nnodes: int = 1) -> str:
         """
-        Create or reuse a shared PersistentVolumeClaim for data storage.
-        
-        K8s best practice: Use shared PVC for data (separate from compute pods).
-        This PVC is reusable across multiple training runs.
-        
+        Create or reuse ``madengine-shared-data`` for long-lived datasets (cache).
+
+        Always uses ReadWriteMany + an NFS-style StorageClass so the same PVC
+        works for single- and multi-pod jobs. Use ``data_storage_class`` or
+        ``nfs_storage_class`` (e.g. nfs-banff), not local-path.
+
         Args:
-            nnodes: Number of nodes (determines access mode requirements)
-        
+            nnodes: Reserved for logging (shared-data access mode does not depend on it).
+
         Returns:
             Name of the PVC (existing or newly created)
         """
-        # Use a consistent name for reusability (not job-specific)
         pvc_name = "madengine-shared-data"
-        
-        # Check if PVC already exists (idempotent)
+
+        if self.k8s_config.get("recreate_shared_data_pvc"):
+            try:
+                self.core_v1.delete_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
+                )
+                self.console.print(
+                    "[yellow]recreate_shared_data_pvc: deleted existing "
+                    f"{pvc_name} (backup data first if needed)[/yellow]"
+                )
+                self._wait_for_pvc_deleted(pvc_name)
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+
         try:
             existing_pvc = self.core_v1.read_namespaced_persistent_volume_claim(
                 name=pvc_name,
-                namespace=self.namespace
+                namespace=self.namespace,
             )
             self.console.print(f"[dim]✓ Using existing data PVC: {pvc_name}[/dim]")
-            
-            # Verify access mode for multi-node
-            if nnodes > 1:
-                access_modes = existing_pvc.spec.access_modes
-                if "ReadWriteMany" not in access_modes:
-                    self.console.print(
-                        f"[yellow]⚠️  Warning: PVC {pvc_name} doesn't support ReadWriteMany[/yellow]"
-                    )
-                    self.console.print(
-                        f"[yellow]   Multi-node deployment may fail. Current modes: {access_modes}[/yellow]"
-                    )
-            
+
+            access_modes = existing_pvc.spec.access_modes or []
+            if "ReadWriteMany" not in access_modes:
+                self.console.print(
+                    f"[yellow]⚠️  Warning: {pvc_name} is not ReadWriteMany "
+                    f"(modes: {access_modes}).[/yellow]"
+                )
+                self.console.print(
+                    "[yellow]   For NFS-backed long-lived data, delete the PVC and re-run with "
+                    "k8s.data_storage_class / nfs_storage_class set, or use "
+                    "recreate_shared_data_pvc (after backup).[/yellow]"
+                )
             return pvc_name
-            
+
         except ApiException as e:
             if e.status != 404:
-                raise  # Unexpected error
-            
-            # PVC doesn't exist, create it
-            # Determine access mode based on deployment topology
-            # RWO (ReadWriteOnce): Single-node - works with most storage classes (local-path, EBS, etc.)
-            # RWX (ReadWriteMany): Multi-node - requires shared storage (NFS, CephFS, etc.)
-            access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
-            
-            self.console.print(f"[blue]Creating shared data PVC: {pvc_name}...[/blue]")
-            self.console.print(f"[dim]  Access mode: {access_mode} ({'multi-node' if nnodes > 1 else 'single-node'})[/dim]")
-            
-            # Render data PVC template
-            template_dir = Path(__file__).parent / "templates" / "kubernetes"
-            pvc_template = template_dir / "pvc-data.yaml.j2"
-            
-            with open(pvc_template, "r") as f:
-                pvc_template_str = f.read()
-            
-            template = Template(pvc_template_str)
-            pvc_yaml = template.render(
-                pvc_name=pvc_name,
-                namespace=self.namespace,
-                access_mode=access_mode,
-                storage_size=self.k8s_config.get("data_storage_size", "100Gi"),
-                storage_class=self.k8s_config.get("storage_class")
+                raise
+
+        access_mode = "ReadWriteMany"
+        storage_class = self._k8s_data_storage_class()
+        self.console.print(f"[blue]Creating shared data PVC: {pvc_name}...[/blue]")
+        self.console.print(
+            f"[dim]  Access mode: {access_mode}; storageClass={storage_class or '(cluster default)'}; "
+            f"nnodes={nnodes}[/dim]"
+        )
+        if not storage_class:
+            self.console.print(
+                "[yellow]⚠️  Set k8s.nfs_storage_class or data_storage_class to an RWX class "
+                "(e.g. nfs-banff) for shared-data. Default SC may be local-path (RWO-only).[/yellow]"
             )
-            
-            # Create PVC
-            pvc_dict = yaml.safe_load(pvc_yaml)
-            self.core_v1.create_namespaced_persistent_volume_claim(
-                namespace=self.namespace, body=pvc_dict
-            )
-            
-            # Wait for PVC to be bound (important!)
-            self.console.print(f"[dim]Waiting for PVC to be bound...[/dim]")
-            for _ in range(30):  # Wait up to 30 seconds
-                try:
-                    pvc = self.core_v1.read_namespaced_persistent_volume_claim(
-                        name=pvc_name, namespace=self.namespace
-                    )
-                    if pvc.status.phase == "Bound":
-                        self.console.print(f"[green]✓ PVC bound successfully[/green]")
-                        break
-                except ApiException:
-                    pass
-                time.sleep(1)
-            else:
-                self.console.print(
-                    f"[yellow]⚠️  Warning: PVC created but not bound yet. "
-                    f"Check: kubectl describe pvc {pvc_name}[/yellow]"
+
+        template_dir = Path(__file__).parent / "templates" / "kubernetes"
+        pvc_template = template_dir / "pvc-data.yaml.j2"
+
+        with open(pvc_template, "r") as f:
+            pvc_template_str = f.read()
+
+        template = Template(pvc_template_str)
+        pvc_yaml = template.render(
+            pvc_name=pvc_name,
+            namespace=self.namespace,
+            access_mode=access_mode,
+            storage_size=self.k8s_config.get("data_storage_size", "100Gi"),
+            storage_class=storage_class,
+        )
+
+        pvc_dict = yaml.safe_load(pvc_yaml)
+        self.core_v1.create_namespaced_persistent_volume_claim(
+            namespace=self.namespace, body=pvc_dict
+        )
+
+        self.console.print("[dim]Waiting for PVC to be bound...[/dim]")
+        for _ in range(30):
+            try:
+                pvc = self.core_v1.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
                 )
-            
-            return pvc_name
+                if pvc.status.phase == "Bound":
+                    self.console.print("[green]✓ PVC bound successfully[/green]")
+                    break
+            except ApiException:
+                pass
+            time.sleep(1)
+        else:
+            self.console.print(
+                f"[yellow]⚠️  Warning: PVC created but not bound yet. "
+                f"Check: kubectl describe pvc {pvc_name}[/yellow]"
+            )
+
+        return pvc_name
     
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
@@ -1570,7 +1638,8 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             
             # 1. Create PVC for results storage
             self.console.print("[blue]Creating PVC for results storage...[/blue]")
-            pvc_name = self._create_results_pvc()
+            nnodes_deploy = getattr(self, "_nnodes", 1)
+            pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
             self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
             
             # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
@@ -1812,6 +1881,48 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         except Exception:
             pass
 
+    def _primary_workload_container_exit_code(self, pod: Any) -> int:
+        """
+        Exit code of the primary workload container (spec.containers[0]), matched by name
+        against container_statuses (ordering-safe if sidecars are added later).
+        """
+        if not pod.spec or not pod.spec.containers:
+            return 0
+        primary_name = pod.spec.containers[0].name
+        for cs in pod.status.container_statuses or []:
+            if cs.name == primary_name and cs.state and cs.state.terminated:
+                return cs.state.terminated.exit_code or 0
+        # Fallback: first terminated container in spec order
+        name_order = [c.name for c in pod.spec.containers]
+        for want in name_order:
+            for cs in pod.status.container_statuses or []:
+                if cs.name == want and cs.state and cs.state.terminated:
+                    return cs.state.terminated.exit_code or 0
+        return 0
+
+    def _refresh_pod_until_terminal_phase(
+        self,
+        pod_name: str,
+        *,
+        timeout_seconds: float = 30.0,
+        interval_seconds: float = 0.5,
+    ) -> Any:
+        """
+        Poll read_namespaced_pod until phase is Succeeded or Failed, or timeout.
+        Avoids stale list/single-get right after Job completion (phase still Running).
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last: Any = None
+        while time.monotonic() < deadline:
+            last = self.core_v1.read_namespaced_pod(
+                name=pod_name, namespace=self.namespace
+            )
+            phase = last.status.phase
+            if phase in ("Succeeded", "Failed"):
+                return last
+            time.sleep(interval_seconds)
+        return last
+
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
         Enhanced results collection from K8s pods following vLLM multi-node best practices.
@@ -1939,13 +2050,12 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         log, model_info.get("name", "")
                     )
                     
-                    # Get pod exit status
-                    pod_status = pod.status.phase
-                    pod_exit_code = 0
-                    if pod.status.container_statuses:
-                        container_status = pod.status.container_statuses[0]
-                        if container_status.state.terminated:
-                            pod_exit_code = container_status.state.terminated.exit_code or 0
+                    # Pod phase/exit can lag right after Job success; poll until terminal or timeout
+                    pod = self._refresh_pod_until_terminal_phase(pod_name)
+                    pod_status = pod.status.phase if pod else "Unknown"
+                    pod_exit_code = (
+                        self._primary_workload_container_exit_code(pod) if pod else -1
+                    )
                     
                     # Store per-node info for display table
                     node_info = {

@@ -373,21 +373,45 @@ kubectl exec -it <pod-name> -- ls -lh /data/
 | **NAS** | SSH/rsync | NAS credentials in `credential.json` |
 | **Local** | Filesystem | Pre-mounted PVC |
 
-### Storage Classes
+### Storage Classes (local-path vs NFS)
 
-**Single-Node (RWO)**:
+madengine separates **per-job results** from **long-lived shared data**:
+
+| Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
+|--------|-------------|----------------------------|----------------------------|
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `local_path_storage_class` or `single_node_results_storage_class` (e.g. `local-path`) | **RWX** — `nfs_storage_class` or `multi_node_results_storage_class` (e.g. `nfs-banff`) |
+| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
+
+**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, `local_path_storage_class` → `local-path`, `recreate_shared_data_pvc` → `false`. You do not need to set these unless you use another cluster — then override in additional context.
+
+Example override for a different cluster:
+
+```json
+{
+  "k8s": {
+    "nfs_storage_class": "nfs-client",
+    "local_path_storage_class": "standard",
+    "data_storage_class": "nfs-client"
+  }
+}
+```
+
+- **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
+- **`local_path_storage_class`**: RWO class for **single-node only** results PVC.
+- **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
+- **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
+- **`recreate_shared_data_pvc`**: If `true`, deletes existing `madengine-shared-data` before create (**destroys data** — backup first). Use when migrating from RWO `local-path` to RWX NFS.
+
+**Single-Node (RWO)** (results only):
+
 - ✅ `local-path` (Rancher)
 - ✅ AWS EBS (`gp3`, `io2`)
-- ✅ Azure Disk
-- ✅ Any RWO storage class
 
-**Multi-Node (RWX)**:
-- ✅ NFS (`nfs-client`)
-- ✅ CephFS
-- ✅ GlusterFS
-- ✅ AWS EFS
-- ✅ Azure Files
-- ❌ `local-path` (RWO only)
+**Multi-node & shared-data (RWX)**:
+
+- ✅ NFS (e.g. `nfs-banff`, `nfs-client`)
+- ✅ CephFS, GlusterFS, AWS EFS, Azure Files
+- ❌ `local-path` (RWO only — not for shared-data or multi-node results)
 
 ### Custom PVC (Optional)
 
@@ -513,6 +537,13 @@ To use an existing PVC instead of auto-creation:
 |-------|------|---------|-------------|
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
 | `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
+| `storage_class` | string | `null` | Optional fallback if the keys below are unset |
+| `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
+| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` |
+| `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
+| `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (`local_path_storage_class` if unset) |
+| `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
+| `recreate_shared_data_pvc` | boolean | **`false`** (preset) | If `true`, delete `madengine-shared-data` before create (data loss) |
 
 #### Distributed Execution Fields
 
