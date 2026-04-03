@@ -625,6 +625,18 @@ host_ipc: true
 PVCs: Recommended for data and results
 ```
 
+### Local `k8s_results` layout (after `madengine run`)
+
+Artifacts are written under `./k8s_results/<job_name>/`:
+
+| Path | Contents |
+|------|----------|
+| `<job_name>/<pod_name>/pod.log` | Container log from the Kubernetes API |
+| `<job_name>/<pod_name>/pvc/` | Copy of `/results/<subdir>/` from the results PVC, matched to that pod |
+| `<job_name>/pvc_unmapped/<subdir>/` | PVC folders that could not be matched to a pod name |
+
+Write durable outputs under `/results/<replica-id>/` in the container so each replica’s files land in a predictable PVC subdir (e.g. hostname or `jobname-<index>`). Madengine maps that subdir to the full pod name when copying to the host.
+
 ### Distributed Launchers
 
 **Training Launchers:**

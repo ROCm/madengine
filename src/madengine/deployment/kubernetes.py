@@ -74,6 +74,44 @@ except ImportError:
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 
 
+def match_pvc_subdir_to_k8s_pod(
+    pvc_subdir: str,
+    pod_names: List[str],
+    assigned: set,
+) -> Optional[str]:
+    """
+    Map one top-level name under /results/ to a full Kubernetes pod name.
+
+    Matches ``pod == pvc_subdir`` or ``pod.startswith(pvc_subdir + "-")`` among pods
+    not yet assigned. Prefer exact equality; if multiple prefix matches, pick the
+    first sorted name (deterministic).
+    """
+    available = sorted(p for p in pod_names if p not in assigned)
+    exact = [p for p in available if p == pvc_subdir]
+    if exact:
+        return exact[0]
+    prefixed = [p for p in available if p.startswith(pvc_subdir + "-")]
+    if not prefixed:
+        return None
+    return sorted(prefixed)[0]
+
+
+def assign_pvc_subdirs_to_pods(pod_dirs: List[str], pod_names: List[str]) -> Dict[str, str]:
+    """
+    Assign each PVC subdir to at most one pod. Process longest names first so
+    short prefixes do not steal pods (e.g. ``foo-0`` before ``foo``).
+    """
+    cleaned = [d.strip() for d in pod_dirs if d and d.strip()]
+    assigned: set = set()
+    mapping: Dict[str, str] = {}
+    for pvc_subdir in sorted(cleaned, key=lambda x: (-len(x), x)):
+        m = match_pvc_subdir_to_k8s_pod(pvc_subdir, pod_names, assigned)
+        if m:
+            mapping[pvc_subdir] = m
+            assigned.add(m)
+    return mapping
+
+
 class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
     """
     Kubernetes cluster deployment using Python client library.
@@ -1933,9 +1971,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         - Total throughput = pod-0 throughput × num_replicas
         
         Collects:
-        1. Pod logs
-        2. File artifacts via kubectl cp (profiling, tracing, env details)
-        3. Results from shared PVC (if configured)
+        1. Pod logs (``k8s_results/<job>/<pod>/pod.log``)
+        2. PVC mirror per pod (``.../<pod>/pvc/``), mapped from ``/results/<subdir>/``
+        3. File artifacts via kubectl cp when pods are still running (keep-alive path)
         
         Returns:
             Dict with logs, artifacts, and performance results
@@ -2037,7 +2075,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     log = self.core_v1.read_namespaced_pod_log(
                         name=pod_name, namespace=self.namespace
                     )
-                    log_file = pod_dir / f"{pod_name}.log"
+                    log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
                     results["logs"].append({
                         "pod": pod_name,
@@ -2116,7 +2154,8 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             )
             
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
-            self._collect_from_pvc(deployment_id, results_dir, results)
+            k8s_pod_names = [p.metadata.name for p in sorted_pods]
+            self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
             
             # ========================================================================
             # Aggregate per-node metrics
@@ -2511,17 +2550,30 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         
         return artifacts
     
-    def _collect_from_pvc(self, deployment_id: str, results_dir: Path, results: Dict):
+    def _collect_from_pvc(
+        self,
+        deployment_id: str,
+        results_dir: Path,
+        results: Dict,
+        pod_names: Optional[List[str]] = None,
+    ):
         """
         Collect all artifacts from the PVC using a temporary busybox pod.
-        
+
         This is the best practice for collecting results from completed K8s jobs.
         kubectl cp doesn't work on completed pods, so we use a helper pod.
-        
+
+        When ``pod_names`` is provided, each ``/results/<subdir>/`` is copied to
+        ``results_dir/<k8s_pod_name>/pvc/`` by matching subdir to pod name (exact or
+        ``pod.startswith(subdir + "-")``). Unmatched subdirs go under
+        ``results_dir/pvc_unmapped/<subdir>/``. When ``pod_names`` is omitted, the
+        legacy layout ``results_dir/<subdir>/`` is used.
+
         Args:
             deployment_id: Job deployment ID
             results_dir: Local directory to save results
             results: Results dict to update
+            pod_names: Full Kubernetes pod names for this job (ordered)
         """
         pvc_name = f"{deployment_id}-results"
         
@@ -2580,48 +2632,118 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 time.sleep(1)
             else:
                 raise Exception("Collector pod did not start in time")
-            
-            # List pod result directories in PVC
+
+            # Mount / NFS may need a moment before another pod sees prior job writes.
+            time.sleep(2)
+
+            # List pod result directories in PVC (retry: NFS can lag right after Job completion)
             list_cmd = [
-                "kubectl", "exec", collector_pod_name, "-n", self.namespace, "--",
-                "ls", "-1", "/results/"
+                "kubectl",
+                "exec",
+                collector_pod_name,
+                "-n",
+                self.namespace,
+                "-c",
+                "collector",
+                "--",
+                "ls",
+                "-1",
+                "/results/",
             ]
-            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=10)
-            
-            if list_result.returncode == 0 and list_result.stdout.strip():
-                pod_dirs = list_result.stdout.strip().split('\n')
-                
+            list_result = subprocess.CompletedProcess(
+                args=list_cmd, returncode=-1, stdout="", stderr=""
+            )
+            pod_dirs: List[str] = []
+            for attempt in range(45):
+                list_result = subprocess.run(
+                    list_cmd, capture_output=True, text=True, timeout=30
+                )
+                if list_result.returncode == 0 and list_result.stdout.strip():
+                    pod_dirs = [
+                        d
+                        for d in list_result.stdout.strip().split("\n")
+                        if d and d != "lost+found"
+                    ]
+                    if pod_dirs:
+                        break
+                if list_result.stderr.strip():
+                    self.console.print(
+                        f"[dim]    PVC ls attempt {attempt + 1} (rc={list_result.returncode}): "
+                        f"{list_result.stderr.strip()[:300]}[/dim]"
+                    )
+                time.sleep(1)
+
+            if pod_dirs:
+                pvc_map: Dict[str, str] = {}
+                if pod_names:
+                    pvc_map = assign_pvc_subdirs_to_pods(pod_dirs, pod_names)
+
                 for pod_dir_name in pod_dirs:
                     if not pod_dir_name:
                         continue
-                    
-                    # Copy entire pod directory
-                    local_pod_dir = results_dir / pod_dir_name
-                    local_pod_dir.mkdir(exist_ok=True)
-                    
+
+                    matched_pod = pvc_map.get(pod_dir_name) if pod_names else None
+                    if pod_names:
+                        if matched_pod:
+                            local_pod_dir = results_dir / matched_pod / "pvc"
+                        else:
+                            local_pod_dir = results_dir / "pvc_unmapped" / pod_dir_name
+                    else:
+                        local_pod_dir = results_dir / pod_dir_name
+
+                    local_pod_dir.mkdir(parents=True, exist_ok=True)
+
                     cp_cmd = [
-                        "kubectl", "cp",
+                        "kubectl",
+                        "cp",
+                        "-c",
+                        "collector",
                         f"{self.namespace}/{collector_pod_name}:/results/{pod_dir_name}",
-                        str(local_pod_dir)
+                        str(local_pod_dir),
                     ]
-                    
+
                     cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
-                    
+
                     if cp_result.returncode == 0:
                         # Count collected files
                         file_count = sum(1 for _ in local_pod_dir.rglob('*') if _.is_file())
                         if file_count > 0:
-                            results["artifacts"].append({
+                            art: Dict[str, Any] = {
                                 "source": f"PVC:{pvc_name}/{pod_dir_name}",
                                 "local_path": str(local_pod_dir),
                                 "file_count": file_count,
-                                "type": "pvc_collection"
-                            })
-                            self.console.print(f"[dim]    ✓ Collected {file_count} files from {pod_dir_name}[/dim]")
+                                "type": "pvc_collection",
+                                "pvc_subdir": pod_dir_name,
+                            }
+                            if pod_names:
+                                art["k8s_pod"] = matched_pod
+                            results["artifacts"].append(art)
+                            if matched_pod:
+                                dest_hint = f"{matched_pod}/pvc"
+                            elif pod_names:
+                                dest_hint = f"pvc_unmapped/{pod_dir_name}"
+                            else:
+                                dest_hint = pod_dir_name
+                            self.console.print(
+                                f"[dim]    ✓ Collected {file_count} files from {pod_dir_name} → {dest_hint}[/dim]"
+                            )
                 
                 self.console.print(f"[green]✓ Collected artifacts from PVC[/green]")
             else:
-                self.console.print(f"[yellow]⚠ No results found in PVC[/yellow]")
+                hint = ""
+                if list_result.returncode != 0 or list_result.stderr.strip():
+                    hint = (
+                        f" (kubectl exec rc={list_result.returncode}"
+                        + (
+                            f", stderr={list_result.stderr.strip()[:400]!r}"
+                            if list_result.stderr.strip()
+                            else ""
+                        )
+                        + ")"
+                    )
+                self.console.print(
+                    f"[yellow]⚠ No results found in PVC after retries{hint}[/yellow]"
+                )
             
             # Cleanup collector pod
             self.core_v1.delete_namespaced_pod(
@@ -2643,6 +2765,12 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "job_name": results["job_name"],
             "namespace": results["namespace"],
             "collected_at": datetime.now().isoformat(),
+            "k8s_results_layout": (
+                "Per pod: <job>/<pod_name>/pod.log (API log) and "
+                "<job>/<pod_name>/pvc/ (mirror of /results/<subdir>/). "
+                "Unmatched PVC subdirs: <job>/pvc_unmapped/<subdir>/."
+            ),
+            "layout_version": 2,
             "pods": len(results["logs"]),
             "total_artifacts": len(results["artifacts"]),
             "artifacts_by_type": {},
