@@ -8,7 +8,8 @@ metadata:
     madengine-pvc: "true"
 spec:
   accessModes:
-    - ReadWriteOnce  # Single-node access is sufficient for per-job results collection
+    # RWO: single-node results (e.g. local-path). RWX: multi-node (e.g. nfs-banff).
+    - {{ access_mode | default("ReadWriteOnce") }}
   resources:
     requests:
       storage: {{ storage_size | default("10Gi") }}

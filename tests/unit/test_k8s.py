@@ -1,4 +1,9 @@
-"""Unit tests for Kubernetes Secret helpers and ConfigMap size estimate."""
+"""
+Kubernetes-related unit tests (secrets/config helpers, PVC → pod mapping).
+
+Keep new K8s-focused unit tests here to avoid many small `test_k8s_*.py` files.
+Integration/e2e tests stay in their own modules.
+"""
 
 from madengine.deployment.k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
@@ -10,6 +15,10 @@ from madengine.deployment.k8s_secrets import (
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
     build_registry_secret_data,
+)
+from madengine.deployment.kubernetes import (
+    assign_pvc_subdirs_to_pods,
+    match_pvc_subdir_to_k8s_pod,
 )
 
 
@@ -99,3 +108,49 @@ def test_estimate_skips_credential_when_not_in_configmap():
         "common_script_contents": {},
     }
     assert estimate_configmap_payload_bytes(ctx) < 100
+
+
+# --- PVC /results subdir → pod name (kubernetes.collect_results) ------------
+
+
+def test_pvc_match_exact():
+    assigned: set = set()
+    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod"
+    assigned.add("my-pod")
+    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod-0-abc"
+
+
+def test_pvc_match_prefix_indexed_job():
+    assigned: set = set()
+    pods = ["madengine-dummy-torchrun-0-fz7th", "madengine-dummy-torchrun-1-88hw6"]
+    assert (
+        match_pvc_subdir_to_k8s_pod("madengine-dummy-torchrun-0", pods, assigned)
+        == "madengine-dummy-torchrun-0-fz7th"
+    )
+    assigned.add("madengine-dummy-torchrun-0-fz7th")
+    assert (
+        match_pvc_subdir_to_k8s_pod("madengine-dummy-torchrun-1", pods, assigned)
+        == "madengine-dummy-torchrun-1-88hw6"
+    )
+
+
+def test_pvc_assign_longest_subdir_first():
+    pod_names = ["madengine-dummy-torchrun-0-fz7th", "madengine-dummy-torchrun-1-88hw6"]
+    mapping = assign_pvc_subdirs_to_pods(
+        ["madengine-dummy-torchrun-0", "madengine-dummy-torchrun-1"],
+        pod_names,
+    )
+    assert mapping["madengine-dummy-torchrun-0"] == "madengine-dummy-torchrun-0-fz7th"
+    assert mapping["madengine-dummy-torchrun-1"] == "madengine-dummy-torchrun-1-88hw6"
+
+
+def test_pvc_assign_no_duplicate_pods():
+    pods = ["a-x", "a-y"]
+    m = assign_pvc_subdirs_to_pods(["a"], pods)
+    assert len(m) == 1
+    assert m["a"] in pods
+
+
+def test_pvc_assign_empty_dirs():
+    assert assign_pvc_subdirs_to_pods([], ["p"]) == {}
+    assert assign_pvc_subdirs_to_pods(["  ", ""], ["p"]) == {}

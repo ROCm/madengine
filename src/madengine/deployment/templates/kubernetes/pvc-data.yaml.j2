@@ -11,9 +11,8 @@ metadata:
     description: "Shared data storage for madengine (auto-created)"
 spec:
   accessModes:
-    # RWO for single-node (broader storage class support)
-    # RWX for multi-node (requires NFS or similar)
-    - {{ access_mode | default("ReadWriteOnce") }}
+    # Long-lived shared data: always ReadWriteMany (NFS/EFS) for single- and multi-pod.
+    - {{ access_mode | default("ReadWriteMany") }}
   resources:
     requests:
       storage: {{ storage_size | default("100Gi") }}
