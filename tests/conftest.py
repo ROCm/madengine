@@ -140,6 +140,7 @@ def mock_run_args():
     args.force_mirror_local = False
     args.disable_skip_gpu_arch = False
     args.verbose = False
+    args.skip_model_run = False
     args._separate_phases = True
     return args
 
