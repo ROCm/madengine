@@ -191,7 +191,7 @@ class Context:
         """
         # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
         return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
+            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /opt/rocm/bin/rocm-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
         )
 
     def get_host_os(self) -> str:
@@ -322,7 +322,28 @@ class Context:
             - AMD
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
-            return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
+            try:
+                return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
+            except Exception as e:
+                # Try fallback to rocm-smi
+                try:
+                    output = self.console.sh("rocm-smi -i")
+                    # Parse output to extract product name from brackets
+                    # Example: "GPU[0]          : Device Name:          Arcturus GL-XL [Instinct MI100]"
+                    # Extract: "Instinct MI100"
+                    for line in output.split('\n'):
+                        if 'Device Name:' in line and 'GPU[0]' in line:
+                            # Use regex to find text within brackets
+                            match = re.search(r'\[(.*?)\]', line)
+                            if match:
+                                return match.group(1).strip()
+                    raise RuntimeError("Could not parse GPU product name from rocm-smi output")
+                except Exception as rocm_error:
+                    raise RuntimeError(
+                        f"Unable to determine AMD GPU product name. "
+                        f"Ensure amd-smi or rocm-smi is installed and GPUs are accessible. "
+                        f"amd-smi error: {e}, rocm-smi error: {rocm_error}"
+                    )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
             return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0")
         else:
@@ -414,9 +435,64 @@ class Context:
             
             kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
 
-            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.0 and node id otherwise
-            # node id is more robust but is only available from 6.4.0
-            if rocm_version < (6, 4, 0):
+            # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
+            # node id is more robust but is only available from 6.4.1
+            use_legacy_method = False
+            
+            if rocm_version >= (6, 4, 1):
+                # Try modern method using node_id (ROCm >= 6.4.1)
+                try:
+                    kfd_nodeids = []
+                    for line in kfd_properties:
+                        try:
+                            match = re.search(r"\d+", line.split()[0])
+                            if match:
+                                kfd_nodeids.append(int(match.group()))
+                            else:
+                                print(f"Warning: Could not extract node ID from line: {line}")
+                        except (IndexError, ValueError) as e:
+                            print(f"Warning: Failed to parse node ID from line '{line}': {e}")
+                            continue
+
+                    if len(kfd_nodeids) != len(kfd_renderDs):
+                        raise RuntimeError(
+                            f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
+                            f"and renderDs count ({len(kfd_renderDs)})"
+                        )
+
+                    # Map node ids to renderDs
+                    nodeid_renderD_map = {
+                        nodeid: renderD 
+                        for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
+                    }
+
+                    # Get list of GPUs from amd-smi
+                    output = self.console.sh("amd-smi list -e --json")
+                    if not output or output.strip() == "":
+                        raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
+                    
+                    data = json.loads(output)
+                    
+                    if not data or not isinstance(data, list):
+                        raise ValueError("amd-smi returned empty or invalid data")
+
+                    # Get gpu id to node id map from amd-smi
+                    gpuid_nodeid_map = {}
+                    for item in data:
+                        gpuid_nodeid_map[item["gpu"]] = item["node_id"]
+
+                    # Sort gpu_renderDs based on gpu ids
+                    gpu_renderDs = [
+                        nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
+                        for gpuid in sorted(gpuid_nodeid_map.keys())
+                    ]
+                    
+                except Exception as e:
+                    # Fallback to legacy method if amd-smi fails
+                    print(f"Warning: amd-smi failed on ROCm >= 6.4.1, falling back to rocm-smi: {e}")
+                    use_legacy_method = True
+
+            if rocm_version < (6, 4, 1) or use_legacy_method:
                 # Legacy method using unique_id
                 kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
                 if not kfd_unique_output:
@@ -463,61 +539,6 @@ class Context:
                         gpu_renderDs.append(uniqueid_renderD_map[unique_id])
                     except (IndexError, KeyError) as e:
                         raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
-            else:
-                # Modern method using node_id (ROCm >= 6.4.0)
-                kfd_nodeids = []
-                for line in kfd_properties:
-                    try:
-                        match = re.search(r"\d+", line.split()[0])
-                        if match:
-                            kfd_nodeids.append(int(match.group()))
-                        else:
-                            print(f"Warning: Could not extract node ID from line: {line}")
-                    except (IndexError, ValueError) as e:
-                        print(f"Warning: Failed to parse node ID from line '{line}': {e}")
-                        continue
-
-                if len(kfd_nodeids) != len(kfd_renderDs):
-                    raise RuntimeError(
-                        f"Mismatch between node IDs count ({len(kfd_nodeids)}) "
-                        f"and renderDs count ({len(kfd_renderDs)})"
-                    )
-
-                # Map node ids to renderDs
-                nodeid_renderD_map = {
-                    nodeid: renderD 
-                    for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
-                }
-
-                # Get list of GPUs from amd-smi
-                output = self.console.sh("amd-smi list -e --json")
-                if not output or output.strip() == "":
-                    raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
-                
-                try:
-                    data = json.loads(output)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}")
-                
-                if not data or not isinstance(data, list):
-                    raise ValueError("amd-smi returned empty or invalid data")
-
-                # Get gpu id to node id map from amd-smi
-                gpuid_nodeid_map = {}
-                for item in data:
-                    try:
-                        gpuid_nodeid_map[item["gpu"]] = item["node_id"]
-                    except KeyError as e:
-                        raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
-
-                # Sort gpu_renderDs based on gpu ids
-                try:
-                    gpu_renderDs = [
-                        nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
-                        for gpuid in sorted(gpuid_nodeid_map.keys())
-                    ]
-                except KeyError as e:
-                    raise RuntimeError(f"Failed to map GPU IDs to renderDs: {e}")
 
         except (RuntimeError, ValueError, KeyError) as e:
             # Re-raise with context
