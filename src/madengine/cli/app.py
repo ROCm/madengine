@@ -71,6 +71,9 @@ def cli_main() -> None:
     """Entry point for the CLI application."""
     try:
         app()
+    except typer.Exit:
+        # Preserve exit code from run/build/other commands for Jenkins and scripts
+        raise
     except KeyboardInterrupt:
         console.print("\n🛑 [yellow]Operation cancelled by user[/yellow]")
         sys.exit(ExitCode.FAILURE)

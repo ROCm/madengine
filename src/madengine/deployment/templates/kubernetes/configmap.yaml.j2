@@ -9,8 +9,10 @@ metadata:
 data:
   build_manifest.json: |
 {{ manifest_content | indent(4, first=True) }}
+  {% if include_credential_in_configmap %}
   credential.json: |
 {{ credential_content | indent(4, first=True) }}
+  {% endif %}
   {% if data_json_content %}
   data.json: |
 {{ data_json_content | indent(4, first=True) }}

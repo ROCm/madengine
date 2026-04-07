@@ -3,13 +3,13 @@
 SGLang Distributed Inference Benchmark
 
 SGLang uses its own native launcher - NO torchrun needed!
-- Uses Ray for distributed coordination internally
-- Supports Tensor Parallelism (TP) within nodes
-- Supports multi-node deployment with automatic load balancing
+- Tensor Parallelism (TP) within a node
+- One run per node (data parallel): run.sh invokes this with --nnodes 1 per node,
+  so each node runs an independent benchmark with TP = GPUs on that node.
 
-Launch modes:
-  Single-node/multi-GPU: TP only
-  Multi-node/multi-GPU: TP across nodes with load balancing
+Launch modes (driven by run.sh):
+  Single-node: TP = GPUs on node, nnodes=1
+  Multi-node: One serve per node (TP only on that node), nnodes=1 per process
 """
 
 import os

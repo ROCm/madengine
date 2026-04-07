@@ -38,7 +38,7 @@ except ImportError as e:
     sys.exit(1)
 
 # Configuration
-DEFAULT_MODEL = "facebook/opt-125m"  # Small model for testing
+DEFAULT_MODEL = "facebook/opt-350m"  # 16 attention heads, compatible with TP=8
 NUM_PROMPTS = 100
 MAX_TOKENS = 128
 TEMPERATURE = 0.8
@@ -61,25 +61,20 @@ def print_header(args):
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
     
-    # Check multi-node setup
     nnodes = int(os.environ.get("NNODES", "1"))
     node_rank = int(os.environ.get("NODE_RANK", "0"))
     
-    if nnodes > 1:
-        print(f"Multi-node mode: {nnodes} nodes (Node {node_rank})")
-        print(f"Parallelism strategy: Data Parallelism")
-        print(f"  - Each node: Independent replica with TP={args.tensor_parallel_size}")
-        print(f"  - Total GPUs: {args.tensor_parallel_size * nnodes}")
-    
     print(f"Model: {args.model}")
     print(f"Tensor Parallel Size: {args.tensor_parallel_size}")
-    print(f"Pipeline Parallel Size: {1 if nnodes > 1 else args.pipeline_parallel_size}")
-    
-    if nnodes == 1:
-        # Calculate total parallelism for single-node
-        total_gpus = args.tensor_parallel_size * args.pipeline_parallel_size
-        print(f"Total GPUs (TP × PP): {total_gpus}")
-    
+    print(f"Pipeline Parallel Size: {args.pipeline_parallel_size}")
+    total_gpus = args.tensor_parallel_size * args.pipeline_parallel_size
+    print(f"Total GPUs (TP × PP): {total_gpus}")
+    if nnodes > 1:
+        print(f"Multi-node: {nnodes} nodes (driver on node {node_rank})")
+        if args.pipeline_parallel_size > 1:
+            print(f"Strategy: TP + PP (single Ray cluster)")
+        else:
+            print(f"Strategy: TP (single Ray cluster)")
     print(f"Number of prompts: {NUM_PROMPTS}")
     print(f"Max tokens: {MAX_TOKENS}")
     print(f"Distributed backend: {args.distributed_backend}")
@@ -97,43 +92,32 @@ def generate_prompts(num_prompts: int) -> List[str]:
 
 
 def run_inference(args):
-    """Run vLLM V1 inference benchmark with Data Parallelism support."""
+    """Run vLLM V1 inference benchmark. Supports single-node (TP) and multi-node (TP+PP with Ray)."""
     print("\n" + "=" * 70)
     print("Initializing vLLM V1 Engine")
     print("=" * 70)
     
-    # Get multi-node environment variables
     nnodes = int(os.environ.get("NNODES", "1"))
     node_rank = int(os.environ.get("NODE_RANK", "0"))
     
-    # Determine distributed backend
-    # For single-node: use 'mp' (multiprocessing) or None
-    # For multi-node: use 'ray'
     if args.distributed_backend == "auto":
         distributed_backend = "ray" if nnodes > 1 else None
     else:
         distributed_backend = args.distributed_backend if args.distributed_backend != "none" else None
     
-    # Multi-node Data Parallelism: Override pipeline parallelism
-    # Each node runs an independent replica with tensor parallelism
-    if nnodes > 1:
+    # Use requested TP and PP (multi-node uses TP+PP from madengine env; no forced PP=1)
+    effective_pipeline_size = args.pipeline_parallel_size
+    effective_gpu_memory = 0.60 if args.pipeline_parallel_size > 1 else 0.85
+    
+    if nnodes > 1 and distributed_backend == "ray":
         print("=" * 70)
-        print("🔀 MULTI-NODE DATA PARALLELISM MODE")
+        print("MULTI-NODE TP + PP (single Ray cluster)")
         print("=" * 70)
         print(f"Total nodes: {nnodes}")
-        print(f"Current node rank: {node_rank}")
-        print(f"Strategy: Each node runs independent replica")
-        print(f"  - Tensor Parallelism: {args.tensor_parallel_size} GPUs per node")
-        print(f"  - Pipeline Parallelism: Disabled (PP=1)")
-        print(f"  - Data Parallelism: {nnodes} replicas (one per node)")
+        print(f"Tensor Parallel Size: {args.tensor_parallel_size}")
+        print(f"Pipeline Parallel Size: {effective_pipeline_size}")
+        print(f"Total GPUs: {args.tensor_parallel_size * effective_pipeline_size}")
         print("=" * 70)
-        
-        # Force PP=1 for Data Parallelism
-        effective_pipeline_size = 1
-        effective_gpu_memory = 0.85  # Higher memory utilization for DP
-    else:
-        effective_pipeline_size = args.pipeline_parallel_size
-        effective_gpu_memory = 0.60 if args.pipeline_parallel_size > 1 else 0.85
     
     print(f"Using distributed backend: {distributed_backend or 'default'}")
     
@@ -161,7 +145,7 @@ def run_inference(args):
         llm = LLM(**llm_kwargs)
         print("✓ vLLM V1 engine initialized successfully")
         if nnodes > 1:
-            print(f"✓ Node {node_rank} ready with TP={args.tensor_parallel_size}")
+            print(f"✓ Multi-node TP={args.tensor_parallel_size} PP={effective_pipeline_size} (Ray)")
     except Exception as e:
         print(f"✗ Failed to initialize vLLM engine: {e}")
         import traceback
@@ -202,11 +186,8 @@ def run_inference(args):
     throughput = NUM_PROMPTS / elapsed_time
     tokens_per_second = total_tokens / elapsed_time
     
-    # Print results
     print(f"\n{'=' * 70}")
     print("Benchmark Results")
-    if nnodes > 1:
-        print(f"Node {node_rank}/{nnodes} (Data Parallel Replica)")
     print("=" * 70)
     print(f"Total prompts: {NUM_PROMPTS}")
     print(f"Total time: {elapsed_time:.2f} seconds")
@@ -214,7 +195,7 @@ def run_inference(args):
     print(f"Token generation: {tokens_per_second:.2f} tokens/second")
     print(f"Average latency: {(elapsed_time / NUM_PROMPTS) * 1000:.2f} ms/request")
     if nnodes > 1:
-        print(f"Aggregate throughput (all {nnodes} nodes): ~{throughput * nnodes:.2f} requests/second")
+        print(f"(Multi-node TP+PP: single replica across {args.tensor_parallel_size * effective_pipeline_size} GPUs)")
     print("=" * 70)
     
     # Print sample outputs
@@ -233,19 +214,9 @@ def run_inference(args):
     print(f"model: {args.model}")
     print(f"tensor_parallel_size: {args.tensor_parallel_size}")
     print(f"pipeline_parallel_size: {effective_pipeline_size}")
-    
-    # Multi-node Data Parallelism info
     if nnodes > 1:
-        print(f"data_parallel_size: {nnodes}")
-        print(f"node_rank: {node_rank}")
-        print(f"aggregate_throughput: {throughput * nnodes:.2f} requests_per_second (estimated)")
-    
-    # Determine what backend was actually used
-    if args.distributed_backend == "auto":
-        actual_backend = "ray" if nnodes > 1 else "default"
-    else:
-        actual_backend = args.distributed_backend if args.distributed_backend != "none" else "default"
-    print(f"distributed_backend: {actual_backend}")
+        print(f"nnodes: {nnodes}")
+    print(f"distributed_backend: {distributed_backend or 'default'}")
     
     return 0
 

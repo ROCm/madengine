@@ -13,8 +13,25 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Callable, Dict, Optional
 from copy import deepcopy
+
+
+def apply_deployment_config(config: Any, load_fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+    """Apply deployment defaults via a loader and set config.additional_context.
+
+    Used by SLURM and Kubernetes deployment classes before calling super().__init__(config).
+
+    Args:
+        config: DeploymentConfig (or any object with additional_context attribute).
+        load_fn: ConfigLoader.load_slurm_config or ConfigLoader.load_k8s_config.
+
+    Returns:
+        The merged full configuration dict.
+    """
+    full_config = load_fn(config.additional_context or {})
+    config.additional_context = full_config
+    return full_config
 
 
 class ConfigLoader:

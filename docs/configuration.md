@@ -26,16 +26,65 @@ madengine run --tags model --additional-context-file config.json
 }
 ```
 
-## Basic Configuration
+## Default Configuration Values
 
-### Required for Local Execution
+madengine provides sensible defaults for common AMD/Ubuntu workflows:
 
-```json
-{
-  "gpu_vendor": "AMD",
-  "guest_os": "UBUNTU"
-}
+| Field | Default Value | Customization |
+|-------|---------------|---------------|
+| `gpu_vendor` | `AMD` | Set to `NVIDIA` for NVIDIA GPUs |
+| `guest_os` | `UBUNTU` | Set to `CENTOS` for CentOS containers |
+
+### When Defaults Apply
+
+Defaults are applied during the **build** command when fields are not explicitly provided:
+
+```bash
+# Uses defaults: {"gpu_vendor": "AMD", "guest_os": "UBUNTU"}
+madengine build --tags model
+
+# Explicit override
+madengine build --tags model \
+  --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 ```
+
+When defaults are applied, you'll see an informative message:
+
+```
+ℹ️  Using default values for build configuration:
+   • gpu_vendor: AMD (default)
+   • guest_os: UBUNTU (default)
+
+💡 To customize, use --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
+```
+
+### Partial Configuration
+
+You can provide one field and let the other default:
+
+```bash
+# Override only gpu_vendor (guest_os defaults to UBUNTU)
+madengine build --tags model \
+  --additional-context '{"gpu_vendor": "NVIDIA"}'
+
+# Override only guest_os (gpu_vendor defaults to AMD)
+madengine build --tags model \
+  --additional-context '{"guest_os": "CENTOS"}'
+```
+
+### Production Recommendations
+
+For production deployments:
+- ✅ **DO** explicitly specify all configuration values
+- ✅ **DO** use configuration files for reproducibility
+- ⚠️ **AVOID** relying on defaults in automated workflows
+
+### Run Command Behavior
+
+The **run** command does NOT require these values because it can detect GPU vendor at runtime.
+Defaults only apply to the **build** command where Dockerfile selection requires them.
+
+## Basic Configuration
 
 **gpu_vendor** (case-insensitive):
 - `"AMD"` - AMD ROCm GPUs
@@ -231,12 +280,13 @@ madengine run --tags model --force-mirror-local /tmp/mirror
 }
 ```
 
-Automatically applies:
+Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`):
 - Namespace: `default`
 - Resource limits based on GPU count
-- Image pull policy: `IfNotPresent`
+- Image pull policy: `Always` (base default)
 - Service account: `default`
 - GPU vendor detection from context
+- `k8s.secrets` defaults (see below)
 
 ### Full Configuration
 
@@ -252,7 +302,13 @@ Automatically applies:
     "cpu_limit": "32",
     "service_account": "madengine-sa",
     "image_pull_policy": "Always",
-    "image_pull_secrets": ["my-registry-secret"]
+    "ttl_seconds_after_finished": null,
+    "allow_privileged_profiling": null,
+    "secrets": {
+      "strategy": "from_local_credentials",
+      "image_pull_secret_names": ["my-registry-secret"],
+      "runtime_secret_name": null
+    }
   }
 }
 ```
@@ -267,7 +323,11 @@ Automatically applies:
 - `cpu_limit` - CPU cores limit (default: 2× CPU request)
 - `service_account` - Service account name
 - `image_pull_policy` - `Always`, `IfNotPresent`, or `Never`
-- `image_pull_secrets` - List of image pull secrets
+- `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
+- `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
+- `secrets.strategy` - `from_local_credentials` (default): create `Secret` objects from local `credential.json` at deploy time; `existing`: only reference pre-created Secrets; `omit`: no runtime Secret from client
+- `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
+- `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 ### Multi-Node Kubernetes
 

@@ -144,7 +144,30 @@ madengine build --tags model \
 madengine build --tags model --live-output --verbose
 ```
 
-**Required Context for Build:**
+**Default Values:**
+
+The build command applies the following defaults if not specified:
+
+- **gpu_vendor**: `AMD`
+- **guest_os**: `UBUNTU`
+
+Example with defaults:
+```bash
+# Equivalent to providing {"gpu_vendor": "AMD", "guest_os": "UBUNTU"}
+madengine build --tags dummy
+```
+
+You will see a message indicating which defaults were applied:
+
+```
+ℹ️  Using default values for build configuration:
+   • gpu_vendor: AMD (default)
+   • guest_os: UBUNTU (default)
+
+💡 To customize, use --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
+```
+
+**Supported Values:**
 
 - `gpu_vendor`: `"AMD"` or `"NVIDIA"`
 - `guest_os`: `"UBUNTU"` or `"CENTOS"`
@@ -470,17 +493,19 @@ madengine database \
 
 ## Exit Codes
 
-madengine uses standard exit codes to indicate success or failure:
+madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect success or failure:
 
 | Code | Constant | Description |
 |------|----------|-------------|
 | `0` | `SUCCESS` | Command completed successfully |
 | `1` | `FAILURE` | General failure |
-| `2` | `INVALID_ARGS` | Invalid command-line arguments or configuration |
-| `3` | `BUILD_FAILURE` | One or more builds failed |
-| `4` | `RUN_FAILURE` | One or more model executions failed |
+| `2` | `BUILD_FAILURE` | One or more image builds failed (e.g. Docker build error) |
+| `3` | `RUN_FAILURE` | One or more model executions failed |
+| `4` | `INVALID_ARGS` | Invalid command-line arguments or configuration |
 
-**Example Usage in Scripts:**
+**Failure recording:** Pre-run failures (e.g. image pull, setup) and run failures are recorded in the performance table (`perf.csv`) with status `FAILURE`, so all attempted models appear in the CSV. The file is created automatically if missing.
+
+**Example usage in scripts / CI:**
 
 ```bash
 #!/bin/bash
@@ -491,7 +516,7 @@ if [ $? -eq 0 ]; then
   madengine run --manifest-file build_manifest.json
 else
   echo "Build failed with exit code $?"
-  exit 1
+  exit $?
 fi
 ```
 

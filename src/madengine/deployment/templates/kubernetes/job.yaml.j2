@@ -8,6 +8,9 @@ metadata:
     model: {{ model_name }}
     madengine-job: "true"
 spec:
+  {% if ttl_seconds_after_finished is not none %}
+  ttlSecondsAfterFinished: {{ ttl_seconds_after_finished }}
+  {% endif %}
   completions: {{ completions }}
   parallelism: {{ parallelism }}
   {% if completion_mode %}
@@ -22,13 +25,10 @@ spec:
         model: {{ model_name }}
     spec:
       {% if subdomain %}
-      subdomain: {{ subdomain }}  # Required for DNS in headless service
+      subdomain: {{ subdomain }}
       {% endif %}
       restartPolicy: Never
       terminationGracePeriodSeconds: 60
-      {% if subdomain %}
-      subdomain: {{ subdomain }}
-      {% endif %}
       {% if node_selector %}
       nodeSelector:
         {% for key, value in node_selector.items() %}
@@ -39,9 +39,12 @@ spec:
       hostIPC: true
       {% endif %}
       
-      # Image pull secrets for private registries
+      {% if image_pull_secrets and image_pull_secrets|length > 0 %}
       imagePullSecrets:
-      - name: dockerhub-creds
+      {% for ips in image_pull_secrets %}
+      - name: {{ ips.name }}
+      {% endfor %}
+      {% endif %}
       
       # Init container extracts madengine scripts from package
       initContainers:
@@ -124,7 +127,13 @@ spec:
             
             # Copy config files from ConfigMap to workspace
             cp /config/build_manifest.json /workspace/
+            {% if include_credential_in_configmap %}
             cp /config/credential.json /workspace/ 2>/dev/null || true
+            {% elif runtime_credentials_secret_name %}
+            # credential.json mounted from Secret at /workspace/credential.json
+            {% else %}
+            echo '{}' > /workspace/credential.json
+            {% endif %}
             cp /config/data.json /workspace/ 2>/dev/null || true
             
             # GPU Information
@@ -610,6 +619,12 @@ spec:
         - name: config
           mountPath: /config
           readOnly: true
+        {% if runtime_credentials_secret_name %}
+        - name: runtime-credentials
+          mountPath: /workspace/credential.json
+          subPath: credential.json
+          readOnly: true
+        {% endif %}
         - name: shm
           mountPath: /dev/shm
         - name: results
@@ -620,12 +635,14 @@ spec:
           readOnly: false  # Must be writable for data provider downloads
         {% endif %}
         
+        {% if privileged_profiling %}
         securityContext:
           capabilities:
             add:
             - SYS_PTRACE
           seccompProfile:
             type: Unconfined
+        {% endif %}
       
       {% if tolerations %}
       tolerations:
@@ -649,6 +666,14 @@ spec:
       - name: config
         configMap:
           name: {{ configmap_name }}
+      {% if runtime_credentials_secret_name %}
+      - name: runtime-credentials
+        secret:
+          secretName: {{ runtime_credentials_secret_name }}
+          items:
+          - key: credential.json
+            path: credential.json
+      {% endif %}
       - name: shm
         emptyDir:
           medium: Memory

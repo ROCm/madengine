@@ -352,7 +352,6 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
             console.print("[yellow]⚠️  Performance CSV is empty[/yellow]")
             return
         
-        # Get session_start_row to mark current runs (don't filter, just mark)
         total_rows = len(df)
         
         # Try parameter first, then fall back to marker file
@@ -378,7 +377,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
-        perf_table.add_column("Launcher", justify="center", style="magenta")  # Distributed launcher
+        perf_table.add_column("Launcher", justify="center", style="magenta")
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
@@ -388,12 +387,15 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Data Name", style="magenta")
         perf_table.add_column("Data Provider", style="magenta")        
         
-        # Helper function to format duration
+        # Helper function to format duration (accepts float seconds or "Xs" string)
         def format_duration(duration):
-            if pd.isna(duration) or duration == "":
+            if pd.isna(duration) or duration == "" or duration is None:
                 return "N/A"
             try:
-                dur = float(duration)
+                if isinstance(duration, str) and duration.strip().endswith("s"):
+                    dur = float(duration.strip()[:-1])
+                else:
+                    dur = float(duration)
                 if dur < 1:
                     return f"{dur*1000:.0f}ms"
                 elif dur < 60:
@@ -401,7 +403,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 else:
                     return f"{dur/60:.1f}m"
             except (ValueError, TypeError):
-                return "N/A"
+                return str(duration) if duration else "N/A"
         
         # Helper function to format performance
         def format_performance(perf):

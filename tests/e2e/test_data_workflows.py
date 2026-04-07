@@ -18,6 +18,7 @@ import pytest
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from madengine.core.dataprovider import Data
 
 
@@ -85,7 +86,7 @@ class TestDataProviders:
             os.unlink(temp_file_path)
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf.csv", "perf.html"]], indirect=True
+        "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
     )
     def test_local_data_provider_runs_successfully(
         self, global_data, clean_test_temp_files

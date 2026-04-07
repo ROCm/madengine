@@ -24,10 +24,15 @@ pip install git+https://github.com/ROCm/madengine.git
 # Discover models
 madengine discover --tags dummy
 
-# Run locally
+# Run locally (full workflow: discover/build/run as configured by the model)
+madengine run --tags dummy
+
+# Or with explicit configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
+
+> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
 
 Results are saved to `perf_entry.csv`.
 
@@ -51,13 +56,14 @@ For complete command options and detailed examples, see **[CLI Command Reference
 # Discover models
 madengine discover --tags dummy
 
-# Build image
-madengine build --tags model \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Build image (uses AMD/UBUNTU defaults)
+madengine build --tags model
 
 # Run model
-madengine run --tags model \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+madengine run --tags model
+
+# For NVIDIA or other configurations, specify explicitly:
+# madengine build --tags model --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate HTML report
 madengine report to-html --csv-file perf_entry.csv
@@ -664,6 +670,8 @@ madengine discover --tags model --verbose
 
 ### CI/CD Integration
 
+madengine uses consistent exit codes (0=success, 2=build failure, 3=run failure, 4=invalid args). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
+
 ```bash
 #!/bin/bash
 # Example CI script
@@ -679,19 +687,19 @@ madengine build --batch-manifest batch.json \
 madengine run --manifest-file build_manifest.json \
   --timeout 3600
 
-# Check exit code
+# Check exit code (0=success, 2=build failure, 3=run failure; see CLI Reference)
 if [ $? -eq 0 ]; then
   echo "✅ Tests passed"
   
   # Generate and upload results
   madengine report to-email --output ci_results.html
   madengine database \
-    --csv-file perf_entry.csv \
+    --csv-file perf.csv \
     --db ci_results \
     --collection ${CI_BUILD_ID}
 else
   echo "❌ Tests failed"
-  exit 1
+  exit $?
 fi
 ```
 

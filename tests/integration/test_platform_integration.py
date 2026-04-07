@@ -14,6 +14,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
+from madengine.execution.docker_builder import DockerBuilder
+from madengine.execution.dockerfile_utils import (
+    parse_dockerfile_gpu_variables,
+    normalize_architecture_name,
+    is_target_arch_compatible_with_variable,
+    is_compilation_arch_compatible,
+)
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
@@ -541,6 +548,139 @@ class TestPlatformSpecificBehavior:
                         # Context is initialized during execute, verify CPU mode
                         if orchestrator.context:
                             assert orchestrator.context.get_system_ngpus() == 0
+
+
+# ============================================================================
+# Multi-GPU architecture (Dockerfile parsing, normalization, image filtering)
+# ============================================================================
+
+class TestMultiGPUArch:
+    """Multi-arch DockerBuilder logic, dockerfile_utils, and run-phase image filtering."""
+
+    def setup_method(self):
+        self.context = MagicMock()
+        self.console = MagicMock()
+        self.builder = DockerBuilder(self.context, self.console)
+        mock_args = MagicMock()
+        mock_args.additional_context = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+        mock_args.additional_context_file = None
+        mock_args.live_output = True
+        mock_args.data_config_file_name = "data.json"
+        mock_args.tags = []
+        mock_args.target_archs = []
+        mock_args.force_mirror_local = None
+        self.orchestrator = BuildOrchestrator(mock_args)
+
+    @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
+    @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
+    @patch.object(DockerBuilder, "build_image")
+    def test_multi_arch_build_image_naming(self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles):
+        model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
+        mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
+        mock_check_gpu_vars.return_value = (True, "docker/dummy.Dockerfile")
+        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908", "build_duration": 1.0}
+        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        assert result[0]["docker_image"].endswith("_gfx908")
+        mock_check_gpu_vars.return_value = (False, "docker/dummy.Dockerfile")
+        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}
+        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        assert not result[0]["docker_image"].endswith("_gfx908")
+
+    @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
+    @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
+    @patch.object(DockerBuilder, "build_image")
+    def test_multi_arch_manifest_fields(self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles):
+        model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
+        mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
+        mock_check_gpu_vars.return_value = (True, "docker/dummy.Dockerfile")
+        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908", "build_duration": 1.0}
+        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        assert result[0]["gpu_architecture"] == "gfx908"
+
+    @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
+    @patch.object(DockerBuilder, "build_image")
+    def test_legacy_single_arch_build(self, mock_build_image, mock_get_dockerfiles):
+        model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
+        mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
+        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}
+        result = self.builder._build_model_single_arch(model_info, None, False, None, "", None)
+        assert result[0]["docker_image"] == "ci-dummy_dummy.ubuntu.amd"
+
+    @patch.object(DockerBuilder, "_build_model_single_arch")
+    def test_additional_context_overrides_target_archs(self, mock_single_arch):
+        self.context.ctx = {"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx908"}}
+        model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
+        mock_single_arch.return_value = [{"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}]
+        result = self.builder.build_all_models([model_info], target_archs=["gfx908", "gfx90a"])
+        assert result["successful_builds"][0]["docker_image"] == "ci-dummy_dummy.ubuntu.amd"
+
+    def test_parse_dockerfile_gpu_variables(self):
+        content = """
+        ARG MAD_SYSTEM_GPU_ARCHITECTURE=gfx908
+        ENV PYTORCH_ROCM_ARCH=gfx908;gfx90a
+        ARG GPU_TARGETS=gfx908,gfx942
+        ENV GFX_COMPILATION_ARCH=gfx908
+        ARG GPU_ARCHS=gfx908;gfx90a;gfx942
+        """
+        result = parse_dockerfile_gpu_variables(content)
+        assert result["MAD_SYSTEM_GPU_ARCHITECTURE"] == ["gfx908"]
+        assert result["PYTORCH_ROCM_ARCH"] == ["gfx908", "gfx90a"]
+        assert result["GPU_TARGETS"] == ["gfx908", "gfx942"]
+        assert result["GFX_COMPILATION_ARCH"] == ["gfx908"]
+        assert result["GPU_ARCHS"] == ["gfx908", "gfx90a", "gfx942"]
+
+    def test_parse_dockerfile_gpu_variables_env_delimiter(self):
+        result = parse_dockerfile_gpu_variables("ENV PYTORCH_ROCM_ARCH = gfx908,gfx90a")
+        assert result["PYTORCH_ROCM_ARCH"] == ["gfx908", "gfx90a"]
+
+    def test_parse_malformed_dockerfile(self):
+        result = parse_dockerfile_gpu_variables(
+            "ENV BAD_LINE\nARG MAD_SYSTEM_GPU_ARCHITECTURE=\nENV PYTORCH_ROCM_ARCH=\n"
+        )
+        assert isinstance(result, dict)
+
+    def test_normalize_architecture_name(self):
+        cases = {
+            "gfx908": "gfx908", "GFX908": "gfx908", "mi100": "gfx908", "mi-100": "gfx908",
+            "mi200": "gfx90a", "mi-200": "gfx90a", "mi210": "gfx90a", "mi250": "gfx90a",
+            "mi300": "gfx940", "mi-300": "gfx940", "mi300a": "gfx940",
+            "mi300x": "gfx942", "mi-300x": "gfx942", "unknown": "unknown", "": None,
+        }
+        for inp, expected in cases.items():
+            assert normalize_architecture_name(inp) == expected
+
+    def test_is_target_arch_compatible_with_variable(self):
+        assert is_target_arch_compatible_with_variable("MAD_SYSTEM_GPU_ARCHITECTURE", ["gfx908"], "gfx942")
+        assert is_target_arch_compatible_with_variable("PYTORCH_ROCM_ARCH", ["gfx908", "gfx942"], "gfx942")
+        assert not is_target_arch_compatible_with_variable("PYTORCH_ROCM_ARCH", ["gfx908"], "gfx942")
+        assert is_target_arch_compatible_with_variable("GFX_COMPILATION_ARCH", ["gfx908"], "gfx908")
+        assert not is_target_arch_compatible_with_variable("GFX_COMPILATION_ARCH", ["gfx908"], "gfx942")
+        assert is_target_arch_compatible_with_variable("UNKNOWN_VAR", ["foo"], "bar")
+
+    def test_is_compilation_arch_compatible(self):
+        assert is_compilation_arch_compatible("gfx908", "gfx908")
+        assert not is_compilation_arch_compatible("gfx908", "gfx942")
+        assert is_compilation_arch_compatible("foo", "foo")
+
+    def test_filter_images_by_gpu_architecture(self):
+        mock_args = MagicMock()
+        mock_args.additional_context = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+        mock_args.additional_context_file = None
+        mock_args.tags = []
+        mock_args.live_output = True
+        mock_args.data_config_file_name = "data.json"
+        mock_args.force_mirror_local = None
+        run_orch = RunOrchestrator(mock_args)
+        built = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
+        filtered = run_orch._filter_images_by_gpu_architecture(built, "gfx908")
+        assert "img1" in filtered and "img2" not in filtered
+        built_legacy = {"img1": {"gpu_architecture": "gfx908"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
+        filtered = run_orch._filter_images_by_gpu_architecture(built_legacy, "gfx908")
+        assert "img1" in filtered
+        built_nomatch = {"img1": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx942", "gpu_vendor": "AMD"}}
+        assert len(run_orch._filter_images_by_gpu_architecture(built_nomatch, "gfx908")) == 0
+        built_all = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}}
+        assert len(run_orch._filter_images_by_gpu_architecture(built_all, "gfx908")) == 2
 
 
 if __name__ == "__main__":

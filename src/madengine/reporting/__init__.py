@@ -4,7 +4,7 @@ madengine Reporting
 Reporting modules for madengine including performance CSV and superset generation.
 """
 
-from .update_perf_csv import update_perf_csv, flatten_tags
+from .update_perf_csv import PERF_CSV_HEADER, update_perf_csv, flatten_tags
 from .update_perf_super import (
     update_perf_super_json,
     update_perf_super_csv,
@@ -12,6 +12,7 @@ from .update_perf_super import (
 )
 
 __all__ = [
+    "PERF_CSV_HEADER",
     "update_perf_csv",
     "flatten_tags",
     "update_perf_super_json",

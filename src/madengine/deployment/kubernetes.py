@@ -4,7 +4,7 @@ Kubernetes Deployment - Container orchestration using Jinja2 templates + Python 
 
 Uses Jinja2 templates for manifest generation (industry best practice) and
 Kubernetes Python client library for applying manifests.
-Requires AMD GPU Device Plugin: https://github.com/ROCm/k8s-device-plugin
+Requires a GPU device plugin matching the configured resource name (AMD or NVIDIA).
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -33,14 +33,35 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Template
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
-from .config_loader import ConfigLoader
+from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from .common import (
+    VALID_LAUNCHERS,
+    configure_multi_node_profiling,
+    is_rocprofv3_available,
+    normalize_launcher,
+)
+from .config_loader import ConfigLoader, apply_deployment_config
+from .k8s_secrets import (
+    CONFIGMAP_MAX_BYTES,
+    SECRETS_STRATEGY_EXISTING,
+    SECRETS_STRATEGY_FROM_LOCAL,
+    SECRETS_STRATEGY_OMIT,
+    create_or_update_secrets_from_credentials,
+    delete_job_secrets_if_exist,
+    estimate_configmap_payload_bytes,
+    merge_secrets_config,
+    resolve_image_pull_secret_refs,
+    resolve_runtime_secret_name,
+    build_registry_secret_data,
+)
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
 from madengine.core.errors import ConfigurationError, create_error_context
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
+from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
 try:
     from madengine.reporting.update_perf_csv import update_perf_csv
@@ -50,186 +71,48 @@ except ImportError:
     REPORTING_AVAILABLE = False
 
 
-# Valid distributed launchers
-VALID_LAUNCHERS = [
-    "torchrun",
-    "torchtitan",
-    "deepspeed",
-    "megatron-lm",
-    "primus",
-    "vllm",
-    "sglang",
-    "sglang-disagg"
-]
+from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 
 
-def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> str:
+def match_pvc_subdir_to_k8s_pod(
+    pvc_subdir: str,
+    pod_names: List[str],
+    assigned: set,
+) -> Optional[str]:
     """
-    Normalize launcher field based on deployment type and launcher value.
-    
-    Logic:
-    - If launcher is in VALID_LAUNCHERS: keep as-is
-    - If launcher is None/empty/invalid:
-        * local → "docker" (runs in Docker container)
-        * slurm → "docker" (typically uses containers on compute nodes)
-        * kubernetes → "native" (pod itself is the container)
-    
-    Args:
-        launcher_type: Raw launcher type from config (may be None)
-        deployment_type: "local", "slurm", or "kubernetes"
-        
-    Returns:
-        Normalized launcher string
+    Map one top-level name under /results/ to a full Kubernetes pod name.
+
+    Matches ``pod == pvc_subdir`` or ``pod.startswith(pvc_subdir + "-")`` among pods
+    not yet assigned. Prefer exact equality; if multiple prefix matches, pick the
+    first sorted name (deterministic).
     """
-    # If launcher is valid, keep it
-    if launcher_type and launcher_type in VALID_LAUNCHERS:
-        return launcher_type
-    
-    # Otherwise, default based on deployment type
-    if deployment_type == "local":
-        return "docker"
-    elif deployment_type == "slurm":
-        return "docker"
-    elif deployment_type == "kubernetes":
-        return "native"
-    else:
-        # Fallback for unknown deployment types
-        return "docker"
+    available = sorted(p for p in pod_names if p not in assigned)
+    exact = [p for p in available if p == pvc_subdir]
+    if exact:
+        return exact[0]
+    prefixed = [p for p in available if p.startswith(pvc_subdir + "-")]
+    if not prefixed:
+        return None
+    return sorted(prefixed)[0]
 
 
-def is_rocprofv3_available() -> bool:
+def assign_pvc_subdirs_to_pods(pod_dirs: List[str], pod_names: List[str]) -> Dict[str, str]:
     """
-    Check if rocprofv3 is available on the system.
-    
-    rocprofv3 is required for multi-node profiling with MPI support.
-    It's part of rocprofiler-sdk package in ROCm >= 6.4.1.
-    
-    Returns:
-        True if rocprofv3 is available and executable, False otherwise
+    Assign each PVC subdir to at most one pod. Process longest names first so
+    short prefixes do not steal pods (e.g. ``foo-0`` before ``foo``).
     """
-    try:
-        # Note: rocprofv3 doesn't support --version, use --help instead
-        result = subprocess.run(
-            ["rocprofv3", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
+    cleaned = [d.strip() for d in pod_dirs if d and d.strip()]
+    assigned: set = set()
+    mapping: Dict[str, str] = {}
+    for pvc_subdir in sorted(cleaned, key=lambda x: (-len(x), x)):
+        m = match_pvc_subdir_to_k8s_pod(pvc_subdir, pod_names, assigned)
+        if m:
+            mapping[pvc_subdir] = m
+            assigned.add(m)
+    return mapping
 
 
-def configure_multi_node_profiling(
-    nnodes: int,
-    tools_config: List[Dict],
-    logger
-) -> Dict[str, Any]:
-    """
-    Configure profiling for multi-node runs with rocprofv3 support.
-    
-    Industry best practice for multi-node profiling:
-    - Profile ALL nodes to detect stragglers, load imbalances, and communication bottlenecks
-    - Use rocprofv3 (MPI-aware) for distributed profiling
-    - Collect per-node outputs for detailed analysis
-    
-    Logic:
-    1. Single node (nnodes == 1): Use existing tool behavior
-    2. Multi-node (nnodes > 1):
-       a. Check if rocprofv3 is available
-       b. If available: Enable per-node profiling, upgrade "rocprof" to "rocprofv3"
-       c. If not available: Log warning and skip profiling
-    
-    Args:
-        nnodes: Number of nodes in the deployment
-        tools_config: List of tool configurations from user
-        logger: Logger instance for messages
-        
-    Returns:
-        Dictionary with profiling configuration:
-        - enabled: bool - Whether profiling is enabled
-        - mode: str - "single_node", "multi_node", or "multi_node_unsupported"
-        - tools: List[Dict] - Processed tool configurations
-        - per_node_collection: bool - Whether to collect from all nodes
-    """
-    if nnodes == 1:
-        # Single node - existing behavior works fine
-        return {
-            "enabled": True,
-            "mode": "single_node",
-            "tools": tools_config,
-            "per_node_collection": False
-        }
-    
-    # Multi-node case - check rocprofv3 availability
-    if not is_rocprofv3_available():
-        logger.warning(
-            "╔════════════════════════════════════════════════════════════════════════════╗\n"
-            "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
-            "╠════════════════════════════════════════════════════════════════════════════╣\n"
-            "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
-            "║                                                                            ║\n"
-            "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
-            "║                                                                            ║\n"
-            "║ Profiling will be SKIPPED for this multi-node run.                        ║\n"
-            "║                                                                            ║\n"
-            "║ To enable multi-node profiling:                                           ║\n"
-            "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
-            "║   • Command: apt install rocprofiler-sdk                                  ║\n"
-            "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
-            "║                                                                            ║\n"
-            "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
-            "╚════════════════════════════════════════════════════════════════════════════╝"
-        )
-        return {
-            "enabled": False,
-            "mode": "multi_node_unsupported",
-            "tools": [],
-            "per_node_collection": False
-        }
-    
-    # rocprofv3 is available - enable full multi-node profiling
-    logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
-    
-    # Upgrade "rocprof" tools to "rocprofv3" for multi-node compatibility
-    upgraded_tools = []
-    rocprof_upgraded = False
-    
-    for tool in tools_config:
-        tool_name = tool.get("name")
-        
-        if tool_name == "rocprof":
-            # Upgrade to rocprofv3 for multi-node MPI support
-            logger.info(
-                f"  → Upgrading 'rocprof' to 'rocprofv3' for multi-node MPI compatibility"
-            )
-            upgraded_tool = tool.copy()
-            upgraded_tool["name"] = "rocprofv3"
-            upgraded_tools.append(upgraded_tool)
-            rocprof_upgraded = True
-        else:
-            upgraded_tools.append(tool)
-    
-    # Log profiling tools being used
-    if upgraded_tools:
-        tool_names = [t.get("name") for t in upgraded_tools]
-        logger.info(f"  → Multi-node profiling tools: {', '.join(tool_names)}")
-        
-        # Highlight RCCL trace if present (critical for multi-node communication)
-        if "rccl_trace" in tool_names:
-            logger.info("  → ✓ rccl_trace enabled (critical for multi-node communication profiling)")
-    
-    return {
-        "enabled": True,
-        "mode": "multi_node",
-        "tools": upgraded_tools,
-        "per_node_collection": True,
-        "profiler": "rocprofv3",
-        "wrapper_mode": "launcher"
-    }
-
-
-class KubernetesDeployment(BaseDeployment):
+class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
     """
     Kubernetes cluster deployment using Python client library.
 
@@ -237,7 +120,7 @@ class KubernetesDeployment(BaseDeployment):
     - client.BatchV1Api(): Job creation and management
     - client.CoreV1Api(): Pod logs and status
 
-    Requires AMD GPU Device Plugin: https://github.com/ROCm/k8s-device-plugin
+    Requires nodes advertising the configured GPU resource (AMD or NVIDIA device plugin).
 
     **Workflow**:
     1. User has kubeconfig configured (in-cluster or ~/.kube/config)
@@ -272,11 +155,7 @@ class KubernetesDeployment(BaseDeployment):
                 "Install with: pip install pyyaml"
             )
 
-        # Apply intelligent defaults using ConfigLoader
-        # This merges built-in presets with user configuration
-        full_config = ConfigLoader.load_k8s_config(config.additional_context)
-        config.additional_context = full_config
-
+        apply_deployment_config(config, ConfigLoader.load_k8s_config)
         super().__init__(config)
 
         # Parse K8s configuration (now with defaults applied)
@@ -289,11 +168,8 @@ class KubernetesDeployment(BaseDeployment):
 
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
-        self.jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
-        
-        # Register custom Jinja2 filters
-        self.jinja_env.filters['dirname'] = lambda path: str(Path(path).parent)
-        
+        self.jinja_env = create_jinja_env(template_dir)
+
         # Initialize data provider (will be used if models need data)
         self.data = None
         self.context_for_data = None
@@ -347,23 +223,37 @@ class KubernetesDeployment(BaseDeployment):
                     return False
                 raise
 
-            # Validate AMD GPU Device Plugin is deployed
+            # Validate GPU device plugin: nodes expose the configured GPU resource
             nodes = self.core_v1.list_node()
-            amd_gpu_nodes = [
+            gpu_nodes = [
                 n
                 for n in nodes.items
-                if self.gpu_resource_name in n.status.allocatable
+                if self.gpu_resource_name in (n.status.allocatable or {})
             ]
 
-            if not amd_gpu_nodes:
+            if not gpu_nodes:
+                vendor = str(
+                    self.config.additional_context.get("gpu_vendor", "AMD")
+                ).upper()
+                if vendor == "NVIDIA":
+                    hint = (
+                        "[yellow]  Ensure NVIDIA GPU device plugin is installed, e.g.:[/yellow]\n"
+                        "[yellow]  https://github.com/NVIDIA/k8s-device-plugin[/yellow]"
+                    )
+                else:
+                    hint = (
+                        "[yellow]  Ensure AMD GPU device plugin is deployed, e.g.:[/yellow]\n"
+                        "[yellow]  kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-dp.yaml[/yellow]"
+                    )
                 self.console.print(
                     f"[yellow]⚠ No nodes with {self.gpu_resource_name} found[/yellow]\n"
-                    f"[yellow]  Ensure AMD GPU Device Plugin is deployed:[/yellow]\n"
-                    f"[yellow]  kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-dp.yaml[/yellow]"
+                    f"{hint}"
                 )
                 return False
 
-            self.console.print(f"[green]✓ Found {len(amd_gpu_nodes)} AMD GPU nodes[/green]")
+            self.console.print(
+                f"[green]✓ Found {len(gpu_nodes)} node(s) with {self.gpu_resource_name}[/green]"
+            )
             return True
 
         except Exception as e:
@@ -389,6 +279,7 @@ class KubernetesDeployment(BaseDeployment):
 
             # Prepare template context
             context = self._prepare_template_context(model_info, image_info)
+            self._image_pull_secrets_for_pods = context.get("image_pull_secrets") or []
 
             # Render ConfigMap template
             configmap_template = self.jinja_env.get_template("configmap.yaml.j2")
@@ -455,7 +346,7 @@ class KubernetesDeployment(BaseDeployment):
             return
         
         # Load tools.json to get pre/post script definitions
-        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        tools_json_path = get_madengine_root() / "scripts" / "common" / "tools.json"
         if not tools_json_path.exists():
             return
         
@@ -493,7 +384,7 @@ class KubernetesDeployment(BaseDeployment):
         """
         import os
         script_contents = {}
-        madengine_root = Path(__file__).parent.parent  # Go up to madengine/ directory
+        madengine_root = get_madengine_root()
         
         for script_config in script_list:
             script_path = script_config.get("path", "")
@@ -785,7 +676,7 @@ class KubernetesDeployment(BaseDeployment):
                 data_provider_script = k8s_tools_config["data_providers"][provider_type]
                 
                 # Load K8s data provider script content
-                k8s_script_path = Path(__file__).parent.parent / data_provider_script["script"]
+                k8s_script_path = get_madengine_root() / data_provider_script["script"]
                 if k8s_script_path.exists():
                     with open(k8s_script_path, "r") as f:
                         data_provider_script_content = f.read()
@@ -1035,6 +926,53 @@ class KubernetesDeployment(BaseDeployment):
         # Load pre/post script contents for ConfigMap (since madengine not installed in container)
         pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
 
+        merged_sec = merge_secrets_config(self.k8s_config)
+        strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
+        cred_path = Path("credential.json")
+        cred_exists = cred_path.exists()
+
+        created_pull_preview: List[str] = []
+        if cred_exists and strategy == SECRETS_STRATEGY_FROM_LOCAL:
+            try:
+                parsed = json.loads(cred_path.read_text(encoding="utf-8"))
+                if build_registry_secret_data(parsed):
+                    created_pull_preview.append(f"{self.job_name}-registry-pull")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if strategy == SECRETS_STRATEGY_FROM_LOCAL:
+            include_credential_in_configmap = not cred_exists
+        else:
+            include_credential_in_configmap = False
+
+        created_runtime_name: Optional[str] = (
+            f"{self.job_name}-runtime"
+            if strategy == SECRETS_STRATEGY_FROM_LOCAL and cred_exists
+            else None
+        )
+        runtime_credentials_secret_name = resolve_runtime_secret_name(
+            strategy, merged_sec, created_runtime_name
+        )
+
+        image_pull_secrets = resolve_image_pull_secret_refs(
+            strategy, merged_sec, created_pull_preview
+        )
+
+        ap_prof = self.k8s_config.get("allow_privileged_profiling")
+        if ap_prof is None:
+            privileged_profiling = bool(self._get_tools_config())
+        else:
+            privileged_profiling = bool(ap_prof)
+
+        _pytorch_native = frozenset(
+            {"torchrun", "deepspeed", "torchtitan", "megatron"}
+        )
+        subdomain_val = (
+            self.job_name
+            if nnodes > 1 and launcher_type in _pytorch_native
+            else None
+        )
+
         # Build complete context
         context = {
             # Job metadata
@@ -1045,6 +983,13 @@ class KubernetesDeployment(BaseDeployment):
             "configmap_name": self.configmap_name,
             "manifest_content": manifest_content,
             "credential_content": credential_content,
+            "include_credential_in_configmap": include_credential_in_configmap,
+            "runtime_credentials_secret_name": runtime_credentials_secret_name,
+            "image_pull_secrets": image_pull_secrets,
+            "privileged_profiling": privileged_profiling,
+            "ttl_seconds_after_finished": self.k8s_config.get(
+                "ttl_seconds_after_finished"
+            ),
             "data_json_content": data_json_content,
             "model_scripts_contents": model_scripts_contents,  # All scripts in directory
             "model_script_path": model_script_path,
@@ -1059,9 +1004,9 @@ class KubernetesDeployment(BaseDeployment):
             # Resources
             "gpu_resource_name": self.gpu_resource_name,
             "gpu_count": gpu_count,
-                    "memory": self.k8s_config.get("memory", "128Gi"),
+            "memory": self.k8s_config.get("memory", "128Gi"),
             "memory_limit": self.k8s_config.get("memory_limit", "256Gi"),
-                    "cpu": self.k8s_config.get("cpu", "32"),
+            "cpu": self.k8s_config.get("cpu", "32"),
             "cpu_limit": self.k8s_config.get("cpu_limit", "64"),
             # Job spec
             "completions": nnodes,
@@ -1072,7 +1017,7 @@ class KubernetesDeployment(BaseDeployment):
             "node_selector": self.k8s_config.get("node_selector", {}),
             "tolerations": self.k8s_config.get("tolerations", []),
             "host_ipc": nnodes > 1,  # Enable for multi-node
-            "subdomain": self.job_name if (launcher_type == "torchrun" and nnodes > 1) else None,
+            "subdomain": subdomain_val,
             # Execution
             "gpu_visibility": ",".join(str(i) for i in range(gpu_count)),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
             "gpu_architecture": self.manifest.get("context", {}).get(
@@ -1100,7 +1045,6 @@ class KubernetesDeployment(BaseDeployment):
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
             # Tool command chains (pre-built for template)
-            # Tool command chains (pre-built for template)
             "launcher_tool_chain": self._build_tool_command_chain(
                 self._get_tools_config(), "bash /tmp/run_launcher.sh"
             ) if launcher_command else None,
@@ -1115,6 +1059,13 @@ class KubernetesDeployment(BaseDeployment):
             # Multiple results file (e.g. perf_dummy.csv) - copied to PVC for K8s result collection
             "multiple_results": model_info.get("multiple_results") or "",
         }
+
+        est = estimate_configmap_payload_bytes(context)
+        if est > CONFIGMAP_MAX_BYTES:
+            raise ConfigurationError(
+                f"ConfigMap payload would be ~{est} bytes; Kubernetes limit is ~1 MiB. "
+                "Reduce embedded scripts or use a smaller scripts directory."
+            )
 
         return context
     
@@ -1271,884 +1222,6 @@ class KubernetesDeployment(BaseDeployment):
             enriched_tools.append(enriched_tool)
         
         return enriched_tools
-    
-    def _generate_torchrun_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate torchrun launcher command for K8s Indexed Jobs.
-        
-        For single-node (nnodes=1), generates standalone torchrun command.
-        For multi-node (nnodes>1), generates distributed torchrun with headless
-        service DNS for coordination.
-        
-        Uses K8s environment variables for distributed coordination:
-        - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
-        - Headless service DNS for MASTER_ADDR
-        
-        CRITICAL FIX: For bash scripts that use ${BASH_SOURCE[0]}, we cd into the
-        script directory first so relative paths resolve correctly. This fixes the
-        issue where profiling tool wrappers prevent BASH_SOURCE from resolving.
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port. Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-        
-        Returns:
-            Complete torchrun command string
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        """
-        from pathlib import Path
-        
-        # Validate inputs (defensive programming)
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
-        # Check if model_script is a bash script
-        # If so, execute it directly as it handles torchrun internally
-        if model_script.endswith('.sh'):
-            # For bash scripts, set environment variables and execute script
-            # The script itself will invoke torchrun with the appropriate Python file
-            # CRITICAL: cd to script directory first so BASH_SOURCE[0] resolves correctly
-            script_dir = str(Path(model_script).parent)
-            script_name = str(Path(model_script).name)
-            if nnodes == 1:
-                return f"""export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"
-export MAD_RUNTIME_NGPUS={nproc_per_node}
-cd {script_dir} && bash {script_name}"""
-            else:
-                return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
-export MAD_RUNTIME_NGPUS={nproc_per_node}
-cd {script_dir} && bash {script_name}"""
-        
-        # For Python scripts, invoke torchrun directly
-        # For single-node, simpler standalone command
-        if nnodes == 1:
-            return f"""torchrun \\
-    --standalone \\
-    --nnodes=1 \\
-    --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
-        
-        # Multi-node: Use headless service DNS and JOB_COMPLETION_INDEX
-        return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export RANK=${{JOB_COMPLETION_INDEX}}
-export WORLD_SIZE={nnodes}
-export LOCAL_RANK=0
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-echo "Torchrun Configuration:"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  RANK: $RANK"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
-
-torchrun \\
-    --nnodes={nnodes} \\
-    --nproc_per_node={nproc_per_node} \\
-    --rdzv_backend=c10d \\
-    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \\
-    --rdzv_id={self.job_name} \\
-    --role=worker \\
-    --tee=3 \\
-    {model_script}"""
-    
-    def _generate_deepspeed_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate DeepSpeed launcher command for K8s Indexed Jobs.
-        
-        DeepSpeed has its own launcher that handles:
-        - ZeRO optimization stages (ZeRO-1, ZeRO-2, ZeRO-3)
-        - Gradient accumulation
-        - Mixed precision training
-        - Pipeline parallelism
-        - Hostfile management (handled by K8s in our case)
-        
-        For single-node (nnodes=1), uses localhost setup.
-        For multi-node (nnodes>1), uses headless service DNS for coordination.
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port. Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-        
-        Returns:
-            Complete DeepSpeed launcher command string
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        """
-        # Validate inputs
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
-        # For single-node
-        if nnodes == 1:
-            return f"""# DeepSpeed Single-Node Setup
-export MASTER_ADDR=localhost
-export MASTER_PORT={master_port}
-export RANK=0
-export LOCAL_RANK=0
-export WORLD_SIZE={nproc_per_node}
-
-echo "DeepSpeed Configuration:"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  NUM_GPUS: {nproc_per_node}"
-
-# DeepSpeed launcher (single-node)
-deepspeed --num_gpus={nproc_per_node} \\
-    --master_port={master_port} \\
-    {model_script}"""
-        
-        # Multi-node: Use K8s headless service for coordination
-        return f"""# Multi-node DeepSpeed setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export RANK=${{JOB_COMPLETION_INDEX}}
-export LOCAL_RANK=0
-export WORLD_SIZE={nnodes * nproc_per_node}
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-echo "DeepSpeed Multi-Node Configuration:"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  RANK (Node Rank): $RANK"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  NNODES: $NNODES"
-echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
-
-# Create hostfile for DeepSpeed (K8s Indexed Job aware)
-cat > /tmp/hostfile << EOF
-{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}
-EOF
-
-# Add all nodes to hostfile
-for i in $(seq 1 $((NNODES - 1))); do
-    echo "{self.job_name}-$i.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}" >> /tmp/hostfile
-done
-
-echo ""
-echo "Generated hostfile:"
-cat /tmp/hostfile
-echo ""
-
-# DeepSpeed launcher (multi-node with hostfile)
-deepspeed --hostfile=/tmp/hostfile \\
-    --master_addr=$MASTER_ADDR \\
-    --master_port=$MASTER_PORT \\
-    --num_nodes={nnodes} \\
-    --num_gpus={nproc_per_node} \\
-    {model_script}"""
-    
-    def _generate_bash_script_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate command to execute a bash script directly.
-        
-        This is used when the model script is a .sh file that handles
-        launcher invocation internally (e.g., using torchrun inside the script).
-        
-        Sets up environment variables for distributed training that the bash
-        script can use.
-        
-        Args:
-            nnodes: Number of nodes (pods)
-            nproc_per_node: GPUs per node
-            master_port: Master communication port
-            model_script: Path to the bash script
-        
-        Returns:
-            Command to execute the bash script with environment setup
-        """
-        # For single-node
-        if nnodes == 1:
-            return f"""# Bash Script Execution (Single-Node)
-# Setting up environment for script to use
-export MASTER_ADDR=localhost
-export MASTER_PORT={master_port}
-export RANK=0
-export LOCAL_RANK=0
-export WORLD_SIZE={nproc_per_node}
-export NNODES=1
-export NPROC_PER_NODE={nproc_per_node}
-
-echo "Bash Script Configuration:"
-echo "  Script: {model_script}"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  NNODES: $NNODES"
-echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
-echo ""
-
-# Execute the bash script directly
-bash {model_script}"""
-        
-        # Multi-node: Use K8s headless service for coordination
-        return f"""# Bash Script Execution (Multi-Node)
-# Setting up environment for script to use
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export RANK=${{JOB_COMPLETION_INDEX}}
-export LOCAL_RANK=0
-export WORLD_SIZE={nnodes * nproc_per_node}
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-echo "Bash Script Multi-Node Configuration:"
-echo "  Script: {model_script}"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  RANK (Node Rank): $RANK"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  NNODES: $NNODES"
-echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
-echo ""
-
-# Execute the bash script directly
-bash {model_script}"""
-    
-    def _generate_torchtitan_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate TorchTitan launcher command for K8s Indexed Jobs.
-        
-        TorchTitan is a PyTorch native platform for large-scale LLM pre-training
-        that supports multi-dimensional parallelism:
-        - FSDP2 (Fully Sharded Data Parallel v2)
-        - Tensor Parallel (TP)
-        - Pipeline Parallel (PP)
-        - Context Parallel (CP)
-        
-        TorchTitan uses torchrun as its underlying distributed launcher but
-        requires additional configuration for its parallelism strategies.
-        
-        For single-node (nnodes=1): Uses standalone torchrun with TP
-        For multi-node (nnodes>1): Uses distributed torchrun with TP+PP+FSDP2
-        
-        Uses K8s environment variables for distributed coordination:
-        - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
-        - Headless service DNS for MASTER_ADDR
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port. Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-        
-        Returns:
-            Complete torchtitan launch command string with environment setup
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        
-        Example single-node output:
-            export TORCHTITAN_TENSOR_PARALLEL_SIZE=8
-            export TORCHTITAN_PIPELINE_PARALLEL_SIZE=1
-            torchrun --standalone --nproc_per_node=8 train.py --config llama3_8b.toml
-        
-        Example multi-node output:
-            export MASTER_ADDR="job-0.job.namespace.svc.cluster.local"
-            export TORCHTITAN_TENSOR_PARALLEL_SIZE=8
-            export TORCHTITAN_PIPELINE_PARALLEL_SIZE=4
-            export TORCHTITAN_FSDP_ENABLED=1
-            torchrun --nnodes=4 --nproc_per_node=8 ... train.py --config llama3_405b.toml
-        """
-        # Validate inputs
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
-        # For single-node, use standalone mode with Tensor Parallelism only
-        if nnodes == 1:
-            return f"""# TorchTitan single-node setup (Tensor Parallelism)
-export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export TORCHTITAN_PIPELINE_PARALLEL_SIZE=1
-export TORCHTITAN_FSDP_ENABLED=0
-export TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
-
-echo "TorchTitan Configuration (Single Node):"
-echo "  Tensor Parallel Size: {nproc_per_node}"
-echo "  Pipeline Parallel Size: 1"
-echo "  Total GPUs: {nproc_per_node}"
-
-torchrun \\
-    --standalone \\
-    --nnodes=1 \\
-    --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
-        
-        # Multi-node: Use headless service DNS and enable all parallelism strategies
-        return f"""# TorchTitan multi-node setup (K8s Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export RANK=${{JOB_COMPLETION_INDEX}}
-export WORLD_SIZE={nnodes}
-export LOCAL_RANK=0
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-# TorchTitan multi-dimensional parallelism configuration
-# These can be overridden by TOML config file in model script
-export TORCHTITAN_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export TORCHTITAN_PIPELINE_PARALLEL_SIZE={nnodes}
-export TORCHTITAN_FSDP_ENABLED=1
-export TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
-
-echo "TorchTitan Configuration (Multi-Node):"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  RANK: $RANK"
-echo "  WORLD_SIZE: $WORLD_SIZE"
-echo "  Tensor Parallel Size: {nproc_per_node}"
-echo "  Pipeline Parallel Size: {nnodes}"
-echo "  FSDP: Enabled"
-echo "  Total GPUs: {nnodes * nproc_per_node}"
-
-torchrun \\
-    --nnodes={nnodes} \\
-    --nproc_per_node={nproc_per_node} \\
-    --rdzv_backend=c10d \\
-    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \\
-    --rdzv_id={self.job_name} \\
-    --role=worker \\
-    --tee=3 \\
-    {model_script}"""
-    
-    def _generate_sglang_disagg_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate SGLang Disaggregated launcher command for K8s Indexed Jobs.
-        
-        SGLang Disaggregated uses separate node pools for:
-        - Proxy (index 0): Load balancer and request router
-        - Prefill (indices 1 to xP): Prompt processing
-        - Decode (indices xP+1 to end): Token generation
-        
-        Communication via Mooncake framework for efficient KV cache transfer.
-        
-        Architecture:
-        - Pod 0: Runs mini_lb (proxy/load balancer)
-        - Pods 1-xP: Run prefill servers
-        - Pods xP+1 to N-1: Run decode servers
-        
-        Args:
-            nnodes: Total number of pods (must be >= 3)
-            nproc_per_node: GPUs per pod
-            master_port: Port for proxy service
-            model_script: Path to model launch script
-            
-        Returns:
-            Complete disaggregated launch setup
-            
-        Raises:
-            ValueError: If nnodes < 3 or invalid parameters
-        """
-        # Validate
-        if not isinstance(nnodes, int) or nnodes < 3:
-            raise ValueError(
-                f"SGLang Disaggregated requires minimum 3 nodes, got {nnodes}"
-            )
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be >= 1, got {nproc_per_node}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string")
-        
-        # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
-        prefill_nodes = sglang_disagg_config.get("prefill_nodes")
-        decode_nodes = sglang_disagg_config.get("decode_nodes")
-        
-        if prefill_nodes is not None and decode_nodes is not None:
-            # User specified custom split - validate
-            if prefill_nodes < 1 or decode_nodes < 1:
-                raise ValueError(
-                    f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
-                    f"got prefill={prefill_nodes}, decode={decode_nodes}"
-                )
-            if prefill_nodes + decode_nodes + 1 != nnodes:
-                raise ValueError(
-                    f"Custom split validation failed: "
-                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
-                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
-                )
-            xP = prefill_nodes
-            yD = decode_nodes
-        else:
-            # Default automatic split (can be customized via additional_context)
-            xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% prefill
-            yD = nnodes - 1 - xP  # remaining decode
-        
-        # Build prefill and decode server lists
-        prefill_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
-            for i in range(1, xP + 1)
-        ])
-        
-        decode_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
-            for i in range(xP + 1, nnodes)
-        ])
-        
-        return f"""# SGLang Disaggregated K8s Setup
-# ============================================
-# Cluster: {nnodes} pods total
-#   Proxy: Pod 0
-#   Prefill: Pods 1-{xP} ({xP} nodes)
-#   Decode: Pods {xP+1}-{nnodes-1} ({yD} nodes)
-# ============================================
-
-export POD_INDEX=${{JOB_COMPLETION_INDEX:-0}}
-export TOTAL_PODS={nnodes}
-export PREFILL_COUNT={xP}
-export DECODE_COUNT={yD}
-export TP_SIZE={nproc_per_node}
-
-# Get pod IP
-export POD_IP=$(hostname -i | awk '{{print $1}}')
-
-echo "=========================================="
-echo "SGLang Disaggregated Pod Info"
-echo "=========================================="
-echo "Pod Index: $POD_INDEX"
-echo "Pod IP: $POD_IP"
-echo "Total Pods: $TOTAL_PODS"
-echo "Prefill Pods: $PREFILL_COUNT"
-echo "Decode Pods: $DECODE_COUNT"
-echo "TP Size: $TP_SIZE"
-echo "=========================================="
-
-# Node role assignment based on pod index
-if [ "$POD_INDEX" -eq 0 ]; then
-    # Proxy Node (Load Balancer)
-    echo "🔀 This pod is PROXY (Load Balancer)"
-    
-    python3 -m sglang.srt.disaggregation.mini_lb \\
-        --prefill {prefill_servers} \\
-        --decode {decode_servers} \\
-        --host 0.0.0.0 \\
-        --port {master_port}
-    
-elif [ "$POD_INDEX" -le "{xP}" ]; then
-    # Prefill Nodes
-    echo "⚡ This pod is PREFILL Node"
-    
-    python3 -m sglang.launch_server \\
-        --model-path "$MODEL_PATH" \\
-        --disaggregation-mode prefill \\
-        --tp-size {nproc_per_node} \\
-        --host $POD_IP \\
-        --port 30000 \\
-        --trust-remote-code \\
-        --disaggregation-transfer-backend mooncake
-    
-else
-    # Decode Nodes
-    echo "🔤 This pod is DECODE Node"
-    
-    python3 -m sglang.launch_server \\
-        --model-path "$MODEL_PATH" \\
-        --disaggregation-mode decode \\
-        --tp-size {nproc_per_node} \\
-        --host $POD_IP \\
-        --port 30000 \\
-        --trust-remote-code \\
-        --disaggregation-transfer-backend mooncake
-fi
-
-echo "SGLang Disaggregated setup complete"
-"""
-    
-    def _generate_vllm_command(
-        self,
-        nnodes: int,
-        nproc_per_node: int,
-        master_port: int,
-        model_script: str,
-        model_args: str = "",
-    ) -> str:
-        """
-        Generate vLLM launcher command for K8s Indexed Jobs.
-        
-        vLLM is an inference engine with its own process management via Ray.
-        Unlike training frameworks, vLLM doesn't use torchrun.
-        
-        Architecture:
-        - Single-node: Tensor Parallelism (TP) across GPUs, no Ray needed
-        - Multi-node: Data Parallelism where each node runs independent vLLM replica
-          * Each replica uses TP across its local GPUs
-          * Ray coordinates resources on each node independently
-          * Benefits: Simpler, more robust, better for inference serving
-        
-        For K8s multi-node:
-        - Each pod runs its own independent vLLM instance
-        - Uses Ray for local GPU coordination
-        - NO shared Ray cluster across pods (Data Parallelism mode)
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port (for Ray). Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-            model_args: CLI args for the script (e.g. --model_repo openai/gpt-oss-20b).
-        
-        Returns:
-            Complete vLLM launch setup with environment configuration
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        """
-        # Validate inputs
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-
-        # Run script from its directory so relative paths (run_vllm.py, configs/) resolve
-        script_dir = str(Path(model_script).parent)
-        script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
-        
-        # For single-node, simple TP setup (no Ray needed)
-        if nnodes == 1:
-            return f"""# vLLM single-node setup (Tensor Parallelism)
-export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export VLLM_PIPELINE_PARALLEL_SIZE=1
-export VLLM_DISTRIBUTED_BACKEND="auto"
-export NNODES=1
-export NPROC_PER_NODE={nproc_per_node}
-export NODE_RANK=0
-
-echo "vLLM Configuration (Single Node):"
-echo "  Tensor Parallel Size: {nproc_per_node}"
-echo "  Pipeline Parallel Size: 1"
-echo "  Distributed Backend: auto (no Ray)"
-echo "  Total GPUs: {nproc_per_node}"
-
-# vLLM handles process management - run script from its directory so run_vllm.py/configs resolve
-{run_cmd}"""
-        
-        # Multi-node: Data Parallelism with independent Ray clusters per pod
-        return f"""# vLLM multi-node setup (K8s Data Parallelism Mode)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export NODE_RANK=${{JOB_COMPLETION_INDEX}}
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-# vLLM Data Parallelism configuration
-# Each pod runs INDEPENDENT vLLM replica (no shared Ray cluster)
-export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export VLLM_PIPELINE_PARALLEL_SIZE=1
-export VLLM_DISTRIBUTED_BACKEND="ray"
-
-# Get current pod IP for Ray
-POD_IP=$(hostname -i | awk '{{print $1}}')
-export VLLM_HOST_IP="$POD_IP"
-
-echo "vLLM Configuration (Multi-Node Data Parallelism):"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  NODE_RANK: $NODE_RANK (Pod Index)"
-echo "  NNODES: $NNODES"
-echo "  Tensor Parallel Size: {nproc_per_node} (per pod)"
-echo "  Data Parallel Size: {nnodes} (independent replicas)"
-echo "  Pod IP: $POD_IP"
-echo "  Total GPUs: {nnodes * nproc_per_node}"
-echo ""
-echo "Mode: Each pod runs independent vLLM replica with local Ray"
-
-# Clean any existing Ray processes
-ray stop --force 2>/dev/null || true
-pkill -9 -f "ray::" 2>/dev/null || true
-sleep 2
-
-# Start independent Ray cluster on THIS pod only
-echo "Starting Ray cluster on Pod $NODE_RANK..."
-ray start --head --port=6379 --node-ip-address="$POD_IP" --num-gpus={nproc_per_node}
-sleep 3
-
-echo "Ray cluster ready:"
-ray status
-
-# Run vLLM inference script from its directory so run_vllm.py/configs resolve
-{run_cmd}
-
-# Cleanup Ray on exit
-trap "ray stop --force 2>/dev/null || true" EXIT"""
-
-    def _generate_sglang_command(
-        self,
-        nnodes: int,
-        nproc_per_node: int,
-        master_port: int,
-        model_script: str,
-        model_args: str = "",
-    ) -> str:
-        """
-        Generate SGLang launcher command for K8s Indexed Jobs.
-        
-        SGLang is an inference engine with native launcher (sglang.launch_server).
-        Similar to vLLM, it manages its own process spawning via Ray.
-        
-        Architecture:
-        - Single-node: Tensor Parallelism (TP) across GPUs
-        - Multi-node: Uses SGLang's native multi-node launcher with Ray
-          * TP across GPUs within each node
-          * Ray for distributed coordination
-        
-        For K8s:
-        - Uses headless service for node discovery (similar to torchrun)
-        - Each pod knows its rank via JOB_COMPLETION_INDEX
-        - SGLang native launcher handles Ray cluster setup
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port (for NCCL/Ray). Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-            model_args: CLI args for the script (e.g. --model_repo ...).
-        
-        Returns:
-            Complete SGLang launch setup with environment configuration
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        """
-        # Validate inputs
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-
-        # Run script from its directory so relative paths resolve; pass model args
-        script_dir = str(Path(model_script).parent)
-        script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
-
-        # For single-node, simple TP setup
-        if nnodes == 1:
-            return f"""# SGLang single-node setup (Tensor Parallelism)
-export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export SGLANG_PIPELINE_PARALLEL_SIZE=1
-export NNODES=1
-export NPROC_PER_NODE={nproc_per_node}
-export NODE_RANK=0
-
-echo "SGLang Configuration (Single Node):"
-echo "  Tensor Parallel Size: {nproc_per_node}"
-echo "  Total GPUs: {nproc_per_node}"
-
-# SGLang native launcher handles everything
-{run_cmd}"""
-
-        # Multi-node: Use SGLang's native multi-node support
-        return f"""# SGLang multi-node setup (K8s Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
-export MASTER_PORT={master_port}
-export NODE_RANK=${{JOB_COMPLETION_INDEX}}
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-
-# SGLang parallelism configuration
-export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
-export SGLANG_PIPELINE_PARALLEL_SIZE=1
-
-# Get current pod IP
-POD_IP=$(hostname -i | awk '{{print $1}}')
-export SGLANG_HOST_IP="$POD_IP"
-
-echo "SGLang Configuration (Multi-Node):"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  NODE_RANK: $NODE_RANK (Pod Index)"
-echo "  NNODES: $NNODES"
-echo "  Tensor Parallel Size: {nproc_per_node}"
-echo "  Pod IP: $POD_IP"
-echo "  Total GPUs: {nnodes * nproc_per_node}"
-
-# Clean any existing Ray processes
-ray stop --force 2>/dev/null || true
-pkill -9 -f "ray::" 2>/dev/null || true
-sleep 2
-
-# SGLang native launcher will handle Ray cluster coordination
-# Pass NCCL init address for multi-node setup
-export NCCL_INIT_ADDR="${{MASTER_ADDR}}:${{MASTER_PORT}}"
-
-echo "Starting SGLang with native multi-node launcher..."
-{run_cmd}
-
-# Cleanup Ray on exit
-trap "ray stop --force 2>/dev/null || true" EXIT"""
-
-    def _generate_megatron_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate Megatron-LM launcher command for K8s Indexed Jobs.
-        
-        Megatron-LM is a training framework for large transformers with tensor and pipeline parallelism.
-        It uses torchrun as the underlying launcher but with Megatron-specific environment variables.
-        
-        Architecture:
-        - Single-node: Tensor Parallelism (TP) across GPUs
-        - Multi-node: Tensor + Pipeline Parallelism
-          * TP across GPUs within each node
-          * PP across nodes
-        
-        For K8s:
-        - Uses headless service for node discovery (like torchrun/deepspeed)
-        - Each pod knows its rank via JOB_COMPLETION_INDEX
-        - Sets TENSOR_MODEL_PARALLEL_SIZE and PIPELINE_MODEL_PARALLEL_SIZE (Megatron-Core standard)
-        
-        Args:
-            nnodes: Number of nodes (pods). Must be >= 1.
-            nproc_per_node: GPUs per node. Must be >= 1.
-            master_port: Master communication port (for NCCL). Must be 1-65535.
-            model_script: Path to model's run script. Cannot be empty.
-        
-        Returns:
-            Complete Megatron-LM launch setup with environment configuration
-        
-        Raises:
-            ValueError: If any parameter is invalid
-        """
-        # Validate inputs
-        if not isinstance(nnodes, int) or nnodes < 1:
-            raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
-        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
-        if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
-            raise ValueError(f"master_port must be 1-65535, got {master_port}")
-        if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
-        # For single-node, use TP only
-        if nnodes == 1:
-            return f"""# Megatron-LM single-node setup (Tensor Parallelism)
-export TENSOR_MODEL_PARALLEL_SIZE={min(nproc_per_node, 8)}
-export PIPELINE_MODEL_PARALLEL_SIZE=1
-export CONTEXT_PARALLEL_SIZE=1
-export NNODES=1
-export NPROC_PER_NODE={nproc_per_node}
-export MASTER_ADDR=localhost
-export MASTER_PORT={master_port}
-export NODE_RANK=0
-
-echo "Megatron-LM Configuration (Single-Node):"
-echo "  Tensor Model Parallel Size: {min(nproc_per_node, 8)}"
-echo "  Pipeline Model Parallel Size: 1"
-echo "  Total GPUs: {nproc_per_node}"
-
-# Launch using torchrun with Megatron configuration
-torchrun \\
-    --standalone \\
-    --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
-        
-        # Multi-node: TP + PP
-        else:
-            # Use headless service for node discovery (set by template)
-            return f"""# Megatron-LM multi-node setup (Tensor + Pipeline Parallelism)
-export TENSOR_MODEL_PARALLEL_SIZE={nproc_per_node}
-export PIPELINE_MODEL_PARALLEL_SIZE={nnodes}
-export CONTEXT_PARALLEL_SIZE=1
-export NNODES={nnodes}
-export NPROC_PER_NODE={nproc_per_node}
-export NODE_RANK=${{JOB_COMPLETION_INDEX}}
-export MASTER_ADDR=${{MASTER_ADDR}}
-export MASTER_PORT={master_port}
-
-echo "Megatron-LM Configuration (Multi-Node):"
-echo "  MASTER_ADDR: $MASTER_ADDR"
-echo "  MASTER_PORT: $MASTER_PORT"
-echo "  NODE_RANK: $NODE_RANK (Pod Index)"
-echo "  NNODES: $NNODES"
-echo "  Tensor Model Parallel Size: {nproc_per_node}"
-echo "  Pipeline Model Parallel Size: {nnodes}"
-echo "  Total GPUs: {nnodes * nproc_per_node}"
-
-# Wait for all pods to be ready (K8s Indexed Job coordination)
-echo "Waiting for all {nnodes} pods to be ready..."
-sleep 5
-
-# Launch using torchrun with Megatron multi-node configuration
-torchrun \\
-    --nnodes={nnodes} \\
-    --nproc_per_node={nproc_per_node} \\
-    --node_rank=${{NODE_RANK}} \\
-    --master_addr=${{MASTER_ADDR}} \\
-    --master_port={master_port} \\
-    {model_script}"""
-
-    def _generate_primus_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
-    ) -> str:
-        """
-        Generate Primus launcher command for K8s Indexed Jobs.
-
-        Primus (Megatron-LM, TorchTitan, Jax/MaxText) runs via model script that calls
-        run_pretrain.sh. We only export PRIMUS_CONFIG_PATH and optional PRIMUS_CLI_EXTRA.
-        NNODES, NODE_RANK, MASTER_ADDR, etc. are set by the job template.
-        """
-        primus_cfg = self.config.additional_context.get("distributed", {}).get("primus", {})
-        config_path = primus_cfg.get("config_path", "exp_pretrain.yaml")
-        cli_extra = primus_cfg.get("cli_extra", "")
-        config_path_quoted = config_path.replace('"', '\\"')
-        lines = [
-            "# Primus launcher (model script runs run_pretrain.sh)",
-            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
-        ]
-        if (cli_extra or "").strip():
-            cli_extra_quoted = cli_extra.replace('"', '\\"')
-            lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
-        return "\n".join(lines)
 
     def _load_k8s_tools(self) -> Dict:
         """
@@ -2315,28 +1388,65 @@ torchrun \\
             f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
         )
 
-    def _create_results_pvc(self) -> str:
+    def _k8s_data_storage_class(self) -> Optional[str]:
+        """StorageClass for long-lived ``madengine-shared-data`` (NFS RWX recommended)."""
+        return (
+            self.k8s_config.get("data_storage_class")
+            or self.k8s_config.get("nfs_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _k8s_results_storage_class(self, nnodes: int) -> Optional[str]:
         """
-        Create a PersistentVolumeClaim for results storage.
-        
-        Returns:
-            Name of the created PVC
+        Per-job results: local-path (RWO) for single-node, NFS (RWX) for multi-node.
+
+        Falls back to ``storage_class`` for backward compatibility.
+        """
+        if nnodes > 1:
+            return (
+                self.k8s_config.get("multi_node_results_storage_class")
+                or self.k8s_config.get("nfs_storage_class")
+                or self.k8s_config.get("storage_class")
+            )
+        return (
+            self.k8s_config.get("single_node_results_storage_class")
+            or self.k8s_config.get("local_path_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _create_results_pvc(self, nnodes: int = 1) -> str:
+        """
+        Create a PersistentVolumeClaim for per-job results.
+
+        Single-node uses ReadWriteOnce (typically local-path). Multi-node uses
+        ReadWriteMany (typically nfs-banff or other RWX class).
         """
         pvc_name = f"{self.job_name}-results"
-        
-        # Render PVC template
+        access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
+        storage_class = self._k8s_results_storage_class(nnodes)
+
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
         pvc_template = template_dir / "pvc.yaml.j2"
-        
+
         with open(pvc_template, "r") as f:
             pvc_template_str = f.read()
-        
+
         template = Template(pvc_template_str)
+        self.console.print(
+            f"[dim]  Results PVC: access={access_mode}, "
+            f"storageClass={storage_class or '(cluster default)'}[/dim]"
+        )
+        if nnodes > 1 and not storage_class:
+            self.console.print(
+                "[yellow]⚠️  Multi-node: set k8s.nfs_storage_class or "
+                "multi_node_results_storage_class to an RWX class (e.g. nfs-banff).[/yellow]"
+            )
         pvc_yaml = template.render(
             pvc_name=pvc_name,
             namespace=self.namespace,
+            access_mode=access_mode,
             storage_size=self.k8s_config.get("results_storage_size", "10Gi"),
-            storage_class=self.k8s_config.get("storage_class")
+            storage_class=storage_class,
         )
         
         # Create PVC (retry on 409 "object is being deleted" until it is gone)
@@ -2361,98 +1471,129 @@ torchrun \\
                 else:
                     raise
     
+    def _wait_for_pvc_deleted(self, pvc_name: str, max_wait: int = 90) -> None:
+        """Block until the PVC is fully removed (or timeout)."""
+        for i in range(max_wait):
+            try:
+                self.core_v1.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
+                )
+                if i > 0 and i % 10 == 0:
+                    self.console.print(
+                        f"[dim]Waiting for PVC {pvc_name} to be removed... ({i}s)[/dim]"
+                    )
+                time.sleep(1)
+            except ApiException as e:
+                if e.status == 404:
+                    return
+                raise
+
     def _create_or_get_data_pvc(self, nnodes: int = 1) -> str:
         """
-        Create or reuse a shared PersistentVolumeClaim for data storage.
-        
-        K8s best practice: Use shared PVC for data (separate from compute pods).
-        This PVC is reusable across multiple training runs.
-        
+        Create or reuse ``madengine-shared-data`` for long-lived datasets (cache).
+
+        Always uses ReadWriteMany + an NFS-style StorageClass so the same PVC
+        works for single- and multi-pod jobs. Use ``data_storage_class`` or
+        ``nfs_storage_class`` (e.g. nfs-banff), not local-path.
+
         Args:
-            nnodes: Number of nodes (determines access mode requirements)
-        
+            nnodes: Reserved for logging (shared-data access mode does not depend on it).
+
         Returns:
             Name of the PVC (existing or newly created)
         """
-        # Use a consistent name for reusability (not job-specific)
         pvc_name = "madengine-shared-data"
-        
-        # Check if PVC already exists (idempotent)
+
+        if self.k8s_config.get("recreate_shared_data_pvc"):
+            try:
+                self.core_v1.delete_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
+                )
+                self.console.print(
+                    "[yellow]recreate_shared_data_pvc: deleted existing "
+                    f"{pvc_name} (backup data first if needed)[/yellow]"
+                )
+                self._wait_for_pvc_deleted(pvc_name)
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+
         try:
             existing_pvc = self.core_v1.read_namespaced_persistent_volume_claim(
                 name=pvc_name,
-                namespace=self.namespace
+                namespace=self.namespace,
             )
             self.console.print(f"[dim]✓ Using existing data PVC: {pvc_name}[/dim]")
-            
-            # Verify access mode for multi-node
-            if nnodes > 1:
-                access_modes = existing_pvc.spec.access_modes
-                if "ReadWriteMany" not in access_modes:
-                    self.console.print(
-                        f"[yellow]⚠️  Warning: PVC {pvc_name} doesn't support ReadWriteMany[/yellow]"
-                    )
-                    self.console.print(
-                        f"[yellow]   Multi-node deployment may fail. Current modes: {access_modes}[/yellow]"
-                    )
-            
+
+            access_modes = existing_pvc.spec.access_modes or []
+            if "ReadWriteMany" not in access_modes:
+                self.console.print(
+                    f"[yellow]⚠️  Warning: {pvc_name} is not ReadWriteMany "
+                    f"(modes: {access_modes}).[/yellow]"
+                )
+                self.console.print(
+                    "[yellow]   For NFS-backed long-lived data, delete the PVC and re-run with "
+                    "k8s.data_storage_class / nfs_storage_class set, or use "
+                    "recreate_shared_data_pvc (after backup).[/yellow]"
+                )
             return pvc_name
-            
+
         except ApiException as e:
             if e.status != 404:
-                raise  # Unexpected error
-            
-            # PVC doesn't exist, create it
-            # Determine access mode based on deployment topology
-            # RWO (ReadWriteOnce): Single-node - works with most storage classes (local-path, EBS, etc.)
-            # RWX (ReadWriteMany): Multi-node - requires shared storage (NFS, CephFS, etc.)
-            access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
-            
-            self.console.print(f"[blue]Creating shared data PVC: {pvc_name}...[/blue]")
-            self.console.print(f"[dim]  Access mode: {access_mode} ({'multi-node' if nnodes > 1 else 'single-node'})[/dim]")
-            
-            # Render data PVC template
-            template_dir = Path(__file__).parent / "templates" / "kubernetes"
-            pvc_template = template_dir / "pvc-data.yaml.j2"
-            
-            with open(pvc_template, "r") as f:
-                pvc_template_str = f.read()
-            
-            template = Template(pvc_template_str)
-            pvc_yaml = template.render(
-                pvc_name=pvc_name,
-                namespace=self.namespace,
-                access_mode=access_mode,
-                storage_size=self.k8s_config.get("data_storage_size", "100Gi"),
-                storage_class=self.k8s_config.get("storage_class")
+                raise
+
+        access_mode = "ReadWriteMany"
+        storage_class = self._k8s_data_storage_class()
+        self.console.print(f"[blue]Creating shared data PVC: {pvc_name}...[/blue]")
+        self.console.print(
+            f"[dim]  Access mode: {access_mode}; storageClass={storage_class or '(cluster default)'}; "
+            f"nnodes={nnodes}[/dim]"
+        )
+        if not storage_class:
+            self.console.print(
+                "[yellow]⚠️  Set k8s.nfs_storage_class or data_storage_class to an RWX class "
+                "(e.g. nfs-banff) for shared-data. Default SC may be local-path (RWO-only).[/yellow]"
             )
-            
-            # Create PVC
-            pvc_dict = yaml.safe_load(pvc_yaml)
-            self.core_v1.create_namespaced_persistent_volume_claim(
-                namespace=self.namespace, body=pvc_dict
-            )
-            
-            # Wait for PVC to be bound (important!)
-            self.console.print(f"[dim]Waiting for PVC to be bound...[/dim]")
-            for _ in range(30):  # Wait up to 30 seconds
-                try:
-                    pvc = self.core_v1.read_namespaced_persistent_volume_claim(
-                        name=pvc_name, namespace=self.namespace
-                    )
-                    if pvc.status.phase == "Bound":
-                        self.console.print(f"[green]✓ PVC bound successfully[/green]")
-                        break
-                except ApiException:
-                    pass
-                time.sleep(1)
-            else:
-                self.console.print(
-                    f"[yellow]⚠️  Warning: PVC created but not bound yet. "
-                    f"Check: kubectl describe pvc {pvc_name}[/yellow]"
+
+        template_dir = Path(__file__).parent / "templates" / "kubernetes"
+        pvc_template = template_dir / "pvc-data.yaml.j2"
+
+        with open(pvc_template, "r") as f:
+            pvc_template_str = f.read()
+
+        template = Template(pvc_template_str)
+        pvc_yaml = template.render(
+            pvc_name=pvc_name,
+            namespace=self.namespace,
+            access_mode=access_mode,
+            storage_size=self.k8s_config.get("data_storage_size", "100Gi"),
+            storage_class=storage_class,
+        )
+
+        pvc_dict = yaml.safe_load(pvc_yaml)
+        self.core_v1.create_namespaced_persistent_volume_claim(
+            namespace=self.namespace, body=pvc_dict
+        )
+
+        self.console.print("[dim]Waiting for PVC to be bound...[/dim]")
+        for _ in range(30):
+            try:
+                pvc = self.core_v1.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=self.namespace
                 )
-            
-            return pvc_name
+                if pvc.status.phase == "Bound":
+                    self.console.print("[green]✓ PVC bound successfully[/green]")
+                    break
+            except ApiException:
+                pass
+            time.sleep(1)
+        else:
+            self.console.print(
+                f"[yellow]⚠️  Warning: PVC created but not bound yet. "
+                f"Check: kubectl describe pvc {pvc_name}[/yellow]"
+            )
+
+        return pvc_name
     
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
@@ -2467,6 +1608,14 @@ torchrun \\
         except ApiException as e:
             if e.status != 404:  # Ignore not found
                 pass
+
+        try:
+            delete_job_secrets_if_exist(self.core_v1, self.namespace, self.job_name)
+            self.console.print(
+                f"[dim]Removed job-scoped Secrets for {self.job_name} (if present)[/dim]"
+            )
+        except ApiException:
+            pass
         
         # Delete existing ConfigMap
         try:
@@ -2548,7 +1697,8 @@ torchrun \\
             
             # 1. Create PVC for results storage
             self.console.print("[blue]Creating PVC for results storage...[/blue]")
-            pvc_name = self._create_results_pvc()
+            nnodes_deploy = getattr(self, "_nnodes", 1)
+            pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
             self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
             
             # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
@@ -2560,7 +1710,20 @@ torchrun \\
                     nnodes = getattr(self, '_nnodes', 1)
                     self._create_or_get_data_pvc(nnodes=nnodes)
             
-            # 2. Create ConfigMap
+            # 2. Create Secrets from local credential.json (strategy: from_local_credentials)
+            merged_sec = merge_secrets_config(self.k8s_config)
+            strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
+            cred_path = Path("credential.json")
+            if strategy == SECRETS_STRATEGY_FROM_LOCAL and cred_path.exists():
+                self.console.print(
+                    "[blue]Creating Kubernetes Secrets from credential.json...[/blue]"
+                )
+                create_or_update_secrets_from_credentials(
+                    self.core_v1, self.namespace, self.job_name, cred_path
+                )
+                self.console.print("[green]✓ Applied registry/runtime Secrets[/green]")
+
+            # 3. Create ConfigMap
             self.console.print("[blue]Creating ConfigMap...[/blue]")
             configmap_dict = yaml.safe_load(self.configmap_yaml)
             self.core_v1.create_namespaced_config_map(
@@ -2570,7 +1733,7 @@ torchrun \\
                 f"[green]✓ Created ConfigMap: {self.configmap_name}[/green]"
             )
 
-            # 3. Create Service (if needed for multi-node)
+            # 4. Create Service (if needed for multi-node)
             if self.service_yaml:
                 self.console.print("[blue]Creating headless Service...[/blue]")
                 service_dict = yaml.safe_load(self.service_yaml)
@@ -2579,7 +1742,7 @@ torchrun \\
                 )
                 self.console.print(f"[green]✓ Created Service: {self.job_name}[/green]")
 
-            # 4. Create Job
+            # 5. Create Job
             self.console.print("[blue]Creating Job...[/blue]")
             job_dict = yaml.safe_load(self.job_yaml)
             job = self.batch_v1.create_namespaced_job(
@@ -2777,6 +1940,48 @@ torchrun \\
         except Exception:
             pass
 
+    def _primary_workload_container_exit_code(self, pod: Any) -> int:
+        """
+        Exit code of the primary workload container (spec.containers[0]), matched by name
+        against container_statuses (ordering-safe if sidecars are added later).
+        """
+        if not pod.spec or not pod.spec.containers:
+            return 0
+        primary_name = pod.spec.containers[0].name
+        for cs in pod.status.container_statuses or []:
+            if cs.name == primary_name and cs.state and cs.state.terminated:
+                return cs.state.terminated.exit_code or 0
+        # Fallback: first terminated container in spec order
+        name_order = [c.name for c in pod.spec.containers]
+        for want in name_order:
+            for cs in pod.status.container_statuses or []:
+                if cs.name == want and cs.state and cs.state.terminated:
+                    return cs.state.terminated.exit_code or 0
+        return 0
+
+    def _refresh_pod_until_terminal_phase(
+        self,
+        pod_name: str,
+        *,
+        timeout_seconds: float = 30.0,
+        interval_seconds: float = 0.5,
+    ) -> Any:
+        """
+        Poll read_namespaced_pod until phase is Succeeded or Failed, or timeout.
+        Avoids stale list/single-get right after Job completion (phase still Running).
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last: Any = None
+        while time.monotonic() < deadline:
+            last = self.core_v1.read_namespaced_pod(
+                name=pod_name, namespace=self.namespace
+            )
+            phase = last.status.phase
+            if phase in ("Succeeded", "Failed"):
+                return last
+            time.sleep(interval_seconds)
+        return last
+
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
         Enhanced results collection from K8s pods following vLLM multi-node best practices.
@@ -2787,9 +1992,9 @@ torchrun \\
         - Total throughput = pod-0 throughput × num_replicas
         
         Collects:
-        1. Pod logs
-        2. File artifacts via kubectl cp (profiling, tracing, env details)
-        3. Results from shared PVC (if configured)
+        1. Pod logs (``k8s_results/<job>/<pod>/pod.log``)
+        2. PVC mirror per pod (``.../<pod>/pvc/``), mapped from ``/results/<subdir>/``
+        3. File artifacts via kubectl cp when pods are still running (keep-alive path)
         
         Returns:
             Dict with logs, artifacts, and performance results
@@ -2891,7 +2096,7 @@ torchrun \\
                     log = self.core_v1.read_namespaced_pod_log(
                         name=pod_name, namespace=self.namespace
                     )
-                    log_file = pod_dir / f"{pod_name}.log"
+                    log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
                     results["logs"].append({
                         "pod": pod_name,
@@ -2900,15 +2105,16 @@ torchrun \\
                     })
                     
                     # 2. Parse NODE-LOCAL performance from log
-                    perf_data = self._parse_node_performance(log, model_info, build_info)
+                    perf_data = self._parse_performance_from_log(
+                        log, model_info.get("name", "")
+                    )
                     
-                    # Get pod exit status
-                    pod_status = pod.status.phase
-                    pod_exit_code = 0
-                    if pod.status.container_statuses:
-                        container_status = pod.status.container_statuses[0]
-                        if container_status.state.terminated:
-                            pod_exit_code = container_status.state.terminated.exit_code or 0
+                    # Pod phase/exit can lag right after Job success; poll until terminal or timeout
+                    pod = self._refresh_pod_until_terminal_phase(pod_name)
+                    pod_status = pod.status.phase if pod else "Unknown"
+                    pod_exit_code = (
+                        self._primary_workload_container_exit_code(pod) if pod else -1
+                    )
                     
                     # Store per-node info for display table
                     node_info = {
@@ -2969,7 +2175,8 @@ torchrun \\
             )
             
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
-            self._collect_from_pvc(deployment_id, results_dir, results)
+            k8s_pod_names = [p.metadata.name for p in sorted_pods]
+            self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
             
             # ========================================================================
             # Aggregate per-node metrics
@@ -3012,21 +2219,51 @@ torchrun \\
                     )
                 
                 if aggregated_record:
-                    # Write ONE aggregated row to perf.csv (CRITICAL for database)
-                    self._write_to_perf_csv(aggregated_record)
-                    
+                    # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
+                    self._ensure_perf_csv_exists()
+                    run_details_dict = self._build_perf_entry_from_aggregated(
+                        aggregated_record, model_info, build_info, deployment_id
+                    )
+                    perf_entry_path = Path("perf_entry.json")
+                    with open(perf_entry_path, "w", encoding="utf-8") as f:
+                        json.dump(run_details_dict, f, indent=2)
+                    if run_details_dict.get("status") == "SUCCESS":
+                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                    else:
+                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                    scripts_path = model_info.get("scripts", "")
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
+                    try:
+                        if run_details_dict.get("status") == "SUCCESS":
+                            num_entries = update_perf_super_json(
+                                single_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        else:
+                            num_entries = update_perf_super_json(
+                                exception_result=str(perf_entry_path),
+                                perf_super_json="perf_super.json",
+                                scripts_base_dir=scripts_base_dir,
+                            )
+                        update_perf_super_csv(
+                            perf_super_json="perf_super.json",
+                            perf_super_csv="perf_super.csv",
+                            num_entries=num_entries,
+                        )
+                    except Exception as e:
+                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
                     results["successful_runs"].append({
                         "model": model_info.get("name"),
                         "perf_data": aggregated_record,
-                        "nodes": results["nodes"],  # Include per-node details
-                        "per_node_metrics": per_node_metrics  # For detailed analysis
+                        "nodes": results["nodes"],
+                        "per_node_metrics": per_node_metrics
                     })
-                    
                     self.console.print(
                         f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
                     )
                     self.console.print(
-                        f"[green]✓ Updated local perf.csv[/green]"
+                        f"[green]✓ Updated perf_entry.json, perf.csv, perf_super.* (Docker-compatible)[/green]"
                     )
             else:
                 # No performance from log: try multiple_results CSV (same contract as local Docker)
@@ -3057,7 +2294,7 @@ torchrun \\
                         model_name=model_info.get("name", ""),
                     )
                     scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = os.path.dirname(scripts_path) if scripts_path else None
+                    scripts_base_dir = scripts_base_dir_from(scripts_path)
                     num_entries = update_perf_super_json(
                         perf_super_json="perf_super.json",
                         multiple_results=str(resolved_csv_path),
@@ -3334,17 +2571,30 @@ torchrun \\
         
         return artifacts
     
-    def _collect_from_pvc(self, deployment_id: str, results_dir: Path, results: Dict):
+    def _collect_from_pvc(
+        self,
+        deployment_id: str,
+        results_dir: Path,
+        results: Dict,
+        pod_names: Optional[List[str]] = None,
+    ):
         """
         Collect all artifacts from the PVC using a temporary busybox pod.
-        
+
         This is the best practice for collecting results from completed K8s jobs.
         kubectl cp doesn't work on completed pods, so we use a helper pod.
-        
+
+        When ``pod_names`` is provided, each ``/results/<subdir>/`` is copied to
+        ``results_dir/<k8s_pod_name>/pvc/`` by matching subdir to pod name (exact or
+        ``pod.startswith(subdir + "-")``). Unmatched subdirs go under
+        ``results_dir/pvc_unmapped/<subdir>/``. When ``pod_names`` is omitted, the
+        legacy layout ``results_dir/<subdir>/`` is used.
+
         Args:
             deployment_id: Job deployment ID
             results_dir: Local directory to save results
             results: Results dict to update
+            pod_names: Full Kubernetes pod names for this job (ordered)
         """
         pvc_name = f"{deployment_id}-results"
         
@@ -3354,23 +2604,27 @@ torchrun \\
             
             self.console.print(f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]")
             
+            collector_spec: Dict[str, Any] = {
+                "restartPolicy": "Never",
+                "containers": [{
+                    "name": "collector",
+                    "image": "busybox:latest",
+                    "command": ["sh", "-c", "sleep 600"],
+                    "volumeMounts": [{"name": "results", "mountPath": "/results"}]
+                }],
+                "volumes": [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
+            }
+            ips = getattr(self, "_image_pull_secrets_for_pods", None) or []
+            if ips:
+                collector_spec["imagePullSecrets"] = ips
+
             collector_pod_spec = {
                 "apiVersion": "v1",
                 "kind": "Pod",
                 "metadata": {"name": collector_pod_name, "namespace": self.namespace},
-                "spec": {
-                    "restartPolicy": "Never",
-                    "imagePullSecrets": [{"name": "dockerhub-creds"}],
-                    "containers": [{
-                        "name": "collector",
-                        "image": "busybox:latest",
-                        "command": ["sh", "-c", "sleep 600"],
-                        "volumeMounts": [{"name": "results", "mountPath": "/results"}]
-                    }],
-                    "volumes": [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
-                }
+                "spec": collector_spec,
             }
-            
+
             # Delete existing collector pod if it exists (prevents 409 Conflict)
             try:
                 self.core_v1.delete_namespaced_pod(
@@ -3399,48 +2653,118 @@ torchrun \\
                 time.sleep(1)
             else:
                 raise Exception("Collector pod did not start in time")
-            
-            # List pod result directories in PVC
+
+            # Mount / NFS may need a moment before another pod sees prior job writes.
+            time.sleep(2)
+
+            # List pod result directories in PVC (retry: NFS can lag right after Job completion)
             list_cmd = [
-                "kubectl", "exec", collector_pod_name, "-n", self.namespace, "--",
-                "ls", "-1", "/results/"
+                "kubectl",
+                "exec",
+                collector_pod_name,
+                "-n",
+                self.namespace,
+                "-c",
+                "collector",
+                "--",
+                "ls",
+                "-1",
+                "/results/",
             ]
-            list_result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=10)
-            
-            if list_result.returncode == 0 and list_result.stdout.strip():
-                pod_dirs = list_result.stdout.strip().split('\n')
-                
+            list_result = subprocess.CompletedProcess(
+                args=list_cmd, returncode=-1, stdout="", stderr=""
+            )
+            pod_dirs: List[str] = []
+            for attempt in range(45):
+                list_result = subprocess.run(
+                    list_cmd, capture_output=True, text=True, timeout=30
+                )
+                if list_result.returncode == 0 and list_result.stdout.strip():
+                    pod_dirs = [
+                        d
+                        for d in list_result.stdout.strip().split("\n")
+                        if d and d != "lost+found"
+                    ]
+                    if pod_dirs:
+                        break
+                if list_result.stderr.strip():
+                    self.console.print(
+                        f"[dim]    PVC ls attempt {attempt + 1} (rc={list_result.returncode}): "
+                        f"{list_result.stderr.strip()[:300]}[/dim]"
+                    )
+                time.sleep(1)
+
+            if pod_dirs:
+                pvc_map: Dict[str, str] = {}
+                if pod_names:
+                    pvc_map = assign_pvc_subdirs_to_pods(pod_dirs, pod_names)
+
                 for pod_dir_name in pod_dirs:
                     if not pod_dir_name:
                         continue
-                    
-                    # Copy entire pod directory
-                    local_pod_dir = results_dir / pod_dir_name
-                    local_pod_dir.mkdir(exist_ok=True)
-                    
+
+                    matched_pod = pvc_map.get(pod_dir_name) if pod_names else None
+                    if pod_names:
+                        if matched_pod:
+                            local_pod_dir = results_dir / matched_pod / "pvc"
+                        else:
+                            local_pod_dir = results_dir / "pvc_unmapped" / pod_dir_name
+                    else:
+                        local_pod_dir = results_dir / pod_dir_name
+
+                    local_pod_dir.mkdir(parents=True, exist_ok=True)
+
                     cp_cmd = [
-                        "kubectl", "cp",
+                        "kubectl",
+                        "cp",
+                        "-c",
+                        "collector",
                         f"{self.namespace}/{collector_pod_name}:/results/{pod_dir_name}",
-                        str(local_pod_dir)
+                        str(local_pod_dir),
                     ]
-                    
+
                     cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
-                    
+
                     if cp_result.returncode == 0:
                         # Count collected files
                         file_count = sum(1 for _ in local_pod_dir.rglob('*') if _.is_file())
                         if file_count > 0:
-                            results["artifacts"].append({
+                            art: Dict[str, Any] = {
                                 "source": f"PVC:{pvc_name}/{pod_dir_name}",
                                 "local_path": str(local_pod_dir),
                                 "file_count": file_count,
-                                "type": "pvc_collection"
-                            })
-                            self.console.print(f"[dim]    ✓ Collected {file_count} files from {pod_dir_name}[/dim]")
+                                "type": "pvc_collection",
+                                "pvc_subdir": pod_dir_name,
+                            }
+                            if pod_names:
+                                art["k8s_pod"] = matched_pod
+                            results["artifacts"].append(art)
+                            if matched_pod:
+                                dest_hint = f"{matched_pod}/pvc"
+                            elif pod_names:
+                                dest_hint = f"pvc_unmapped/{pod_dir_name}"
+                            else:
+                                dest_hint = pod_dir_name
+                            self.console.print(
+                                f"[dim]    ✓ Collected {file_count} files from {pod_dir_name} → {dest_hint}[/dim]"
+                            )
                 
                 self.console.print(f"[green]✓ Collected artifacts from PVC[/green]")
             else:
-                self.console.print(f"[yellow]⚠ No results found in PVC[/yellow]")
+                hint = ""
+                if list_result.returncode != 0 or list_result.stderr.strip():
+                    hint = (
+                        f" (kubectl exec rc={list_result.returncode}"
+                        + (
+                            f", stderr={list_result.stderr.strip()[:400]!r}"
+                            if list_result.stderr.strip()
+                            else ""
+                        )
+                        + ")"
+                    )
+                self.console.print(
+                    f"[yellow]⚠ No results found in PVC after retries{hint}[/yellow]"
+                )
             
             # Cleanup collector pod
             self.core_v1.delete_namespaced_pod(
@@ -3462,6 +2786,12 @@ torchrun \\
             "job_name": results["job_name"],
             "namespace": results["namespace"],
             "collected_at": datetime.now().isoformat(),
+            "k8s_results_layout": (
+                "Per pod: <job>/<pod_name>/pod.log (API log) and "
+                "<job>/<pod_name>/pvc/ (mirror of /results/<subdir>/). "
+                "Unmatched PVC subdirs: <job>/pvc_unmapped/<subdir>/."
+            ),
+            "layout_version": 2,
             "pods": len(results["logs"]),
             "total_artifacts": len(results["artifacts"]),
             "artifacts_by_type": {},
@@ -3528,48 +2858,44 @@ torchrun \\
             
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
-            
+
             # Build information
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
-            
+
             # Runtime information
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
             "launcher": launcher,
             "gpu_architecture": "",
-            
+
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
-            
+
             # Timing
             "build_duration": build_info.get("build_duration", ""),
             "test_duration": "",
-            
+
             # Data information
             "dataname": model_info.get("data", ""),
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            
+
             # Build tracking
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        
-        # Flatten tags if they are in list format
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(item) for item in result["tags"])
-        
+        flatten_tags_in_place(result)
         return result
 
     # Standard perf.csv header (must match container_runner.ensure_perf_csv_exists)
@@ -3587,6 +2913,67 @@ torchrun \\
         if not perf_csv_path.exists():
             perf_csv_path.write_text(self._PERF_CSV_HEADER + "\n", encoding="utf-8")
             self.console.print("[dim]Created perf.csv with standard header[/dim]")
+
+    def _build_perf_entry_from_aggregated(
+        self,
+        aggregated_record: Dict[str, Any],
+        model_info: Dict[str, Any],
+        build_info: Dict[str, Any],
+        deployment_id: str,
+    ) -> Dict[str, Any]:
+        """Build full run_details dict from aggregated record for perf_entry and update_* pipeline."""
+        from madengine.utils.config_parser import ConfigParser
+
+        deployment_config = self.manifest.get("deployment_config", {})
+        distributed_config = deployment_config.get("distributed", {})
+        nnodes = distributed_config.get("nnodes", 1)
+        nproc_per_node = distributed_config.get("nproc_per_node")
+        if nproc_per_node is None:
+            nproc_per_node = int(model_info.get("n_gpus", 1))
+        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
+        run_details = {
+            "model": model_info.get("name", aggregated_record.get("model", "")),
+            "n_gpus": str(aggregated_record.get("n_gpus", nnodes * nproc_per_node)),
+            "nnodes": str(aggregated_record.get("nnodes", nnodes)),
+            "gpus_per_node": str(aggregated_record.get("gpus_per_node", nproc_per_node)),
+            "training_precision": model_info.get("training_precision", ""),
+            "pipeline": get_pipeline(),
+            "args": model_info.get("args", ""),
+            "tags": model_info.get("tags", ""),
+            "docker_file": build_info.get("dockerfile", ""),
+            "base_docker": build_info.get("base_docker", ""),
+            "docker_sha": build_info.get("docker_sha", ""),
+            "docker_image": build_info.get("docker_image", ""),
+            "git_commit": "",
+            "machine_name": deployment_id,
+            "deployment_type": "kubernetes",
+            "launcher": launcher,
+            "gpu_architecture": aggregated_record.get("gpu_architecture", ""),
+            "performance": str(aggregated_record.get("performance", "")),
+            "metric": aggregated_record.get("metric", ""),
+            "relative_change": "",
+            "status": aggregated_record.get("status", "SUCCESS"),
+            "build_duration": build_info.get("build_duration", ""),
+            "test_duration": test_duration,
+            "dataname": aggregated_record.get("data_name", model_info.get("data", "")),
+            "data_provider_type": aggregated_record.get("data_provider", ""),
+            "data_size": "",
+            "data_download_duration": "",
+            "build_number": get_build_number(),
+            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+        }
+        flatten_tags_in_place(run_details)
+        try:
+            scripts_path = model_info.get("scripts", "")
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
+            config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
+            run_details["configs"] = config_parser.parse_and_load(
+                model_info.get("args", ""), scripts_path
+            )
+        except Exception:
+            run_details["configs"] = None
+        return run_details
 
     def _build_common_info_dict(
         self,
@@ -3616,7 +3003,7 @@ torchrun \\
             "nnodes": nnodes_str,
             "gpus_per_node": gpus_per_node,
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3635,11 +3022,10 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
 
     def _create_multiple_result_row_record(
@@ -3670,7 +3056,7 @@ torchrun \\
             "nnodes": str(nnodes),
             "gpus_per_node": str(nproc_per_node),
             "training_precision": model_info.get("training_precision", ""),
-            "pipeline": os.environ.get("pipeline", ""),
+            "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
             "docker_file": build_info.get("dockerfile", ""),
@@ -3692,81 +3078,11 @@ torchrun \\
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-            "build_number": os.environ.get("BUILD_NUMBER", "0"),
+            "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
-        if isinstance(result["tags"], list):
-            result["tags"] = ",".join(str(t) for t in result["tags"])
+        flatten_tags_in_place(result)
         return result
-    
-    def _parse_node_performance(
-        self, 
-        log_content: str, 
-        model_info: Dict, 
-        build_info: Dict
-    ) -> Optional[Dict]:
-        """
-        Parse node-local performance from log.
-        
-        Expected format in log (from updated run scripts):
-            performance: <value> <metric>
-            node_id: <id>
-            local_gpus: <num_gpus>
-        
-        Args:
-            log_content: Pod log content
-            model_info: Model information dict
-            build_info: Build information dict
-            
-        Returns:
-            Dict with node performance data, or None if parsing failed
-        """
-        import re
-        
-        perf_data = None
-        
-        # Parse performance line
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
-        match = re.search(perf_pattern, log_content)
-        
-        if match:
-            value = float(match.group(1))
-            metric = match.group(2)
-            
-            # Try to extract node_id for validation
-            node_id_pattern = r"node_id:\s*(\d+)"
-            node_match = re.search(node_id_pattern, log_content)
-            node_id = int(node_match.group(1)) if node_match else None
-            
-            # Try to extract local_gpus
-            local_gpus_pattern = r"local_gpus:\s*(\d+)"
-            gpus_match = re.search(local_gpus_pattern, log_content)
-            local_gpus = int(gpus_match.group(1)) if gpus_match else 1
-            
-            # Extract duration if available
-            duration_pattern = r"test_duration:\s*([\d.]+)s"
-            duration_match = re.search(duration_pattern, log_content)
-            duration = f"{duration_match.group(1)}s" if duration_match else "N/A"
-            
-            # Extract GPU architecture from rocEnvTool runtime detection
-            # Look for pattern: 🔹 Name : gfx942 or Name : gfx942
-            gpu_arch_pattern = r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)"
-            gpu_arch_match = re.search(gpu_arch_pattern, log_content)
-            gpu_arch = gpu_arch_match.group(1) if gpu_arch_match else "N/A"
-            
-            perf_data = {
-                "model": model_info.get("name"),
-                "performance": value,
-                "metric": metric,
-                "node_id": node_id,
-                "local_gpus": local_gpus,
-                "duration": duration,
-                "gpu_architecture": gpu_arch,
-                "data_name": "N/A",
-                "data_provider": "N/A"
-            }
-        
-        return perf_data
     
     def _parse_multiple_results_from_artifacts(
         self,
@@ -4012,247 +3328,6 @@ torchrun \\
         if self._merge_multi_node_multiple_results_csv(csv_paths, merged_path):
             return merged_path
         return csv_paths[0]
-
-    def _determine_aggregation_method(self, metric_name: str) -> str:
-        """
-        Determine how to aggregate a metric based on its name/type.
-        
-        Args:
-            metric_name: Name of the performance metric
-            
-        Returns:
-            "sum", "average", "max", or "unknown"
-        """
-        metric_lower = metric_name.lower()
-        
-        # Throughput metrics - SUM
-        if any(keyword in metric_lower for keyword in [
-            "throughput", "samples_per_second", "tokens_per_second", 
-            "images_per_second", "requests_per_second", "qps",
-            "bandwidth", "ops_per_second", "samples/sec", "tokens/sec"
-        ]):
-            return "sum"
-        
-        # Latency metrics - AVERAGE
-        elif any(keyword in metric_lower for keyword in [
-            "latency", "time", "duration", "milliseconds", "seconds",
-            "ttft", "tpot", "response_time"
-        ]):
-            return "average"
-        
-        # Accuracy metrics - AVERAGE
-        elif any(keyword in metric_lower for keyword in [
-            "accuracy", "precision", "recall", "f1", "loss"
-        ]):
-            return "average"
-        
-        # Memory metrics - MAX
-        elif any(keyword in metric_lower for keyword in [
-            "memory", "bytes", "ram", "vram", "gb", "mb"
-        ]):
-            return "max"
-        
-        else:
-            # Unknown - default to sum for throughput-like metrics (conservative)
-            self.console.print(f"[yellow]⚠ Unknown metric type '{metric_name}', using sum aggregation[/yellow]")
-            return "sum"
-    
-    def _aggregate_node_metrics(
-        self, 
-        per_node_metrics: List[Dict], 
-        nnodes: int,
-        launcher_type: str
-    ) -> Optional[Dict]:
-        """
-        Aggregate per-node metrics into single job-level metric.
-        
-        Aggregation Strategy:
-        - Throughput (samples/sec, tokens/sec, images/sec): SUM
-        - Latency (ms, seconds): AVERAGE
-        - Accuracy (%, ratio): AVERAGE or LAST
-        - Memory (bytes, GB): MAX or SUM
-        
-        Args:
-            per_node_metrics: List of performance dicts from each node
-            nnodes: Number of nodes
-            launcher_type: Type of launcher (torchrun, deepspeed, etc.)
-            
-        Returns:
-            Dict with aggregated performance data for perf.csv
-        """
-        import statistics
-        
-        if not per_node_metrics:
-            return None
-        
-        # Get metric type from first node
-        first_metric = per_node_metrics[0]
-        metric_name = first_metric["metric"]
-        
-        # Determine aggregation strategy based on metric type
-        aggregation_method = self._determine_aggregation_method(metric_name)
-        
-        if aggregation_method == "sum":
-            # Sum throughput metrics
-            aggregated_value = sum(m["performance"] for m in per_node_metrics)
-            method_desc = "sum_across_nodes"
-        elif aggregation_method == "average":
-            # Average latency/accuracy metrics
-            aggregated_value = statistics.mean(m["performance"] for m in per_node_metrics)
-            method_desc = "average_across_nodes"
-        elif aggregation_method == "max":
-            # Max for memory usage
-            aggregated_value = max(m["performance"] for m in per_node_metrics)
-            method_desc = "max_across_nodes"
-        else:
-            # Unknown - conservative sum
-            aggregated_value = sum(m["performance"] for m in per_node_metrics)
-            method_desc = "sum_across_nodes (default)"
-        
-        # Compute statistics for validation
-        perfs = [m["performance"] for m in per_node_metrics]
-        if len(perfs) > 1:
-            statistics_dict = {
-                "mean": statistics.mean(perfs),
-                "std_dev": statistics.stdev(perfs),
-                "min": min(perfs),
-                "max": max(perfs),
-                "coefficient_variation": statistics.stdev(perfs) / statistics.mean(perfs) if statistics.mean(perfs) > 0 else 0
-            }
-        else:
-            statistics_dict = {
-                "mean": perfs[0],
-                "std_dev": 0,
-                "min": perfs[0],
-                "max": perfs[0],
-                "coefficient_variation": 0
-            }
-        
-        # Get GPU architecture from any successful node
-        gpu_arch = "N/A"
-        for m in per_node_metrics:
-            if m.get("gpu_architecture") and m["gpu_architecture"] != "N/A":
-                gpu_arch = m["gpu_architecture"]
-                break
-        
-        # Get duration (use max across nodes - slowest determines job time)
-        durations = [m.get("duration", "N/A") for m in per_node_metrics if m.get("duration") != "N/A"]
-        if durations:
-            # Extract numeric value and find max
-            duration_values = []
-            for d in durations:
-                if isinstance(d, str) and d.endswith("s"):
-                    try:
-                        duration_values.append(float(d[:-1]))
-                    except ValueError:
-                        pass
-            duration = f"{max(duration_values):.2f}s" if duration_values else "N/A"
-        else:
-            duration = "N/A"
-        
-        # Get total GPUs
-        total_gpus = sum(m.get("local_gpus", 1) for m in per_node_metrics)
-        gpus_per_node = per_node_metrics[0].get("local_gpus", 1) if per_node_metrics else 1
-        
-        # Build aggregated record (matches perf.csv schema)
-        aggregated_record = {
-            "model": first_metric["model"],
-            "performance": aggregated_value,
-            "metric": metric_name,
-            "status": "SUCCESS",
-            "topology": f"{nnodes}N×{gpus_per_node}G",
-            "nnodes": nnodes,
-            "launcher": launcher_type or "N/A",
-            "deployment_type": "kubernetes",
-            "gpu_architecture": gpu_arch,
-            "test_duration": duration,  # FIXED: Must match CSV header name
-            "data_name": first_metric.get("data_name", "N/A"),
-            "data_provider": first_metric.get("data_provider", "N/A"),
-            
-            # NEW: Aggregation metadata (for results_summary.json)
-            "aggregation_method": method_desc,
-            "nodes_contributing": len(per_node_metrics),
-            "per_node_mean": statistics_dict["mean"],
-            "per_node_std_dev": statistics_dict["std_dev"],
-            "per_node_cv": statistics_dict["coefficient_variation"]
-        }
-        
-        return aggregated_record
-    
-    def _write_to_perf_csv(self, perf_data: Dict):
-        """
-        Write performance data to local perf.csv file.
-
-        Uses the same format as local execution for consistency.
-        Matches the schema from container_runner.py's create_run_details_dict().
-
-        When appending to an existing file, uses the file's existing header so that
-        column order matches (e.g. MAD-private uses a different schema with model/performance
-        in different positions). Values are mapped by column name so model, performance,
-        metric, status etc. always land in the correct columns.
-        """
-        import csv
-        from pathlib import Path
-
-        perf_csv_path = Path("perf.csv")
-
-        # CSV headers for NEW files (madengine standard order)
-        default_headers = [
-            "model",
-            "n_gpus",
-            "nnodes",
-            "gpus_per_node",
-            "training_precision",
-            "pipeline",
-            "args",
-            "tags",
-            "docker_file",
-            "base_docker",
-            "docker_sha",
-            "docker_image",
-            "git_commit",
-            "machine_name",
-            "deployment_type",
-            "launcher",
-            "gpu_architecture",
-            "performance",
-            "metric",
-            "relative_change",
-            "status",
-            "build_duration",
-            "test_duration",
-            "dataname",
-            "data_provider_type",
-            "data_size",
-            "data_download_duration",
-            "build_number",
-            "additional_docker_run_options",
-        ]
-
-        file_exists = perf_csv_path.exists()
-        existing_header = None
-        if file_exists:
-            # Read existing header so we write in the same column order (fixes MAD-private
-            # and other repos that use a different perf.csv schema with more/different columns)
-            with open(perf_csv_path, "r", newline="", encoding="utf-8", errors="replace") as rf:
-                reader = csv.reader(rf)
-                existing_header = next(reader, None)
-        headers = existing_header if existing_header else default_headers
-        if file_exists and existing_header:
-            # Build row by name so model/performance/metric/status go to correct columns
-            row_by_name = {k: perf_data.get(k, "") for k in headers}
-            row_to_write = [str(row_by_name.get(h, "")) for h in headers]
-        else:
-            row_to_write = perf_data
-
-        with open(perf_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-            if not file_exists:
-                writer.writeheader()
-            if file_exists and existing_header:
-                csv.writer(f).writerow(row_to_write)
-            else:
-                writer.writerow(row_to_write)
 
     def cleanup(self, deployment_id: str) -> bool:
         """Delete Job, ConfigMap, Service and associated pods."""

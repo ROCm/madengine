@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 # built-in modules
+import importlib
 import json
 import os
 import sys
@@ -229,18 +230,22 @@ class TestValidateAdditionalContext:
             assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
             mock_console.print.assert_called()
 
-    def test_validate_additional_context_missing_required_fields(self):
-        """Test validation with missing required fields."""
-        with patch("madengine.cli.validators.console") as mock_console:
-            # Missing gpu_vendor
-            with pytest.raises(typer.Exit) as exc_info:
-                validate_additional_context('{"guest_os": "UBUNTU"}')
-            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+    def test_validate_additional_context_defaults_fill_partial_fields(self):
+        """Missing gpu_vendor or guest_os is filled from defaults (no error)."""
+        from madengine.core.additional_context_defaults import (
+            DEFAULT_GPU_VENDOR,
+            DEFAULT_GUEST_OS,
+        )
 
-            # Missing guest_os
-            with pytest.raises(typer.Exit) as exc_info:
-                validate_additional_context('{"gpu_vendor": "AMD"}')
-            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+        with patch("madengine.cli.validators.console") as mock_console:
+            r1 = validate_additional_context('{"guest_os": "UBUNTU"}')
+            assert r1["gpu_vendor"] == DEFAULT_GPU_VENDOR
+            assert r1["guest_os"] == "UBUNTU"
+
+            r2 = validate_additional_context('{"gpu_vendor": "AMD"}')
+            assert r2["gpu_vendor"] == "AMD"
+            assert r2["guest_os"] == DEFAULT_GUEST_OS
+            mock_console.print.assert_called()
 
     def test_validate_additional_context_invalid_values(self):
         """Test validation with invalid field values."""
@@ -392,3 +397,82 @@ class TestProcessBatchManifest:
             assert "missing required 'model_name' field" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
+
+
+# ============================================================================
+# CLI exit code and error handling tests (CI / Jenkins smoke)
+# ============================================================================
+
+@pytest.fixture
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+class TestExitCodeConstants:
+    """Exit codes used by Jenkins/scripts for success and failure."""
+
+    def test_build_failure_exit_code(self):
+        """BUILD_FAILURE is 2 for build-only failures."""
+        assert ExitCode.BUILD_FAILURE == 2
+
+    def test_run_failure_exit_code(self):
+        """RUN_FAILURE is 3 when at least one model run fails."""
+        assert ExitCode.RUN_FAILURE == 3
+
+
+class TestCliMainPreservesTyperExit:
+    """cli_main must re-raise typer.Exit so process exit code is correct for Jenkins."""
+
+    def test_typer_exit_preserves_exit_code(self):
+        """When a command raises typer.Exit(3), cli_main re-raises and runner sees exit_code 3."""
+        # Use importlib to get the app module (not the Typer bound as madengine.cli.app)
+        app_module = importlib.import_module("madengine.cli.app")
+        mock_app = MagicMock(side_effect=typer.Exit(ExitCode.RUN_FAILURE))
+        with patch.object(app_module, "app", mock_app):
+            with pytest.raises(typer.Exit) as exc_info:
+                app_module.cli_main()
+            assert exc_info.value.exit_code == ExitCode.RUN_FAILURE
+
+
+class TestRunCommandExitCodes:
+    """Smoke tests and run command exit codes for Jenkins.
+
+    Uses Typer CliRunner (in-process); no Docker/GPU required for timeout/help tests.
+    """
+
+    def test_run_invalid_timeout_exits_invalid_args(self, runner: CliRunner) -> None:
+        """timeout < -1 is rejected before orchestration (ExitCode.INVALID_ARGS)."""
+        result = runner.invoke(
+            app,
+            ["run", "--timeout", "-2"],
+        )
+        assert result.exit_code == ExitCode.INVALID_ARGS
+
+    def test_run_help_exits_zero(self, runner: CliRunner) -> None:
+        """CLI help is reachable in CI without GPU."""
+        result = runner.invoke(app, ["run", "--help"])
+        assert result.exit_code == ExitCode.SUCCESS
+        assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
+
+    def test_run_command_build_error_returns_build_failure_exit_code(
+        self, runner: CliRunner
+    ) -> None:
+        """When BuildError is raised (e.g. all builds failed), run command exits with BUILD_FAILURE."""
+        from madengine.core.errors import BuildError
+
+        run_module = importlib.import_module("madengine.cli.commands.run")
+        mock_orch = MagicMock()
+        mock_orch.execute.side_effect = BuildError("All builds failed")
+        with patch.object(run_module, "RunOrchestrator", return_value=mock_orch):
+            result = runner.invoke(
+                app,
+                [
+                    "run",
+                    "--tags",
+                    "some_model",
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert result.exit_code == ExitCode.BUILD_FAILURE

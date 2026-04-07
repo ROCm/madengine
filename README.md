@@ -30,6 +30,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - [Reporting and Database](#-reporting-and-database)
 - [Installation](#-installation)
 - [Tips & Best Practices](#-tips--best-practices)
+  - [Exit codes and CI](#exit-codes-and-ci)
 - [Contributing](#-contributing)
 - [License](#-license)
 - [Links & Resources](#-links--resources)
@@ -58,20 +59,24 @@ git clone https://github.com/ROCm/MAD.git && cd MAD
 # Discover available models
 madengine discover --tags dummy
 
-# Run locally
+# Run locally (full workflow: discover/build/run as configured by the model)
+madengine run --tags dummy
+
+# Or with explicit configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
+> **Note**: For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified. For production deployments or non-AMD/Ubuntu environments, explicitly specify these values.
+
 If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
 
 ```bash
-madengine run --tags dummy --rocm-path /path/to/rocm \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy ...
+madengine run --tags dummy --rocm-path /path/to/rocm
+# or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy
 ```
 
-**Results saved to `perf_entry.csv`**
+**Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
 
 ## 📋 Commands
 
@@ -91,13 +96,14 @@ madengine provides five main commands for model automation and benchmarking:
 # Discover models
 madengine discover --tags dummy
 
-# Build image
-madengine build --tags dummy \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Build image (uses AMD/UBUNTU defaults)
+madengine build --tags dummy
 
 # Run model
-madengine run --tags dummy \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+madengine run --tags dummy
+
+# For non-AMD/Ubuntu environments, specify explicitly:
+# madengine build --tags dummy --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate report
 madengine report to-html --csv-file perf_entry.csv
@@ -547,6 +553,12 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 - **Enable verbose logging** (`--verbose`) when debugging issues
 - **Use `--live-output`** for real-time monitoring of long-running operations
 
+### CI / Jenkins
+
+- **Exit codes:** The CLI uses fixed exit codes (`ExitCode` in `madengine.cli.constants`, e.g. `SUCCESS=0`, `RUN_FAILURE=3`, `INVALID_ARGS=4`). Pipelines should treat **non-zero** as failure; no log scraping is required for pass/fail.
+- **Streaming:** In Jenkins, avoid redirecting stdout only to a file (`> file`) without `tee` if you want the console to update during the run. Prefer `... 2>&1 | tee madengine.run.log` with `bash -o pipefail` so the step exit code is still from `madengine`.
+- **Unbuffered Python:** If output still appears in chunks, set `PYTHONUNBUFFERED=1` (or `python -u`) for the `madengine` process.
+
 ### Build & Deployment
 
 - **Separate build and run phases** for distributed deployments
@@ -560,6 +572,10 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 - **Use profiling tools** to identify bottlenecks
 - **Monitor GPU utilization** with `gpu_info_power_profiler`
 - **Profile library calls** with rocBLAS/MIOpen tracing
+
+### Exit codes and CI
+
+madengine uses consistent exit codes for scripts and CI (e.g. Jenkins): `0` = success, `1` = general failure, `2` = build failure, `3` = one or more run failures, `4` = invalid arguments. Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](docs/cli-reference.md#exit-codes) for the full table and examples.
 
 ### Troubleshooting
 

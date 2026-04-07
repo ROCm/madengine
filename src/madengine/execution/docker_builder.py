@@ -17,19 +17,16 @@ from rich.console import Console as RichConsole
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.utils.ops import PythonicTee
+from madengine.execution.dockerfile_utils import (
+    is_compilation_arch_compatible,
+    is_target_arch_compatible_with_variable,
+    parse_dockerfile_gpu_variables,
+    parse_gpu_variable_value,
+)
 
 
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
-
-    # GPU architecture variables used in MAD/DLM Dockerfiles
-    GPU_ARCH_VARIABLES = [
-        "MAD_SYSTEM_GPU_ARCHITECTURE",
-        "PYTORCH_ROCM_ARCH", 
-        "GPU_TARGETS",
-        "GFX_COMPILATION_ARCH",
-        "GPU_ARCHS"
-    ]
 
     def __init__(
         self, context: Context, console: Console = None, live_output: bool = False
@@ -582,7 +579,7 @@ class DockerBuilder:
                     dockerfile_content = f.read()
                 
                 # Parse GPU architecture variables from Dockerfile
-                dockerfile_gpu_vars = self._parse_dockerfile_gpu_variables(dockerfile_content)
+                dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
                 
                 if dockerfile_gpu_vars:
                     return True, dockerfile_path
@@ -633,7 +630,7 @@ class DockerBuilder:
                     dockerfile_content = f.read()
                 
                 # Parse GPU architecture variables from Dockerfile
-                dockerfile_gpu_vars = self._parse_dockerfile_gpu_variables(dockerfile_content)
+                dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
                 
                 if not dockerfile_gpu_vars:
                     # No GPU variables found - target arch is acceptable
@@ -643,7 +640,7 @@ class DockerBuilder:
                 
                 # Validate target architecture against each GPU variable
                 for var_name, var_values in dockerfile_gpu_vars.items():
-                    if not self._is_target_arch_compatible_with_variable(
+                    if not is_target_arch_compatible_with_variable(
                         var_name, var_values, target_arch
                     ):
                         self.rich_console.print(f"[red]Error: Target architecture '{target_arch}' is not compatible "
@@ -661,119 +658,6 @@ class DockerBuilder:
         except Exception as e:
             self.rich_console.print(f"[yellow]Warning: Error validating target architecture for model {model_info['name']}: {e}[/yellow]")
             return True  # Assume compatible on parsing errors
-
-    def _parse_dockerfile_gpu_variables(self, dockerfile_content: str) -> typing.Dict[str, typing.List[str]]:
-        """Parse GPU architecture variables from Dockerfile content."""
-        gpu_variables = {}
-        
-        for var_name in self.GPU_ARCH_VARIABLES:
-            # Look for ARG declarations
-            arg_pattern = rf"ARG\s+{var_name}=([^\s\n]+)"
-            arg_matches = re.findall(arg_pattern, dockerfile_content, re.IGNORECASE)
-            
-            # Look for ENV declarations  
-            env_pattern = rf"ENV\s+{var_name}[=\s]+([^\s\n]+)"
-            env_matches = re.findall(env_pattern, dockerfile_content, re.IGNORECASE)
-            
-            # Process found values
-            all_matches = arg_matches + env_matches
-            if all_matches:
-                # Take the last defined value (in case of multiple definitions)
-                raw_value = all_matches[-1].strip('"\'')
-                parsed_values = self._parse_gpu_variable_value(var_name, raw_value)
-                if parsed_values:
-                    gpu_variables[var_name] = parsed_values
-        
-        return gpu_variables
-
-    def _parse_gpu_variable_value(self, var_name: str, raw_value: str) -> typing.List[str]:
-        """Parse GPU variable value based on variable type and format."""
-        architectures = []
-        
-        # Handle different variable formats
-        if var_name in ["GPU_TARGETS", "GPU_ARCHS", "PYTORCH_ROCM_ARCH"]:
-            # These often contain multiple architectures separated by semicolons or commas
-            if ";" in raw_value:
-                architectures = [arch.strip() for arch in raw_value.split(";") if arch.strip()]
-            elif "," in raw_value:
-                architectures = [arch.strip() for arch in raw_value.split(",") if arch.strip()]
-            else:
-                architectures = [raw_value.strip()]
-        else:
-            # Single architecture value (MAD_SYSTEM_GPU_ARCHITECTURE, GFX_COMPILATION_ARCH)
-            architectures = [raw_value.strip()]
-        
-        # Normalize architecture names
-        normalized_archs = []
-        for arch in architectures:
-            normalized = self._normalize_architecture_name(arch)
-            if normalized:
-                normalized_archs.append(normalized)
-        
-        return normalized_archs
-
-    def _normalize_architecture_name(self, arch: str) -> str:
-        """Normalize architecture name to standard format."""
-        arch = arch.lower().strip()
-        
-        # Handle common variations and aliases
-        if arch.startswith("gfx"):
-            return arch
-        elif arch in ["mi100", "mi-100"]:
-            return "gfx908"
-        elif arch in ["mi200", "mi-200", "mi210", "mi250"]:
-            return "gfx90a"
-        elif arch in ["mi300", "mi-300", "mi300a"]:
-            return "gfx940"
-        elif arch in ["mi300x", "mi-300x"]:
-            return "gfx942"
-        elif arch.startswith("mi"):
-            # Unknown MI series - return as is for potential future support
-            return arch
-        
-        return arch if arch else None
-
-    def _is_target_arch_compatible_with_variable(
-        self, 
-        var_name: str, 
-        var_values: typing.List[str], 
-        target_arch: str
-    ) -> bool:
-        """
-        Validate that target architecture is compatible with a specific GPU variable.
-        Used during build phase validation.
-        """
-        if var_name == "MAD_SYSTEM_GPU_ARCHITECTURE":
-            # MAD_SYSTEM_GPU_ARCHITECTURE will be overridden by target_arch, so always compatible
-            return True
-        
-        elif var_name in ["PYTORCH_ROCM_ARCH", "GPU_TARGETS", "GPU_ARCHS"]:
-            # Multi-architecture variables - target arch must be in the list
-            return target_arch in var_values
-        
-        elif var_name == "GFX_COMPILATION_ARCH":
-            # Compilation architecture should be compatible with target arch
-            return len(var_values) == 1 and (
-                var_values[0] == target_arch or
-                self._is_compilation_arch_compatible(var_values[0], target_arch)
-            )
-        
-        # Unknown variable - assume compatible
-        return True
-
-    def _is_compilation_arch_compatible(self, compile_arch: str, target_arch: str) -> bool:
-        """Check if compilation architecture is compatible with target architecture."""
-        # Define compatibility rules for compilation
-        compatibility_matrix = {
-            "gfx908": ["gfx908"],  # MI100 - exact match only
-            "gfx90a": ["gfx90a"],  # MI200 - exact match only
-            "gfx940": ["gfx940"],  # MI300A - exact match only
-            "gfx941": ["gfx941"],  # MI300X - exact match only
-            "gfx942": ["gfx942"],  # MI300X - exact match only
-        }
-        
-        compatible_archs = compatibility_matrix.get(compile_arch, [compile_arch])
-        return target_arch in compatible_archs
 
     def _build_model_single_arch(
         self, 
@@ -809,7 +693,11 @@ class DockerBuilder:
             if registry:
                 try:
                     registry_image = self._create_registry_image_name(
-                        build_info["docker_image"], registry, batch_build_metadata, model_info
+                        build_info["docker_image"],
+                        registry,
+                        batch_build_metadata,
+                        model_info,
+                        credentials,
                     )
                     self.push_image(build_info["docker_image"], registry, credentials, registry_image)
                     build_info["registry_image"] = registry_image
@@ -896,28 +784,29 @@ class DockerBuilder:
         return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
 
     def _create_registry_image_name(
-        self, 
-        image_name: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create registry image name."""
         if batch_build_metadata and model_info["name"] in batch_build_metadata:
             meta = batch_build_metadata[model_info["name"]]
             if meta.get("registry_image"):
                 return meta["registry_image"]
-        
-        # Default registry naming
-        return self._determine_registry_image_name(image_name, registry)
+
+        return self._determine_registry_image_name(image_name, registry, credentials)
 
     def _create_arch_registry_image_name(
-        self, 
-        image_name: str, 
-        gpu_arch: str, 
-        registry: str, 
-        batch_build_metadata: typing.Optional[dict], 
-        model_info: typing.Dict
+        self,
+        image_name: str,
+        gpu_arch: str,
+        registry: str,
+        batch_build_metadata: typing.Optional[dict],
+        model_info: typing.Dict,
+        credentials: typing.Optional[dict] = None,
     ) -> str:
         """Create architecture-specific registry image name."""
         # For multi-arch builds, add architecture to the tag
@@ -926,9 +815,10 @@ class DockerBuilder:
             if meta.get("registry_image"):
                 # Append architecture to existing registry image
                 return f"{meta['registry_image']}_{gpu_arch}"
-        
-        # Default arch-specific registry naming
-        base_registry_name = self._determine_registry_image_name(image_name, registry)
+
+        base_registry_name = self._determine_registry_image_name(
+            image_name, registry, credentials
+        )
         return f"{base_registry_name}"  # Architecture already in image_name
 
     def _determine_registry_image_name(
@@ -975,20 +865,6 @@ class DockerBuilder:
                 registry_image = f"{registry}/{docker_image}"
 
         return registry_image
-
-    def _is_compilation_arch_compatible(self, compile_arch: str, target_arch: str) -> bool:
-        """Check if compilation architecture is compatible with target architecture."""
-        # Define compatibility rules for compilation
-        compatibility_matrix = {
-            "gfx908": ["gfx908"],  # MI100 - exact match only
-            "gfx90a": ["gfx90a"],  # MI200 - exact match only
-            "gfx940": ["gfx940"],  # MI300A - exact match only
-            "gfx941": ["gfx941"],  # MI300X - exact match only
-            "gfx942": ["gfx942"],  # MI300X - exact match only
-        }
-        
-        compatible_archs = compatibility_matrix.get(compile_arch, [compile_arch])
-        return target_arch in compatible_archs
 
     def _build_model_for_arch(
         self, 
@@ -1043,74 +919,3 @@ class DockerBuilder:
             arch_results.append(build_info)
         
         return arch_results
-
-    def _build_model_single_arch(
-        self, 
-        model_info: typing.Dict,
-        credentials: typing.Dict,
-        clean_cache: bool,
-        registry: str,
-        phase_suffix: str,
-        batch_build_metadata: typing.Optional[dict]
-    ) -> typing.List[typing.Dict]:
-        """Build model using existing single architecture flow."""
-        
-        # Find dockerfiles for this model
-        dockerfiles = self._get_dockerfiles_for_model(model_info)
-
-        results = []
-        for dockerfile in dockerfiles:
-            build_info = self.build_image(
-                model_info, 
-                dockerfile, 
-                credentials,
-                clean_cache, 
-                phase_suffix
-            )
-            
-            # Extract GPU architecture from build args or context for manifest
-            gpu_arch = self._get_effective_gpu_architecture(model_info, dockerfile)
-            if gpu_arch:
-                build_info["gpu_architecture"] = gpu_arch
-            
-            # Handle registry push (existing logic)
-            if registry:
-                registry_image = self._determine_registry_image_name(
-                    build_info["docker_image"], registry, credentials
-                )
-                try:
-                    self.push_image(build_info["docker_image"], registry, credentials, registry_image)
-                    build_info["registry_image"] = registry_image
-                except Exception as e:
-                    build_info["push_error"] = str(e)
-            
-            results.append(build_info)
-        
-        return results
-
-    def _get_effective_gpu_architecture(self, model_info: typing.Dict, dockerfile_path: str) -> str:
-        """Get effective GPU architecture for single arch builds."""
-        # Check if MAD_SYSTEM_GPU_ARCHITECTURE is in build args from additional_context
-        if ("docker_build_arg" in self.context.ctx and 
-            "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_build_arg"]):
-            return self.context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
-        
-        # Try to extract from Dockerfile defaults
-        try:
-            with open(dockerfile_path, 'r') as f:
-                content = f.read()
-            
-            # Look for ARG or ENV declarations
-            patterns = [
-                r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)",
-                r"ENV\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)"
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, content, re.IGNORECASE)
-                if match:
-                    return match.group(1).strip('"\'')
-        except Exception:
-            pass
-        
-        return None

@@ -24,6 +24,7 @@ from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.errors import (
+    BuildError,
     ConfigurationError,
     RuntimeError as MADRuntimeError,
     create_error_context,
@@ -31,6 +32,10 @@ from madengine.core.errors import (
 )
 from madengine.core.constants import get_rocm_path
 from madengine.utils.session_tracker import SessionTracker
+from madengine.orchestration.image_filtering import (
+    filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
+    filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
+)
 
 
 class RunOrchestrator:
@@ -284,7 +289,7 @@ class RunOrchestrator:
                 self._cleanup_model_dir_copies()
                 raise
 
-        except (ConfigurationError, MADRuntimeError):
+        except (ConfigurationError, MADRuntimeError, BuildError):
             raise
         except Exception as e:
             context = create_error_context(
@@ -987,52 +992,22 @@ class RunOrchestrator:
     def _filter_images_by_gpu_compatibility(
         self, built_images: Dict, runtime_gpu_vendor: str, runtime_gpu_arch: str
     ) -> Dict:
-        """Filter images compatible with runtime GPU vendor and architecture.
-        
-        Args:
-            built_images: Dictionary of built images from manifest
-            runtime_gpu_vendor: Runtime GPU vendor (AMD, NVIDIA, NONE)
-            runtime_gpu_arch: Runtime GPU architecture (gfx90a, sm_90, etc.)
-            
-        Returns:
-            Dictionary of compatible images
-        """
+        """Filter images compatible with runtime GPU vendor and architecture."""
         compatible_images = {}
-
         for model_name, image_info in built_images.items():
-            image_gpu_vendor = image_info.get("gpu_vendor", "")
-            image_arch = image_info.get("gpu_architecture", "")
-
-            # Legacy images without vendor info - treat as compatible for backward compatibility
-            if not image_gpu_vendor:
+            if not image_info.get("gpu_vendor", ""):
                 self.rich_console.print(
                     f"[yellow]  Warning: {model_name} has no gpu_vendor, treating as compatible (legacy)[/yellow]"
                 )
                 compatible_images[model_name] = image_info
                 continue
-
-            # Check GPU vendor compatibility first (most important)
-            if runtime_gpu_vendor == "NONE" or image_gpu_vendor == runtime_gpu_vendor:
-                # Vendor matches or CPU-only, check architecture if specified
-                if image_arch:
-                    # Architecture specified, must match
-                    if image_arch == runtime_gpu_arch:
-                        compatible_images[model_name] = image_info
-                    else:
-                        self.rich_console.print(
-                            f"[dim]  Skipping {model_name}: architecture mismatch "
-                            f"({image_arch} != {runtime_gpu_arch})[/dim]"
-                        )
-                else:
-                    # No architecture specified, vendor match is enough
-                    compatible_images[model_name] = image_info
-            else:
-                # Vendor mismatch
-                self.rich_console.print(
-                    f"[dim]  Skipping {model_name}: GPU vendor mismatch "
-                    f"({image_gpu_vendor} != {runtime_gpu_vendor})[/dim]"
-                )
-
+        built_with_vendor = {k: v for k, v in built_images.items() if v.get("gpu_vendor")}
+        compat, skipped = _filter_by_gpu_compat(
+            built_with_vendor, runtime_gpu_vendor, runtime_gpu_arch
+        )
+        compatible_images.update(compat)
+        for model_name, reason in skipped:
+            self.rich_console.print(f"[dim]  Skipping {model_name}: {reason}[/dim]")
         return compatible_images
     
     def _filter_images_by_gpu_architecture(
@@ -1048,51 +1023,21 @@ class RunOrchestrator:
     def _filter_images_by_skip_gpu_arch(
         self, built_images: Dict, built_models: Dict, runtime_gpu_arch: str
     ) -> Dict:
-        """Filter out models that should skip the current GPU architecture.
-        
-        This implements the skip_gpu_arch logic from model definitions,
-        where models can specify GPU architectures they don't support.
-        
-        Args:
-            built_images: Dictionary of built images from manifest
-            built_models: Dictionary of model metadata from manifest
-            runtime_gpu_arch: Runtime GPU architecture (gfx90a, A100, etc.)
-            
-        Returns:
-            Dictionary of images that should run (not skipped)
-        """
-        if getattr(self.args, 'disable_skip_gpu_arch', False):
-            # User disabled skip logic, run all models
-            self.rich_console.print("[dim]  --disable-skip-gpu-arch flag set, skipping GPU architecture checks[/dim]")
+        """Filter out models that should skip the current GPU architecture."""
+        disable = getattr(self.args, "disable_skip_gpu_arch", False)
+        if disable:
+            self.rich_console.print(
+                "[dim]  --disable-skip-gpu-arch flag set, skipping GPU architecture checks[/dim]"
+            )
             return built_images
-        
-        compatible_images = {}
-        
-        for model_name, image_info in built_images.items():
-            # Get model metadata to check skip_gpu_arch field
-            model_info = built_models.get(model_name, {})
-            skip_gpu_arch_str = model_info.get("skip_gpu_arch", "")
-            
-            if skip_gpu_arch_str:
-                # Parse comma-separated list of architectures to skip
-                skip_list = [arch.strip() for arch in skip_gpu_arch_str.split(",")]
-                
-                # Normalize architecture comparison (handle "NVIDIA A100" -> "A100")
-                sys_gpu_arch = runtime_gpu_arch
-                if sys_gpu_arch and "NVIDIA" in sys_gpu_arch:
-                    sys_gpu_arch = sys_gpu_arch.split()[1]
-                
-                if sys_gpu_arch in skip_list:
-                    self.rich_console.print(
-                        f"[yellow]  Skipping model {model_name} as it is not supported on {runtime_gpu_arch} architecture.[/yellow]"
-                    )
-                    
-                    # Write SKIPPED status to perf CSV
-                    self._write_skipped_status(model_name, image_info, runtime_gpu_arch)
-                    continue
-            
-            compatible_images[model_name] = image_info
-        
+        compatible_images, skipped = _filter_by_skip_gpu_arch(
+            built_images, built_models, runtime_gpu_arch, disable_skip=False
+        )
+        for model_name, image_info, gpu_arch in skipped:
+            self.rich_console.print(
+                f"[yellow]  Skipping model {model_name} as it is not supported on {gpu_arch} architecture.[/yellow]"
+            )
+            self._write_skipped_status(model_name, image_info, gpu_arch)
         return compatible_images
 
     def _write_skipped_status(self, model_name: str, image_info: Dict, gpu_arch: str) -> None:

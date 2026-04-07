@@ -174,6 +174,21 @@ Located in [`minimal/`](minimal/) directory:
 
 **See [minimal/README.md](minimal/README.md) for detailed documentation and [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for launcher details.**
 
+### Kubernetes Secrets (`credential.json`)
+
+Registry and runtime credentials are **not** stored in a ConfigMap. By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from your local `credential.json` before creating the Job: a `kubernetes.io/dockerconfigjson` Secret when Docker Hub auth is present, and an opaque Secret with `credential.json` for in-container use. Mount paths match the previous behavior (`/workspace/credential.json`).
+
+- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI).
+- **`omit`**: no Secret creation from the client; optional extra pull secret names only.
+
+To validate rendered YAML after a debug run, install [kubeconform](https://github.com/yannh/kubeconform) and run `./tests/scripts/k8s_validate_manifests.sh ./k8s_manifests` from the madengine repo root (see `docs/deployment.md`).
+
+### Multi-node DNS (PyTorch vs Ray)
+
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+
+For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
+
 ### Full Configs (Reference Examples)
 
 Complete configurations showing all available fields:
@@ -358,21 +373,45 @@ kubectl exec -it <pod-name> -- ls -lh /data/
 | **NAS** | SSH/rsync | NAS credentials in `credential.json` |
 | **Local** | Filesystem | Pre-mounted PVC |
 
-### Storage Classes
+### Storage Classes (local-path vs NFS)
 
-**Single-Node (RWO)**:
+madengine separates **per-job results** from **long-lived shared data**:
+
+| Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
+|--------|-------------|----------------------------|----------------------------|
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `local_path_storage_class` or `single_node_results_storage_class` (e.g. `local-path`) | **RWX** — `nfs_storage_class` or `multi_node_results_storage_class` (e.g. `nfs-banff`) |
+| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
+
+**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, `local_path_storage_class` → `local-path`, `recreate_shared_data_pvc` → `false`. You do not need to set these unless you use another cluster — then override in additional context.
+
+Example override for a different cluster:
+
+```json
+{
+  "k8s": {
+    "nfs_storage_class": "nfs-client",
+    "local_path_storage_class": "standard",
+    "data_storage_class": "nfs-client"
+  }
+}
+```
+
+- **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
+- **`local_path_storage_class`**: RWO class for **single-node only** results PVC.
+- **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
+- **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
+- **`recreate_shared_data_pvc`**: If `true`, deletes existing `madengine-shared-data` before create (**destroys data** — backup first). Use when migrating from RWO `local-path` to RWX NFS.
+
+**Single-Node (RWO)** (results only):
+
 - ✅ `local-path` (Rancher)
 - ✅ AWS EBS (`gp3`, `io2`)
-- ✅ Azure Disk
-- ✅ Any RWO storage class
 
-**Multi-Node (RWX)**:
-- ✅ NFS (`nfs-client`)
-- ✅ CephFS
-- ✅ GlusterFS
-- ✅ AWS EFS
-- ✅ Azure Files
-- ❌ `local-path` (RWO only)
+**Multi-node & shared-data (RWX)**:
+
+- ✅ NFS (e.g. `nfs-banff`, `nfs-client`)
+- ✅ CephFS, GlusterFS, AWS EFS, Azure Files
+- ❌ `local-path` (RWO only — not for shared-data or multi-node results)
 
 ### Custom PVC (Optional)
 
@@ -498,6 +537,13 @@ To use an existing PVC instead of auto-creation:
 |-------|------|---------|-------------|
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
 | `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
+| `storage_class` | string | `null` | Optional fallback if the keys below are unset |
+| `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
+| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` |
+| `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
+| `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (`local_path_storage_class` if unset) |
+| `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
+| `recreate_shared_data_pvc` | boolean | **`false`** (preset) | If `true`, delete `madengine-shared-data` before create (data loss) |
 
 #### Distributed Execution Fields
 
@@ -578,6 +624,18 @@ CPU: 24 per node
 host_ipc: true
 PVCs: Recommended for data and results
 ```
+
+### Local `k8s_results` layout (after `madengine run`)
+
+Artifacts are written under `./k8s_results/<job_name>/`:
+
+| Path | Contents |
+|------|----------|
+| `<job_name>/<pod_name>/pod.log` | Container log from the Kubernetes API |
+| `<job_name>/<pod_name>/pvc/` | Copy of `/results/<subdir>/` from the results PVC, matched to that pod |
+| `<job_name>/pvc_unmapped/<subdir>/` | PVC folders that could not be matched to a pod name |
+
+Write durable outputs under `/results/<replica-id>/` in the container so each replica’s files land in a predictable PVC subdir (e.g. hostname or `jobname-<index>`). Madengine maps that subdir to the full pod name when copying to the host.
 
 ### Distributed Launchers
 
