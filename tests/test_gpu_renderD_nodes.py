@@ -23,9 +23,12 @@ def is_amd_gpu():
     try:
         console = Console()
         rocm_path = get_rocm_path()
-        amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
+        vendor_env = {**os.environ, "ROCM_PATH": rocm_path}
         vendor = console.sh(
-            f'bash -c \'if [[ -f "{amd_smi_path}" ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; else echo "OTHER"; fi || true\''
+            'bash -c \'if [[ -f "${ROCM_PATH}/bin/amd-smi" ]]; then echo "AMD"; '
+            'elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; '
+            'else echo "OTHER"; fi || true\'',
+            env=vendor_env,
         )
         return vendor.strip() == "AMD"
     except Exception:

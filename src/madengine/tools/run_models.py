@@ -33,6 +33,7 @@ It also contains the RunDetails class, which is responsible for storing the perf
 import sys
 import os
 import json
+import shlex
 import time
 import re
 import traceback
@@ -205,8 +206,10 @@ class RunModels:
         gpu_vendor = self.context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
         # show gpu info
         if gpu_vendor.find("AMD") != -1:
-            amd_smi_path = os.path.join(self.context.ctx["rocm_path"], "bin", "amd-smi")
-            self.console.sh(f"{amd_smi_path} || true")
+            ro = self.context.ctx["rocm_path"]
+            amd_smi = shlex.quote(os.path.join(ro, "bin", "amd-smi"))
+            rocm_smi = shlex.quote(os.path.join(ro, "bin", "rocm-smi"))
+            self.console.sh(f"{amd_smi} || {rocm_smi} || true")
         elif gpu_vendor.find("NVIDIA") != -1:
             self.console.sh("nvidia-smi -L || true")
 
@@ -793,8 +796,10 @@ class RunModels:
 
             # echo gpu smi info
             if gpu_vendor.find("AMD") != -1:
-                amd_smi_path = os.path.join(self.context.ctx["rocm_path"], "bin", "amd-smi")
-                smi = model_docker.sh(f"{amd_smi_path} || true")
+                ro = self.context.ctx["rocm_path"]
+                amd_smi = shlex.quote(os.path.join(ro, "bin", "amd-smi"))
+                rocm_smi = shlex.quote(os.path.join(ro, "bin", "rocm-smi"))
+                smi = model_docker.sh(f"{amd_smi} || {rocm_smi} || true")
             elif gpu_vendor.find("NVIDIA") != -1:
                 smi = model_docker.sh("/usr/bin/nvidia-smi || true")
             else:

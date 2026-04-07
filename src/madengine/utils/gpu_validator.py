@@ -70,7 +70,14 @@ class ROCmValidator:
             'amd_smi': os.path.join(self.rocm_path, 'bin', 'amd-smi'),
             'rocm_smi': os.path.join(self.rocm_path, 'bin', 'rocm-smi'),
         }
-        
+
+    def _rocm_tool_cmd(self, name: str, args: List[str]) -> List[str]:
+        """Prefer ``{rocm_path}/bin/{name}`` when present, else bare *name* on PATH."""
+        full = os.path.join(self.rocm_path, "bin", name)
+        if os.path.isfile(full):
+            return [full] + args
+        return [name] + args
+
     def _run_command(self, cmd: List[str], timeout: int = 10) -> Tuple[bool, str, str]:
         """Run a command and return success status and output
         
@@ -106,8 +113,10 @@ class ROCmValidator:
         Returns:
             ROCm version string or None if not found
         """
-        # Try hipconfig first
-        success, stdout, _ = self._run_command(['hipconfig', '--version'])
+        # Try hipconfig under rocm_path first (non-default installs may not set PATH)
+        success, stdout, _ = self._run_command(
+            self._rocm_tool_cmd("hipconfig", ["--version"])
+        )
         if success and stdout:
             return stdout.split('-')[0]  # Remove build suffix
         
@@ -130,7 +139,7 @@ class ROCmValidator:
             Tuple of (accessible, message)
         """
         # Try rocminfo first
-        success, stdout, stderr = self._run_command(['rocminfo'])
+        success, stdout, stderr = self._run_command(self._rocm_tool_cmd("rocminfo", []))
         if success:
             # Check if any GPU agents are listed
             if 'Agent' in stdout and 'gfx' in stdout.lower():
@@ -139,12 +148,14 @@ class ROCmValidator:
                 return False, "rocminfo ran but no GPU agents detected"
         
         # Try amd-smi
-        success, stdout, stderr = self._run_command(['amd-smi', 'list'])
+        success, stdout, stderr = self._run_command(
+            self._rocm_tool_cmd("amd-smi", ["list"])
+        )
         if success and stdout:
             return True, "GPUs accessible via amd-smi"
         
         # Try rocm-smi
-        success, stdout, stderr = self._run_command(['rocm-smi'])
+        success, stdout, stderr = self._run_command(self._rocm_tool_cmd("rocm-smi", []))
         if success and stdout:
             return True, "GPUs accessible via rocm-smi"
         
