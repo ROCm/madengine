@@ -17,9 +17,12 @@ import json
 import collections.abc
 import os
 import re
+import shlex
+import subprocess
 import typing
 # third-party modules
 from madengine.core.console import Console
+from madengine.core.constants import get_rocm_path
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError
 
 
@@ -65,18 +68,23 @@ class Context:
     def __init__(
             self, 
             additional_context: str=None, 
-            additional_context_file: str=None
+            additional_context_file: str=None,
+            rocm_path: str=None
         ) -> None:
         """Constructor of the Context class.
         
         Args:
             additional_context: The additional context.
             additional_context_file: The additional context file.
+            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
             
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU architecture is not detected.
         """
+        # Resolve ROCm path first (used by get_gpu_vendor and others)
+        self._rocm_path = get_rocm_path(rocm_path)
+
         # Initialize the console
         self.console = Console()
 
@@ -99,7 +107,7 @@ class Context:
         # Validate ROCm installation if AMD GPU is detected
         if self.ctx["gpu_vendor"] == "AMD":
             try:
-                validate_rocm_installation(verbose=False, raise_on_error=True)
+                validate_rocm_installation(verbose=False, raise_on_error=True, rocm_path=self._rocm_path)
             except GPUInstallationError as e:
                 print("\n" + "="*70)
                 print("ERROR: ROCm Installation Validation Failed")
@@ -110,6 +118,8 @@ class Context:
 
         # Initialize the docker context
         self.ctx["docker_env_vars"] = {}
+        self.ctx["rocm_path"] = self._rocm_path
+        self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
         self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
         self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self.get_system_ngpus()
         self.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = self.get_system_gpu_architecture()
@@ -161,6 +171,10 @@ class Context:
         # Set multi-node runner after context update
         self.ctx['docker_env_vars']['MAD_MULTI_NODE_RUNNER'] = self.set_multi_node_runner()
 
+    def _quoted_rocm_bin(self, name: str) -> str:
+        """Shell-safe path to a binary under ``{rocm_path}/bin``."""
+        return shlex.quote(os.path.join(self._rocm_path, "bin", name))
+
     def get_ctx_test(self) -> str:
         """Get context test.
         
@@ -189,9 +203,15 @@ class Context:
             - NVIDIA
             - AMD
         """
-        # Check if the GPU vendor is NVIDIA or AMD, and if it is unable to detect the GPU vendor.
+        # ROCM_PATH via subprocess env avoids embedding user-controlled paths in shell strings.
+        vendor_env = {**os.environ, "ROCM_PATH": self._rocm_path}
         return self.console.sh(
-            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; elif [[ -f /opt/rocm/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; elif [[ -f /opt/rocm/bin/rocm-smi ]]; then echo "AMD"; else echo "Unable to detect GPU vendor"; fi || true\''
+            'bash -c \'if [[ -f /usr/bin/nvidia-smi ]] && $(/usr/bin/nvidia-smi > /dev/null 2>&1); then echo "NVIDIA"; '
+            'elif [[ -f "${ROCM_PATH}/bin/amd-smi" ]]; then echo "AMD"; '
+            'elif [[ -f /usr/local/bin/amd-smi ]]; then echo "AMD"; '
+            'elif [[ -f "${ROCM_PATH}/bin/rocm-smi" ]]; then echo "AMD"; '
+            'else echo "Unable to detect GPU vendor"; fi || true\'',
+            env=vendor_env,
         )
 
     def get_host_os(self) -> str:
@@ -254,11 +274,19 @@ class Context:
         number_gpus = 0
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             try:
-                number_gpus = int(self.console.sh("amd-smi list --csv | tail -n +3 | wc -l"))
+                amd_smi = self._quoted_rocm_bin("amd-smi")
+                number_gpus = int(
+                    self.console.sh(f"{amd_smi} list --csv | tail -n +3 | wc -l")
+                )
             except Exception as e:
                 # Try fallback to rocm-smi
                 try:
-                    number_gpus = int(self.console.sh("rocm-smi --showid --csv | tail -n +2 | wc -l"))
+                    rocm_smi = self._quoted_rocm_bin("rocm-smi")
+                    number_gpus = int(
+                        self.console.sh(
+                            f"{rocm_smi} --showid --csv | tail -n +2 | wc -l"
+                        )
+                    )
                 except Exception:
                     raise RuntimeError(
                         f"Unable to determine number of AMD GPUs. "
@@ -289,14 +317,31 @@ class Context:
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             try:
-                arch = self.console.sh("/opt/rocm/bin/rocminfo |grep -o -m 1 'gfx.*'")
-                if not arch or arch.strip() == "":
+                rocminfo_path = os.path.join(self._rocm_path, "bin", "rocminfo")
+                try:
+                    proc = subprocess.run(
+                        [rocminfo_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                    )
+                except FileNotFoundError as fnf:
+                    raise RuntimeError(
+                        f"rocminfo not found at {rocminfo_path}"
+                    ) from fnf
+                out = (proc.stdout or "") + (proc.stderr or "")
+                match = re.search(r"gfx\S+", out)
+                if not match:
+                    raise RuntimeError("rocminfo returned empty architecture")
+                arch = match.group(0)
+                if not arch.strip():
                     raise RuntimeError("rocminfo returned empty architecture")
                 return arch
             except Exception as e:
                 raise RuntimeError(
                     f"Unable to determine AMD GPU architecture. "
-                    f"Ensure ROCm is installed and rocminfo is accessible at /opt/rocm/bin/rocminfo. "
+                    f"Ensure ROCm is installed and rocminfo is accessible (ROCM_PATH={self._rocm_path}). "
                     f"Error: {e}"
                 )
         elif self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "NVIDIA":
@@ -323,11 +368,15 @@ class Context:
         """
         if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] == "AMD":
             try:
-                return self.console.sh("amd-smi static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2")
+                amd_smi = self._quoted_rocm_bin("amd-smi")
+                return self.console.sh(
+                    f"{amd_smi} static -g 0 | grep MARKET_NAME: | cut -d ':' -f 2"
+                )
             except Exception as e:
                 # Try fallback to rocm-smi
                 try:
-                    output = self.console.sh("rocm-smi -i")
+                    rocm_smi = self._quoted_rocm_bin("rocm-smi")
+                    output = self.console.sh(f"{rocm_smi} -i")
                     # Parse output to extract product name from brackets
                     # Example: "GPU[0]          : Device Name:          Arcturus GL-XL [Instinct MI100]"
                     # Extract: "Instinct MI100"
@@ -352,7 +401,8 @@ class Context:
     def get_system_hip_version(self):
         if self.ctx['docker_env_vars']['MAD_GPU_VENDOR']=='AMD':
             try:
-                version = self.console.sh("hipconfig --version | cut -d'.' -f1,2")
+                hipconfig = self._quoted_rocm_bin("hipconfig")
+                version = self.console.sh(f"{hipconfig} --version | cut -d'.' -f1,2")
                 if not version or version.strip() == "":
                     raise RuntimeError("hipconfig returned empty version")
                 return version
@@ -408,9 +458,16 @@ class Context:
             
         try:
             # Get ROCm version
-            rocm_version_str = self.console.sh("cat /opt/rocm/.info/version | cut -d'-' -f1")
+            version_file = os.path.join(self._rocm_path, ".info", "version")
+            try:
+                with open(version_file, "r", encoding="utf-8") as vf:
+                    rocm_version_str = vf.read().strip().split("-")[0].split("\n")[0]
+            except OSError as io_err:
+                raise RuntimeError(
+                    f"Failed to read ROCm version file {version_file}: {io_err}"
+                ) from io_err
             if not rocm_version_str or rocm_version_str.strip() == "":
-                raise RuntimeError("Failed to retrieve ROCm version from /opt/rocm/.info/version")
+                raise RuntimeError(f"Failed to retrieve ROCm version from {version_file}")
             
             # Parse version safely
             try:
@@ -467,7 +524,8 @@ class Context:
                     }
 
                     # Get list of GPUs from amd-smi
-                    output = self.console.sh("amd-smi list -e --json")
+                    amd_smi = self._quoted_rocm_bin("amd-smi")
+                    output = self.console.sh(f"{amd_smi} list -e --json")
                     if not output or output.strip() == "":
                         raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
                     
@@ -523,7 +581,10 @@ class Context:
                 }
 
                 # Get GPU ID to unique ID mapping from rocm-smi
-                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'")
+                rocm_smi = self._quoted_rocm_bin("rocm-smi")
+                rsmi_output = self.console.sh(
+                    f"{rocm_smi} --showuniqueid | grep 'Unique.*:'"
+                )
                 if not rsmi_output or rsmi_output.strip() == "":
                     raise RuntimeError("Failed to retrieve unique IDs from rocm-smi")
                 

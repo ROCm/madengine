@@ -6,6 +6,7 @@ This module provides a class to run console commands.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
+import os
 import subprocess
 import typing
 # third-party modules
@@ -62,7 +63,9 @@ class Console:
         if self.shellVerbose and not secret:
             print("> " + command, flush=True)
 
-        # Run the shell command
+        # Merge partial env with inherited environment (subprocess replaces env entirely if set).
+        run_env = None if env is None else {**os.environ, **env}
+
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -71,7 +74,7 @@ class Console:
             shell=True,
             universal_newlines=True,
             bufsize=1,
-            env=env,
+            env=run_env,
         )
 
         # Get the output of the shell command, and check for failure, and return the output.

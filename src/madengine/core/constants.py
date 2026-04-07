@@ -89,3 +89,21 @@ if "PUBLIC_GITHUB_ROCM_KEY" not in os.environ:
         }
 else:
     PUBLIC_GITHUB_ROCM_KEY = json.loads(os.environ["PUBLIC_GITHUB_ROCM_KEY"])
+
+
+def get_rocm_path(override=None):
+    """Return ROCm installation root directory.
+
+    Resolution order: override (e.g. from CLI) -> ROCM_PATH env -> default /opt/rocm.
+    Path is normalized with ``os.path.normpath`` (preserves ``/`` as root).
+
+    Args:
+        override: Optional path overriding env and default.
+
+    Returns:
+        str: Absolute ROCm root path.
+    """
+    raw = override if override else os.environ.get("ROCM_PATH", "/opt/rocm")
+    path = os.path.abspath(os.path.expanduser(str(raw).strip()))
+    # normpath preserves "/" as install root; rstrip(os.sep) would turn "/" into "".
+    return os.path.normpath(path)
