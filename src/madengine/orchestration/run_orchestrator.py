@@ -143,6 +143,10 @@ class RunOrchestrator:
         1. Run-only: If manifest_file provided
         2. Full workflow: If tags provided (build + run)
 
+        When args.skip_model_run is True (Policy A), the model execution step is
+        skipped only if this invocation ran a build (_did_build_phase). Otherwise
+        the flag is ignored with a warning.
+
         Args:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
@@ -257,6 +261,34 @@ class RunOrchestrator:
                 target = deployment_config.get("target", "local")
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
+
+            # Use `is True` so MagicMock-based test doubles do not count as enabled.
+            skip_requested = getattr(self.args, "skip_model_run", False) is True
+            if skip_requested and not self._did_build_phase:
+                self.rich_console.print(
+                    "[yellow]⚠️  --skip-model-run is ignored "
+                    "(not a build+run workflow in this invocation).[/yellow]\n"
+                )
+
+            if skip_requested and self._did_build_phase:
+                self.rich_console.print(
+                    "[bold cyan]Skipping model run (--skip-model-run) after build.[/bold cyan]\n"
+                )
+                results = {
+                    "successful_runs": [],
+                    "failed_runs": [],
+                    "total_runs": 0,
+                    "skipped_model_run": True,
+                }
+                results["session_start_row"] = session_start_row
+                results["session_row_count"] = (
+                    self.session_tracker.get_session_row_count()
+                )
+                self.rich_console.print(
+                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
+                )
+                self._cleanup_model_dir_copies()
+                return results
 
             # Step 4: Execute based on target
             try:

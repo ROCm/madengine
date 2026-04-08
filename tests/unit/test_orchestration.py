@@ -1,5 +1,7 @@
 """Unit tests for orchestration: image_filtering and orchestrator init/validation."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -190,3 +192,82 @@ class TestManifestValidation:
 
         with pytest.raises(ConfigurationError):
             orchestrator.execute(manifest_file=None, tags=None)
+
+
+@pytest.mark.unit
+class TestSkipModelRunPolicyA:
+    """Policy A: --skip-model-run only skips execution after an internal build."""
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_skip_after_build_skips_execute_local(self, mock_cleanup, tmp_path):
+        """Full workflow: skip_model_run + build phase skips _execute_local."""
+        perf = tmp_path / "perf.csv"
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.skip_model_run = True
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(perf)
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+            with patch.object(
+                RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
+            ):
+                with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    with patch.object(
+                        RunOrchestrator, "_combine_build_and_run_logs"
+                    ) as mock_combine:
+                        orchestrator.execute(
+                            manifest_file=None, tags=["dummy"], timeout=60
+                        )
+
+        mock_local.assert_not_called()
+        mock_combine.assert_not_called()
+        mock_cleanup.assert_called()
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_skip_ignored_when_run_only_still_calls_execute_local(
+        self, mock_cleanup, tmp_path
+    ):
+        """Run-only: skip_model_run is ignored; _execute_local runs."""
+        perf = tmp_path / "perf.csv"
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.skip_model_run = True
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(perf)
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+            mock_local.return_value = {
+                "successful_runs": [],
+                "failed_runs": [],
+            }
+            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_called_once()
+        mock_cleanup.assert_called()

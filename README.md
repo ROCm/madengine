@@ -30,6 +30,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - [Reporting and Database](#-reporting-and-database)
 - [Installation](#-installation)
 - [Tips & Best Practices](#-tips--best-practices)
+  - [Log error pattern scan](#log-error-pattern-scan)
   - [Exit codes and CI](#exit-codes-and-ci)
 - [Contributing](#-contributing)
 - [License](#-license)
@@ -46,6 +47,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
+- **📋 Configurable log scan** - Optional `--additional-context` keys to disable or tune post-run log substring checks (see [Log error pattern scan](#log-error-pattern-scan))
 
 ## 🚀 Quick Start
 
@@ -119,10 +121,10 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | Guide | Description |
 |-------|-------------|
 | [Installation](docs/installation.md) | Complete installation instructions |
-| [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
+| [Usage Guide](docs/usage.md) | Commands, workflows, and examples ([`--skip-model-run`](docs/usage.md#skip-model-run-after-build)) |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
-| [Configuration](docs/configuration.md) | Advanced configuration options |
+| [Configuration](docs/configuration.md) | Advanced options; [run log error pattern scan](docs/configuration.md#run-phase-log-error-pattern-scan) |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed training frameworks |
 | [Profiling](docs/profiling.md) | Performance analysis tools |
@@ -553,6 +555,13 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 - **Enable verbose logging** (`--verbose`) when debugging issues
 - **Use `--live-output`** for real-time monitoring of long-running operations
 
+### Log error pattern scan
+
+After a local Docker run, madengine can scan the captured **run log** for common failure substrings (for example `RuntimeError:`, `CUDA out of memory`, `Traceback`). That helps catch hard failures when exit codes are ambiguous, but some workloads log benign `RuntimeError:` text while tests still pass.
+
+- **Disable** the scan when another signal is authoritative (e.g. pytest/JUnit inside the image): set `"log_error_pattern_scan": false` in `--additional-context` or in the model entry in `models.json`. See [Configuration — Run phase: log error pattern scan](docs/configuration.md#run-phase-log-error-pattern-scan).
+- **Extend exclusions** with `log_error_benign_patterns` (list of strings), or **replace** the default pattern list with `log_error_patterns` (non-empty list of strings) for advanced cases.
+
 ### CI / Jenkins
 
 - **Exit codes:** The CLI uses fixed exit codes (`ExitCode` in `madengine.cli.constants`, e.g. `SUCCESS=0`, `RUN_FAILURE=3`, `INVALID_ARGS=4`). Pipelines should treat **non-zero** as failure; no log scraping is required for pass/fail.
@@ -562,6 +571,7 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 ### Build & Deployment
 
 - **Separate build and run phases** for distributed deployments
+- **Build without executing:** `madengine run --tags … --skip-model-run` skips container execution **after a build in that same invocation** (ignored when using an existing `--manifest-file`). See [Usage — Skip model run after build](docs/usage.md#skip-model-run-after-build).
 - **Use registries** for multi-node execution (K8s/SLURM)
 - **Use batch build mode** for CI/CD to optimize build times
 - **Specify `--target-archs`** when building for multiple GPU architectures
@@ -597,6 +607,7 @@ madengine build --tags model --clean-docker-cache --verbose
 
 **Common Issues:**
 - **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)
+- **False failures from `RuntimeError:` in logs**: If the workload logs expected exception text but tests pass, disable or tune the scan with `log_error_pattern_scan` / `log_error_benign_patterns` — see [Configuration](docs/configuration.md#run-phase-log-error-pattern-scan)
 - **ROCProf log errors**: Messages like `E20251230` are informational logs, not errors (fixed in v2.0+)
 - **Configuration errors**: Validate JSON with `python -m json.tool your-config.json`
 

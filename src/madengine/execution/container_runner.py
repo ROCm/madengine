@@ -35,6 +35,7 @@ from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.execution.container_runner_helpers import (
     make_run_log_file_path,
+    resolve_log_error_scan_config,
     resolve_run_timeout,
 )
 
@@ -1296,27 +1297,18 @@ class ContainerRunner:
                         # Set status based on performance and error patterns
                         # First check for obvious failure patterns in the logs
                         try:
-                            # Check for common failure patterns in the log file
-                            # Note: Patterns should be specific enough to avoid false positives
-                            # from profiling tools (rocprof, etc.) that use "Error:" as log level
-                            error_patterns = [
-                                "OutOfMemoryError",
-                                "HIP out of memory",
-                                "CUDA out of memory",
-                                "RuntimeError:",  # More specific with colon
-                                "AssertionError:",
-                                "ValueError:",
-                                "SystemExit",
-                                "failed (exitcode:",  # Literal text in logs
-                                "Traceback (most recent call last)",  # Python tracebacks
-                                "FAILED",
-                                "Exception:",
-                                "ImportError:",
-                                "ModuleNotFoundError:",
-                            ]
+                            scan_logs, error_patterns, extra_benign = (
+                                resolve_log_error_scan_config(
+                                    model_info, self.additional_context
+                                )
+                            )
 
                             has_errors = False
-                            if log_file_path and os.path.exists(log_file_path):
+                            if (
+                                scan_logs
+                                and log_file_path
+                                and os.path.exists(log_file_path)
+                            ):
                                 try:
                                     # Define benign patterns to exclude from error detection
                                     # These are known warnings/info messages that should not trigger failures
@@ -1336,7 +1328,8 @@ class ContainerRunner:
                                         "rocpd_op:",                          # ROCProf operation logs
                                         "rpd_tracer:",                        # ROCProf tracer logs
                                     ]
-                                    
+                                    benign_patterns.extend(extra_benign)
+
                                     # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns).
                                     # Use subprocess (not console.sh) so the check runs silently and does not clutter console output.
                                     for pattern in error_patterns:
@@ -1373,6 +1366,11 @@ class ContainerRunner:
                                             pass  # Error checking is optional; treat as no match
                                 except Exception:
                                     pass  # Error checking is optional
+                            elif not scan_logs:
+                                self.rich_console.print(
+                                    "[dim]ℹ️  Log error pattern scan disabled "
+                                    "(log_error_pattern_scan).[/dim]"
+                                )
 
                             # Status logic: Must have performance AND no errors to be considered success
                             # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)

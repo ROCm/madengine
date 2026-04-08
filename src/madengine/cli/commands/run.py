@@ -95,6 +95,13 @@ def run(
             help="Rebuild images without using cache (for full workflow)",
         ),
     ] = False,
+    skip_model_run: Annotated[
+        bool,
+        typer.Option(
+            "--skip-model-run",
+            help="After a build in this invocation, skip executing models (ignored when using an existing manifest).",
+        ),
+    ] = False,
     manifest_output: Annotated[
         str,
         typer.Option(
@@ -193,6 +200,12 @@ def run(
         manifest_exists = manifest_file and os.path.exists(manifest_file)
 
         if manifest_exists:
+            if skip_model_run:
+                console.print(
+                    "[yellow]⚠️  --skip-model-run applies only after a build in this invocation; "
+                    "using an existing manifest. Ignoring --skip-model-run.[/yellow]"
+                )
+
             console.print(
                 Panel(
                     f"🚀 [bold cyan]Running Models (Execution Only)[/bold cyan]\n"
@@ -225,6 +238,7 @@ def run(
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
                 rocm_path=rocm_path,
+                skip_model_run=skip_model_run,
                 _separate_phases=True,
             )
 
@@ -290,12 +304,18 @@ def run(
                     f"⚠️  Manifest file [yellow]{manifest_file}[/yellow] not found, running complete workflow"
                 )
 
+            skip_note = (
+                "\nSkip run: [yellow]yes (--skip-model-run)[/yellow]"
+                if skip_model_run
+                else ""
+            )
             console.print(
                 Panel(
                     f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
                     f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                     f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
-                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
+                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s"
+                    f"{skip_note}",
                     title="Workflow Configuration",
                     border_style="magenta",
                 )
@@ -323,6 +343,7 @@ def run(
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
                 rocm_path=rocm_path,
+                skip_model_run=skip_model_run,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 
@@ -385,6 +406,10 @@ def run(
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
             if workflow_summary["overall_success"]:
+                if execution_summary.get("skipped_model_run"):
+                    console.print(
+                        "[cyan]Model run was skipped (--skip-model-run); build completed.[/cyan]"
+                    )
                 console.print(
                     "🎉 [bold green]Complete workflow finished successfully![/bold green]"
                 )

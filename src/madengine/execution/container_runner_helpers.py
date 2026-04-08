@@ -7,6 +7,100 @@ Extracted so run_container logic is easier to test and maintain.
 
 import typing
 
+# Default substrings matched in container run logs post-hoc (see ContainerRunner).
+DEFAULT_LOG_ERROR_PATTERNS: typing.Tuple[str, ...] = (
+    "OutOfMemoryError",
+    "HIP out of memory",
+    "CUDA out of memory",
+    "RuntimeError:",
+    "AssertionError:",
+    "ValueError:",
+    "SystemExit",
+    "failed (exitcode:",
+    "Traceback (most recent call last)",
+    "FAILED",
+    "Exception:",
+    "ImportError:",
+    "ModuleNotFoundError:",
+)
+
+
+def _coerce_bool(value: typing.Any, *, default: bool) -> bool:
+    """Interpret JSON/CLI scalars as bool; fall back to *default* if None."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("0", "false", "no", "off", ""):
+            return False
+        if s in ("1", "true", "yes", "on"):
+            return True
+    return default
+
+
+def _pick_context_over_model(
+    model_info: typing.Dict,
+    additional_context: typing.Dict,
+    key: str,
+    default: typing.Any = None,
+) -> typing.Any:
+    """Resolve key from model_info, overridden by additional_context when present."""
+    ctx = additional_context or {}
+    mi = model_info or {}
+    if key in ctx:
+        return ctx[key]
+    if key in mi:
+        return mi[key]
+    return default
+
+
+def resolve_log_error_scan_config(
+    model_info: typing.Dict,
+    additional_context: typing.Optional[typing.Dict] = None,
+) -> typing.Tuple[bool, typing.List[str], typing.List[str]]:
+    """
+    Resolve whether to scan run logs for error substrings and which patterns to use.
+
+    Keys (in ``additional_context`` and/or ``model_info``; context wins):
+
+    - ``log_error_pattern_scan`` (default True): set False to skip grep-based failure detection.
+    - ``log_error_benign_patterns``: list of extra substrings/regex fragments excluded from matches.
+    - ``log_error_patterns``: non-empty list of strings replaces the default error pattern list.
+
+    Returns:
+        (scan_enabled, error_patterns, extra_benign_patterns)
+    """
+    ctx = additional_context if additional_context is not None else {}
+    mi = model_info if model_info is not None else {}
+
+    scan_enabled = _coerce_bool(
+        _pick_context_over_model(mi, ctx, "log_error_pattern_scan", True),
+        default=True,
+    )
+
+    raw_benign_mi = mi.get("log_error_benign_patterns")
+    raw_benign_ctx = ctx.get("log_error_benign_patterns")
+    extra_benign: typing.List[str] = []
+    for part in (raw_benign_mi, raw_benign_ctx):
+        if isinstance(part, list):
+            extra_benign.extend(str(x) for x in part if x is not None)
+
+    custom_patterns = _pick_context_over_model(mi, ctx, "log_error_patterns", None)
+    if (
+        isinstance(custom_patterns, list)
+        and len(custom_patterns) > 0
+        and all(isinstance(x, str) for x in custom_patterns)
+    ):
+        error_patterns = list(custom_patterns)
+    else:
+        error_patterns = list(DEFAULT_LOG_ERROR_PATTERNS)
+
+    return scan_enabled, error_patterns, extra_benign
+
 
 def resolve_run_timeout(
     model_info: typing.Dict,

@@ -281,6 +281,21 @@ madengine build --batch-manifest batch.json \
 
 ## Run Workflow
 
+### Skip model run after build
+
+When `madengine run` **builds** in the same invocation (no pre-existing `--manifest-file`), you can pass **`--skip-model-run`** to produce images and `build_manifest.json` **without** running model containers.
+
+- **Ignored** when `--manifest-file` points at an existing manifest (execution-only mode): use plain `madengine run --manifest-file ...` to run later.
+- **Ignored** with a warning if this invocation did not perform a build (for example a manifest was already present and no rebuild occurred).
+
+```bash
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
+  --skip-model-run
+```
+
+See [CLI Reference — `run`](cli-reference.md#run---execute-models) and `madengine run --help`.
+
 ### Local Execution
 
 Run on local machine:
@@ -384,6 +399,8 @@ madengine run --tags model --verbose --live-output
 # Both
 madengine run --tags model --keep-alive --verbose --live-output
 ```
+
+If the run is marked `FAILURE` because the log contains benign substrings (for example `RuntimeError:`) while the workload actually passed, configure [log error pattern scan](configuration.md#run-phase-log-error-pattern-scan) (`log_error_pattern_scan`, `log_error_benign_patterns`).
 
 ### Clean Rebuild
 

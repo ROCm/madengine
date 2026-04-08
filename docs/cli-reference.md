@@ -219,6 +219,7 @@ madengine run [OPTIONS]
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run |
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
+| `--skip-model-run` | | FLAG | `False` | After a **build in this invocation**, skip executing models (manifest/images still produced). **Ignored** when using `--manifest-file` with an existing manifest (run-only), or when no build ran in this invocation. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
 | `--manifest-output` | | TEXT | `build_manifest.json` | Output file for build manifest (full workflow) |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for summary JSON |
 | `--live-output` | `-l` | FLAG | `False` | Print output in real-time |
@@ -245,6 +246,11 @@ madengine run --tags dummy --rocm-path /path/to/rocm \
 
 # Run with pre-built images (manifest-based)
 madengine run --manifest-file build_manifest.json
+
+# Build in this invocation but skip executing containers (CI: images + manifest only)
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
+  --skip-model-run
 
 # Multi-GPU with torchrun
 madengine run --tags model \
@@ -591,6 +597,16 @@ For complex configurations, use JSON files with `--additional-context-file`:
 ```
 
 To run on specific nodes, add `"nodelist": "node01,node02"` to the `slurm` section. When set, the job runs only on those nodes and node health preflight is skipped. See [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
+
+### Run phase: log error pattern scan (optional)
+
+These keys apply to **local Docker runs** when madengine post-processes the run log. Use them when substring matches cause false `FAILURE` status (for example benign `RuntimeError:` lines). Full details: [Configuration — Run phase: log error pattern scan](configuration.md#run-phase-log-error-pattern-scan).
+
+| Key | Description |
+|-----|-------------|
+| `log_error_pattern_scan` | Default `true`. Set `false` to skip grep-based log failure detection. |
+| `log_error_benign_patterns` | Array of extra strings to exclude from matching (merged with built-in benign list). |
+| `log_error_patterns` | Non-empty array replaces the default substring list (advanced). |
 
 ---
 
