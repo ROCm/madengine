@@ -170,6 +170,34 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
     if "guest_os" in context and not isinstance(context["guest_os"], str):
         _fail_structure("guest_os", "a string")
 
+    if "log_error_pattern_scan" in context and not isinstance(
+        context["log_error_pattern_scan"], (bool, str, int, float, type(None))
+    ):
+        _fail_structure(
+            "log_error_pattern_scan",
+            "a boolean, string, number, or null",
+        )
+
+    if "log_error_benign_patterns" in context:
+        lebp = context["log_error_benign_patterns"]
+        if not isinstance(lebp, list) or not all(
+            isinstance(x, str) for x in lebp
+        ):
+            _fail_structure(
+                "log_error_benign_patterns",
+                "an array of strings",
+            )
+
+    if "log_error_patterns" in context:
+        lep = context["log_error_patterns"]
+        if not isinstance(lep, list) or not lep or not all(
+            isinstance(x, str) for x in lep
+        ):
+            _fail_structure(
+                "log_error_patterns",
+                "a non-empty array of strings",
+            )
+
 
 def _normalize_docker_build_arg_values(context: Dict[str, Any]) -> None:
     dba = context.get("docker_build_arg")

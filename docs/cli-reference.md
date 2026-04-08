@@ -598,6 +598,16 @@ For complex configurations, use JSON files with `--additional-context-file`:
 
 To run on specific nodes, add `"nodelist": "node01,node02"` to the `slurm` section. When set, the job runs only on those nodes and node health preflight is skipped. See [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
 
+### Run phase: log error pattern scan (optional)
+
+These keys apply to **local Docker runs** when madengine post-processes the run log. Use them when substring matches cause false `FAILURE` status (for example benign `RuntimeError:` lines). Full details: [Configuration — Run phase: log error pattern scan](configuration.md#run-phase-log-error-pattern-scan).
+
+| Key | Description |
+|-----|-------------|
+| `log_error_pattern_scan` | Default `true`. Set `false` to skip grep-based log failure detection. |
+| `log_error_benign_patterns` | Array of extra strings to exclude from matching (merged with built-in benign list). |
+| `log_error_patterns` | Non-empty array replaces the default substring list (advanced). |
+
 ---
 
 ## Environment Variables
