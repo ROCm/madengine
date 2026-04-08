@@ -119,7 +119,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | Guide | Description |
 |-------|-------------|
 | [Installation](docs/installation.md) | Complete installation instructions |
-| [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
+| [Usage Guide](docs/usage.md) | Commands, workflows, and examples ([`--skip-model-run`](docs/usage.md#skip-model-run-after-build)) |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
 | [Configuration](docs/configuration.md) | Advanced configuration options |
@@ -562,6 +562,7 @@ See [Installation Guide](docs/installation.md) for detailed instructions.
 ### Build & Deployment
 
 - **Separate build and run phases** for distributed deployments
+- **Build without executing:** `madengine run --tags … --skip-model-run` skips container execution **after a build in that same invocation** (ignored when using an existing `--manifest-file`). See [Usage — Skip model run after build](docs/usage.md#skip-model-run-after-build).
 - **Use registries** for multi-node execution (K8s/SLURM)
 - **Use batch build mode** for CI/CD to optimize build times
 - **Specify `--target-archs`** when building for multiple GPU architectures
