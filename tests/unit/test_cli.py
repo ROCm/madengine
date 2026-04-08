@@ -453,6 +453,7 @@ class TestRunCommandExitCodes:
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == ExitCode.SUCCESS
         assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
+        assert "--skip-model-run" in result.stdout
 
     def test_run_command_build_error_returns_build_failure_exit_code(
         self, runner: CliRunner
