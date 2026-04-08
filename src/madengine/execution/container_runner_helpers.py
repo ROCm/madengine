@@ -68,7 +68,7 @@ def resolve_log_error_scan_config(
 
     Keys (in ``additional_context`` and/or ``model_info``; context wins):
 
-    - ``log_error_pattern_scan`` (default True): set False to skip grep-based failure detection.
+    - ``log_error_pattern_scan`` (default True): set False to skip post-run log error detection.
     - ``log_error_benign_patterns``: list of extra **literal** substrings; a log line containing
       any of them is excluded from error matching (not interpreted as regex).
     - ``log_error_patterns``: non-empty list of strings replaces the default error pattern list.
