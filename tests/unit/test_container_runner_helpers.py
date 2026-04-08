@@ -4,6 +4,7 @@ import pytest
 
 from madengine.execution.container_runner_helpers import (
     DEFAULT_LOG_ERROR_PATTERNS,
+    log_text_has_error_pattern,
     resolve_log_error_scan_config,
 )
 
@@ -82,3 +83,50 @@ class TestResolveLogErrorScanConfig:
             {}, {"log_error_pattern_scan": raw}
         )
         assert enabled is expected
+
+
+class TestLogTextHasErrorPattern:
+    def test_finds_literal_pattern(self):
+        log = "line1\nRuntimeError: boom\n"
+        assert log_text_has_error_pattern(log, "RuntimeError:", [])
+
+    def test_respects_benign_substring(self):
+        log = "ignore FutureWarning in this line\n"
+        assert not log_text_has_error_pattern(
+            log,
+            "FutureWarning",
+            ["FutureWarning"],
+            (),
+        )
+
+    def test_quotes_in_pattern_no_shell(self):
+        """Patterns with quotes must match literally; must not raise or crash."""
+        log = "msg: can't happen\n"
+        assert log_text_has_error_pattern(log, "can't happen", [])
+
+    def test_excludes_grep_meta_line(self):
+        log = "some grep -q stuff RuntimeError: x\nreal RuntimeError: bad\n"
+        # First line matches exclusion grep -q.*RuntimeError
+        assert log_text_has_error_pattern(log, "RuntimeError:", [], ())
+
+    def test_regex_benign_excludes_rocprof_style_line(self):
+        log = (
+            "E12345678  generateRocpd.cpp: noise\n"
+            "clean RuntimeError: real issue\n"
+        )
+        assert log_text_has_error_pattern(
+            log,
+            "RuntimeError:",
+            [],
+            (r"^E[0-9]{8}.*generateRocpd\.cpp",),
+        )
+
+    def test_user_benign_literal_parentheses(self):
+        # User-config benign strings must be literal substrings (not broken by ad-hoc regex escaping).
+        log = "info (benign marker) ok\nRuntimeError: real\n"
+        assert log_text_has_error_pattern(
+            log,
+            "RuntimeError:",
+            ["(benign marker)"],
+            (),
+        )
