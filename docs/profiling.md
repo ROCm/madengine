@@ -841,6 +841,8 @@ ROCProf uses glog-style logging where `E` prefix means "Error level log" (not an
 
 **Fixed in:** madengine v2.0+
 
+For false failures **not** caused by ROCProf (for example workloads that print benign `RuntimeError:` text), see [Configuration — Run phase: log error pattern scan](configuration.md#run-phase-log-error-pattern-scan) (`log_error_pattern_scan`, `log_error_benign_patterns`).
+
 **Verification:**
 ```bash
 # Run with profiling - should show SUCCESS status

@@ -1322,7 +1322,7 @@ class ContainerRunner:
                             elif not scan_logs:
                                 self.rich_console.print(
                                     "[dim]ℹ️  Log error pattern scan disabled "
-                                    "(log_error_pattern_scan / disable_log_error_scan).[/dim]"
+                                    "(log_error_pattern_scan).[/dim]"
                                 )
 
                             # Status logic: Must have performance AND no errors to be considered success

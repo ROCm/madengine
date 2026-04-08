@@ -15,7 +15,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 
 | Guide | Description |
 |-------|-------------|
-| [Configuration](configuration.md) | Advanced configuration options |
+| [Configuration](configuration.md) | Advanced configuration options (includes [run log error pattern scan](configuration.md#run-phase-log-error-pattern-scan)) |
 | [Batch Build](batch-build.md) | Selective builds with batch manifests |
 | [Deployment](deployment.md) | Kubernetes and SLURM deployment |
 | [Launchers](launchers.md) | Multi-node training frameworks |

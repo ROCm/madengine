@@ -84,6 +84,41 @@ For production deployments:
 The **run** command does NOT require these values because it can detect GPU vendor at runtime.
 Defaults only apply to the **build** command where Dockerfile selection requires them.
 
+## Run phase: log error pattern scan
+
+After a successful container run, madengine may scan the **run log file** for fixed substrings (for example `RuntimeError:`, `OutOfMemoryError`, `Traceback (most recent call last)`). If a match is found, the run can be marked `FAILURE` even when performance metrics exist—intended as a safety net when logs show obvious Python or OOM errors.
+
+Some suites (for example layer unit tests) intentionally print benign `RuntimeError:` text while pytest still passes. In those cases you can **disable** the scan or **narrow** what counts as an error.
+
+Keys can be set in `--additional-context` / `--additional-context-file`, or on the **model** entry in `models.json` (same keys). **Runtime context overrides the model** when both are set.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `log_error_pattern_scan` | bool or string/number (coerced) | `true` | If `false`, skip substring-based log failure detection entirely (rely on exit codes and other signals). |
+| `log_error_benign_patterns` | array of strings | `[]` | Extra lines to **exclude** before matching (appended to built-in exclusions such as ROCProf/metrics noise). Model list is merged first, then context list. |
+| `log_error_patterns` | array of strings (non-empty) | (built-in list) | If set, **replaces** the default pattern list. Use only when you need a custom allowlist of failure substrings. |
+
+**Example — disable scan for a tag (pytest is authoritative):**
+
+```bash
+madengine run --tags my_unit_test_suite \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "log_error_pattern_scan": false}'
+```
+
+**Example — extra benign substrings (prefer stable strings from real logs):**
+
+```json
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "log_error_benign_patterns": [
+    "expected benign fragment from workload log"
+  ]
+}
+```
+
+Disabling the scan does **not** change performance metric extraction from the log; it only affects the post-hoc grep used to set `has_errors` for status.
+
 ## Basic Configuration
 
 **gpu_vendor** (case-insensitive):

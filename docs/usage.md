@@ -385,6 +385,8 @@ madengine run --tags model --verbose --live-output
 madengine run --tags model --keep-alive --verbose --live-output
 ```
 
+If the run is marked `FAILURE` because the log contains benign substrings (for example `RuntimeError:`) while the workload actually passed, configure [log error pattern scan](configuration.md#run-phase-log-error-pattern-scan) (`log_error_pattern_scan`, `log_error_benign_patterns`).
+
 ### Clean Rebuild
 
 ```bash

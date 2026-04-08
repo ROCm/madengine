@@ -68,7 +68,6 @@ def resolve_log_error_scan_config(
     Keys (in ``additional_context`` and/or ``model_info``; context wins):
 
     - ``log_error_pattern_scan`` (default True): set False to skip grep-based failure detection.
-    - ``disable_log_error_scan`` (default False): if True, same as disabling scan (alias).
     - ``log_error_benign_patterns``: list of extra substrings/regex fragments excluded from matches.
     - ``log_error_patterns``: non-empty list of strings replaces the default error pattern list.
 
@@ -78,15 +77,10 @@ def resolve_log_error_scan_config(
     ctx = additional_context if additional_context is not None else {}
     mi = model_info if model_info is not None else {}
 
-    disable = _coerce_bool(
-        _pick_context_over_model(mi, ctx, "disable_log_error_scan", False),
-        default=False,
-    )
-    scan_on = _coerce_bool(
+    scan_enabled = _coerce_bool(
         _pick_context_over_model(mi, ctx, "log_error_pattern_scan", True),
         default=True,
     )
-    scan_enabled = (not disable) and scan_on
 
     raw_benign_mi = mi.get("log_error_benign_patterns")
     raw_benign_ctx = ctx.get("log_error_benign_patterns")

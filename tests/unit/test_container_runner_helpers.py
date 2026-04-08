@@ -15,23 +15,9 @@ class TestResolveLogErrorScanConfig:
         assert patterns == list(DEFAULT_LOG_ERROR_PATTERNS)
         assert extra == []
 
-    def test_disable_log_error_scan(self):
-        enabled, _, extra = resolve_log_error_scan_config(
-            {}, {"disable_log_error_scan": True}
-        )
-        assert enabled is False
-        assert extra == []
-
     def test_log_error_pattern_scan_false_string(self):
         enabled, _, _ = resolve_log_error_scan_config(
             {}, {"log_error_pattern_scan": "false"}
-        )
-        assert enabled is False
-
-    def test_disable_wins_over_scan_true(self):
-        enabled, _, _ = resolve_log_error_scan_config(
-            {},
-            {"disable_log_error_scan": True, "log_error_pattern_scan": True},
         )
         assert enabled is False
 

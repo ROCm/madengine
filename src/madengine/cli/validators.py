@@ -178,14 +178,6 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
             "a boolean, string, number, or null",
         )
 
-    if "disable_log_error_scan" in context and not isinstance(
-        context["disable_log_error_scan"], (bool, str, int, float, type(None))
-    ):
-        _fail_structure(
-            "disable_log_error_scan",
-            "a boolean, string, number, or null",
-        )
-
     if "log_error_benign_patterns" in context:
         lebp = context["log_error_benign_patterns"]
         if not isinstance(lebp, list) or not all(
