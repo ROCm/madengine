@@ -9,7 +9,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 | Guide | Description |
 |-------|-------------|
 | [Installation](installation.md) | Complete installation instructions |
-| [Usage Guide](usage.md) | Commands, configuration, and examples |
+| [Usage Guide](usage.md) | Commands, configuration, and examples ([`--skip-model-run`](usage.md#skip-model-run-after-build)) |
 
 ### Configuration & Deployment
 
