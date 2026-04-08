@@ -5,6 +5,7 @@ Pure helpers for container run flow (log paths, timeout resolution).
 Extracted so run_container logic is easier to test and maintain.
 """
 
+import re
 import typing
 
 # Default substrings matched in container run logs post-hoc (see ContainerRunner).
@@ -68,7 +69,8 @@ def resolve_log_error_scan_config(
     Keys (in ``additional_context`` and/or ``model_info``; context wins):
 
     - ``log_error_pattern_scan`` (default True): set False to skip grep-based failure detection.
-    - ``log_error_benign_patterns``: list of extra substrings/regex fragments excluded from matches.
+    - ``log_error_benign_patterns``: list of extra **literal** substrings; a log line containing
+      any of them is excluded from error matching (not interpreted as regex).
     - ``log_error_patterns``: non-empty list of strings replaces the default error pattern list.
 
     Returns:
@@ -100,6 +102,51 @@ def resolve_log_error_scan_config(
         error_patterns = list(DEFAULT_LOG_ERROR_PATTERNS)
 
     return scan_enabled, error_patterns, extra_benign
+
+
+def log_text_has_error_pattern(
+    log_text: str,
+    pattern: str,
+    benign_substrings: typing.Sequence[str],
+    benign_regexes: typing.Sequence[str] = (),
+) -> bool:
+    """
+    Whether *log_text* contains a literal *pattern* on some line that is not excluded.
+
+    Exclusions (same intent as the old ``grep -v -E | grep -F`` pipeline):
+
+    - Meta lines mentioning our own ``grep`` / "Found error pattern" machinery.
+    - *benign_substrings*: line skipped if any string appears as a **literal** substring.
+    - *benign_regexes*: line skipped if any compiled regex matches (for built-in ROCProf rules).
+
+    User-supplied benign entries should use *benign_substrings* only so regex metacharacters
+    in config are not interpreted unless explicitly added to *benign_regexes*.
+    """
+    pattern_escaped = re.escape(pattern)
+    try:
+        meta_excl = re.compile(
+            f"(grep -q.*{pattern_escaped}|Found error pattern.*{pattern_escaped})"
+        )
+    except re.error:
+        return False
+
+    compiled_benign: typing.List[re.Pattern[str]] = []
+    for rx in benign_regexes:
+        try:
+            compiled_benign.append(re.compile(rx))
+        except re.error:
+            continue
+
+    for line in log_text.splitlines():
+        if meta_excl.search(line):
+            continue
+        if any(s in line for s in benign_substrings):
+            continue
+        if any(br.search(line) for br in compiled_benign):
+            continue
+        if pattern in line:
+            return True
+    return False
 
 
 def resolve_run_timeout(
