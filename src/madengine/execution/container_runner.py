@@ -238,7 +238,9 @@ class ContainerRunner:
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
             "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
-                self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
+                (self.context.ctx.get("docker_env_vars") or {}).get(
+                    "MAD_SYSTEM_GPU_ARCHITECTURE", ""
+                )
                 if self.context
                 else ""
             ),
