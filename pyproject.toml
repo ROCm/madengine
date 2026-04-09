@@ -180,3 +180,7 @@ exclude_lines = [
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", "venv", "build", "dist", ".git"]
+skips = ["B101"]  # Skip assert_used (used in tests)
