@@ -16,10 +16,23 @@ from madengine.core.context import Context
 class TestContextInitialization:
     """Test Context object initialization."""
     
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=None)
+    @patch.object(Context, "get_docker_gpus", return_value="0")
+    @patch.object(Context, "get_system_gpu_product_name", return_value="Test GPU")
+    @patch.object(Context, "get_system_hip_version", return_value="6.0")
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
     @patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a")
-    def test_context_initializes_with_defaults(self, mock_arch, mock_ngpus, mock_vendor):
+    def test_context_initializes_with_defaults(
+        self,
+        mock_arch,
+        mock_ngpus,
+        mock_vendor,
+        mock_hip,
+        mock_product,
+        mock_docker_gpus,
+        mock_renderd,
+    ):
         """Context should initialize with system defaults."""
         context = Context()
         
@@ -36,9 +49,23 @@ class TestContextInitialization:
 class TestBuildArgGeneration:
     """Test Docker build argument generation logic."""
     
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=None)
+    @patch.object(Context, "get_docker_gpus", return_value="0")
+    @patch.object(Context, "get_system_gpu_product_name", return_value="Test GPU")
+    @patch.object(Context, "get_system_hip_version", return_value="6.0")
+    @patch.object(Context, "get_system_ngpus", return_value=1)
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a")
-    def test_generates_build_args_for_amd(self, mock_arch, mock_vendor):
+    def test_generates_build_args_for_amd(
+        self,
+        mock_arch,
+        mock_vendor,
+        mock_ngpus,
+        mock_hip,
+        mock_product,
+        mock_docker_gpus,
+        mock_renderd,
+    ):
         """Should generate proper build args for AMD GPUs."""
         context = Context()
         context.ctx = {
