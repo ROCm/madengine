@@ -26,7 +26,7 @@ from madengine.core.dataprovider import Data
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
-    RuntimeError as MADRuntimeError,
+    ExecutionError,
     create_error_context,
     handle_error,
 )
@@ -158,7 +158,7 @@ class RunOrchestrator:
 
         Raises:
             ConfigurationError: If neither manifest nor tags provided
-            MADRuntimeError: If execution fails
+            ExecutionError: If execution fails
         """
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print("[bold blue]🚀 RUN PHASE[/bold blue]")
@@ -321,14 +321,14 @@ class RunOrchestrator:
                 self._cleanup_model_dir_copies()
                 raise
 
-        except (ConfigurationError, MADRuntimeError, BuildError):
+        except (ConfigurationError, ExecutionError, BuildError):
             raise
         except Exception as e:
             context = create_error_context(
                 operation="run_phase",
                 component="RunOrchestrator",
             )
-            raise MADRuntimeError(
+            raise ExecutionError(
                 f"Run phase failed: {e}",
                 context=context,
                 suggestions=[
@@ -604,7 +604,7 @@ class RunOrchestrator:
             )
 
             if not compatible_images:
-                raise MADRuntimeError(
+                raise ExecutionError(
                     f"No compatible images for GPU vendor '{runtime_gpu_vendor}' and architecture '{runtime_gpu_arch}'",
                     context=create_error_context(
                         operation="filter_images",

@@ -109,17 +109,21 @@ class AuthenticationError(MADEngineError):
         )
 
 
-class RuntimeError(MADEngineError):
+class ExecutionError(MADEngineError):
     """Runtime execution errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.RUNTIME, 
-            context, 
+            message,
+            ErrorCategory.RUNTIME,
+            context,
             recoverable=False,
             **kwargs
         )
+
+
+# Backward compatibility alias
+RuntimeError = ExecutionError
 
 
 class BuildError(MADEngineError):

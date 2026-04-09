@@ -737,13 +737,13 @@ class MongoDBHandler:
     def run(self) -> bool:
         """Execute the MongoDB upload operation."""
         logger.warning("MongoDBHandler is deprecated. Use upload_file_to_mongodb instead.")
-        
-        print("\n" + "=" * 80)
-        print("📤 UPLOADING TO MONGODB")
-        print("=" * 80)
-        print(f"📂 File: {self.file_path}")
-        print(f"🗄️  Database: {self.database_name}")
-        print(f"📊 Collection: {self.collection_name}")
+
+        console.print("\n" + "=" * 80)
+        console.print("[bold blue]📤 UPLOADING TO MONGODB[/bold blue]")
+        console.print("=" * 80)
+        console.print(f"📂 File: [cyan]{self.file_path}[/cyan]")
+        console.print(f"🗄️  Database: [cyan]{self.database_name}[/cyan]")
+        console.print(f"📊 Collection: [cyan]{self.collection_name}[/cyan]")
         
         try:
             # Parse unique fields if provided
@@ -760,28 +760,28 @@ class MongoDBHandler:
                 config=self.config,
                 options=options
             )
-            
-            print(f"✅ Successfully processed {result.documents_processed} documents")
-            print(f"   Inserted: {result.documents_inserted}")
-            print(f"   Updated: {result.documents_updated}")
-            print("=" * 80 + "\n")
-            
+
+            console.print(f"✅ [bold green]Successfully processed {result.documents_processed} documents[/bold green]")
+            console.print(f"   Inserted: {result.documents_inserted}")
+            console.print(f"   Updated: {result.documents_updated}")
+            console.print("=" * 80 + "\n")
+
             self.return_status = True
-            
+
         except FileNotFoundError as e:
-            print(f"❌ Error: {e}")
+            console.print(f"[bold red]❌ Error:[/bold red] {e}")
             self.return_status = False
         except ConnectionFailure as e:
-            print(f"❌ MongoDB connection failed: {e}")
-            print("💡 Tip: Check MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASSWORD")
+            console.print(f"[bold red]❌ MongoDB connection failed:[/bold red] {e}")
+            console.print("[yellow]💡 Tip: Check MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASSWORD[/yellow]")
             self.return_status = False
         except ValueError as e:
-            print(f"❌ Invalid file: {e}")
+            console.print(f"[bold red]❌ Invalid file:[/bold red] {e}")
             self.return_status = False
         except Exception as e:
-            print(f"❌ Unexpected error: {e}")
+            console.print(f"[bold red]❌ Unexpected error:[/bold red] {e}")
             logger.exception("MongoDB upload failed")
             self.return_status = False
-        
-        print("=" * 80 + "\n")
+
+        console.print("=" * 80 + "\n")
         return self.return_status
