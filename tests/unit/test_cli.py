@@ -17,6 +17,7 @@ import importlib
 import json
 import os
 import sys
+from io import StringIO
 import tempfile
 import unittest.mock
 from pathlib import Path
@@ -25,6 +26,7 @@ from unittest.mock import MagicMock, Mock, patch, mock_open
 # third-party modules
 import pytest
 import typer
+from rich.console import Console as RichConsole
 from typer.testing import CliRunner
 
 # project modules
@@ -155,6 +157,28 @@ class TestDisplayResultsTable:
             display_results_table(summary, "Build Results")
 
             mock_console.print.assert_called()
+
+    def test_display_results_table_build_shows_gpu_arch_from_docker_builder(self):
+        """Multi-arch builds record gpu_architecture; table must show it, not N/A."""
+        summary = {
+            "successful_builds": [
+                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a", "gpu_architecture": "gfx90a"},
+                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942", "gpu_architecture": "gfx942"},
+            ],
+            "failed_builds": [],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results", show_gpu_arch=True)
+
+            mock_console.print.assert_called()
+            table_arg = mock_console.print.call_args[0][0]
+            buf = StringIO()
+            RichConsole(file=buf, width=120, force_terminal=True).print(table_arg)
+            rendered = buf.getvalue()
+            assert "gfx90a" in rendered
+            assert "gfx942" in rendered
+            assert "N/A" not in rendered
 
     def test_display_results_table_build_failures(self):
         """Test displaying build results table with failures."""

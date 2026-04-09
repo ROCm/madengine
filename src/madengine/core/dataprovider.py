@@ -649,6 +649,12 @@ class Data:
 
     def reorder_data_provider_config(self, dataname: str) -> None:
         """Reorder the data provider config to match the order of the ordered_data_provider_types"""
+        if dataname not in self.data_provider_config:
+            raise RuntimeError(
+                f'Unknown data name "{dataname}". Define it in data.json (or additional context '
+                f'"data") with at least one provider block (e.g. "local", "minio", "aws"). '
+                f"Known keys: {sorted(self.data_provider_config.keys())}"
+            )
         ordered_data_provider_types = [
             CustomDataProvider.provider_type,
             LocalDataProvider.provider_type,
