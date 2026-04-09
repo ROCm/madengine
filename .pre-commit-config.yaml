@@ -1,0 +1,68 @@
+# Pre-commit hooks for madengine
+# See https://pre-commit.com for more information
+# Install with: pip install pre-commit && pre-commit install
+
+repos:
+  # Code formatting
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: ['--line-length=88']
+
+  # Import sorting
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ['--profile=black', '--line-length=88']
+
+  # Linting
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        args:
+          - '--max-line-length=88'
+          - '--extend-ignore=E203,E501,W503'
+          - '--exclude=venv,build,dist,.git,__pycache__,.pytest_cache'
+
+  # Type checking (optional - can be slow)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-PyYAML
+          - types-toml
+        args: ['--ignore-missing-imports', '--check-untyped-defs']
+        files: ^src/madengine/
+        exclude: ^(tests/|src/madengine/scripts/)
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+        exclude: '\.md$'
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Security checks
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        args: ['-c', 'pyproject.toml', '--skip', 'B101']
+        additional_dependencies: ['bandit[toml]']

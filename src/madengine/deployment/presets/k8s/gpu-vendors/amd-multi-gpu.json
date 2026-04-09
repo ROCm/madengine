@@ -1,0 +1,16 @@
+{
+  "_comment": "AMD multi-GPU optimizations - applied only when distributed/multi-GPU",
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "2",
+    "HSA_ENABLE_SDMA": "0",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  }
+}
+

@@ -1,0 +1,15 @@
+{
+  "_comment": "NVIDIA GPU configuration",
+  "k8s": {
+    "gpu_resource_name": "nvidia.com/gpu"
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0",
+    "NCCL_P2P_DISABLE": "0",
+    "NCCL_P2P_LEVEL": "NVL",
+    "OMP_NUM_THREADS": "12"
+  }
+}
+

@@ -1,0 +1,11 @@
+{
+  "_comment": "Single GPU profile - 1 GPU resources",
+  "k8s": {
+    "gpu_count": 1,
+    "memory": "16Gi",
+    "memory_limit": "32Gi",
+    "cpu": "8",
+    "cpu_limit": "16"
+  }
+}
+

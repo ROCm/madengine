@@ -1,0 +1,15 @@
+{
+  "_comment": "Minimal Config with Custom Namespace",
+  "_description": "Shows how to override specific defaults",
+  "_use_case": "Deploying to a specific namespace",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 1,
+    "namespace": "default",
+    "memory": "32Gi"
+  }
+}
+

@@ -1,0 +1,44 @@
+{
+  "_comment": "SGLang Disaggregated K8s Config - 5 nodes x 8 GPUs",
+  "_description": "Multi-node SGLang disaggregated with prefill/decode separation",
+  "_use_case": "Large-scale LLM inference with specialized prefill/decode clusters",
+  "_reference": "https://github.com/sgl-project/sglang",
+  "_architecture": {
+    "proxy": "Pod 0 (Load Balancer)",
+    "prefill": "Pods 1-2 (2 nodes, ~40%)",
+    "decode": "Pods 3-4 (2 nodes, ~60%)",
+    "total": "5 pods total"
+  },
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 8,
+    "memory": "256Gi",
+    "memory_limit": "384Gi",
+    "cpu": "64",
+    "cpu_limit": "96",
+    "node_selector": {
+      "feature.node.kubernetes.io/amd-gpu-mi300x": "true"
+    }
+  },
+  
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 5,
+    "nproc_per_node": 8,
+    "master_port": 29500
+  },
+  
+  "context": {
+    "env_vars": {
+      "SGLANG_ENABLE_RADIX_CACHE": "1",
+      "SGLANG_RADIX_CACHE_SIZE": "0.9",
+      "NCCL_TIMEOUT": "600",
+      "RAY_health_check_timeout_ms": "60000",
+      "MOONCAKE_TEST_MODE": "0"
+    }
+  }
+}
+

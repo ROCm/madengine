@@ -8,6 +8,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import typing
+
 # user-defined modules
 from madengine.core.console import Console
 
@@ -59,31 +60,33 @@ class Docker:
         container_name_exists = self.console.sh(
             "docker container ps -a | grep " + container_name + " | wc -l"
         )
-        # if container name exists, raise error.
+        # if container name exists, clean it up automatically
         if container_name_exists != "0":
-            raise RuntimeError(
-                "Container with name, "
-                + container_name
-                + " already exists. "
-                + "Please stop (docker stop --time=1 SHA) and remove this (docker rm -f SHA) to proceed..."
+            print(
+                f"⚠️  Container '{container_name}' already exists. Cleaning up..."
             )
+            # Stop the container (with timeout)
+            self.console.sh(
+                f"docker stop -t 1 {container_name} 2>/dev/null || true"
+            )
+            # Remove the container
+            self.console.sh(
+                f"docker rm -f {container_name} 2>/dev/null || true"
+            )
+            print(f"✓ Cleaned up existing container '{container_name}'")
 
         # run docker command
-        command = (
-            "docker run -t -d -u "
-            + self.userid
-            + ":"
-            + self.groupid
-            + " "
-            + dockerOpts
-            + " "
-        )
+        command = "docker run -t -d "
+        # Conditionally add -u flag if not already present in dockerOpts
+        if "-u " not in dockerOpts:
+            command += f"-u {self.userid}:{self.groupid} "
+        command += dockerOpts + " "
 
         # add mounts
         if mounts is not None:
             for mount in mounts:
                 command += "-v " + mount + ":" + mount + " "
-        
+
         # add current working directory
         command += "-v " + cwd + ":/myworkspace/ "
 
@@ -91,12 +94,14 @@ class Docker:
         if envVars is not None:
             for evar in envVars.keys():
                 command += "-e " + evar + "=" + envVars[evar] + " "
-        
+
         command += "--workdir /myworkspace/ "
         command += "--name " + container_name + " "
         command += image + " "
-
-        # hack to keep docker open
+        
+        # Use 'cat' to keep container alive (blocks waiting for stdin)
+        # Works reliably across all deployment types (local, k8s, slurm)
+        # with fresh image pulls preventing corrupted layer issues
         command += "cat "
         self.console.sh(command)
 
@@ -105,19 +110,14 @@ class Docker:
             "docker ps -aqf 'name=" + container_name + "' "
         )
 
-    def sh(
-            self, 
-            command: str, 
-            timeout: int=60, 
-            secret: bool=False
-        ) -> str:
+    def sh(self, command: str, timeout: int = 60, secret: bool = False) -> str:
         """Run shell command inside docker.
-        
+
         Args:
             command (str): The shell command.
             timeout (int): The timeout in seconds.
             secret (bool): The flag to hide the command.
-        
+
         Returns:
             str: The output of the shell command.
         """
@@ -132,7 +132,7 @@ class Docker:
         """Destructor of the Docker class."""
         # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
         if not self.keep_alive and self.docker_sha:
-            self.console.sh("docker stop --time=1 " + self.docker_sha)
+            self.console.sh("docker stop -t 1 " + self.docker_sha)
             self.console.sh("docker rm -f " + self.docker_sha)
             return
 
@@ -144,6 +144,6 @@ class Docker:
                 "Open a bash session in container : ",
                 "docker exec -it " + self.docker_sha + " bash",
             )
-            print("Stop container : ", "docker stop --time=1 " + self.docker_sha)
+            print("Stop container : ", "docker stop -t 1 " + self.docker_sha)
             print("Remove container : ", "docker rm -f " + self.docker_sha)
             print("==========================================")

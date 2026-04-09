@@ -1,0 +1,15 @@
+{
+  "_comment": "Single-node SLURM profile - optimized for single node multi-GPU",
+  "_description": "Configuration for running on a single SLURM node with multiple GPUs",
+  
+  "slurm": {
+    "nodes": 1,
+    "gpus_per_node": 8,
+    "time": "12:00:00"
+  },
+  
+  "env_vars": {
+    "NCCL_DEBUG": "WARN"
+  }
+}
+

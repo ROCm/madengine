@@ -1,0 +1,25 @@
+{
+  "_comment": "Megatron-LM Minimal Config - Dedicated launcher support",
+  "_description": "Megatron-LM with automated tensor/pipeline parallelism setup",
+  "_use_case": "Large-scale transformer training with Megatron-LM on SLURM",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 2,
+    "time": "02:00:00"
+  },
+  
+  "distributed": {
+    "launcher": "megatron",
+    "nnodes": 1,
+    "nproc_per_node": 2
+  },
+  
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  }
+}

@@ -18,13 +18,16 @@ dependencies = [
   "sqlalchemy",
   "setuptools-rust",
   "paramiko",
-  "mysql-connector-python",
-  "pymysql",
   "tqdm",
   "pytest",
   "typing-extensions",
   "pymongo",
   "toml",
+  "typer>=0.9.0",
+  "rich>=13.0.0",
+  "click>=8.0.0",
+  "jinja2>=3.0.0",
+  "pyyaml>=6.0",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -33,13 +36,13 @@ classifiers = [
 ]
 
 [project.scripts]
-madengine = "madengine.mad:main"
+madengine = "madengine.cli.app:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/ROCm/madengine"
 Issues = "https://github.com/ROCm/madengine/issues"
 
-[project.extras]
+[project.optional-dependencies]
 dev = [
   "pytest",
   "pytest-cov",
@@ -47,19 +50,45 @@ dev = [
   "pytest-timeout",
   "pytest-mock",
   "pytest-asyncio",
+  "black>=21.0.0",
+  "flake8",
+  "mypy>=0.910",
+  "isort",
+  "pre-commit",
+]
+# Optional dependencies for distributed deployments
+# Note: SLURM requires no additional dependencies (uses CLI commands)
+kubernetes = [
+  "kubernetes>=28.0.0",
+]
+# Complete development environment (dev + kubernetes deployment)
+all = [
+  "kubernetes>=28.0.0",
+  "pytest",
+  "pytest-cov",
+  "pytest-xdist",
+  "pytest-timeout",
+  "pytest-mock",
+  "pytest-asyncio",
+  "black>=21.0.0",
+  "flake8",
+  "mypy>=0.910",
+  "isort",
+  "pre-commit",
 ]
 
 [tool.hatch.build.targets.wheel]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/madengine/scripts" = "madengine/scripts"
+"src/madengine/deployment/templates" = "madengine/deployment/templates"
 
 [tool.hatch.version]
 source = "versioningit"
 
 [tool.versioningit.vcs]
 method = "git"
-default-tag = "v1.0.0"
+default-tag = "v2.0.0"
 
 [tool.versioningit.tag2version]
 regex = "v(?P<version>.*)"
@@ -68,3 +97,90 @@ regex = "v(?P<version>.*)"
 distance = "{base_version}.post{distance}+{vcs}{rev}"
 dirty = "{base_version}+d{build_date:%Y%m%d}"
 distance-dirty = "{base_version}.post{distance}+{vcs}{rev}.d{build_date:%Y%m%d}"
+
+# Code formatting and linting configuration
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["madengine"]
+known_third_party = ["pytest", "pandas", "numpy", "sqlalchemy"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "paramiko.*",
+    "pymongo.*",
+    "toml.*",
+    "jsondiff.*",
+    "git.*",
+    "kubernetes.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_paths = ["src"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.coverage.run]
+source = ["src/madengine"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", "venv", "build", "dist", ".git"]
+skips = ["B101"]  # Skip assert_used (used in tests)

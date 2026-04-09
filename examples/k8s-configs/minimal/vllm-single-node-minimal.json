@@ -1,0 +1,29 @@
+{
+  "_comment": "Minimal vLLM Single-Node K8s Config - 4 GPUs",
+  "_description": "vLLM inference with Tensor Parallelism for single-node",
+  "_use_case": "LLM inference serving with vLLM",
+  "_reference": "https://github.com/vllm-project/vllm",
+  
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  
+  "k8s": {
+    "gpu_count": 4,
+    "memory": "128Gi",
+    "cpu": "32"
+  },
+  
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 1,
+    "nproc_per_node": 4
+  },
+  
+  "context": {
+    "env_vars": {
+      "VLLM_KV_CACHE_SIZE": "0.7",
+      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
+    }
+  }
+}
+
