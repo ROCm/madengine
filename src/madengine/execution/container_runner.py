@@ -34,6 +34,7 @@ from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.execution.container_runner_helpers import (
+    log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
     resolve_run_timeout,
@@ -1310,60 +1311,48 @@ class ContainerRunner:
                                 and os.path.exists(log_file_path)
                             ):
                                 try:
-                                    # Define benign patterns to exclude from error detection
-                                    # These are known warnings/info messages that should not trigger failures
-                                    benign_patterns = [
+                                    # Benign: literal substrings (incl. user extra_benign) vs regex (ROCProf lines).
+                                    benign_substrings = [
                                         "Failed to establish connection to the metrics exporter agent",
                                         "RpcError: Running out of retries to initialize the metrics agent",
                                         "Metrics will not be exported",
                                         "FutureWarning",
-                                        # ROCProf/glog logging patterns (E/W/I prefixes are log levels, not errors)
-                                        r"^E[0-9]{8}.*generateRocpd\.cpp",  # ROCProf error-level logs
-                                        r"^W[0-9]{8}.*simple_timer\.cpp",    # ROCProf warning-level logs
-                                        r"^W[0-9]{8}.*generateRocpd\.cpp",   # ROCProf warning-level logs
-                                        r"^E[0-9]{8}.*tool\.cpp",            # ROCProf tool logs
-                                        "Opened result file:",                # ROCProf result file messages
-                                        "SQLite3 generation ::",              # ROCProf SQLite messages
-                                        r"\[rocprofv3\]",                     # ROCProf v3 messages
-                                        "rocpd_op:",                          # ROCProf operation logs
-                                        "rpd_tracer:",                        # ROCProf tracer logs
+                                        "Opened result file:",
+                                        "SQLite3 generation ::",
+                                        "rocpd_op:",
+                                        "rpd_tracer:",
                                     ]
-                                    benign_patterns.extend(extra_benign)
+                                    benign_substrings.extend(extra_benign)
+                                    benign_regexes = [
+                                        # ROCProf/glog: E/W prefixes are log levels, not app errors
+                                        r"^E[0-9]{8}.*generateRocpd\.cpp",
+                                        r"^W[0-9]{8}.*simple_timer\.cpp",
+                                        r"^W[0-9]{8}.*generateRocpd\.cpp",
+                                        r"^E[0-9]{8}.*tool\.cpp",
+                                        r"\[rocprofv3\]",
+                                    ]
 
-                                    # Check for error patterns in the log (exclude our own grep commands, output messages, and benign patterns).
-                                    # Use subprocess (not console.sh) so the check runs silently and does not clutter console output.
+                                    # Scan in Python (no shell; literals vs regex benign rules are explicit).
+                                    with open(
+                                        log_file_path,
+                                        "r",
+                                        encoding="utf-8",
+                                        errors="ignore",
+                                    ) as _lf:
+                                        log_scan_text = _lf.read()
+
                                     for pattern in error_patterns:
-                                        # Build exclusion regex: our own commands, output messages, and benign patterns.
-                                        # Use re.escape(pattern) so parentheses and other special chars are safe in grep -E.
-                                        pattern_escaped = re.escape(pattern)
-                                        exclusions = f"(grep -q.*{pattern_escaped}|Found error pattern.*{pattern_escaped}"
-                                        for benign in benign_patterns:
-                                            # Escape special regex characters in benign patterns
-                                            escaped_benign = benign.replace(".", r"\.").replace("(", r"\(").replace(")", r"\)")
-                                            exclusions += f"|{escaped_benign}"
-                                        exclusions += ")"
-                                        # Match pattern literally in the filtered log (grep -F avoids regex issues)
-                                        error_check_cmd = [
-                                            "sh",
-                                            "-c",
-                                            f"grep -v -E '{exclusions}' {log_file_path} | grep -F -q -- '{pattern}' && echo 'FOUND' || echo 'NOT_FOUND'",
-                                        ]
-                                        try:
-                                            proc = subprocess.run(
-                                                error_check_cmd,
-                                                capture_output=True,
-                                                text=True,
-                                                timeout=60,
+                                        if log_text_has_error_pattern(
+                                            log_scan_text,
+                                            pattern,
+                                            benign_substrings,
+                                            benign_regexes,
+                                        ):
+                                            has_errors = True
+                                            print(
+                                                f"Found error pattern '{pattern}' in logs"
                                             )
-                                            result = (proc.stdout or "").strip()
-                                            if result == "FOUND":
-                                                has_errors = True
-                                                print(
-                                                    f"Found error pattern '{pattern}' in logs"
-                                                )
-                                                break
-                                        except (subprocess.TimeoutExpired, OSError):
-                                            pass  # Error checking is optional; treat as no match
+                                            break
                                 except Exception:
                                     pass  # Error checking is optional
                             elif not scan_logs:

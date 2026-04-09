@@ -194,3 +194,120 @@ class TestValidateAdditionalContext:
         ctx = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": []}'
         result = validate_additional_context(additional_context=ctx)
         assert result["tools"] == []
+
+    def test_validate_additional_context_log_error_keys_accepted(self):
+        """Valid types for log scan keys pass structure validation."""
+        ctx = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_pattern_scan": False,
+                "log_error_benign_patterns": ["noise", "(ok)"],
+                "log_error_patterns": ["OOM", "Killed"],
+            }
+        )
+        result = validate_additional_context(additional_context=ctx)
+        assert result["log_error_pattern_scan"] is False
+        assert result["log_error_benign_patterns"] == ["noise", "(ok)"]
+        assert result["log_error_patterns"] == ["OOM", "Killed"]
+
+    @pytest.mark.parametrize(
+        "leps",
+        [
+            True,
+            "true",
+            0,
+            1,
+            None,
+        ],
+    )
+    def test_validate_additional_context_log_error_pattern_scan_coercible_types(
+        self, leps
+    ):
+        ctx = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_pattern_scan": leps,
+            }
+        )
+        result = validate_additional_context(additional_context=ctx)
+        assert result["log_error_pattern_scan"] == leps
+
+    def test_validate_additional_context_log_error_pattern_scan_rejects_bad_type(self):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_pattern_scan": [],
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_log_error_benign_patterns_rejects_non_list(
+        self,
+    ):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_benign_patterns": "not-a-list",
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_log_error_benign_patterns_rejects_non_strings(
+        self,
+    ):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_benign_patterns": ["a", 1],
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_log_error_patterns_rejects_empty_list(self):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_patterns": [],
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_log_error_patterns_rejects_non_list(self):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_patterns": {},
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_validate_additional_context_log_error_patterns_rejects_non_string_element(
+        self,
+    ):
+        bad = json.dumps(
+            {
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "log_error_patterns": ["ok", 2],
+            }
+        )
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
