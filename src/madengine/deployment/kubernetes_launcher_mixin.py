@@ -5,6 +5,8 @@
 
 from pathlib import Path
 
+from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
+
 
 class KubernetesLauncherMixin:
     def _generate_torchrun_command(
@@ -859,4 +861,98 @@ torchrun \\
     --master_addr=${{MASTER_ADDR}} \\
     --master_port={master_port} \\
     {model_script}"""
-    
+
+    def _generate_primus_command(
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
+        model_name: str = "",
+    ) -> str:
+        """
+        Generate Primus launcher command for K8s Indexed Jobs.
+
+        Primus (TorchTitan, Megatron, MaxText, etc.) runs via ``run.sh`` →
+        ``examples/run_pretrain.sh``, which expects ``NNODES``, ``NODE_RANK``,
+        ``GPUS_PER_NODE``, ``MASTER_ADDR``, and ``MASTER_PORT`` (see Primus
+        ``run_pretrain.sh``). For multi-node jobs, ``NODE_RANK`` is
+        ``JOB_COMPLETION_INDEX`` (Indexed Job); the job template must export
+        ``JOB_COMPLETION_INDEX`` for Primus the same way as for torchrun.
+
+        Args:
+            nnodes: Number of nodes (pods)
+            nproc_per_node: GPUs per node
+            master_port: Master communication port
+            model_script: Path to model's run script (e.g. scripts/primus_pretrain/run.sh)
+            model_args: Optional extra arguments for the script (same as data.json ``args``)
+            model_name: Model id (e.g. ``primus_pretrain/torchtitan_MI300X_...``). Used to set
+                ``BACKEND`` when ``distributed.primus.backend`` is omitted; see
+                ``primus_pretrain/get_models_json.py`` naming convention.
+
+        Returns:
+            Shell snippet: exports + ``cd`` + ``bash run.sh ...``
+        """
+        manifest = getattr(self, "manifest", None)
+        primus_cfg = merged_primus_config(
+            manifest if isinstance(manifest, dict) else None,
+            self.config.additional_context,
+        )
+        config_path = primus_cfg.get("config_path", "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml")
+        cli_extra = primus_cfg.get("cli_extra", "")
+        config_path_quoted = config_path.replace('"', '\\"')
+        lines = [
+            "# Primus launcher (run.sh → Primus examples/run_pretrain.sh)",
+            # Dockerfile uses PRIMUS_ROOT=/workspace/Primus; ConfigMap extracts Primus/… there.
+            'export PRIMUS_ROOT="${PRIMUS_ROOT:-/workspace/Primus}"',
+            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
+        ]
+        if (cli_extra or "").strip():
+            cli_extra_quoted = cli_extra.replace('"', '\\"')
+            lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
+        backend_override = (primus_cfg.get("backend") or "").strip()
+        backend_effective = backend_override
+        if not backend_effective and model_name:
+            backend_effective = infer_primus_backend_from_model_name(model_name) or ""
+        if backend_effective:
+            backend_quoted = backend_effective.replace('"', '\\"')
+            lines.append(f'export BACKEND="{backend_quoted}"')
+
+        if nnodes == 1:
+            lines.extend(
+                [
+                    "export MASTER_ADDR=${MASTER_ADDR:-localhost}",
+                    f"export MASTER_PORT=${{MASTER_PORT:-{master_port}}}",
+                    "export NNODES=1",
+                    "export NODE_RANK=0",
+                    f"export GPUS_PER_NODE={nproc_per_node}",
+                    f"export MAD_RUNTIME_NGPUS={nproc_per_node}",
+                ]
+            )
+        else:
+            master_dns = (
+                f"{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+            )
+            lines.extend(
+                [
+                    "# Multi-node: Indexed Job + headless Service (pod-0 DNS as master)",
+                    f'export MASTER_ADDR="{master_dns}"',
+                    f"export MASTER_PORT={master_port}",
+                    f"export NNODES={nnodes}",
+                    "export NODE_RANK=${JOB_COMPLETION_INDEX}",
+                    f"export GPUS_PER_NODE={nproc_per_node}",
+                    f"export MAD_RUNTIME_NGPUS={nproc_per_node}",
+                ]
+            )
+
+        script_dir = str(Path(model_script).parent)
+        script_name = str(Path(model_script).name)
+        args_tail = (model_args or "").strip()
+        if args_tail:
+            lines.append(f"cd {script_dir} && bash {script_name} {args_tail}")
+        else:
+            lines.append(f"cd {script_dir} && bash {script_name}")
+
+        return "\n".join(lines)
+

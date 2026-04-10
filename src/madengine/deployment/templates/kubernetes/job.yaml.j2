@@ -5,7 +5,7 @@ metadata:
   namespace: {{ namespace }}
   labels:
     app: madengine
-    model: {{ model_name }}
+    model: {{ model_label }}
     madengine-job: "true"
 spec:
   {% if ttl_seconds_after_finished is not none %}
@@ -22,7 +22,7 @@ spec:
       labels:
         app: madengine
         job-name: {{ job_name }}
-        model: {{ model_name }}
+        model: {{ model_label }}
     spec:
       {% if subdomain %}
       subdomain: {{ subdomain }}
@@ -108,7 +108,7 @@ spec:
       
       # Main container runs benchmark
       containers:
-      - name: {{ job_name }}
+      - name: {{ main_container_name }}
         image: {{ image }}
         imagePullPolicy: {{ image_pull_policy }}
         workingDir: /workspace
@@ -181,7 +181,7 @@ spec:
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
             
-            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" %}
+            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" or launcher_type == "primus" or launcher_type == "torchtitan" %}
             # {{ launcher_type }} distributed environment (auto-configured from K8s)
             {% if nnodes > 1 %}
             # Multi-node {{ launcher_type }} (Indexed Job)
@@ -278,6 +278,9 @@ spec:
                 echo "✓ Cleared MIOpen cache directory"
             fi
             mkdir -p "${MIOPEN_USER_DB_PATH:-/tmp/.miopen}"
+            
+            # Primus: experiment YAMLs are in the ConfigMap as Primus/examples/... and extracted
+            # to /workspace/Primus (see madengine _bundle_primus_k8s_examples_overlay); PRIMUS_ROOT=/workspace/Primus.
             
             # Create wrapper script for launcher
             echo ""

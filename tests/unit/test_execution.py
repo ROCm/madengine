@@ -72,6 +72,19 @@ class TestMakeRunLogFilePath:
         )
         assert out == "other_model_some_ubuntu_22.live.log"
 
+    def test_full_registry_ref_matches_short_ci_tag(self):
+        """Run log name must match build log base when image is registry/name:ci-…."""
+        model = {"name": "primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain"}
+        short = "ci-primus_pretrain_torchtitan_mi300x_qwen3_4b-pretrain_primus.ubuntu.amd"
+        full = f"rocm/mad-private:{short}"
+        assert make_run_log_file_path(model, short, ".run") == make_run_log_file_path(
+            model, full, ".run"
+        )
+        assert make_run_log_file_path(model, short, ".run") == (
+            "primus_pretrain_torchtitan_MI300X_qwen3_4B-pretrain_"
+            "primus.ubuntu.amd.run.live.log"
+        )
+
 
 # ---- dockerfile_utils ----
 

@@ -48,6 +48,12 @@ class DockerBuilder:
     def get_context_path(self, info: typing.Dict) -> str:
         """Get the context path for Docker build.
 
+        Default is ``./docker`` (Dockerfiles that only COPY siblings under ``docker/``).
+        Primus images use ``COPY scripts/Primus/`` from the repository root; for those,
+        the context must be ``.`` so ``scripts/Primus`` is visible. Models with
+        ``dockerfile`` containing ``primus`` get repo-root context unless ``dockercontext``
+        is set explicitly.
+
         Args:
             info: The model info dict.
 
@@ -56,8 +62,10 @@ class DockerBuilder:
         """
         if "dockercontext" in info and info["dockercontext"] != "":
             return info["dockercontext"]
-        else:
-            return "./docker"
+        dockerfile_hint = (info.get("dockerfile") or "").lower()
+        if "primus" in dockerfile_hint:
+            return "."
+        return "./docker"
 
     def get_build_arg(self, run_build_arg: typing.Dict = {}) -> str:
         """Get the build arguments.

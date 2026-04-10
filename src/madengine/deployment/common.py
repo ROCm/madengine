@@ -17,6 +17,7 @@ VALID_LAUNCHERS = [
     "torchtitan",
     "deepspeed",
     "megatron-lm",
+    "primus",
     "vllm",
     "sglang",
     "sglang-disagg"

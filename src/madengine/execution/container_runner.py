@@ -232,7 +232,7 @@ class ContainerRunner:
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
-            "docker_image": build_info.get("docker_image", ""),
+            "docker_image": run_results.get("docker_image", build_info.get("docker_image", "")),
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
@@ -712,6 +712,31 @@ class ContainerRunner:
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
+    def _resolve_docker_image(self, docker_image: str, model_name: str) -> str:
+        """Resolve Docker image: use requested image if present, else primus_pretrain fallback with clear error."""
+        try:
+            self.console.sh(f"docker image inspect {docker_image} >/dev/null 2>&1")
+            return docker_image
+        except (subprocess.CalledProcessError, RuntimeError, Exception):
+            pass
+        if model_name.startswith("primus_pretrain/"):
+            fallback = "ci-primus_pretrain_primus.ubuntu.amd"
+            try:
+                self.console.sh(f"docker image inspect {fallback} >/dev/null 2>&1")
+                print(
+                    f"ℹ️  Using shared Primus image (one build for all primus_pretrain configs): {fallback}"
+                )
+                return fallback
+            except (subprocess.CalledProcessError, RuntimeError, Exception):
+                raise RuntimeError(
+                    f"Docker image '{docker_image}' not found and fallback '{fallback}' not found. "
+                    "Build the Primus image first: madengine build --tags primus_pretrain --additional-context-file <config>.json"
+                ) from None
+        raise RuntimeError(
+            f"Docker image '{docker_image}' not found. "
+            "Build it first: madengine build --tags <model_tag> --additional-context-file <config>.json"
+        ) from None
+
     def run_container(
         self,
         model_info: typing.Dict,
@@ -742,6 +767,9 @@ class ContainerRunner:
         """
         self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
 
+        # Resolve image: if model-specific image is missing, try shared primus_pretrain image (one build for all configs)
+        docker_image = self._resolve_docker_image(docker_image, model_info["name"])
+
         timeout = resolve_run_timeout(model_info, timeout)
         log_file_path = make_run_log_file_path(model_info, docker_image, phase_suffix)
         print(f"Run log will be written to: {log_file_path}")
@@ -765,6 +793,8 @@ class ContainerRunner:
         # If build info provided, merge it
         if build_info:
             run_results.update(build_info)
+        # Preserve actual image used (resolved, possibly fallback) for perf reporting
+        run_results["docker_image"] = docker_image
 
         # Prepare docker run options
         gpu_vendor = self.context.ctx["gpu_vendor"]
@@ -844,7 +874,10 @@ class ContainerRunner:
             'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
             'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
             'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
-            'TORCH_ELASTIC_RDZV_TIMEOUT',  # Rendezvous timeout so all nodes can join after pull
+            # Primus launcher (config path and optional CLI extra args)
+            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
+            # Rendezvous timeout so all nodes can join after pull
+            'TORCH_ELASTIC_RDZV_TIMEOUT',
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
             'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
@@ -1151,11 +1184,24 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
+                        # When model writes performance to a file in run_directory, copy to cwd
+                        # so the host can read it (e.g. bind-mounted workspace) before extraction.
+                        multiple_results_file = (model_info.get("multiple_results") or "").strip()
+                        if multiple_results_file:
+                            try:
+                                model_docker.sh(
+                                    f"cp {model_dir}/{multiple_results_file} . 2>/dev/null || true"
+                                )
+                            except Exception:
+                                pass
+
                         # Extract performance metrics from logs
                         # Look for performance data in the log output similar to original run_models.py
                         try:
                             # Check if multiple results file is specified in model_info
                             multiple_results = model_info.get("multiple_results", None)
+                            if multiple_results:
+                                multiple_results = multiple_results.strip()
 
                             if multiple_results:
                                 resolved_path = _resolve_multiple_results_path(
