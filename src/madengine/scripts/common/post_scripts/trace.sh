@@ -140,6 +140,9 @@ rocm_trace_lite)
 	# OUTPUT is rocm_trace_lite_output (same dir rtl_trace_wrapper.sh writes to).
 	echo "rocm-trace-lite post-script: Collecting RTL outputs under ${OUTPUT}..."
 	mkdir -p "$OUTPUT"
+	if [ -f "trace.db" ] && [ ! -f "${OUTPUT}/trace.db" ]; then
+		mv -v "trace.db" "$OUTPUT/" 2>/dev/null || cp -v "trace.db" "$OUTPUT/" || true
+	fi
 	for f in trace.json.gz trace.json; do
 		if [ -f "$f" ]; then
 			mv -v "$f" "$OUTPUT/" 2>/dev/null || cp -v "$f" "$OUTPUT/" || true

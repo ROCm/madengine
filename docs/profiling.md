@@ -138,9 +138,11 @@ Collect comprehensive ROCm profiling data:
 }
 ```
 
-**Default behavior:** The `rtl` CLI is installed in the container via the trace pre-script (`pip install rocm-trace-lite`) when possible; you can instead bake `rocm-trace-lite` into your model image and rely on the same tool definition.
+**How madengine runs it:** The tool prepends `bash ../scripts/common/tools/rtl_trace_wrapper.sh` around your model command. The wrapper runs `rtl trace -o rocm_trace_lite_output/trace.db …` (see the [RTL quick start](https://sunway513.github.io/rocm-trace-lite/quickstart.html)). If `rtl` is not on `PATH` but the Python package is installed, it falls back to `python3 -m rocm_trace_lite.cli`.
 
-**Output:** `rocm_trace_lite_output/trace.db` under the model workspace (and optionally `trace.json.gz` / `trace.json` if RTL emits them next to the run). Artifacts are collected into `rocm_trace_lite_output/` and copied to `/myworkspace/` like other profiling tools.
+**Installing `rocm-trace-lite` in the container:** Upstream distributes **wheels on [GitHub Releases](https://github.com/sunway513/rocm-trace-lite/releases)**, not on PyPI. The trace **pre-script** (`scripts/common/pre_scripts/trace.sh` with args `rocm_trace_lite`) installs via `pip` from the latest matching `linux_x86_64` wheel when possible (GitHub API + a pinned fallback URL). You need **outbound HTTPS to `github.com`** for that path, unless you pre-install the wheel in the image. For offline or custom builds, set **`ROCM_TRACE_LITE_WHEEL_URL`** to the full URL of a `.whl` file before the run (or bake the package into the container). Published wheels target **linux x86_64**; other architectures require a compatible wheel and the env override.
+
+**Output:** `rocm_trace_lite_output/trace.db` under the model workspace (and optionally `trace.json.gz`, `trace_summary.txt`, etc., depending on RTL version). The trace **post-script** copies `rocm_trace_lite_output/` to `/myworkspace/` like other profiling tools.
 
 **RTL vs rocprofv3**
 
@@ -274,6 +276,10 @@ madengine run --tags your_model \
 # Comprehensive profiling
 madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocprofv3_comprehensive.json
+
+# rocm-trace-lite (RTL) — not a rocprofv3 preset; do not mix with rocprof on the same run
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocm_trace_lite.json
 ```
 
 See `examples/profiling-configs/README.md` for complete documentation.
