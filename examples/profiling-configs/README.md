@@ -86,7 +86,19 @@ madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocprofv3_lightweight.json
 ```
 
-### 6. Multi-Node Distributed (`rocprofv3_multinode.json`)
+### 6. rocm-trace-lite (`rocm_trace_lite.json`)
+
+**Use Case**: Low-overhead GPU kernel dispatch tracing without rocprofiler-sdk (SQLite output compatible with RPD-style tools). See the [rocm-trace-lite documentation](https://sunway513.github.io/rocm-trace-lite/index.html).
+
+**Do not** combine with `rocprof` / `rocprofv3_*` on the same run.
+
+**Usage**:
+```bash
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocm_trace_lite.json
+```
+
+### 7. Multi-Node Distributed (`rocprofv3_multinode.json`)
 
 **Use Case**: Large-scale distributed training on SLURM clusters
 
@@ -191,6 +203,8 @@ The wrapper script auto-detects which profiler is available and formats the comm
 | `rocprofv3_api_overhead` | API call analysis | HIP/HSA/marker traces with stats | Low |
 | `rocprofv3_pc_sampling` | Kernel hotspot analysis | PC sampling at 1000 Hz | Medium |
 
+**Other:** `rocm_trace_lite` — kernel dispatch SQLite trace via [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html) (not a rocprofv3 preset; do not combine with `rocprof` / `rocprofv3_*` on the same run).
+
 ## Counter Definition Files
 
 Counter files are located at `src/madengine/scripts/common/tools/counters/`:
@@ -219,6 +233,8 @@ rocprof_output/
 gpu_info_power_profiler_output.csv  # Power consumption over time
 gpu_info_vram_profiler_output.csv   # VRAM usage over time
 library_trace.csv                    # Library API calls (if library tracing enabled)
+
+rocm_trace_lite_output/trace.db      # rocm-trace-lite (optional trace.json.gz)
 ```
 
 ## Visualization

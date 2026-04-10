@@ -458,6 +458,7 @@ madengine run --tags model \
 | `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
 | `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
 | `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
+| `rocm_trace_lite` | Lightweight kernel dispatch trace (HSA, SQLite/RPD-style) | `rocm_trace_lite_output/trace.db` |
 | `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
 | `miopen_trace` | MIOpen library calls | Conv/pooling operations |
 | `tensile_trace` | Tensile GEMM library | Matrix multiply details |

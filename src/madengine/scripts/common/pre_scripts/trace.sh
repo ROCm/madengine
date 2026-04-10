@@ -65,4 +65,11 @@ rpd)
 	echo "RPD setup completed successfully"
 	;;
 
+rocm_trace_lite)
+	# Install rocm-trace-lite (provides the `rtl` CLI). Requires pip/network in the container.
+	if command -v python3 >/dev/null 2>&1; then
+		python3 -m pip install --user --upgrade 'rocm-trace-lite' || true
+	fi
+	;;
+
 esac

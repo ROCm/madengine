@@ -124,6 +124,34 @@ Collect comprehensive ROCm profiling data:
 
 **Note:** The rpd pre-script installs build dependencies in the container (e.g. `nlohmann-json3-dev` on Ubuntu) so the rocmProfileData tracer can compile; the first run may take longer while packages are installed.
 
+### rocm-trace-lite (RTL) — lightweight kernel dispatch trace
+
+[rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html) captures GPU kernel dispatch timestamps via HSA runtime interception and writes a **SQLite** `.db` file (RPD-compatible). It does **not** use rocprofiler-sdk or rocprofiler. Use it when you want a **low-overhead** dispatch timeline without installing the full rocprofv3 stack, or alongside workflows that already rely on RPD-style SQLite.
+
+**Do not** wrap the same workload with both **rocprofv3** (or `rocprof` via `rocprof_wrapper.sh`) and **rocm_trace_lite** in one run: choose **one** primary GPU profiler.
+
+```json
+{
+  "tools": [
+    {"name": "rocm_trace_lite"}
+  ]
+}
+```
+
+**Default behavior:** The `rtl` CLI is installed in the container via the trace pre-script (`pip install rocm-trace-lite`) when possible; you can instead bake `rocm-trace-lite` into your model image and rely on the same tool definition.
+
+**Output:** `rocm_trace_lite_output/trace.db` under the model workspace (and optionally `trace.json.gz` / `trace.json` if RTL emits them next to the run). Artifacts are collected into `rocm_trace_lite_output/` and copied to `/myworkspace/` like other profiling tools.
+
+**RTL vs rocprofv3**
+
+| Topic | rocprofv3 (this guide, presets `rocprofv3_*`) | rocm-trace-lite |
+|-------|-----------------------------------------------|-----------------|
+| Stack | rocprofiler-sdk, rich traces and counters | HSA interception, SQLite timeline |
+| Multi-node (K8s/SLURM) | `rocprof` is upgraded to `rocprofv3` when available | Does not require `rocprofv3` on the submission host; other rocprof-family tools are omitted if `rocprofv3` is missing (see multi-node profiling behavior below) |
+| When to prefer | Deep analysis, hardware counters, Perfetto from rocprofv3 | Minimal-deps dispatch trace, RPD-compatible `.db` |
+
+**Multi-node profiling:** Multi-node runs that use **only** tools outside the rocprof/rocprofv3 family (such as `rocm_trace_lite`) keep profiling enabled even when `rocprofv3` is not installed on the machine submitting the job. If the tool list includes **rocprof** or any **`rocprofv3_*`** preset and `rocprofv3` is unavailable, those entries are dropped; if no tools remain, profiling is disabled and the usual rocprofiler-sdk installation guidance is logged.
+
 ### ROCprofv3 - Advanced GPU Profiling
 
 ROCprofv3 is the next-generation profiler for ROCm 7.0+ with enhanced features and better performance. madengine provides pre-configured profiles for common bottleneck scenarios.
