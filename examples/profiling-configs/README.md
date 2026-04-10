@@ -96,7 +96,7 @@ madengine run --tags your_model \
 
 - madengine wraps the workload with `rtl_trace_wrapper.sh` and writes under `rocm_trace_lite_output/` (see [Profiling Guide](../../docs/profiling.md)).
 - On the first run, the trace pre-script installs `rocm-trace-lite` from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). The container needs **HTTPS access to GitHub**, unless the wheel is already installed in the image.
-- Override the wheel with **`ROCM_TRACE_LITE_WHEEL_URL`** (direct `.whl` URL) for air-gapped or custom platforms. Default automation targets **linux x86_64** wheels.
+- Default install uses a **pinned** wheel URL in the trace pre-script. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to pull the latest release via the GitHub API instead (needs `curl`). Override with **`ROCM_TRACE_LITE_WHEEL_URL`** (direct `.whl` URL) for air-gapped or custom platforms. Automation targets **linux x86_64** wheels.
 
 **Usage**:
 ```bash

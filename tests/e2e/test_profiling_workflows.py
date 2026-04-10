@@ -74,6 +74,7 @@ class TestProfilingFunctionality:
                 "Neither rocprof_output/results.csv (legacy) nor *_results.db (rocprofv3) generated with rocprof profiling run."
             )
 
+    @requires_gpu("rocm_trace_lite profiling requires GPU hardware")
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
     @pytest.mark.parametrize(
         "clean_test_temp_files",

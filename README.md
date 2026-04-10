@@ -491,7 +491,7 @@ See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-us
 **rocm-trace-lite (`rocm_trace_lite`):**
 
 - madengine runs workloads under `scripts/common/tools/rtl_trace_wrapper.sh`, which invokes the `rtl` CLI (or `python3 -m rocm_trace_lite.cli`) and writes traces under `rocm_trace_lite_output/`.
-- The trace **pre-script** installs the package from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). By default it resolves the latest `linux_x86_64` wheel via the GitHub API, with a pinned fallback. Set **`ROCM_TRACE_LITE_WHEEL_URL`** to a direct `.whl` URL for air-gapped installs or non-x86_64 platforms.
+- The trace **pre-script** installs the package from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). By default it uses a **pinned** `linux_x86_64` wheel for reproducible installs. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to resolve the latest wheel via the GitHub API, or **`ROCM_TRACE_LITE_WHEEL_URL`** to a direct `.whl` URL for air-gapped installs or non-x86_64 platforms.
 - Choose **either** `rocm_trace_lite` **or** rocprof / `rocprofv3_*` for a given run—not both. Details: [Profiling Guide](docs/profiling.md) (section *rocm-trace-lite (RTL)*).
 
 **TheRock Validation:**
