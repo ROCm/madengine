@@ -32,15 +32,19 @@ def _normalize_key(key: str) -> str:
 
 
 def _safe_int(val) -> int:
+    # Prefer int(s) over int(float(s)) so large PMC counts stay exact (float has ~53 bits).
     if val is None:
         return 0
     s = (val or "").strip().strip('"').strip("'")
     if not s:
         return 0
     try:
-        return int(float(s))
+        return int(s)
     except (ValueError, TypeError):
-        return 0
+        try:
+            return int(float(s))
+        except (ValueError, TypeError, OverflowError):
+            return 0
 
 
 def parse_csv(path: Path) -> dict:
