@@ -12,6 +12,7 @@ from madengine.deployment.common import (
     configure_multi_node_profiling,
     is_rocprofv3_available,
     normalize_launcher,
+    tools_include_rocprof_family,
 )
 
 
@@ -69,6 +70,17 @@ class TestNormalizeLauncher:
         assert normalize_launcher(None, deployment) == "docker"
 
 
+class TestToolsIncludeRocprofFamily:
+    """tools_include_rocprof_family."""
+
+    def test_detects_rocprof_and_presets(self):
+        assert tools_include_rocprof_family([{"name": "rocprof"}]) is True
+        assert tools_include_rocprof_family([{"name": "rocprofv3_lightweight"}]) is True
+
+    def test_false_for_rocm_trace_lite(self):
+        assert tools_include_rocprof_family([{"name": "rocm_trace_lite"}]) is False
+
+
 class TestIsRocprofv3Available:
     """is_rocprofv3_available (mocked subprocess)."""
 
@@ -111,6 +123,31 @@ class TestConfigureMultiNodeProfiling:
         assert out["mode"] == "multi_node_unsupported"
         assert out["tools"] == []
         logger.warning.assert_called_once()
+
+    @patch("madengine.deployment.common.is_rocprofv3_available", return_value=False)
+    def test_multi_node_no_rocprofv3_keeps_rocm_trace_lite(self, _mock_avail):
+        logger = MagicMock()
+        tools = [{"name": "rocm_trace_lite"}]
+        out = configure_multi_node_profiling(2, tools, logger)
+        assert out["enabled"] is True
+        assert out["mode"] == "multi_node"
+        assert out["tools"] == tools
+        assert out["per_node_collection"] is True
+        logger.info.assert_called()
+
+    @patch("madengine.deployment.common.is_rocprofv3_available", return_value=False)
+    def test_multi_node_no_rocprofv3_filters_mixed_tools(self, _mock_avail):
+        logger = MagicMock()
+        out = configure_multi_node_profiling(
+            2,
+            [{"name": "rocprof"}, {"name": "rocm_trace_lite"}],
+            logger,
+        )
+        assert out["enabled"] is True
+        assert out["mode"] == "multi_node"
+        assert out["tools"] == [{"name": "rocm_trace_lite"}]
+        assert out["per_node_collection"] is True
+        logger.warning.assert_called()
 
     @patch("madengine.deployment.common.is_rocprofv3_available", return_value=True)
     def test_multi_node_upgrades_rocprof_to_rocprofv3(self, _mock_avail):

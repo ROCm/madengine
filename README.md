@@ -43,7 +43,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
 - **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
-- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, rocblas, MIOpen, RCCL tracing
+- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (RTL), rocblas, MIOpen, RCCL tracing
 - **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
@@ -433,6 +433,12 @@ madengine run --tags model \
 madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
 
+# rocm-trace-lite — lightweight kernel dispatch trace (SQLite; no rocprofiler-sdk)
+# Requires outbound HTTPS to GitHub on first run unless the wheel is baked into the image
+# (see docs/profiling.md). Do not combine with rocprof / rocprofv3_* on the same run.
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocm_trace_lite"}]}'
+
 # Power and VRAM monitoring
 madengine run --tags model \
   --additional-context '{"tools": [
@@ -458,6 +464,7 @@ madengine run --tags model \
 | `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
 | `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
 | `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
+| `rocm_trace_lite` | Lightweight kernel dispatch trace (HSA, SQLite/RPD-style); wraps [`rtl trace`](https://sunway513.github.io/rocm-trace-lite/quickstart.html) via `rtl_trace_wrapper.sh` | `rocm_trace_lite_output/trace.db` (and optional `trace.json.gz`, `trace_summary.txt`) |
 | `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
 | `miopen_trace` | MIOpen library calls | Conv/pooling operations |
 | `tensile_trace` | Tensile GEMM library | Matrix multiply details |
@@ -480,6 +487,12 @@ madengine provides 8 pre-configured ROCprofv3 profiles for different bottleneck 
 - `rocprofv3_pc_sampling` - Kernel hotspot identification
 
 See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-use configuration files.
+
+**rocm-trace-lite (`rocm_trace_lite`):**
+
+- madengine runs workloads under `scripts/common/tools/rtl_trace_wrapper.sh`, which invokes the `rtl` CLI (or `python3 -m rocm_trace_lite.cli`) and writes traces under `rocm_trace_lite_output/`.
+- The trace **pre-script** installs the package from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). By default it uses a **pinned** `linux_x86_64` wheel for reproducible installs. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to resolve the latest wheel via the GitHub API, or **`ROCM_TRACE_LITE_WHEEL_URL`** to a direct `.whl` URL for air-gapped installs or non-x86_64 platforms.
+- Choose **either** `rocm_trace_lite` **or** rocprof / `rocprofv3_*` for a given run—not both. Details: [Profiling Guide](docs/profiling.md) (section *rocm-trace-lite (RTL)*).
 
 **TheRock Validation:**
 

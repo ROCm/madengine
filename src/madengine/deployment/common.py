@@ -22,6 +22,37 @@ VALID_LAUNCHERS = [
     "sglang-disagg"
 ]
 
+# Tool names that use rocprof / rocprofv3 wrapping and need MPI-aware rocprofv3 on multi-node.
+_ROCPROF_FAMILY_TOOL_NAMES = frozenset(
+    {
+        "rocprof",
+        "rocprof_hip_only",
+        "rocprof_sys",
+        "rocprofv3",
+        "rocprofv3_compute",
+        "rocprofv3_memory",
+        "rocprofv3_communication",
+        "rocprofv3_full",
+        "rocprofv3_lightweight",
+        "rocprofv3_agent",
+        "rocprofv3_agent_counter",
+        "rocprofv3_perfetto",
+        "rocprofv3_api_overhead",
+        "rocprofv3_pc_sampling",
+    }
+)
+
+
+def tools_include_rocprof_family(tools_config: List[Dict]) -> bool:
+    """Return True if any tool in the list is a rocprof/rocprofv3 family entry."""
+    for tool in tools_config:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if name in _ROCPROF_FAMILY_TOOL_NAMES:
+            return True
+    return False
+
 
 def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> str:
     """
@@ -90,9 +121,12 @@ def configure_multi_node_profiling(
     Logic:
     1. Single node (nnodes == 1): Use existing tool behavior
     2. Multi-node (nnodes > 1):
-       a. Check if rocprofv3 is available
-       b. If available: Enable per-node profiling, upgrade "rocprof" to "rocprofv3"
-       c. If not available: Log warning and skip profiling
+       a. If rocprofv3 is available: enable per-node profiling; upgrade "rocprof" to "rocprofv3"
+       b. If rocprofv3 is unavailable and the list includes only non-rocprof tools
+          (e.g. rocm_trace_lite, library traces): keep those tools with per-node collection
+       c. If rocprofv3 is unavailable and the list includes rocprof/rocprofv3-family tools:
+          drop only those entries; if nothing remains, disable profiling and log the
+          same guidance as before (install rocprofiler-sdk)
 
     Args:
         nnodes: Number of nodes in the deployment
@@ -115,29 +149,62 @@ def configure_multi_node_profiling(
         }
 
     if not is_rocprofv3_available():
-        logger.warning(
-            "╔════════════════════════════════════════════════════════════════════════════╗\n"
-            "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
-            "╠════════════════════════════════════════════════════════════════════════════╣\n"
-            "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
-            "║                                                                            ║\n"
-            "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
-            "║                                                                            ║\n"
-            "║ Profiling will be SKIPPED for this multi-node run.                        ║\n"
-            "║                                                                            ║\n"
-            "║ To enable multi-node profiling:                                           ║\n"
-            "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
-            "║   • Command: apt install rocprofiler-sdk                                  ║\n"
-            "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
-            "║                                                                            ║\n"
-            "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
-            "╚════════════════════════════════════════════════════════════════════════════╝"
+        if tools_include_rocprof_family(tools_config):
+            filtered_tools: List[Dict] = [
+                t
+                for t in tools_config
+                if isinstance(t, dict) and t.get("name") not in _ROCPROF_FAMILY_TOOL_NAMES
+            ]
+            if filtered_tools:
+                logger.warning(
+                    "Multi-node: rocprofv3 not found on submission host; "
+                    "omitting rocprof/rocprofv3-family tools. Remaining tools: "
+                    + ", ".join(
+                        str(x.get("name"))
+                        for x in filtered_tools
+                        if isinstance(x, dict) and x.get("name")
+                    )
+                )
+                return {
+                    "enabled": True,
+                    "mode": "multi_node",
+                    "tools": filtered_tools,
+                    "per_node_collection": True,
+                }
+            logger.warning(
+                "╔════════════════════════════════════════════════════════════════════════════╗\n"
+                "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
+                "╠════════════════════════════════════════════════════════════════════════════╣\n"
+                "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
+                "║                                                                            ║\n"
+                "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
+                "║                                                                            ║\n"
+                "║ rocprof/rocprofv3-family profiling will be SKIPPED for this multi-node    ║\n"
+                "║ run.                                                                      ║\n"
+                "║                                                                            ║\n"
+                "║ To enable multi-node rocprof profiling:                                   ║\n"
+                "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
+                "║   • Command: apt install rocprofiler-sdk                                  ║\n"
+                "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
+                "║                                                                            ║\n"
+                "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
+                "╚════════════════════════════════════════════════════════════════════════════╝"
+            )
+            return {
+                "enabled": False,
+                "mode": "multi_node_unsupported",
+                "tools": [],
+                "per_node_collection": False
+            }
+        logger.info(
+            "Multi-node: rocprofv3 not found on submission host; keeping non-rocprof tools "
+            "(rocprof/rocprofv3 family requires rocprofv3 for MPI-aware capture)."
         )
         return {
-            "enabled": False,
-            "mode": "multi_node_unsupported",
-            "tools": [],
-            "per_node_collection": False
+            "enabled": True,
+            "mode": "multi_node",
+            "tools": tools_config,
+            "per_node_collection": True,
         }
 
     logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
