@@ -140,6 +140,7 @@ k8s_manifests/
 k8s_results/
 rocprof_output/
 rpd_output/
+rocm_trace_lite_output/
 slurm_results/
 MagicMock/
 .madengine_session_start

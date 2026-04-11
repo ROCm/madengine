@@ -63,7 +63,7 @@ madengine v2.0 is a **complete rewrite** with a unified CLI architecture, replac
 #### ROCprofv3 Profiling Suite (ROCm 7.0+)
 - **8 pre-configured profiles**: compute, memory, communication, full, lightweight, perfetto, api_overhead, pc_sampling
 - **Hardware counter definitions**: 4 counter files for targeted profiling scenarios
-- **Configuration examples**: 6 ready-to-use JSON configs in `examples/profiling-configs/`
+- **Configuration examples**: Ready-to-use JSON configs in `examples/profiling-configs/` (including `rocm_trace_lite.json` for [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite))
 - **Custom command support**: Fixed argument parsing with `--` separator requirement
 - **Auto-detection**: Seamlessly switches between rocprof (legacy) and rocprofv3
 

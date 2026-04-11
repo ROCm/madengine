@@ -177,6 +177,22 @@
         }
       ]
     },
+    "rocm_trace_lite": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "rocm_trace_lite"
+        }
+      ],
+      "cmd": "bash ../scripts/common/tools/rtl_trace_wrapper.sh ",
+      "env_vars": {},
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocm_trace_lite"
+        }
+      ]
+    },
     "rocblas_trace": {
       "env_vars": {
         "ROCBLAS_TRACE": "1"

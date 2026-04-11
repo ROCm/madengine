@@ -386,6 +386,11 @@ spec:
                     echo "✓ Copied rocprofv3 directory: $dir"
                 fi
             done
+            # rocm-trace-lite (SQLite and optional Perfetto JSON beside trace.db)
+            if [ -d "rocm_trace_lite_output" ]; then
+                cp -r rocm_trace_lite_output /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied rocm_trace_lite_output"
+            fi
             
             # Copy tool-specific outputs
             if ls gpu_info_*.csv 1> /dev/null 2>&1; then
@@ -570,6 +575,11 @@ spec:
                     echo "✓ Copied rocprofv3 directory: $dir"
                 fi
             done
+            # rocm-trace-lite (SQLite under rocm_trace_lite_output/)
+            if [ -d "rocm_trace_lite_output" ]; then
+                cp -r rocm_trace_lite_output /results/${HOSTNAME}/ 2>/dev/null || true
+                echo "✓ Copied rocm_trace_lite_output"
+            fi
             
             # Copy GPU profiler outputs
             if ls gpu_info_*.csv 1> /dev/null 2>&1; then

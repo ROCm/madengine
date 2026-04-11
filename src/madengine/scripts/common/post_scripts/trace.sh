@@ -136,6 +136,24 @@ rocprof)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: Output directory may be empty (profiling was passive)"
 	;;
 
+rocm_trace_lite)
+	# OUTPUT is rocm_trace_lite_output (same dir rtl_trace_wrapper.sh writes to).
+	echo "rocm-trace-lite post-script: Collecting RTL outputs under ${OUTPUT}..."
+	mkdir -p "$OUTPUT"
+	if [ -f "trace.db" ] && [ ! -f "${OUTPUT}/trace.db" ]; then
+		mv -v "trace.db" "$OUTPUT/" 2>/dev/null || cp -v "trace.db" "$OUTPUT/" || true
+	fi
+	for f in trace.json.gz trace.json; do
+		if [ -f "$f" ]; then
+			mv -v "$f" "$OUTPUT/" 2>/dev/null || cp -v "$f" "$OUTPUT/" || true
+		fi
+	done
+	if [ ! -f "${OUTPUT}/trace.db" ]; then
+		echo "WARNING: ${OUTPUT}/trace.db not found (rtl may have failed or used a different path)."
+	fi
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: rocm_trace_lite output directory may be empty"
+	;;
+
 esac
 
 chmod -R a+rw "${SAVESPACE}/${OUTPUT}"
