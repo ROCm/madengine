@@ -15,6 +15,9 @@
 # Environment (optional):
 #   RTL_WRAPPER_OUTPUT_DIR   Output directory (default: rocm_trace_lite_output)
 #   RTL_WRAPPER_TRACE_DB     Full path to trace DB (default: $RTL_WRAPPER_OUTPUT_DIR/trace.db)
+#   RTL_MODE                 Profiling mode passed to `rtl trace --mode` (e.g. lite, default, full).
+#                            When unset, `rtl trace` uses the RTL CLI default (version-dependent).
+#                            See: https://github.com/sunway513/rocm-trace-lite
 
 set -euo pipefail
 
@@ -25,9 +28,15 @@ mkdir -p "${RTL_OUT_DIR}"
 
 # Prefer rtl on PATH; else Python module after pip install (same entry point as rtl CLI).
 if command -v rtl >/dev/null 2>&1; then
+	if [[ -n "${RTL_MODE:-}" ]]; then
+		exec rtl trace --mode "${RTL_MODE}" -o "${RTL_DB}" "$@"
+	fi
 	exec rtl trace -o "${RTL_DB}" "$@"
 fi
 if python3 -c 'import rocm_trace_lite' 2>/dev/null; then
+	if [[ -n "${RTL_MODE:-}" ]]; then
+		exec python3 -m rocm_trace_lite.cli trace --mode "${RTL_MODE}" -o "${RTL_DB}" "$@"
+	fi
 	exec python3 -m rocm_trace_lite.cli trace -o "${RTL_DB}" "$@"
 fi
 

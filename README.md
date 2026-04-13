@@ -464,7 +464,8 @@ madengine run --tags model \
 | `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
 | `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
 | `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
-| `rocm_trace_lite` | Lightweight kernel dispatch trace (HSA, SQLite/RPD-style); wraps [`rtl trace`](https://sunway513.github.io/rocm-trace-lite/quickstart.html) via `rtl_trace_wrapper.sh` | `rocm_trace_lite_output/trace.db` (and optional `trace.json.gz`, `trace_summary.txt`) |
+| `rocm_trace_lite` | RTL **`lite`** mode — kernel dispatch trace (HSA, SQLite/RPD-style); [`rtl trace --mode lite`](https://sunway513.github.io/rocm-trace-lite/quickstart.html) via `rtl_trace_wrapper.sh` | `rocm_trace_lite_output/trace.db` (and optional `trace.json.gz`, `trace_summary.txt`) |
+| `rocm_trace_lite_default` | RTL **`default`** mode — broader dispatch coverage; higher overhead than `lite` (same outputs paths) | Same as `rocm_trace_lite` |
 | `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
 | `miopen_trace` | MIOpen library calls | Conv/pooling operations |
 | `tensile_trace` | Tensile GEMM library | Matrix multiply details |
@@ -488,9 +489,9 @@ madengine provides 8 pre-configured ROCprofv3 profiles for different bottleneck 
 
 See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-use configuration files.
 
-**rocm-trace-lite (`rocm_trace_lite`):**
+**rocm-trace-lite (`rocm_trace_lite` / `rocm_trace_lite_default`):**
 
-- madengine runs workloads under `scripts/common/tools/rtl_trace_wrapper.sh`, which invokes the `rtl` CLI (or `python3 -m rocm_trace_lite.cli`) and writes traces under `rocm_trace_lite_output/`.
+- madengine runs workloads under `scripts/common/tools/rtl_trace_wrapper.sh`, which invokes the `rtl` CLI (or `python3 -m rocm_trace_lite.cli`) with **`RTL_MODE=lite`** or **`RTL_MODE=default`** and writes traces under `rocm_trace_lite_output/`.
 - The trace **pre-script** installs the package from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). By default it uses a **pinned** `linux_x86_64` wheel for reproducible installs. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to resolve the latest wheel via the GitHub API, or **`ROCM_TRACE_LITE_WHEEL_URL`** to a direct `.whl` URL for air-gapped installs or non-x86_64 platforms.
 - Choose **either** `rocm_trace_lite` **or** rocprof / `rocprofv3_*` for a given run—not both. Details: [Profiling Guide](docs/profiling.md) (section *rocm-trace-lite (RTL)*).
 
