@@ -1,6 +1,6 @@
 # Profiling configurations
 
-This directory contains pre-configured profiling setups for madengine. Most files target **ROCprofv3**; **`rocm_trace_lite.json`** enables [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (not rocprofv3—do not combine with `rocprof` / `rocprofv3_*` on the same run).
+This directory contains pre-configured profiling setups for madengine. Most files target **ROCprofv3**; **`rocm_trace_lite.json`** / **`rocm_trace_lite_default.json`** enable [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (not rocprofv3—do not combine with `rocprof` / `rocprofv3_*` on the same run).
 
 ## Available Profiles
 
@@ -86,9 +86,12 @@ madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocprofv3_lightweight.json
 ```
 
-### 6. rocm-trace-lite (`rocm_trace_lite.json`)
+### 6. rocm-trace-lite (`rocm_trace_lite.json`, `rocm_trace_lite_default.json`)
 
-**Use Case**: Low-overhead GPU kernel dispatch tracing without rocprofiler-sdk (SQLite output compatible with RPD-style tools). See the [rocm-trace-lite documentation](https://sunway513.github.io/rocm-trace-lite/index.html) and [Quick Start](https://sunway513.github.io/rocm-trace-lite/quickstart.html).
+**Use Case**: GPU kernel dispatch tracing without rocprofiler-sdk (SQLite output compatible with RPD-style tools). See the [rocm-trace-lite documentation](https://sunway513.github.io/rocm-trace-lite/index.html) and [Quick Start](https://sunway513.github.io/rocm-trace-lite/quickstart.html).
+
+- **`rocm_trace_lite.json`** — tool `rocm_trace_lite`: RTL **`lite`** mode (typically lower overhead).
+- **`rocm_trace_lite_default.json`** — tool `rocm_trace_lite_default`: RTL **`default`** mode (broader coverage; compare overhead vs `lite`).
 
 **Do not** combine with `rocprof` / `rocprofv3_*` on the same run.
 
@@ -102,6 +105,9 @@ madengine run --tags your_model \
 ```bash
 madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocm_trace_lite.json
+
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocm_trace_lite_default.json
 ```
 
 ### 7. Multi-Node Distributed (`rocprofv3_multi_node.json`)
@@ -209,7 +215,7 @@ The wrapper script auto-detects which profiler is available and formats the comm
 | `rocprofv3_api_overhead` | API call analysis | HIP/HSA/marker traces with stats | Low |
 | `rocprofv3_pc_sampling` | Kernel hotspot analysis | PC sampling at 1000 Hz | Medium |
 
-**Other:** `rocm_trace_lite` — kernel dispatch SQLite trace via [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html), installed from **GitHub Release wheels** by the trace pre-script (not PyPI; see [Profiling Guide](../../docs/profiling.md)). Not a rocprofv3 preset; do not combine with `rocprof` / `rocprofv3_*` on the same run.
+**Other:** `rocm_trace_lite` (RTL **lite** mode) and `rocm_trace_lite_default` (RTL **default** mode) — kernel dispatch SQLite trace via [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html), installed from **GitHub Release wheels** by the trace pre-script (not PyPI; see [Profiling Guide](../../docs/profiling.md)). Not a rocprofv3 preset; do not combine with `rocprof` / `rocprofv3_*` on the same run.
 
 ## Counter Definition Files
 

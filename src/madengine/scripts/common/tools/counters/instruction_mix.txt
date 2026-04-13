@@ -1,0 +1,7 @@
+# Instruction mix counters for MAD-agent instruction_histogram (real data)
+# Used with rocprofv3 counter collection; output is converted to instruction_histogram.json
+pmc: SQ_INSTS_VALU
+pmc: SQ_INSTS_SALU
+pmc: SQ_INSTS_VMEM_RD
+pmc: SQ_INSTS_VMEM_WR
+pmc: SQ_WAIT_INST_ANY

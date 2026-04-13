@@ -1,0 +1,10 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocm_trace_lite_default",
+      "env_vars": {}
+    }
+  ]
+}
