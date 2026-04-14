@@ -79,6 +79,7 @@ class TestToolsIncludeRocprofFamily:
 
     def test_false_for_rocm_trace_lite(self):
         assert tools_include_rocprof_family([{"name": "rocm_trace_lite"}]) is False
+        assert tools_include_rocprof_family([{"name": "rocm_trace_lite_default"}]) is False
 
 
 class TestIsRocprofv3Available:
@@ -134,6 +135,16 @@ class TestConfigureMultiNodeProfiling:
         assert out["tools"] == tools
         assert out["per_node_collection"] is True
         logger.info.assert_called()
+
+    @patch("madengine.deployment.common.is_rocprofv3_available", return_value=False)
+    def test_multi_node_no_rocprofv3_keeps_rocm_trace_lite_default(self, _mock_avail):
+        logger = MagicMock()
+        tools = [{"name": "rocm_trace_lite_default"}]
+        out = configure_multi_node_profiling(2, tools, logger)
+        assert out["enabled"] is True
+        assert out["mode"] == "multi_node"
+        assert out["tools"] == tools
+        assert out["per_node_collection"] is True
 
     @patch("madengine.deployment.common.is_rocprofv3_available", return_value=False)
     def test_multi_node_no_rocprofv3_filters_mixed_tools(self, _mock_avail):

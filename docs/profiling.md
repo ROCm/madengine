@@ -128,7 +128,7 @@ Collect comprehensive ROCm profiling data:
 
 [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html) captures GPU kernel dispatch timestamps via HSA runtime interception and writes a **SQLite** `.db` file (RPD-compatible). It does **not** use rocprofiler-sdk or rocprofiler. Use it when you want a **low-overhead** dispatch timeline without installing the full rocprofv3 stack, or alongside workflows that already rely on RPD-style SQLite.
 
-**Do not** wrap the same workload with both **rocprofv3** (or `rocprof` via `rocprof_wrapper.sh`) and **rocm_trace_lite** in one run: choose **one** primary GPU profiler.
+**Do not** wrap the same workload with both **rocprofv3** (or `rocprof` via `rocprof_wrapper.sh`) and **rocm_trace_lite** / **rocm_trace_lite_default** in one run: choose **one** primary GPU profiler.
 
 ```json
 {
@@ -138,7 +138,9 @@ Collect comprehensive ROCm profiling data:
 }
 ```
 
-**How madengine runs it:** The tool prepends `bash ../scripts/common/tools/rtl_trace_wrapper.sh` around your model command. The wrapper runs `rtl trace -o rocm_trace_lite_output/trace.db …` (see the [RTL quick start](https://sunway513.github.io/rocm-trace-lite/quickstart.html)). If `rtl` is not on `PATH` but the Python package is installed, it falls back to `python3 -m rocm_trace_lite.cli`.
+Use **`rocm_trace_lite`** for RTL **`lite`** mode (lower overhead; skips some dispatches that already carry a completion signal) or **`rocm_trace_lite_default`** for RTL **`default`** mode (broader coverage; higher overhead). Both set `RTL_MODE` for `rtl_trace_wrapper.sh`, which passes `rtl trace --mode <mode> …` when supported by your installed rocm-trace-lite. See upstream [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (`--mode` / profiling modes). Example: `examples/profiling-configs/rocm_trace_lite_default.json`.
+
+**How madengine runs it:** The tool prepends `bash ../scripts/common/tools/rtl_trace_wrapper.sh` around your model command. The wrapper runs `rtl trace` with `-o rocm_trace_lite_output/trace.db` and optional `--mode` from `RTL_MODE` (see the [RTL quick start](https://sunway513.github.io/rocm-trace-lite/quickstart.html)). If `rtl` is not on `PATH` but the Python package is installed, it falls back to `python3 -m rocm_trace_lite.cli`.
 
 **Installing `rocm-trace-lite` in the container:** Upstream distributes **wheels on [GitHub Releases](https://github.com/sunway513/rocm-trace-lite/releases)**, not on PyPI. The trace **pre-script** (`scripts/common/pre_scripts/trace.sh` with args `rocm_trace_lite`) installs via `pip` from a **pinned** `linux_x86_64` wheel URL by default (reproducible; bump the pin in that script when you intentionally upgrade RTL). To follow upstream’s latest release instead, set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** (uses the GitHub API; needs `curl`). For a specific wheel, set **`ROCM_TRACE_LITE_WHEEL_URL`** to the full URL of a `.whl` file (or bake the package into the image). You need **outbound HTTPS to `github.com`** for the default or latest path unless the wheel is already present. Published wheels target **linux x86_64**; other architectures require a compatible wheel and the env override.
 
@@ -152,7 +154,7 @@ Collect comprehensive ROCm profiling data:
 | Multi-node (K8s/SLURM) | `rocprof` is upgraded to `rocprofv3` when available | Does not require `rocprofv3` on the submission host; other rocprof-family tools are omitted if `rocprofv3` is missing (see multi-node profiling behavior below) |
 | When to prefer | Deep analysis, hardware counters, Perfetto from rocprofv3 | Minimal-deps dispatch trace, RPD-compatible `.db` |
 
-**Multi-node profiling:** Multi-node runs that use **only** tools outside the rocprof/rocprofv3 family (such as `rocm_trace_lite`) keep profiling enabled even when `rocprofv3` is not installed on the machine submitting the job. If the tool list includes **rocprof** or any **`rocprofv3_*`** preset and `rocprofv3` is unavailable, those entries are dropped; if no tools remain, profiling is disabled and the usual rocprofiler-sdk installation guidance is logged.
+**Multi-node profiling:** Multi-node runs that use **only** tools outside the rocprof/rocprofv3 family (such as `rocm_trace_lite` or `rocm_trace_lite_default`) keep profiling enabled even when `rocprofv3` is not installed on the machine submitting the job. If the tool list includes **rocprof** or any **`rocprofv3_*`** preset and `rocprofv3` is unavailable, those entries are dropped; if no tools remain, profiling is disabled and the usual rocprofiler-sdk installation guidance is logged.
 
 ### ROCprofv3 - Advanced GPU Profiling
 
@@ -280,6 +282,8 @@ madengine run --tags your_model \
 # rocm-trace-lite (RTL) — not a rocprofv3 preset; do not mix with rocprof on the same run
 madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocm_trace_lite.json
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/rocm_trace_lite_default.json
 ```
 
 See `examples/profiling-configs/README.md` for complete documentation.

@@ -185,7 +185,27 @@
         }
       ],
       "cmd": "bash ../scripts/common/tools/rtl_trace_wrapper.sh ",
-      "env_vars": {},
+      "env_vars": {
+        "RTL_MODE": "lite"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "rocm_trace_lite"
+        }
+      ]
+    },
+    "rocm_trace_lite_default": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "rocm_trace_lite"
+        }
+      ],
+      "cmd": "bash ../scripts/common/tools/rtl_trace_wrapper.sh ",
+      "env_vars": {
+        "RTL_MODE": "default"
+      },
       "post_scripts": [
         {
           "path": "scripts/common/post_scripts/trace.sh",
