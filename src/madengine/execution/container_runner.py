@@ -1217,7 +1217,7 @@ class ContainerRunner:
                                         # Try multiple patterns to match different log formats
                                         
                                         # Pattern 1: "performance: 12345 metric_name" (original expected format)
-                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)[/a-zA-Z]*,?\s+([a-zA-Z_][a-zA-Z0-9_]*)'
                                         match = re.search(perf_pattern, log_content)
                                         
                                         if match:
