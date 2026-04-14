@@ -362,13 +362,13 @@ class BaseDeployment(ABC):
         """
         import re
 
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
+        perf_pattern = r"performance:\s*([\d.]+)[/a-zA-Z]*,?\s+(\S+)"
         match = re.search(perf_pattern, log_content)
         if not match:
             return None
 
         value = float(match.group(1))
-        metric = match.group(2)
+        metric = match.group(2).rstrip(',')
 
         node_id_pattern = r"node_id:\s*(\d+)"
         node_match = re.search(node_id_pattern, log_content)
