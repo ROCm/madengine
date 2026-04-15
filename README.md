@@ -40,7 +40,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 
 - **🚀 Modern CLI** - Rich terminal output with Typer and Rich
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
-- **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
+- **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
 - **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
 - **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (RTL), rocblas, MIOpen, RCCL tracing
@@ -155,7 +155,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
   └─────────────────────────────────┼───────────────────────────────────────────────────────┘
                                     ▼
   ┌──────────────────────────────────── Launcher Layer (Distribution) ──────────────────────┐
-  │  Train: torchrun · DeepSpeed · TorchTitan · Megatron-LM                                 │
+  │  Train: torchrun · DeepSpeed · Megatron-LM · TorchTitan · Primus                         │
   │  Infer: vLLM · SGLang · SGLang Disagg                                                   │
   └─────────────────────────────────┬───────────────────────────────────────────────────────┘
                                     ▼
@@ -177,7 +177,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
 4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
-5. **Distributed Launchers** - Training (torchrun, DeepSpeed, TorchTitan, Megatron-LM) and Inference (vLLM, SGLang)
+5. **Distributed Launchers** - Training (torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
 
@@ -191,6 +191,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | **DeepSpeed** | ✅ | ✅ | ✅ | Training | ZeRO optimization, pipeline parallelism |
 | **Megatron-LM** | ✅ | ✅ | ✅ | Training | Tensor+Pipeline parallel, large transformers |
 | **TorchTitan** | ✅ | ✅ | ✅ | Training | FSDP2+TP+PP+CP, Llama 3.1 (8B-405B) |
+| **Primus** | ✅ | ✅ | ✅ | Training | Megatron / TorchTitan / MaxText via Primus YAML; `distributed.primus` |
 | **vLLM** | ✅ | ✅ | ✅ | Inference | v1 engine, PagedAttention, Ray cluster |
 | **SGLang** | ✅ | ✅ | ✅ | Inference | RadixAttention, structured generation |
 | **SGLang Disagg** | ❌ | ✅ | ✅ | Inference | Disaggregated prefill/decode, Mooncake, 3+ nodes |
@@ -205,6 +206,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
 | **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
 | **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **Primus** | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❌No | Unified pretrain (experiment YAML; backend-specific) |
 | **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
 | **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
 | **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |

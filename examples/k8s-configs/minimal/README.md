@@ -128,6 +128,30 @@ madengine run --tags model \
 
 ---
 
+### [primus-minimal.json](primus-minimal.json)
+**Primus pretrain** with `distributed.launcher: "primus"` and `distributed.primus.config_path` pointing at a Primus experiment YAML (Megatron, TorchTitan, or MaxText layout under the Primus repo).
+
+```json
+{
+  "k8s": {
+    "gpu_count": 2
+  },
+  "distributed": {
+    "launcher": "primus",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    "primus": {
+      "config_path": "examples/megatron/configs/MI300X/deepseek_v2_lite-BF16-pretrain.yaml",
+      "cli_extra": ""
+    }
+  }
+}
+```
+
+**See:** [Launchers Guide](../../../docs/launchers.md#5-primus) and [examples/k8s-configs/README.md](../README.md#primus-on-kubernetes) (Primus on Kubernetes).
+
+---
+
 ## 🔄 Comparison: Old vs New
 
 ### Before (Full Config Required)
