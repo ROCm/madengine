@@ -178,6 +178,38 @@ def resolve_run_timeout(
     return cli_timeout
 
 
+def _docker_image_ref_for_log_naming(docker_image: str) -> str:
+    """
+    Reduce a Docker image reference to the same string ``DockerBuilder`` uses for tags.
+
+    Build logs use ``{model}_{dockerfile}.build.live.log`` where the image tag is
+    ``ci-{model_lower}_{dockerfile}``. Run may receive a full ref (e.g.
+    ``registry/namespace/name:ci-...``). Using the whole ref breaks pairing with
+    ``*.build.live.log`` and embeds ``/`` and ``:`` in filenames.
+
+    Rules:
+
+    - Strip digest (``@sha256:...``).
+    - If there is a ``/``, take the part after the last ``/`` (image name or
+      ``name:tag``).
+    - If that tail contains ``:``, return the tag (part after the first ``:`` in
+      the tail), which matches ``ci-...`` for normal ``repo/name:tag`` refs.
+    - Otherwise return the tail, or the whole string if there is no ``/``.
+
+    This matches short names like ``ci-model_ubuntu`` (no registry) unchanged.
+    """
+    if not docker_image:
+        return docker_image
+    s = docker_image.strip()
+    if "@" in s:
+        s = s.split("@", 1)[0]
+    last_slash = s.rfind("/")
+    tail = s[last_slash + 1 :] if last_slash >= 0 else s
+    if ":" in tail:
+        return tail.split(":", 1)[1]
+    return tail
+
+
 def make_run_log_file_path(
     model_info: typing.Dict,
     docker_image: str,
@@ -189,14 +221,19 @@ def make_run_log_file_path(
     Derives dockerfile part from image name (strip ci- and model prefix),
     then: {model_safe}_{dockerfile_part}{phase_suffix}.live.log
 
+    ``docker_image`` may be a short tag (``ci-model_ubuntu``) or a full
+    reference (``registry/repo/name:ci-model_ubuntu``); the latter is
+    normalized so run logs align with ``DockerBuilder`` / ``*.build.live.log``.
+
     Args:
         model_info: Must have "name" key.
-        docker_image: Full docker image name (e.g. ci-model_ubuntu.22.04).
+        docker_image: Docker image reference (short tag or registry/name:tag).
         phase_suffix: Optional suffix (e.g. ".run").
 
     Returns:
         Log file path string with "/" replaced by "_".
     """
+    docker_image = _docker_image_ref_for_log_naming(docker_image)
     image_name_without_ci = docker_image.replace("ci-", "")
     model_name_clean = model_info["name"].replace("/", "_").lower()
 

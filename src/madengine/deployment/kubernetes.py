@@ -71,7 +71,17 @@ except ImportError:
     REPORTING_AVAILABLE = False
 
 
+from .k8s_names import (
+    sanitize_k8s_container_name,
+    sanitize_k8s_label_value,
+    sanitize_k8s_object_name,
+)
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
+from .primus_backend import (
+    infer_primus_backend_from_model_name,
+    infer_primus_examples_overlay_subdirs,
+    merged_primus_config,
+)
 
 
 def match_pvc_subdir_to_k8s_pod(
@@ -195,6 +205,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
 
         # Generated resources
         self.job_name = None
+        self.main_container_name = None
         self.configmap_name = None
         self.configmap_yaml = None
         self.job_yaml = None
@@ -272,9 +283,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             model_info = self.manifest["built_models"][model_key]
             image_info = self.manifest["built_images"][model_key]
 
-            # Generate resource names (K8s compatible: lowercase, hyphens)
-            model_name = model_info["name"].lower().replace("_", "-")
-            self.job_name = f"madengine-{model_name}"
+            # Generate resource names (K8s compatible: no '/', spaces, etc.)
+            raw_model_name = model_info["name"]
+            self.job_name = sanitize_k8s_object_name("madengine", raw_model_name)
+            # Pod container names must be DNS labels (no dots); Job/PVC names may include dots.
+            self.main_container_name = sanitize_k8s_container_name(self.job_name)
+            if any(ch in raw_model_name for ch in "/\\ "):
+                self.console.print(
+                    f"[dim]K8s resource name (sanitized from model name): {self.job_name}[/dim]"
+                )
+            if self.main_container_name != self.job_name:
+                self.console.print(
+                    f"[dim]Pod container name (DNS label, no dots): {self.main_container_name}[/dim]"
+                )
             self.configmap_name = f"{self.job_name}-config"
 
             # Prepare template context
@@ -557,6 +578,98 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                                                         script_contents[util_rel_path] = uf.read()
                                                     self.console.print(f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]")
 
+    def _bundle_primus_k8s_examples_overlay(
+        self, model_scripts_contents: Dict[str, str], model_name: str = ""
+    ) -> None:
+        """
+        Add Primus experiment files from ``scripts/Primus`` into ``model_scripts_contents``
+        using ConfigMap keys under ``Primus/...`` (not ``scripts/Primus/...``).
+
+        The init container writes paths like ``/workspace/Primus/examples/...``, matching
+        ``PRIMUS_ROOT=/workspace/Primus`` in the Primus Dockerfile. The Job volume hides
+        image layers under ``/workspace``, so this bundle is what makes K8s runs work.
+
+        Always includes when present:
+
+        - ``requirements.txt`` (repo root; ``pip install -r`` from ``run_pretrain.sh``)
+        - ``examples/scripts/`` (``prepare_experiment.py``, NCCL helper shells, etc.)
+        - ``examples/run_pretrain.sh``
+        - The backend subtree from ``distributed.primus.config_path`` (torchtitan,
+          megatron, MaxText, …).
+        """
+        manifest = getattr(self, "manifest", None)
+        primus_cfg = merged_primus_config(
+            manifest if isinstance(manifest, dict) else None,
+            self.config.additional_context,
+        )
+        config_path = primus_cfg.get("config_path") or ""
+        backend_hint = (primus_cfg.get("backend") or "").strip()
+        subdirs = infer_primus_examples_overlay_subdirs(
+            config_path,
+            backend_hint=backend_hint,
+            model_name=model_name or "",
+        )
+        cwd = Path.cwd()
+        primus_repo = cwd / "scripts" / "Primus"
+        if not primus_repo.is_dir():
+            self.console.print(
+                f"[yellow]Primus K8s: {primus_repo} not found — skipping Primus ConfigMap bundle.[/yellow]"
+            )
+            return
+
+        def _add_primus_file(host_file: Path) -> bool:
+            try:
+                content = host_file.read_text(encoding="utf-8", errors="strict")
+            except (UnicodeDecodeError, OSError):
+                self.console.print(
+                    f"[dim]Skipping non-text Primus file for K8s bundle: {host_file}[/dim]"
+                )
+                return False
+            rel_under_repo = host_file.relative_to(primus_repo)
+            key = str(Path("Primus") / rel_under_repo)
+            model_scripts_contents[key] = content
+            return True
+
+        req = primus_repo / "requirements.txt"
+        if req.is_file():
+            if _add_primus_file(req):
+                self.console.print("[dim]Primus K8s: bundled Primus/requirements.txt[/dim]")
+
+        ex_scripts = primus_repo / "examples" / "scripts"
+        if ex_scripts.is_dir():
+            n_scripts = 0
+            for f in ex_scripts.rglob("*"):
+                if not f.is_file():
+                    continue
+                if _add_primus_file(f):
+                    n_scripts += 1
+            self.console.print(
+                f"[dim]Primus K8s: bundled Primus/examples/scripts for ConfigMap ({n_scripts} files)[/dim]"
+            )
+
+        run_pre = primus_repo / "examples" / "run_pretrain.sh"
+        if run_pre.is_file():
+            if _add_primus_file(run_pre):
+                self.console.print("[dim]Primus K8s: bundled Primus/examples/run_pretrain.sh[/dim]")
+
+        for sub in subdirs:
+            base = primus_repo / "examples" / sub
+            if not base.is_dir():
+                self.console.print(
+                    f"[yellow]Primus K8s: scripts/Primus/examples/{sub} not found under {cwd} — "
+                    "skipping that subtree.[/yellow]"
+                )
+                continue
+            n = 0
+            for f in base.rglob("*"):
+                if not f.is_file():
+                    continue
+                if _add_primus_file(f):
+                    n += 1
+            self.console.print(
+                f"[dim]Primus K8s: bundled Primus/examples/{sub} for ConfigMap ({n} files)[/dim]"
+            )
+
     def _prepare_template_context(
         self, model_info: Dict, image_info: Dict
     ) -> Dict[str, Any]:
@@ -765,6 +878,15 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             
             self.console.print(f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
+        elif launcher_type == "primus":
+            if not isinstance(nnodes, int) or nnodes < 1:
+                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+            if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+            
+            self.console.print(f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self._bundle_primus_k8s_examples_overlay(model_scripts_contents, model_name)
+
         # Determine if we need multi-node setup
         create_headless_service = False
         launcher_command = None
@@ -882,6 +1004,38 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 model_script=model_info.get("scripts", "run.sh")
             )
 
+        elif launcher_type == "primus":
+            if nnodes > 1:
+                create_headless_service = True
+                self.console.print(f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]")
+            
+            # Generate Primus launcher command (env-only: PRIMUS_CONFIG_PATH, PRIMUS_CLI_EXTRA)
+            launcher_command = self._generate_primus_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh"),
+                model_args=model_info.get("args", "") or "",
+                model_name=model_info.get("name", "") or "",
+            )
+            primus_cfg = merged_primus_config(self.manifest, self.config.additional_context)
+            backend_hint = (primus_cfg.get("backend") or "").strip().lower()
+            inferred_backend = infer_primus_backend_from_model_name(
+                model_info.get("name", "") or ""
+            )
+            config_path_lower = (primus_cfg.get("config_path") or "").lower()
+            looks_maxtext = (
+                backend_hint == "maxtext"
+                or inferred_backend == "MaxText"
+                or "maxtext" in config_path_lower
+            )
+            if looks_maxtext and nnodes > 1:
+                self.console.print(
+                    "[yellow]Warning: Primus MaxText multi-node may run in-container apt installs "
+                    "(InfiniBand-related packages) inside run_pretrain.sh. Ensure your image or "
+                    "cluster policy allows this, or use a pre-baked image.[/yellow]"
+                )
+
         # Prepare pre/post scripts (similar to local execution)
         pre_scripts = []
         post_scripts = []
@@ -944,7 +1098,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             privileged_profiling = bool(ap_prof)
 
         _pytorch_native = frozenset(
-            {"torchrun", "deepspeed", "torchtitan", "megatron"}
+            {"torchrun", "deepspeed", "torchtitan", "megatron", "primus"}
         )
         subdomain_val = (
             self.job_name
@@ -956,8 +1110,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         context = {
             # Job metadata
             "job_name": self.job_name,
+            "main_container_name": getattr(
+                self, "main_container_name", None
+            )
+            or sanitize_k8s_container_name(self.job_name),
             "namespace": self.namespace,
             "model_name": model_name,
+            "model_label": sanitize_k8s_label_value(model_name),
             # ConfigMap
             "configmap_name": self.configmap_name,
             "manifest_content": manifest_content,
@@ -1201,7 +1360,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             enriched_tools.append(enriched_tool)
         
         return enriched_tools
-    
+
     def _load_k8s_tools(self) -> Dict:
         """
         Load K8s-specific tools configuration.
