@@ -319,6 +319,7 @@ class DiscoverModels:
                     for model in self.models:
                         if (
                             model["name"] == model_name
+                            or model["name"].split("/")[-1] == model_name
                             or self._model_entry_has_tag(model.get("tags"), tag)
                             or tag == "all"
                         ):
@@ -329,6 +330,7 @@ class DiscoverModels:
                     for custom_model in self.custom_models:
                         if (
                             custom_model.name == model_name
+                            or custom_model.name.split("/")[-1] == model_name
                             or self._model_entry_has_tag(custom_model.tags, tag)
                             or tag == "all"
                         ):
