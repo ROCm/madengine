@@ -169,10 +169,11 @@ Located in [`minimal/`](minimal/) directory:
 | File | Launcher | Description | GPUs |
 |------|----------|-------------|------|
 | [`minimal/torchtitan-single-node-minimal.json`](minimal/torchtitan-single-node-minimal.json) | TorchTitan | LLM pre-training (single-node) | 8 |
+| [`minimal/primus-minimal.json`](minimal/primus-minimal.json) | primus | Primus pretrain (edit `distributed.primus.config_path`) | 2 |
 | [`minimal/vllm-single-node-minimal.json`](minimal/vllm-single-node-minimal.json) | vLLM | LLM inference (single-node) | 4 |
 | [`minimal/sglang-single-node-minimal.json`](minimal/sglang-single-node-minimal.json) | SGLang | LLM inference (single-node) | 4 |
 
-**See [minimal/README.md](minimal/README.md) for detailed documentation and [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for launcher details.**
+**See [minimal/README.md](minimal/README.md) for detailed documentation and [Launchers Guide](../../docs/launchers.md) for launcher details.**
 
 ### Kubernetes Secrets (`credential.json`)
 
@@ -675,7 +676,9 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 **Training Launchers:**
 - **torchrun**: Standard PyTorch DDP/FSDP training
 - **deepspeed**: ZeRO optimization for memory efficiency
+- **megatron**: Megatron-LM tensor and pipeline parallelism
 - **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
+- **primus**: Unified Primus pretrain (Megatron / TorchTitan / MaxText experiment YAML; see [Primus on Kubernetes](#primus-on-kubernetes))
 
 **Inference Launchers:**
 - **vllm**: High-throughput LLM serving with continuous batching
@@ -692,7 +695,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 ❌ Simple benchmarks without distributed execution
 ❌ Development and testing (use single GPU)
 
-**See [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for comprehensive launcher guide.**
+**See [Launchers Guide](../../docs/launchers.md) for the comprehensive launcher guide.**
 
 ### AMD ROCm Optimizations
 

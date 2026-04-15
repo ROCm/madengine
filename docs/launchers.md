@@ -225,9 +225,22 @@ TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
 - K8s: `examples/k8s-configs/minimal/torchtitan-single-node-minimal.json`
 - SLURM: `examples/slurm-configs/minimal/torchtitan-single-node-minimal.json`
 
+**Model Configuration** (TOML):
+```toml
+[model]
+name = "llama3"
+flavor = "8B"
+
+[training]
+tensor_parallel_degree = 8
+pipeline_parallel_degree = 1
+batch_size = 1
+seq_len = 8192
+```
+
 ---
 
-### 5b. Primus
+### 5. Primus
 
 **Purpose**: Unified pretrain entry for Megatron-LM, TorchTitan, and Jax/MaxText via Primus experiment YAML.
 
@@ -254,7 +267,7 @@ TORCHTITAN_CONTEXT_PARALLEL_SIZE=1
 Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND=...` before your model script when path-based detection is not enough. If omitted, madengine infers `BACKEND` from the **model name** when it follows `primus_pretrain/<launcher>_<arch>_...` (e.g. `primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain` → `torchtitan`), matching `scripts/primus_pretrain/get_models_json.py` in MAD-internal.
 
 **Features**:
-- Launcher sets `PRIMUS_CONFIG_PATH`, optional `PRIMUS_CLI_EXTRA`, and optional `BACKEND` from `primus.backend`; no `MAD_MULTI_NODE_RUNNER`
+- Launcher sets `PRIMUS_ROOT` (default `/workspace/Primus` on K8s after init), `PRIMUS_CONFIG_PATH`, optional `PRIMUS_CLI_EXTRA`, and optional `BACKEND` (from `primus.backend` or inferred from `primus_pretrain/...` model names); no `MAD_MULTI_NODE_RUNNER`
 - Model script (e.g. `run.sh`) sets `EXP` and calls Primus `run_pretrain.sh`
 - NNODES, NODE_RANK, MASTER_ADDR, etc. set by madengine job template
 - Use with MAD-Internal Primus submodule and `scripts/primus_pretrain/run.sh`
@@ -268,22 +281,7 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 
 ---
 
-**Model Configuration** (TOML):
-```toml
-[model]
-name = "llama3"
-flavor = "8B"
-
-[training]
-tensor_parallel_degree = 8
-pipeline_parallel_degree = 1
-batch_size = 1
-seq_len = 8192
-```
-
----
-
-### 5. vLLM
+### 6. vLLM
 
 **Purpose**: High-throughput LLM inference serving
 
@@ -330,7 +328,7 @@ VLLM_DISTRIBUTED_BACKEND="auto"  # or "ray" for multi-node
 
 ---
 
-### 6. SGLang
+### 7. SGLang
 
 **Purpose**: Fast LLM inference with structured generation
 
@@ -375,7 +373,7 @@ SGLANG_PIPELINE_PARALLEL_SIZE=1
 
 ---
 
-### 7. SGLang Disaggregated (NEW!)
+### 8. SGLang Disaggregated (NEW!)
 
 **Purpose**: Large-scale disaggregated LLM inference with specialized prefill/decode clusters
 
@@ -692,8 +690,10 @@ MAD_MULTI_NODE_RUNNER="torchrun ..."
 
 **Primus**:
 ```bash
+PRIMUS_ROOT=/workspace/Primus          # default; K8s overlays Primus/examples from ConfigMap here
 PRIMUS_CONFIG_PATH="examples/megatron/configs/MI300X/..."
-PRIMUS_CLI_EXTRA=""   # optional
+PRIMUS_CLI_EXTRA=""                   # optional
+BACKEND="megatron"                    # optional; from distributed.primus.backend or model-name inference
 # No MAD_MULTI_NODE_RUNNER (model script calls Primus run_pretrain.sh)
 ```
 
@@ -777,6 +777,8 @@ madengine provides `$MAD_MULTI_NODE_RUNNER` for frameworks that use torchrun:
 
 # For torchrun/deepspeed/megatron/torchtitan
 $MAD_MULTI_NODE_RUNNER your_training_script.py --args
+
+# For primus (no MAD_MULTI_NODE_RUNNER; use run.sh → run_pretrain.sh; PRIMUS_* / BACKEND set by madengine)
 
 # For vLLM/sglang (no MAD_MULTI_NODE_RUNNER)
 python your_inference_script.py --args

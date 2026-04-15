@@ -138,11 +138,14 @@ This creates:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
+- `megatron` - Megatron-LM training
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain (Megatron / TorchTitan / MaxText YAML)
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated SGLang (multi-node)
 
-See [Distributed Launchers Guide](distributed-launchers.md) for details.
+See [Launchers Guide](launchers.md) for details.
 
 ### Monitoring
 
@@ -450,8 +453,8 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 
 ## Next Steps
 
-- [Distributed Launchers Guide](distributed-launchers.md) - Multi-node training frameworks
+- [Launchers Guide](launchers.md) - Distributed training and inference launchers
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations
-- [User Guide](user-guide.md) - General usage instructions
+- [Usage Guide](usage.md) - General usage instructions
 

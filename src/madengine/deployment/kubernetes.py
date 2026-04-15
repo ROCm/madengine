@@ -77,6 +77,11 @@ from .k8s_names import (
     sanitize_k8s_object_name,
 )
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
+
+
+def _pod_job_name_label_selector(deployment_id: str) -> str:
+    """Selector for the ``job-name`` pod label; value must be a valid ≤63-char label value."""
+    return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 from .primus_backend import (
     infer_primus_backend_from_model_name,
     infer_primus_examples_overlay_subdirs,
@@ -203,9 +208,11 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         self.batch_v1 = client.BatchV1Api()
         self.core_v1 = client.CoreV1Api()
 
-        # Generated resources
+        # Generated resources (see prepare(): K8s uses different constraints per field)
         self.job_name = None
-        self.main_container_name = None
+        self.job_label = None  # pod label job-name + label selectors; ≤63 chars (sanitize_k8s_label_value)
+        self.service_name = None  # headless Service metadata.name + Pod subdomain; DNS label ≤63 (no dots)
+        self.main_container_name = None  # same string as service_name (container names are DNS labels)
         self.configmap_name = None
         self.configmap_yaml = None
         self.job_yaml = None
@@ -283,11 +290,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             model_info = self.manifest["built_models"][model_key]
             image_info = self.manifest["built_images"][model_key]
 
-            # Generate resource names (K8s compatible: no '/', spaces, etc.)
+            # Resource names: one logical job, three string forms (job_name alone cannot satisfy every K8s limit).
+            # - job_name: Job/PVC/ConfigMap metadata (RFC 1123 subdomain, up to 253 chars; may contain dots).
+            # - job_label: value for label job-name on pods + Service selector + API label_selector queries
+            #   (≤63; sanitize_k8s_label_value); must stay in sync with _pod_job_name_label_selector(deployment_id).
+            # - service_name / main_container_name: single DNS label (≤63, no dots) from
+            #   sanitize_k8s_container_name(job_name)—used for headless Service name, Pod subdomain, and the
+            #   middle label in Indexed Job DNS ({job_name}-{i}.{service_name}.ns.svc...). Launcher mixin uses
+            #   service_name for that subdomain segment via _k8s_headless_subdomain_label.
             raw_model_name = model_info["name"]
             self.job_name = sanitize_k8s_object_name("madengine", raw_model_name)
-            # Pod container names must be DNS labels (no dots); Job/PVC names may include dots.
+            self.job_label = sanitize_k8s_label_value(self.job_name)
             self.main_container_name = sanitize_k8s_container_name(self.job_name)
+            self.service_name = self.main_container_name
             if any(ch in raw_model_name for ch in "/\\ "):
                 self.console.print(
                     f"[dim]K8s resource name (sanitized from model name): {self.job_name}[/dim]"
@@ -1101,7 +1116,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             {"torchrun", "deepspeed", "torchtitan", "megatron", "primus"}
         )
         subdomain_val = (
-            self.job_name
+            self.service_name
             if nnodes > 1 and launcher_type in _pytorch_native
             else None
         )
@@ -1110,6 +1125,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         context = {
             # Job metadata
             "job_name": self.job_name,
+            "job_label": self.job_label,
             "main_container_name": getattr(
                 self, "main_container_name", None
             )
@@ -1176,7 +1192,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "data_pvc": self.k8s_config.get("data_pvc"),
             # Multi-node
             "create_headless_service": create_headless_service,
-            "service_name": self.job_name,
+            "service_name": self.service_name,
             "ports": [29500] if create_headless_service else [],
             # Data provider configuration (already prepared above)
             "data_config": data_config,
@@ -1770,10 +1786,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if hasattr(self, 'service_yaml') and self.service_yaml:
             try:
                 self.core_v1.delete_namespaced_service(
-                    name=self.job_name,
+                    name=self.service_name,
                     namespace=self.namespace
                 )
-                self.console.print(f"[dim]Deleted existing Service: {self.job_name}[/dim]")
+                self.console.print(f"[dim]Deleted existing Service: {self.service_name}[/dim]")
             except ApiException as e:
                 if e.status != 404:
                     pass
@@ -1878,7 +1894,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 self.core_v1.create_namespaced_service(
                     namespace=self.namespace, body=service_dict
                 )
-                self.console.print(f"[green]✓ Created Service: {self.job_name}[/green]")
+                self.console.print(f"[green]✓ Created Service: {self.service_name}[/green]")
 
             # 5. Create Job
             self.console.print("[blue]Creating Job...[/blue]")
@@ -1992,7 +2008,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 if not pod_name:
                     pods = self.core_v1.list_namespaced_pod(
                         namespace=self.namespace,
-                        label_selector=f"job-name={deployment_id}"
+                        label_selector=_pod_job_name_label_selector(deployment_id),
                     )
                     if pods.items:
                         pod_name = pods.items[0].metadata.name
@@ -2059,7 +2075,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
-                label_selector=f"job-name={deployment_id}"
+                label_selector=_pod_job_name_label_selector(deployment_id),
             )
             
             for pod in pods.items:
@@ -2155,7 +2171,8 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         try:
             # Get pods for this job
             pods = self.core_v1.list_namespaced_pod(
-                namespace=self.namespace, label_selector=f"job-name={deployment_id}"
+                namespace=self.namespace,
+                label_selector=_pod_job_name_label_selector(deployment_id),
             )
 
             # Get model info and build info from manifest
@@ -3504,12 +3521,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         except Exception:
             pass
 
-        # Delete Service (if exists)
+        # Delete Service (if exists); name is DNS-label headless svc, not always full Job name
         try:
+            svc_name = sanitize_k8s_container_name(deployment_id)
             self.core_v1.delete_namespaced_service(
-                name=deployment_id, namespace=self.namespace
+                name=svc_name, namespace=self.namespace
             )
-            self.console.print(f"[yellow]Deleted Service: {deployment_id}[/yellow]")
+            self.console.print(f"[yellow]Deleted Service: {svc_name}[/yellow]")
         except ApiException as e:
             if e.status != 404:
                 pass  # Service may not exist for single-node jobs

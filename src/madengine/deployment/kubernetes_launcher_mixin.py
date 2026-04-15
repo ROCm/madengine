@@ -9,6 +9,20 @@ from .primus_backend import infer_primus_backend_from_model_name, merged_primus_
 
 
 class KubernetesLauncherMixin:
+    """Launcher command helpers; expects ``job_name``, optional ``service_name`` (see Kubernetes deploy)."""
+
+    @property
+    def _k8s_headless_subdomain_label(self) -> str:
+        """
+        DNS label for the headless Service name and Pod ``subdomain`` (≤63 chars).
+
+        Indexed Job pod hostnames are ``{{jobName}}-{{index}}``; the middle label in
+        ``{{hostname}}.{{subdomain}}.ns.svc.cluster.local`` must match Service metadata.name.
+        When unset (e.g. tests), fall back to ``job_name`` for short names.
+        """
+        sn = getattr(self, "service_name", None)
+        return sn if sn is not None else self.job_name
+
     def _generate_torchrun_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
@@ -63,7 +77,7 @@ export MAD_RUNTIME_NGPUS={nproc_per_node}
 cd {script_dir} && bash {script_name}"""
             else:
                 return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
@@ -80,7 +94,7 @@ cd {script_dir} && bash {script_name}"""
         
         # Multi-node: Use headless service DNS and JOB_COMPLETION_INDEX
         return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export RANK=${{JOB_COMPLETION_INDEX}}
 export WORLD_SIZE={nnodes}
@@ -165,7 +179,7 @@ deepspeed --num_gpus={nproc_per_node} \\
         
         # Multi-node: Use K8s headless service for coordination
         return f"""# Multi-node DeepSpeed setup (Kubernetes Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export RANK=${{JOB_COMPLETION_INDEX}}
 export LOCAL_RANK=0
@@ -183,12 +197,12 @@ echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
 
 # Create hostfile for DeepSpeed (K8s Indexed Job aware)
 cat > /tmp/hostfile << EOF
-{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}
+{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local slots={nproc_per_node}
 EOF
 
 # Add all nodes to hostfile
 for i in $(seq 1 $((NNODES - 1))); do
-    echo "{self.job_name}-$i.{self.job_name}.{self.namespace}.svc.cluster.local slots={nproc_per_node}" >> /tmp/hostfile
+    echo "{self.job_name}-$i.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local slots={nproc_per_node}" >> /tmp/hostfile
 done
 
 echo ""
@@ -252,7 +266,7 @@ bash {model_script}"""
         # Multi-node: Use K8s headless service for coordination
         return f"""# Bash Script Execution (Multi-Node)
 # Setting up environment for script to use
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export RANK=${{JOB_COMPLETION_INDEX}}
 export LOCAL_RANK=0
@@ -351,7 +365,7 @@ torchrun \\
         
         # Multi-node: Use headless service DNS and enable all parallelism strategies
         return f"""# TorchTitan multi-node setup (K8s Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export RANK=${{JOB_COMPLETION_INDEX}}
 export WORLD_SIZE={nnodes}
@@ -453,12 +467,12 @@ torchrun \\
         
         # Build prefill and decode server lists
         prefill_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
+            f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
             for i in range(1, xP + 1)
         ])
         
         decode_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self.job_name}.{self.namespace}.svc.cluster.local:30000"
+            f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
             for i in range(xP + 1, nnodes)
         ])
         
@@ -606,7 +620,7 @@ echo "  Total GPUs: {nproc_per_node}"
         
         # Multi-node: Data Parallelism with independent Ray clusters per pod
         return f"""# vLLM multi-node setup (K8s Data Parallelism Mode)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export NODE_RANK=${{JOB_COMPLETION_INDEX}}
 export NNODES={nnodes}
@@ -724,7 +738,7 @@ echo "  Total GPUs: {nproc_per_node}"
 
         # Multi-node: Use SGLang's native multi-node support
         return f"""# SGLang multi-node setup (K8s Indexed Job)
-export MASTER_ADDR="{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export NODE_RANK=${{JOB_COMPLETION_INDEX}}
 export NNODES={nnodes}
@@ -932,7 +946,7 @@ torchrun \\
             )
         else:
             master_dns = (
-                f"{self.job_name}-0.{self.job_name}.{self.namespace}.svc.cluster.local"
+                f"{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
             )
             lines.extend(
                 [

@@ -3,6 +3,7 @@
 import pytest
 
 from madengine.execution.container_runner_helpers import (
+    _docker_image_ref_for_log_naming,
     make_run_log_file_path,
     resolve_run_timeout,
 )
@@ -39,6 +40,26 @@ class TestResolveRunTimeout:
     def test_custom_default_cli(self):
         assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
         assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
+
+
+class TestDockerImageRefForLogNaming:
+    """_docker_image_ref_for_log_naming: CI tag extraction vs stable non-ci refs."""
+
+    def test_ci_tag_from_registry_ref(self):
+        assert (
+            _docker_image_ref_for_log_naming("rocm/ns/img:ci-m_model_df")
+            == "ci-m_model_df"
+        )
+
+    def test_non_ci_tag_sanitizes_full_ref(self):
+        assert _docker_image_ref_for_log_naming("ubuntu:22.04") == "ubuntu_22.04"
+        assert (
+            _docker_image_ref_for_log_naming("registry/ns/myimg:latest")
+            == "registry_ns_myimg_latest"
+        )
+
+    def test_short_ci_tag_unchanged(self):
+        assert _docker_image_ref_for_log_naming("ci-model_ubuntu") == "ci-model_ubuntu"
 
 
 class TestMakeRunLogFilePath:

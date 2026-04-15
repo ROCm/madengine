@@ -8,6 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from madengine.deployment.k8s_names import (
+    sanitize_k8s_container_name,
+    sanitize_k8s_object_name,
+)
 from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
 from madengine.deployment.primus_backend import (
     infer_primus_backend_from_model_name,
@@ -80,6 +84,18 @@ class TestGeneratePrimusCommand:
         assert "madengine-j-0.madengine-j.ns1.svc.cluster.local" in cmd
         assert "JOB_COMPLETION_INDEX" in cmd
         assert "NNODES=2" in cmd
+
+    def test_multi_node_master_dns_uses_short_headless_subdomain(self):
+        """Headless Service / Pod subdomain must be a DNS label (≤63); hostname stays Job name-index."""
+        long_job = sanitize_k8s_object_name("madengine", "z" * 400)
+        sub = sanitize_k8s_container_name(long_job)
+        assert len(sub) <= 63
+        h = _PrimusCommandHarness(
+            {"distributed": {"primus": {}}}, job_name=long_job, namespace="ns1"
+        )
+        h.service_name = sub
+        cmd = h._generate_primus_command(2, 8, 1234, "scripts/primus_pretrain/run.sh", "")
+        assert f"{long_job}-0.{sub}.ns1.svc.cluster.local" in cmd
 
 
 # --- primus_backend helpers --------------------------------------------------

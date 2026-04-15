@@ -180,34 +180,44 @@ def resolve_run_timeout(
 
 def _docker_image_ref_for_log_naming(docker_image: str) -> str:
     """
-    Reduce a Docker image reference to the same string ``DockerBuilder`` uses for tags.
+    Reduce a Docker image reference to a stable filename-safe log naming component.
 
     Build logs use ``{model}_{dockerfile}.build.live.log`` where the image tag is
-    ``ci-{model_lower}_{dockerfile}``. Run may receive a full ref (e.g.
-    ``registry/namespace/name:ci-...``). Using the whole ref breaks pairing with
-    ``*.build.live.log`` and embeds ``/`` and ``:`` in filenames.
+    ``ci-{model_lower}_{dockerfile}``. For those CI-style refs, returning the
+    tag preserves pairing with ``*.build.live.log``. For normal tagged refs such
+    as ``ubuntu:22.04`` or ``myimage:latest``, collapsing to only the tag would
+    cause collisions, so keep the digest-free reference and sanitize it for filenames.
 
     Rules:
 
-    - Strip digest (``@sha256:...``).
-    - If there is a ``/``, take the part after the last ``/`` (image name or
-      ``name:tag``).
-    - If that tail contains ``:``, return the tag (part after the first ``:`` in
-      the tail), which matches ``ci-...`` for normal ``repo/name:tag`` refs.
-    - Otherwise return the tail, or the whole string if there is no ``/``.
+    - Strip digest (``@sha256:...``) for naming purposes.
+    - If the last path segment is ``name:tag`` and ``tag`` starts with ``ci-``,
+      return only ``tag``.
+    - Otherwise return the digest-free reference with ``:``, ``/``, and ``@``
+      replaced by ``_``.
 
-    This matches short names like ``ci-model_ubuntu`` (no registry) unchanged.
+    Short names without ``/`` or ``:``, e.g. ``ci-model_ubuntu``, pass through
+    unchanged (aside from digest stripping).
     """
     if not docker_image:
         return docker_image
     s = docker_image.strip()
-    if "@" in s:
-        s = s.split("@", 1)[0]
-    last_slash = s.rfind("/")
-    tail = s[last_slash + 1 :] if last_slash >= 0 else s
+    ref_without_digest = s.split("@", 1)[0]
+    last_slash = ref_without_digest.rfind("/")
+    tail = (
+        ref_without_digest[last_slash + 1 :]
+        if last_slash >= 0
+        else ref_without_digest
+    )
     if ":" in tail:
-        return tail.split(":", 1)[1]
-    return tail
+        _, tag = tail.split(":", 1)
+        if tag.startswith("ci-"):
+            return tag
+    return (
+        ref_without_digest.replace("/", "_")
+        .replace(":", "_")
+        .replace("@", "_")
+    )
 
 
 def make_run_log_file_path(
