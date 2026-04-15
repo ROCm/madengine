@@ -24,6 +24,7 @@ from madengine.deployment.k8s_secrets import (
     build_registry_secret_data,
 )
 from madengine.deployment.kubernetes import (
+    _pod_job_name_label_selector,
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
@@ -192,6 +193,15 @@ class TestSanitizeK8sObjectName:
         n = sanitize_k8s_object_name("madengine", "///")
         assert "madengine" in n
         assert "/" not in n
+
+
+@pytest.mark.unit
+def test_pod_job_name_label_selector_matches_sanitized_job_name():
+    """Pods use job-name label value = sanitize_k8s_label_value(Job metadata name); list queries must match."""
+    jid = sanitize_k8s_object_name("madengine", "z" * 400)
+    sel = _pod_job_name_label_selector(jid)
+    assert sel == f"job-name={sanitize_k8s_label_value(jid)}"
+    assert len(sel.split("=", 1)[1]) <= 63
 
 
 @pytest.mark.unit

@@ -159,8 +159,18 @@ class TestContainerRunner:
     @patch("madengine.execution.container_runner.Docker")
     @patch("builtins.open", new_callable=mock_open)
     @patch("os.path.exists")
+    @patch(
+        "madengine.execution.container_runner._docker_image_exists_locally",
+        return_value=True,
+    )
     def test_run_container_success(
-        self, mock_exists, mock_file, mock_docker_class, mock_sh, mock_context_class
+        self,
+        _mock_image_exists,
+        mock_exists,
+        mock_file,
+        mock_docker_class,
+        mock_sh,
+        mock_context_class,
     ):
         """Test successful container run."""
         # Mock context to avoid GPU detection
@@ -215,8 +225,12 @@ class TestContainerRunner:
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
     @patch("madengine.execution.container_runner.Docker")
+    @patch(
+        "madengine.execution.container_runner._docker_image_exists_locally",
+        return_value=True,
+    )
     def test_run_container_timeout(
-        self, mock_docker_class, mock_sh, mock_context_class
+        self, _mock_image_exists, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test container run with timeout."""
         # Mock context to avoid GPU detection
@@ -256,8 +270,12 @@ class TestContainerRunner:
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
     @patch("madengine.execution.container_runner.Docker")
+    @patch(
+        "madengine.execution.container_runner._docker_image_exists_locally",
+        return_value=True,
+    )
     def test_run_container_failure(
-        self, mock_docker_class, mock_sh, mock_context_class
+        self, _mock_image_exists, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test container run failure."""
         # Mock context to avoid GPU detection

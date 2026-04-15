@@ -9,6 +9,7 @@ using pre-built images.
 
 import os
 import re
+import shlex
 import subprocess
 import time
 import json
@@ -51,6 +52,34 @@ def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typ
     if os.path.isfile(path_in_model_dir):
         return path_in_model_dir
     return None
+
+
+def _docker_image_exists_locally(image: str) -> bool:
+    """Return True if ``docker image inspect`` succeeds for *image* (argv list; no shell)."""
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, OSError):
+        return False
+
+
+def _bash_quote_path(path: str) -> str:
+    """Shell-escape a path for ``bash -c`` in the container (POSIX)."""
+    return shlex.quote(os.path.normpath((path or "").replace("\\", "/")))
+
+
+def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
+    """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
+    rel = (relative_path or "").strip()
+    src = os.path.normpath(os.path.join(model_dir, rel)).replace("\\", "/")
+    return (
+        f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
+    )
 
 
 class ContainerRunner:
@@ -714,24 +743,19 @@ class ContainerRunner:
 
     def _resolve_docker_image(self, docker_image: str, model_name: str) -> str:
         """Resolve Docker image: use requested image if present, else primus_pretrain fallback with clear error."""
-        try:
-            self.console.sh(f"docker image inspect {docker_image} >/dev/null 2>&1")
+        if _docker_image_exists_locally(docker_image):
             return docker_image
-        except (subprocess.CalledProcessError, RuntimeError, Exception):
-            pass
         if model_name.startswith("primus_pretrain/"):
             fallback = "ci-primus_pretrain_primus.ubuntu.amd"
-            try:
-                self.console.sh(f"docker image inspect {fallback} >/dev/null 2>&1")
+            if _docker_image_exists_locally(fallback):
                 print(
                     f"ℹ️  Using shared Primus image (one build for all primus_pretrain configs): {fallback}"
                 )
                 return fallback
-            except (subprocess.CalledProcessError, RuntimeError, Exception):
-                raise RuntimeError(
-                    f"Docker image '{docker_image}' not found and fallback '{fallback}' not found. "
-                    "Build the Primus image first: madengine build --tags primus_pretrain --additional-context-file <config>.json"
-                ) from None
+            raise RuntimeError(
+                f"Docker image '{docker_image}' not found and fallback '{fallback}' not found. "
+                "Build the Primus image first: madengine build --tags primus_pretrain --additional-context-file <config>.json"
+            ) from None
         raise RuntimeError(
             f"Docker image '{docker_image}' not found. "
             "Build it first: madengine build --tags <model_tag> --additional-context-file <config>.json"
@@ -1190,7 +1214,9 @@ class ContainerRunner:
                         if multiple_results_file:
                             try:
                                 model_docker.sh(
-                                    f"cp {model_dir}/{multiple_results_file} . 2>/dev/null || true"
+                                    _cp_model_dir_file_to_cwd_cmd(
+                                        model_dir, multiple_results_file
+                                    )
                                 )
                             except Exception:
                                 pass
@@ -1538,20 +1564,34 @@ class ContainerRunner:
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
                         try:
-                            model_docker.sh(f"cp {model_dir}/*_profiler_output.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/*_output.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/*_trace.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/library_trace.csv . 2>/dev/null || true")
+                            _md = model_dir.replace("\\", "/")
+                            model_docker.sh(
+                                f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
+                                f"{_bash_quote_path('.')} 2>/dev/null || true"
+                            )
+                            model_docker.sh(
+                                f"cp -- {_bash_quote_path(_md)}/*_output.csv "
+                                f"{_bash_quote_path('.')} 2>/dev/null || true"
+                            )
+                            model_docker.sh(
+                                f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
+                                f"{_bash_quote_path('.')} 2>/dev/null || true"
+                            )
+                            model_docker.sh(
+                                _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
+                            )
                         except Exception as e:
                             # Ignore errors if no profiler/trace output files exist
                             pass
 
                         # Copy multiple_results CSV to workspace root before run_directory is removed
                         # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
-                        mult_res = model_info.get("multiple_results")
+                        mult_res = (model_info.get("multiple_results") or "").strip()
                         if mult_res:
                             try:
-                                model_docker.sh(f"cp {model_dir}/{mult_res} . 2>/dev/null || true")
+                                model_docker.sh(
+                                    _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                )
                             except Exception:
                                 pass
 

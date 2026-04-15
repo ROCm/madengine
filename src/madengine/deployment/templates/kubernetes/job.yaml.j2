@@ -21,7 +21,7 @@ spec:
     metadata:
       labels:
         app: madengine
-        job-name: {{ job_name }}
+        job-name: {{ job_label }}
         model: {{ model_label }}
     spec:
       {% if subdomain %}
