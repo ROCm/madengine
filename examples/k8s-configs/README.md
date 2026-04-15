@@ -169,10 +169,11 @@ Located in [`minimal/`](minimal/) directory:
 | File | Launcher | Description | GPUs |
 |------|----------|-------------|------|
 | [`minimal/torchtitan-single-node-minimal.json`](minimal/torchtitan-single-node-minimal.json) | TorchTitan | LLM pre-training (single-node) | 8 |
+| [`minimal/primus-minimal.json`](minimal/primus-minimal.json) | primus | Primus pretrain (edit `distributed.primus.config_path`) | 2 |
 | [`minimal/vllm-single-node-minimal.json`](minimal/vllm-single-node-minimal.json) | vLLM | LLM inference (single-node) | 4 |
 | [`minimal/sglang-single-node-minimal.json`](minimal/sglang-single-node-minimal.json) | SGLang | LLM inference (single-node) | 4 |
 
-**See [minimal/README.md](minimal/README.md) for detailed documentation and [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for launcher details.**
+**See [minimal/README.md](minimal/README.md) for detailed documentation and [Launchers Guide](../../docs/launchers.md) for launcher details.**
 
 ### Kubernetes Secrets (`credential.json`)
 
@@ -185,9 +186,32 @@ To validate rendered YAML after a debug run, install [kubeconform](https://githu
 
 ### Multi-node DNS (PyTorch vs Ray)
 
-For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
 
 For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
+
+### Primus on Kubernetes
+
+Upstream Primus separates two ideas: a **universal** training driver (`examples/run_pretrain.sh`, used by all backends) and an optional **Kubernetes workload API client** (`examples/run_k8s_pretrain.sh`) that talks to a remote service to create workloads. Those are not the same integration as madengine’s native K8s path.
+
+| Approach | Role |
+|----------|------|
+| Primus `run_k8s_pretrain.sh` | HTTP client to an external **workload API** (replicas, image, `backend`, `exp`, node labels, etc.). Does **not** match madengine’s `kubectl`-style Job YAML flow. |
+| madengine `distributed.launcher: "primus"` | Renders a standard **Job** (and headless **Service** when `nnodes > 1`), injects cluster env (`MASTER_ADDR`, `NNODES`, `NODE_RANK` / `JOB_COMPLETION_INDEX`, `GPUS_PER_NODE`), `PRIMUS_CONFIG_PATH`, optional `PRIMUS_CLI_EXTRA`, and optional `BACKEND` from `distributed.primus.backend`, then runs your model script (e.g. `scripts/primus_pretrain/run.sh`). |
+
+**Backends** (one madengine launcher; Primus routes inside `run_pretrain.sh`):
+
+| Experiment path (typical) | Backend |
+|---------------------------|---------|
+| `examples/torchtitan/...` | TorchTitan (PyTorch / `torchrun`) |
+| `examples/megatron/...` | Megatron-LM |
+| `examples/maxtext/...` | MaxText (JAX; coordinator env from master) |
+
+Set `distributed.primus.config_path` to your YAML under the Primus repo layout. Use optional `distributed.primus.backend` (e.g. `MaxText`, `megatron`) to emit `export BACKEND=...` when you want to override inference. If `backend` is omitted, madengine sets `BACKEND` from the **model name** when it matches `primus_pretrain/<launcher>_<arch>_...` (e.g. `primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain` → `torchtitan`).
+
+**MaxText caveat:** For **multi-node** MaxText, Primus `run_pretrain.sh` may run **in-container `apt` installs** (InfiniBand-related packages). Many clusters disallow that unless the image is pre-baked or policy allows it. madengine logs a **warning** when MaxText is detected (`backend` or path) and `nnodes > 1`.
+
+Primus examples under [`basic/`](basic/): [`primus-single-node-multi-gpu.json`](basic/primus-single-node-multi-gpu.json) (one pod, multi-GPU) and [`primus-multi-node.json`](basic/primus-multi-node.json) (Indexed Job). The same files work for TorchTitan, Megatron, and MaxText: set `distributed.primus.config_path` to your experiment YAML, and rely on madengine’s `BACKEND` inference from the model name (`primus_pretrain/<launcher>_<arch>_...`) or set `distributed.primus.backend` only when you need an explicit override. Use `docker_env_vars.HF_TOKEN` as a placeholder or runtime secrets — do not commit real tokens.
 
 ### Full Configs (Reference Examples)
 
@@ -213,6 +237,8 @@ Complete configurations showing all available fields:
 | [`basic/torchtitan-multi-node-basic.json`](basic/torchtitan-multi-node-basic.json) | 8/node | 4 | TorchTitan | Llama 3.1 70B+ training |
 | [`basic/vllm-multi-node-basic.json`](basic/vllm-multi-node-basic.json) | 4/node | 2 | vLLM | High-throughput inference |
 | [`basic/sglang-multi-node-basic.json`](basic/sglang-multi-node-basic.json) | 4/node | 2 | SGLang | Distributed inference |
+| [`basic/primus-single-node-multi-gpu.json`](basic/primus-single-node-multi-gpu.json) | 8 | 1 | primus | Primus pretrain (single pod; edit `primus.config_path`) |
+| [`basic/primus-multi-node.json`](basic/primus-multi-node.json) | 8/node | 2+ | primus | Primus pretrain (multi-pod; edit `nnodes`, `primus.config_path`) |
 
 ---
 
@@ -551,12 +577,20 @@ Configuration for distributed workloads (training and inference):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `vllm`, `sglang` |
+| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`, `vllm`, `sglang` |
 | `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
 | `nnodes` | integer | `1` | Number of nodes |
 | `nproc_per_node` | integer | gpu_count | Processes per node (= GPUs per node) |
 | `master_port` | integer | `29500` | Master communication port |
+
+When `launcher` is **`primus`**, set nested **`primus`** (under `distributed`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primus.config_path` | string | Path to the Primus experiment YAML (e.g. under `examples/torchtitan/...`). |
+| `primus.cli_extra` | string | Optional extra arguments passed to Primus CLI. |
+| `primus.backend` | string | Optional. If set, madengine emits `export BACKEND=...` (e.g. `MaxText`, `megatron`) before your `run.sh`. |
 
 #### Environment Variables
 
@@ -642,7 +676,9 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 **Training Launchers:**
 - **torchrun**: Standard PyTorch DDP/FSDP training
 - **deepspeed**: ZeRO optimization for memory efficiency
+- **megatron**: Megatron-LM tensor and pipeline parallelism
 - **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
+- **primus**: Unified Primus pretrain (Megatron / TorchTitan / MaxText experiment YAML; see [Primus on Kubernetes](#primus-on-kubernetes))
 
 **Inference Launchers:**
 - **vllm**: High-throughput LLM serving with continuous batching
@@ -659,7 +695,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 ❌ Simple benchmarks without distributed execution
 ❌ Development and testing (use single GPU)
 
-**See [docs/distributed-launchers.md](../../docs/distributed-launchers.md) for comprehensive launcher guide.**
+**See [Launchers Guide](../../docs/launchers.md) for the comprehensive launcher guide.**
 
 ### AMD ROCm Optimizations
 

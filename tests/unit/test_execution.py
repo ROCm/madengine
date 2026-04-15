@@ -3,6 +3,7 @@
 import pytest
 
 from madengine.execution.container_runner_helpers import (
+    _docker_image_ref_for_log_naming,
     make_run_log_file_path,
     resolve_run_timeout,
 )
@@ -41,6 +42,26 @@ class TestResolveRunTimeout:
         assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
 
 
+class TestDockerImageRefForLogNaming:
+    """_docker_image_ref_for_log_naming: CI tag extraction vs stable non-ci refs."""
+
+    def test_ci_tag_from_registry_ref(self):
+        assert (
+            _docker_image_ref_for_log_naming("rocm/ns/img:ci-m_model_df")
+            == "ci-m_model_df"
+        )
+
+    def test_non_ci_tag_sanitizes_full_ref(self):
+        assert _docker_image_ref_for_log_naming("ubuntu:22.04") == "ubuntu_22.04"
+        assert (
+            _docker_image_ref_for_log_naming("registry/ns/myimg:latest")
+            == "registry_ns_myimg_latest"
+        )
+
+    def test_short_ci_tag_unchanged(self):
+        assert _docker_image_ref_for_log_naming("ci-model_ubuntu") == "ci-model_ubuntu"
+
+
 class TestMakeRunLogFilePath:
     """make_run_log_file_path behavior."""
 
@@ -71,6 +92,19 @@ class TestMakeRunLogFilePath:
             {"name": "other/model"}, "ci-some_ubuntu_22", "",
         )
         assert out == "other_model_some_ubuntu_22.live.log"
+
+    def test_full_registry_ref_matches_short_ci_tag(self):
+        """Run log name must match build log base when image is registry/name:ci-…."""
+        model = {"name": "primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain"}
+        short = "ci-primus_pretrain_torchtitan_mi300x_qwen3_4b-pretrain_primus.ubuntu.amd"
+        full = f"rocm/mad-private:{short}"
+        assert make_run_log_file_path(model, short, ".run") == make_run_log_file_path(
+            model, full, ".run"
+        )
+        assert make_run_log_file_path(model, short, ".run") == (
+            "primus_pretrain_torchtitan_MI300X_qwen3_4B-pretrain_"
+            "primus.ubuntu.amd.run.live.log"
+        )
 
 
 # ---- dockerfile_utils ----

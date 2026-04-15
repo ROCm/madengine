@@ -419,7 +419,7 @@ echo "=========================================="
 # Generate launcher-specific command
 {{ launcher_command }}
 
-{% if launcher_type in ['torchrun', 'deepspeed', 'megatron'] %}
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 {% endif %}
 echo "=========================================="
@@ -428,7 +428,7 @@ echo "=========================================="
 echo "Single-node {{ launcher_type|default('torchrun') }} setup"
 {{ launcher_command }}
 
-{% if launcher_type in ['torchrun', 'deepspeed', 'megatron'] %}
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 {% endif %}
 {% endif %}
@@ -617,7 +617,9 @@ echo "  RANK (node rank): ${RANK}"
 echo "  NODE_RANK: ${NODE_RANK}"
 echo "  NNODES: ${NNODES}"
 echo "  NPROC_PER_NODE: ${GPUS_PER_NODE}"
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
+{% endif %}
 if [ "${SLURM_PROCID}" = "0" ]; then
     echo "  MAD_IS_MASTER_NODE: true (will collect performance metrics)"
 else
