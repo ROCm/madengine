@@ -19,7 +19,7 @@ SLURM_MULTI_ALIASES = [
     "slurm_multi",
     "slurm-multi",
 ]
-BAREMETAL_LAUNCHERS = SLURM_MULTI_ALIASES
+SELF_MANAGED_LAUNCHERS = SLURM_MULTI_ALIASES
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
@@ -674,7 +674,7 @@ class ContainerRunner:
                 else:
                     print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
-    def _run_on_baremetal(
+    def _run_self_managed(
         self,
         model_info: typing.Dict,
         build_info: typing.Dict,
@@ -685,7 +685,7 @@ class ContainerRunner:
         run_env: typing.Dict,
     ) -> typing.Dict:
         """
-        Run script directly on baremetal (not inside Docker).
+        Run script directly on the host (self-managed launcher, not inside madengine Docker).
         
         Used for slurm_multi launchers that manage their own Docker containers
         via SLURM srun commands. The script is executed directly on the node.
@@ -772,7 +772,7 @@ class ContainerRunner:
         
         # Run script with logging
         test_start_time = time.time()
-        self.rich_console.print("\n[bold blue]Running script on baremetal...[/bold blue]")
+        self.rich_console.print("\n[bold blue]Running script (self-managed launcher)...[/bold blue]")
         
         try:
             with open(log_file_path, mode="w", buffering=1) as outlog:
@@ -1097,13 +1097,13 @@ class ContainerRunner:
 
         print(f"Docker options: {docker_options}")
 
-        # ========== CHECK FOR BAREMETAL LAUNCHERS ==========
-        # slurm_multi launchers run scripts directly on baremetal,
-        # not inside Docker. The script itself manages Docker containers via srun.
+        # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
+        # slurm_multi launchers run scripts directly on the host,
+        # not inside a madengine-managed Docker. The script manages its own containers via srun.
         launcher = ""
         
         # Debug: Print all sources
-        print(f"🔍 Baremetal check - looking for launcher...")
+        print(f"🔍 Self-managed launcher check...")
         print(f"   MAD_LAUNCHER_TYPE env: {os.environ.get('MAD_LAUNCHER_TYPE', '<not set>')}")
         if self.additional_context:
             distributed_config = self.additional_context.get("distributed", {})
@@ -1121,10 +1121,10 @@ class ContainerRunner:
         # Normalize launcher name (replace underscores with hyphens)
         launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
         
-        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in BAREMETAL_LAUNCHERS]:
-            self.rich_console.print(f"\n[bold cyan]🖥️ Running on BAREMETAL (launcher: {launcher})[/bold cyan]")
+        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in SELF_MANAGED_LAUNCHERS]:
+            self.rich_console.print(f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]")
             self.rich_console.print(f"[dim]Script will manage its own Docker containers via SLURM[/dim]")
-            return self._run_on_baremetal(
+            return self._run_self_managed(
                 model_info=model_info,
                 build_info=build_info,
                 log_file_path=log_file_path,
@@ -1133,7 +1133,7 @@ class ContainerRunner:
                 pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
                 run_env=run_env,
             )
-        # ========== END BAREMETAL CHECK ==========
+        # ========== END SELF-MANAGED CHECK ==========
 
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")

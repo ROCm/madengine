@@ -215,7 +215,7 @@ def build(
 
     try:
         validated_context = validate_additional_context(
-            additional_context, additional_context_file, use_image
+            additional_context, additional_context_file
         )
 
         # Create arguments object

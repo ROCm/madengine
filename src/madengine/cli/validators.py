@@ -284,7 +284,6 @@ def additional_context_needs_cli_validation(
 def validate_additional_context(
     additional_context: str,
     additional_context_file: Optional[str] = None,
-    use_image: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Validate and parse additional context.
@@ -292,7 +291,6 @@ def validate_additional_context(
     Args:
         additional_context: JSON string containing additional context
         additional_context_file: Optional file containing additional context
-        use_image: Optional pre-built image to use (skips required field validation)
 
     Returns:
         Dict containing parsed additional context
