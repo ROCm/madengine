@@ -98,6 +98,8 @@ madengine build [OPTIONS]
 | `--target-archs` | `-a` | TEXT | `[]` | Target GPU architectures (e.g., gfx908,gfx90a,gfx942) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
+| `--use-image` | | TEXT | `None` | Skip Docker build, use pre-built image. Omit value to auto-detect from model's `DOCKER_IMAGE_NAME` |
+| `--build-on-compute` | | FLAG | `False` | Build Docker images on SLURM compute node instead of login node |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
@@ -142,6 +144,16 @@ madengine build --tags model \
 
 # Real-time output with verbose logging
 madengine build --tags model --live-output --verbose
+
+# Use pre-built image (skip Docker build)
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file slurm-config.json
+
+# Build on SLURM compute node instead of login node
+madengine build --tags model \
+  --build-on-compute \
+  --additional-context-file slurm-config.json
 ```
 
 **Default Values:**
@@ -192,6 +204,172 @@ When using `--batch-manifest`, provide a JSON file with selective build configur
 ```
 
 See [Batch Build Guide](batch-build.md) for details.
+
+**Pre-built Image Mode (`--use-image`):**
+
+Skip Docker build and use an existing image from a registry or local Docker cache:
+
+```bash
+# Auto-detect image from model card's DOCKER_IMAGE_NAME env var
+madengine build --tags sglang_disagg \
+  --use-image \
+  --additional-context-file config.json
+
+# Explicitly specify image from Docker Hub
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file config.json
+
+# Use image from NGC
+madengine build --tags model \
+  --use-image nvcr.io/nvidia/pytorch:24.01-py3
+
+# Use locally cached image
+madengine build --tags model \
+  --use-image my-local-image:latest
+```
+
+**Image Resolution Priority:**
+1. If `--use-image <name>` is specified, use that image
+2. If `--use-image` (no value), auto-detect from model card's `DOCKER_IMAGE_NAME` env var
+3. If no image found in model card, error with helpful suggestions
+
+**Multiple Models Warning:**
+When using auto-detection with multiple models that have different `DOCKER_IMAGE_NAME` values, the first model's image is used and a warning is printed.
+
+**Mutual Exclusivity:**
+- `--use-image` cannot be used with `--registry` (push requires local build)
+- `--use-image` cannot be used with `--build-on-compute` (skip build vs. build on compute)
+
+**When to use `--use-image`:**
+- Using official framework images (SGLang, vLLM, etc.)
+- Image is pre-cached on compute nodes
+- Testing without rebuilding
+- CI/CD pipelines with external images
+
+The generated manifest marks the image as `"prebuilt": true` with `build_time: 0`.
+
+**Relationship with `MAD_CONTAINER_IMAGE`:**
+
+`--use-image` and `MAD_CONTAINER_IMAGE` both allow using pre-built images, but operate at different phases:
+
+| | `--use-image` | `MAD_CONTAINER_IMAGE` |
+|---|---|---|
+| Phase | Build (`madengine build`) | Run (`madengine run`) |
+| Output | Generates a manifest file | Creates a synthetic manifest at runtime |
+| Workflow | Two-step: `build` then `run` | Single-step: `run` only |
+| Use case | slurm_multi, CI pipelines, reproducible manifests | Quick local testing, ad-hoc runs |
+
+They are complementary. Use `--use-image` when you want a persistent manifest that can be shared or re-run. Use `MAD_CONTAINER_IMAGE` when you want a quick single-command run without generating a manifest.
+
+**Build on Compute Node (`--build-on-compute`):**
+
+Build Docker images on a SLURM compute node, push to registry, and pull in parallel during run phase:
+
+```bash
+# Build on compute node and push to registry (--registry REQUIRED)
+madengine build --tags model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context-file slurm-config.json
+```
+
+**Required:** `--registry` must be specified with `--build-on-compute`.
+
+**SLURM Config Priority:**
+1. Model card's `slurm` section (base configuration)
+2. `--additional-context` overrides (command line takes precedence)
+
+If the model card already has `slurm` config, you only need to provide missing or override values:
+
+```bash
+# Model card has partition/time, just override reservation
+madengine build --tags model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context '{"slurm": {"reservation": "my-res"}}'
+```
+
+**When to use `--build-on-compute`:**
+- Login node has limited disk space or resources
+- Build requires GPU access (e.g., AOT compilation)
+- Login node policies prohibit heavy workloads
+- Distributing images to many compute nodes (build once, pull everywhere)
+
+**How it works:**
+
+*Build Phase:*
+1. Discovers model and merges SLURM config (model card + additional-context)
+2. Submits build job to **1 compute node** via `sbatch --wait`
+3. Builds Docker image on that node
+4. Pushes image to registry
+5. Generates manifest with registry image name
+
+*Run Phase:*
+1. Detects `built_on_compute: true` in manifest
+2. Pulls image **in parallel on ALL nodes** via `srun docker pull`
+3. Executes model script
+
+**Inside existing SLURM allocation:**
+
+If you're already inside an `salloc` allocation, `--build-on-compute` uses `srun` directly instead of submitting a new job.
+
+**Error Messages:**
+
+If required SLURM fields are missing, specific errors are shown:
+- Missing `partition`: "Add partition to model card's slurm section or via --additional-context"
+
+---
+
+**Multi-Node SLURM Launcher (`slurm_multi`):**
+
+Models using the `slurm_multi` launcher (for multi-node distributed inference) **require** either `--registry` or `--use-image`:
+
+```bash
+# Option 1: Build and push to registry
+madengine build --tags sglang_model \
+  --registry docker.io/myorg \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Option 2: Use pre-built image from registry
+madengine build --tags sglang_model \
+  --use-image docker.io/myorg/sglang:latest
+
+# Option 3: Build on compute and push
+madengine build --tags sglang_model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context-file config.json
+```
+
+**Why this requirement?**
+
+Multi-node SLURM jobs run on multiple compute nodes. Each node needs access to the Docker image:
+- Local builds only exist on the login/build node
+- Compute nodes cannot access locally built images
+- Registry images enable parallel `docker pull` on all nodes
+
+**Parallel Image Pull:**
+
+During `madengine run`, images from a registry are automatically pulled in parallel on all allocated nodes:
+
+```bash
+srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES docker pull <image>
+```
+
+This ensures fast, consistent image availability across the cluster.
+
+**Re-using Images:**
+
+For subsequent runs with the same image, use `--use-image` to skip building:
+
+```bash
+# First run: build and push
+madengine build --tags model --registry docker.io/myorg
+
+# Subsequent runs: use pre-built image
+madengine build --tags model --use-image docker.io/myorg/model:latest
+```
 
 ---
 

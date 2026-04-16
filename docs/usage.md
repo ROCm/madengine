@@ -279,6 +279,99 @@ madengine build --batch-manifest batch.json \
 ]
 ```
 
+### Pre-built Image Mode
+
+Skip Docker build entirely and use an existing image:
+
+```bash
+# Auto-detect image from model card's DOCKER_IMAGE_NAME env var
+madengine build --tags sglang_disagg \
+  --use-image \
+  --additional-context-file slurm-config.json
+
+# Or explicitly specify the image
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file slurm-config.json
+
+# Then run normally
+madengine run --manifest-file build_manifest.json
+```
+
+**Image Resolution:**
+1. If `--use-image <name>` provided → use that image
+2. If `--use-image` (no value) → auto-detect from model card's `DOCKER_IMAGE_NAME`
+3. If no image found → error with helpful message
+
+**Mutual Exclusivity:**
+- Cannot use with `--registry` (push requires local build)
+- Cannot use with `--build-on-compute` (skip vs. build)
+
+**Use cases:**
+- Official framework images (SGLang, vLLM, PyTorch NGC)
+- Pre-cached images on compute nodes
+- Quick testing without rebuild time
+- CI/CD with external registries
+
+The manifest marks the image as `"prebuilt": true` with zero build time.
+
+### Build on Compute Node
+
+For SLURM environments where login nodes have limited resources:
+
+```bash
+# Build on 1 compute node, push to registry, pull in parallel at runtime
+madengine build --tags model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context '{"slurm": {"reservation": "my-res"}}'
+```
+
+**Required:** `--registry` must be specified.
+
+**SLURM Config Merging:**
+- Model card's `slurm` section provides base configuration
+- `--additional-context` overrides specific fields
+- Only specify what's missing or needs override
+
+**How it works:**
+
+*Build Phase:*
+1. Builds Docker image on **1 compute node**
+2. Pushes image to registry
+3. Stores registry image name in manifest
+
+*Run Phase:*
+1. Pulls image **in parallel on ALL nodes** via `srun docker pull`
+2. Executes model script
+
+**Benefits:**
+- Offloads heavy build to compute resources
+- Build once, distribute via registry pull
+- Respects login node resource policies
+- Parallel pull scales to many nodes
+
+### Multi-Node SLURM (slurm_multi)
+
+Models using the `slurm_multi` launcher **require** either `--registry` or `--use-image`:
+
+```bash
+# Option 1: Build and push
+madengine build --tags sglang_model --registry docker.io/myorg
+
+# Option 2: Use pre-built image
+madengine build --tags sglang_model --use-image
+
+# Option 3: Build on compute
+madengine build --tags sglang_model --build-on-compute --registry docker.io/myorg
+```
+
+**Why?** Multi-node jobs run on multiple compute nodes. Each node needs the Docker image, and local builds only exist on the login node.
+
+**Parallel Pull:** During `madengine run`, registry images are automatically pulled in parallel on all nodes before execution.
+
+**Re-using images:** For subsequent runs with the same image, use `--use-image` to skip building.
+
 ## Run Workflow
 
 ### Skip model run after build

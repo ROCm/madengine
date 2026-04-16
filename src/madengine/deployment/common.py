@@ -19,7 +19,7 @@ VALID_LAUNCHERS = [
     "megatron-lm",
     "vllm",
     "sglang",
-    "sglang-disagg"
+    "slurm_multi",
 ]
 
 
@@ -43,6 +43,9 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
     """
     if launcher_type and launcher_type in VALID_LAUNCHERS:
         return launcher_type
+    # Normalize hyphen variant: slurm-multi -> slurm_multi
+    if launcher_type and launcher_type.replace("-", "_") in VALID_LAUNCHERS:
+        return launcher_type.replace("-", "_")
     if deployment_type == "local":
         return "docker"
     if deployment_type == "slurm":
