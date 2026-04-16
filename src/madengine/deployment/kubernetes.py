@@ -73,16 +73,6 @@ except ImportError:
 
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 
-VALID_LAUNCHERS = [
-    "torchrun",
-    "torchtitan",
-    "deepspeed",
-    "megatron-lm",
-    "vllm",
-    "sglang",
-    "slurm_multi",
-]
-
 SLURM_MULTI_ALIASES = [
     "slurm_multi",
     "slurm-multi",

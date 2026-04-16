@@ -249,6 +249,19 @@ When using auto-detection with multiple models that have different `DOCKER_IMAGE
 
 The generated manifest marks the image as `"prebuilt": true` with `build_time: 0`.
 
+**Relationship with `MAD_CONTAINER_IMAGE`:**
+
+`--use-image` and `MAD_CONTAINER_IMAGE` both allow using pre-built images, but operate at different phases:
+
+| | `--use-image` | `MAD_CONTAINER_IMAGE` |
+|---|---|---|
+| Phase | Build (`madengine build`) | Run (`madengine run`) |
+| Output | Generates a manifest file | Creates a synthetic manifest at runtime |
+| Workflow | Two-step: `build` then `run` | Single-step: `run` only |
+| Use case | slurm_multi, CI pipelines, reproducible manifests | Quick local testing, ad-hoc runs |
+
+They are complementary. Use `--use-image` when you want a persistent manifest that can be shared or re-run. Use `MAD_CONTAINER_IMAGE` when you want a quick single-command run without generating a manifest.
+
 **Build on Compute Node (`--build-on-compute`):**
 
 Build Docker images on a SLURM compute node, push to registry, and pull in parallel during run phase:

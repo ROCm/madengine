@@ -258,6 +258,20 @@ class BuildOrchestrator:
             DiscoveryError: If model discovery fails
             BuildError: If Docker build fails
         """
+        # --use-image and --build-on-compute are mutually exclusive
+        if use_image and build_on_compute:
+            raise ConfigurationError(
+                "--use-image and --build-on-compute cannot be used together",
+                context=create_error_context(
+                    operation="build",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Use --use-image to skip build and use an existing image",
+                    "Use --build-on-compute to build on a compute node and push to registry",
+                ],
+            )
+
         # Handle pre-built image mode
         if use_image:
             # If use_image is "auto", resolve from model card

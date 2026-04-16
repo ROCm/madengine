@@ -419,9 +419,9 @@ scancel -u $USER
 }
 ```
 
-### Baremetal Execution (slurm_multi)
+### Self-Managed Execution (slurm_multi)
 
-For disaggregated inference workloads like SGLang Disaggregated, madengine supports baremetal execution where the model's `.slurm` script manages Docker containers directly:
+For disaggregated inference workloads like SGLang Disaggregated, madengine supports self-managed execution where the model's `.slurm` script manages Docker containers directly:
 
 ```json
 {
@@ -443,9 +443,9 @@ For disaggregated inference workloads like SGLang Disaggregated, madengine suppo
 }
 ```
 
-**How baremetal execution works:**
+**How self-managed execution works:**
 1. madengine generates a wrapper script (not a Docker container)
-2. The wrapper runs the model's `.slurm` script directly on baremetal
+2. The wrapper runs the model's `.slurm` script directly on the host
 3. The `.slurm` script manages Docker containers via `srun`
 4. Environment variables from `models.json` and `additional-context` are passed through
 
