@@ -10,7 +10,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -26,7 +25,6 @@ from madengine.core.errors import (
     ConfigurationError,
     DiscoveryError,
     create_error_context,
-    handle_error,
 )
 from madengine.utils.discover_models import DiscoverModels
 from madengine.execution.docker_builder import DockerBuilder

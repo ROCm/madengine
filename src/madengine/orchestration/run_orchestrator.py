@@ -29,7 +29,6 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
     create_error_context,
-    handle_error,
 )
 from madengine.core.constants import get_rocm_path
 from madengine.utils.session_tracker import SessionTracker

@@ -10,6 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 from typing import Dict, Optional
 
 from madengine.core.errors import (
@@ -75,3 +76,96 @@ def load_credentials() -> Optional[Dict]:
             credentials["dockerhub"]["repository"] = docker_hub_repo
 
     return credentials
+
+
+def login_to_registry(
+    registry: str,
+    credentials: Optional[Dict],
+    console,
+    rich_console,
+    raise_on_failure: bool = True,
+) -> None:
+    """Login to a Docker registry.
+
+    This is the single shared implementation used by both DockerBuilder
+    and ContainerRunner.
+
+    Args:
+        registry: Registry URL (e.g., "localhost:5000", "docker.io", or empty
+            for DockerHub).
+        credentials: Credentials dictionary keyed by registry name.
+        console: A ``Console`` instance for shell execution.
+        rich_console: A Rich ``Console`` instance for formatted output.
+        raise_on_failure: If ``True`` (default), re-raise on login failure.
+            Set to ``False`` when the caller can fall back to pulling
+            public images.
+    """
+    if not credentials:
+        rich_console.print(
+            "[yellow]No credentials provided for registry login[/yellow]"
+        )
+        return
+
+    registry_key = registry if registry else "dockerhub"
+
+    # Normalise docker.io → dockerhub
+    if registry and registry.lower() == "docker.io":
+        registry_key = "dockerhub"
+
+    if registry_key not in credentials:
+        error_msg = f"No credentials found for registry: {registry_key}"
+        if registry_key == "dockerhub":
+            error_msg += (
+                f"\nPlease add dockerhub credentials to credential.json:\n"
+                "{\n"
+                '  "dockerhub": {\n'
+                '    "repository": "your-repository",\n'
+                '    "username": "your-dockerhub-username",\n'
+                '    "password": "your-dockerhub-password-or-token"\n'
+                "  }\n"
+                "}"
+            )
+        else:
+            error_msg += (
+                f"\nPlease add {registry_key} credentials to credential.json:\n"
+                "{\n"
+                f'  "{registry_key}": {{\n'
+                f'    "repository": "your-repository",\n'
+                f'    "username": "your-{registry_key}-username",\n'
+                f'    "password": "your-{registry_key}-password"\n'
+                "  }\n"
+                "}"
+            )
+        rich_console.print(f"[red]{error_msg}[/red]")
+        raise RuntimeError(error_msg)
+
+    creds = credentials[registry_key]
+
+    if "username" not in creds or "password" not in creds:
+        error_msg = (
+            f"Invalid credentials format for registry: {registry_key}"
+            f"\nCredentials must contain 'username' and 'password' fields"
+        )
+        rich_console.print(f"[red]{error_msg}[/red]")
+        raise RuntimeError(error_msg)
+
+    username = str(creds["username"])
+    password = str(creds["password"])
+
+    login_command = f"echo {shlex.quote(password)} | docker login"
+    if registry and registry.lower() not in ["docker.io", "dockerhub"]:
+        login_command += f" {registry}"
+    login_command += f" --username {username} --password-stdin"
+
+    try:
+        console.sh(login_command, secret=True)
+        rich_console.print(
+            f"[green]Successfully logged in to registry: "
+            f"{registry or 'DockerHub'}[/green]"
+        )
+    except Exception as e:
+        rich_console.print(
+            f"[red]Failed to login to registry {registry}: {e}[/red]"
+        )
+        if raise_on_failure:
+            raise

@@ -23,7 +23,7 @@ import typing
 # third-party modules
 from madengine.core.console import Console
 from madengine.core.constants import get_rocm_path
-from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
+from madengine.utils.gpu_validator import GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
@@ -434,11 +434,11 @@ class Context:
             "if [ -f \"$(which apt)\" ]; then echo 'HOST_UBUNTU'; elif [ -f \"$(which yum)\" ]; then echo 'HOST_CENTOS'; elif [ -f \"$(which zypper)\" ]; then echo 'HOST_SLES'; elif [ -f \"$(which tdnf)\" ]; then echo 'HOST_AZURE'; else echo 'Unable to detect Host OS'; fi || true"
         )
 
-    def get_numa_balancing(self) -> bool:
+    def get_numa_balancing(self) -> typing.Union[str, bool]:
         """Get NUMA balancing.
 
         Returns:
-            bool: The output of the shell command.
+            Union[str, bool]: The shell command output as a string, or False if the path does not exist.
 
         Raises:
             RuntimeError: If the NUMA balancing is not enabled or disabled.
