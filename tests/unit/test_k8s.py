@@ -1,10 +1,17 @@
 """
-Kubernetes-related unit tests (secrets/config helpers, PVC → pod mapping).
+Kubernetes-related unit tests (secrets/config helpers, name sanitization, PVC → pod).
 
 Keep new K8s-focused unit tests here to avoid many small `test_k8s_*.py` files.
 Integration/e2e tests stay in their own modules.
 """
 
+import pytest
+
+from madengine.deployment.k8s_names import (
+    sanitize_k8s_container_name,
+    sanitize_k8s_label_value,
+    sanitize_k8s_object_name,
+)
 from madengine.deployment.k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_EXISTING,
@@ -17,6 +24,7 @@ from madengine.deployment.k8s_secrets import (
     build_registry_secret_data,
 )
 from madengine.deployment.kubernetes import (
+    _pod_job_name_label_selector,
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
@@ -154,3 +162,71 @@ def test_pvc_assign_no_duplicate_pods():
 def test_pvc_assign_empty_dirs():
     assert assign_pvc_subdirs_to_pods([], ["p"]) == {}
     assert assign_pvc_subdirs_to_pods(["  ", ""], ["p"]) == {}
+
+
+# --- Object / label / container name sanitization (k8s_names) ----------------
+
+
+@pytest.mark.unit
+class TestSanitizeK8sObjectName:
+    def test_slash_in_model_name(self):
+        name = sanitize_k8s_object_name(
+            "madengine", "primus_pretrain/torchtitan_MI300X_qwen3_1.7B-pretrain"
+        )
+        assert "/" not in name
+        assert name.startswith("madengine-")
+        assert name == "madengine-primus-pretrain-torchtitan-mi300x-qwen3-1.7b-pretrain"
+
+    def test_uppercase_and_underscore(self):
+        n = sanitize_k8s_object_name("madengine", "My_Model_NAME")
+        assert n == "madengine-my-model-name"
+
+    def test_max_length_stable_hash(self):
+        long_name = "a" * 400
+        n = sanitize_k8s_object_name("madengine", long_name)
+        assert len(n) <= 253
+        assert "/" not in n
+        n2 = sanitize_k8s_object_name("madengine", long_name)
+        assert n == n2
+
+    def test_empty_body_uses_model(self):
+        n = sanitize_k8s_object_name("madengine", "///")
+        assert "madengine" in n
+        assert "/" not in n
+
+
+@pytest.mark.unit
+def test_pod_job_name_label_selector_matches_sanitized_job_name():
+    """Pods use job-name label value = sanitize_k8s_label_value(Job metadata name); list queries must match."""
+    jid = sanitize_k8s_object_name("madengine", "z" * 400)
+    sel = _pod_job_name_label_selector(jid)
+    assert sel == f"job-name={sanitize_k8s_label_value(jid)}"
+    assert len(sel.split("=", 1)[1]) <= 63
+
+
+@pytest.mark.unit
+class TestSanitizeK8sLabelValue:
+    def test_slash_and_length(self):
+        raw = "primus_pretrain/torchtitan_MI300X_qwen3_1.7B-pretrain"
+        v = sanitize_k8s_label_value(raw)
+        assert len(v) <= 63
+        assert "/" not in v
+
+    def test_long_value_truncated(self):
+        raw = "x" * 200
+        v = sanitize_k8s_label_value(raw)
+        assert len(v) <= 63
+
+
+@pytest.mark.unit
+class TestSanitizeK8sContainerName:
+    def test_dots_from_version_become_hyphens(self):
+        job = "madengine-primus-pretrain-torchtitan-mi300x-qwen3-1.7b-pretrain"
+        c = sanitize_k8s_container_name(job)
+        assert "." not in c
+        assert "1-7b" in c or "17" in c
+
+    def test_max_63_chars(self):
+        long_hint = "a" * 200
+        c = sanitize_k8s_container_name(long_hint)
+        assert len(c) <= 63

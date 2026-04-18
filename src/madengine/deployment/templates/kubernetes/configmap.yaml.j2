@@ -5,7 +5,7 @@ metadata:
   namespace: {{ namespace }}
   labels:
     app: madengine
-    model: {{ model_name }}
+    model: {{ model_label }}
 data:
   build_manifest.json: |
 {{ manifest_content | indent(4, first=True) }}

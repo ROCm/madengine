@@ -178,6 +178,48 @@ def resolve_run_timeout(
     return cli_timeout
 
 
+def _docker_image_ref_for_log_naming(docker_image: str) -> str:
+    """
+    Reduce a Docker image reference to a stable filename-safe log naming component.
+
+    Build logs use ``{model}_{dockerfile}.build.live.log`` where the image tag is
+    ``ci-{model_lower}_{dockerfile}``. For those CI-style refs, returning the
+    tag preserves pairing with ``*.build.live.log``. For normal tagged refs such
+    as ``ubuntu:22.04`` or ``myimage:latest``, collapsing to only the tag would
+    cause collisions, so keep the digest-free reference and sanitize it for filenames.
+
+    Rules:
+
+    - Strip digest (``@sha256:...``) for naming purposes.
+    - If the last path segment is ``name:tag`` and ``tag`` starts with ``ci-``,
+      return only ``tag``.
+    - Otherwise return the digest-free reference with ``:``, ``/``, and ``@``
+      replaced by ``_``.
+
+    Short names without ``/`` or ``:``, e.g. ``ci-model_ubuntu``, pass through
+    unchanged (aside from digest stripping).
+    """
+    if not docker_image:
+        return docker_image
+    s = docker_image.strip()
+    ref_without_digest = s.split("@", 1)[0]
+    last_slash = ref_without_digest.rfind("/")
+    tail = (
+        ref_without_digest[last_slash + 1 :]
+        if last_slash >= 0
+        else ref_without_digest
+    )
+    if ":" in tail:
+        _, tag = tail.split(":", 1)
+        if tag.startswith("ci-"):
+            return tag
+    return (
+        ref_without_digest.replace("/", "_")
+        .replace(":", "_")
+        .replace("@", "_")
+    )
+
+
 def make_run_log_file_path(
     model_info: typing.Dict,
     docker_image: str,
@@ -189,14 +231,19 @@ def make_run_log_file_path(
     Derives dockerfile part from image name (strip ci- and model prefix),
     then: {model_safe}_{dockerfile_part}{phase_suffix}.live.log
 
+    ``docker_image`` may be a short tag (``ci-model_ubuntu``) or a full
+    reference (``registry/repo/name:ci-model_ubuntu``); the latter is
+    normalized so run logs align with ``DockerBuilder`` / ``*.build.live.log``.
+
     Args:
         model_info: Must have "name" key.
-        docker_image: Full docker image name (e.g. ci-model_ubuntu.22.04).
+        docker_image: Docker image reference (short tag or registry/name:tag).
         phase_suffix: Optional suffix (e.g. ".run").
 
     Returns:
         Log file path string with "/" replaced by "_".
     """
+    docker_image = _docker_image_ref_for_log_naming(docker_image)
     image_name_without_ci = docker_image.replace("ci-", "")
     model_name_clean = model_info["name"].replace("/", "_").lower()
 

@@ -36,11 +36,11 @@ madengine v2.0 is a **complete rewrite** with a unified CLI architecture, replac
 - **Factory pattern**: Automatic deployment target selection based on configuration
 
 #### Distributed Framework Support
-- **Training launchers**: torchrun, DeepSpeed, Megatron-LM, TorchTitan
+- **Training launchers**: torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus
 - **Inference launchers**: vLLM, SGLang, SGLang Disaggregated
 - **Launcher mixin**: Unified launcher configuration via `kubernetes_launcher_mixin.py`
 - **Template-driven**: Jinja2 templates for each launcher type
-- **Full documentation**: Comprehensive launcher guide in `docs/distributed-launchers.md`
+- **Full documentation**: Comprehensive launcher guide in `docs/launchers.md`
 
 #### GPU Vendor Support
 - **AMD ROCm**: Full support with `amd-smi`/`rocm-smi` detection
@@ -223,7 +223,7 @@ madengine v2.0 is a **complete rewrite** with a unified CLI architecture, replac
 
 #### Legacy Documentation
 - **Removed**: `docs/distributed-execution-solution.md`, `docs/madengine-cli-guide.md`
-- **Removed**: `docs/TORCHTITAN_LAUNCHER.md` (consolidated into distributed-launchers.md)
+- **Removed**: `docs/TORCHTITAN_LAUNCHER.md` (consolidated into `docs/launchers.md`)
 - **Justification**: Consolidated into comprehensive single-source documentation
 
 #### Direct Print Calls

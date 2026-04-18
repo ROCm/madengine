@@ -5,11 +5,11 @@ metadata:
   namespace: {{ namespace }}
   labels:
     app: madengine
-    model: {{ model_name }}
+    model: {{ model_label }}
 spec:
   clusterIP: None  # Headless service for torchrun coordination
   selector:
-    job-name: {{ job_name }}
+    job-name: {{ job_label }}
   ports:
   {% for port in ports %}
   - name: port-{{ port }}
