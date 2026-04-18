@@ -7,7 +7,9 @@ enabling distributed workflows where images are built on a central host
 and then distributed to remote nodes for execution.
 """
 
+import glob
 import os
+import shlex
 import time
 import json
 import re
@@ -67,7 +69,7 @@ class DockerBuilder:
             return "."
         return "./docker"
 
-    def get_build_arg(self, run_build_arg: typing.Dict = {}) -> str:
+    def get_build_arg(self, run_build_arg: typing.Optional[typing.Dict] = None) -> str:
         """Get the build arguments.
 
         Args:
@@ -76,6 +78,8 @@ class DockerBuilder:
         Returns:
             str: The build arguments.
         """
+        if run_build_arg is None:
+            run_build_arg = {}
         if not run_build_arg and "docker_build_arg" not in self.context.ctx:
             return ""
 
@@ -84,14 +88,14 @@ class DockerBuilder:
             build_args += (
                 "--build-arg "
                 + build_arg
-                + "='"
-                + self.context.ctx["docker_build_arg"][build_arg]
-                + "' "
+                + "="
+                + shlex.quote(self.context.ctx["docker_build_arg"][build_arg])
+                + " "
             )
 
         if run_build_arg:
             for key, value in run_build_arg.items():
-                build_args += "--build-arg " + key + "='" + value + "' "
+                build_args += "--build-arg " + key + "=" + shlex.quote(value) + " "
 
         return build_args
 
@@ -300,8 +304,8 @@ class DockerBuilder:
         username = str(creds["username"])
         password = str(creds["password"])
 
-        # Perform docker login
-        login_command = f"echo '{password}' | docker login"
+        # Perform docker login — shlex.quote handles passwords with special chars
+        login_command = f"echo {shlex.quote(password)} | docker login"
 
         if registry and registry.lower() not in ["docker.io", "dockerhub"]:
             login_command += f" {registry}"
@@ -604,8 +608,10 @@ class DockerBuilder:
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
         """Get dockerfiles for a model."""
         try:
+            # Quote the dockerfile path to prevent shell injection
+            dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(
-                f"ls {model_info['dockerfile']}.*"
+                f"ls {dockerfile_quoted}.*"
             ).split("\n")
 
             dockerfiles = {}

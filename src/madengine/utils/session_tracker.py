@@ -47,11 +47,12 @@ class SessionTracker:
             The starting row number (number of rows in CSV before this session)
         """
         if self.perf_csv_path.exists():
-            # Count existing rows (excluding header)
+            # Count existing data rows (excluding header and blank lines)
             with open(self.perf_csv_path, 'r') as f:
                 lines = f.readlines()
+                non_empty = [l for l in lines if l.strip()]
                 # Subtract 1 for header row
-                self.session_start_row = max(0, len(lines) - 1)
+                self.session_start_row = max(0, len(non_empty) - 1)
         else:
             # No existing file, start at 0
             self.session_start_row = 0
@@ -85,7 +86,8 @@ class SessionTracker:
         
         with open(self.perf_csv_path, 'r') as f:
             lines = f.readlines()
-            current_row_count = max(0, len(lines) - 1)  # Exclude header
+            non_empty = [l for l in lines if l.strip()]
+            current_row_count = max(0, len(non_empty) - 1)  # Exclude header
         
         return current_row_count - self.session_start_row
     

@@ -83,14 +83,14 @@ class ValidationError(MADEngineError):
         )
 
 
-class ConnectionError(MADEngineError):
+class NetworkError(MADEngineError):
     """Connection and network errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.CONNECTION, 
-            context, 
+            message,
+            ErrorCategory.CONNECTION,
+            context,
             recoverable=True,
             **kwargs
         )
@@ -120,10 +120,6 @@ class ExecutionError(MADEngineError):
             recoverable=False,
             **kwargs
         )
-
-
-# Backward compatibility alias
-RuntimeError = ExecutionError
 
 
 class BuildError(MADEngineError):
@@ -191,14 +187,14 @@ class ConfigurationError(MADEngineError):
         )
 
 
-class TimeoutError(MADEngineError):
+class DeploymentTimeoutError(MADEngineError):
     """Timeout and duration errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.TIMEOUT, 
-            context, 
+            message,
+            ErrorCategory.TIMEOUT,
+            context,
             recoverable=True,
             **kwargs
         )
@@ -388,3 +384,9 @@ def create_error_context(
         component=component,
         **kwargs
     )
+
+
+# Backward-compatible aliases for renamed error classes.
+# These avoid shadowing builtins.ConnectionError and builtins.TimeoutError.
+ConnectionError = NetworkError  # noqa: A001
+TimeoutError = DeploymentTimeoutError  # noqa: A001

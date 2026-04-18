@@ -7,6 +7,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import os
+import shlex
 import typing
 
 # user-defined modules
@@ -32,7 +33,7 @@ class Docker:
         mounts: typing.Optional[typing.List] = None,
         envVars: typing.Optional[typing.Dict] = None,
         keep_alive: bool = False,
-        console: Console = Console(),
+        console: Console = None,
     ) -> None:
         """Constructor of the Docker class.
 
@@ -52,13 +53,14 @@ class Docker:
         self.docker_sha = None
         self.keep_alive = keep_alive
         cwd = os.getcwd()
-        self.console = console
+        self.console = console if console is not None else Console()
         self.userid = self.console.sh("id -u")
         self.groupid = self.console.sh("id -g")
 
         # check if container name exists
+        container_name_quoted = shlex.quote(container_name)
         container_name_exists = self.console.sh(
-            "docker container ps -a | grep " + container_name + " | wc -l"
+            "docker container ps -a | grep " + container_name_quoted + " | wc -l"
         )
         # if container name exists, clean it up automatically
         if container_name_exists != "0":
@@ -67,11 +69,11 @@ class Docker:
             )
             # Stop the container (with timeout)
             self.console.sh(
-                f"docker stop -t 1 {container_name} 2>/dev/null || true"
+                f"docker stop -t 1 {container_name_quoted} 2>/dev/null || true"
             )
             # Remove the container
             self.console.sh(
-                f"docker rm -f {container_name} 2>/dev/null || true"
+                f"docker rm -f {container_name_quoted} 2>/dev/null || true"
             )
             print(f"✓ Cleaned up existing container '{container_name}'")
 
@@ -93,7 +95,7 @@ class Docker:
         # add envVars
         if envVars is not None:
             for evar in envVars.keys():
-                command += "-e " + evar + "=" + envVars[evar] + " "
+                command += "-e " + evar + "=" + shlex.quote(str(envVars[evar])) + " "
 
         command += "--workdir /myworkspace/ "
         command += "--name " + container_name + " "
@@ -123,7 +125,7 @@ class Docker:
         """
         # run as root!
         return self.console.sh(
-            "docker exec " + self.docker_sha + ' bash -c "' + command + '"',
+            "docker exec " + self.docker_sha + " bash -c " + shlex.quote(command),
             timeout=timeout,
             secret=secret,
         )

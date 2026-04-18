@@ -82,7 +82,7 @@ def format_dataframe_for_log(
         header += f"📏 Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
 
     if truncated_rows:
-        header += f"⚠️  Display truncated: showing first {max_rows} rows\n"
+        header += f"⚠️  Display truncated: showing last {max_rows} rows\n"
 
     header += f"{'='*80}\n"
 

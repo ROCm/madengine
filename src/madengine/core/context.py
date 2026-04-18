@@ -395,11 +395,8 @@ class Context:
         for amd_smi_path in amd_smi_paths:
             if os.path.exists(amd_smi_path):
                 try:
-                    # Debug: log to stderr so SLURM node .err captures where we are if killed
-                    print(f"[DEBUG] get_gpu_vendor: trying amd-smi at {amd_smi_path}", file=sys.stderr, flush=True)
                     # Verify amd-smi actually works (180s timeout for slow GPU initialization)
                     result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
-                    print(f"[DEBUG] get_gpu_vendor: amd-smi returned", file=sys.stderr, flush=True)
                     if result and result.strip() == "AMD":
                         return "AMD"
                 except Exception as e:
@@ -409,9 +406,7 @@ class Context:
         rocm_smi_path = os.path.join(self._rocm_path, "bin", "rocm-smi")
         if os.path.exists(rocm_smi_path):
             try:
-                print(f"[DEBUG] get_gpu_vendor: trying rocm-smi at {rocm_smi_path}", file=sys.stderr, flush=True)
                 result = self.console.sh(f"{rocm_smi_path} --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
-                print(f"[DEBUG] get_gpu_vendor: rocm-smi returned", file=sys.stderr, flush=True)
                 if result and result.strip() == "AMD":
                     return "AMD"
             except Exception as e:

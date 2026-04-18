@@ -441,8 +441,8 @@ class ContainerRunner:
         username = str(creds["username"])
         password = str(creds["password"])
 
-        # Perform docker login
-        login_command = f"echo '{password}' | docker login"
+        # Perform docker login — shlex.quote handles passwords with special chars
+        login_command = f"echo {shlex.quote(password)} | docker login"
 
         if registry and registry.lower() not in ["docker.io", "dockerhub"]:
             login_command += f" {registry}"
@@ -604,7 +604,6 @@ class ContainerRunner:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
                 env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
 
-        print(f"Env arguments: {env_args}")
         return env_args
 
     def get_mount_arg(self, mount_datapaths: typing.List) -> str:

@@ -631,11 +631,13 @@ class BaseDeployment(ABC):
             row_to_write = perf_data
 
         with open(perf_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-            if not file_exists:
-                writer.writeheader()
             if file_exists and existing_header:
+                # File already has a header — write a plain row using csv.writer
+                # to preserve the exact column order captured in row_to_write
                 csv.writer(f).writerow(row_to_write)
             else:
+                # New file — write header then the data row via DictWriter
+                writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+                writer.writeheader()
                 writer.writerow(row_to_write)
 
