@@ -1,9 +1,9 @@
 """Unit tests for madengine.core.auth module."""
 
 import os
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
-from madengine.core.auth import load_credentials
+from madengine.core.auth import load_credentials, login_to_registry
 
 
 class TestLoadCredentials:
@@ -112,3 +112,92 @@ class TestLoadCredentials:
         assert result is not None
         assert "custom_registry" in result
         assert result["custom_registry"]["token"] == "abc123"
+
+
+class TestLoginToRegistry:
+    """Tests for login_to_registry()."""
+
+    def _mocks(self):
+        console = MagicMock()
+        rich_console = MagicMock()
+        return console, rich_console
+
+    def test_no_credentials_returns_early(self):
+        """Passing None credentials logs a warning and returns without error."""
+        console, rich_console = self._mocks()
+        login_to_registry("docker.io", None, console, rich_console)
+        console.sh.assert_not_called()
+
+    def test_missing_registry_key_raises_when_raise_on_failure(self):
+        """RuntimeError raised when registry key absent and raise_on_failure=True."""
+        console, rich_console = self._mocks()
+        credentials = {"other_registry": {"username": "u", "password": "p"}}
+        try:
+            login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "myregistry.io" in str(e)
+        console.sh.assert_not_called()
+
+    def test_missing_registry_key_returns_when_not_raise_on_failure(self):
+        """Returns silently when registry key absent and raise_on_failure=False."""
+        console, rich_console = self._mocks()
+        credentials = {"other_registry": {"username": "u", "password": "p"}}
+        login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=False)
+        console.sh.assert_not_called()
+
+    def test_invalid_credentials_format_raises(self):
+        """RuntimeError raised when username/password fields missing."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"token": "abc"}}
+        try:
+            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "username" in str(e) or "password" in str(e)
+        console.sh.assert_not_called()
+
+    def test_invalid_credentials_format_returns_when_not_raise_on_failure(self):
+        """Returns silently when credentials format invalid and raise_on_failure=False."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"token": "abc"}}
+        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=False)
+        console.sh.assert_not_called()
+
+    def test_docker_io_normalised_to_dockerhub(self):
+        """docker.io registry is looked up under the 'dockerhub' key."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        login_to_registry("docker.io", credentials, console, rich_console)
+        console.sh.assert_called_once()
+        cmd = console.sh.call_args[0][0]
+        # docker.io should not appear in the login command (uses default DockerHub endpoint)
+        assert "docker.io" not in cmd
+
+    def test_custom_registry_included_in_command(self):
+        """Non-DockerHub registry URL is included in the login command."""
+        console, rich_console = self._mocks()
+        credentials = {"myregistry.io": {"username": "user", "password": "pass"}}
+        login_to_registry("myregistry.io", credentials, console, rich_console)
+        console.sh.assert_called_once()
+        cmd = console.sh.call_args[0][0]
+        assert "myregistry.io" in cmd
+
+    def test_login_failure_raises_when_raise_on_failure(self):
+        """docker login error is re-raised when raise_on_failure=True."""
+        console, rich_console = self._mocks()
+        console.sh.side_effect = RuntimeError("auth failed")
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        try:
+            login_to_registry(None, credentials, console, rich_console, raise_on_failure=True)
+            assert False, "Expected RuntimeError"
+        except RuntimeError:
+            pass
+
+    def test_login_failure_suppressed_when_not_raise_on_failure(self):
+        """docker login error is suppressed when raise_on_failure=False."""
+        console, rich_console = self._mocks()
+        console.sh.side_effect = RuntimeError("auth failed")
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        login_to_registry(None, credentials, console, rich_console, raise_on_failure=False)
+        # Should not propagate the exception

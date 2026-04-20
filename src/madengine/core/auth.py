@@ -157,15 +157,18 @@ def login_to_registry(
     username = str(creds["username"])
     password = str(creds["password"])
 
-    quoted_password = shlex.quote(password)
+    # Pass the password via an environment variable so it never appears in
+    # the process argument list (visible via /proc or ps to other users).
     quoted_username = shlex.quote(username)
-    login_command = f"printf %s {quoted_password} | docker login"
+    login_command = "printf %s \"$MAD_REGISTRY_PASSWORD\" | docker login"
     if registry and registry.lower() not in ["docker.io", "dockerhub"]:
         login_command += f" {shlex.quote(str(registry))}"
     login_command += f" --username {quoted_username} --password-stdin"
 
+    login_env = {**os.environ, "MAD_REGISTRY_PASSWORD": password}
+
     try:
-        console.sh(login_command, secret=True)
+        console.sh(login_command, secret=True, env=login_env)
         rich_console.print(
             f"[green]Successfully logged in to registry: "
             f"{registry or 'DockerHub'}[/green]"

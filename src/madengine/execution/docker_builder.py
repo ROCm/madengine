@@ -85,15 +85,15 @@ class DockerBuilder:
         for build_arg in self.context.ctx["docker_build_arg"].keys():
             build_args += (
                 "--build-arg "
-                + build_arg
+                + shlex.quote(str(build_arg))
                 + "="
-                + shlex.quote(self.context.ctx["docker_build_arg"][build_arg])
+                + shlex.quote(str(self.context.ctx["docker_build_arg"][build_arg]))
                 + " "
             )
 
         if run_build_arg:
             for key, value in run_build_arg.items():
-                build_args += "--build-arg " + key + "=" + shlex.quote(value) + " "
+                build_args += "--build-arg " + shlex.quote(str(key)) + "=" + shlex.quote(str(value)) + " "
 
         return build_args
 

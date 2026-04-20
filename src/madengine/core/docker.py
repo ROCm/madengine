@@ -57,13 +57,15 @@ class Docker:
         self.userid = self.console.sh("id -u")
         self.groupid = self.console.sh("id -g")
 
-        # check if container name exists
+        # check if container name exists — use an exact-match filter so names
+        # containing regex metacharacters (e.g. ".", "[") cannot produce false
+        # positives, and substring matches are avoided entirely.
         container_name_quoted = shlex.quote(container_name)
         container_name_exists = self.console.sh(
-            "docker container ps -a | grep " + container_name_quoted + " | wc -l"
+            f"docker container ps -aq --filter name=^/{container_name_quoted}$"
         )
         # if container name exists, clean it up automatically
-        if container_name_exists != "0":
+        if container_name_exists:
             print(
                 f"⚠️  Container '{container_name}' already exists. Cleaning up..."
             )
