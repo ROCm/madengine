@@ -17,6 +17,7 @@ import typing
 import warnings
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
+from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker
@@ -389,72 +390,16 @@ class ContainerRunner:
     def login_to_registry(self, registry: str, credentials: typing.Dict = None) -> None:
         """Login to a Docker registry for pulling images.
 
-        Args:
-            registry: Registry URL (e.g., "localhost:5000", "docker.io")
-            credentials: Optional credentials dictionary containing username/password
+        Delegates to :func:`madengine.core.auth.login_to_registry`.
+        Does not raise on failure so public images can still be pulled.
         """
-        if not credentials:
-            self.rich_console.print("[yellow]No credentials provided for registry login[/yellow]")
-            return
-
-        # Check if registry credentials are available
-        registry_key = registry if registry else "dockerhub"
-
-        # Handle docker.io as dockerhub
-        if registry and registry.lower() == "docker.io":
-            registry_key = "dockerhub"
-
-        if registry_key not in credentials:
-            error_msg = f"No credentials found for registry: {registry_key}"
-            if registry_key == "dockerhub":
-                error_msg += f"\nPlease add dockerhub credentials to credential.json:\n"
-                error_msg += "{\n"
-                error_msg += '  "dockerhub": {\n'
-                error_msg += '    "repository": "your-repository",\n'
-                error_msg += '    "username": "your-dockerhub-username",\n'
-                error_msg += '    "password": "your-dockerhub-password-or-token"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            else:
-                error_msg += (
-                    f"\nPlease add {registry_key} credentials to credential.json:\n"
-                )
-                error_msg += "{\n"
-                error_msg += f'  "{registry_key}": {{\n'
-                error_msg += f'    "repository": "your-repository",\n'
-                error_msg += f'    "username": "your-{registry_key}-username",\n'
-                error_msg += f'    "password": "your-{registry_key}-password"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            print(error_msg)
-            raise RuntimeError(error_msg)
-
-        creds = credentials[registry_key]
-
-        if "username" not in creds or "password" not in creds:
-            error_msg = f"Invalid credentials format for registry: {registry_key}"
-            error_msg += f"\nCredentials must contain 'username' and 'password' fields"
-            print(error_msg)
-            raise RuntimeError(error_msg)
-
-        # Ensure credential values are strings
-        username = str(creds["username"])
-        password = str(creds["password"])
-
-        # Perform docker login
-        login_command = f"echo '{password}' | docker login"
-
-        if registry and registry.lower() not in ["docker.io", "dockerhub"]:
-            login_command += f" {registry}"
-
-        login_command += f" --username {username} --password-stdin"
-
-        try:
-            self.console.sh(login_command, secret=True)
-            self.rich_console.print(f"[green]✅ Successfully logged in to registry: {registry or 'DockerHub'}[/green]")
-        except Exception as e:
-            self.rich_console.print(f"[red]❌ Failed to login to registry {registry}: {e}[/red]")
-            # Don't raise exception here, as public images might still be pullable
+        login_to_registry(
+            registry,
+            credentials,
+            console=self.console,
+            rich_console=self.rich_console,
+            raise_on_failure=False,
+        )
 
     def pull_image(
         self,
@@ -493,7 +438,7 @@ class ContainerRunner:
             try:
                 self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
-            except:
+            except Exception:
                 pass  # It's okay if image doesn't exist
         
         try:
@@ -597,14 +542,14 @@ class ContainerRunner:
         # Add custom environment variables
         if run_env:
             for env_arg in run_env:
-                env_args += f"--env {env_arg}='{str(run_env[env_arg])}' "
+                env_args += f"--env {env_arg}={shlex.quote(str(run_env[env_arg]))} "
 
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
+                value = self.context.ctx["docker_env_vars"][env_arg]
+                env_args += f"--env {env_arg}={shlex.quote(str(value))} "
 
-        print(f"Env arguments: {env_args}")
         return env_args
 
     def get_mount_arg(self, mount_datapaths: typing.List) -> str:
