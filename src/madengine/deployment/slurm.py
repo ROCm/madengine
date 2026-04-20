@@ -1019,20 +1019,26 @@ export MASTER_PORT={master_port}
                         message=f"Job {job_id} failed: {status}",
                     )
 
-            # Fallback - assume completed
-            self.console.print(f"[dim yellow]Warning: Could not get status for job {job_id}, assuming success[/dim yellow]")
+            # sacct returned non-zero — status unknown, do not assume success
+            self.console.print(
+                f"[yellow]Warning: sacct returned non-zero for job {job_id} "
+                f"(exit code {result.returncode}). Status cannot be verified.[/yellow]"
+            )
             return DeploymentResult(
-                status=DeploymentStatus.SUCCESS,
+                status=DeploymentStatus.UNKNOWN,
                 deployment_id=job_id,
-                message=f"Job {job_id} completed (assumed)",
+                message=f"Job {job_id} status unknown: sacct exited with code {result.returncode}",
             )
 
         except Exception as e:
-            self.console.print(f"[dim yellow]Warning: Exception checking job {job_id}: {e}[/dim yellow]")
+            self.console.print(
+                f"[yellow]Warning: Exception checking job {job_id} status: {e}. "
+                f"Status cannot be verified.[/yellow]"
+            )
             return DeploymentResult(
-                status=DeploymentStatus.SUCCESS,
+                status=DeploymentStatus.UNKNOWN,
                 deployment_id=job_id,
-                message=f"Job {job_id} completed (status unavailable)",
+                message=f"Job {job_id} status unknown: {e}",
             )
 
     def _build_perf_entry_from_aggregated(
