@@ -1,10 +1,7 @@
 """Unit tests for madengine.core.auth module."""
 
-import json
 import os
-from unittest.mock import mock_open, patch, MagicMock
-
-import pytest
+from unittest.mock import mock_open, patch
 
 from madengine.core.auth import load_credentials
 

@@ -542,12 +542,13 @@ class ContainerRunner:
         # Add custom environment variables
         if run_env:
             for env_arg in run_env:
-                env_args += f"--env {env_arg}='{str(run_env[env_arg])}' "
+                env_args += f"--env {env_arg}={shlex.quote(str(run_env[env_arg]))} "
 
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
+                value = self.context.ctx["docker_env_vars"][env_arg]
+                env_args += f"--env {env_arg}={shlex.quote(str(value))} "
 
         return env_args
 

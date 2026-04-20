@@ -96,9 +96,10 @@ def login_to_registry(
         credentials: Credentials dictionary keyed by registry name.
         console: A ``Console`` instance for shell execution.
         rich_console: A Rich ``Console`` instance for formatted output.
-        raise_on_failure: If ``True`` (default), re-raise on login failure.
-            Set to ``False`` when the caller can fall back to pulling
-            public images.
+        raise_on_failure: If ``True`` (default), raise ``RuntimeError`` on any
+            failure (missing key, invalid format, or docker login error).
+            Set to ``False`` to log and return instead, allowing the caller
+            to fall back to pulling public images.
     """
     if not credentials:
         rich_console.print(
@@ -137,7 +138,9 @@ def login_to_registry(
                 "}"
             )
         rich_console.print(f"[red]{error_msg}[/red]")
-        raise RuntimeError(error_msg)
+        if raise_on_failure:
+            raise RuntimeError(error_msg)
+        return
 
     creds = credentials[registry_key]
 
@@ -147,15 +150,19 @@ def login_to_registry(
             f"\nCredentials must contain 'username' and 'password' fields"
         )
         rich_console.print(f"[red]{error_msg}[/red]")
-        raise RuntimeError(error_msg)
+        if raise_on_failure:
+            raise RuntimeError(error_msg)
+        return
 
     username = str(creds["username"])
     password = str(creds["password"])
 
-    login_command = f"echo {shlex.quote(password)} | docker login"
+    quoted_password = shlex.quote(password)
+    quoted_username = shlex.quote(username)
+    login_command = f"printf %s {quoted_password} | docker login"
     if registry and registry.lower() not in ["docker.io", "dockerhub"]:
-        login_command += f" {registry}"
-    login_command += f" --username {username} --password-stdin"
+        login_command += f" {shlex.quote(str(registry))}"
+    login_command += f" --username {quoted_username} --password-stdin"
 
     try:
         console.sh(login_command, secret=True)

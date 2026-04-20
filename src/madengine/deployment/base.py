@@ -43,6 +43,7 @@ class DeploymentStatus(Enum):
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -224,7 +225,7 @@ class BaseDeployment(ABC):
         while True:
             status = self.monitor(deployment_id)
 
-            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED]:
+            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN]:
                 return status
 
             # Still running, wait and check again

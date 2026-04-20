@@ -1025,7 +1025,7 @@ export MASTER_PORT={master_port}
                 f"(exit code {result.returncode}). Status cannot be verified.[/yellow]"
             )
             return DeploymentResult(
-                status=DeploymentStatus.FAILED,
+                status=DeploymentStatus.UNKNOWN,
                 deployment_id=job_id,
                 message=f"Job {job_id} status unknown: sacct exited with code {result.returncode}",
             )
@@ -1036,7 +1036,7 @@ export MASTER_PORT={master_port}
                 f"Status cannot be verified.[/yellow]"
             )
             return DeploymentResult(
-                status=DeploymentStatus.FAILED,
+                status=DeploymentStatus.UNKNOWN,
                 deployment_id=job_id,
                 message=f"Job {job_id} status unknown: {e}",
             )
