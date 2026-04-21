@@ -85,7 +85,6 @@ class DiscoverModels:
         
         # Only copy if MODEL_DIR points to a different directory (not current dir)
         if model_dir_abs != cwd_abs:
-            import shlex
             import subprocess
             from pathlib import Path
 
@@ -122,7 +121,7 @@ class DiscoverModels:
                 copied_count = 0
                 for src_path, item_name, item_type in items_to_copy:
                     try:
-                        cmd = f"cp -vLR --preserve=all {shlex.quote(str(src_path))} {shlex.quote(str(cwd_abs))}/"
+                        cmd = f"cp -vLR --preserve=all {src_path} {cwd_abs}/"
                         result = subprocess.run(
                             cmd, shell=True, capture_output=True, text=True, check=True
                         )
@@ -217,12 +216,9 @@ class DiscoverModels:
                         custom_model_list = get_models_json.list_models()
 
                         for custom_model in custom_model_list:
-                            if not isinstance(custom_model, CustomModel):
-                                raise TypeError(
-                                    "Please use or subclass "
-                                    "madengine.utils.discover_models.CustomModel "
-                                    "to define your custom model."
-                                )
+                            assert isinstance(
+                                custom_model, CustomModel
+                            ), "Please use or subclass madengine.utils.discover_models.CustomModel to define your custom model."
                             # Update model name using backslash-separated path
                             custom_model.name = dirname + "/" + custom_model.name
                             # Defer updating script and dockerfile paths until update_model is called

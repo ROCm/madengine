@@ -85,14 +85,6 @@ class TestToolsIncludeRocprofFamily:
 class TestIsRocprofv3Available:
     """is_rocprofv3_available (mocked subprocess)."""
 
-    def setup_method(self):
-        # Clear the lru_cache so each test starts with a fresh result
-        is_rocprofv3_available.cache_clear()
-
-    def teardown_method(self):
-        # Restore clean cache state after each test
-        is_rocprofv3_available.cache_clear()
-
     def test_returns_true_when_help_succeeds(self):
         with patch("madengine.deployment.common.subprocess.run") as m:
             m.return_value = MagicMock(returncode=0)

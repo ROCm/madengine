@@ -88,14 +88,8 @@ def register_default_deployments():
         DeploymentFactory.register("k8s", KubernetesDeployment)
         DeploymentFactory.register("kubernetes", KubernetesDeployment)
     except ImportError:
-        import warnings
-        warnings.warn(
-            "Kubernetes deployment target is unavailable: the 'kubernetes' library is not "
-            "installed. Install it with: pip install madengine[kubernetes] "
-            "(or pip install madengine[all]).",
-            ImportWarning,
-            stacklevel=2,
-        )
+        # Kubernetes library not installed, skip registration
+        pass
 
 
 # Auto-register on module import

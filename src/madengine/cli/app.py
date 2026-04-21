@@ -8,7 +8,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import sys
-from importlib.metadata import PackageNotFoundError, version as pkg_version
 
 import typer
 from rich.traceback import install
@@ -56,12 +55,9 @@ def main(
     Built with Typer and Rich for a beautiful, production-ready experience.
     """
     if version:
-        try:
-            _version = pkg_version("madengine")
-        except PackageNotFoundError:
-            _version = "unknown"
+        # You might want to get the actual version from your package
         console.print(
-            f"🚀 [bold cyan]madengine[/bold cyan] version [green]{_version}[/green]"
+            "🚀 [bold cyan]madengine[/bold cyan] version [green]2.0.0[/green]"
         )
         raise typer.Exit()
 
