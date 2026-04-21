@@ -59,7 +59,7 @@ def build(
         Optional[str],
         typer.Option(
             "--use-image",
-            is_flag=False,
+            is_flag=True,
             flag_value="auto",
             help="Skip Docker build and use pre-built image. Optionally specify image name, or omit to auto-detect from model card's DOCKER_IMAGE_NAME"
         ),
