@@ -7,6 +7,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import signal
+import typing
 
 
 class Timeout:

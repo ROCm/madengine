@@ -184,7 +184,7 @@ class ConfigParser:
         current = os.path.abspath(start_dir)
         stop = os.path.abspath(stop_dir)
         
-        while current == stop or current.startswith(stop + os.sep):
+        while current.startswith(stop):
             parent = os.path.dirname(current)
             if parent == current:  # Reached root
                 break
