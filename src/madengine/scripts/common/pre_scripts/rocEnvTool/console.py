@@ -30,6 +30,19 @@ class Console:
               proc.wait(timeout=timeout) 
       except subprocess.TimeoutExpired as exc:
           proc.kill()
+          if canFail:
+              # Caller opted into failure tolerance; surface a warning (not
+              # "RuntimeError:", so downstream error-pattern scans don't
+              # false-positive) and return an empty result so env-dump keeps
+              # going. Without this, informational probes like
+              # `rocm-smi -cga` on large multi-GPU systems can time out and
+              # poison the whole run's status (see AISQA-7944 / phantom_rccl).
+              print(
+                  "  \u26A0 console timeout after %ds "
+                  "(canFail=True, continuing): %s" % (timeout, command),
+                  flush=True,
+              )
+              return ""
           raise RuntimeError('Console script timeout') from exc
       if proc.returncode != 0:
           if not canFail:
