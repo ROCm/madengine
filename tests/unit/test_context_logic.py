@@ -7,7 +7,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from madengine.core.context import Context
 

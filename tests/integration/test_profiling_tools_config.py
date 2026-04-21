@@ -1,4 +1,4 @@
-"""Unit tests for rocm_trace_lite: tools.json entry and apply_tools wiring (no Docker)."""
+"""Integration tests for rocm_trace_lite: tools.json entry and apply_tools wiring."""
 
 import json
 from pathlib import Path

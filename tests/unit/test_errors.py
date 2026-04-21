@@ -1,4 +1,4 @@
-"""Integration tests for error handling: CLI integration, workflow, unified system, backward compat.
+"""Unit tests for error handling: CLI integration, workflow, unified system, backward compat.
 
 Merged from test_cli_error_integration and test_error_system_integration.
 Deduplicated: single setup_logging/handler test, one context serialization test.
@@ -6,13 +6,9 @@ Deduplicated: single setup_logging/handler test, one context serialization test.
 
 import json
 import os
-import sys
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
-
-# Ensure src on path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from madengine.core.errors import (
     ErrorHandler,

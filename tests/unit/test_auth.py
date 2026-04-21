@@ -1,6 +1,7 @@
 """Unit tests for madengine.core.auth module."""
 
 import os
+import pytest
 from unittest.mock import MagicMock, mock_open, patch
 
 from madengine.core.auth import load_credentials, login_to_registry
@@ -132,11 +133,8 @@ class TestLoginToRegistry:
         """RuntimeError raised when registry key absent and raise_on_failure=True."""
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
-        try:
+        with pytest.raises(RuntimeError, match="myregistry.io"):
             login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
-            assert False, "Expected RuntimeError"
-        except RuntimeError as e:
-            assert "myregistry.io" in str(e)
         console.sh.assert_not_called()
 
     def test_missing_registry_key_returns_when_not_raise_on_failure(self):
@@ -150,11 +148,8 @@ class TestLoginToRegistry:
         """RuntimeError raised when username/password fields missing."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
-        try:
+        with pytest.raises(RuntimeError, match="username|password"):
             login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
-            assert False, "Expected RuntimeError"
-        except RuntimeError as e:
-            assert "username" in str(e) or "password" in str(e)
         console.sh.assert_not_called()
 
     def test_invalid_credentials_format_returns_when_not_raise_on_failure(self):
@@ -188,11 +183,8 @@ class TestLoginToRegistry:
         console, rich_console = self._mocks()
         console.sh.side_effect = RuntimeError("auth failed")
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
-        try:
+        with pytest.raises(RuntimeError, match="auth failed"):
             login_to_registry(None, credentials, console, rich_console, raise_on_failure=True)
-            assert False, "Expected RuntimeError"
-        except RuntimeError:
-            pass
 
     def test_login_failure_suppressed_when_not_raise_on_failure(self):
         """docker login error is suppressed when raise_on_failure=False."""

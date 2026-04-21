@@ -10,7 +10,6 @@ import os
 import json
 import shlex
 import tempfile
-import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
 # third-party modules
@@ -20,7 +19,6 @@ import pytest
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.core.context import Context
 from madengine.core.console import Console
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestDockerBuilder:

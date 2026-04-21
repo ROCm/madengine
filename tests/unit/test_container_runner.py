@@ -6,8 +6,6 @@ import subprocess
 import tempfile
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from madengine.execution.container_runner import ContainerRunner
 
 

@@ -6,12 +6,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import re
-import csv
-import time
 
 # 3rd party modules
 import pytest
-import json
 
 # project modules
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR
@@ -19,7 +16,6 @@ from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
 from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from tests.fixtures.utils import is_nvidia
-from tests.fixtures.utils import generate_additional_context_for_machine
 
 
 class TestPrePostScriptsFunctionality:

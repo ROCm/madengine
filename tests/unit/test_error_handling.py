@@ -6,18 +6,11 @@ Tests the core error handling functionality including error types,
 context management, Rich console integration, and error propagation.
 """
 
-import pytest
-import json
-import io
 import re
-from unittest.mock import Mock, patch, MagicMock
-from rich.console import Console
-from rich.text import Text
 
-# Add src to path for imports
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+import pytest
+from unittest.mock import Mock
+from rich.console import Console
 
 from madengine.core.errors import (
     ErrorCategory,
