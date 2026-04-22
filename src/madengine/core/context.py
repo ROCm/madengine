@@ -22,7 +22,10 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.core.constants import get_rocm_path
+from madengine.utils.rocm_path_resolver import (
+    resolve_container_rocm_path,
+    resolve_host_rocm_path,
+)
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
@@ -90,12 +93,11 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
-            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
+            rocm_path: Host ROCm root (``--rocm-path``), same as top-level ``MAD_ROCM_PATH``.
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
         """
-        self._rocm_path = get_rocm_path(rocm_path)
         # Initialize the console
         self.console = Console()
         self._gpu_context_initialized = False
@@ -129,6 +131,9 @@ class Context:
             # Convert the string representation of python dictionary to a dictionary.
             dict_additional_context = ast.literal_eval(additional_context)
             update_dict(self.ctx, dict_additional_context)
+
+        # Host ROCm path after merge (top-level MAD_ROCM_PATH, then --rocm-path, then auto)
+        self._rocm_path = resolve_host_rocm_path(self.ctx, rocm_path)
 
         # Initialize context based on mode
         # User-provided contexts will not be overridden by detection
@@ -255,7 +260,7 @@ class Context:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
             self.ctx["rocm_path"] = self._rocm_path
-            self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
+            resolve_container_rocm_path(self.ctx["docker_env_vars"], self._rocm_path)
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][

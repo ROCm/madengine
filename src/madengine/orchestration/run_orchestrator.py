@@ -30,7 +30,6 @@ from madengine.core.errors import (
     create_error_context,
     handle_error,
 )
-from madengine.core.constants import get_rocm_path
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
@@ -113,11 +112,10 @@ class RunOrchestrator:
         else:
             context_string = None
             
-        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
-            rocm_path=rocm_path,
+            rocm_path=getattr(self.args, "rocm_path", None),
         )
 
         # Initialize data provider if data config exists
@@ -423,11 +421,10 @@ class RunOrchestrator:
         # Initialize build-only context for manifest generation
         # (we need context structure, but skip GPU detection since we're not building)
         context_string = repr(self.additional_context) if self.additional_context else None
-        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         build_context = Context(
             additional_context=context_string,
             build_only_mode=True,
-            rocm_path=rocm_path,
+            rocm_path=getattr(self.args, "rocm_path", None),
         )
         
         # Create manifest structure

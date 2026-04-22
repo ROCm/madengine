@@ -156,7 +156,7 @@ def run(
         Optional[str],
         typer.Option(
             "--rocm-path",
-            help="ROCm installation path (overrides ROCM_PATH env; default: /opt/rocm). Use when ROCm is not under /opt/rocm (e.g. Rock tar/whl).",
+            help="Host ROCm root (alias for top-level MAD_ROCM_PATH in --additional-context). Auto-detect when omitted (set MAD_AUTO_ROCM_PATH=0 to disable).",
         ),
     ] = None,
 ) -> None:

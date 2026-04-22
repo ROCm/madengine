@@ -309,21 +309,29 @@ madengine run --tags model \
 - `gpu_vendor`: "AMD", "NVIDIA"
 - `guest_os`: "UBUNTU", "CENTOS"
 
-### ROCm path (non-default installs)
+### ROCm path (host and container)
 
-When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths:
+By default, **madengine** auto-detects the **host** ROCm root (apt under `/opt/rocm`, TheRock `rocm-sdk` layout, etc.). Disable scanning with `MAD_AUTO_ROCM_PATH=0` (then `ROCM_PATH` / `/opt/rocm` only).
+
+**Host** overrides: top-level `MAD_ROCM_PATH` in `--additional-context`, or `--rocm-path` (same meaning as top-level `MAD_ROCM_PATH`).
+
+**Container** override: `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` — otherwise the host-resolved path is mirrored into `ROCM_PATH` in the container.
 
 ```bash
-# Via environment variable
-export ROCM_PATH=/path/to/rocm
-madengine run --tags model --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-
-# Via CLI (overrides ROCM_PATH)
-madengine run --tags model --rocm-path /path/to/rocm \
+# Host path via CLI (alias for top-level MAD_ROCM_PATH)
+madengine run --tags model --rocm-path /path/to/host/rocm \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or in additional context (host + optional container)
+madengine run --tags model --additional-context '{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "MAD_ROCM_PATH": "/path/to/host/rocm",
+  "docker_env_vars": {"MAD_ROCM_PATH": "/opt/rocm"}
+}'
 ```
 
-`--rocm-path` applies only to the **run** command (not build). See [CLI Reference - run](cli-reference.md#run---execute-models).
+`--rocm-path` applies only to the **run** command (not build). See [Configuration - ROCm path](configuration.md#rocm-path-run-only).
 
 ### Deploy to Kubernetes
 
@@ -616,7 +624,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `MODEL_DIR` | MAD package directory | `/path/to/MAD` |
-| `ROCM_PATH` | ROCm installation root (used when `--rocm-path` not set). Use when ROCm is not in `/opt/rocm` (e.g. Rock, pip). | `/path/to/rocm` |
+| `ROCM_PATH` | Legacy host ROCm root when not using `MAD_ROCM_PATH` / `--rocm-path` and when auto is off or as a fallback. | `/path/to/rocm` |
+| `MAD_AUTO_ROCM_PATH` | Set to `0` to disable host auto-detect (use `ROCM_PATH` then `/opt/rocm` only). Default: on. | `0` |
 | `MAD_VERBOSE_CONFIG` | Verbose config logging | `"true"` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |

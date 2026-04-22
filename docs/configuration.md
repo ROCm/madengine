@@ -131,12 +131,19 @@ Disabling the scan does **not** change performance metric extraction from the lo
 
 ### ROCm path (run only)
 
-When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths. Use the **run** command option or environment variable (not JSON context):
+Design rationale and precedence are recorded in [ADR 0001: ROCm path resolution](adr/0001-rocm-path-resolution.md).
 
-- **CLI:** `madengine run --rocm-path /path/to/rocm ...`
-- **Environment:** `export ROCM_PATH=/path/to/rocm`
+**Host** (where `madengine` runs validation): by default, the ROCm root is **auto-detected** (traditional `/opt/rocm`, [TheRock](https://github.com/ROCm/TheRock) `rocm-sdk` / manifest layout, or `ROCM_PATH`-like env hints). Set `MAD_AUTO_ROCM_PATH=0` to skip auto and use only legacy resolution (`ROCM_PATH` then `/opt/rocm`).
 
-Resolution order: `--rocm-path` → `ROCM_PATH` → `/opt/rocm`. This applies only to the run phase; build does not perform GPU detection.
+**Overrides** (recommended for CI):
+
+- **CLI (host only):** `madengine run --rocm-path /path/to/rocm` — same meaning as top-level `MAD_ROCM_PATH` in additional context.
+- **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"`.
+- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` passed to workloads; if omitted, the **host**-resolved path is mirrored into the container by default.
+
+Precedence (host): top-level `MAD_ROCM_PATH` → `--rocm-path` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
+
+This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
 
 ## Build Configuration
 
