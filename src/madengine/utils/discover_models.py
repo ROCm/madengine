@@ -47,13 +47,19 @@ class CustomModel:
 class DiscoverModels:
     """Class to discover models in the project."""
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, strict: bool = False):
         """Initialize the DiscoverModels class.
 
         Args:
             args (argparse.Namespace): Arguments passed to the script.
+            strict (bool): When True, tag matching only uses exact full model
+                name (no cross-namespace short-name or tags-list matching).
+                Use for ``run`` to prevent ``pyt_huggingface_gpt2`` from
+                selecting ``MAD/pyt_huggingface_gpt2``. Default False
+                preserves the loose discover behaviour.
         """
         self.args = args
+        self.strict = strict
         self.rich_console = RichConsole()
         # list of models from models.json and scripts/model_dir/models.json
         self.models: typing.List[dict] = []
@@ -317,23 +323,31 @@ class DiscoverModels:
                             tag_models.append(model_dict)
                 else:
                     for model in self.models:
-                        if (
-                            model["name"] == model_name
-                            or model["name"].split("/")[-1] == model_name
-                            or self._model_entry_has_tag(model.get("tags"), tag)
-                            or tag == "all"
-                        ):
+                        if self.strict:
+                            match = model["name"] == model_name or tag == "all"
+                        else:
+                            match = (
+                                model["name"] == model_name
+                                or model["name"].split("/")[-1] == model_name
+                                or self._model_entry_has_tag(model.get("tags"), tag)
+                                or tag == "all"
+                            )
+                        if match:
                             model_dict = model.copy()
                             model_dict["args"] = model_dict["args"] + extra_args
                             tag_models.append(model_dict)
 
                     for custom_model in self.custom_models:
-                        if (
-                            custom_model.name == model_name
-                            or custom_model.name.split("/")[-1] == model_name
-                            or self._model_entry_has_tag(custom_model.tags, tag)
-                            or tag == "all"
-                        ):
+                        if self.strict:
+                            match = custom_model.name == model_name or tag == "all"
+                        else:
+                            match = (
+                                custom_model.name == model_name
+                                or custom_model.name.split("/")[-1] == model_name
+                                or self._model_entry_has_tag(custom_model.tags, tag)
+                                or tag == "all"
+                            )
+                        if match:
                             custom_model.update_model()
                             dirname = custom_model.name.split("/")[0]
                             custom_model.dockerfile = os.path.normpath(

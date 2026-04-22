@@ -261,7 +261,7 @@ class BuildOrchestrator:
         try:
             # Step 1: Discover models
             self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
-            discover_models = DiscoverModels(args=self.args)
+            discover_models = DiscoverModels(args=self.args, strict=True)
             models = discover_models.run()
 
             if not models:
