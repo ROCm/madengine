@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from madengine.deployment.base import create_jinja_env
+from madengine.deployment.base import BaseDeployment, DeploymentConfig, create_jinja_env
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
     configure_multi_node_profiling,
@@ -179,3 +179,109 @@ class TestConfigureMultiNodeProfiling:
         out = configure_multi_node_profiling(2, tools, logger)
         assert out["tools"][0]["name"] == "rccl_trace"
         assert out["tools"][1]["name"] == "rocprofv3"
+
+
+# ---- BaseDeployment._parse_performance_from_log ----
+
+class _ConcreteDeployment(BaseDeployment):
+    """Minimal concrete subclass to exercise BaseDeployment methods under test."""
+
+    DEPLOYMENT_TYPE = "test"
+
+    def validate(self): pass
+    def prepare(self): pass
+    def deploy(self): pass
+    def monitor(self, deployment_id): pass
+    def collect_results(self, deployment_id): pass
+    def cleanup(self, deployment_id): pass
+
+
+def _make_deployment():
+    cfg = MagicMock(spec=DeploymentConfig)
+    cfg.manifest_file = None
+    with patch.object(BaseDeployment, "_load_manifest", return_value={}):
+        return _ConcreteDeployment(cfg)
+
+
+class TestParsePerformanceFromLog:
+    """_parse_performance_from_log handles all accepted log formats consistently."""
+
+    def setup_method(self):
+        self.dep = _make_deployment()
+
+    def _parse(self, log_content):
+        return self.dep._parse_performance_from_log(log_content, "test_model")
+
+    # --- baseline formats ---
+
+    def test_basic_integer(self):
+        result = self._parse("performance: 12345 samples_per_second")
+        assert result["performance"] == 12345.0
+        assert result["metric"] == "samples_per_second"
+
+    def test_decimal(self):
+        result = self._parse("performance: 100.5 samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    def test_scientific_lowercase_e(self):
+        result = self._parse("performance: 1.23e+4 samples_per_second")
+        assert result["performance"] == pytest.approx(12300.0)
+        assert result["metric"] == "samples_per_second"
+
+    def test_scientific_uppercase_e(self):
+        result = self._parse("performance: 1.23E+4 samples_per_second")
+        assert result["performance"] == pytest.approx(12300.0)
+        assert result["metric"] == "samples_per_second"
+
+    # --- new formats: unit suffix and/or comma after value ---
+
+    def test_unit_suffix_slash_s(self):
+        """Value followed by /s unit suffix: suffix is stripped."""
+        result = self._parse("performance: 100.5/s samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    def test_unit_suffix_and_comma(self):
+        """Suffix then comma: performance: 100.5/s, samples_per_second."""
+        result = self._parse("performance: 100.5/s, samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    def test_comma_separator_no_suffix(self):
+        """Comma only: performance: 100.5, samples_per_second."""
+        result = self._parse("performance: 100.5, samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    def test_comma_before_suffix(self):
+        """Comma immediately before suffix: performance: 100.5,/s samples_per_second."""
+        result = self._parse("performance: 100.5,/s samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    def test_comma_space_before_suffix(self):
+        """Comma then space then suffix: performance: 100.5, /s samples_per_second."""
+        result = self._parse("performance: 100.5, /s samples_per_second")
+        assert result["performance"] == 100.5
+        assert result["metric"] == "samples_per_second"
+
+    # --- no match ---
+
+    def test_no_match_returns_none(self):
+        assert self._parse("throughput: 100.5 samples_per_second") is None
+
+    def test_no_match_missing_metric_returns_none(self):
+        assert self._parse("performance: 100.5") is None
+
+    # --- auxiliary fields parsed alongside performance ---
+
+    def test_node_id_and_local_gpus_parsed(self):
+        log = "performance: 50.0 tokens_per_second\nnode_id: 2\nlocal_gpus: 4"
+        result = self._parse(log)
+        assert result["node_id"] == 2
+        assert result["local_gpus"] == 4
+
+    def test_model_name_propagated(self):
+        result = self._parse("performance: 1.0 metric")
+        assert result["model"] == "test_model"
