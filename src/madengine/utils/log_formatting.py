@@ -9,8 +9,10 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import pandas as pd
+import typing
 from rich.table import Table
 from rich.console import Console as RichConsole
+from rich.text import Text
 
 
 def format_dataframe_for_log(
@@ -80,7 +82,7 @@ def format_dataframe_for_log(
         header += f"📏 Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
 
     if truncated_rows:
-        header += f"⚠️  Display truncated: showing last {max_rows} rows\n"
+        header += f"⚠️  Display truncated: showing first {max_rows} rows\n"
 
     header += f"{'='*80}\n"
 
@@ -207,3 +209,33 @@ def print_dataframe_beautiful(
         # Fallback to simple but nice formatting
         formatted_output = format_dataframe_for_log(df, title)
         print(formatted_output)
+
+
+def highlight_log_section(title: str, content: str, style: str = "info") -> str:
+    """
+    Create a highlighted log section with borders and styling.
+
+    Args:
+        title: Section title
+        content: Section content
+        style: Style type ('info', 'success', 'warning', 'error')
+
+    Returns:
+        str: Formatted log section
+    """
+    styles = {
+        "info": {"emoji": "ℹ️", "border": "-"},
+        "success": {"emoji": "✅", "border": "="},
+        "warning": {"emoji": "⚠️", "border": "!"},
+        "error": {"emoji": "❌", "border": "#"},
+    }
+
+    style_config = styles.get(style, styles["info"])
+    emoji = style_config["emoji"]
+    border_char = style_config["border"]
+
+    border = border_char * 80
+    header = f"\n{border}\n{emoji} {title.upper()}\n{border}"
+    footer = f"{border}\n"
+
+    return f"{header}\n{content}\n{footer}"

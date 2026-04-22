@@ -10,7 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import subprocess
 import os
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 

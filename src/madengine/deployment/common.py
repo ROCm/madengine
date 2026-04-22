@@ -8,7 +8,6 @@ profiling configuration so logic is not duplicated across deployment modules.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import functools
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -85,7 +84,6 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
     return "docker"
 
 
-@functools.lru_cache(maxsize=None)
 def is_rocprofv3_available() -> bool:
     """
     Check if rocprofv3 is available on the system.

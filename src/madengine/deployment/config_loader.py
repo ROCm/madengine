@@ -11,6 +11,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from copy import deepcopy

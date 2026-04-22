@@ -8,20 +8,20 @@ and then distributed to remote nodes for execution.
 """
 
 import os
-import shlex
 import time
 import json
 import re
 import typing
 from contextlib import redirect_stdout, redirect_stderr
 from rich.console import Console as RichConsole
-from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.utils.ops import PythonicTee
 from madengine.execution.dockerfile_utils import (
+    is_compilation_arch_compatible,
     is_target_arch_compatible_with_variable,
     parse_dockerfile_gpu_variables,
+    parse_gpu_variable_value,
 )
 
 
@@ -67,7 +67,7 @@ class DockerBuilder:
             return "."
         return "./docker"
 
-    def get_build_arg(self, run_build_arg: typing.Optional[typing.Dict] = None) -> str:
+    def get_build_arg(self, run_build_arg: typing.Dict = {}) -> str:
         """Get the build arguments.
 
         Args:
@@ -76,8 +76,6 @@ class DockerBuilder:
         Returns:
             str: The build arguments.
         """
-        if run_build_arg is None:
-            run_build_arg = {}
         if not run_build_arg and "docker_build_arg" not in self.context.ctx:
             return ""
 
@@ -86,14 +84,14 @@ class DockerBuilder:
             build_args += (
                 "--build-arg "
                 + build_arg
-                + "="
-                + shlex.quote(self.context.ctx["docker_build_arg"][build_arg])
-                + " "
+                + "='"
+                + self.context.ctx["docker_build_arg"][build_arg]
+                + "' "
             )
 
         if run_build_arg:
             for key, value in run_build_arg.items():
-                build_args += "--build-arg " + key + "=" + shlex.quote(value) + " "
+                build_args += "--build-arg " + key + "='" + value + "' "
 
         return build_args
 
@@ -250,15 +248,72 @@ class DockerBuilder:
     def login_to_registry(self, registry: str, credentials: typing.Dict = None) -> None:
         """Login to a Docker registry.
 
-        Delegates to :func:`madengine.core.auth.login_to_registry`.
+        Args:
+            registry: Registry URL (e.g., "localhost:5000", "docker.io", or empty for DockerHub)
+            credentials: Optional credentials dictionary containing username/password
         """
-        login_to_registry(
-            registry,
-            credentials,
-            console=self.console,
-            rich_console=self.rich_console,
-            raise_on_failure=True,
-        )
+        if not credentials:
+            print("No credentials provided for registry login")
+            return
+
+        # Check if registry credentials are available
+        registry_key = registry if registry else "dockerhub"
+
+        # Handle docker.io as dockerhub
+        if registry and registry.lower() == "docker.io":
+            registry_key = "dockerhub"
+
+        if registry_key not in credentials:
+            error_msg = f"No credentials found for registry: {registry_key}"
+            if registry_key == "dockerhub":
+                error_msg += f"\nPlease add dockerhub credentials to credential.json:\n"
+                error_msg += "{\n"
+                error_msg += '  "dockerhub": {\n'
+                error_msg += '    "repository": "your-repository",\n'
+                error_msg += '    "username": "your-dockerhub-username",\n'
+                error_msg += '    "password": "your-dockerhub-password-or-token"\n'
+                error_msg += "  }\n"
+                error_msg += "}"
+            else:
+                error_msg += (
+                    f"\nPlease add {registry_key} credentials to credential.json:\n"
+                )
+                error_msg += "{\n"
+                error_msg += f'  "{registry_key}": {{\n'
+                error_msg += f'    "repository": "your-repository",\n'
+                error_msg += f'    "username": "your-{registry_key}-username",\n'
+                error_msg += f'    "password": "your-{registry_key}-password"\n'
+                error_msg += "  }\n"
+                error_msg += "}"
+            self.rich_console.print(f"[red]{error_msg}[/red]")
+            raise RuntimeError(error_msg)
+
+        creds = credentials[registry_key]
+
+        if "username" not in creds or "password" not in creds:
+            error_msg = f"Invalid credentials format for registry: {registry_key}"
+            error_msg += f"\nCredentials must contain 'username' and 'password' fields"
+            self.rich_console.print(f"[red]{error_msg}[/red]")
+            raise RuntimeError(error_msg)
+
+        # Ensure credential values are strings
+        username = str(creds["username"])
+        password = str(creds["password"])
+
+        # Perform docker login
+        login_command = f"echo '{password}' | docker login"
+
+        if registry and registry.lower() not in ["docker.io", "dockerhub"]:
+            login_command += f" {registry}"
+
+        login_command += f" --username {username} --password-stdin"
+
+        try:
+            self.console.sh(login_command, secret=True)
+            self.rich_console.print(f"[green]✅ Successfully logged in to registry: {registry or 'DockerHub'}[/green]")
+        except Exception as e:
+            self.rich_console.print(f"[red]❌ Failed to login to registry {registry}: {e}[/red]")
+            raise
 
     def push_image(
         self,
@@ -549,10 +604,8 @@ class DockerBuilder:
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
         """Get dockerfiles for a model."""
         try:
-            # Quote the dockerfile path to prevent shell injection
-            dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(
-                f"ls {dockerfile_quoted}.*"
+                f"ls {model_info['dockerfile']}.*"
             ).split("\n")
 
             dockerfiles = {}

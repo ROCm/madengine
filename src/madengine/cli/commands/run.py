@@ -194,9 +194,6 @@ def run(
     # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
     if timeout == -1:
         timeout = 7200
-    # 0 means "no timeout" per the help text — map to None so subprocess never expires
-    elif timeout == 0:
-        timeout = None
 
     try:
         # Check if we're doing execution-only or full workflow
