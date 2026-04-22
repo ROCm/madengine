@@ -94,6 +94,144 @@ class ContainerRunner:
             build_args += f"--build-arg {key}='{value}' "
         return build_args
 
+    def _get_node_rank(self) -> int:
+        """Return the current node rank for distributed runs."""
+        node_rank_raw = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            return int(node_rank_raw)
+        except Exception:
+            return 0
+
+    def _local_image_exists(self, run_image: str) -> bool:
+        """Check whether a Docker image already exists locally."""
+        try:
+            self.console.sh(
+                f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1"
+            )
+            return True
+        except (subprocess.CalledProcessError, RuntimeError):
+            return False
+
+    def _get_local_image_tar_path(self, run_image: str) -> typing.Optional[str]:
+        """Resolve the shared tar path for a local image, if configured."""
+        builds_dir = (os.environ.get("MAD_DOCKER_BUILDS") or "").strip()
+        if not builds_dir:
+            return None
+
+        safe_image_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_image).strip("._")
+        if not safe_image_name:
+            safe_image_name = "docker_image"
+        return os.path.join(builds_dir, f"{safe_image_name}.tar")
+
+    def _load_local_image_from_tar(self, run_image: str, tar_path: str) -> None:
+        """Load a Docker image from a previously saved tar archive."""
+        if not os.path.exists(tar_path):
+            raise RuntimeError(f"Image tar not found for {run_image}: {tar_path}")
+
+        self.rich_console.print(
+            f"[yellow]📦 Loading local image tar:[/yellow] {tar_path}"
+        )
+        self.console.sh(f"docker load -i {shlex.quote(tar_path)}", timeout=None)
+        self.console.sh(
+            f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1"
+        )
+        self.rich_console.print(
+            f"[green]✅ Loaded local image from tar:[/green] {run_image}"
+        )
+
+    def _save_local_image_to_tar(self, run_image: str, tar_path: str) -> None:
+        """Persist a local Docker image into the shared tar cache."""
+        tar_dir = os.path.dirname(tar_path)
+        if tar_dir:
+            os.makedirs(tar_dir, exist_ok=True)
+
+        self.rich_console.print(
+            f"[yellow]💾 Saving local image tar:[/yellow] {tar_path}"
+        )
+        self.console.sh(
+            f"docker save -o {shlex.quote(tar_path)} {shlex.quote(run_image)}",
+            timeout=None,
+        )
+        self.rich_console.print(
+            f"[green]✅ Saved local image tar:[/green] {tar_path}"
+        )
+
+    def _build_or_pull_local_image(
+        self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
+    ) -> None:
+        """Ensure the local image exists by building it first and pulling as fallback."""
+        self.rich_console.print(
+            f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]"
+        )
+        try:
+            self._build_local_image_from_manifest(
+                run_image=run_image,
+                build_info=build_info,
+                model_info=model_info,
+            )
+        except Exception as build_error:
+            self.rich_console.print(
+                "[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]"
+            )
+            try:
+                self.pull_image(run_image)
+            except Exception as pull_error:
+                raise RuntimeError(
+                    f"Failed to build or pull local image {run_image}: "
+                    f"build_error={build_error}; pull_error={pull_error}"
+                )
+
+    def _ensure_local_image_available(
+        self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
+    ) -> None:
+        """Prepare a local image with optional shared tar cache support."""
+        tar_path = self._get_local_image_tar_path(run_image)
+        node_rank = self._get_node_rank()
+        is_primary_node = node_rank == 0
+        image_exists = self._local_image_exists(run_image)
+        tar_exists = bool(tar_path) and os.path.exists(tar_path)
+        tar_missing_at_start = bool(tar_path) and not tar_exists
+
+        # When shared cache is configured and no tar exists yet, only node 0
+        # may produce the tar artifact. Other nodes wait and then load it.
+        if tar_missing_at_start:
+            if is_primary_node:
+                if not image_exists:
+                    self._build_or_pull_local_image(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
+                    )
+                    image_exists = True
+                if not tar_exists:
+                    self._save_local_image_to_tar(run_image, tar_path)
+                    tar_exists = True
+
+            self._sync_after_local_image_ready(run_image=run_image)
+
+            if not image_exists:
+                if not tar_exists and not os.path.exists(tar_path):
+                    raise RuntimeError(
+                        f"Node 0 did not produce image tar for {run_image}: {tar_path}"
+                    )
+                self._load_local_image_from_tar(run_image, tar_path)
+                image_exists = True
+
+        elif not image_exists:
+            if tar_exists:
+                self._load_local_image_from_tar(run_image, tar_path)
+                image_exists = True
+            else:
+                self._build_or_pull_local_image(
+                    run_image=run_image,
+                    build_info=build_info,
+                    model_info=model_info,
+                )
+                image_exists = True
+
+        if tar_path and image_exists and is_primary_node and not tar_exists:
+            self._save_local_image_to_tar(run_image, tar_path)
+
     def _build_local_image_from_manifest(
         self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
     ) -> None:
@@ -146,44 +284,10 @@ class ContainerRunner:
         if nnodes <= 1:
             return
 
-        sync_root = os.environ.get(
-            "PD_SYNC_ROOT",
-            f"/home/{os.environ.get('USER', 'user')}/.madengine_vllm_disagg_sync",
-        )
-        job_id = os.environ.get("SLURM_JOB_ID", "0")
-        image_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", run_image)
-        barrier_dir = os.path.join(sync_root, f"{job_id}_image_ready_{image_key}")
-        os.makedirs(barrier_dir, exist_ok=True)
-
-        if node_rank == "0":
-            for name in os.listdir(barrier_dir):
-                if name.startswith("ready_"):
-                    try:
-                        os.remove(os.path.join(barrier_dir, name))
-                    except OSError:
-                        pass
-
-        ready_file = os.path.join(barrier_dir, f"ready_{node_rank}.txt")
-        with open(ready_file, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
-
-
-        start = time.time()
-        ready_count = 0
-        fs_barrier_timeout_s = min(timeout_s, 20)
-        while time.time() - start < fs_barrier_timeout_s:
-            try:
-                ready_count = len([n for n in os.listdir(barrier_dir) if n.startswith("ready_")])
-            except FileNotFoundError:
-                ready_count = 0
-            if ready_count >= nnodes:
-                return
-            time.sleep(2)
-
         self._tcp_image_ready_barrier(
             nnodes=nnodes,
             node_rank=node_rank,
-            timeout_s=max(1, int(timeout_s - (time.time() - start))),
+            timeout_s=timeout_s,
         )
         return
 
@@ -1455,6 +1559,14 @@ class ContainerRunner:
                                     ]:
                                         probe_cmd = f"if [ -f {candidate} ]; then echo EXISTS; else echo MISSING; fi"
                                         container_checks[candidate] = (model_docker.sh(probe_cmd) or "").strip()
+                                    csv_inventory = (
+                                        model_docker.sh(
+                                            f"sh -c 'ls -lah {model_dir}/*.csv 2>/dev/null; "
+                                            f"ls -lah {model_dir}/workdir/*.csv 2>/dev/null; "
+                                            f"ls -lah {model_dir}/benchmark_*_CONCURRENCY.log 2>/dev/null'"
+                                        )
+                                        or ""
+                                    )
                                 except Exception as probe_err:
                                     pass
 
@@ -1500,8 +1612,24 @@ class ContainerRunner:
                                                     pass
                                             
                                             if not has_valid_perf:
-                                                run_results["performance"] = None
-                                                print("Error: Performance metric is empty in all rows of multiple results file.")
+                                                nnodes_env = os.environ.get("NNODES", "1")
+                                                try:
+                                                    nnodes = int(nnodes_env)
+                                                except (TypeError, ValueError):
+                                                    nnodes = 1
+
+                                                if nnodes > 1:
+                                                    # In multi-node runs perf CSV may be populated by another node
+                                                    # moments later (shared workspace race). Keep the path so
+                                                    # downstream aggregation can consume finalized file content.
+                                                    print(
+                                                        "Warning: Performance metric is currently empty in "
+                                                        "multiple results file during multi-node run; "
+                                                        "deferring final decision to aggregation step."
+                                                    )
+                                                else:
+                                                    run_results["performance"] = None
+                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
                                 except Exception as e:
                                     self.rich_console.print(
                                         f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
@@ -1985,33 +2113,12 @@ class ContainerRunner:
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
-                    # Verify image exists
-                    try:
-                        inspect_t0 = time.time()
-                        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except (subprocess.CalledProcessError, RuntimeError) as e:
-                        self.rich_console.print(
-                            f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]"
-                        )
-                        # Build from manifest dockerfile on current compute node first.
-                        try:
-                            self._build_local_image_from_manifest(
-                                run_image=run_image,
-                                build_info=build_info,
-                                model_info=model_info,
-                            )
-                        except Exception as build_error:
-                            self.rich_console.print(
-                                "[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]"
-                            )
-                            try:
-                                self.pull_image(run_image)
-                            except Exception as pull_error:
-                                raise RuntimeError(
-                                    f"Failed to build or pull local image {run_image}: "
-                                    f"build_error={build_error}; pull_error={pull_error}"
-                                )
+
+                    self._ensure_local_image_available(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
+                    )
                     # Ensure all nodes reach this point before entering container run.
                     self._sync_after_local_image_ready(run_image=run_image)
                 

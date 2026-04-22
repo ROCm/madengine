@@ -76,6 +76,106 @@ class TestContainerRunner:
         assert "images" in result
         assert "model1" in result["images"]
 
+    @patch.dict(os.environ, {"MAD_DOCKER_BUILDS": "/shared/builds", "NODE_RANK": "0"}, clear=False)
+    @patch.object(ContainerRunner, "_sync_after_local_image_ready")
+    @patch.object(ContainerRunner, "_save_local_image_to_tar")
+    @patch.object(ContainerRunner, "_build_or_pull_local_image")
+    @patch.object(ContainerRunner, "_local_image_exists", return_value=True)
+    @patch("os.path.exists", return_value=False)
+    def test_ensure_local_image_available_saves_tar_on_primary_node(
+        self,
+        mock_exists,
+        mock_local_image_exists,
+        mock_build_or_pull,
+        mock_save_to_tar,
+        mock_sync,
+    ):
+        """Primary node should save a tar when image exists but cache file is missing."""
+        runner = ContainerRunner()
+
+        runner._ensure_local_image_available(
+            run_image="rocm/pyt_mlperf_training:full-tefix",
+            build_info={},
+            model_info={},
+        )
+
+        mock_build_or_pull.assert_not_called()
+        mock_save_to_tar.assert_called_once_with(
+            "rocm/pyt_mlperf_training:full-tefix",
+            "/shared/builds/rocm_pyt_mlperf_training_full-tefix.tar",
+        )
+        assert mock_sync.call_count == 1
+
+    @patch.dict(os.environ, {"MAD_DOCKER_BUILDS": "/shared/builds", "NODE_RANK": "0"}, clear=False)
+    @patch.object(ContainerRunner, "_save_local_image_to_tar")
+    @patch.object(ContainerRunner, "_build_or_pull_local_image")
+    @patch.object(ContainerRunner, "_load_local_image_from_tar")
+    @patch.object(ContainerRunner, "_local_image_exists", return_value=False)
+    @patch("os.path.exists", return_value=True)
+    def test_ensure_local_image_available_loads_existing_tar(
+        self,
+        mock_exists,
+        mock_local_image_exists,
+        mock_load_from_tar,
+        mock_build_or_pull,
+        mock_save_to_tar,
+    ):
+        """Existing tar cache should be loaded instead of rebuilding."""
+        runner = ContainerRunner()
+
+        runner._ensure_local_image_available(
+            run_image="rocm/pyt_mlperf_training:full-tefix",
+            build_info={},
+            model_info={},
+        )
+
+        mock_load_from_tar.assert_called_once_with(
+            "rocm/pyt_mlperf_training:full-tefix",
+            "/shared/builds/rocm_pyt_mlperf_training_full-tefix.tar",
+        )
+        mock_build_or_pull.assert_not_called()
+        mock_save_to_tar.assert_not_called()
+
+    @patch.dict(os.environ, {"MAD_DOCKER_BUILDS": "/shared/builds", "NODE_RANK": "1"}, clear=False)
+    @patch.object(ContainerRunner, "_save_local_image_to_tar")
+    @patch.object(ContainerRunner, "_build_or_pull_local_image")
+    @patch.object(ContainerRunner, "_load_local_image_from_tar")
+    @patch.object(ContainerRunner, "_sync_after_local_image_ready")
+    @patch.object(ContainerRunner, "_local_image_exists", return_value=False)
+    @patch("os.path.exists", return_value=False)
+    def test_ensure_local_image_available_waits_for_primary_tar_on_worker(
+        self,
+        mock_exists,
+        mock_local_image_exists,
+        mock_sync,
+        mock_load_from_tar,
+        mock_build_or_pull,
+        mock_save_to_tar,
+    ):
+        """Worker nodes should wait for node 0 and then load the shared tar."""
+        runner = ContainerRunner()
+
+        def exists_side_effect(path):
+            if path == "/shared/builds/rocm_pyt_mlperf_training_full-tefix.tar":
+                return mock_sync.call_count > 0
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        runner._ensure_local_image_available(
+            run_image="rocm/pyt_mlperf_training:full-tefix",
+            build_info={},
+            model_info={},
+        )
+
+        mock_sync.assert_called_once_with(run_image="rocm/pyt_mlperf_training:full-tefix")
+        mock_load_from_tar.assert_called_once_with(
+            "rocm/pyt_mlperf_training:full-tefix",
+            "/shared/builds/rocm_pyt_mlperf_training_full-tefix.tar",
+        )
+        mock_build_or_pull.assert_not_called()
+        mock_save_to_tar.assert_not_called()
+
     @patch.object(Console, "sh")
     def test_pull_image(self, mock_sh):
         """Test pulling image from registry."""

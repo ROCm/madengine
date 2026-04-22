@@ -655,40 +655,105 @@ echo "Task completed with exit code: $TASK_EXIT"
 # =============================================================================
 
 if [ $TASK_EXIT -eq 0 ]; then
+    RESULTS_DIR={{ manifest_file | dirname }}
+    NODE_STAGE_DIR="${RESULTS_DIR}/.madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+    STAGE_MARKER="${NODE_STAGE_DIR}/.stage_complete"
+    mkdir -p "${NODE_STAGE_DIR}" 2>/dev/null || true
+
+    # Stage per-node artifacts into shared results directory.
+    for f in "$WORKSPACE"/perf.csv "$WORKSPACE"/perf_*.csv "$WORKSPACE"/perf-*.csv "$WORKSPACE"/benchmark_*_CONCURRENCY.log "$WORKSPACE"/*.log; do
+        if [ -f "$f" ]; then
+            cp "$f" "${NODE_STAGE_DIR}/" 2>/dev/null || true
+        fi
+    done
+    touch "${STAGE_MARKER}" 2>/dev/null || true
+
     if [ "${SLURM_PROCID}" = "0" ]; then
         # Master node: Collect and report results
-        RESULTS_DIR={{ manifest_file | dirname }}
         echo ""
         echo "========================================================================"
         echo "Master Node (SLURM_PROCID=0): Collecting results"
         echo "========================================================================"
         echo "Copying results back to: $RESULTS_DIR"
-        
-        # Copy performance results (main metric file)
-        if [ -f "$WORKSPACE/perf.csv" ]; then
-            cp "$WORKSPACE/perf.csv" "$RESULTS_DIR/perf.csv" 2>/dev/null || true
-            echo "  ✓ Copied: perf.csv (global metrics)"
-        fi
 
-        # Copy workload-level CSV artifacts (supports both perf_*.csv and perf-*.csv naming)
-        for csv in "$WORKSPACE"/perf_*.csv "$WORKSPACE"/perf-*.csv; do
-            if [ -f "$csv" ]; then
-                csv_basename=$(basename "$csv")
-                cp "$csv" "$RESULTS_DIR/${csv_basename}" 2>/dev/null || true
-                echo "  ✓ Copied: ${csv_basename}"
+        # Wait for worker staging to avoid racing on partially written artifacts.
+        EXPECTED_NODES={{ nodes }}
+        WAITED_SECONDS=0
+        while [ $WAITED_SECONDS -lt 180 ]; do
+            READY_NODES=$(ls -1d "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/.stage_complete 2>/dev/null | wc -l)
+            if [ "${READY_NODES}" -ge "${EXPECTED_NODES}" ]; then
+                break
+            fi
+            sleep 2
+            WAITED_SECONDS=$((WAITED_SECONDS + 2))
+        done
+        echo "  Node staging markers detected: ${READY_NODES}/${EXPECTED_NODES}"
+        
+        # Merge perf.csv and workload-level perf files across all nodes.
+        CSV_NAME_LIST=$(
+            {
+                for c in "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/perf.csv; do [ -f "$c" ] && basename "$c"; done
+                for c in "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/perf_*.csv; do [ -f "$c" ] && basename "$c"; done
+                for c in "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/perf-*.csv; do [ -f "$c" ] && basename "$c"; done
+            } | sort -u
+        )
+
+        for csv_basename in ${CSV_NAME_LIST}; do
+            BEST_FILE=""
+            BEST_SCORE=-1
+            BEST_NODE="unknown"
+
+            for candidate in "${RESULTS_DIR}"/.madengine_job_"${SLURM_JOB_ID}"_node_*/"${csv_basename}"; do
+                if [ -f "$candidate" ]; then
+                    # Prefer files that contain the most non-empty performance values.
+                    # This matters for multi-node training where only one node may see
+                    # the final throughput lines and therefore generate valid metrics.
+                    PERF_COL_INDEX=$(
+                        awk -F, '
+                            NR == 1 {
+                                for (i = 1; i <= NF; i++) {
+                                    gsub(/^"|"$/, "", $i)
+                                    if ($i == "performance") {
+                                        print i
+                                        exit
+                                    }
+                                }
+                            }
+                        ' "$candidate" 2>/dev/null
+                    )
+                    if [ -n "$PERF_COL_INDEX" ]; then
+                        NON_EMPTY_PERF=$(
+                            awk -F, -v perf_col="$PERF_COL_INDEX" '
+                                NR > 1 {
+                                    value = $perf_col
+                                    gsub(/^"|"$/, "", value)
+                                    if (value != "") {
+                                        c++
+                                    }
+                                }
+                                END { print c + 0 }
+                            ' "$candidate" 2>/dev/null || echo 0
+                        )
+                    else
+                        NON_EMPTY_PERF=$(awk -F, 'NR>1 && $2 != "" {c++} END{print c+0}' "$candidate" 2>/dev/null || echo 0)
+                    fi
+                    TOTAL_ROWS=$(awk 'END{print NR+0}' "$candidate" 2>/dev/null || echo 0)
+                    SCORE=$((NON_EMPTY_PERF * 100000 + TOTAL_ROWS))
+                    if [ "$SCORE" -gt "$BEST_SCORE" ]; then
+                        BEST_SCORE="$SCORE"
+                        BEST_FILE="$candidate"
+                        BEST_NODE=$(basename "$(dirname "$candidate")")
+                    fi
+                fi
+            done
+
+            if [ -n "$BEST_FILE" ]; then
+                cp "$BEST_FILE" "$RESULTS_DIR/${csv_basename}" 2>/dev/null || true
+                echo "  ✓ Merged: ${csv_basename} (selected from ${BEST_NODE})"
             fi
         done
-        
-        # Copy log files
-        for log in "$WORKSPACE"/*.log; do
-            if [ -f "$log" ]; then
-                log_basename=$(basename "$log")
-                cp "$log" "$RESULTS_DIR/${log_basename}" 2>/dev/null || true
-                echo "  ✓ Copied: ${log_basename}"
-            fi
-        done
-        
-        # Copy any workload results files
+
+        # Copy any workload results files from master node workspace
         if [ -f "$WORKSPACE/results.txt" ]; then
             cp "$WORKSPACE/results.txt" "$RESULTS_DIR/" 2>/dev/null || true
             echo "  ✓ Copied: results.txt"
