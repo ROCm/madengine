@@ -41,7 +41,7 @@ The architecture diagram (Orchestration, Infrastructure, and Launcher layers) is
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
 4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
-5. **Distributed Launchers** - Training (torchrun, DeepSpeed, TorchTitan, Megatron-LM) and Inference (vLLM, SGLang)
+5. **Distributed Launchers** - Training (torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
 

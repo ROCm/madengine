@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -96,6 +97,24 @@ class TestPerformanceRegex:
         """Unrelated log line does not match."""
         val, met = self._match("throughput: 100.5 samples_per_second")
         assert val is None and met is None
+
+
+class TestResolveDockerImage:
+    """_resolve_docker_image uses subprocess argv (no shell) for docker inspect."""
+
+    @patch("madengine.execution.container_runner.subprocess.run")
+    def test_inspect_passes_image_ref_as_single_argv_element(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            ["docker", "image", "inspect", "x"], 0
+        )
+        runner = ContainerRunner(context=MagicMock(), console=MagicMock())
+        ref = "registry/ns/name:ci-model_df; touch evil"
+        assert runner._resolve_docker_image(ref, "other/model") == ref
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["docker", "image", "inspect", ref]
+        assert kwargs.get("check") is True
+        assert kwargs.get("stdout") == subprocess.DEVNULL
 
 
 class TestCreateSetupFailurePerfEntry:

@@ -385,7 +385,7 @@ class BaseDeployment(ABC):
             return None
 
         value = float(match.group(1))
-        metric = match.group(2)
+        metric = match.group(2).rstrip(',')
 
         node_id_pattern = r"node_id:\s*(\d+)"
         node_match = re.search(node_id_pattern, log_content)

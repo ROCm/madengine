@@ -61,8 +61,11 @@ Stripped-down configurations showing only essential fields:
 - `single-gpu-minimal.json` - Minimal single GPU config
 - `multi-gpu-minimal.json` - Minimal 8 GPU config
 - `multi-node-minimal.json` - Minimal 2-node config
+- `primus-minimal.json` - Minimal Primus pretrain (`distributed.launcher: "primus"`; edit `primus.config_path`)
 - `vllm-single-node-minimal.json` - Minimal vLLM single-node
 - `vllm-multi-node-minimal.json` - Minimal vLLM multi-node
+
+For Primus options and environment variables, see [Launchers Guide](../../docs/launchers.md#5-primus).
 
 ## 🔄 Configuration Workflow
 
