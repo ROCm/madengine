@@ -76,7 +76,8 @@ class TestScopedTags:
 
 
 class TestUnscopedTagSelection:
-    """Unscoped --tags only searches root-level models (no scope prefix crossing)."""
+    """Unscoped --tags: name-based matching is root-only (no scope prefix crossing),
+    but tag-field matching is scope-agnostic and can select models in any scope."""
 
     def test_unscoped_tag_matches_root_model_by_name(self):
         """--tags pyt_foo matches a root-level model named exactly pyt_foo."""
