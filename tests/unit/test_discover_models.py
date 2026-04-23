@@ -143,3 +143,16 @@ class TestUnscopedTagSelection:
         dm.custom_models = []
         dm.select_models()
         assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_foo", "root_model"]
+
+    def test_unscoped_tag_with_extra_args_matches_by_tag_field(self):
+        """--tags inference:batch-size=32 selects by tag 'inference', not 'inference:batch-size=32'."""
+        dm = DiscoverModels(args=argparse.Namespace(tags=["inference:batch-size=32"]))
+        dm.models = [
+            {"name": "pyt_foo", "tags": ["inference"], "args": ""},
+            {"name": "pyt_bar", "tags": ["training"], "args": ""},
+        ]
+        dm.custom_models = []
+        dm.select_models()
+        assert len(dm.selected_models) == 1
+        assert dm.selected_models[0]["name"] == "pyt_foo"
+        assert "--batch-size 32" in dm.selected_models[0]["args"]
