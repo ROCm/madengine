@@ -607,9 +607,62 @@ class ContainerRunner:
         print(f"Env arguments: {env_args}")
         return env_args
 
-    def get_mount_arg(self, mount_datapaths: typing.List) -> str:
+    def _get_build_args(self) -> str:
+        """Build ``docker build --build-arg`` string from ``docker_build_arg`` context."""
+        docker_build_arg = self.context.ctx.get("docker_build_arg", {}) if self.context else {}
+        if not docker_build_arg:
+            return ""
+        build_args = ""
+        for key, value in docker_build_arg.items():
+            build_args += f"--build-arg {key}='{value}' "
+        return build_args
+
+    def _extract_additional_mount_targets(self, additional_opts: str) -> typing.Set[str]:
+        """Extract container-side mount targets from free-form docker run options.
+
+        Parses ``-v`` / ``--volume`` tokens from ``additional_docker_run_options``
+        and returns the set of container paths already being mounted, so that
+        :meth:`get_mount_arg` can skip duplicates that would otherwise cause
+        docker to reject the run ("Duplicate mount point").
+        """
+        targets: typing.Set[str] = set()
+        if not additional_opts:
+            return targets
+        try:
+            tokens = shlex.split(additional_opts)
+        except Exception:
+            return targets
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in ("-v", "--volume") and i + 1 < len(tokens):
+                spec = tokens[i + 1]
+                i += 2
+            elif token.startswith("-v") and len(token) > 2:
+                spec = token[2:]
+                i += 1
+            elif token.startswith("--volume="):
+                spec = token.split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
+                continue
+
+            # spec format: /host:/container[:mode]
+            parts = spec.split(":")
+            if len(parts) >= 2:
+                targets.add(parts[1])
+        return targets
+
+    def get_mount_arg(
+        self,
+        mount_datapaths: typing.List,
+        excluded_container_targets: typing.Optional[typing.Set[str]] = None,
+    ) -> str:
         """Get the mount arguments for docker run."""
         mount_args = ""
+        excluded_container_targets = excluded_container_targets or set()
 
         # Mount data paths
         if mount_datapaths:
@@ -629,6 +682,10 @@ class ContainerRunner:
         # Mount context paths
         if "docker_mounts" in self.context.ctx:
             for mount_arg in self.context.ctx["docker_mounts"].keys():
+                # Avoid duplicate mount points when additional_docker_run_options
+                # already mounts the same container target.
+                if mount_arg in excluded_container_targets:
+                    continue
                 mount_args += (
                     f"-v {self.context.ctx['docker_mounts'][mount_arg]}:{mount_arg} "
                 )
@@ -902,6 +959,12 @@ class ContainerRunner:
             'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
             # Rendezvous timeout so all nodes can join after pull
             'TORCH_ELASTIC_RDZV_TIMEOUT',
+            # Workload-level settings commonly provided via deployment_config.env_vars
+            # (required for disaggregated launchers like vLLM / SGLang disagg)
+            'MODEL_NAME', 'MODEL_DIR', 'xP', 'yD', 'PD_SYNC_ROOT', 'PD_RUN_ID',
+            'PROXY_TYPE', 'ROUTER_PORT', 'BENCHMARK_PORT', 'SLURM_JOB_ID',
+            'OUTPUT_DIR', 'BARRIER_TIMEOUT_S', 'PROXY_CLOSE_TIMEOUT_S',
+            'REQUIRE_RDMA', 'KV_UCX_TLS', 'KV_UCX_SOCKADDR_TLS_PRIORITY',
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
             'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
@@ -978,9 +1041,14 @@ class ContainerRunner:
             self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
             print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
         
+        additional_docker_run_options = model_info.get("additional_docker_run_options", "")
+        additional_mount_targets = self._extract_additional_mount_targets(additional_docker_run_options)
         docker_options += self.get_env_arg(run_env)
-        docker_options += self.get_mount_arg(mount_datapaths)
-        docker_options += f" {model_info.get('additional_docker_run_options', '')}"
+        docker_options += self.get_mount_arg(
+            mount_datapaths,
+            excluded_container_targets=additional_mount_targets,
+        )
+        docker_options += f" {additional_docker_run_options}"
 
         # Generate container name
         base_container_name = "container_" + re.sub(
