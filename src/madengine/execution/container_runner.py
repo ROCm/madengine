@@ -1731,8 +1731,27 @@ class ContainerRunner:
                                                         break
                                                 
                                                 if not has_valid_perf:
-                                                    run_results["performance"] = None
-                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
+                                                    nnodes_env = os.environ.get("NNODES", "1")
+                                                    try:
+                                                        nnodes = int(nnodes_env)
+                                                    except (TypeError, ValueError):
+                                                        nnodes = 1
+
+                                                    if nnodes > 1:
+                                                        # In multi-node runs the performance CSV on this
+                                                        # node may legitimately lack values (metrics are
+                                                        # only populated on the rank that parses the final
+                                                        # output). Keep the path so downstream per-node
+                                                        # aggregation on the login node can pick the best
+                                                        # candidate across all nodes.
+                                                        print(
+                                                            "Warning: Performance metric is currently empty in "
+                                                            "multiple results file during multi-node run; "
+                                                            "deferring final decision to aggregation step."
+                                                        )
+                                                    else:
+                                                        run_results["performance"] = None
+                                                        print("Error: Performance metric is empty in all rows of multiple results file.")
                                     except Exception as e:
                                         self.rich_console.print(
                                             f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
