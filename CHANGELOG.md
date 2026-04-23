@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Performance log parsing**: Unified and extended the `performance:` log regex across all execution paths (`base.py`, `container_runner.py`) to correctly parse values with unit suffixes (e.g. `/s`), comma separators between the value and metric name, explicit sign prefixes (`+`/`-`), uppercase scientific notation (`E`), and leading-dot decimals (e.g. `.5`). Previously the narrow `[\d.]+` pattern silently dropped records from training scripts that emitted `performance: 14164/s, samples_per_second`-style lines. The pattern is now defined as a single module-level constant (`PERFORMANCE_LOG_PATTERN` in `deployment/base.py`) shared by both parsers.
 
+- **Model discovery — tag selection with extra args**: In the unscoped `--tags` path, tag-list matching and the `all` check incorrectly used the raw tag string (e.g. `inference:batch-size=32`) instead of the pre-colon model name (`inference`). This caused tag-based selection to silently fail whenever extra args were appended via the colon syntax. Fixed for both `models` and `custom_models` loops.
+
+- **Model discovery — cross-scope name leakage**: Unscoped tags (e.g. `--tags pyt_foo`) previously matched models in any scope via a short-name split (`model["name"].split("/")[-1]`), so `pyt_foo` would silently select `MAD/pyt_foo`. Removed the short-name backward-compat matching; an unscoped name now only matches a model whose full name equals the tag exactly.
+
+### Changed
+
+- **Model discovery — scope-based tag selection**: Replaced the `strict` mode flag on `DiscoverModels` with a cleaner scope-based rule that applies uniformly to both `madengine run` and `madengine build`:
+  - **Unscoped tag** (e.g. `--tags inference`, `--tags pyt_foo`): matches any model with that value in its `tags` field (scope-agnostic), or a model whose full name equals the tag exactly (root-only).
+  - **Scoped tag** (e.g. `--tags MAD/inference`, `--tags MAD/pyt_foo`): restricts candidates to models prefixed with `MAD/`, then matches by tag field or exact full name within that scope.
+  - `--tags all` and `--tags scope/all` continue to select all models globally or within a scope respectively.
+  - Removed `strict_discovery` parameter from `BuildOrchestrator.execute()` and the corresponding call in `RunOrchestrator._build_phase()` as they are no longer needed.
+
 ## [2.0.0] - 2026-04-09
 
 ### Overview
