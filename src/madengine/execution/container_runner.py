@@ -618,6 +618,158 @@ class ContainerRunner:
             build_args += f"--build-arg {key}='{value}' "
         return build_args
 
+    def _get_node_rank(self) -> int:
+        """Return the current node rank for distributed runs."""
+        node_rank_raw = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            return int(node_rank_raw)
+        except Exception:
+            return 0
+
+    def _local_image_exists(self, run_image: str) -> bool:
+        """Check whether a Docker image already exists locally."""
+        try:
+            self.console.sh(
+                f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1"
+            )
+            return True
+        except (subprocess.CalledProcessError, RuntimeError):
+            return False
+
+    def _get_local_image_tar_path(self, run_image: str) -> typing.Optional[str]:
+        """Resolve the shared tar path for a local image, if configured.
+
+        When ``MAD_DOCKER_BUILDS`` points at a shared directory (e.g. a network
+        filesystem visible to all nodes), this path is used to stage a
+        ``docker save`` tar of the pre-built local image so that worker nodes
+        can ``docker load`` it instead of rebuilding or pulling.
+        """
+        builds_dir = (os.environ.get("MAD_DOCKER_BUILDS") or "").strip()
+        if not builds_dir:
+            return None
+
+        safe_image_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_image).strip("._")
+        if not safe_image_name:
+            safe_image_name = "docker_image"
+        return os.path.join(builds_dir, f"{safe_image_name}.tar")
+
+    def _load_local_image_from_tar(self, run_image: str, tar_path: str) -> None:
+        """Load a Docker image from a previously saved tar archive."""
+        if not os.path.exists(tar_path):
+            raise RuntimeError(f"Image tar not found for {run_image}: {tar_path}")
+
+        self.rich_console.print(
+            f"[yellow]📦 Loading local image tar:[/yellow] {tar_path}"
+        )
+        self.console.sh(f"docker load -i {shlex.quote(tar_path)}", timeout=None)
+        self.console.sh(
+            f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1"
+        )
+        self.rich_console.print(
+            f"[green]✅ Loaded local image from tar:[/green] {run_image}"
+        )
+
+    def _save_local_image_to_tar(self, run_image: str, tar_path: str) -> None:
+        """Persist a local Docker image into the shared tar cache."""
+        tar_dir = os.path.dirname(tar_path)
+        if tar_dir:
+            os.makedirs(tar_dir, exist_ok=True)
+
+        self.rich_console.print(
+            f"[yellow]💾 Saving local image tar:[/yellow] {tar_path}"
+        )
+        self.console.sh(
+            f"docker save -o {shlex.quote(tar_path)} {shlex.quote(run_image)}",
+            timeout=None,
+        )
+        self.rich_console.print(
+            f"[green]✅ Saved local image tar:[/green] {tar_path}"
+        )
+
+    def _build_or_pull_local_image(
+        self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
+    ) -> None:
+        """Ensure the local image exists by building it first and pulling as fallback."""
+        self.rich_console.print(
+            f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]"
+        )
+        try:
+            self._build_local_image_from_manifest(
+                run_image=run_image,
+                build_info=build_info,
+                model_info=model_info,
+            )
+        except Exception as build_error:
+            self.rich_console.print(
+                "[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]"
+            )
+            try:
+                self.pull_image(run_image)
+            except Exception as pull_error:
+                raise RuntimeError(
+                    f"Failed to build or pull local image {run_image}: "
+                    f"build_error={build_error}; pull_error={pull_error}"
+                )
+
+    def _ensure_local_image_available(
+        self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
+    ) -> None:
+        """Prepare a local image, optionally using a shared tar cache.
+
+        Behavior by node and cache state:
+
+        * If ``MAD_DOCKER_BUILDS`` is configured and the tar is missing,
+          only node 0 builds/pulls the image and saves the tar, while
+          worker nodes wait at :meth:`_sync_after_local_image_ready`
+          and then load the tar.
+        * If the tar already exists, any node loads it directly.
+        * Without a shared tar cache, each node builds/pulls independently.
+        """
+        tar_path = self._get_local_image_tar_path(run_image)
+        node_rank = self._get_node_rank()
+        is_primary_node = node_rank == 0
+        image_exists = self._local_image_exists(run_image)
+        tar_exists = bool(tar_path) and os.path.exists(tar_path)
+        tar_missing_at_start = bool(tar_path) and not tar_exists
+
+        if tar_missing_at_start:
+            if is_primary_node:
+                if not image_exists:
+                    self._build_or_pull_local_image(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
+                    )
+                    image_exists = True
+                if not tar_exists:
+                    self._save_local_image_to_tar(run_image, tar_path)
+                    tar_exists = True
+
+            self._sync_after_local_image_ready(run_image=run_image)
+
+            if not image_exists:
+                if not tar_exists and not os.path.exists(tar_path):
+                    raise RuntimeError(
+                        f"Node 0 did not produce image tar for {run_image}: {tar_path}"
+                    )
+                self._load_local_image_from_tar(run_image, tar_path)
+                image_exists = True
+
+        elif not image_exists:
+            if tar_exists:
+                self._load_local_image_from_tar(run_image, tar_path)
+                image_exists = True
+            else:
+                self._build_or_pull_local_image(
+                    run_image=run_image,
+                    build_info=build_info,
+                    model_info=model_info,
+                )
+                image_exists = True
+
+        if tar_path and image_exists and is_primary_node and not tar_exists:
+            self._save_local_image_to_tar(run_image, tar_path)
+
     def _build_local_image_from_manifest(
         self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
     ) -> None:
@@ -2090,33 +2242,11 @@ class ContainerRunner:
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
 
-                    # Verify image exists; if missing, build from manifest dockerfile on
-                    # the current compute node first, and fall back to pull only if the
-                    # build attempt fails. This makes distributed runs self-sufficient
-                    # when the pre-built image has not been staged to every node.
-                    try:
-                        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        self.rich_console.print(
-                            f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]"
-                        )
-                        try:
-                            self._build_local_image_from_manifest(
-                                run_image=run_image,
-                                build_info=build_info,
-                                model_info=model_info,
-                            )
-                        except Exception as build_error:
-                            self.rich_console.print(
-                                "[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]"
-                            )
-                            try:
-                                self.pull_image(run_image)
-                            except Exception as pull_error:
-                                raise RuntimeError(
-                                    f"Failed to build or pull local image {run_image}: "
-                                    f"build_error={build_error}; pull_error={pull_error}"
-                                )
+                    self._ensure_local_image_available(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
+                    )
                     # Ensure all nodes reach this point before entering container run,
                     # otherwise workers may start while node 0 is still building / loading.
                     self._sync_after_local_image_ready(run_image=run_image)
