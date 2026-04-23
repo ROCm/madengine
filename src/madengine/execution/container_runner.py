@@ -91,14 +91,15 @@ def _print_run_env_table(
             host_rocm_ver = "unknown"
 
         # ── Container side ─────────────────────────────────────────
-        # Installation type: check for TheRock share markers first, then
-        # fall back to looking for the traditional .info/version file.
+        # Installation type: if rocm-sdk resolves a root it is TheRock;
+        # otherwise fall back to the traditional .info/version marker.
+        # Avoids nested quoting issues by not embedding $(...) inside [ -f "..." ].
         ctr_install_type = _sh(
-            "if [ -f \"$(rocm-sdk path --root 2>/dev/null)/share/therock/therock_manifest.json\" ] "
-            "|| [ -f \"$(rocm-sdk path --root 2>/dev/null)/share/therock/dist_info.json\" ] "
-            "2>/dev/null; then echo therock; "
-            "elif [ -f /opt/rocm/.info/version ]; then echo apt install; "
-            "else echo unknown; fi 2>/dev/null || echo unknown"
+            "if command -v rocm-sdk >/dev/null 2>&1 "
+            "&& rocm-sdk path --root >/dev/null 2>&1; "
+            "then echo therock; "
+            "elif [ -f /opt/rocm/.info/version ]; then echo 'apt install'; "
+            "else echo unknown; fi"
         )
 
         # ROCm root: prefer rocm-sdk, then ROCM_PATH env, then /opt/rocm
