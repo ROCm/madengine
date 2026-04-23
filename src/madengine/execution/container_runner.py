@@ -34,6 +34,7 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
@@ -1288,9 +1289,9 @@ class ContainerRunner:
                                         
                                         # Try multiple patterns to match different log formats
                                         
-                                        # Pattern 1: "performance: 12345 metric_name" (original expected format)
-                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-                                        match = re.search(perf_pattern, log_content)
+                                        # Pattern 1: "performance: <value>[<unit>][,] <metric>"
+                                        # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
+                                        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
                                         
                                         if match:
                                             run_results["performance"] = match.group(1).strip()

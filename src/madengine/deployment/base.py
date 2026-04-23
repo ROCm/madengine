@@ -20,6 +20,20 @@ from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
 
+# Regex for parsing "performance: <value> <metric>" log lines.
+# Value: optional sign, integer/decimal, scientific notation (e or E).
+# Separator: optional unit suffix (/[a-zA-Z]+) and/or comma, in any order —
+#   "123/s, metric", "123, metric", "123,/s metric", "123, /s metric".
+# Metric: any non-whitespace, non-comma token (e.g. loss, latency_ms,
+#   samples/sec, tokens/sec).
+PERFORMANCE_LOG_PATTERN = (
+    r"performance:\s+"
+    r"([+\-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+\-]?[0-9]+)?)"
+    r"(?:,?\s*/[a-zA-Z]+\s*,?|,)?\s+"
+    r"([^\s,]+)"
+)
+
+
 def create_jinja_env(template_dir: Path) -> Environment:
     """Create a Jinja2 Environment with common filters for deployment templates.
 
@@ -347,10 +361,16 @@ class BaseDeployment(ABC):
         Parse node-local performance from log content.
 
         Expected format (from training scripts):
-            performance: <value> <metric>
+            performance: <value>[<unit>][,] <metric>
             node_id: <id>
             local_gpus: <num_gpus>
             test_duration: <value>s
+
+        <value> may include an optional sign, decimal point, and scientific notation
+        (e.g. 1.23e+4 or 1.23E+4).  A unit suffix such as /s and/or a comma separator
+        between the value and metric name are accepted in either order, e.g.:
+            performance: 14164/s, samples_per_second
+            performance: 14164, /s samples_per_second
 
         Args:
             log_content: Raw log text (e.g. node stdout)
@@ -362,13 +382,12 @@ class BaseDeployment(ABC):
         """
         import re
 
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
-        match = re.search(perf_pattern, log_content)
+        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
         if not match:
             return None
 
         value = float(match.group(1))
-        metric = match.group(2)
+        metric = match.group(2).rstrip(',')
 
         node_id_pattern = r"node_id:\s*(\d+)"
         node_match = re.search(node_id_pattern, log_content)

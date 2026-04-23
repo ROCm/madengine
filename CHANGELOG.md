@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
 
+## [2.0.1] - 2026-04-23
+
+### Fixed
+
+- **Performance log parsing**: Unified and extended the `performance:` log regex across all execution paths (`base.py`, `container_runner.py`) to correctly parse values with unit suffixes (e.g. `/s`), comma separators between the value and metric name, explicit sign prefixes (`+`/`-`), uppercase scientific notation (`E`), and leading-dot decimals (e.g. `.5`). Previously the narrow `[\d.]+` pattern silently dropped records from training scripts that emitted `performance: 14164/s, samples_per_second`-style lines. The pattern is now defined as a single module-level constant (`PERFORMANCE_LOG_PATTERN` in `deployment/base.py`) shared by both parsers.
+
 ## [2.0.0] - 2026-04-09
 
 ### Overview
