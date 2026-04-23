@@ -7,7 +7,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import signal
-import typing
 
 
 class Timeout:
@@ -42,9 +41,13 @@ class Timeout:
 
     def __enter__(self) -> None:
         """Enter the context manager."""
+        if not self.seconds:
+            return
         signal.signal(signal.SIGALRM, self.handle_timeout)
         signal.alarm(self.seconds)
 
     def __exit__(self, type, value, traceback) -> None:
         """Exit the context manager."""
+        if not self.seconds:
+            return
         signal.alarm(0)
