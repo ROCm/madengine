@@ -10,6 +10,7 @@ using pre-built images.
 import os
 import re
 import shlex
+import socket
 import subprocess
 import time
 import json
@@ -616,6 +617,205 @@ class ContainerRunner:
         for key, value in docker_build_arg.items():
             build_args += f"--build-arg {key}='{value}' "
         return build_args
+
+    def _build_local_image_from_manifest(
+        self, run_image: str, build_info: typing.Dict, model_info: typing.Dict
+    ) -> None:
+        """Build ``run_image`` on the current compute node using its manifest dockerfile.
+
+        Used by ``run --manifest-file`` in distributed mode when the local image
+        is not present on a compute node and pulling is not desired or possible.
+        """
+        dockerfile = build_info.get("dockerfile", "")
+        if not dockerfile or dockerfile == "N/A (local image mode)":
+            raise RuntimeError(
+                f"Cannot build image {run_image}: dockerfile is missing in manifest"
+            )
+
+        if not os.path.exists(dockerfile):
+            raise RuntimeError(
+                f"Cannot build image {run_image}: dockerfile not found at '{dockerfile}'"
+            )
+
+        docker_context = model_info.get("dockercontext", "") or "./docker"
+        if not os.path.exists(docker_context):
+            # Fallback to dockerfile directory if the provided context path is unavailable
+            # on the compute node (e.g. workspace layout differs from submission node).
+            docker_context = os.path.dirname(dockerfile) or "."
+
+        build_args = self._get_build_args()
+        build_command = (
+            f"docker build --network=host -t {run_image} --pull -f {dockerfile} "
+            f"{build_args}{docker_context}"
+        )
+
+        self.rich_console.print(
+            f"[yellow]🔨 Building missing local image on this node:[/yellow] {run_image}"
+        )
+        self.rich_console.print(f"[dim]  Dockerfile: {dockerfile}[/dim]")
+        self.rich_console.print(f"[dim]  Context: {docker_context}[/dim]")
+        self.console.sh(build_command, timeout=None)
+        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
+        self.rich_console.print(
+            f"[green]✅ Built local image on this node:[/green] {run_image}"
+        )
+
+    def _sync_after_local_image_ready(
+        self, run_image: str, timeout_s: int = 1800
+    ) -> None:
+        """Barrier for multi-node local-image runs so all nodes continue together.
+
+        Relies on a TCP rendezvous between ``NODE_RANK=0`` and worker nodes so
+        that no shared filesystem visibility is required. No-op for single-node
+        runs (``NNODES<=1``).
+        """
+        nnodes_raw = os.environ.get("NNODES") or os.environ.get("WORLD_SIZE") or "1"
+        node_rank = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            nnodes = int(nnodes_raw)
+        except Exception:
+            nnodes = 1
+        if nnodes <= 1:
+            return
+
+        self._tcp_image_ready_barrier(
+            nnodes=nnodes,
+            node_rank=node_rank,
+            timeout_s=timeout_s,
+        )
+
+    def _tcp_image_ready_barrier(
+        self, nnodes: int, node_rank: str, timeout_s: int
+    ) -> None:
+        """TCP rendezvous barrier that does not require shared filesystem visibility.
+
+        Node 0 listens on one of ``candidate_ports`` derived from ``MASTER_PORT``
+        and ``SLURM_JOB_ID``; workers send ``READY <token> <rank>`` and wait for
+        ``GO <token> <rank>``. The port range and token defend against multiple
+        concurrent jobs reusing the same master host.
+        """
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        job_id_raw = os.environ.get("SLURM_JOB_ID", "0")
+        try:
+            job_id = int(job_id_raw)
+        except Exception:
+            job_id = 0
+        token = f"JOB{job_id}"
+        master_port_raw = os.environ.get("MASTER_PORT", "29500")
+        try:
+            master_port = int(master_port_raw)
+        except Exception:
+            master_port = 29500
+        base_port = 43000 + ((master_port + job_id) % 1000)
+        candidate_ports = [base_port + i for i in range(0, 16)]
+        deadline = time.time() + timeout_s
+        rank_int = int(node_rank)
+
+        if rank_int == 0:
+            accepted = 0
+            peers = []
+            waiting: typing.Dict[int, socket.socket] = {}
+            server = None
+            port = None
+            try:
+                bind_errors = []
+                for candidate in candidate_ports:
+                    trial = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        trial.bind(("0.0.0.0", candidate))
+                        server = trial
+                        port = candidate
+                        break
+                    except Exception as e:
+                        bind_errors.append({"port": candidate, "error": str(e)})
+                        try:
+                            trial.close()
+                        except Exception:
+                            pass
+                if server is None or port is None:
+                    raise RuntimeError(
+                        f"TCP barrier bind failed on all candidate ports: {bind_errors}"
+                    )
+                server.listen(max(1, nnodes - 1))
+                server.settimeout(2.0)
+                while accepted < max(0, nnodes - 1) and time.time() < deadline:
+                    try:
+                        conn, addr = server.accept()
+                        conn.settimeout(2.0)
+                        payload = conn.recv(128).decode("utf-8", errors="ignore").strip()
+                        parts = payload.split()
+                        if len(parts) != 3 or parts[0] != "READY" or parts[1] != token:
+                            conn.close()
+                            continue
+                        try:
+                            worker_rank = int(parts[2])
+                        except Exception:
+                            conn.close()
+                            continue
+                        if worker_rank <= 0 or worker_rank >= nnodes:
+                            conn.close()
+                            continue
+                        if worker_rank in waiting:
+                            try:
+                                waiting[worker_rank].close()
+                            except Exception:
+                                pass
+                        waiting[worker_rank] = conn
+                        peers.append(f"{addr[0]}:r{worker_rank}")
+                        accepted = len(waiting)
+                    except socket.timeout:
+                        continue
+                if accepted < max(0, nnodes - 1):
+                    raise RuntimeError(
+                        f"TCP barrier timeout on master: accepted={accepted}/"
+                        f"{max(0, nnodes - 1)} port={port}"
+                    )
+                for worker_rank, conn in waiting.items():
+                    try:
+                        conn.sendall(f"GO {token} {worker_rank}\n".encode("utf-8"))
+                    finally:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                return
+            finally:
+                try:
+                    if server is not None:
+                        server.close()
+                except Exception:
+                    pass
+
+        last_error = ""
+        connect_attempts = 0
+        while time.time() < deadline:
+            for candidate in candidate_ports:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                connect_attempts += 1
+                try:
+                    sock.settimeout(1.5)
+                    sock.connect((master_addr, candidate))
+                    sock.sendall(f"READY {token} {node_rank}\n".encode("utf-8"))
+                    remaining_s = max(1.0, deadline - time.time())
+                    sock.settimeout(remaining_s)
+                    ack = sock.recv(128).decode("utf-8", errors="ignore").strip()
+                    if ack == f"GO {token} {node_rank}":
+                        return
+                    last_error = f"unexpected_ack={ack!r} port={candidate}"
+                except Exception as e:
+                    last_error = f"{e} port={candidate}"
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+            time.sleep(1)
+
+        raise RuntimeError(
+            f"TCP barrier timeout on worker rank={node_rank} master={master_addr} "
+            f"ports={candidate_ports} attempts={connect_attempts} last_error={last_error}"
+        )
 
     def _extract_additional_mount_targets(self, additional_opts: str) -> typing.Set[str]:
         """Extract container-side mount targets from free-form docker run options.
@@ -1889,16 +2089,37 @@ class ContainerRunner:
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
-                    # Verify image exists
+
+                    # Verify image exists; if missing, build from manifest dockerfile on
+                    # the current compute node first, and fall back to pull only if the
+                    # build attempt fails. This makes distributed runs self-sufficient
+                    # when the pre-built image has not been staged to every node.
                     try:
                         self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except (subprocess.CalledProcessError, RuntimeError) as e:
-                        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
+                    except (subprocess.CalledProcessError, RuntimeError):
+                        self.rich_console.print(
+                            f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]"
+                        )
                         try:
-                            self.pull_image(run_image)
-                        except Exception as e:
-                            raise RuntimeError(f"Failed to find or pull local image {run_image}: {e}")
+                            self._build_local_image_from_manifest(
+                                run_image=run_image,
+                                build_info=build_info,
+                                model_info=model_info,
+                            )
+                        except Exception as build_error:
+                            self.rich_console.print(
+                                "[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]"
+                            )
+                            try:
+                                self.pull_image(run_image)
+                            except Exception as pull_error:
+                                raise RuntimeError(
+                                    f"Failed to build or pull local image {run_image}: "
+                                    f"build_error={build_error}; pull_error={pull_error}"
+                                )
+                    # Ensure all nodes reach this point before entering container run,
+                    # otherwise workers may start while node 0 is still building / loading.
+                    self._sync_after_local_image_ready(run_image=run_image)
                 
                 elif build_info.get("registry_image"):
                     # Registry image: Pull from registry
