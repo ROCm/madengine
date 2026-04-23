@@ -26,15 +26,26 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import os
 import json
 import logging
+import sys
 
 
 # Utility function for optional verbose logging of configuration
 def _log_config_info(message: str, force_print: bool = False):
     """Log configuration information either to logger or print if specified."""
+    # Keep --version/--help output clean even if MAD_VERBOSE_CONFIG=true.
+    if any(arg in {"--version", "-V", "--help", "-h"} for arg in sys.argv[1:]):
+        logging.debug(message)
+        return
     if force_print or os.environ.get("MAD_VERBOSE_CONFIG", "").lower() == "true":
         print(message)
     else:
         logging.debug(message)
+
+
+def _is_lightweight_cli_invocation() -> bool:
+    """Return True for metadata/help invocations that should avoid side effects."""
+    lightweight_flags = {"--version", "-V", "--help", "-h"}
+    return any(arg in lightweight_flags for arg in sys.argv[1:])
 
 
 # third-party modules
@@ -65,9 +76,12 @@ def _setup_model_dir():
         _log_config_info(f"Model dir: {MODEL_DIR} copied to current dir: {cwd_abs}")
 
 
-# Only setup model directory if explicitly requested (when not just importing for constants)
+# Only setup model directory if explicitly requested and invocation is not metadata-only.
 if os.environ.get("MAD_SETUP_MODEL_DIR", "").lower() == "true":
-    _setup_model_dir()
+    if _is_lightweight_cli_invocation():
+        _log_config_info("Skipping MODEL_DIR setup for lightweight CLI invocation (--version/--help).")
+    else:
+        _setup_model_dir()
 
 # madengine credentials configuration
 CRED_FILE = "credential.json"

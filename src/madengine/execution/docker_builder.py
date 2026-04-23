@@ -70,6 +70,12 @@ class DockerBuilder:
     def get_build_arg(self, run_build_arg: typing.Optional[typing.Dict] = None) -> str:
         """Get the build arguments.
 
+        Each ``KEY=VALUE`` pair is wrapped with :func:`shlex.quote` because
+        the resulting string is interpolated into a ``docker build`` command
+        executed via ``Console.sh`` (``shell=True``). Manual single-quote
+        wrapping is unsafe when values contain quotes, whitespace, ``$`` or
+        other shell metacharacters.
+
         Args:
             run_build_arg: The run build arguments.
 

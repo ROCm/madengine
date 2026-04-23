@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
+- **Multi-node barrier**: The TCP image-ready barrier in `ContainerRunner` now binds to `MASTER_ADDR`'s resolved IP when possible (falling back to `0.0.0.0`) so the listener is not gratuitously exposed on other interfaces of the master host.
+
+### Added
+
+- **`MAD_BARRIER_TOKEN`** env var: opt-in secret for the multi-node TCP image-ready barrier in `ContainerRunner._tcp_image_ready_barrier`. When set, replaces the predictable `JOB<SLURM_JOB_ID>` token so other processes on the master node cannot spoof `READY`/`GO` messages. Defaults to the previous `JOB<id>` value for backward compatibility.
 
 - **Kubernetes deployment refactor**: Decomposed the monolithic `kubernetes.py` (~2800 lines) into focused mixin modules — `k8s_pvc.py` (PVC lifecycle), `k8s_results.py` (log/artifact collection and performance aggregation), `k8s_scripts.py` (script extraction and ConfigMap building), and `k8s_template_context.py` (Jinja2 template context assembly). `KubernetesDeployment` now composes these mixins; no functional changes.
 
