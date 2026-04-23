@@ -266,6 +266,20 @@ class TestParsePerformanceFromLog:
         assert result["performance"] == 100.5
         assert result["metric"] == "samples_per_second"
 
+    # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
+
+    def test_metric_samples_per_sec_slash(self):
+        """samples/sec is recognised and value is parsed correctly."""
+        result = self._parse("performance: 1234.5 samples/sec")
+        assert result["performance"] == 1234.5
+        assert result["metric"] == "samples/sec"
+
+    def test_metric_tokens_per_sec_slash(self):
+        """tokens/sec is recognised; _determine_aggregation_method uses this name."""
+        result = self._parse("performance: 500.0 tokens/sec")
+        assert result["performance"] == 500.0
+        assert result["metric"] == "tokens/sec"
+
     # --- no match ---
 
     def test_no_match_returns_none(self):

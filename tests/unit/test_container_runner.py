@@ -86,6 +86,20 @@ class TestPerformanceRegex:
         """Leading-dot decimal without integer part (v1 supported via [0-9]*[.]?[0-9]*)."""
         assert self._match("performance: .5 samples_per_second") == (".5", "samples_per_second")
 
+    # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
+
+    def test_metric_samples_per_sec_slash(self):
+        """samples/sec metric (used by _determine_aggregation_method) is parsed."""
+        assert self._match("performance: 1234.5 samples/sec") == ("1234.5", "samples/sec")
+
+    def test_metric_tokens_per_sec_slash(self):
+        """tokens/sec metric (used by _determine_aggregation_method) is parsed."""
+        assert self._match("performance: 500.0 tokens/sec") == ("500.0", "tokens/sec")
+
+    def test_metric_with_slash_and_suffix(self):
+        """Slash metric combined with /s value suffix."""
+        assert self._match("performance: 500.0/s tokens/sec") == ("500.0", "tokens/sec")
+
     # --- non-matching cases ---
 
     def test_no_match_missing_metric(self):

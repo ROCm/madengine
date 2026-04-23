@@ -22,13 +22,15 @@ from rich.console import Console
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
-# Separator: unit suffix (e.g. /s) and/or comma accepted in either order —
+# Separator: optional unit suffix (/[a-zA-Z]+) and/or comma, in any order —
 #   "123/s, metric", "123, metric", "123,/s metric", "123, /s metric".
+# Metric: any non-whitespace, non-comma token (e.g. loss, latency_ms,
+#   samples/sec, tokens/sec).
 PERFORMANCE_LOG_PATTERN = (
     r"performance:\s+"
     r"([+\-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+\-]?[0-9]+)?)"
-    r"(?:[/a-zA-Z]*\s*,?|,\s*[/a-zA-Z]*)"
-    r"\s+([a-zA-Z_][a-zA-Z0-9_]*)"
+    r"(?:,?\s*/[a-zA-Z]+\s*,?|,)?\s+"
+    r"([^\s,]+)"
 )
 
 
