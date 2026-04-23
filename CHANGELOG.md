@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Model discovery — cross-scope name leakage**: Unscoped tags (e.g. `--tags pyt_foo`) previously matched models in any scope via a short-name split (`model["name"].split("/")[-1]`), so `pyt_foo` would silently select `MAD/pyt_foo`. Removed the short-name backward-compat matching; an unscoped name now only matches a model whose full name equals the tag exactly.
 
+- **E2E tests — hardware-agnostic GPU arch skip**: `test_commandline_argument_skip_gpu_arch` and its companion test now detect the current GPU architecture at runtime and inject it into the fixture's `skip_gpu_arch` list, so both tests pass on any GPU (gfx942, gfx950, etc.) without hardcoding arch names. Added `get_gpu_arch()` utility to `tests/fixtures/utils.py`.
+
+- **E2E tests — `test_docker_gpus` pre-script OOM on MI350X**: The `run_rocenv_tool.sh` system-env pre-script was being OOM-killed (exit 137) inside Docker on gfx950 nodes with 6 GPUs bound, failing a test whose purpose is only GPU binding verification. Fixed by correcting the `gen_sys_env_details` condition in `container_runner.py` — the old `or` made the context key a no-op since `generate_sys_env_details` defaults to `True` — and passing `gen_sys_env_details: False` in the test's `additional_context`.
+
 ### Changed
 
 - **Model discovery — scope-based tag selection**: Replaced the `strict` mode flag on `DiscoverModels` with a cleaner scope-based rule that applies uniformly to both `madengine run` and `madengine build`:
