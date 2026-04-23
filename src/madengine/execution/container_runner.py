@@ -1255,10 +1255,61 @@ class ContainerRunner:
                         )
                         # Use the container timeout (default 7200s) for script execution
                         # to prevent indefinite hangs
-                        model_output = model_docker.sh(
-                            f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=timeout,
-                        )
+                        try:
+                            model_output = model_docker.sh(
+                                f"cd {model_dir} && {script_name} {model_args}",
+                                timeout=timeout,
+                            )
+                        except RuntimeError as run_err:
+                            # On script failure, collect lightweight diagnostics from the
+                            # running container (process table, listening ports, log tails).
+                            # These are printed via Console.sh so they land in the run log
+                            # alongside the failure. Failures here are non-fatal.
+                            run_err_str = str(run_err)
+                            container_id_match = re.search(
+                                r"docker exec\s+([a-f0-9]+)\s+bash",
+                                run_err_str,
+                            )
+                            failed_container_id = (
+                                container_id_match.group(1)
+                                if container_id_match
+                                else None
+                            )
+                            if failed_container_id:
+                                try:
+                                    self.console.sh(
+                                        f"docker exec {failed_container_id} bash -lc "
+                                        f"\"ps -eo pid,ppid,stat,etime,cmd | sed -n '1,160p'\"",
+                                        timeout=20,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    self.console.sh(
+                                        f"docker exec {failed_container_id} bash -lc "
+                                        f"\"(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null "
+                                        f"|| lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true) "
+                                        f"| sed -n '1,200p'\"",
+                                        timeout=20,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    self.console.sh(
+                                        f"docker exec {failed_container_id} bash -lc "
+                                        f"\"for d in /run_logs /run_logs/${{SLURM_JOB_ID:-}} "
+                                        f"/myworkspace/{model_dir}; do "
+                                        f"if [ -d \\\"$d\\\" ]; then echo ===DIR:$d===; "
+                                        f"ls -lah \\\"$d\\\" | sed -n '1,80p'; fi; done; "
+                                        f"for f in /run_logs/*.log /run_logs/${{SLURM_JOB_ID:-}}/*.log "
+                                        f"/myworkspace/{model_dir}/*.log; do "
+                                        f"if [ -f \\\"$f\\\" ]; then echo ===$f===; "
+                                        f"tail -n 80 \\\"$f\\\"; fi; done\"",
+                                        timeout=30,
+                                    )
+                                except Exception:
+                                    pass
+                            raise
                         # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
                         if not self.live_output:
                             print(model_output)
@@ -1412,6 +1463,10 @@ class ContainerRunner:
                                         "RpcError: Running out of retries to initialize the metrics agent",
                                         "Metrics will not be exported",
                                         "FutureWarning",
+                                        # rocEnvTool pre-script can timeout rocm-smi without affecting run correctness.
+                                        "RuntimeError: Console script timeout",
+                                        "rocEnvTool/console.py",
+                                        "rocEnvTool/rocenv_tool.py",
                                         "Opened result file:",
                                         "SQLite3 generation ::",
                                         "rocpd_op:",
@@ -1647,6 +1702,26 @@ class ContainerRunner:
                             )
                             model_docker.sh(
                                 _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
+                            )
+                            # Additionally stage workload-level perf/benchmark artifacts that
+                            # some frameworks (e.g. vLLM/SGLang disagg) write under workdir or
+                            # /run_logs, so SLURM per-node result collection can find them.
+                            _md_q = _bash_quote_path(_md)
+                            _cwd_q = _bash_quote_path(".")
+                            model_docker.sh(f"cp -- {_md_q}/perf_*.csv {_cwd_q} 2>/dev/null || true")
+                            model_docker.sh(f"cp -- {_md_q}/perf-*.csv {_cwd_q} 2>/dev/null || true")
+                            model_docker.sh(
+                                f"cp -- {_md_q}/benchmark_*_CONCURRENCY.log {_cwd_q} 2>/dev/null || true"
+                            )
+                            model_docker.sh(f"cp -- {_md_q}/workdir/perf_*.csv {_cwd_q} 2>/dev/null || true")
+                            model_docker.sh(f"cp -- {_md_q}/workdir/perf-*.csv {_cwd_q} 2>/dev/null || true")
+                            model_docker.sh(
+                                f"cp -- {_md_q}/workdir/benchmark_*_CONCURRENCY.log {_cwd_q} 2>/dev/null || true"
+                            )
+                            slurm_job_id = os.environ.get("SLURM_JOB_ID", "*")
+                            model_docker.sh(
+                                f"cp -- /run_logs/{shlex.quote(slurm_job_id)}/benchmark_*_CONCURRENCY.log "
+                                f"{_cwd_q} 2>/dev/null || true"
                             )
                         except Exception as e:
                             # Ignore errors if no profiler/trace output files exist
