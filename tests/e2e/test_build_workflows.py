@@ -29,6 +29,7 @@ from tests.fixtures.utils import clean_test_temp_files
 from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from tests.fixtures.utils import generate_additional_context_for_machine
 from tests.fixtures.utils import get_gpu_arch
+from tests.fixtures.utils import requires_gpu
 
 
 @pytest.fixture
@@ -99,6 +100,7 @@ class TestCLIFeatures:
         if not success:
             pytest.fail("model, dummy, not found in perf_test.csv.")
 
+    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )
@@ -123,6 +125,7 @@ class TestCLIFeatures:
         if "Skipping model" not in output:
             pytest.fail("Enable skipping gpu arch for running model is failed.")
 
+    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )

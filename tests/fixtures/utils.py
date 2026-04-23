@@ -201,10 +201,13 @@ def is_nvidia() -> bool:
 
 
 def get_gpu_arch() -> str:
-    """Get the current GPU architecture string (e.g., 'gfx942', 'gfx950').
+    """Get the current GPU architecture identifier string.
+
+    On AMD systems, returns a GPU architecture token (e.g., 'gfx942', 'gfx950').
+    On NVIDIA systems, returns the GPU model name (e.g., 'A100', 'H100').
 
     Returns:
-        str: GPU architecture string, or empty string if detection fails.
+        str: GPU architecture/model identifier, or empty string if detection fails.
     """
     global _gpu_arch_cache
 
@@ -218,10 +221,16 @@ def get_gpu_arch() -> str:
             arch = console.sh(
                 "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
             )
+            arch = arch.strip() if arch else ""
+            # Normalize "NVIDIA A100-SXM4-40GB" -> "A100", "NVIDIA H100 PCIe" -> "H100"
+            if arch.startswith("NVIDIA "):
+                arch = arch[len("NVIDIA "):].split("-")[0].split()[0]
         else:
-            rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+            from madengine.core.constants import get_rocm_path
+            rocm_path = get_rocm_path()
             arch = console.sh(f"{rocm_path}/bin/rocminfo |grep -o -m 1 'gfx.*'")
-        _gpu_arch_cache = arch.strip() if arch else ""
+            arch = arch.strip() if arch else ""
+        _gpu_arch_cache = arch
         return _gpu_arch_cache
     except Exception:
         _gpu_arch_cache = ""
