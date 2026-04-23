@@ -7,7 +7,6 @@ error types and consistent Rich console-based error reporting.
 """
 
 import logging
-import traceback
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, List
 from enum import Enum
@@ -16,7 +15,6 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
-    from rich.table import Table
 except ImportError:
     raise ImportError("Rich is required for error handling. Install with: pip install rich")
 
@@ -83,7 +81,7 @@ class ValidationError(MADEngineError):
         )
 
 
-class ConnectionError(MADEngineError):
+class NetworkError(MADEngineError):
     """Connection and network errors."""
     
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
@@ -94,6 +92,10 @@ class ConnectionError(MADEngineError):
             recoverable=True,
             **kwargs
         )
+
+
+# Deprecated: use NetworkError instead; will be removed in a future release
+ConnectionError = NetworkError
 
 
 class AuthenticationError(MADEngineError):
@@ -120,10 +122,6 @@ class ExecutionError(MADEngineError):
             recoverable=False,
             **kwargs
         )
-
-
-# Backward compatibility alias
-RuntimeError = ExecutionError
 
 
 class BuildError(MADEngineError):
@@ -191,7 +189,7 @@ class ConfigurationError(MADEngineError):
         )
 
 
-class TimeoutError(MADEngineError):
+class DeploymentTimeoutError(MADEngineError):
     """Timeout and duration errors."""
     
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
