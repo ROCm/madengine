@@ -20,6 +20,7 @@ sys.path.insert(1, BASE_DIR)
 
 # Cache variables to avoid repeated system checks during collection
 _gpu_vendor_cache = None
+_gpu_arch_cache = None
 _gpu_nodeid_map_cache = None
 _num_gpus_cache = None
 _num_cpus_cache = None
@@ -197,6 +198,34 @@ def is_nvidia() -> bool:
         # If context creation fails during collection, assume AMD
         _gpu_vendor_cache = "AMD"
         return False
+
+
+def get_gpu_arch() -> str:
+    """Get the current GPU architecture string (e.g., 'gfx942', 'gfx950').
+
+    Returns:
+        str: GPU architecture string, or empty string if detection fails.
+    """
+    global _gpu_arch_cache
+
+    if _gpu_arch_cache is not None:
+        return _gpu_arch_cache
+
+    try:
+        from madengine.core.console import Console
+        console = Console(live_output=True)
+        if is_nvidia():
+            arch = console.sh(
+                "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
+            )
+        else:
+            rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+            arch = console.sh(f"{rocm_path}/bin/rocminfo |grep -o -m 1 'gfx.*'")
+        _gpu_arch_cache = arch.strip() if arch else ""
+        return _gpu_arch_cache
+    except Exception:
+        _gpu_arch_cache = ""
+        return _gpu_arch_cache
 
 
 def get_gpu_nodeid_map() -> dict:
