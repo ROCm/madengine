@@ -588,12 +588,16 @@ class RunOrchestrator:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
                 self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
-            # Restore docker_env_vars from build context (e.g. MAD_SECRET_HFTOKEN for Primus HF-backed configs)
+            # Restore docker_env_vars from build context (e.g. MAD_SECRET_HFTOKEN for Primus HF-backed configs).
+            # Keep runtime-detected values as priority (consistent with docker_mounts / docker_build_arg):
+            # values already populated by Context (e.g. MAD_SECRETS_* read from os.environ) must not be
+            # overwritten by manifest entries that may still contain unexpanded "${VAR}" placeholders.
             if "docker_env_vars" in manifest_context and manifest_context["docker_env_vars"]:
                 if "docker_env_vars" not in self.context.ctx:
                     self.context.ctx["docker_env_vars"] = {}
                 for k, v in manifest_context["docker_env_vars"].items():
-                    self.context.ctx["docker_env_vars"][k] = v
+                    if k not in self.context.ctx["docker_env_vars"]:
+                        self.context.ctx["docker_env_vars"][k] = v
 
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
