@@ -174,7 +174,7 @@ def run(
     # Input validation
     if timeout < -1:
         console.print(
-            "❌ [red]Timeout must be -1 (default) or a positive integer[/red]"
+            "❌ [red]Timeout must be -1 (default), 0 (no timeout), or a positive integer[/red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
@@ -192,8 +192,11 @@ def run(
         effective_additional_context_file = None
 
     # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
+    # Convert 0 to None sentinel meaning "no timeout"
     if timeout == -1:
         timeout = 7200
+    elif timeout == 0:
+        timeout = None
 
     try:
         # Check if we're doing execution-only or full workflow
@@ -211,7 +214,7 @@ def run(
                     f"🚀 [bold cyan]Running Models (Execution Only)[/bold cyan]\n"
                     f"Manifest: [yellow]{manifest_file}[/yellow]\n"
                     f"Registry: [yellow]{registry or 'Auto-detected'}[/yellow]\n"
-                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
+                    f"Timeout: [yellow]{f'{timeout}s' if timeout is not None else 'Disabled'}[/yellow]",
                     title="Execution Configuration",
                     border_style="green",
                 )
@@ -314,7 +317,7 @@ def run(
                     f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
                     f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                     f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
-                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s"
+                    f"Timeout: [yellow]{f'{timeout}s' if timeout is not None else 'Disabled'}[/yellow]"
                     f"{skip_note}",
                     title="Workflow Configuration",
                     border_style="magenta",
@@ -476,4 +479,3 @@ def run(
         )
         handle_error(e, context=context)
         raise typer.Exit(ExitCode.FAILURE)
-
