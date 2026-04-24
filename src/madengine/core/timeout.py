@@ -7,23 +7,24 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import signal
-import typing
+from typing import Optional
 
 
 class Timeout:
     """Class to handle timeouts.
 
     Attributes:
-        seconds (int): The timeout in seconds.
+        seconds (Optional[int]): The timeout in seconds, or None/0 to disable.
     """
 
-    def __init__(self, seconds: int = 15) -> None:
+    def __init__(self, seconds: Optional[int] = 15) -> None:
         """Constructor of the Timeout class.
 
         Args:
-            seconds (int): The timeout in seconds.
+            seconds (Optional[int]): The timeout in seconds. None or 0 disables
+                the timeout. Negative values are treated as no timeout.
         """
-        self.seconds = seconds
+        self.seconds = seconds if seconds and seconds > 0 else None
 
     def handle_timeout(self, signum, frame) -> None:
         """Handle timeout.
@@ -42,9 +43,13 @@ class Timeout:
 
     def __enter__(self) -> None:
         """Enter the context manager."""
+        if not self.seconds:
+            return
         signal.signal(signal.SIGALRM, self.handle_timeout)
         signal.alarm(self.seconds)
 
     def __exit__(self, type, value, traceback) -> None:
         """Exit the context manager."""
+        if not self.seconds:
+            return
         signal.alarm(0)

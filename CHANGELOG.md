@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **E2E tests — `test_docker_gpus` pre-script OOM on MI350X**: The `run_rocenv_tool.sh` system-env pre-script was being OOM-killed (exit 137) inside Docker on gfx950 nodes with 6 GPUs bound, failing a test whose purpose is only GPU binding verification. Fixed by correcting the `gen_sys_env_details` condition in `container_runner.py` — the old `or` made the context key a no-op since `generate_sys_env_details` defaults to `True` — and passing `gen_sys_env_details: False` in the test's `additional_context`.
 
+- **`--timeout 0` crashing with `signal.alarm(None)`**: `Timeout.__enter__` called `signal.alarm(None)` when `--timeout 0` was passed because the CLI correctly maps `0 → None` but `Timeout` had no guard for a falsy value. Added early-return in `__enter__`/`__exit__` when `seconds` is `None` or `0`. Also fixed the run command panels printing `Nones` for timeout when `--timeout 0` was used; they now display `disabled`.
+
+- **Docker container name regex false positives**: The `docker ps --filter name=^/<name>$` exact-match filter embedded the container name directly into the regex without escaping, so names containing metacharacters (e.g. `.`, `[`) could match unintended containers. Applied `re.escape()` to the name before building the filter pattern.
+
+- **`login_to_registry` type annotation**: The `registry` parameter was typed as `str` but the implementation handled `None` and callers (including tests) passed `None` to mean DockerHub. Corrected to `Optional[str]`.
+
+- **Registry password process-list exposure**: `docker login` was invoked with the password in the argument list (visible via `/proc` or `ps`). Changed to pass it via a `MAD_REGISTRY_PASSWORD` environment variable consumed through `printf %s "$MAD_REGISTRY_PASSWORD" | docker login --password-stdin`.
+
+- **`login_to_registry` — `raise_on_failure` not fully honoured**: Missing-key and invalid-format errors in `login_to_registry` always raised `RuntimeError` regardless of `raise_on_failure`. All three failure paths (missing registry key, invalid credential format, docker login error) are now gated on `raise_on_failure`, allowing `ContainerRunner` to fall through to public image pulls.
+
+- **Kubernetes missing-package warning invisible**: `DeploymentFactory` raised `ImportWarning` when the `kubernetes` package was absent, which Python silences by default. Changed to `UserWarning` so the install hint is always visible.
+
 ### Changed
 
 - **Model discovery — scope-based tag selection**: Replaced the `strict` mode flag on `DiscoverModels` with a cleaner scope-based rule that applies uniformly to both `madengine run` and `madengine build`:
@@ -32,6 +44,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Scoped tag** (e.g. `--tags MAD/inference`, `--tags MAD/pyt_foo`): restricts candidates to models prefixed with `MAD/`, then matches by tag field or exact full name within that scope.
   - `--tags all` and `--tags scope/all` continue to select all models globally or within a scope respectively.
   - Removed `strict_discovery` parameter from `BuildOrchestrator.execute()` and the corresponding call in `RunOrchestrator._build_phase()` as they are no longer needed.
+
+- **Shared `login_to_registry` utility**: Extracted duplicated Docker registry login logic (~120 lines) from `DockerBuilder` and `ContainerRunner` into `core/auth.py::login_to_registry()`. Both classes now delegate to it. `DockerBuilder` uses `raise_on_failure=True`; `ContainerRunner` uses `raise_on_failure=False` to allow fallback to public images.
+
+- **Centralised credential loading**: Extracted `_load_credentials` from `BuildOrchestrator` and `RunOrchestrator` into `core/auth.py::load_credentials()`. Environment variables (`MAD_DOCKERHUB_USER`, `MAD_DOCKERHUB_PASSWORD`, `MAD_DOCKERHUB_REPO`) take precedence over `credential.json`.
+
+- **Dead code removal**: Removed unused functions `find_and_replace_pattern` and `substring_found` (`utils/ops.py`), `highlight_log_section` (`utils/log_formatting.py`), `SessionTracker.get_session_start` and `SessionTracker.load_marker` (`utils/session_tracker.py`), and the unused `_filter_images_by_dockerfile_context` method from `RunOrchestrator`.
+
+- **`ConfigurationError` instead of `SystemExit` in orchestrator config loading**: `BuildOrchestrator` now raises a structured `ConfigurationError` (with suggestions) instead of calling `sys.exit()` directly when configuration loading fails.
+
+### Security
+
+- **Registry password no longer in process argument list**: Docker login commands previously passed the password as a CLI argument visible to other users via `/proc` or `ps`. All registry logins now inject the password through a dedicated `MAD_REGISTRY_PASSWORD` environment variable and use `--password-stdin`.
+
+- **`build-arg` values shell-quoted**: All Docker `--build-arg` key/value pairs are now wrapped with `str()` before `shlex.quote()` to prevent shell injection from non-string config values.
+
+### Tests
+
+- **New `TestTimeout` suite**: Covers `None`, `0`, and positive-second cases for `Timeout.__enter__`/`__exit__`, plus a `resolve_run_timeout` passthrough regression test.
+
+- **New `TestLoginToRegistry` suite**: Covers all success and failure paths of `login_to_registry`, including `raise_on_failure=True/False` behaviour, missing registry key, invalid credential format, and `docker.io` normalisation.
+
+- **Test suite cleanup**: Removed dead imports across 14 test files; replaced `try/assert False/except` antipattern with `pytest.raises()` (with `match=`); narrowed 5 bare `except:` clauses to `except Exception:`; deleted a pass-only dead test; removed duplicate tests; reclassified `test_profiling_tools_config.py` from unit to integration (reads real disk files) and `test_errors.py` from integration to unit (pure mocks).
 
 ## [2.0.0] - 2026-04-09
 

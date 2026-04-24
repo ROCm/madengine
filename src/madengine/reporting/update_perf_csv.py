@@ -62,7 +62,7 @@ def flatten_tags(perf_entry: dict):
         The performance entry with flattened tags.
     """
     # flatten tags to a string, if tags is a list.
-    if type(perf_entry["tags"]) == list:
+    if isinstance(perf_entry["tags"], list):
         perf_entry["tags"] = ",".join(str(item) for item in perf_entry["tags"])
 
 
@@ -192,6 +192,9 @@ def handle_single_result(perf_csv_df: pd.DataFrame, single_result: str) -> pd.Da
         AssertionError: If the number of columns in the performance csv DataFrame is not equal
     """
     single_result_json = read_json(single_result)
+    # Remove non-scalar fields that are not perf.csv columns (e.g. configs list).
+    # See handle_exception_result for rationale.
+    single_result_json.pop("configs", None)
     perf_entry_dict_to_csv(single_result_json)
     single_result_df = pd.DataFrame(single_result_json, index=[0])
     if perf_csv_df.empty:
@@ -226,6 +229,11 @@ def handle_exception_result(
         AssertionError: If there is already an entry for the model in the performance csv DataFrame.
     """
     exception_result_json = read_json(exception_result)
+    # Remove non-scalar fields that are not perf.csv columns (e.g. configs list)
+    # before constructing a single-row DataFrame with index=[0].
+    # pd.DataFrame(dict_with_list_value, index=[0]) raises ValueError when any
+    # dict value is a list whose length != 1.
+    exception_result_json.pop("configs", None)
     perf_entry_dict_to_csv(exception_result_json)
     exception_result_df = pd.DataFrame(exception_result_json, index=[0])
     if perf_csv_df.empty:

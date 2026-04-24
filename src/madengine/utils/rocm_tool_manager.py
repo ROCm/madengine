@@ -199,14 +199,15 @@ class ROCmToolManager(BaseGPUToolManager):
             self._log_debug(f"Command succeeded: {command[:50]}...")
             return stdout
         
-        # Log primary failure
-        self._log_warning(f"Primary command failed: {command[:50]}... Error: {stderr}")
-        
+        # Capture primary error before attempting fallback (fallback overwrites stderr)
+        primary_stderr = stderr
+        self._log_warning(f"Primary command failed: {command[:50]}... Error: {primary_stderr}")
+
         # Try fallback if provided
         if fallback_command:
             self._log_info(f"Trying fallback command: {fallback_command[:50]}...")
             success, stdout, stderr = self._execute_shell_command(fallback_command, timeout)
-            
+
             if success:
                 self._log_warning("Fallback command succeeded (primary tool may be missing or misconfigured)")
                 return stdout
@@ -215,7 +216,7 @@ class ROCmToolManager(BaseGPUToolManager):
                 raise RuntimeError(
                     f"Both primary and fallback commands failed.\n"
                     f"Primary: {command}\n"
-                    f"Primary error: {stderr}\n"
+                    f"Primary error: {primary_stderr}\n"
                     f"Fallback: {fallback_command}\n"
                     f"Fallback error: {stderr}"
                 )

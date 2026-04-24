@@ -395,6 +395,8 @@ def process_batch_manifest_entries(
 
         # If the model was not built (build_new=false), create an entry for it
         if not build_new:
+            # Initialize with a safe fallback so the except block can always reference it
+            dockerfile_matched = "unknown"
             # Find the model configuration by discovering models with this tag
             try:
                 # Create a temporary args object to discover the model
