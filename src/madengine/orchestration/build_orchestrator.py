@@ -46,13 +46,17 @@ class BuildOrchestrator:
     - Save deployment_config from --additional-context
     """
 
-    def __init__(self, args, additional_context: Optional[Dict] = None):
+    def __init__(self, args, additional_context: Optional[Dict] = None, detect_local_gpu_arch: bool = False):
         """
         Initialize build orchestrator.
 
         Args:
             args: CLI arguments namespace
             additional_context: Dict from --additional-context (merged with args if present)
+            detect_local_gpu_arch: When True, auto-detect MAD_SYSTEM_GPU_ARCHITECTURE from the
+                local node before building. Intended for full workflow (build+run) on a local
+                single node. Has no effect if the user already provided the value via
+                --additional-context. Default False preserves existing standalone-build behavior.
         """
         self.args = args
         self.console = Console(live_output=getattr(args, "live_output", True))
@@ -120,7 +124,9 @@ class BuildOrchestrator:
         ))
         self.rich_console.print()
 
-        # Initialize context in build-only mode (no GPU detection)
+        # Initialize context in build-only mode (no GPU detection by default).
+        # Pass detect_local_gpu_arch so Context.init_build_context() can optionally
+        # auto-detect MAD_SYSTEM_GPU_ARCHITECTURE for full workflow (build+run) runs.
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
         # Use self.additional_context (post-ConfigLoader), not pre-defaults merged_context
@@ -128,6 +134,7 @@ class BuildOrchestrator:
         self.context = Context(
             additional_context=context_string,
             build_only_mode=True,
+            detect_local_gpu_arch=detect_local_gpu_arch,
         )
 
         # Load credentials if available
@@ -287,6 +294,12 @@ class BuildOrchestrator:
                 live_output=getattr(self.args, "live_output", False),
             )
             self._warn_if_mad_arch_unresolved_for_dockerfiles(models, builder)
+
+            resolved_arch = self.context.ctx.get("docker_build_arg", {}).get("MAD_SYSTEM_GPU_ARCHITECTURE")
+            if resolved_arch:
+                self.rich_console.print(
+                    f"[green]✓ MAD_SYSTEM_GPU_ARCHITECTURE resolved: {resolved_arch}[/green]\n"
+                )
 
             # Step 3: Build Docker images
             self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
