@@ -2,11 +2,115 @@
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner import ContainerRunner
+
+
+PERF_PATTERN = PERFORMANCE_LOG_PATTERN
+
+
+class TestPerformanceRegex:
+    """Performance regex in container_runner matches all supported log formats."""
+
+    def _match(self, log_line):
+        m = re.search(PERF_PATTERN, log_line)
+        return (m.group(1), m.group(2)) if m else (None, None)
+
+    # --- formats that were already handled before the regex change ---
+
+    def test_basic_integer(self):
+        assert self._match("performance: 12345 samples_per_second") == ("12345", "samples_per_second")
+
+    def test_decimal(self):
+        assert self._match("performance: 100.5 samples_per_second") == ("100.5", "samples_per_second")
+
+    def test_scientific_lowercase_e(self):
+        assert self._match("performance: 1.23e+4 samples_per_second") == ("1.23e+4", "samples_per_second")
+
+    def test_scientific_negative_exponent(self):
+        assert self._match("performance: 1.23e-4 samples_per_second") == ("1.23e-4", "samples_per_second")
+
+    def test_zero(self):
+        assert self._match("performance: 0 samples_per_second") == ("0", "samples_per_second")
+
+    def test_metric_with_digits(self):
+        assert self._match("performance: 123 metric123") == ("123", "metric123")
+
+    def test_metric_starting_with_underscore(self):
+        assert self._match("performance: 123 _metric") == ("123", "_metric")
+
+    # --- new formats added with the extended regex ---
+
+    def test_unit_suffix_slash_s(self):
+        """Value followed by /s unit suffix: suffix is stripped, metric parsed correctly."""
+        assert self._match("performance: 14164/s samples_per_second") == ("14164", "samples_per_second")
+
+    def test_unit_suffix_and_comma(self):
+        """Value with /s suffix and comma separator."""
+        assert self._match("performance: 14164.5/s, samples_per_second") == ("14164.5", "samples_per_second")
+
+    def test_comma_separator_no_suffix(self):
+        """Comma after value without a unit suffix."""
+        assert self._match("performance: 100.5, samples_per_second") == ("100.5", "samples_per_second")
+
+    def test_comma_before_suffix(self):
+        """Comma immediately before /s suffix: 123,/s metric."""
+        assert self._match("performance: 123,/s metric") == ("123", "metric")
+
+    def test_comma_space_before_suffix(self):
+        """Comma then space then /s suffix: 123, /s metric."""
+        assert self._match("performance: 123, /s metric") == ("123", "metric")
+
+    # --- formats inherited from madenginev1 ---
+
+    def test_scientific_uppercase_e(self):
+        """Uppercase E in scientific notation (v1 supported, old v2 broke on this)."""
+        assert self._match("performance: 1.23E+4 samples_per_second") == ("1.23E+4", "samples_per_second")
+
+    def test_positive_sign(self):
+        """Explicitly signed positive value (v1 supported via [+|-]? prefix)."""
+        assert self._match("performance: +123.45 samples_per_second") == ("+123.45", "samples_per_second")
+
+    def test_negative_sign(self):
+        """Signed negative value (v1 supported)."""
+        assert self._match("performance: -123.45 samples_per_second") == ("-123.45", "samples_per_second")
+
+    def test_leading_dot_decimal(self):
+        """Leading-dot decimal without integer part (v1 supported via [0-9]*[.]?[0-9]*)."""
+        assert self._match("performance: .5 samples_per_second") == (".5", "samples_per_second")
+
+    # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
+
+    def test_metric_samples_per_sec_slash(self):
+        """samples/sec metric (used by _determine_aggregation_method) is parsed."""
+        assert self._match("performance: 1234.5 samples/sec") == ("1234.5", "samples/sec")
+
+    def test_metric_tokens_per_sec_slash(self):
+        """tokens/sec metric (used by _determine_aggregation_method) is parsed."""
+        assert self._match("performance: 500.0 tokens/sec") == ("500.0", "tokens/sec")
+
+    def test_metric_with_slash_and_suffix(self):
+        """Slash metric combined with /s value suffix."""
+        assert self._match("performance: 500.0/s tokens/sec") == ("500.0", "tokens/sec")
+
+    # --- non-matching cases ---
+
+    def test_no_match_missing_metric(self):
+        """Line with value but no metric name does not match."""
+        val, met = self._match("performance: 100.5")
+        assert val is None and met is None
+
+    def test_no_match_wrong_keyword(self):
+        """Unrelated log line does not match."""
+        val, met = self._match("throughput: 100.5 samples_per_second")
+        assert val is None and met is None
 
 
 class TestResolveDockerImage:
