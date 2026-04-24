@@ -935,6 +935,17 @@ class ContainerRunner:
             if merged_count > 0:
                 print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
+        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
+            "AMD"
+        ) != -1:
+            from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
+
+            finalize_container_rocm_path(
+                self.context.ctx["docker_env_vars"],
+                docker_image,
+                self.context._rocm_path,
+            )
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])

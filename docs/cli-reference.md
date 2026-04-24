@@ -211,7 +211,7 @@ madengine run [OPTIONS]
 |--------|-------|------|---------|-------------|
 | `--tags` | `-t` | TEXT | `[]` | Model tags to run (can specify multiple) |
 | `--manifest-file` | `-m` | TEXT | `""` | Build manifest file path (for pre-built images) |
-| `--rocm-path` | | TEXT | `None` | ROCm installation root (default: `ROCM_PATH` env or `/opt/rocm`). Use when ROCm is not in `/opt/rocm` (e.g. Rock, pip). |
+| `--rocm-path` | | TEXT | `None` | **Host** ROCm installation root only (default: `ROCM_PATH` env or `/opt/rocm`). Use when the **runner’s** ROCm is not in `/opt/rocm` (e.g. TheRock, pip). Does not set the in-container `ROCM_PATH` for Docker; that is resolved at `run` from the image, probe, or `docker_env_vars` — see [Configuration — ROCm path](configuration.md#rocm-path-run-only). |
 | `--registry` | `-r` | TEXT | `None` | Docker registry URL |
 | `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
@@ -617,7 +617,8 @@ madengine recognizes these environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MODEL_DIR` | Path to MAD package directory | Auto-detected |
-| `ROCM_PATH` | ROCm installation root (used when `--rocm-path` not set) | `/opt/rocm` |
+| `ROCM_PATH` | **Host** ROCm installation root (used when `--rocm-path` not set and for host auto-detect / legacy). In-container `ROCM_PATH` for Docker is not taken from this variable unless the image or run logic supplies it. | `/opt/rocm` |
+| `MAD_AUTO_ROCM_PATH` | Set to `0` to disable **host** auto-detect (`ROCM_PATH` then `/opt/rocm` on the host). | (default: scan on) |
 | `MAD_VERBOSE_CONFIG` | Enable verbose configuration logging | `false` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | None |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password/token | None |

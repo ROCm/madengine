@@ -315,7 +315,7 @@ By default, **madengine** auto-detects the **host** ROCm root (apt under `/opt/r
 
 **Host** overrides: top-level `MAD_ROCM_PATH` in `--additional-context`, or `--rocm-path` (same meaning as top-level `MAD_ROCM_PATH`).
 
-**Container** override: `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` — otherwise the host-resolved path is mirrored into `ROCM_PATH` in the container.
+**In-container** `ROCM_PATH` (AMD Docker runs) is **not** copied from the host. If you do not set `docker_env_vars.MAD_ROCM_PATH` (or a literal `ROCM_PATH` in `docker_env_vars`), madengine sets it at **run** time from, in order: the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME` via `docker image inspect`), an in-container probe (`docker run --rm`), or `/opt/rocm` with a warning. Override explicitly with `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` when the image needs a fixed root. Details: [Configuration — ROCm path](configuration.md#rocm-path-run-only), [ADR 0001](adr/0001-rocm-path-resolution.md).
 
 ```bash
 # Host path via CLI (alias for top-level MAD_ROCM_PATH)
@@ -624,8 +624,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `MODEL_DIR` | MAD package directory | `/path/to/MAD` |
-| `ROCM_PATH` | Legacy host ROCm root when not using `MAD_ROCM_PATH` / `--rocm-path` and when auto is off or as a fallback. | `/path/to/rocm` |
-| `MAD_AUTO_ROCM_PATH` | Set to `0` to disable host auto-detect (use `ROCM_PATH` then `/opt/rocm` only). Default: on. | `0` |
+| `ROCM_PATH` | **Host** ROCm root when not using top-level `MAD_ROCM_PATH` / `--rocm-path`, and (with `MAD_AUTO_ROCM_PATH=0` or as fallback) for host-side detection and tools. In-container `ROCM_PATH` for Docker is set separately at run; see [ROCm path (host and container)](#rocm-path-host-and-container). | `/path/to/rocm` |
+| `MAD_AUTO_ROCM_PATH` | Set to `0` to disable **host** auto-detect (use `ROCM_PATH` then `/opt/rocm` only on the host). Default: on. | `0` |
 | `MAD_VERBOSE_CONFIG` | Verbose config logging | `"true"` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |

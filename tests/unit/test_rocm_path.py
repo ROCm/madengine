@@ -11,7 +11,9 @@ from madengine.core.constants import get_rocm_path
 from madengine.utils import rocm_path_resolver as rpr
 from madengine.utils.rocm_path_resolver import (
     MAD_ROCM_PATH,
+    apply_container_rocm_path_overrides,
     auto_detect_rocm_path,
+    finalize_container_rocm_path,
     get_rocm_path_legacy,
     normalize_rocm_path,
     resolve_container_rocm_path,
@@ -60,7 +62,7 @@ class TestContextRocmPath:
         assert ctx._rocm_path == "/opt/rocm"
 
     def test_context_runtime_includes_rocm_path_in_ctx(self):
-        """Context in runtime mode includes rocm_path and ROCM_PATH in docker_env_vars."""
+        """Context stores host rocm_path; in-container ROCM_PATH is set at run time."""
         from madengine.core.context import Context
         from unittest.mock import patch
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
@@ -75,9 +77,10 @@ class TestContextRocmPath:
             ctx = Context(rocm_path="/my/rocm")
             exp = normalize_rocm_path("/my/rocm")
             assert ctx.ctx.get("rocm_path") == exp
-            assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") == exp
+            # Host path is not mirrored into docker_env_vars.ROCM_PATH at init.
+            assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") in (None, "")
 
-    def test_context_container_mad_overrides_mirror(self):
+    def test_context_container_mad_overrides_host(self):
         """docker_env_vars MAD_ROCM_PATH sets in-container ROCM_PATH (not host path)."""
         from madengine.core.context import Context
         from unittest.mock import patch
@@ -169,16 +172,53 @@ class TestResolveHostContainerRocmPath:
         assert d.get("ROCM_PATH") == r
         assert MAD_ROCM_PATH not in d
 
-    def test_resolve_container_mirrors_host(self):
+    def test_apply_overrides_does_not_mirror_host(self):
         d = {}
-        r = resolve_container_rocm_path(d, "/hostpath")
-        assert r == os.path.abspath("/hostpath").rstrip(os.sep)
-        assert d["ROCM_PATH"] == r
+        r = apply_container_rocm_path_overrides(d, "/hostpath")
+        assert r is None
+        assert "ROCM_PATH" not in d
+        assert resolve_container_rocm_path(d, "/hostpath") == ""
 
     def test_get_rocm_path_legacy_alias(self, monkeypatch):
         monkeypatch.delenv("ROCM_PATH", raising=False)
         g = get_rocm_path_legacy(None)
         assert g == os.path.abspath("/opt/rocm").rstrip(os.sep)
+
+    def test_finalize_prefers_oci(self, monkeypatch):
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: "/opt/from/oci",
+        )
+        d = {}
+        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        assert p == normalize_rocm_path("/opt/from/oci")
+        assert d["ROCM_PATH"] == p
+
+    def test_finalize_uses_probe_when_no_oci(self, monkeypatch):
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: None,
+        )
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.infer_rocm_path_via_docker_run",
+            lambda _img, log=None: "/opt/probed",
+        )
+        d = {}
+        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        assert p == normalize_rocm_path("/opt/probed")
+
+    def test_finalize_defaults(self, monkeypatch):
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: None,
+        )
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.infer_rocm_path_via_docker_run",
+            lambda _img, log=None: None,
+        )
+        d = {}
+        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        assert p == normalize_rocm_path("/opt/rocm")
 
 
 @pytest.mark.unit

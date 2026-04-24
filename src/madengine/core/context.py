@@ -23,7 +23,7 @@ import typing
 # third-party modules
 from madengine.core.console import Console
 from madengine.utils.rocm_path_resolver import (
-    resolve_container_rocm_path,
+    apply_container_rocm_path_overrides,
     resolve_host_rocm_path,
 )
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
@@ -260,7 +260,11 @@ class Context:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
             self.ctx["rocm_path"] = self._rocm_path
-            resolve_container_rocm_path(self.ctx["docker_env_vars"], self._rocm_path)
+            # In-container ``ROCM_PATH`` for Docker is finalized in ``ContainerRunner.run_container``
+            # (OCI env + in-image probe). Here we only map ``MAD_ROCM_PATH`` / user ``ROCM_PATH``.
+            apply_container_rocm_path_overrides(
+                self.ctx["docker_env_vars"], self._rocm_path
+            )
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
