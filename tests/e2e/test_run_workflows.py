@@ -359,7 +359,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7', 'gen_sys_env_details': False}\" "
         )
 
         gpu_nodeid_map = get_gpu_nodeid_map()

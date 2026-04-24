@@ -34,6 +34,7 @@ from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.therock_markers import is_therock_tree
+from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
@@ -1082,9 +1083,11 @@ class ContainerRunner:
         if os.path.exists(tools_json_file):
             self.apply_tools(pre_encapsulate_post_scripts, run_env, tools_json_file)
 
-        # Add system environment collection script to pre_scripts (equivalent to generate_sys_env_details)
-        # This ensures distributed runs have the same system environment logging as standard runs
-        if generate_sys_env_details or self.context.ctx.get("gen_sys_env_details"):
+        # Add system environment collection script to pre_scripts
+        # Context can explicitly disable via gen_sys_env_details: false in additional_context
+        ctx_sys_env = self.context.ctx.get("gen_sys_env_details")
+        should_collect_sys_env = ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
+        if should_collect_sys_env:
             self.gather_system_env_details(
                 pre_encapsulate_post_scripts, model_info["name"]
             )
@@ -1415,9 +1418,9 @@ class ContainerRunner:
                                         
                                         # Try multiple patterns to match different log formats
                                         
-                                        # Pattern 1: "performance: 12345 metric_name" (original expected format)
-                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-                                        match = re.search(perf_pattern, log_content)
+                                        # Pattern 1: "performance: <value>[<unit>][,] <metric>"
+                                        # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
+                                        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
                                         
                                         if match:
                                             run_results["performance"] = match.group(1).strip()
