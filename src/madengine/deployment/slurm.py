@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -980,14 +981,34 @@ export MASTER_PORT={master_port}
             self.console.print(f"[dim yellow]Note: Could not locate log files: {e}[/dim yellow]")
 
     def _check_job_completion(self, job_id: str) -> DeploymentResult:
-        """Check completed job status using sacct (locally)."""
+        """Check completed job status using sacct (locally).
+
+        sacct can transiently return non-zero immediately after a job leaves
+        the queue because SLURM's accounting database may not yet be updated.
+        Retry up to _SACCT_RETRIES times with _SACCT_RETRY_DELAY seconds
+        between attempts before declaring the status UNKNOWN.
+        """
+        _SACCT_RETRIES = 3
+        _SACCT_RETRY_DELAY = 5  # seconds
+
         try:
-            result = subprocess.run(
-                ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            result = None
+            for attempt in range(1, _SACCT_RETRIES + 1):
+                result = subprocess.run(
+                    ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    break
+                if attempt < _SACCT_RETRIES:
+                    self.console.print(
+                        f"[dim yellow]sacct returned non-zero for job {job_id} "
+                        f"(attempt {attempt}/{_SACCT_RETRIES}), retrying in "
+                        f"{_SACCT_RETRY_DELAY}s...[/dim yellow]"
+                    )
+                    time.sleep(_SACCT_RETRY_DELAY)
 
             if result.returncode == 0:
                 status = result.stdout.strip().upper()

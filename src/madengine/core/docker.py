@@ -97,8 +97,11 @@ class Docker:
         command += "-v " + cwd + ":/myworkspace/ "
 
         # add envVars
+        _env_key_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
         if envVars is not None:
             for evar in envVars.keys():
+                if not _env_key_re.match(evar):
+                    raise ValueError(f"Invalid environment variable name: {evar!r}")
                 command += "-e " + evar + "=" + shlex.quote(str(envVars[evar])) + " "
 
         command += "--workdir /myworkspace/ "
@@ -111,9 +114,10 @@ class Docker:
         command += "cat "
         self.console.sh(command)
 
-        # find container sha
+        # find container sha — use the same exact-match filter as the existence
+        # check above to avoid false positives from substring/regex matches.
         self.docker_sha = self.console.sh(
-            "docker ps -aqf 'name=" + container_name + "' "
+            f"docker ps -aqf name={container_name_regex}"
         )
 
     def sh(self, command: str, timeout: int = 60, secret: bool = False) -> str:

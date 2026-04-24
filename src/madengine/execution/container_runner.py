@@ -536,6 +536,8 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
+    _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
     def get_env_arg(self, run_env: typing.Dict) -> str:
         """Get the environment arguments for docker run."""
         env_args = ""
@@ -543,11 +545,15 @@ class ContainerRunner:
         # Add custom environment variables
         if run_env:
             for env_arg in run_env:
+                if not self._ENV_KEY_RE.match(env_arg):
+                    raise ValueError(f"Invalid environment variable name: {env_arg!r}")
                 env_args += f"--env {env_arg}={shlex.quote(str(run_env[env_arg]))} "
 
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
+                if not self._ENV_KEY_RE.match(env_arg):
+                    raise ValueError(f"Invalid environment variable name: {env_arg!r}")
                 value = self.context.ctx["docker_env_vars"][env_arg]
                 env_args += f"--env {env_arg}={shlex.quote(str(value))} "
 
