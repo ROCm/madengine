@@ -1059,6 +1059,12 @@ class ContainerRunner:
         ) != -1:
             from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
 
+            # Clear any ROCM_PATH left from a previous model run so finalize always
+            # re-resolves per docker_image (OCI config → probe → default).
+            # If the user supplied MAD_ROCM_PATH via additional_context it was merged
+            # into docker_env_vars just above and finalize will consume it correctly.
+            self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
+
             finalize_container_rocm_path(
                 self.context.ctx["docker_env_vars"],
                 docker_image,

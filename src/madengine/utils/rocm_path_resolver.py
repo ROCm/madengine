@@ -257,7 +257,7 @@ def resolve_host_rocm_path(
 _CONTAINER_PROBE_SH = r"""try_root() {
   d="$1"
   [ -d "$d" ] || return 1
-  { [ -f "$d/bin/rocminfo" ] || [ -f "$d/bin/amd-smi" ] || [ -f "$d/share/therock/therock_manifest.json" ] || [ -f "$d/share/therock/dist_info.json" ]; } && return 0
+  { [ -f "$d/bin/rocminfo" ] || [ -f "$d/bin/amd-smi" ] || [ -f "$d/bin/rocm-smi" ] || [ -f "$d/share/therock/therock_manifest.json" ] || [ -f "$d/share/therock/dist_info.json" ]; } && return 0
   return 1
 }
 if command -v rocm-sdk >/dev/null 2>&1; then
@@ -387,12 +387,14 @@ def apply_container_rocm_path_overrides(
     Returns the resolved path if one was set, else ``None``.
     """
     d = docker_env
-    if MAD_ROCM_PATH in d and d[MAD_ROCM_PATH] is not None:
-        s = d.pop(MAD_ROCM_PATH)
+    if MAD_ROCM_PATH in d:
+        s = d.pop(MAD_ROCM_PATH)  # always consume, even when None
         if isinstance(s, (int, float)):
             s = str(s)
         if not isinstance(s, str) or not str(s).strip():
             s = host_path
+        if not s:
+            return None
         croot = normalize_rocm_path(str(s).strip())
     elif d.get("ROCM_PATH") not in (None, ""):
         croot = normalize_rocm_path(str(d["ROCM_PATH"]).strip())

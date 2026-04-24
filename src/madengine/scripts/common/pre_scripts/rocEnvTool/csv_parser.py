@@ -3,6 +3,7 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 import os
+import shlex
 import shutil
 from console import Console
 
@@ -36,7 +37,7 @@ class CSVParser:
         # Use PATH resolution first so TheRock images (where rocm-smi lives
         # under a Python venv, not /opt/rocm/bin/) are handled correctly.
         rocm_smi_cmd = shutil.which("rocm-smi") or "/opt/rocm/bin/rocm-smi"
-        rocm_smi_out = console.sh(f"{rocm_smi_cmd} || true")
+        rocm_smi_out = console.sh(shlex.quote(rocm_smi_cmd) + " || true")
         nv_smi_out = console.sh("nvidia-smi -L || true")
         if "not found" not in rocm_smi_out and "No such file" not in rocm_smi_out:
             gpu_device_type = "AMD"
@@ -119,10 +120,10 @@ class CSVParser:
             for j in range(1, len(lines)):
                 line = lines[j].rstrip()
                 if "GPU" in line:
-                    num_gpu += 1
                     values = line.split(":")
                     if len(values) < 3:
                         continue
+                    num_gpu += 1
                     name = values[1].split("(UUID")[0]
                     uuid = values[2]
             info_list.append("Name|" + name)
