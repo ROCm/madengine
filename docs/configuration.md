@@ -147,6 +147,8 @@ Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_RO
 
 This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
 
+At the start of each container run, a **Run Phase Environment** table is printed showing host vs container installation type (`apt install` or `therock`), ROCm/CUDA root, and version side-by-side. See [Run phase environment table](usage.md#run-phase-environment-table).
+
 ## Build Configuration
 
 ### Batch Manifest

@@ -333,6 +333,31 @@ madengine run --tags model --additional-context '{
 
 `--rocm-path` applies only to the **run** command (not build). See [Configuration - ROCm path](configuration.md#rocm-path-run-only).
 
+### Run phase environment table
+
+At the start of each container run, madengine prints a side-by-side environment summary for the **host** and the **container**:
+
+```
+🖥️   RUN PHASE ENVIRONMENT
+================================================================================
+                            HOST                                  CONTAINER
+  ──────────────────────────────────────────────────────────────────────────────
+  GPU Vendor                AMD                                   AMD
+  Installation Type         apt install                           therock
+  ROCm Root                 /opt/rocm                             /opt/python/lib/python3.13/site-packages/_rocm_sdk_devel
+  ROCm Version              6.4.0                                 7.13.0a20260415
+  ──────────────────────────────────────────────────────────────────────────────
+================================================================================
+```
+
+| Field | AMD values | NVIDIA values |
+|---|---|---|
+| Installation Type | `apt install` (traditional `/opt/rocm`) or `therock` (Python-package layout) | `CUDA toolkit` |
+| ROCm / CUDA Root | Resolved via `RocmPathResolver` (host) or `rocm-sdk path --root` (container) | `nvcc` binary location |
+| ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
+
+The host column uses the same resolution as `--rocm-path` / `MAD_ROCM_PATH`. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+
 ### Deploy to Kubernetes
 
 ```bash

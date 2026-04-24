@@ -266,7 +266,15 @@ class TestTheRockVersionedContainerLayout:
             r = p.resolve()
             if r == vroot:
                 return real_looks(r)
-            if str(r) == "/opt/rocm":
+            # Suppress any real /opt/rocm installation on the host (including
+            # when /opt/rocm is a symlink, e.g. /opt/rocm -> /opt/rocm-6.4.2,
+            # so p.resolve() won't equal Path("/opt/rocm")).
+            p_str = str(p)
+            r_str = str(r)
+            if p_str == "/opt/rocm" or r_str == "/opt/rocm":
+                return False
+            # Also suppress versioned host installs reachable via /opt/rocm symlink
+            if p_str.startswith("/opt/rocm-") and r_str != str(vroot):
                 return False
             return real_looks(p)
 
