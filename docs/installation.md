@@ -83,7 +83,7 @@ madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
-**Non-default ROCm location (host):** If ROCm is not under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip install), set `ROCM_PATH` on the **host** or use `madengine run --rocm-path /path/to/rocm` so **host** GPU checks (`amd-smi`, etc.) resolve correctly. **In-container** `ROCM_PATH` for Docker workloads is set separately at run (image OCI env, in-image probe, or `docker_env_vars.MAD_ROCM_PATH`); it is not copied from the host. See [Configuration — ROCm path](configuration.md#rocm-path-run-only).
+**Non-default ROCm location (host):** If ROCm is not under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip install), set `ROCM_PATH` on the **host** or set top-level `MAD_ROCM_PATH` in `--additional-context` so **host** GPU checks (`amd-smi`, etc.) resolve correctly. **In-container** `ROCM_PATH` for Docker workloads is set separately at run (image OCI env, in-image probe, or `docker_env_vars.MAD_ROCM_PATH`); it is not copied from the host. See [Configuration — ROCm path](configuration.md#rocm-path-run-only).
 
 ### NVIDIA CUDA
 
@@ -140,7 +140,7 @@ rocm-smi
 ls -la /dev/kfd /dev/dri
 ```
 
-If ROCm is installed in a non-default path on the **host** (e.g. TheRock or pip), set `export ROCM_PATH=/path/to/rocm` or use `madengine run --rocm-path /path/to/rocm` (host validation only; see [ROCm path (run only)](configuration.md#rocm-path-run-only) for in-container behavior).
+If ROCm is installed in a non-default path on the **host** (e.g. TheRock or pip), set `export ROCM_PATH=/path/to/rocm` or pass `MAD_ROCM_PATH` in `--additional-context` (host validation only; see [ROCm path (run only)](configuration.md#rocm-path-run-only) for in-container behavior).
 
 ### MAD Package Not Found
 

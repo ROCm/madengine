@@ -199,7 +199,7 @@ PUBLIC_GITHUB_ROCM_KEY = _get_public_github_rocm_key()
 def get_rocm_path(override=None):
     """Return ROCm installation root (legacy, no automatic filesystem scan).
 
-    For full resolution (MAD_ROCM_PATH, --rocm-path, auto-detect) use
+    For full resolution (MAD_ROCM_PATH, auto-detect) use
     :func:`madengine.utils.rocm_path_resolver.resolve_host_rocm_path` in
     :class:`~madengine.core.context.Context`.
 

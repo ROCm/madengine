@@ -313,16 +313,18 @@ madengine run --tags model \
 
 By default, **madengine** auto-detects the **host** ROCm root (apt under `/opt/rocm`, TheRock `rocm-sdk` layout, etc.). Disable scanning with `MAD_AUTO_ROCM_PATH=0` (then `ROCM_PATH` / `/opt/rocm` only).
 
-**Host** overrides: top-level `MAD_ROCM_PATH` in `--additional-context`, or `--rocm-path` (same meaning as top-level `MAD_ROCM_PATH`).
+**Host** override: set top-level `MAD_ROCM_PATH` in `--additional-context` to tell madengine where host GPU tools live (`rocminfo`, `amd-smi`, etc.).
 
 **In-container** `ROCM_PATH` (AMD Docker runs) is **not** copied from the host. If you do not set `docker_env_vars.MAD_ROCM_PATH` (or a literal `ROCM_PATH` in `docker_env_vars`), madengine sets it at **run** time from, in order: the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME` via `docker image inspect`), an in-container probe (`docker run --rm`), or `/opt/rocm` with a warning. Override explicitly with `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` when the image needs a fixed root. Details: [Configuration — ROCm path](configuration.md#rocm-path-run-only), [ADR 0001](adr/0001-rocm-path-resolution.md).
 
-```bash
-# Host path via CLI (alias for top-level MAD_ROCM_PATH)
-madengine run --tags model --rocm-path /path/to/host/rocm \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+The two keys are independent — host and container can point to different ROCm installations:
 
-# Or in additional context (host + optional container)
+```bash
+# Override host ROCm root only
+madengine run --tags model \
+  --additional-context '{"MAD_ROCM_PATH": "/path/to/host/rocm", "gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Override host and container paths independently
 madengine run --tags model --additional-context '{
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
@@ -331,7 +333,7 @@ madengine run --tags model --additional-context '{
 }'
 ```
 
-`--rocm-path` applies only to the **run** command (not build). See [Configuration - ROCm path](configuration.md#rocm-path-run-only).
+See [Configuration - ROCm path](configuration.md#rocm-path-run-only).
 
 ### Run phase environment table
 
@@ -356,7 +358,7 @@ At the start of each container run, madengine prints a side-by-side environment 
 | ROCm / CUDA Root | Resolved via `RocmPathResolver` (host) or `rocm-sdk path --root` (container) | `nvcc` binary location |
 | ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
 
-The host column uses the same resolution as `--rocm-path` / `MAD_ROCM_PATH`. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
 
 ### Deploy to Kubernetes
 
@@ -649,7 +651,7 @@ madengine build --tags model --clean-docker-cache --verbose
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `MODEL_DIR` | MAD package directory | `/path/to/MAD` |
-| `ROCM_PATH` | **Host** ROCm root when not using top-level `MAD_ROCM_PATH` / `--rocm-path`, and (with `MAD_AUTO_ROCM_PATH=0` or as fallback) for host-side detection and tools. In-container `ROCM_PATH` for Docker is set separately at run; see [ROCm path (host and container)](#rocm-path-host-and-container). | `/path/to/rocm` |
+| `ROCM_PATH` | **Host** ROCm root fallback when `MAD_ROCM_PATH` is not set in additional context and auto-detect is disabled or finds nothing. In-container `ROCM_PATH` for Docker is set separately at run; see [ROCm path (host and container)](#rocm-path-host-and-container). | `/path/to/rocm` |
 | `MAD_AUTO_ROCM_PATH` | Set to `0` to disable **host** auto-detect (use `ROCM_PATH` then `/opt/rocm` only on the host). Default: on. | `0` |
 | `MAD_VERBOSE_CONFIG` | Verbose config logging | `"true"` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |

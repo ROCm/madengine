@@ -16,10 +16,9 @@ fails the root check).
 **Host** overrides (precedence):
 
 1. Top-level ``MAD_ROCM_PATH`` in additional context.
-2. ``--rocm-path`` (CLI) — host-only; same meaning as (1).
-3. Auto-detection (when ``MAD_AUTO_ROCM_PATH`` is not ``"0"``).
-4. ``ROCM_PATH`` environment variable.
-5. Default ``/opt/rocm``.
+2. Auto-detection (when ``MAD_AUTO_ROCM_PATH`` is not ``"0"``).
+3. ``ROCM_PATH`` environment variable.
+4. Default ``/opt/rocm``.
 
 **Container** (``docker_env_vars``) — set when the run uses Docker (``run_container``):
 
@@ -232,7 +231,6 @@ def get_rocm_path_legacy(override: Optional[str] = None) -> str:
 
 def resolve_host_rocm_path(
     ctx: Optional[Dict[str, Any]] = None,
-    cli_rocm_path: Optional[str] = None,
 ) -> str:
     """
     Resolve the host ROCm installation root for madengine (GPU tools, validation).
@@ -243,8 +241,6 @@ def resolve_host_rocm_path(
     mad = ctx.get(MAD_ROCM_PATH)
     if isinstance(mad, str) and mad.strip():
         return normalize_rocm_path(mad)
-    if cli_rocm_path and str(cli_rocm_path).strip():
-        return normalize_rocm_path(str(cli_rocm_path).strip())
 
     if os.environ.get("MAD_AUTO_ROCM_PATH", "1").strip() == "0":
         return get_rocm_path_legacy(None)

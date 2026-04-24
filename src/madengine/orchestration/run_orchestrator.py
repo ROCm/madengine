@@ -115,7 +115,6 @@ class RunOrchestrator:
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
-            rocm_path=getattr(self.args, "rocm_path", None),
         )
 
         # Initialize data provider if data config exists
@@ -424,7 +423,6 @@ class RunOrchestrator:
         build_context = Context(
             additional_context=context_string,
             build_only_mode=True,
-            rocm_path=getattr(self.args, "rocm_path", None),
         )
         
         # Create manifest structure

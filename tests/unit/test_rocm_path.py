@@ -1,5 +1,5 @@
 """
-Unit tests for ROCm path (ROCM_PATH / --rocm-path) support.
+Unit tests for ROCm path (ROCM_PATH / MAD_ROCM_PATH) support.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -54,12 +54,21 @@ class TestGetRocmPath:
 class TestContextRocmPath:
     """Test Context stores and uses rocm_path."""
 
-    def test_context_build_only_stores_rocm_path(self):
-        """Context with build_only_mode=True and rocm_path sets _rocm_path."""
+    def test_context_build_only_default_rocm_path(self):
+        """Context with build_only_mode=True resolves _rocm_path via auto-detect or default."""
         from madengine.core.context import Context
 
-        ctx = Context(build_only_mode=True, rocm_path="/opt/rocm")
-        assert ctx._rocm_path == "/opt/rocm"
+        ctx = Context(build_only_mode=True)
+        assert os.path.isabs(ctx._rocm_path)
+
+    def test_context_build_only_mad_rocm_path(self):
+        """Context with build_only_mode=True and top-level MAD_ROCM_PATH sets _rocm_path."""
+        from madengine.core.context import Context
+        from madengine.utils.rocm_path_resolver import normalize_rocm_path
+
+        ac = repr({MAD_ROCM_PATH: "/opt/rocm-test"})
+        ctx = Context(build_only_mode=True, additional_context=ac)
+        assert ctx._rocm_path == normalize_rocm_path("/opt/rocm-test")
 
     def test_context_runtime_includes_rocm_path_in_ctx(self):
         """Context stores host rocm_path; in-container ROCM_PATH is set at run time."""
@@ -67,6 +76,7 @@ class TestContextRocmPath:
         from unittest.mock import patch
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
 
+        ac = repr({MAD_ROCM_PATH: "/my/rocm"})
         with patch.object(Context, "get_gpu_vendor", return_value="AMD"), \
              patch.object(Context, "get_system_ngpus", return_value=2), \
              patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a"), \
@@ -74,20 +84,21 @@ class TestContextRocmPath:
              patch.object(Context, "get_system_hip_version", return_value="5.4"), \
              patch.object(Context, "get_docker_gpus", return_value="0-1"), \
              patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
-            ctx = Context(rocm_path="/my/rocm")
+            ctx = Context(additional_context=ac)
             exp = normalize_rocm_path("/my/rocm")
             assert ctx.ctx.get("rocm_path") == exp
             # Host path is not mirrored into docker_env_vars.ROCM_PATH at init.
             assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") in (None, "")
 
     def test_context_container_mad_overrides_host(self):
-        """docker_env_vars MAD_ROCM_PATH sets in-container ROCM_PATH (not host path)."""
+        """docker_env_vars MAD_ROCM_PATH sets in-container ROCM_PATH independently."""
         from madengine.core.context import Context
         from unittest.mock import patch
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
 
         ac = repr(
             {
+                MAD_ROCM_PATH: "/on/host",
                 "docker_env_vars": {MAD_ROCM_PATH: "/in/image"},
             }
         )
@@ -98,10 +109,7 @@ class TestContextRocmPath:
              patch.object(Context, "get_system_hip_version", return_value="5.4"), \
              patch.object(Context, "get_docker_gpus", return_value="0-1"), \
              patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
-            ctx = Context(
-                additional_context=ac,
-                rocm_path="/on/host",
-            )
+            ctx = Context(additional_context=ac)
         assert ctx._rocm_path == normalize_rocm_path("/on/host")
         assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") == normalize_rocm_path(
             "/in/image"
@@ -125,43 +133,23 @@ class TestRocmToolManagerRocmPath:
 
 
 @pytest.mark.unit
-class TestRunCommandRocmPath:
-    """Test run command exposes --rocm-path."""
-
-    def test_run_help_includes_rocm_path(self):
-        """madengine run --help mentions --rocm-path."""
-        from typer.testing import CliRunner
-        from madengine.cli import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["run", "--help"])
-        assert result.exit_code == 0
-        assert "--rocm-path" in result.output
-
-
-@pytest.mark.unit
 class TestResolveHostContainerRocmPath:
     """Test madengine rocm_path_resolver (MAD_ROCM_PATH / auto)."""
 
-    def test_resolve_host_mad_takes_precedence_over_cli(self):
-        """Top-level MAD_ROCM_PATH in context wins over --rocm-path."""
-        p = resolve_host_rocm_path({MAD_ROCM_PATH: "/from/context"}, "/from/cli")
+    def test_resolve_host_mad_context_takes_precedence(self):
+        """Top-level MAD_ROCM_PATH in context is used for host path."""
+        p = resolve_host_rocm_path({MAD_ROCM_PATH: "/from/context"})
         assert os.path.isabs(p)
         assert p == os.path.abspath("/from/context").rstrip(os.sep)
-
-    def test_resolve_host_cli_when_no_mad(self):
-        """--rocm-path (cli) is used when MAD_ROCM_PATH is absent."""
-        p = resolve_host_rocm_path({}, "/only/cli")
-        assert p == os.path.abspath("/only/cli").rstrip(os.sep)
 
     def test_resolve_host_legacy_when_auto_off(self, monkeypatch):
         """MAD_AUTO_ROCM_PATH=0 uses ROCM_PATH env then default."""
         monkeypatch.setenv("MAD_AUTO_ROCM_PATH", "0")
         monkeypatch.delenv("ROCM_PATH", raising=False)
-        p = resolve_host_rocm_path({}, None)
+        p = resolve_host_rocm_path({})
         assert p == os.path.abspath("/opt/rocm").rstrip(os.sep)
         monkeypatch.setenv("ROCM_PATH", "/env/ro")
-        p2 = resolve_host_rocm_path({}, None)
+        p2 = resolve_host_rocm_path({})
         assert p2 == os.path.abspath("/env/ro").rstrip(os.sep)
 
     def test_resolve_container_mad_consumes_key(self):

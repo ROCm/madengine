@@ -85,7 +85,6 @@ class Context:
         additional_context: str = None,
         additional_context_file: str = None,
         build_only_mode: bool = False,
-        rocm_path: str = None,
     ) -> None:
         """Constructor of the Context class.
 
@@ -93,7 +92,6 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
-            rocm_path: Host ROCm root (``--rocm-path``), same as top-level ``MAD_ROCM_PATH``.
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
@@ -132,8 +130,8 @@ class Context:
             dict_additional_context = ast.literal_eval(additional_context)
             update_dict(self.ctx, dict_additional_context)
 
-        # Host ROCm path after merge (top-level MAD_ROCM_PATH, then --rocm-path, then auto)
-        self._rocm_path = resolve_host_rocm_path(self.ctx, rocm_path)
+        # Host ROCm path: top-level MAD_ROCM_PATH in context, then auto-detect
+        self._rocm_path = resolve_host_rocm_path(self.ctx)
 
         # Initialize context based on mode
         # User-provided contexts will not be overridden by detection
@@ -396,7 +394,7 @@ class Context:
                 print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
-        # Use configurable ROCm path (ROCM_PATH / --rocm-path) for non-default installs
+        # Use configurable ROCm path (MAD_ROCM_PATH / ROCM_PATH) for non-default installs
         amd_smi_paths = [
             os.path.join(self._rocm_path, "bin", "amd-smi"),
             "/usr/local/bin/amd-smi",

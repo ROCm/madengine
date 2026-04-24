@@ -152,13 +152,6 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
-    rocm_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--rocm-path",
-            help="Host ROCm root (alias for top-level MAD_ROCM_PATH in --additional-context). Auto-detect when omitted (set MAD_AUTO_ROCM_PATH=0 to disable).",
-        ),
-    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -237,7 +230,6 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
-                rocm_path=rocm_path,
                 skip_model_run=skip_model_run,
                 _separate_phases=True,
             )
@@ -342,7 +334,6 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
-                rocm_path=rocm_path,
                 skip_model_run=skip_model_run,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )

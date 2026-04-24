@@ -211,7 +211,6 @@ madengine run [OPTIONS]
 |--------|-------|------|---------|-------------|
 | `--tags` | `-t` | TEXT | `[]` | Model tags to run (can specify multiple) |
 | `--manifest-file` | `-m` | TEXT | `""` | Build manifest file path (for pre-built images) |
-| `--rocm-path` | | TEXT | `None` | **Host** ROCm installation root only (default: `ROCM_PATH` env or `/opt/rocm`). Use when the **runner’s** ROCm is not in `/opt/rocm` (e.g. TheRock, pip). Does not set the in-container `ROCM_PATH` for Docker; that is resolved at `run` from the image, probe, or `docker_env_vars` — see [Configuration — ROCm path](configuration.md#rocm-path-run-only). |
 | `--registry` | `-r` | TEXT | `None` | Docker registry URL |
 | `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
@@ -240,9 +239,13 @@ madengine run [OPTIONS]
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
-# Custom ROCm path (when ROCm is not in /opt/rocm, e.g. Rock or pip install)
-madengine run --tags dummy --rocm-path /path/to/rocm \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Custom host ROCm path (when ROCm is not in /opt/rocm, e.g. TheRock or pip install)
+madengine run --tags dummy \
+  --additional-context '{"MAD_ROCM_PATH": "/path/to/rocm", "gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Custom in-container ROCm path (independent from host)
+madengine run --tags dummy \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "docker_env_vars": {"MAD_ROCM_PATH": "/path/in/container"}}'
 
 # Run with pre-built images (manifest-based)
 madengine run --manifest-file build_manifest.json
@@ -617,7 +620,7 @@ madengine recognizes these environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MODEL_DIR` | Path to MAD package directory | Auto-detected |
-| `ROCM_PATH` | **Host** ROCm installation root (used when `--rocm-path` not set and for host auto-detect / legacy). In-container `ROCM_PATH` for Docker is not taken from this variable unless the image or run logic supplies it. | `/opt/rocm` |
+| `ROCM_PATH` | **Host** ROCm installation root (fallback when `MAD_ROCM_PATH` is not set in additional context and auto-detect is disabled or finds nothing). In-container `ROCM_PATH` for Docker is not taken from this variable; set `docker_env_vars.MAD_ROCM_PATH` in additional context instead. | `/opt/rocm` |
 | `MAD_AUTO_ROCM_PATH` | Set to `0` to disable **host** auto-detect (`ROCM_PATH` then `/opt/rocm` on the host). | (default: scan on) |
 | `MAD_VERBOSE_CONFIG` | Enable verbose configuration logging | `false` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | None |
