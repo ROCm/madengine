@@ -79,7 +79,7 @@ def load_credentials() -> Optional[Dict]:
 
 
 def login_to_registry(
-    registry: str,
+    registry: Optional[str],
     credentials: Optional[Dict],
     console,
     rich_console,
@@ -91,8 +91,8 @@ def login_to_registry(
     and ContainerRunner.
 
     Args:
-        registry: Registry URL (e.g., "localhost:5000", "docker.io", or empty
-            for DockerHub).
+        registry: Registry URL (e.g., "localhost:5000", "docker.io"), or
+            ``None``/empty string to target DockerHub.
         credentials: Credentials dictionary keyed by registry name.
         console: A ``Console`` instance for shell execution.
         rich_console: A Rich ``Console`` instance for formatted output.

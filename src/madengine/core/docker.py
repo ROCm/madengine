@@ -7,6 +7,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import os
+import re
 import shlex
 import typing
 
@@ -61,8 +62,9 @@ class Docker:
         # containing regex metacharacters (e.g. ".", "[") cannot produce false
         # positives, and substring matches are avoided entirely.
         container_name_quoted = shlex.quote(container_name)
+        container_name_regex = shlex.quote(f"^/{re.escape(container_name)}$")
         container_name_exists = self.console.sh(
-            f"docker container ps -aq --filter name=^/{container_name_quoted}$"
+            f"docker container ps -aq --filter name={container_name_regex}"
         )
         # if container name exists, clean it up automatically
         if container_name_exists:
