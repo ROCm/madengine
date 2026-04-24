@@ -954,9 +954,11 @@ class ContainerRunner:
         if os.path.exists(tools_json_file):
             self.apply_tools(pre_encapsulate_post_scripts, run_env, tools_json_file)
 
-        # Add system environment collection script to pre_scripts (equivalent to generate_sys_env_details)
-        # This ensures distributed runs have the same system environment logging as standard runs
-        if generate_sys_env_details or self.context.ctx.get("gen_sys_env_details"):
+        # Add system environment collection script to pre_scripts
+        # Context can explicitly disable via gen_sys_env_details: false in additional_context
+        ctx_sys_env = self.context.ctx.get("gen_sys_env_details")
+        should_collect_sys_env = ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
+        if should_collect_sys_env:
             self.gather_system_env_details(
                 pre_encapsulate_post_scripts, model_info["name"]
             )
