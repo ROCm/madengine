@@ -140,6 +140,62 @@ Collect comprehensive ROCm profiling data:
 
 Use **`rocm_trace_lite`** for RTL **`lite`** mode (lower overhead; skips some dispatches that already carry a completion signal) or **`rocm_trace_lite_default`** for RTL **`default`** mode (broader coverage; higher overhead). Both set `RTL_MODE` for `rtl_trace_wrapper.sh`, which passes `rtl trace --mode <mode> …` when supported by your installed rocm-trace-lite. See upstream [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (`--mode` / profiling modes). Example: `examples/profiling-configs/rocm_trace_lite_default.json`.
 
+#### rocm_trace_lite_fast — minimal-overhead env-var mode
+
+For **benchmarking** where wall-time accuracy matters, use **`rocm_trace_lite_fast`** instead. It eliminates the ~20-35 second wall-time overhead that `rocm_trace_lite` adds from synchronous post-processing (merge, summary, Perfetto conversion).
+
+```json
+{
+  "tools": [
+    {"name": "rocm_trace_lite_fast"}
+  ]
+}
+```
+
+**How it differs from `rocm_trace_lite`:**
+
+| Aspect | `rocm_trace_lite` | `rocm_trace_lite_fast` |
+|--------|-------------------|----------------------|
+| Wrapper | `rtl trace` CLI (subprocess) | Direct env-var (`HSA_TOOLS_LIB` + `LD_PRELOAD`) |
+| Post-processing | Synchronous, BEFORE perf metric | Deferred to post-script, AFTER perf metric |
+| Wall time overhead | ~20-35s (merge + summary + Perfetto) | ~0-1s (HSA OnLoad only) |
+| Throughput impact | ~0.5-1% | ~0.5-1% (same per-kernel cost) |
+| Trace output | Same | Same (trace.db + summary + Perfetto) |
+
+**Example:**
+```bash
+madengine run --tags pyt_huggingface_gpt2 \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "tools": [{"name": "rocm_trace_lite_fast"}]
+  }'
+```
+
+The wrapper script (`rtl_envvar_wrapper.sh`) sets `HSA_TOOLS_LIB`, `LD_PRELOAD`, and `RTL_OUTPUT` environment variables and then `exec`s the model command directly. Each torchrun worker writes its own `trace_<PID>.db` file. After the model exits and madengine captures the performance metric, the post-script merges per-process traces, generates a summary, and converts to Perfetto JSON.
+
+#### roctx markers for model scripts
+
+RTL captures [roctx markers](https://sunway513.github.io/rocm-trace-lite/tutorial_roctx.html) via its built-in roctx shim (`LD_PRELOAD`). madengine ships a helper at `scripts/common/tools/roctx_markers.py` that model developers can use to annotate phases:
+
+```python
+from roctx_markers import roctx_range, roctx_mark
+
+with roctx_range("warmup"):
+    for i in range(warmup_iters):
+        model(input)
+    torch.cuda.synchronize()
+
+with roctx_range("timed"):
+    for i in range(timed_iters):
+        output = model(input)
+    torch.cuda.synchronize()
+
+roctx_mark("done")
+```
+
+When RTL is not loaded, all calls are silent no-ops with zero overhead. When RTL is active, markers appear in the trace timeline, enabling per-phase analysis (warmup vs timed vs per-step). Per-marker cost is <100ns (a single `clock_gettime` + thread-local vector push).
+
 **How madengine runs it:** The tool prepends `bash ../scripts/common/tools/rtl_trace_wrapper.sh` around your model command. The wrapper runs `rtl trace` with `-o rocm_trace_lite_output/trace.db` and optional `--mode` from `RTL_MODE` (see the [RTL quick start](https://sunway513.github.io/rocm-trace-lite/quickstart.html)). If `rtl` is not on `PATH` but the Python package is installed, it falls back to `python3 -m rocm_trace_lite.cli`.
 
 **Installing `rocm-trace-lite` in the container:** Upstream distributes **wheels on [GitHub Releases](https://github.com/sunway513/rocm-trace-lite/releases)**, not on PyPI. The trace **pre-script** (`scripts/common/pre_scripts/trace.sh` with args `rocm_trace_lite`) installs via `pip` from a **pinned** `linux_x86_64` wheel URL by default (reproducible; bump the pin in that script when you intentionally upgrade RTL). To follow upstream’s latest release instead, set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** (uses the GitHub API; needs `curl`). For a specific wheel, set **`ROCM_TRACE_LITE_WHEEL_URL`** to the full URL of a `.whl` file (or bake the package into the image). You need **outbound HTTPS to `github.com`** for the default or latest path unless the wheel is already present. Published wheels target **linux x86_64**; other architectures require a compatible wheel and the env override.

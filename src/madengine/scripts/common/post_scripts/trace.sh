@@ -154,6 +154,69 @@ rocm_trace_lite)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: rocm_trace_lite output directory may be empty"
 	;;
 
+rocm_trace_lite_fast)
+	# Env-var mode: per-process trace_*.db files written by RTL's atexit handler.
+	# This post-script runs AFTER madengine has extracted the performance metric,
+	# so merge + summary + Perfetto do NOT affect wall time or throughput measurement.
+	echo "rocm-trace-lite post-script (fast mode): merging per-process traces..."
+	mkdir -p "$OUTPUT"
+
+	# Merge per-process trace_<PID>.db files into a single trace.db
+	if ls rocm_trace_lite_output/trace_*.db 1>/dev/null 2>&1; then
+		python3 << 'PYEOF'
+import glob, os, re, shutil, sys
+files = sorted([
+    f for f in glob.glob('rocm_trace_lite_output/trace_*.db')
+    if re.match(r'^trace_\d+\.db$', os.path.basename(f))
+])
+if not files:
+    print('No per-process trace files found.')
+elif len(files) == 1:
+    shutil.copy2(files[0], 'rocm_trace_lite_output/trace.db')
+    print('Single process trace -> trace.db')
+else:
+    merged = False
+    try:
+        from rocm_trace_lite.cmd_trace import _merge_traces
+        _merge_traces(files, 'rocm_trace_lite_output/trace.db')
+        print(f'Merged {len(files)} per-process traces -> trace.db')
+        merged = True
+    except Exception as e:
+        sys.stderr.write(f'merge warning: {e}\n')
+    if not merged:
+        shutil.copy2(files[0], 'rocm_trace_lite_output/trace.db')
+        print('Warning: merge unavailable, using first trace file')
+PYEOF
+		rc=$?; [ $rc -ne 0 ] && echo "Warning: trace merge failed (non-fatal)"
+	else
+		echo "Warning: no per-process trace_*.db files found in rocm_trace_lite_output/"
+	fi
+
+	# Generate summary + Perfetto conversion (best-effort)
+	if [ -f "rocm_trace_lite_output/trace.db" ]; then
+		if command -v rtl >/dev/null 2>&1; then
+			rtl summary rocm_trace_lite_output/trace.db 2>/dev/null | tee rocm_trace_lite_output/trace_summary.txt || true
+			rtl convert rocm_trace_lite_output/trace.db -o rocm_trace_lite_output/trace.json.gz 2>&1 || true
+		elif python3 -c 'import rocm_trace_lite' 2>/dev/null; then
+			python3 -c "
+from rocm_trace_lite.cmd_summary import summary
+from rocm_trace_lite.cmd_convert import convert
+summary('rocm_trace_lite_output/trace.db', 'rocm_trace_lite_output/trace_summary.txt')
+convert('rocm_trace_lite_output/trace.db', 'rocm_trace_lite_output/trace.json.gz')
+" 2>/dev/null || true
+		fi
+	else
+		echo "WARNING: trace.db not found after merge."
+	fi
+
+	# Move all outputs into the canonical output directory
+	if [ -d "rocm_trace_lite_output" ] && [ "rocm_trace_lite_output" != "$OUTPUT" ]; then
+		cp -vLR --preserve=all rocm_trace_lite_output/* "$OUTPUT/" 2>/dev/null || true
+	fi
+
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: rocm_trace_lite output may be empty"
+	;;
+
 esac
 
 chmod -R a+rw "${SAVESPACE}/${OUTPUT}"
