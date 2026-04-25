@@ -315,7 +315,7 @@ By default, **madengine** auto-detects the **host** ROCm root (apt under `/opt/r
 
 **Host** override: set top-level `MAD_ROCM_PATH` in `--additional-context` to tell madengine where host GPU tools live (`rocminfo`, `amd-smi`, etc.).
 
-**In-container** `ROCM_PATH` (AMD Docker runs) is **not** copied from the host. If you do not set `docker_env_vars.MAD_ROCM_PATH` (or a literal `ROCM_PATH` in `docker_env_vars`), madengine sets it at **run** time from, in order: the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME` via `docker image inspect`), an in-container probe (`docker run --rm`), or `/opt/rocm` with a warning. Override explicitly with `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` when the image needs a fixed root. Details: [Configuration — ROCm path](configuration.md#rocm-path-run-only), [ADR 0001](adr/0001-rocm-path-resolution.md).
+**In-container** `ROCM_PATH` (AMD Docker runs) is **not** copied from the host. If you do not set `docker_env_vars.MAD_ROCM_PATH` (or a literal `ROCM_PATH` in `docker_env_vars`), madengine sets it at **run** time from, in order: the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME` via `docker image inspect`), an in-container probe (`docker run --rm`), or `/opt/rocm` with a warning. Override explicitly with `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` when the image needs a fixed root. Details: [Configuration — ROCm path](configuration.md#rocm-path-run-only).
 
 The two keys are independent — host and container can point to different ROCm installations:
 

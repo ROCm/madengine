@@ -113,7 +113,7 @@ def _print_run_env_table(
         ctr_rocm_ver = _sh(
             "rocm-sdk version 2>/dev/null "
             "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
-            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | grep -oP '[\\d.]+' "
+            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | grep -oP '[\\d.]+' 2>/dev/null "
             "|| echo unknown"
         )
 
@@ -1061,8 +1061,9 @@ class ContainerRunner:
 
             # Clear any ROCM_PATH left from a previous model run so finalize always
             # re-resolves per docker_image (OCI config → probe → default).
-            # If the user supplied MAD_ROCM_PATH via additional_context it was merged
-            # into docker_env_vars just above and finalize will consume it correctly.
+            # ROCM_PATH is program-managed; users override via MAD_ROCM_PATH in
+            # additional_context.docker_env_vars, which was merged just above and
+            # will be consumed by finalize_container_rocm_path correctly.
             self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
 
             finalize_container_rocm_path(

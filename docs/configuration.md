@@ -131,20 +131,18 @@ Disabling the scan does **not** change performance metric extraction from the lo
 
 ### ROCm path (run only)
 
-Design rationale and precedence are recorded in [ADR 0001: ROCm path resolution](adr/0001-rocm-path-resolution.md).
-
 **Host** (where `madengine` runs validation): by default, the ROCm root is **auto-detected** (traditional `/opt/rocm`, [TheRock](https://github.com/ROCm/TheRock) `rocm-sdk` / manifest layout, or `ROCM_PATH`-like env hints). Set `MAD_AUTO_ROCM_PATH=0` to skip auto and use only legacy resolution (`ROCM_PATH` then `/opt/rocm`).
 
 **Overrides** (recommended for CI):
 
 - **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"` — controls where madengine looks for host GPU tools (`rocminfo`, `amd-smi`, etc.).
-- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm` (see [ADR 0001](adr/0001-rocm-path-resolution.md)). The host-resolved path is **not** mirrored into the container.
+- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
 
 These two keys are independent, allowing host and container to use different ROCm installations without confusion.
 
 Precedence (host): top-level `MAD_ROCM_PATH` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
 
-Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved; see [ADR 0001](adr/0001-rocm-path-resolution.md).
+Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
 
 This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
 

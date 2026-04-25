@@ -16,7 +16,6 @@ from madengine.utils.rocm_path_resolver import (
     finalize_container_rocm_path,
     get_rocm_path_legacy,
     normalize_rocm_path,
-    resolve_container_rocm_path,
     resolve_host_rocm_path,
 )
 
@@ -91,7 +90,7 @@ class TestContextRocmPath:
             assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") in (None, "")
 
     def test_context_container_mad_overrides_host(self):
-        """docker_env_vars MAD_ROCM_PATH sets in-container ROCM_PATH independently."""
+        """docker_env_vars MAD_ROCM_PATH is preserved at context init; consumed at run time."""
         from madengine.core.context import Context
         from unittest.mock import patch
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
@@ -111,10 +110,10 @@ class TestContextRocmPath:
              patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
             ctx = Context(additional_context=ac)
         assert ctx._rocm_path == normalize_rocm_path("/on/host")
-        assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") == normalize_rocm_path(
-            "/in/image"
-        )
-        assert MAD_ROCM_PATH not in ctx.ctx["docker_env_vars"]
+        # ROCM_PATH is set at run time by finalize_container_rocm_path, not at context init.
+        assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") is None
+        # MAD_ROCM_PATH stays in docker_env_vars until consumed by finalize at run time.
+        assert ctx.ctx["docker_env_vars"].get(MAD_ROCM_PATH) == "/in/image"
 
 
 @pytest.mark.unit
@@ -155,7 +154,7 @@ class TestResolveHostContainerRocmPath:
     def test_resolve_container_mad_consumes_key(self):
         d = {MAD_ROCM_PATH: "/in/container"}
         host = "/on/host"
-        r = resolve_container_rocm_path(d, host)
+        r = apply_container_rocm_path_overrides(d, host)
         assert r == os.path.abspath("/in/container").rstrip(os.sep)
         assert d.get("ROCM_PATH") == r
         assert MAD_ROCM_PATH not in d
@@ -165,7 +164,6 @@ class TestResolveHostContainerRocmPath:
         r = apply_container_rocm_path_overrides(d, "/hostpath")
         assert r is None
         assert "ROCM_PATH" not in d
-        assert resolve_container_rocm_path(d, "/hostpath") == ""
 
     def test_get_rocm_path_legacy_alias(self, monkeypatch):
         monkeypatch.delenv("ROCM_PATH", raising=False)

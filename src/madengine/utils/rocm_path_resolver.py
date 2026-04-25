@@ -6,7 +6,7 @@ injectable dependencies for tests) plus small module-level functions for backwar
 compatibility. The resolution pipeline is **not** the historical ``rocEnvTool``/v1
 ``RocmPathResolver`` from madenginev1; it reuses the same *ideas* in a self-contained
 helper for madengine (versioned ``/opt/rocm-*``, TheRock markers, ``PATH`` tools).
-See **ADR 0001** in ``docs/adr/0001-rocm-path-resolution.md`` for the full design.
+See the module docstring and inline comments for design details.
 
 Versioned installs (e.g. ``/opt/rocm-7.13.0`` with ``bin/amd-smi`` and ``bin/rocm-smi``)
 are detected after ``/opt/rocm``. ``which(amd-smi)`` / ``which(rocm-smi)`` infer
@@ -22,16 +22,14 @@ fails the root check).
 
 **Container** (``docker_env_vars``) — set when the run uses Docker (``run_container``):
 
-* ``MAD_ROCM_PATH`` — in-image ROCm root; the key is consumed and mapped to ``ROCM_PATH``.
-* If the user set ``ROCM_PATH`` in ``docker_env_vars`` in additional context, it is kept
-  (normalized) until the run; it wins over OCI / probe in :func:`finalize_container_rocm_path`
-  if already present after :func:`apply_container_rocm_path_overrides`.
+* ``MAD_ROCM_PATH`` in ``docker_env_vars`` — in-image ROCm root; the key is consumed and
+  mapped to ``ROCM_PATH`` inside the container. ``ROCM_PATH`` itself is program-managed
+  and should not be set directly by users.
 * Full in-container resolution order is implemented in
-  :func:`finalize_container_rocm_path` (not host mirroring): (1) existing ``ROCM_PATH``
-  in ``docker_env`` after overrides, (2) ``ROCM_PATH`` / ``ROCM_HOME`` from
-  ``docker image inspect`` OCI ``Config.Env``, (3) ``docker run --rm`` with an
-  in-image shell probe aligned with :class:`RocmPathResolver` heuristics, (4) default
-  ``/opt/rocm`` with a warning.
+  :func:`finalize_container_rocm_path` (no host mirroring): (1) ``MAD_ROCM_PATH`` override,
+  (2) ``ROCM_PATH`` / ``ROCM_HOME`` from ``docker image inspect`` OCI ``Config.Env``,
+  (3) ``docker run --rm`` with an in-image shell probe aligned with
+  :class:`RocmPathResolver` heuristics, (4) default ``/opt/rocm`` with a warning.
 """
 
 from __future__ import annotations
@@ -172,11 +170,11 @@ class RocmPathResolver:
             if m._looks_like_rocm_root(root):
                 return normalize_rocm_path(str(root))
             for _ in range(4):
-                if m._looks_like_rocm_root(root):
-                    return normalize_rocm_path(str(root))
                 if root == root.parent:
                     break
                 root = root.parent
+                if m._looks_like_rocm_root(root):
+                    return normalize_rocm_path(str(root))
 
         candidates: List[Path] = [
             Path("/usr/local/rocm"),
@@ -396,7 +394,7 @@ def apply_container_rocm_path_overrides(
         if not s:
             return None
         croot = normalize_rocm_path(str(s).strip())
-    elif d.get("ROCM_PATH") not in (None, ""):
+    elif d.get("ROCM_PATH") not in (None, "") and str(d.get("ROCM_PATH", "")).strip():
         croot = normalize_rocm_path(str(d["ROCM_PATH"]).strip())
     else:
         return None
@@ -468,17 +466,3 @@ def finalize_container_rocm_path(
     return croot
 
 
-def resolve_container_rocm_path(docker_env: Dict[str, Any], host_path: str) -> str:
-    """
-    Apply :func:`apply_container_rocm_path_overrides` only (used from
-    :class:`~madengine.core.context.Context` init). Does not mirror the host
-    or run Docker inspect/probe. Run-time finalization is
-    :func:`finalize_container_rocm_path`.
-
-    For backward compatibility, returns the in-``docker_env`` ``ROCM_PATH`` if set,
-    else an empty string.
-    """
-    out = apply_container_rocm_path_overrides(docker_env, host_path)
-    if out is not None:
-        return out
-    return ""

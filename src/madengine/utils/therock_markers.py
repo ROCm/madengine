@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-# Relative to a putative ROCm / TheRock install root; keep in sync with ADR 0001.
+# Relative to a putative ROCm / TheRock install root.
 THEROCK_SHARE_DIR: Final = Path("share") / "therock"
 THEROCK_MANIFEST_RELPATH: Final = THEROCK_SHARE_DIR / "therock_manifest.json"
 THEROCK_DIST_INFO_RELPATH: Final = THEROCK_SHARE_DIR / "dist_info.json"
