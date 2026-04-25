@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ROCm path**: Auto-detect host ROCm root by default (traditional `/opt/rocm`, versioned `/opt/rocm-*`, TheRock `rocm-sdk` + markers, `rocminfo` / `amd-smi` / `rocm-smi` on `PATH`). **Host** overrides: top-level `MAD_ROCM_PATH` in `--additional-context`. **Container** `ROCM_PATH` for Docker runs (AMD): `docker_env_vars.MAD_ROCM_PATH` if set; else `ROCM_PATH` / `ROCM_HOME` from the image OCI config (`docker image inspect`); else an in-image shell probe (`docker run --rm`); else default `/opt/rocm` with a warning. The host-resolved path is no longer mirrored into the container by default. Set `MAD_AUTO_ROCM_PATH=0` to use legacy host `ROCM_PATH` / `/opt/rocm` only without scanning. Code: `madengine.utils.rocm_path_resolver`, shared TheRock file markers in `madengine.utils.therock_markers`.
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
 
 ## [2.0.1] - 2026-04-23

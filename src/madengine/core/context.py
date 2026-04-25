@@ -22,7 +22,7 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.core.constants import get_rocm_path
+from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
@@ -82,7 +82,6 @@ class Context:
         additional_context: str = None,
         additional_context_file: str = None,
         build_only_mode: bool = False,
-        rocm_path: str = None,
     ) -> None:
         """Constructor of the Context class.
 
@@ -90,12 +89,10 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
-            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
         """
-        self._rocm_path = get_rocm_path(rocm_path)
         # Initialize the console
         self.console = Console()
         self._gpu_context_initialized = False
@@ -129,6 +126,9 @@ class Context:
             # Convert the string representation of python dictionary to a dictionary.
             dict_additional_context = ast.literal_eval(additional_context)
             update_dict(self.ctx, dict_additional_context)
+
+        # Host ROCm path: top-level MAD_ROCM_PATH in context, then auto-detect
+        self._rocm_path = resolve_host_rocm_path(self.ctx)
 
         # Initialize context based on mode
         # User-provided contexts will not be overridden by detection
@@ -255,7 +255,9 @@ class Context:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
             self.ctx["rocm_path"] = self._rocm_path
-            self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
+            # In-container ROCM_PATH is finalized at run time in run_container
+            # via finalize_container_rocm_path (OCI env → probe → default).
+            # MAD_ROCM_PATH in docker_env_vars is consumed there, not here.
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
@@ -387,7 +389,7 @@ class Context:
                 print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
-        # Use configurable ROCm path (ROCM_PATH / --rocm-path) for non-default installs
+        # Use configurable ROCm path (MAD_ROCM_PATH / ROCM_PATH) for non-default installs
         amd_smi_paths = [
             os.path.join(self._rocm_path, "bin", "amd-smi"),
             "/usr/local/bin/amd-smi",
