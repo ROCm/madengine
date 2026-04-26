@@ -1,6 +1,7 @@
 # Deployment Guide
 
 Deploy madengine workloads to Kubernetes or SLURM clusters for distributed execution.
+For quick end-to-end validation commands, see the README [Smoke Testing](../README.md#-smoke-testing) section.
 
 ## Overview
 
@@ -10,6 +11,41 @@ madengine supports two deployment backends:
 - **SLURM** - HPC cluster job scheduling
 
 Deployment is configured via `--additional-context` and happens automatically during the run phase.
+
+## Cluster Feature Stages
+
+When `additional_context.cluster` is enabled, stage placement is:
+
+- **RDMA recommender**: runtime stage on both SLURM and Kubernetes (before workload launch).
+- **GCM health checks**: SLURM preflight stage before `sbatch` submission.
+- **GCM collector snapshot**: SLURM result-collection stage (post-run, one-shot).
+
+Current scope is intentionally phased:
+
+- RDMA: **SLURM + Kubernetes**
+- GCM: **SLURM only**
+
+## Cluster Smoke Runner
+
+For quick validation of the new cluster feature layer, use the smoke assets under `examples/`:
+
+- Configs:
+  - `examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json`
+  - `examples/k8s-configs/configs/smoke-rdma-k8s.json`
+- One-line wrapper:
+  - `examples/run-smoke.sh`
+- Full checklist:
+  - `examples/cluster-smoke-checklist.md`
+
+Example:
+
+```bash
+examples/run-smoke.sh slurm MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-slurm
+
+examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-k8s
+```
 
 ## Deployment Workflow
 

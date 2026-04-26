@@ -305,6 +305,43 @@ echo "  CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-not set}"
 echo "  ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-not set}"
 echo "  Node: ${SLURM_NODEID}/${SLURM_NNODES} (Rank ${SLURM_PROCID}/${SLURM_NTASKS})"
 
+{% if rdma_enabled and nodes == 1 %}
+# Native RDMA recommender (submission node / single-node path)
+echo ""
+echo "Running RDMA recommender..."
+RDMA_ARTIFACT="${WORKSPACE}/{{ rdma_artifact_name }}"
+RDMA_ENV_FILE="${WORKSPACE}/rdma_env.list"
+if [ "{{ rdma_strict }}" = "True" ]; then
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}" \
+    --strict
+else
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}"
+fi
+RDMA_EXIT=$?
+if [ ${RDMA_EXIT} -ne 0 ]; then
+  echo "RDMA recommender failed with exit code ${RDMA_EXIT}"
+  {% if rdma_strict %}
+  echo "RDMA strict mode enabled; stopping job."
+  exit ${RDMA_EXIT}
+  {% else %}
+  echo "Continuing (strict=false)."
+  {% endif %}
+fi
+if [ "{{ rdma_apply_env }}" = "True" ] && [ -f "${RDMA_ENV_FILE}" ]; then
+  while IFS='=' read -r key value; do
+    [ -z "${key}" ] && continue
+    if [ "{{ rdma_mode }}" = "enforce" ] || [ -z "${!key+x}" ]; then
+      export "${key}=${value}"
+    fi
+  done < "${RDMA_ENV_FILE}"
+  echo "Applied RDMA environment variables (mode={{ rdma_mode }})."
+fi
+{% endif %}
+
 # Set deployment environment flags
 export MAD_IN_SLURM_JOB=1
 export MAD_DEPLOYMENT_TYPE=slurm
@@ -580,6 +617,41 @@ echo "  Manifest: $EXEC_MANIFEST"
 echo "  Command: $MAD_CLI_COMMAND"
 echo ""
 
+{% if rdma_enabled %}
+echo "Running RDMA recommender (node ${SLURM_PROCID})..."
+RDMA_ARTIFACT="${WORKSPACE}/{{ rdma_artifact_name }}"
+RDMA_ENV_FILE="${WORKSPACE}/rdma_env.list"
+if [ "{{ rdma_strict }}" = "True" ]; then
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}" \
+    --strict
+else
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}"
+fi
+RDMA_EXIT=$?
+if [ ${RDMA_EXIT} -ne 0 ]; then
+  echo "RDMA recommender failed with exit code ${RDMA_EXIT}"
+  {% if rdma_strict %}
+  echo "RDMA strict mode enabled; failing node task."
+  exit ${RDMA_EXIT}
+  {% else %}
+  echo "Continuing (strict=false)."
+  {% endif %}
+fi
+if [ "{{ rdma_apply_env }}" = "True" ] && [ -f "${RDMA_ENV_FILE}" ]; then
+  while IFS='=' read -r key value; do
+    [ -z "${key}" ] && continue
+    if [ "{{ rdma_mode }}" = "enforce" ] || [ -z "${!key+x}" ]; then
+      export "${key}=${value}"
+    fi
+  done < "${RDMA_ENV_FILE}"
+  echo "Applied RDMA environment variables (mode={{ rdma_mode }})."
+fi
+{% endif %}
+
 # Execute madengine
 echo "Executing madengine in LOCAL mode..."
 
@@ -687,6 +759,9 @@ if [ $TASK_EXIT -eq 0 ]; then
     for f in "$WORKSPACE"/*_env.csv "$WORKSPACE"/*.log "$WORKSPACE"/multi_results*.csv "$WORKSPACE"/results* "$WORKSPACE"/gpu_info_*.csv "$WORKSPACE"/library_trace.csv; do
         if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     done
+    {% if rdma_enabled %}
+    if [ -f "$WORKSPACE/{{ rdma_artifact_name }}" ]; then cp "$WORKSPACE/{{ rdma_artifact_name }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    {% endif %}
     {% if multiple_results %}
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
@@ -703,6 +778,9 @@ else
     # Copy node logs so collect_results can still inspect them
     if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
     if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+    {% if rdma_enabled %}
+    if [ -f "$WORKSPACE/{{ rdma_artifact_name }}" ]; then cp "$WORKSPACE/{{ rdma_artifact_name }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    {% endif %}
 fi
 
 exit $TASK_EXIT
@@ -734,6 +812,41 @@ echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 echo "=========================================="
 echo ""
 
+{% if rdma_enabled %}
+echo "Running RDMA recommender..."
+RDMA_ARTIFACT="${WORKSPACE}/{{ rdma_artifact_name }}"
+RDMA_ENV_FILE="${WORKSPACE}/rdma_env.list"
+if [ "{{ rdma_strict }}" = "True" ]; then
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}" \
+    --strict
+else
+  python3 -m madengine.deployment.rdma_recommender \
+    --output "${RDMA_ARTIFACT}" \
+    --env-file "${RDMA_ENV_FILE}"
+fi
+RDMA_EXIT=$?
+if [ ${RDMA_EXIT} -ne 0 ]; then
+  echo "RDMA recommender failed with exit code ${RDMA_EXIT}"
+  {% if rdma_strict %}
+  echo "RDMA strict mode enabled; stopping job."
+  exit ${RDMA_EXIT}
+  {% else %}
+  echo "Continuing (strict=false)."
+  {% endif %}
+fi
+if [ "{{ rdma_apply_env }}" = "True" ] && [ -f "${RDMA_ENV_FILE}" ]; then
+  while IFS='=' read -r key value; do
+    [ -z "${key}" ] && continue
+    if [ "{{ rdma_mode }}" = "enforce" ] || [ -z "${!key+x}" ]; then
+      export "${key}=${value}"
+    fi
+  done < "${RDMA_ENV_FILE}"
+  echo "Applied RDMA environment variables (mode={{ rdma_mode }})."
+fi
+{% endif %}
+
 echo "Executing madengine in LOCAL mode (inside SLURM job)"
 echo "  Command: $MAD_CLI_COMMAND"
 echo ""
@@ -754,6 +867,9 @@ if [ $EXIT_CODE -eq 0 ]; then
     JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
     NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_0"
     mkdir -p "$NODE_COLLECTION_DIR"
+    {% if rdma_enabled %}
+    if [ -f "$WORKSPACE/{{ rdma_artifact_name }}" ]; then cp "$WORKSPACE/{{ rdma_artifact_name }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    {% endif %}
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
 fi

@@ -12,6 +12,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,6 +49,8 @@ class SlurmDeployment(BaseDeployment):
 
     DEPLOYMENT_TYPE = "slurm"
     REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
+    GCM_ALLOWED_HEALTH_CHECKS = {"check-hca", "check-ibstat"}
+    GCM_ALLOWED_COLLECTORS = {"slurm_job_monitor"}
 
     def __init__(self, config: DeploymentConfig):
         """
@@ -62,6 +65,9 @@ class SlurmDeployment(BaseDeployment):
         # Parse SLURM configuration (now with defaults applied)
         self.slurm_config = config.additional_context.get("slurm", {})
         self.distributed_config = config.additional_context.get("distributed", {})
+        self.cluster_config = config.additional_context.get("cluster", {})
+        self.rdma_config = self.cluster_config.get("rdma", {})
+        self.gcm_config = self.cluster_config.get("gcm", {})
 
         # SLURM parameters
         self.partition = self.slurm_config.get("partition", "gpu")
@@ -76,6 +82,112 @@ class SlurmDeployment(BaseDeployment):
 
         # Generated script path
         self.script_path = None
+
+    def _gcm_enabled(self) -> bool:
+        return bool(self.gcm_config.get("enabled", False))
+
+    def _gcm_artifact_layout(self) -> Dict[str, str]:
+        source = self.gcm_config.get("source", {})
+        artifacts = self.gcm_config.get("artifacts", {})
+        files = artifacts.get("files", {})
+        return {
+            "repo": source.get("repo", "https://github.com/coketaste/gcm"),
+            "ref": source.get("ref", "9fed02cd0721d3937f8749672951185f31955bd4"),
+            "dir": artifacts.get("dir", str(self.output_dir / "cluster_artifacts")),
+            "health_summary_json": files.get(
+                "health_summary_json", "gcm_health_summary.json"
+            ),
+            "health_raw_log": files.get("health_raw_log", "gcm_health_raw.log"),
+            "collector_output": files.get("collector_output", "gcm_collector_output.log"),
+            "provenance_json": files.get(
+                "provenance_json", "gcm_source_provenance.json"
+            ),
+        }
+
+    def _validate_gcm_allowlist(self) -> None:
+        checks = self.gcm_config.get("health_checks", ["check-hca", "check-ibstat"])
+        invalid_checks = [c for c in checks if c not in self.GCM_ALLOWED_HEALTH_CHECKS]
+        if invalid_checks:
+            raise ValueError(
+                f"Invalid cluster.gcm.health_checks value(s): {invalid_checks}. "
+                f"Allowed: {sorted(self.GCM_ALLOWED_HEALTH_CHECKS)}"
+            )
+
+        collector_cfg = self.gcm_config.get("collector", {})
+        if not collector_cfg.get("enabled", False):
+            return
+        collector_cmd = collector_cfg.get("command", "slurm_job_monitor")
+        if collector_cmd not in self.GCM_ALLOWED_COLLECTORS:
+            raise ValueError(
+                f"Invalid cluster.gcm.collector.command: {collector_cmd}. "
+                f"Allowed: {sorted(self.GCM_ALLOWED_COLLECTORS)}"
+            )
+
+    def _resolve_gcm_provenance(self) -> Dict[str, str]:
+        code = (
+            "import importlib.metadata as m, json, pathlib; "
+            "d=m.distribution('gcm'); "
+            "u=d.read_text('direct_url.json') or '{}'; "
+            "print(json.dumps({'version': d.version, 'direct_url': json.loads(u)}))"
+        )
+        result = subprocess.run(
+            ["python3", "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+        try:
+            parsed = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        direct_url = parsed.get("direct_url", {})
+        vcs_info = direct_url.get("vcs_info", {})
+        return {
+            "version": str(parsed.get("version", "")),
+            "url": str(direct_url.get("url", "")),
+            "commit_id": str(vcs_info.get("commit_id", "")),
+        }
+
+    def _ensure_gcm_installation(self) -> Dict[str, Any]:
+        layout = self._gcm_artifact_layout()
+        expected_repo = layout["repo"]
+        expected_ref = layout["ref"]
+        strict = bool(self.gcm_config.get("strict", False))
+
+        existing = self._resolve_gcm_provenance()
+        has_expected = (
+            existing.get("url", "").startswith(expected_repo)
+            and existing.get("commit_id", "").startswith(expected_ref)
+        )
+
+        install_log = {"installed": False, "provenance": existing}
+        if has_expected:
+            return install_log
+
+        install_target = f"git+{expected_repo}.git@{expected_ref}"
+        pip_cmd = ["python3", "-m", "pip", "install", install_target]
+        result = subprocess.run(
+            pip_cmd, capture_output=True, text=True, timeout=300, check=False
+        )
+        install_log["installed"] = result.returncode == 0
+        install_log["install_stdout"] = result.stdout[-4000:]
+        install_log["install_stderr"] = result.stderr[-4000:]
+
+        refreshed = self._resolve_gcm_provenance()
+        install_log["provenance"] = refreshed
+        now_expected = (
+            refreshed.get("url", "").startswith(expected_repo)
+            and refreshed.get("commit_id", "").startswith(expected_ref)
+        )
+        if strict and not now_expected:
+            raise RuntimeError(
+                "GCM strict mode: installed package provenance does not match "
+                f"{expected_repo}@{expected_ref}"
+            )
+        return install_log
 
     def validate(self) -> bool:
         """Validate SLURM commands are available locally."""
@@ -316,6 +428,14 @@ class SlurmDeployment(BaseDeployment):
             "nproc_per_node": nproc_per_node,
             # Profiling tools (processed for multi-node compatibility)
             "tools": tools,
+            # Cluster feature flags
+            "rdma_enabled": self.rdma_config.get("enabled", False),
+            "rdma_strict": self.rdma_config.get("strict", False),
+            "rdma_mode": self.rdma_config.get("mode", "recommend"),
+            "rdma_apply_env": self.rdma_config.get("apply_env", True),
+            "rdma_artifact_name": self.rdma_config.get(
+                "artifact_name", "rdma_recommendation.json"
+            ),
         }
 
     def _generate_launcher_command(
@@ -707,6 +827,117 @@ export NPROC_PER_NODE={nproc_per_node}
 export MASTER_PORT={master_port}
 # Model script should handle launcher invocation'''
 
+    def _run_gcm_health_preflight(self) -> None:
+        if not self._gcm_enabled():
+            return
+        enabled_platforms = self.gcm_config.get("enabled_platforms", ["slurm"])
+        if "slurm" not in enabled_platforms:
+            self.console.print(
+                "[dim]GCM configured but slurm not enabled in enabled_platforms; skipping.[/dim]"
+            )
+            return
+
+        strict = bool(self.gcm_config.get("strict", False))
+        layout = self._gcm_artifact_layout()
+        artifact_dir = Path(layout["dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = artifact_dir / layout["health_summary_json"]
+        raw_log_path = artifact_dir / layout["health_raw_log"]
+        provenance_path = artifact_dir / layout["provenance_json"]
+
+        self._validate_gcm_allowlist()
+        install_log = self._ensure_gcm_installation()
+        provenance_path.write_text(
+            json.dumps(
+                {
+                    "expected_repo": layout["repo"],
+                    "expected_ref": layout["ref"],
+                    "install": install_log,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        gcm_bin = shutil.which("gcm")
+        health_bin = shutil.which("health_checks")
+        missing = []
+        if not gcm_bin:
+            missing.append("gcm")
+        if not health_bin:
+            missing.append("health_checks")
+        if missing:
+            msg = f"Missing GCM binaries: {missing}"
+            if strict:
+                raise RuntimeError(msg)
+            self.console.print(f"[yellow]{msg}; continuing (strict=false).[/yellow]")
+            summary_path.write_text(
+                json.dumps({"status": "skipped", "reason": msg}, indent=2),
+                encoding="utf-8",
+            )
+            return
+
+        checks = self.gcm_config.get("health_checks", ["check-hca", "check-ibstat"])
+        per_check: List[Dict[str, Any]] = []
+        raw_chunks: List[str] = []
+        timeout_sec = int(self.gcm_config.get("timeout_sec", 60))
+        for check in checks:
+            cmd = [
+                "srun",
+                "--nodes",
+                str(self.nodes),
+                "--ntasks",
+                str(self.nodes),
+                "--ntasks-per-node",
+                "1",
+                "health_checks",
+                check,
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    check=False,
+                )
+                returncode = result.returncode
+                stdout = result.stdout
+                stderr = result.stderr
+            except subprocess.TimeoutExpired as exc:
+                returncode = 124
+                stdout = exc.stdout or ""
+                stderr = (exc.stderr or "") + "\nhealth check timeout"
+            per_check.append(
+                {
+                    "check": check,
+                    "returncode": returncode,
+                    "passed": returncode == 0,
+                }
+            )
+            raw_chunks.append(f"## {check}\n{stdout}\n{stderr}\n")
+
+        raw_log_path.write_text("\n".join(raw_chunks), encoding="utf-8")
+        failed = [c for c in per_check if not c["passed"]]
+        summary = {
+            "status": "failed" if failed else "passed",
+            "strict": strict,
+            "checks": per_check,
+            "artifact_raw_log": str(raw_log_path),
+            "artifact_provenance": str(provenance_path),
+        }
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+        if failed and strict:
+            raise RuntimeError(
+                "GCM strict preflight failed: "
+                + ", ".join(c["check"] for c in failed)
+            )
+        if failed:
+            self.console.print(
+                "[yellow]GCM preflight reported failures; continuing (strict=false).[/yellow]"
+            )
+
     def deploy(self) -> DeploymentResult:
         """Submit sbatch script to SLURM scheduler (locally)."""
         if not self.script_path or not self.script_path.exists():
@@ -781,6 +1012,20 @@ export MASTER_PORT={master_port}
                 # Always cancel health-check jobs so they do not stay in the queue
                 SlurmNodeSelector.cancel_health_check_jobs(health_check_job_name, self.console)
         # ==================== END PREFLIGHT ====================
+
+        try:
+            self._run_gcm_health_preflight()
+        except Exception as e:
+            strict = bool(self.gcm_config.get("strict", False))
+            if strict:
+                return DeploymentResult(
+                    status=DeploymentStatus.FAILED,
+                    deployment_id="",
+                    message=f"GCM preflight failed: {e}",
+                )
+            self.console.print(
+                f"[yellow]⚠ GCM preflight warning: {e} (strict=false, continuing)[/yellow]"
+            )
 
         try:
             # Submit job to SLURM (runs locally on login node)
@@ -1166,7 +1411,21 @@ export MASTER_PORT={master_port}
             "successful_runs": [],
             "failed_runs": [],
             "session_start_row": session_start_row,
+            "cluster_features": {},
         }
+        if self._gcm_enabled():
+            layout = self._gcm_artifact_layout()
+            health_summary = Path(layout["dir"]) / layout["health_summary_json"]
+            if health_summary.exists():
+                try:
+                    results["cluster_features"]["gcm_health"] = json.loads(
+                        health_summary.read_text(encoding="utf-8")
+                    )
+                except json.JSONDecodeError:
+                    results["cluster_features"]["gcm_health"] = {
+                        "status": "error",
+                        "error": "Invalid health summary JSON",
+                    }
 
         model_keys = list(self.manifest.get("built_models") or {})
         model_key = model_keys[0] if model_keys else None
@@ -1188,6 +1447,34 @@ export MASTER_PORT={master_port}
 
         job_dir = self.output_dir / model_name_for_path / deployment_id
         job_dir.mkdir(parents=True, exist_ok=True)
+
+        rdma_cfg = self.cluster_config.get("rdma", {})
+        if rdma_cfg.get("enabled", False):
+            rdma_artifact_name = rdma_cfg.get(
+                "artifact_name", "rdma_recommendation.json"
+            )
+            rdma_entries: List[Dict[str, Any]] = []
+            for node_dir in sorted(job_dir.glob("node_*")):
+                artifact = node_dir / rdma_artifact_name
+                if not artifact.exists():
+                    continue
+                try:
+                    payload = json.loads(artifact.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    payload = {"status": "invalid_json"}
+                rdma_entries.append(
+                    {
+                        "node": node_dir.name,
+                        "artifact": str(artifact),
+                        "status": payload.get("status", "unknown"),
+                        "recommended_env": payload.get("recommended_env", {}),
+                    }
+                )
+            if rdma_entries:
+                results["cluster_features"]["rdma"] = {
+                    "nodes": rdma_entries,
+                    "artifact_name": rdma_artifact_name,
+                }
 
         # Gather log content per node: from job_dir/node_N/ (new) or flat output_dir .out files
         per_node_log_contents: List[tuple] = []
@@ -1340,7 +1627,7 @@ export MASTER_PORT={master_port}
                 self.console.print(
                     f"[green]✓ Updated perf.csv, perf_super.* from multiple_results (Docker-compatible)[/green]"
                 )
-                return results
+                return self._attach_gcm_collector_summary(results, deployment_id)
             # multiple_results set but CSV not found: fall through to single-result path (may write FAILURE)
 
         if self.nodes > 1 and per_node_metrics:
@@ -1404,7 +1691,7 @@ export MASTER_PORT={master_port}
                     f"{len(results['logs'])} log files[/green]"
                 )
                 self._collect_results_parse_perf_csv(results, session_start_row)
-                return results
+                return self._attach_gcm_collector_summary(results, deployment_id)
         else:
             # Multi-node but no metrics parsed - optional failure record
             if per_node_metrics and model_info_for_entry:
@@ -1490,7 +1777,7 @@ export MASTER_PORT={master_port}
             f"[green]✓ Collected results: {len(results['perf_files'])} perf files, "
             f"{len(results['logs'])} log files[/green]"
         )
-        return results
+        return self._attach_gcm_collector_summary(results, deployment_id)
 
     def _collect_results_parse_perf_csv(
         self, results: Dict[str, Any], session_start_row: Optional[int]
@@ -1526,6 +1813,95 @@ export MASTER_PORT={master_port}
                     results["failed_runs"].append(run_data)
         except Exception as e:
             self.console.print(f"[yellow]⚠ Could not parse perf.csv: {e}[/yellow]")
+
+    def _run_gcm_collector_snapshot(self, deployment_id: str) -> Dict[str, Any]:
+        if not self._gcm_enabled():
+            return {"status": "disabled"}
+
+        collector_cfg = self.gcm_config.get("collector", {})
+        if not collector_cfg.get("enabled", False):
+            return {"status": "disabled"}
+
+        self._validate_gcm_allowlist()
+        layout = self._gcm_artifact_layout()
+        artifact_dir = Path(layout["dir"]) / deployment_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        output_path = artifact_dir / layout["collector_output"]
+
+        collector_cmd = collector_cfg.get("command", "slurm_job_monitor")
+        timeout_sec = int(collector_cfg.get("timeout_sec", 120))
+        max_retries = int(collector_cfg.get("max_retries", 1))
+        best_effort = bool(collector_cfg.get("best_effort", True))
+        sink = collector_cfg.get("sink", "file")
+        once_enabled = bool(collector_cfg.get("once", True))
+
+        if not shutil.which("gcm"):
+            msg = "gcm binary not found; collector skipped"
+            if best_effort:
+                output_path.write_text(msg + "\n", encoding="utf-8")
+                return {"status": "skipped", "reason": msg, "output": str(output_path)}
+            raise RuntimeError(msg)
+
+        args = ["gcm", collector_cmd]
+        if once_enabled:
+            args.append("--once")
+        if sink in {"stdout", "file"}:
+            args.extend(["--sink", sink])
+
+        attempts = 0
+        last_error = ""
+        while attempts < max_retries:
+            attempts += 1
+            try:
+                result = subprocess.run(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    check=False,
+                )
+                returncode = result.returncode
+                stdout = result.stdout
+                stderr = result.stderr
+            except subprocess.TimeoutExpired as exc:
+                returncode = 124
+                stdout = exc.stdout or ""
+                stderr = (exc.stderr or "") + "\ncollector timeout"
+            output_path.write_text(
+                f"# attempt={attempts}\n{stdout}\n{stderr}\n",
+                encoding="utf-8",
+            )
+            if returncode == 0:
+                return {
+                    "status": "success",
+                    "attempts": attempts,
+                    "output": str(output_path),
+                    "command": " ".join(args),
+                }
+            last_error = f"returncode={returncode}"
+
+        if best_effort:
+            return {
+                "status": "failed_best_effort",
+                "attempts": attempts,
+                "output": str(output_path),
+                "error": last_error,
+            }
+        raise RuntimeError(f"GCM collector failed after {attempts} attempt(s): {last_error}")
+
+    def _attach_gcm_collector_summary(
+        self, results: Dict[str, Any], deployment_id: str
+    ) -> Dict[str, Any]:
+        results.setdefault("cluster_features", {})
+        try:
+            collector_summary = self._run_gcm_collector_snapshot(deployment_id)
+            results["cluster_features"]["gcm_collector"] = collector_summary
+        except Exception as e:
+            results["cluster_features"]["gcm_collector"] = {
+                "status": "error",
+                "error": str(e),
+            }
+        return results
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""

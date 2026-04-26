@@ -1,0 +1,53 @@
+.PHONY: smoke-slurm smoke-k8s smoke-slurm-verify smoke-k8s-verify
+
+SLURM_SMOKE_CONFIG ?= examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json
+K8S_SMOKE_CONFIG ?= examples/k8s-configs/configs/smoke-rdma-k8s.json
+
+SLURM_SMOKE_MANIFEST ?= build_manifest.slurm.smoke.json
+K8S_SMOKE_MANIFEST ?= build_manifest.k8s.smoke.json
+
+_require-model-vars:
+	@test -n "$(MODEL_DIR)" || (echo "ERROR: MODEL_DIR is required"; exit 1)
+	@test -n "$(MODEL_TAG)" || (echo "ERROR: MODEL_TAG is required"; exit 1)
+
+smoke-slurm: _require-model-vars
+	MODEL_DIR="$(MODEL_DIR)" madengine build \
+		--tags "$(MODEL_TAG)" \
+		--additional-context-file "$(SLURM_SMOKE_CONFIG)" \
+		--manifest-output "$(SLURM_SMOKE_MANIFEST)"
+	MODEL_DIR="$(MODEL_DIR)" madengine run \
+		--manifest-file "$(SLURM_SMOKE_MANIFEST)" \
+		--timeout 3600
+
+smoke-k8s: _require-model-vars
+	MODEL_DIR="$(MODEL_DIR)" madengine build \
+		--tags "$(MODEL_TAG)" \
+		--additional-context-file "$(K8S_SMOKE_CONFIG)" \
+		--manifest-output "$(K8S_SMOKE_MANIFEST)"
+	MODEL_DIR="$(MODEL_DIR)" madengine run \
+		--manifest-file "$(K8S_SMOKE_MANIFEST)" \
+		--timeout 3600
+
+smoke-slurm-verify:
+	python3 - <<'PY'
+import glob, json
+health = glob.glob("slurm_results/cluster_artifacts/**/gcm_health_summary.json", recursive=True)
+collector = glob.glob("slurm_results/cluster_artifacts/**/gcm_collector_output.log", recursive=True)
+rdma = glob.glob("slurm_results/**/rdma_recommendation.json", recursive=True)
+print("gcm health:", health)
+print("gcm collector:", collector)
+print("rdma artifacts:", rdma)
+for p in rdma[:3]:
+    data = json.load(open(p))
+    print(p, data.get("status"))
+PY
+
+smoke-k8s-verify:
+	python3 - <<'PY'
+import glob, json
+rdma = glob.glob("k8s_results/**/rdma_recommendation.json", recursive=True)
+print("rdma artifacts:", rdma)
+for p in rdma[:3]:
+    data = json.load(open(p))
+    print(p, data.get("status"))
+PY
