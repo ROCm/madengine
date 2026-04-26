@@ -1,0 +1,56 @@
+{
+  "_comment": "Phase-1 smoke config: RDMA + SLURM-only GCM checks/collector.",
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 1,
+    "gpus_per_node": 1,
+    "time": "00:30:00",
+    "output_dir": "./slurm_results"
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 1
+  },
+  "cluster": {
+    "rdma": {
+      "enabled": true,
+      "strict": false,
+      "mode": "recommend",
+      "apply_env": true,
+      "artifact_name": "rdma_recommendation.json"
+    },
+    "gcm": {
+      "enabled": true,
+      "enabled_platforms": [
+        "slurm"
+      ],
+      "source": {
+        "repo": "https://github.com/coketaste/gcm",
+        "ref": "9fed02cd0721d3937f8749672951185f31955bd4"
+      },
+      "strict": false,
+      "health_checks": [
+        "check-hca",
+        "check-ibstat"
+      ],
+      "collector": {
+        "enabled": true,
+        "command": "slurm_job_monitor",
+        "once": true,
+        "sink": "file",
+        "timeout_sec": 120,
+        "max_retries": 1,
+        "best_effort": true
+      },
+      "artifacts": {
+        "dir": "./slurm_results/cluster_artifacts",
+        "files": {
+          "health_summary_json": "gcm_health_summary.json",
+          "health_raw_log": "gcm_health_raw.log",
+          "collector_output": "gcm_collector_output.log"
+        }
+      }
+    }
+  }
+}
