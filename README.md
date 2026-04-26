@@ -20,6 +20,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 
 - [Key Features](#-key-features)
 - [Quick Start](#-quick-start)
+- [Smoke Testing](#-smoke-testing)
 - [Commands](#-commands)
 - [Documentation](#-documentation)
 - [Architecture](#-architecture)
@@ -79,6 +80,31 @@ madengine run --tags dummy --rocm-path /path/to/rocm
 ```
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
+
+## 🧪 Smoke Testing
+
+Use the prebuilt smoke configs and wrapper script under `examples/` to quickly validate:
+
+- RDMA recommender on SLURM + Kubernetes
+- GCM preflight/collector on SLURM (phase-1 scope)
+
+```bash
+# SLURM smoke (build + run) + artifact verification
+examples/run-smoke.sh slurm MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-slurm
+
+# Kubernetes smoke (build + run) + artifact verification
+examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-k8s
+```
+
+Smoke assets:
+
+- `examples/run-smoke.sh`
+- `examples/Makefile.smoke`
+- `examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json`
+- `examples/k8s-configs/configs/smoke-rdma-k8s.json`
+- `examples/cluster-smoke-checklist.md`
 
 ## 📋 Commands
 

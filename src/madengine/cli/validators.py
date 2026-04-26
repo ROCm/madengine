@@ -104,6 +104,11 @@ def _fail_structure(key: str, expected: str) -> None:
     raise typer.Exit(ExitCode.INVALID_ARGS)
 
 
+def _fail_value(key: str, message: str) -> None:
+    console.print(f"❌ Invalid additional context: key [red]{key}[/red] {message}.")
+    raise typer.Exit(ExitCode.INVALID_ARGS)
+
+
 def validate_additional_context_structure(context: Dict[str, Any]) -> None:
     """Validate types of known keys after defaults are applied."""
     if "docker_build_arg" in context:
@@ -142,6 +147,7 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
         "kubernetes",
         "distributed",
         "vllm",
+        "cluster",
         "deployment_config",
         "deploy",
     ):
@@ -197,6 +203,104 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
                 "log_error_patterns",
                 "a non-empty array of strings",
             )
+
+    if "cluster" in context:
+        cluster = context["cluster"]
+        if not isinstance(cluster, dict):
+            _fail_structure("cluster", "an object")
+
+        rdma = cluster.get("rdma")
+        if rdma is not None:
+            if not isinstance(rdma, dict):
+                _fail_structure("cluster.rdma", "an object")
+            if "enabled" in rdma and not isinstance(rdma["enabled"], bool):
+                _fail_structure("cluster.rdma.enabled", "a boolean")
+            if "strict" in rdma and not isinstance(rdma["strict"], bool):
+                _fail_structure("cluster.rdma.strict", "a boolean")
+            if "apply_env" in rdma and not isinstance(rdma["apply_env"], bool):
+                _fail_structure("cluster.rdma.apply_env", "a boolean")
+            if "artifact_name" in rdma and not isinstance(rdma["artifact_name"], str):
+                _fail_structure("cluster.rdma.artifact_name", "a string")
+            mode = rdma.get("mode")
+            if mode is not None and mode not in {"recommend", "enforce"}:
+                _fail_value("cluster.rdma.mode", "must be 'recommend' or 'enforce'")
+
+        gcm = cluster.get("gcm")
+        if gcm is not None:
+            if not isinstance(gcm, dict):
+                _fail_structure("cluster.gcm", "an object")
+            if "enabled" in gcm and not isinstance(gcm["enabled"], bool):
+                _fail_structure("cluster.gcm.enabled", "a boolean")
+            if "strict" in gcm and not isinstance(gcm["strict"], bool):
+                _fail_structure("cluster.gcm.strict", "a boolean")
+            if "enabled_platforms" in gcm:
+                platforms = gcm["enabled_platforms"]
+                if not isinstance(platforms, list) or not all(
+                    isinstance(x, str) for x in platforms
+                ):
+                    _fail_structure("cluster.gcm.enabled_platforms", "an array of strings")
+            if "health_checks" in gcm:
+                checks = gcm["health_checks"]
+                if not isinstance(checks, list) or not all(
+                    isinstance(x, str) for x in checks
+                ):
+                    _fail_structure("cluster.gcm.health_checks", "an array of strings")
+                allowed_checks = {"check-hca", "check-ibstat"}
+                disallowed = [x for x in checks if x not in allowed_checks]
+                if disallowed:
+                    _fail_value(
+                        "cluster.gcm.health_checks",
+                        f"contains unsupported value(s) {disallowed}; allowed={sorted(allowed_checks)}",
+                    )
+            source = gcm.get("source")
+            if source is not None:
+                if not isinstance(source, dict):
+                    _fail_structure("cluster.gcm.source", "an object")
+                if "repo" in source and not isinstance(source["repo"], str):
+                    _fail_structure("cluster.gcm.source.repo", "a string")
+                if "ref" in source and not isinstance(source["ref"], str):
+                    _fail_structure("cluster.gcm.source.ref", "a string")
+            collector = gcm.get("collector")
+            if collector is not None:
+                if not isinstance(collector, dict):
+                    _fail_structure("cluster.gcm.collector", "an object")
+                for bool_key in ("enabled", "once", "best_effort"):
+                    if bool_key in collector and not isinstance(
+                        collector[bool_key], bool
+                    ):
+                        _fail_structure(f"cluster.gcm.collector.{bool_key}", "a boolean")
+                for int_key in ("timeout_sec", "max_retries"):
+                    if int_key in collector and not isinstance(collector[int_key], int):
+                        _fail_structure(
+                            f"cluster.gcm.collector.{int_key}", "an integer"
+                        )
+                if "command" in collector and not isinstance(collector["command"], str):
+                    _fail_structure("cluster.gcm.collector.command", "a string")
+                if "sink" in collector and not isinstance(collector["sink"], str):
+                    _fail_structure("cluster.gcm.collector.sink", "a string")
+                if collector.get("command") and collector["command"] not in {
+                    "slurm_job_monitor"
+                }:
+                    _fail_value(
+                        "cluster.gcm.collector.command",
+                        "must be 'slurm_job_monitor' in this phase",
+                    )
+            artifacts = gcm.get("artifacts")
+            if artifacts is not None:
+                if not isinstance(artifacts, dict):
+                    _fail_structure("cluster.gcm.artifacts", "an object")
+                if "dir" in artifacts and not isinstance(artifacts["dir"], str):
+                    _fail_structure("cluster.gcm.artifacts.dir", "a string")
+                files = artifacts.get("files")
+                if files is not None:
+                    if not isinstance(files, dict):
+                        _fail_structure("cluster.gcm.artifacts.files", "an object")
+                    for key, value in files.items():
+                        if not isinstance(key, str) or not isinstance(value, str):
+                            _fail_structure(
+                                "cluster.gcm.artifacts.files",
+                                "an object with string keys and values",
+                            )
 
 
 def _normalize_docker_build_arg_values(context: Dict[str, Any]) -> None:
