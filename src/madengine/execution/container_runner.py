@@ -1383,7 +1383,10 @@ class ContainerRunner:
                                         import csv
                                         with open(resolved_path, "r") as f:
                                             csv_reader = csv.DictReader(f)
-                                            
+
+                                            # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
+                                            csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
+
                                             # Check if 'performance' column exists
                                             if 'performance' not in csv_reader.fieldnames:
                                                 print("Error: 'performance' column not found in multiple results file.")
