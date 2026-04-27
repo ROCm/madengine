@@ -11,7 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
 
-## [2.0.1] - 2026-04-23
+## [2.0.1] - 2026-04-27
+
+### Changed
+
+- **GPU arch auto-detection for full-run mode**: `madengine run --tags` now automatically detects and injects `MAD_SYSTEM_GPU_ARCHITECTURE` into the Docker build args during the build phase. Previously, Dockerfiles declaring `ARG MAD_SYSTEM_GPU_ARCHITECTURE` without a default were built with an empty value unless the user manually passed `--additional-context`. The detection reuses the existing `detect_gpu_vendor()` + `get_gpu_tool_manager()` + `normalize_architecture_name()` pipeline; a user-provided value is never overridden. Standalone `madengine build` is unaffected (detection is off by default). Added `detect_local_gpu_arch` parameter to `Context`, `BuildOrchestrator`, and threaded it through `RunOrchestrator._build_phase()`.
+
+- **Model discovery — scope-based tag selection**: Replaced the `strict` mode flag on `DiscoverModels` with a cleaner scope-based rule that applies uniformly to both `madengine run` and `madengine build`:
+  - **Unscoped tag** (e.g. `--tags inference`, `--tags pyt_foo`): matches any model with that value in its `tags` field (scope-agnostic), or a model whose full name equals the tag exactly (root-only).
+  - **Scoped tag** (e.g. `--tags MAD/inference`, `--tags MAD/pyt_foo`): restricts candidates to models prefixed with `MAD/`, then matches by tag field or exact full name within that scope.
+  - `--tags all` and `--tags scope/all` continue to select all models globally or within a scope respectively.
+  - Removed `strict_discovery` parameter from `BuildOrchestrator.execute()` and the corresponding call in `RunOrchestrator._build_phase()` as they are no longer needed.
 
 ### Fixed
 
@@ -24,14 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E tests — hardware-agnostic GPU arch skip**: `test_commandline_argument_skip_gpu_arch` and its companion test now detect the current GPU architecture at runtime and inject it into the fixture's `skip_gpu_arch` list, so both tests pass on any GPU (gfx942, gfx950, etc.) without hardcoding arch names. Added `get_gpu_arch()` utility to `tests/fixtures/utils.py`.
 
 - **E2E tests — `test_docker_gpus` pre-script OOM on MI350X**: The `run_rocenv_tool.sh` system-env pre-script was being OOM-killed (exit 137) inside Docker on gfx950 nodes with 6 GPUs bound, failing a test whose purpose is only GPU binding verification. Fixed by correcting the `gen_sys_env_details` condition in `container_runner.py` — the old `or` made the context key a no-op since `generate_sys_env_details` defaults to `True` — and passing `gen_sys_env_details: False` in the test's `additional_context`.
-
-### Changed
-
-- **Model discovery — scope-based tag selection**: Replaced the `strict` mode flag on `DiscoverModels` with a cleaner scope-based rule that applies uniformly to both `madengine run` and `madengine build`:
-  - **Unscoped tag** (e.g. `--tags inference`, `--tags pyt_foo`): matches any model with that value in its `tags` field (scope-agnostic), or a model whose full name equals the tag exactly (root-only).
-  - **Scoped tag** (e.g. `--tags MAD/inference`, `--tags MAD/pyt_foo`): restricts candidates to models prefixed with `MAD/`, then matches by tag field or exact full name within that scope.
-  - `--tags all` and `--tags scope/all` continue to select all models globally or within a scope respectively.
-  - Removed `strict_discovery` parameter from `BuildOrchestrator.execute()` and the corresponding call in `RunOrchestrator._build_phase()` as they are no longer needed.
 
 ## [2.0.0] - 2026-04-09
 
