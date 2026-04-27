@@ -82,6 +82,7 @@ class Context:
         additional_context: str = None,
         additional_context_file: str = None,
         build_only_mode: bool = False,
+        detect_local_gpu_arch: bool = False,
     ) -> None:
         """Constructor of the Context class.
 
@@ -89,6 +90,9 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
+            detect_local_gpu_arch: When True and in build_only_mode, attempt to auto-detect
+                MAD_SYSTEM_GPU_ARCHITECTURE from the local node and inject it into docker_build_arg.
+                Has no effect when build_only_mode=False (runtime mode detects it via init_gpu_context).
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
@@ -97,6 +101,7 @@ class Context:
         self.console = Console()
         self._gpu_context_initialized = False
         self._build_only_mode = build_only_mode
+        self._detect_local_gpu_arch = detect_local_gpu_arch
         self._system_context_initialized = False
         self._gpu_tool_manager = None  # Lazy initialization
 
@@ -137,17 +142,22 @@ class Context:
             self.init_runtime_context()
         else:
             # For build-only mode, only initialize what's needed for building
-            self.init_build_context()
+            self.init_build_context(detect_gpu_arch=self._detect_local_gpu_arch)
 
         ## ADD MORE CONTEXTS HERE ##
 
-    def init_build_context(self) -> None:
+    def init_build_context(self, detect_gpu_arch: bool = False) -> None:
         """Initialize build-specific context.
 
         This method sets up only the context needed for Docker builds,
         avoiding GPU detection that would fail on build-only nodes.
         System-specific contexts (host_os, numa_balancing, etc.) should be
         provided via --additional-context for build-only nodes if needed.
+
+        Args:
+            detect_gpu_arch: When True, attempt to auto-detect MAD_SYSTEM_GPU_ARCHITECTURE
+                from the local node and inject it into docker_build_arg. Fails gracefully
+                if no GPU is present (e.g., on a pure CI build node).
         """
         print("Initializing build-only context...")
 
@@ -168,9 +178,26 @@ class Context:
                     "Consider providing host_os via --additional-context if needed for build"
                 )
 
-        # Don't detect GPU-specific contexts in build-only mode
-        # These should be provided via additional_context if needed for build args
-        # (GPU arch guidance is emitted in BuildOrchestrator after model/Dockerfile discovery.)
+        # Optionally auto-detect GPU architecture for local full-workflow builds (build+run).
+        # Skipped for standalone `madengine build` on non-GPU/CI nodes (detect_gpu_arch=False).
+        if detect_gpu_arch and "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get("docker_build_arg", {}):
+            try:
+                from madengine.utils.gpu_validator import detect_gpu_vendor
+                from madengine.execution.dockerfile_utils import normalize_architecture_name
+
+                vendor = detect_gpu_vendor(self._rocm_path)
+                if vendor in (GPUVendor.AMD, GPUVendor.NVIDIA):
+                    manager = get_gpu_tool_manager(vendor, self._rocm_path)
+                    raw_arch = manager.get_gpu_architecture()
+                    arch = normalize_architecture_name(raw_arch) or raw_arch.strip()
+                    self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = arch
+                    print(f"Auto-detected GPU architecture for build: {arch}")
+                else:
+                    print("Warning: No supported GPU detected; MAD_SYSTEM_GPU_ARCHITECTURE will not be set automatically.")
+                    print("Consider providing it via --additional-context if needed for build args.")
+            except Exception as e:
+                print(f"Warning: Could not auto-detect GPU architecture for build: {e}")
+                print("Consider providing MAD_SYSTEM_GPU_ARCHITECTURE via --additional-context if needed for build args.")
 
         # Don't initialize NUMA balancing check for build-only nodes
         # This is runtime-specific and should be handled on execution nodes
