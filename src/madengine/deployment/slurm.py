@@ -1504,7 +1504,8 @@ export MASTER_PORT={master_port}
         try:
             with open(perf_file, "r") as f:
                 reader = csv.DictReader(f)
-                rows = list(reader)
+                reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+                rows = [{k.strip(): v for k, v in row.items() if k} for row in reader]
             if session_start_row is not None and session_start_row < len(rows):
                 rows = rows[session_start_row:]
             elif session_start_row is not None and session_start_row >= len(rows):

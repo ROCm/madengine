@@ -3282,6 +3282,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             try:
                 with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
                     reader = csv_module.DictReader(f)
+                    reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
                     if not reader.fieldnames or "performance" not in reader.fieldnames or "metric" not in reader.fieldnames:
                         continue
                     for row_idx, row in enumerate(reader):
