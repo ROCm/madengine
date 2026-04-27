@@ -11,7 +11,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from enum import Enum
@@ -303,11 +303,11 @@ class DocumentTransformer:
         
         # Add upload timestamp if not present
         if f"{prefix}_uploaded_at" not in doc:
-            doc[f"{prefix}_uploaded_at"] = datetime.utcnow()
+            doc[f"{prefix}_uploaded_at"] = datetime.now(timezone.utc)
         
         # Preserve original created_date if present
         if "created_date" not in doc:
-            doc["created_date"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            doc["created_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         
         return doc
     
