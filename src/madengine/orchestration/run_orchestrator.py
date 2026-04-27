@@ -345,7 +345,16 @@ class RunOrchestrator:
         # Update args with tags
         self.args.tags = tags
 
-        build_orch = BuildOrchestrator(self.args, self.additional_context)
+        # detect_local_gpu_arch=True: full workflow on a local single node — auto-detect
+        # MAD_SYSTEM_GPU_ARCHITECTURE before the build so Dockerfiles that require it
+        # (ARG MAD_SYSTEM_GPU_ARCHITECTURE with no default) are built correctly without
+        # requiring the user to manually pass --additional-context.
+        # The user's explicitly provided value (if any) is still respected and not overridden.
+        build_orch = BuildOrchestrator(
+            self.args,
+            self.additional_context,
+            detect_local_gpu_arch=True,
+        )
         manifest_file = build_orch.execute(
             registry=registry,
             clean_cache=getattr(self.args, "clean_docker_cache", False),
