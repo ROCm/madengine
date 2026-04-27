@@ -165,6 +165,15 @@ class TestResolveHostContainerRocmPath:
         assert r is None
         assert "ROCM_PATH" not in d
 
+    def test_apply_overrides_null_mad_rocm_path_does_not_mirror_host(self):
+        # MAD_ROCM_PATH: null/blank should be treated as "unset", not mirror host
+        for blank in (None, "", "   "):
+            d = {MAD_ROCM_PATH: blank}
+            r = apply_container_rocm_path_overrides(d, "/hostpath")
+            assert r is None, f"Expected None for MAD_ROCM_PATH={blank!r}, got {r!r}"
+            assert MAD_ROCM_PATH not in d, "Key should be consumed even when blank"
+            assert "ROCM_PATH" not in d, "Host path must not be mirrored into container"
+
     def test_get_rocm_path_legacy_alias(self, monkeypatch):
         monkeypatch.delenv("ROCM_PATH", raising=False)
         g = get_rocm_path_legacy(None)

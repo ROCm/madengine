@@ -386,12 +386,11 @@ def apply_container_rocm_path_overrides(
     """
     d = docker_env
     if MAD_ROCM_PATH in d:
-        s = d.pop(MAD_ROCM_PATH)  # always consume, even when None
+        s = d.pop(MAD_ROCM_PATH)  # always consume, even when None/blank
         if isinstance(s, (int, float)):
             s = str(s)
         if not isinstance(s, str) or not str(s).strip():
-            s = host_path
-        if not s:
+            # None/blank means "unset" — do not mirror host into container
             return None
         croot = normalize_rocm_path(str(s).strip())
     elif d.get("ROCM_PATH") not in (None, "") and str(d.get("ROCM_PATH", "")).strip():
