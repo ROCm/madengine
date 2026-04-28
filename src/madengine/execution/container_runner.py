@@ -21,7 +21,6 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -35,6 +34,7 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
@@ -42,6 +42,126 @@ from madengine.execution.container_runner_helpers import (
     resolve_log_error_scan_config,
     resolve_run_timeout,
 )
+
+
+def _print_run_env_table(
+    gpu_vendor: str,
+    context,
+    model_docker,
+    rich_console,
+) -> None:
+    """Print a side-by-side environment table for host and container.
+
+    Covers AMD (installation type, ROCm root, ROCm version) and NVIDIA
+    (installation type, CUDA root, CUDA version) for both sides.
+    Follows container_runner.py convention: rich_console for styled borders,
+    plain print() for data rows (so they appear in the run log file).
+    """
+    from pathlib import Path
+
+    COL_W = 36  # width of each data column
+
+    def row(label: str, host_val: str, container_val: str) -> str:
+        return f"  {label:<26}  {host_val:<{COL_W}}  {container_val:<{COL_W}}"
+
+    def separator() -> str:
+        return "  " + "-" * (26 + 2 + COL_W + 2 + COL_W)
+
+    def _sh(cmd: str) -> str:
+        """Run a command in the container and return stripped output."""
+        try:
+            return (model_docker.sh(cmd) or "").strip()
+        except Exception:
+            return "N/A"
+
+    rich_console.print("\n[bold blue]🖥️   RUN PHASE ENVIRONMENT[/bold blue]")
+    rich_console.print(f"[dim]{'=' * 80}[/dim]")
+    print(row("", "HOST", "CONTAINER"))
+    print(separator())
+
+    if "AMD" in gpu_vendor:
+        # ── Host side ──────────────────────────────────────────────
+        host_rocm_root = getattr(context, "_rocm_path", None) or "unknown"
+        _host_rocm_path = Path(host_rocm_root)
+        host_install_type = (
+            "therock"
+            if _host_rocm_path.is_dir() and is_therock_tree(_host_rocm_path)
+            else "apt install" if _host_rocm_path.is_dir()
+            else "unknown"
+        )
+        try:
+            host_rocm_ver = context._get_tool_manager().get_version() or "unknown"
+        except Exception:
+            host_rocm_ver = "unknown"
+
+        # ── Container side ─────────────────────────────────────────
+        # Installation type: if rocm-sdk resolves a root it is TheRock;
+        # otherwise fall back to the traditional .info/version marker.
+        # Avoids nested quoting issues by not embedding $(...) inside [ -f "..." ].
+        ctr_install_type = _sh(
+            "if command -v rocm-sdk >/dev/null 2>&1 "
+            "&& rocm-sdk path --root >/dev/null 2>&1; "
+            "then echo therock; "
+            "elif [ -f /opt/rocm/.info/version ]; then echo 'apt install'; "
+            "else echo unknown; fi"
+        )
+
+        # ROCm root: prefer rocm-sdk, then ROCM_PATH env, then /opt/rocm
+        ctr_rocm_root = _sh(
+            "rocm-sdk path --root 2>/dev/null "
+            "|| echo \"${ROCM_PATH:-/opt/rocm}\""
+        )
+
+        # ROCm version: prefer rocm-sdk, then .info/version, then rocminfo
+        ctr_rocm_ver = _sh(
+            "rocm-sdk version 2>/dev/null "
+            "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
+            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | sed 's/.*[Vv]ersion:[[:space:]]*//;s/[[:space:]].*//;s/[^0-9.]//g' 2>/dev/null "
+            "|| echo unknown"
+        )
+
+        print(row("GPU Vendor", "AMD", "AMD"))
+        print(row("Installation Type", host_install_type, ctr_install_type))
+        print(row("ROCm Root", host_rocm_root, ctr_rocm_root))
+        print(row("ROCm Version", host_rocm_ver, ctr_rocm_ver))
+
+    elif "NVIDIA" in gpu_vendor:
+        # ── Host side ──────────────────────────────────────────────
+        def _host_sh(cmd: str) -> str:
+            try:
+                return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, text=True).strip()
+            except Exception:
+                return "unknown"
+
+        host_cuda_root = _host_sh(
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 | "
+            "xargs -I{} dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
+            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
+        )
+        host_cuda_ver = _host_sh(
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| echo unknown"
+        )
+
+        # ── Container side ─────────────────────────────────────────
+        ctr_cuda_root = _sh(
+            "dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
+            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
+        )
+        ctr_cuda_ver = _sh(
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| echo unknown"
+        )
+
+        print(row("GPU Vendor", "NVIDIA", "NVIDIA"))
+        print(row("Installation Type", "CUDA toolkit", "CUDA toolkit"))
+        print(row("CUDA Root", host_cuda_root, ctr_cuda_root))
+        print(row("CUDA Version", host_cuda_ver, ctr_cuda_ver))
+
+    print(separator())
+    rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
 def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
@@ -887,6 +1007,32 @@ class ContainerRunner:
             if merged_count > 0:
                 print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
+        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
+            "AMD"
+        ) != -1:
+            from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
+
+            # Determine whether the user explicitly supplied ROCM_PATH for the container.
+            # If they did (via docker_env_vars.ROCM_PATH in additional_context), the
+            # re-merge above already restored it — keep it so finalize uses it directly.
+            # If they did not, clear any ROCM_PATH left from a previous model run so
+            # finalize always re-resolves for the current docker_image (OCI config →
+            # in-image probe → /opt/rocm default).
+            user_supplied_rocm_path = (
+                str(
+                    (self.additional_context or {})
+                    .get("docker_env_vars", {})
+                    .get("ROCM_PATH", "")
+                ).strip()
+            )
+            if not user_supplied_rocm_path:
+                self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
+
+            finalize_container_rocm_path(
+                self.context.ctx["docker_env_vars"],
+                docker_image,
+            )
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
@@ -979,24 +1125,22 @@ class ContainerRunner:
                         whoami = model_docker.sh("whoami")
                         print(f"👤 Running as user: {whoami}")
 
-                        # Show GPU info with version-aware tool selection (PR #54)
+                        # Show GPU info — let the container resolve its own tool paths via
+                        # PATH rather than using host-resolved paths, which break on
+                        # TheRock images where amd-smi/rocm-smi live in a Python venv
+                        # (e.g. /opt/python/bin/) rather than /opt/rocm/bin/.
                         if gpu_vendor.find("AMD") != -1:
                             print(f"🎮 Checking AMD GPU status...")
-                            rocm_path = self.context.ctx.get("rocm_path") or get_rocm_path()
-                            amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
-                            rocm_smi_path = os.path.join(rocm_path, "bin", "rocm-smi")
-                            try:
-                                tool_manager = self.context._get_tool_manager()
-                                preferred_tool = tool_manager.get_preferred_smi_tool()
-                                if preferred_tool == "amd-smi":
-                                    model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
-                                else:
-                                    model_docker.sh(f"{rocm_smi_path} || {amd_smi_path} || true")
-                            except Exception:
-                                model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
+                            model_docker.sh(
+                                "amd-smi 2>/dev/null || rocm-smi 2>/dev/null || "
+                                "echo 'GPU SMI tool not available in container PATH'"
+                            )
                         elif gpu_vendor.find("NVIDIA") != -1:
                             print(f"🎮 Checking NVIDIA GPU status...")
                             model_docker.sh("/usr/bin/nvidia-smi || true")
+
+                        # Print host vs container environment summary table
+                        _print_run_env_table(gpu_vendor, self.context, model_docker, self.rich_console)
 
                         # Prepare model directory
                         model_dir = "run_directory"
@@ -1200,7 +1344,10 @@ class ContainerRunner:
                                         import csv
                                         with open(resolved_path, "r") as f:
                                             csv_reader = csv.DictReader(f)
-                                            
+
+                                            # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
+                                            csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
+
                                             # Check if 'performance' column exists
                                             if 'performance' not in csv_reader.fieldnames:
                                                 print("Error: 'performance' column not found in multiple results file.")

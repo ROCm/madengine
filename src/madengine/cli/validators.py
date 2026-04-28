@@ -124,6 +124,15 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
     ):
         _fail_structure("docker_env_vars", "an object")
 
+    dev = context.get("docker_env_vars")
+    if isinstance(dev, dict) and "ROCM_PATH" in dev:
+        v = dev["ROCM_PATH"]
+        if not isinstance(v, (str, type(None))):
+            _fail_structure(
+                "docker_env_vars['ROCM_PATH']",
+                "a string (container ROCm root override)",
+            )
+
     if "docker_mounts" in context and not isinstance(context["docker_mounts"], dict):
         _fail_structure("docker_mounts", "an object")
 
@@ -169,6 +178,11 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
 
     if "guest_os" in context and not isinstance(context["guest_os"], str):
         _fail_structure("guest_os", "a string")
+
+    if "MAD_ROCM_PATH" in context and not isinstance(
+        context["MAD_ROCM_PATH"], (str, type(None))
+    ):
+        _fail_structure("MAD_ROCM_PATH", "a string (host ROCm root override)")
 
     if "log_error_pattern_scan" in context and not isinstance(
         context["log_error_pattern_scan"], (bool, str, int, float, type(None))
