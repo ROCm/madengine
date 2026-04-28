@@ -125,11 +125,11 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
         _fail_structure("docker_env_vars", "an object")
 
     dev = context.get("docker_env_vars")
-    if isinstance(dev, dict) and "MAD_ROCM_PATH" in dev:
-        v = dev["MAD_ROCM_PATH"]
+    if isinstance(dev, dict) and "ROCM_PATH" in dev:
+        v = dev["ROCM_PATH"]
         if not isinstance(v, (str, type(None))):
             _fail_structure(
-                "docker_env_vars['MAD_ROCM_PATH']",
+                "docker_env_vars['ROCM_PATH']",
                 "a string (container ROCm root override)",
             )
 

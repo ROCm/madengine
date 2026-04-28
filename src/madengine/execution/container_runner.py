@@ -81,10 +81,12 @@ def _print_run_env_table(
     if "AMD" in gpu_vendor:
         # ── Host side ──────────────────────────────────────────────
         host_rocm_root = getattr(context, "_rocm_path", None) or "unknown"
+        _host_rocm_path = Path(host_rocm_root)
         host_install_type = (
             "therock"
-            if is_therock_tree(Path(host_rocm_root))
-            else "apt install"
+            if _host_rocm_path.is_dir() and is_therock_tree(_host_rocm_path)
+            else "apt install" if _host_rocm_path.is_dir()
+            else "unknown"
         )
         try:
             host_rocm_ver = context._get_tool_manager().get_version() or "unknown"
@@ -113,7 +115,7 @@ def _print_run_env_table(
         ctr_rocm_ver = _sh(
             "rocm-sdk version 2>/dev/null "
             "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
-            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | grep -oP '[\\d.]+' 2>/dev/null "
+            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | sed 's/.*[Vv]ersion:[[:space:]]*//;s/[[:space:]].*//;s/[^0-9.]//g' 2>/dev/null "
             "|| echo unknown"
         )
 
@@ -131,13 +133,13 @@ def _print_run_env_table(
                 return "unknown"
 
         host_cuda_root = _host_sh(
-            "nvcc --version 2>/dev/null | grep -oP 'release \\K[\\d.]+' | head -1 | "
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 | "
             "xargs -I{} dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
             "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
         )
         host_cuda_ver = _host_sh(
-            "nvcc --version 2>/dev/null | grep -oP 'release \\K[\\d.]+' | head -1 "
-            "|| nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \\K[\\d.]+' | head -1 "
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
             "|| echo unknown"
         )
 
@@ -147,8 +149,8 @@ def _print_run_env_table(
             "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
         )
         ctr_cuda_ver = _sh(
-            "nvcc --version 2>/dev/null | grep -oP 'release \\K[\\d.]+' | head -1 "
-            "|| nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \\K[\\d.]+' | head -1 "
+            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
+            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
             "|| echo unknown"
         )
 
@@ -1059,17 +1061,25 @@ class ContainerRunner:
         ) != -1:
             from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
 
-            # Clear any ROCM_PATH left from a previous model run so finalize always
-            # re-resolves per docker_image (OCI config → probe → default).
-            # ROCM_PATH is program-managed; users override via MAD_ROCM_PATH in
-            # additional_context.docker_env_vars, which was merged just above and
-            # will be consumed by finalize_container_rocm_path correctly.
-            self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
+            # Determine whether the user explicitly supplied ROCM_PATH for the container.
+            # If they did (via docker_env_vars.ROCM_PATH in additional_context), the
+            # re-merge above already restored it — keep it so finalize uses it directly.
+            # If they did not, clear any ROCM_PATH left from a previous model run so
+            # finalize always re-resolves for the current docker_image (OCI config →
+            # in-image probe → /opt/rocm default).
+            user_supplied_rocm_path = (
+                str(
+                    (self.additional_context or {})
+                    .get("docker_env_vars", {})
+                    .get("ROCM_PATH", "")
+                ).strip()
+            )
+            if not user_supplied_rocm_path:
+                self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
 
             finalize_container_rocm_path(
                 self.context.ctx["docker_env_vars"],
                 docker_image,
-                self.context._rocm_path,
             )
 
         if "data" in model_info and model_info["data"] != "" and self.data:

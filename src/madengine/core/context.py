@@ -284,7 +284,8 @@ class Context:
             self.ctx["rocm_path"] = self._rocm_path
             # In-container ROCM_PATH is finalized at run time in run_container
             # via finalize_container_rocm_path (OCI env → probe → default).
-            # MAD_ROCM_PATH in docker_env_vars is consumed there, not here.
+            # docker_env_vars.ROCM_PATH (user-supplied) is preserved here; finalize
+            # normalizes it at run time. Auto-detection runs in finalize when absent.
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
