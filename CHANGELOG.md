@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.1] - 2026-04-27
 
+### Added
+
+- **ROCm path auto-detection** (`madengine.utils.rocm_path_resolver`): Host ROCm root is now resolved automatically via a priority chain — top-level `MAD_ROCM_PATH` in `--additional-context` → auto-detect (traditional `/opt/rocm`, versioned `/opt/rocm-*`, TheRock `rocm-sdk` + markers, `rocminfo`/`amd-smi`/`rocm-smi` on `PATH`) → `ROCM_PATH` env var → `/opt/rocm` fallback. Set `MAD_AUTO_ROCM_PATH=0` to skip scanning and use the legacy env-var / default behaviour only.
+
+- **In-container ROCM_PATH resolution**: For AMD Docker runs, the container `ROCM_PATH` is now resolved independently of the host: `docker_env_vars.MAD_ROCM_PATH` (consumed and not forwarded as-is) → `ROCM_PATH`/`ROCM_HOME` from the image OCI config (`docker image inspect`) → in-image shell probe (`docker run --rm`) → `/opt/rocm` with a warning. The host-resolved path is no longer mirrored into the container by default, preventing mismatches when host and image ROCm layouts differ.
+
+- **TheRock layout support** (`madengine.utils.therock_markers`): Shared file-marker constants for detecting TheRock (`rocm-sdk`) installs used by both host path resolution and container compatibility checks.
+
+- **Run phase environment table**: `container_runner` now prints a side-by-side table at run time showing host vs. container installation type (`apt`/`therock`/`unknown`), ROCm/CUDA root, and version, making it easier to diagnose path mismatches without inspecting logs manually.
+
 ### Changed
 
 - **GPU arch auto-detection for full-run mode**: `madengine run --tags` now automatically detects and injects `MAD_SYSTEM_GPU_ARCHITECTURE` into the Docker build args during the build phase. Previously, Dockerfiles declaring `ARG MAD_SYSTEM_GPU_ARCHITECTURE` without a default were built with an empty value unless the user manually passed `--additional-context`. The detection reuses the existing `detect_gpu_vendor()` + `get_gpu_tool_manager()` + `normalize_architecture_name()` pipeline; a user-provided value is never overridden. Standalone `madengine build` is unaffected (detection is off by default). Added `detect_local_gpu_arch` parameter to `Context`, `BuildOrchestrator`, and threaded it through `RunOrchestrator._build_phase()`.
@@ -23,13 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--tags all` and `--tags scope/all` continue to select all models globally or within a scope respectively.
   - Removed `strict_discovery` parameter from `BuildOrchestrator.execute()` and the corresponding call in `RunOrchestrator._build_phase()` as they are no longer needed.
 
+- **Removed `--rocm-path` CLI flag**: The flag was an alias for `MAD_ROCM_PATH` but its help text implied it could set both host and container paths, causing confusion. Use `--additional-context` instead: `{"MAD_ROCM_PATH": "/host/rocm"}` for the host root and `{"docker_env_vars": {"MAD_ROCM_PATH": "/container/rocm"}}` for the in-container root.
+
 ### Fixed
 
 - **Performance log parsing**: Unified and extended the `performance:` log regex across all execution paths (`base.py`, `container_runner.py`) to correctly parse values with unit suffixes (e.g. `/s`), comma separators between the value and metric name, explicit sign prefixes (`+`/`-`), uppercase scientific notation (`E`), and leading-dot decimals (e.g. `.5`). Previously the narrow `[\d.]+` pattern silently dropped records from training scripts that emitted `performance: 14164/s, samples_per_second`-style lines. The pattern is now defined as a single module-level constant (`PERFORMANCE_LOG_PATTERN` in `deployment/base.py`) shared by both parsers.
 
+- **TheRock container compatibility — rocEnvTool**: `csv_parser.py` now resolves `rocm-smi` via `shutil.which()` so images where tools live in a Python venv (not `/opt/rocm/bin/`) are detected correctly. Accepts a `path_resolver` argument to read the ROCm version from `RocmPathResolver.get_version()` rather than hardcoding `/opt/rocm/.info/version`. Added bounds check in the NVIDIA GPU info parser. `rocenv_tool.py` passes the resolver to `CSVParser` so version resolution works for both TheRock and traditional installs.
+
+- **TheRock container compatibility — GPU checks**: Container exec commands for `amd-smi`/`rocm-smi` in `container_runner.py` now use PATH-based resolution instead of host-resolved absolute paths, so they work in TheRock images where the tools are not under `/opt/rocm/bin/`.
+
+- **In-container installation type detection**: The shell command used to distinguish TheRock from apt installs was broken by quoting issues when passed through `docker exec bash -c "..."`, causing the check to always fall through to `unknown`. Replaced with a quoting-safe two-step check: test if `rocm-sdk` exists and returns a root path (TheRock), otherwise check `/opt/rocm/.info/version` (apt).
+
 - **Model discovery — tag selection with extra args**: In the unscoped `--tags` path, tag-list matching and the `all` check incorrectly used the raw tag string (e.g. `inference:batch-size=32`) instead of the pre-colon model name (`inference`). This caused tag-based selection to silently fail whenever extra args were appended via the colon syntax. Fixed for both `models` and `custom_models` loops.
 
 - **Model discovery — cross-scope name leakage**: Unscoped tags (e.g. `--tags pyt_foo`) previously matched models in any scope via a short-name split (`model["name"].split("/")[-1]`), so `pyt_foo` would silently select `MAD/pyt_foo`. Removed the short-name backward-compat matching; an unscoped name now only matches a model whose full name equals the tag exactly.
+
+- **`datetime.utcnow()` deprecation in `mongodb.py`**: Replaced all `datetime.utcnow()` calls with `datetime.now(timezone.utc)` to silence Python 3.12+ deprecation warnings.
 
 - **E2E tests — hardware-agnostic GPU arch skip**: `test_commandline_argument_skip_gpu_arch` and its companion test now detect the current GPU architecture at runtime and inject it into the fixture's `skip_gpu_arch` list, so both tests pass on any GPU (gfx942, gfx950, etc.) without hardcoding arch names. Added `get_gpu_arch()` utility to `tests/fixtures/utils.py`.
 
