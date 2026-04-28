@@ -38,7 +38,10 @@ def load_credentials() -> Optional[Dict]:
     if os.path.exists(credential_file):
         try:
             with open(credential_file) as f:
-                credentials = json.load(f)
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("credential.json must contain a JSON object, not " + type(loaded).__name__)
+            credentials = loaded
             print(
                 f"Loaded credentials from {credential_file}: "
                 f"{list(credentials.keys())}"
