@@ -22,14 +22,12 @@ fails the root check).
 
 **Container** (``docker_env_vars``) — set when the run uses Docker (``run_container``):
 
-* ``MAD_ROCM_PATH`` in ``docker_env_vars`` — in-image ROCm root; the key is consumed and
-  mapped to ``ROCM_PATH`` inside the container. ``ROCM_PATH`` itself is program-managed
-  and should not be set directly by users.
-* Full in-container resolution order is implemented in
-  :func:`finalize_container_rocm_path` (no host mirroring): (1) ``MAD_ROCM_PATH`` override,
-  (2) ``ROCM_PATH`` / ``ROCM_HOME`` from ``docker image inspect`` OCI ``Config.Env``,
-  (3) ``docker run --rm`` with an in-image shell probe aligned with
-  :class:`RocmPathResolver` heuristics, (4) default ``/opt/rocm`` with a warning.
+* Set ``ROCM_PATH`` in ``docker_env_vars`` to pin the in-container ROCm root explicitly.
+  When absent, :func:`finalize_container_rocm_path` auto-resolves: (1) ``ROCM_PATH`` /
+  ``ROCM_HOME`` from ``docker image inspect`` OCI ``Config.Env``, (2) ``docker run --rm``
+  with an in-image shell probe aligned with :class:`RocmPathResolver` heuristics,
+  (3) default ``/opt/rocm`` with a warning. The host-resolved path is **not** mirrored
+  into the container.
 """
 
 from __future__ import annotations
@@ -374,63 +372,30 @@ def infer_rocm_path_via_docker_run(
     return line
 
 
-def apply_container_rocm_path_overrides(
-    docker_env: Dict[str, Any], host_path: str
-) -> Optional[str]:
-    """
-    Map ``MAD_ROCM_PATH`` to ``ROCM_PATH`` and normalize a user ``ROCM_PATH`` in
-    ``docker_env``. Does **not** set ``ROCM_PATH`` from the host; see
-    :func:`finalize_container_rocm_path` for run-time resolution.
-
-    Returns the resolved path if one was set, else ``None``.
-    """
-    d = docker_env
-    if MAD_ROCM_PATH in d:
-        s = d.pop(MAD_ROCM_PATH)  # always consume, even when None/blank
-        if isinstance(s, (int, float)):
-            s = str(s)
-        if not isinstance(s, str) or not str(s).strip():
-            # None/blank means "unset" — do not mirror host into container
-            return None
-        croot = normalize_rocm_path(str(s).strip())
-    elif d.get("ROCM_PATH") not in (None, "") and str(d.get("ROCM_PATH", "")).strip():
-        croot = normalize_rocm_path(str(d["ROCM_PATH"]).strip())
-    else:
-        return None
-    d["ROCM_PATH"] = croot
-    return croot
-
-
 def finalize_container_rocm_path(
     docker_env: Dict[str, Any],
     docker_image: str,
-    host_path: str,
     *,
     log: Callable[[str], None] = print,
 ) -> str:
     """
     Set ``docker_env['ROCM_PATH']`` for container workloads (AMD Docker runs).
 
-    Precedence:
+    Callers set ``docker_env['ROCM_PATH']`` directly to override (user-supplied).
+    When absent or empty, this function auto-resolves in order:
 
-    1. If ``ROCM_PATH`` is already in ``docker_env`` (e.g. from
-       :func:`apply_container_rocm_path_overrides`), use it.
-    2. Else if OCI :envvar:`ROCM_PATH` / :envvar:`ROCM_HOME` is set on the image, use
-       that (``docker image inspect``).
-    3. Else log a short warning, run the in-image shell probe, use its output if
-       successful.
-    4. Else default to ``/opt/rocm`` and log a warning.
-
-    ``host_path`` is reserved for callers that need a fallback; it is **not** used
-    for mirroring unless future policy adds an explicit opt-in.
+    1. ``ROCM_PATH`` already in ``docker_env`` (user-supplied via
+       ``docker_env_vars.ROCM_PATH`` in additional context) — normalize and use it.
+    2. OCI :envvar:`ROCM_PATH` / :envvar:`ROCM_HOME` baked into the image config
+       (``docker image inspect``).
+    3. In-image shell probe (``docker run --rm``) aligned with
+       :class:`RocmPathResolver` heuristics.
+    4. Default ``/opt/rocm`` with a warning.
     """
     d = docker_env
-    # Re-run overrides so ``docker_env_vars`` merged in ``run_container`` (late) still
-    # maps ``MAD_ROCM_PATH`` to ``ROCM_PATH`` and consumes the ``MAD_`` key.
-    apply_container_rocm_path_overrides(d, host_path)
 
     existing = d.get("ROCM_PATH")
-    if existing not in (None, ""):
+    if existing not in (None, "") and str(existing).strip():
         croot = normalize_rocm_path(str(existing).strip())
         d["ROCM_PATH"] = croot
         return croot
@@ -447,7 +412,7 @@ def finalize_container_rocm_path(
     log(
         f"Warning: image {docker_image!r} has no ROCM_PATH/ROCM_HOME in OCI Config.Env; "
         f"probing in-container for ROCm root (docker run --rm). "
-        f"Set docker_env_vars.MAD_ROCM_PATH to skip."
+        f"Set docker_env_vars.ROCM_PATH to skip."
     )
     probed = infer_rocm_path_via_docker_run(docker_image, log=log)
     if probed:
@@ -460,7 +425,7 @@ def finalize_container_rocm_path(
     d["ROCM_PATH"] = croot
     log(
         "Warning: could not infer ROCm in container; defaulting ROCM_PATH to "
-        f"{croot} (set docker_env_vars.MAD_ROCM_PATH if wrong)."
+        f"{croot} (set docker_env_vars.ROCM_PATH if wrong)."
     )
     return croot
 

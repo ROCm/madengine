@@ -11,7 +11,6 @@ from madengine.core.constants import get_rocm_path
 from madengine.utils import rocm_path_resolver as rpr
 from madengine.utils.rocm_path_resolver import (
     MAD_ROCM_PATH,
-    apply_container_rocm_path_overrides,
     auto_detect_rocm_path,
     finalize_container_rocm_path,
     get_rocm_path_legacy,
@@ -89,8 +88,8 @@ class TestContextRocmPath:
             # Host path is not mirrored into docker_env_vars.ROCM_PATH at init.
             assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") in (None, "")
 
-    def test_context_container_mad_overrides_host(self):
-        """docker_env_vars MAD_ROCM_PATH is preserved at context init; consumed at run time."""
+    def test_context_container_rocm_path_preserved_at_init(self):
+        """docker_env_vars.ROCM_PATH is preserved at context init; finalize normalizes at run time."""
         from madengine.core.context import Context
         from unittest.mock import patch
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
@@ -98,7 +97,7 @@ class TestContextRocmPath:
         ac = repr(
             {
                 MAD_ROCM_PATH: "/on/host",
-                "docker_env_vars": {MAD_ROCM_PATH: "/in/image"},
+                "docker_env_vars": {"ROCM_PATH": "/in/image"},
             }
         )
         with patch.object(Context, "get_gpu_vendor", return_value="AMD"), \
@@ -110,10 +109,8 @@ class TestContextRocmPath:
              patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
             ctx = Context(additional_context=ac)
         assert ctx._rocm_path == normalize_rocm_path("/on/host")
-        # ROCM_PATH is set at run time by finalize_container_rocm_path, not at context init.
-        assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") is None
-        # MAD_ROCM_PATH stays in docker_env_vars until consumed by finalize at run time.
-        assert ctx.ctx["docker_env_vars"].get(MAD_ROCM_PATH) == "/in/image"
+        # User-supplied ROCM_PATH is kept in docker_env_vars at init; finalize normalizes at run time.
+        assert ctx.ctx["docker_env_vars"].get("ROCM_PATH") == "/in/image"
 
 
 @pytest.mark.unit
@@ -151,41 +148,42 @@ class TestResolveHostContainerRocmPath:
         p2 = resolve_host_rocm_path({})
         assert p2 == os.path.abspath("/env/ro").rstrip(os.sep)
 
-    def test_resolve_container_mad_consumes_key(self):
-        d = {MAD_ROCM_PATH: "/in/container"}
-        host = "/on/host"
-        r = apply_container_rocm_path_overrides(d, host)
-        assert r == os.path.abspath("/in/container").rstrip(os.sep)
-        assert d.get("ROCM_PATH") == r
-        assert MAD_ROCM_PATH not in d
-
-    def test_apply_overrides_does_not_mirror_host(self):
-        d = {}
-        r = apply_container_rocm_path_overrides(d, "/hostpath")
-        assert r is None
-        assert "ROCM_PATH" not in d
-
-    def test_apply_overrides_null_mad_rocm_path_does_not_mirror_host(self):
-        # MAD_ROCM_PATH: null/blank should be treated as "unset", not mirror host
-        for blank in (None, "", "   "):
-            d = {MAD_ROCM_PATH: blank}
-            r = apply_container_rocm_path_overrides(d, "/hostpath")
-            assert r is None, f"Expected None for MAD_ROCM_PATH={blank!r}, got {r!r}"
-            assert MAD_ROCM_PATH not in d, "Key should be consumed even when blank"
-            assert "ROCM_PATH" not in d, "Host path must not be mirrored into container"
-
     def test_get_rocm_path_legacy_alias(self, monkeypatch):
         monkeypatch.delenv("ROCM_PATH", raising=False)
         g = get_rocm_path_legacy(None)
         assert g == os.path.abspath("/opt/rocm").rstrip(os.sep)
 
-    def test_finalize_prefers_oci(self, monkeypatch):
+    # ── Container path: docker_env_vars.ROCM_PATH direct interface ────────────
+
+    def test_finalize_uses_user_supplied_rocm_path(self, monkeypatch):
+        """User-supplied ROCM_PATH in docker_env_vars is normalized and used directly."""
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: "/should/not/be/used",
+        )
+        d = {"ROCM_PATH": "/user/supplied/rocm"}
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
+        assert p == normalize_rocm_path("/user/supplied/rocm")
+        assert d["ROCM_PATH"] == p
+
+    def test_finalize_user_rocm_path_whitespace_only_falls_through(self, monkeypatch):
+        """Whitespace-only ROCM_PATH is treated as unset; OCI detection runs."""
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: "/opt/from/oci",
+        )
+        d = {"ROCM_PATH": "   "}
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
+        assert p == normalize_rocm_path("/opt/from/oci")
+
+    def test_finalize_prefers_oci_when_no_user_rocm_path(self, monkeypatch):
+        """Without user-supplied ROCM_PATH, OCI image config is the next source."""
         monkeypatch.setattr(
             "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
             lambda _img: "/opt/from/oci",
         )
         d = {}
-        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
         assert p == normalize_rocm_path("/opt/from/oci")
         assert d["ROCM_PATH"] == p
 
@@ -199,10 +197,10 @@ class TestResolveHostContainerRocmPath:
             lambda _img, log=None: "/opt/probed",
         )
         d = {}
-        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
         assert p == normalize_rocm_path("/opt/probed")
 
-    def test_finalize_defaults(self, monkeypatch):
+    def test_finalize_defaults_to_opt_rocm(self, monkeypatch):
         monkeypatch.setattr(
             "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
             lambda _img: None,
@@ -212,7 +210,22 @@ class TestResolveHostContainerRocmPath:
             lambda _img, log=None: None,
         )
         d = {}
-        p = finalize_container_rocm_path(d, "x:latest", "/h", log=lambda _s: None)
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
+        assert p == normalize_rocm_path("/opt/rocm")
+
+    def test_finalize_host_not_mirrored_into_container(self, monkeypatch):
+        """Without user-supplied ROCM_PATH, host path is never injected into container."""
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.rocm_path_from_docker_image_config",
+            lambda _img: None,
+        )
+        monkeypatch.setattr(
+            "madengine.utils.rocm_path_resolver.infer_rocm_path_via_docker_run",
+            lambda _img, log=None: None,
+        )
+        d = {}
+        p = finalize_container_rocm_path(d, "x:latest", log=lambda _s: None)
+        # Falls back to /opt/rocm, not the host path
         assert p == normalize_rocm_path("/opt/rocm")
 
 
