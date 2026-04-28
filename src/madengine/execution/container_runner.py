@@ -982,7 +982,7 @@ class ContainerRunner:
 
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
-        if 'multiple_results' in model_info:
+        if model_info.get('multiple_results'):
             docker_options += f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
         docker_options += (
             f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
