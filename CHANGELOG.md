@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`MAD_OUTPUT_CSV` env var — empty value guard**: `container_runner` now uses `model_info.get('multiple_results')` instead of `'multiple_results' in model_info` when deciding whether to inject `MAD_OUTPUT_CSV` into the Docker container. The previous check passed `MAD_OUTPUT_CSV=''` whenever `multiple_results` was present but empty (e.g. via `CustomModel.to_dict()` which always serialises the field with its default value of `""`).
+
 - **Performance log parsing**: Unified and extended the `performance:` log regex across all execution paths (`base.py`, `container_runner.py`) to correctly parse values with unit suffixes (e.g. `/s`), comma separators between the value and metric name, explicit sign prefixes (`+`/`-`), uppercase scientific notation (`E`), and leading-dot decimals (e.g. `.5`). Previously the narrow `[\d.]+` pattern silently dropped records from training scripts that emitted `performance: 14164/s, samples_per_second`-style lines. The pattern is now defined as a single module-level constant (`PERFORMANCE_LOG_PATTERN` in `deployment/base.py`) shared by both parsers.
 
 - **TheRock container compatibility — rocEnvTool**: `csv_parser.py` now resolves `rocm-smi` via `shutil.which()` so images where tools live in a Python venv (not `/opt/rocm/bin/`) are detected correctly. Accepts a `path_resolver` argument to read the ROCm version from `RocmPathResolver.get_version()` rather than hardcoding `/opt/rocm/.info/version`. Added bounds check in the NVIDIA GPU info parser. `rocenv_tool.py` passes the resolver to `CSVParser` so version resolution works for both TheRock and traditional installs.
