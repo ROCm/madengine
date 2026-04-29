@@ -3,10 +3,7 @@
 import os
 import tempfile
 
-import pytest
-
 import json
-
 import pandas as pd
 
 from madengine.reporting.update_perf_csv import (

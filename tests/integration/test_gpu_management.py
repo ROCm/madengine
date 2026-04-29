@@ -13,8 +13,7 @@ import os
 import json
 import stat
 import pytest
-import unittest.mock
-from unittest.mock import Mock, MagicMock, patch, call, mock_open
+from unittest.mock import Mock, patch
 
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 from madengine.utils.rocm_tool_manager import ROCmToolManager, ROCM_VERSION_THRESHOLD
@@ -37,7 +36,7 @@ def is_amd_gpu():
         import subprocess
         result = subprocess.run(['rocm-smi'], capture_output=True, timeout=5)
         return result.returncode == 0
-    except:
+    except Exception:
         return False
 
 

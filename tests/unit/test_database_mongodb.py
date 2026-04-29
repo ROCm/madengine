@@ -11,9 +11,8 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, patch
 import pytest
-import pandas as pd
 
 from madengine.database.mongodb import (
     MongoDBConfig,

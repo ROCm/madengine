@@ -12,7 +12,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 # built-in modules
 import os
-import sys
 import csv
 import json
 import pandas as pd

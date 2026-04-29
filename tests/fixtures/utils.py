@@ -102,7 +102,7 @@ def clean_test_temp_files(request):
             capture_output=True,
             timeout=30
         )
-    except:
+    except Exception:
         pass  # Ignore cleanup errors before test
 
     yield
@@ -124,7 +124,7 @@ def clean_test_temp_files(request):
             capture_output=True,
             timeout=30
         )
-    except:
+    except Exception:
         pass  # Ignore cleanup errors after test
 
 
@@ -273,7 +273,7 @@ def get_gpu_nodeid_map() -> dict:
                     node_id = str(gpu_info["node_id"])
                     gpu_id = gpu_info["gpu"]
                     gpu_map[node_id] = gpu_id
-            except:
+            except Exception:
                 # Fall back to older rocm-smi tools
                 try:
                     rocm_version_str = console.sh("hipconfig --version")
@@ -303,7 +303,7 @@ def get_gpu_nodeid_map() -> dict:
                                 gpu_id = int(line.split()[0])
                                 node_id = line.split()[1]
                                 gpu_map[node_id] = gpu_id
-                except:
+                except Exception:
                     # If all else fails, return empty map
                     pass
         

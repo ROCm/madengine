@@ -38,7 +38,7 @@ class ProfUtils:
                 raise ImportError('Driver not initialized (amdgpu not found in modules)')
                 exit(0)
             self.rocm6 = True
-        except:
+        except Exception:
             rocm_smi.initializeRsmi()
 
     def get_power(self, device: int) -> str:
