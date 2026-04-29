@@ -7,7 +7,6 @@ error types and consistent Rich console-based error reporting.
 """
 
 import logging
-import traceback
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, List
 from enum import Enum
@@ -16,14 +15,13 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
-    from rich.table import Table
 except ImportError:
     raise ImportError("Rich is required for error handling. Install with: pip install rich")
 
 
 class ErrorCategory(Enum):
     """Error category enumeration for classification."""
-    
+
     VALIDATION = "validation"
     CONNECTION = "connection"
     AUTHENTICATION = "authentication"
@@ -72,25 +70,25 @@ class MADEngineError(Exception):
 
 class ValidationError(MADEngineError):
     """Validation and input errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.VALIDATION, 
-            context, 
+            message,
+            ErrorCategory.VALIDATION,
+            context,
             recoverable=True,
             **kwargs
         )
 
 
-class ConnectionError(MADEngineError):
+class NetworkError(MADEngineError):
     """Connection and network errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.CONNECTION, 
-            context, 
+            message,
+            ErrorCategory.CONNECTION,
+            context,
             recoverable=True,
             **kwargs
         )
@@ -98,12 +96,12 @@ class ConnectionError(MADEngineError):
 
 class AuthenticationError(MADEngineError):
     """Authentication and credential errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.AUTHENTICATION, 
-            context, 
+            message,
+            ErrorCategory.AUTHENTICATION,
+            context,
             recoverable=True,
             **kwargs
         )
@@ -120,10 +118,6 @@ class ExecutionError(MADEngineError):
             recoverable=False,
             **kwargs
         )
-
-
-# Backward compatibility alias
-RuntimeError = ExecutionError
 
 
 class BuildError(MADEngineError):
@@ -154,12 +148,12 @@ class DiscoveryError(MADEngineError):
 
 class OrchestrationError(MADEngineError):
     """Distributed orchestration errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.ORCHESTRATION, 
-            context, 
+            message,
+            ErrorCategory.ORCHESTRATION,
+            context,
             recoverable=False,
             **kwargs
         )
@@ -167,12 +161,12 @@ class OrchestrationError(MADEngineError):
 
 class RunnerError(MADEngineError):
     """Distributed runner errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.RUNNER, 
-            context, 
+            message,
+            ErrorCategory.RUNNER,
+            context,
             recoverable=True,
             **kwargs
         )
@@ -180,25 +174,25 @@ class RunnerError(MADEngineError):
 
 class ConfigurationError(MADEngineError):
     """Configuration and setup errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.CONFIGURATION, 
-            context, 
+            message,
+            ErrorCategory.CONFIGURATION,
+            context,
             recoverable=True,
             **kwargs
         )
 
 
-class TimeoutError(MADEngineError):
+class DeploymentTimeoutError(MADEngineError):
     """Timeout and duration errors."""
-    
+
     def __init__(self, message: str, context: Optional[ErrorContext] = None, **kwargs):
         super().__init__(
-            message, 
-            ErrorCategory.TIMEOUT, 
-            context, 
+            message,
+            ErrorCategory.TIMEOUT,
+            context,
             recoverable=True,
             **kwargs
         )

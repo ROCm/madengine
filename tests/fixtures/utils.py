@@ -20,6 +20,7 @@ sys.path.insert(1, BASE_DIR)
 
 # Cache variables to avoid repeated system checks during collection
 _gpu_vendor_cache = None
+_gpu_arch_cache = None
 _gpu_nodeid_map_cache = None
 _num_gpus_cache = None
 _num_cpus_cache = None
@@ -101,7 +102,7 @@ def clean_test_temp_files(request):
             capture_output=True,
             timeout=30
         )
-    except:
+    except Exception:
         pass  # Ignore cleanup errors before test
 
     yield
@@ -123,7 +124,7 @@ def clean_test_temp_files(request):
             capture_output=True,
             timeout=30
         )
-    except:
+    except Exception:
         pass  # Ignore cleanup errors after test
 
 
@@ -199,6 +200,43 @@ def is_nvidia() -> bool:
         return False
 
 
+def get_gpu_arch() -> str:
+    """Get the current GPU architecture identifier string.
+
+    On AMD systems, returns a GPU architecture token (e.g., 'gfx942', 'gfx950').
+    On NVIDIA systems, returns the GPU model name (e.g., 'A100', 'H100').
+
+    Returns:
+        str: GPU architecture/model identifier, or empty string if detection fails.
+    """
+    global _gpu_arch_cache
+
+    if _gpu_arch_cache is not None:
+        return _gpu_arch_cache
+
+    try:
+        from madengine.core.console import Console
+        console = Console(live_output=True)
+        if is_nvidia():
+            arch = console.sh(
+                "nvidia-smi -L | head -n1 | sed 's/(UUID: .*)//g' | sed 's/GPU 0: //g'"
+            )
+            arch = arch.strip() if arch else ""
+            # Normalize "NVIDIA A100-SXM4-40GB" -> "A100", "NVIDIA H100 PCIe" -> "H100"
+            if arch.startswith("NVIDIA "):
+                arch = arch[len("NVIDIA "):].split("-")[0].split()[0]
+        else:
+            from madengine.core.constants import get_rocm_path
+            rocm_path = get_rocm_path()
+            arch = console.sh(f"{rocm_path}/bin/rocminfo |grep -o -m 1 'gfx.*'")
+            arch = arch.strip() if arch else ""
+        _gpu_arch_cache = arch
+        return _gpu_arch_cache
+    except Exception:
+        _gpu_arch_cache = ""
+        return _gpu_arch_cache
+
+
 def get_gpu_nodeid_map() -> dict:
     """Get the GPU node id map using amd-smi
 
@@ -235,7 +273,7 @@ def get_gpu_nodeid_map() -> dict:
                     node_id = str(gpu_info["node_id"])
                     gpu_id = gpu_info["gpu"]
                     gpu_map[node_id] = gpu_id
-            except:
+            except Exception:
                 # Fall back to older rocm-smi tools
                 try:
                     rocm_version_str = console.sh("hipconfig --version")
@@ -265,7 +303,7 @@ def get_gpu_nodeid_map() -> dict:
                                 gpu_id = int(line.split()[0])
                                 node_id = line.split()[1]
                                 gpu_map[node_id] = gpu_id
-                except:
+                except Exception:
                     # If all else fails, return empty map
                     pass
         

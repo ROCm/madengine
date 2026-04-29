@@ -12,7 +12,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 # built-in modules
 import os
-import sys
 import csv
 import json
 import pandas as pd
@@ -21,11 +20,42 @@ import pandas as pd
 import pytest
 
 # project modules
+import shutil
+
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 from tests.fixtures.utils import global_data
 from tests.fixtures.utils import clean_test_temp_files
 from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from tests.fixtures.utils import generate_additional_context_for_machine
+from tests.fixtures.utils import get_gpu_arch
+from tests.fixtures.utils import requires_gpu
+
+
+@pytest.fixture
+def dynamic_skip_gpu_arch_model_dir(tmp_path):
+    """Create a temporary MODEL_DIR with the current GPU arch added to skip_gpu_arch."""
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "fixtures", "dummy")
+    temp_model_dir = tmp_path / "dummy"
+    shutil.copytree(src_dir, temp_model_dir)
+
+    models_json_path = temp_model_dir / "models.json"
+    with open(models_json_path) as f:
+        models = json.load(f)
+
+    current_arch = get_gpu_arch()
+    for model in models:
+        if model["name"] == "dummy_skip_gpu_arch":
+            existing = model.get("skip_gpu_arch", "")
+            skip_archs = [a.strip() for a in existing.split(",") if a.strip()]
+            if current_arch and current_arch not in skip_archs:
+                skip_archs.append(current_arch)
+            model["skip_gpu_arch"] = ", ".join(skip_archs)
+            break
+
+    with open(models_json_path, "w") as f:
+        json.dump(models, f, indent=2)
+
+    return str(temp_model_dir)
 
 
 
@@ -69,15 +99,17 @@ class TestCLIFeatures:
         if not success:
             pytest.fail("model, dummy, not found in perf_test.csv.")
 
+    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )
     def test_commandline_argument_skip_gpu_arch(
-        self, global_data, clean_test_temp_files
+        self, global_data, clean_test_temp_files, dynamic_skip_gpu_arch_model_dir
     ):
         """
         Test that skip_gpu_arch command-line argument skips GPU architecture check.
-        UPDATED: Now uses python3 -m madengine.cli.app instead of legacy mad.py
+        Uses a dynamic MODEL_DIR with the current GPU arch added to the skip list
+        so the test works on any hardware.
         """
         context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
@@ -85,22 +117,24 @@ class TestCLIFeatures:
             + BASE_DIR
             + "; "
             + "MODEL_DIR="
-            + MODEL_DIR
+            + dynamic_skip_gpu_arch_model_dir
             + " "
             + f"python3 -m madengine.cli.app run --tags dummy_skip_gpu_arch --live-output --additional-context '{json.dumps(context)}'"
         )
         if "Skipping model" not in output:
             pytest.fail("Enable skipping gpu arch for running model is failed.")
 
+    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )
     def test_commandline_argument_disable_skip_gpu_arch_fail(
-        self, global_data, clean_test_temp_files
+        self, global_data, clean_test_temp_files, dynamic_skip_gpu_arch_model_dir
     ):
         """
-        Test that --disable-skip-gpu-arch fails GPU architecture check as expected.
-        UPDATED: Now uses python3 -m madengine.cli.app instead of legacy mad.py
+        Test that --disable-skip-gpu-arch overrides skip_gpu_arch and runs the model.
+        Uses the same dynamic MODEL_DIR to ensure the current arch is in the skip list,
+        then verifies --disable-skip-gpu-arch prevents skipping.
         """
         context = generate_additional_context_for_machine()
         output = global_data["console"].sh(
@@ -108,11 +142,10 @@ class TestCLIFeatures:
             + BASE_DIR
             + "; "
             + "MODEL_DIR="
-            + MODEL_DIR
+            + dynamic_skip_gpu_arch_model_dir
             + " "
             + f"python3 -m madengine.cli.app run --tags dummy_skip_gpu_arch --disable-skip-gpu-arch --live-output --additional-context '{json.dumps(context)}'"
         )
-        # Check if exception with message 'Skipping model' is thrown
         if "Skipping model" in output:
             pytest.fail("Disable skipping gpu arch for running model is failed.")
 

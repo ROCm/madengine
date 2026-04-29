@@ -2,6 +2,7 @@
 
 import pytest
 
+from madengine.core.timeout import Timeout
 from madengine.execution.container_runner_helpers import (
     _docker_image_ref_for_log_naming,
     make_run_log_file_path,
@@ -14,6 +15,26 @@ from madengine.execution.dockerfile_utils import (
     normalize_architecture_name,
     parse_dockerfile_gpu_variables,
 )
+
+
+# ---- Timeout ----
+
+class TestTimeout:
+    """Timeout context manager: None/0 must not arm signal.alarm."""
+
+    def test_none_seconds_does_not_raise(self):
+        with Timeout(None):
+            pass  # must not crash
+
+    def test_zero_seconds_does_not_raise(self):
+        with Timeout(0):
+            pass  # must not crash
+
+    def test_positive_seconds_raises_on_expiry(self):
+        with pytest.raises(TimeoutError):
+            with Timeout(1):
+                import time
+                time.sleep(2)
 
 
 # ---- container_runner_helpers ----
@@ -40,6 +61,12 @@ class TestResolveRunTimeout:
     def test_custom_default_cli(self):
         assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
         assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
+
+    def test_no_timeout_sentinel_none_passthrough(self):
+        # --timeout 0 is converted to None by the CLI; resolve_run_timeout must
+        # pass None through unchanged (model timeout must NOT override "no timeout").
+        assert resolve_run_timeout({"timeout": 3600}, None) is None
+        assert resolve_run_timeout({}, None) is None
 
 
 class TestDockerImageRefForLogNaming:

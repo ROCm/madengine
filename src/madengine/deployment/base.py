@@ -14,10 +14,24 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
+
+
+# Regex for parsing "performance: <value> <metric>" log lines.
+# Value: optional sign, integer/decimal, scientific notation (e or E).
+# Separator: optional unit suffix (/[a-zA-Z]+) and/or comma, in any order —
+#   "123/s, metric", "123, metric", "123,/s metric", "123, /s metric".
+# Metric: any non-whitespace, non-comma token (e.g. loss, latency_ms,
+#   samples/sec, tokens/sec).
+PERFORMANCE_LOG_PATTERN = (
+    r"performance:\s+"
+    r"([+\-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+\-]?[0-9]+)?)"
+    r"(?:,?\s*/[a-zA-Z]+\s*,?|,)?\s+"
+    r"([^\s,]+)"
+)
 
 
 def create_jinja_env(template_dir: Path) -> Environment:
@@ -43,6 +57,7 @@ class DeploymentStatus(Enum):
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -224,7 +239,7 @@ class BaseDeployment(ABC):
         while True:
             status = self.monitor(deployment_id)
 
-            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED]:
+            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN]:
                 return status
 
             # Still running, wait and check again
@@ -347,10 +362,16 @@ class BaseDeployment(ABC):
         Parse node-local performance from log content.
 
         Expected format (from training scripts):
-            performance: <value> <metric>
+            performance: <value>[<unit>][,] <metric>
             node_id: <id>
             local_gpus: <num_gpus>
             test_duration: <value>s
+
+        <value> may include an optional sign, decimal point, and scientific notation
+        (e.g. 1.23e+4 or 1.23E+4).  A unit suffix such as /s and/or a comma separator
+        between the value and metric name are accepted in either order, e.g.:
+            performance: 14164/s, samples_per_second
+            performance: 14164, /s samples_per_second
 
         Args:
             log_content: Raw log text (e.g. node stdout)
@@ -362,13 +383,12 @@ class BaseDeployment(ABC):
         """
         import re
 
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
-        match = re.search(perf_pattern, log_content)
+        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
         if not match:
             return None
 
         value = float(match.group(1))
-        metric = match.group(2)
+        metric = match.group(2).rstrip(',')
 
         node_id_pattern = r"node_id:\s*(\d+)"
         node_match = re.search(node_id_pattern, log_content)
@@ -631,11 +651,13 @@ class BaseDeployment(ABC):
             row_to_write = perf_data
 
         with open(perf_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-            if not file_exists:
-                writer.writeheader()
             if file_exists and existing_header:
+                # File already has a header — write a plain row using csv.writer
+                # to preserve the exact column order captured in row_to_write
                 csv.writer(f).writerow(row_to_write)
             else:
+                # New file — write header then the data row via DictWriter
+                writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+                writer.writeheader()
                 writer.writerow(row_to_write)
 

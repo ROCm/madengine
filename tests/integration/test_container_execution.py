@@ -11,7 +11,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import json
-import tempfile
 import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -22,8 +21,6 @@ import pytest
 from madengine.execution.container_runner import ContainerRunner
 from madengine.core.context import Context
 from madengine.core.console import Console
-from madengine.core.dataprovider import Data
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestContainerRunner:

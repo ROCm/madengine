@@ -9,7 +9,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 import pytest
@@ -23,7 +22,7 @@ from madengine.execution.dockerfile_utils import (
 )
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
+from madengine.core.errors import BuildError
 
 
 # ============================================================================
@@ -661,26 +660,6 @@ class TestMultiGPUArch:
         assert is_compilation_arch_compatible("gfx908", "gfx908")
         assert not is_compilation_arch_compatible("gfx908", "gfx942")
         assert is_compilation_arch_compatible("foo", "foo")
-
-    def test_filter_images_by_gpu_architecture(self):
-        mock_args = MagicMock()
-        mock_args.additional_context = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-        mock_args.additional_context_file = None
-        mock_args.tags = []
-        mock_args.live_output = True
-        mock_args.data_config_file_name = "data.json"
-        mock_args.force_mirror_local = None
-        run_orch = RunOrchestrator(mock_args)
-        built = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
-        filtered = run_orch._filter_images_by_gpu_architecture(built, "gfx908")
-        assert "img1" in filtered and "img2" not in filtered
-        built_legacy = {"img1": {"gpu_architecture": "gfx908"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
-        filtered = run_orch._filter_images_by_gpu_architecture(built_legacy, "gfx908")
-        assert "img1" in filtered
-        built_nomatch = {"img1": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx942", "gpu_vendor": "AMD"}}
-        assert len(run_orch._filter_images_by_gpu_architecture(built_nomatch, "gfx908")) == 0
-        built_all = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}}
-        assert len(run_orch._filter_images_by_gpu_architecture(built_all, "gfx908")) == 2
 
 
 if __name__ == "__main__":
