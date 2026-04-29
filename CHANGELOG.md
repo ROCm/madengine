@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
 
+## [2.0.2] - 2026-04-28
+
+### Fixed
+
+- **`credential.json` type validation**: `load_credentials()` now raises `ConfigurationError` if `credential.json` contains a non-object value (e.g. a JSON array or string). Previously, `json.load()` could return a non-dict and assign it to `credentials` before the broad `except` handler fired, causing `AttributeError: 'list' object has no attribute 'keys'` or silent downstream failures. The loaded value is now checked with `isinstance(..., dict)` before being used.
+
 ## [2.0.1] - 2026-04-27
 
 ### Added
