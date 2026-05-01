@@ -7,30 +7,30 @@ context management, Rich console integration, and error propagation.
 """
 
 import re
+from unittest.mock import Mock
 
 import pytest
-from unittest.mock import Mock
 from rich.console import Console
 
 from madengine.core.errors import (
-    ErrorCategory,
-    ErrorContext,
-    MADEngineError,
-    ValidationError,
-    NetworkError,
     AuthenticationError,
-    ExecutionError,
     BuildError,
-    DiscoveryError,
-    OrchestrationError,
-    RunnerError,
     ConfigurationError,
     DeploymentTimeoutError,
+    DiscoveryError,
+    ErrorCategory,
+    ErrorContext,
     ErrorHandler,
-    set_error_handler,
+    ExecutionError,
+    MADEngineError,
+    NetworkError,
+    OrchestrationError,
+    RunnerError,
+    ValidationError,
+    create_error_context,
     get_error_handler,
     handle_error,
-    create_error_context
+    set_error_handler,
 )
 
 
@@ -45,7 +45,7 @@ class TestErrorContext:
             phase="execution",
             component="TestComponent",
             model_name="test_model",
-            additional_info=additional_info
+            additional_info=additional_info,
         )
 
         assert context.operation == "test_operation"
@@ -57,7 +57,7 @@ class TestErrorContext:
 
 class TestMADEngineErrorHierarchy:
     """Test madengine error class hierarchy."""
-    
+
     def test_base_madengine_error(self):
         """Test base madengine error functionality."""
         context = ErrorContext(operation="test")
@@ -66,9 +66,9 @@ class TestMADEngineErrorHierarchy:
             category=ErrorCategory.RUNTIME,
             context=context,
             recoverable=True,
-            suggestions=["Try again", "Check logs"]
+            suggestions=["Try again", "Check logs"],
         )
-        
+
         assert str(error) == "Test error"
         assert error.message == "Test error"
         assert error.category == ErrorCategory.RUNTIME
@@ -76,24 +76,27 @@ class TestMADEngineErrorHierarchy:
         assert error.recoverable is True
         assert error.suggestions == ["Try again", "Check logs"]
         assert error.cause is None
-    
-    @pytest.mark.parametrize("error_class,category,recoverable,message", [
-        (ValidationError, ErrorCategory.VALIDATION, True, "Invalid input"),
-        (NetworkError, ErrorCategory.CONNECTION, True, "Connection failed"),
-        (BuildError, ErrorCategory.BUILD, False, "Build failed"),
-        (RunnerError, ErrorCategory.RUNNER, True, "Runner execution failed"),
-        (AuthenticationError, ErrorCategory.AUTHENTICATION, True, "Auth failed"),
-        (ConfigurationError, ErrorCategory.CONFIGURATION, True, "Config error"),
-    ])
+
+    @pytest.mark.parametrize(
+        "error_class,category,recoverable,message",
+        [
+            (ValidationError, ErrorCategory.VALIDATION, True, "Invalid input"),
+            (NetworkError, ErrorCategory.CONNECTION, True, "Connection failed"),
+            (BuildError, ErrorCategory.BUILD, False, "Build failed"),
+            (RunnerError, ErrorCategory.RUNNER, True, "Runner execution failed"),
+            (AuthenticationError, ErrorCategory.AUTHENTICATION, True, "Auth failed"),
+            (ConfigurationError, ErrorCategory.CONFIGURATION, True, "Config error"),
+        ],
+    )
     def test_error_types(self, error_class, category, recoverable, message):
         """Test all error types with parametrized test."""
         error = error_class(message)
-        
+
         assert isinstance(error, MADEngineError)
         assert error.category == category
         assert error.recoverable is recoverable
         assert str(error) == message
-    
+
     def test_error_with_cause(self):
         """Test error with underlying cause."""
         original_error = ValueError("Original error")
@@ -120,13 +123,10 @@ class TestErrorHandler:
     def test_handle_madengine_error(self):
         """Test handling of madengine structured errors."""
         context = create_error_context(
-            operation="test_operation",
-            component="TestComponent"
+            operation="test_operation", component="TestComponent"
         )
         error = ValidationError(
-            "Test validation error",
-            context=context,
-            suggestions=["Check input"]
+            "Test validation error", context=context, suggestions=["Check input"]
         )
 
         self.error_handler.handle_error(error)
@@ -160,8 +160,6 @@ class TestGlobalErrorHandler:
         assert retrieved_handler == handler
 
 
-
-
 class TestErrorRecoveryAndSuggestions:
     """Test error recovery indicators and suggestions."""
 
@@ -176,15 +174,13 @@ class TestErrorRecoveryAndSuggestions:
         assert BuildError("Build error").recoverable is False
 
 
-
-
 class TestErrorPatternMatching:
     """Test error pattern matching for log analysis.
-    
+
     These tests validate the error pattern fixes for GPT2 training,
     ensuring ROCProf logs are correctly excluded while real errors are caught.
     """
-    
+
     @pytest.fixture
     def benign_patterns(self):
         """Benign patterns that should be excluded from error detection."""
@@ -199,7 +195,7 @@ class TestErrorPatternMatching:
             "rocpd_op:",
             "rpd_tracer:",
         ]
-    
+
     @pytest.fixture
     def error_patterns(self):
         """Error patterns that should be detected in logs."""
@@ -218,7 +214,7 @@ class TestErrorPatternMatching:
             "ImportError:",
             "ModuleNotFoundError:",
         ]
-    
+
     def test_benign_patterns_match_rocprof_logs(self, benign_patterns):
         """Test that benign patterns correctly match ROCProf logs."""
         # Test cases that should be excluded (false positives)
@@ -230,11 +226,11 @@ class TestErrorPatternMatching:
             "rocpd_op: 0",
             "rpd_tracer: finalized in 50.142105 ms",
         ]
-        
+
         for test_line in rocprof_messages:
             matched = any(re.search(pattern, test_line) for pattern in benign_patterns)
             assert matched, f"Failed to match ROCProf log: {test_line[:80]}"
-    
+
     def test_error_patterns_catch_real_errors(self, error_patterns):
         """Test that error patterns correctly catch real errors."""
         # Test cases that should be caught (real errors)
@@ -247,11 +243,11 @@ class TestErrorPatternMatching:
             "AssertionError: Expected shape (2, 3) but got (3, 2)",
             "torch.distributed.elastic.multiprocessing.errors.ChildFailedError: FAILED",
         ]
-        
+
         for test_line in real_errors:
             matched = any(re.search(pattern, test_line) for pattern in error_patterns)
             assert matched, f"Failed to catch error: {test_line[:80]}"
-    
+
     def test_rocprof_messages_dont_trigger_errors(self, error_patterns):
         """Test that ROCProf messages don't trigger error patterns."""
         # ROCProf messages that should NOT trigger errors
@@ -261,10 +257,12 @@ class TestErrorPatternMatching:
             "rocpd_op: 0",
             "rpd_tracer: finalized in 50.142105 ms",
         ]
-        
+
         for test_line in rocprof_messages:
             matched = any(re.search(pattern, test_line) for pattern in error_patterns)
-            assert not matched, f"False positive: {test_line[:80]} matched error pattern"
+            assert (
+                not matched
+            ), f"False positive: {test_line[:80]} matched error pattern"
 
 
 if __name__ == "__main__":

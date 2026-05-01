@@ -5,10 +5,12 @@ This module provides a class to run console commands.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
+import re
+
 # built-in modules
 import subprocess
 import typing
-import re
 
 
 class Console:

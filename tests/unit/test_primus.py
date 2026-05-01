@@ -19,14 +19,15 @@ from madengine.deployment.primus_backend import (
     merged_primus_config,
 )
 
-
 # --- K8s mixin: _generate_primus_command -------------------------------------
 
 
 class _PrimusCommandHarness(KubernetesLauncherMixin):
     """Minimal object with attributes _generate_primus_command expects."""
 
-    def __init__(self, additional_context, job_name="madengine-test", namespace="default"):
+    def __init__(
+        self, additional_context, job_name="madengine-test", namespace="default"
+    ):
         self.config = SimpleNamespace(additional_context=additional_context)
         self.job_name = job_name
         self.namespace = namespace
@@ -72,7 +73,9 @@ class TestGeneratePrimusCommand:
                 }
             }
         )
-        cmd = h._generate_primus_command(1, 4, 1234, "scripts/primus_pretrain/run.sh", "")
+        cmd = h._generate_primus_command(
+            1, 4, 1234, "scripts/primus_pretrain/run.sh", ""
+        )
         assert 'export BACKEND="MaxText"' in cmd
         assert "PRIMUS_CONFIG_PATH=" in cmd
 
@@ -80,7 +83,9 @@ class TestGeneratePrimusCommand:
         h = _PrimusCommandHarness(
             {"distributed": {"primus": {}}}, job_name="madengine-j", namespace="ns1"
         )
-        cmd = h._generate_primus_command(2, 8, 1234, "scripts/primus_pretrain/run.sh", "")
+        cmd = h._generate_primus_command(
+            2, 8, 1234, "scripts/primus_pretrain/run.sh", ""
+        )
         assert "madengine-j-0.madengine-j.ns1.svc.cluster.local" in cmd
         assert "JOB_COMPLETION_INDEX" in cmd
         assert "NNODES=2" in cmd
@@ -94,7 +99,9 @@ class TestGeneratePrimusCommand:
             {"distributed": {"primus": {}}}, job_name=long_job, namespace="ns1"
         )
         h.service_name = sub
-        cmd = h._generate_primus_command(2, 8, 1234, "scripts/primus_pretrain/run.sh", "")
+        cmd = h._generate_primus_command(
+            2, 8, 1234, "scripts/primus_pretrain/run.sh", ""
+        )
         assert f"{long_job}-0.{sub}.ns1.svc.cluster.local" in cmd
 
 

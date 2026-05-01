@@ -11,21 +11,21 @@ Functions:
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import ast
-import json
 import collections.abc
+import json
 import os
 import re
-import sys
 import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
-from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
+from madengine.utils.gpu_validator import GPUVendor
+from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
 
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
@@ -180,10 +180,14 @@ class Context:
 
         # Optionally auto-detect GPU architecture for local full-workflow builds (build+run).
         # Skipped for standalone `madengine build` on non-GPU/CI nodes (detect_gpu_arch=False).
-        if detect_gpu_arch and "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get("docker_build_arg", {}):
+        if detect_gpu_arch and "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get(
+            "docker_build_arg", {}
+        ):
             try:
+                from madengine.execution.dockerfile_utils import (
+                    normalize_architecture_name,
+                )
                 from madengine.utils.gpu_validator import detect_gpu_vendor
-                from madengine.execution.dockerfile_utils import normalize_architecture_name
 
                 vendor = detect_gpu_vendor(self._rocm_path)
                 if vendor in (GPUVendor.AMD, GPUVendor.NVIDIA):
@@ -193,11 +197,17 @@ class Context:
                     self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = arch
                     print(f"Auto-detected GPU architecture for build: {arch}")
                 else:
-                    print("Warning: No supported GPU detected; MAD_SYSTEM_GPU_ARCHITECTURE will not be set automatically.")
-                    print("Consider providing it via --additional-context if needed for build args.")
+                    print(
+                        "Warning: No supported GPU detected; MAD_SYSTEM_GPU_ARCHITECTURE will not be set automatically."
+                    )
+                    print(
+                        "Consider providing it via --additional-context if needed for build args."
+                    )
             except Exception as e:
                 print(f"Warning: Could not auto-detect GPU architecture for build: {e}")
-                print("Consider providing MAD_SYSTEM_GPU_ARCHITECTURE via --additional-context if needed for build args.")
+                print(
+                    "Consider providing MAD_SYSTEM_GPU_ARCHITECTURE via --additional-context if needed for build args."
+                )
 
         # Don't initialize NUMA balancing check for build-only nodes
         # This is runtime-specific and should be handled on execution nodes
@@ -352,10 +362,10 @@ class Context:
 
     def _get_tool_manager(self) -> BaseGPUToolManager:
         """Get GPU tool manager for the current vendor (lazy initialization).
-        
+
         Returns:
             GPU tool manager instance
-            
+
         Raises:
             ValueError: If GPU vendor cannot be determined or is unsupported
         """
@@ -371,9 +381,11 @@ class Context:
                     vendor = None  # Auto-detect
             else:
                 vendor = None  # Auto-detect
-            
-            self._gpu_tool_manager = get_gpu_tool_manager(vendor, rocm_path=self._rocm_path)
-        
+
+            self._gpu_tool_manager = get_gpu_tool_manager(
+                vendor, rocm_path=self._rocm_path
+            )
+
         return self._gpu_tool_manager
 
     def get_ctx_test(self) -> str:
@@ -403,19 +415,22 @@ class Context:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
-            
+
         PR #54 Enhancement:
             Added fallback to rocm-smi if amd-smi is missing.
         """
         # Check NVIDIA first (simplest check)
         if os.path.exists("/usr/bin/nvidia-smi"):
             try:
-                result = self.console.sh("/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''", timeout=180)
+                result = self.console.sh(
+                    "/usr/bin/nvidia-smi > /dev/null 2>&1 && echo 'NVIDIA' || echo ''",
+                    timeout=180,
+                )
                 if result and result.strip() == "NVIDIA":
                     return "NVIDIA"
             except Exception as e:
                 print(f"Warning: nvidia-smi check failed: {e}")
-        
+
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
         # Use configurable ROCm path (MAD_ROCM_PATH / ROCM_PATH) for non-default installs
         amd_smi_paths = [
@@ -426,22 +441,28 @@ class Context:
             if os.path.exists(amd_smi_path):
                 try:
                     # Verify amd-smi actually works (180s timeout for slow GPU initialization)
-                    result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
+                    result = self.console.sh(
+                        f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''",
+                        timeout=180,
+                    )
                     if result and result.strip() == "AMD":
                         return "AMD"
                 except Exception as e:
                     print(f"Warning: amd-smi check failed for {amd_smi_path}: {e}")
-        
+
         # Fallback to rocm-smi (PR #54)
         rocm_smi_path = os.path.join(self._rocm_path, "bin", "rocm-smi")
         if os.path.exists(rocm_smi_path):
             try:
-                result = self.console.sh(f"{rocm_smi_path} --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
+                result = self.console.sh(
+                    f"{rocm_smi_path} --showid > /dev/null 2>&1 && echo 'AMD' || echo ''",
+                    timeout=180,
+                )
                 if result and result.strip() == "AMD":
                     return "AMD"
             except Exception as e:
                 print(f"Warning: rocm-smi check failed: {e}")
-        
+
         return "Unable to detect GPU vendor"
 
     def get_host_os(self) -> str:
@@ -500,20 +521,19 @@ class Context:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
-            
+
         Enhancement:
             Uses version-aware tool manager with automatic fallback (PR #54).
         """
         vendor = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
-        
+
         if vendor == "AMD":
             try:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_count()
             except Exception as e:
                 raise RuntimeError(
-                    f"Unable to determine number of AMD GPUs. "
-                    f"Error: {e}"
+                    f"Unable to determine number of AMD GPUs. " f"Error: {e}"
                 )
         elif vendor == "NVIDIA":
             try:
@@ -522,12 +542,13 @@ class Context:
             except Exception as e:
                 # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    number_gpus = int(self.console.sh("nvidia-smi -L | wc -l", timeout=180))
+                    number_gpus = int(
+                        self.console.sh("nvidia-smi -L | wc -l", timeout=180)
+                    )
                     return number_gpus
                 except Exception:
                     raise RuntimeError(
-                        f"Unable to determine number of NVIDIA GPUs. "
-                        f"Error: {e}"
+                        f"Unable to determine number of NVIDIA GPUs. " f"Error: {e}"
                     )
         else:
             raise RuntimeError(f"Unable to determine gpu vendor: {vendor}")
@@ -569,32 +590,31 @@ class Context:
 
     def get_system_gpu_product_name(self) -> str:
         """Get system GPU product name with fallback (PR #54).
-        
+
         Returns:
             str: The GPU product name (e.g., AMD Instinct MI300X, NVIDIA H100 80GB HBM3).
-        
+
         Raises:
             RuntimeError: If the GPU vendor is not detected.
             RuntimeError: If the GPU product name is unable to determine.
-        
+
         Note:
             What types of GPU vendors are supported?
             - NVIDIA
             - AMD
-            
+
         PR #54 Enhancement:
             Added rocm-smi fallback for AMD GPUs when amd-smi unavailable.
         """
         vendor = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
-        
+
         if vendor == "AMD":
             try:
                 tool_manager = self._get_tool_manager()
                 return tool_manager.get_gpu_product_name(gpu_id=0)
             except Exception as e:
                 raise RuntimeError(
-                    f"Unable to determine AMD GPU product name. "
-                    f"Error: {e}"
+                    f"Unable to determine AMD GPU product name. " f"Error: {e}"
                 )
         elif vendor == "NVIDIA":
             try:
@@ -603,58 +623,66 @@ class Context:
             except Exception as e:
                 # Fallback to direct command for NVIDIA (longer timeout for slow compute nodes)
                 try:
-                    return self.console.sh("nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0", timeout=180)
+                    return self.console.sh(
+                        "nvidia-smi --query-gpu=name --format=csv,noheader,nounits -i 0",
+                        timeout=180,
+                    )
                 except Exception:
                     raise RuntimeError(
-                        f"Unable to determine NVIDIA GPU product name. "
-                        f"Error: {e}"
+                        f"Unable to determine NVIDIA GPU product name. " f"Error: {e}"
                     )
         else:
-            raise RuntimeError(f"Unable to determine gpu product name for vendor: {vendor}")
+            raise RuntimeError(
+                f"Unable to determine gpu product name for vendor: {vendor}"
+            )
 
     def get_system_hip_version(self):
         """Get HIP/CUDA version using tool manager.
-        
+
         Returns:
             str: Version string (e.g., "6.4" for ROCm, "12.0" for CUDA)
-            
+
         Raises:
             RuntimeError: If version cannot be determined
-            
+
         Enhancement:
             Uses tool manager for robust version detection with multiple fallbacks.
         """
-        vendor = self.ctx['docker_env_vars']['MAD_GPU_VENDOR']
-        
-        if vendor == 'AMD':
+        vendor = self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"]
+
+        if vendor == "AMD":
             try:
                 tool_manager = self._get_tool_manager()
                 version_str = tool_manager.get_version()
                 if version_str:
                     # Return major.minor only (e.g., "6.4.1" -> "6.4")
-                    parts = version_str.split('.')
+                    parts = version_str.split(".")
                     if len(parts) >= 2:
                         return f"{parts[0]}.{parts[1]}"
                     return version_str
-                
+
                 # Fallback to hipconfig if tool manager fails
                 version = self.console.sh("hipconfig --version | cut -d'.' -f1,2")
                 if not version or version.strip() == "":
                     raise RuntimeError("hipconfig returned empty version")
                 return version
-                
+
             except Exception as e:
                 raise RuntimeError(
                     f"Unable to determine HIP version. "
                     f"Ensure ROCm is installed and hipconfig is accessible. "
                     f"Error: {e}"
                 )
-        elif vendor == 'NVIDIA':
+        elif vendor == "NVIDIA":
             try:
                 tool_manager = self._get_tool_manager()
-                return tool_manager.get_version() or self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
+                return tool_manager.get_version() or self.console.sh(
+                    "nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'"
+                )
             except Exception:
-                return self.console.sh("nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'")
+                return self.console.sh(
+                    "nvcc --version | sed -n 's/^.*release \\([0-9]\\+\\.[0-9]\\+\\).*$/\\1/p'"
+                )
         else:
             raise RuntimeError(f"Unable to determine hip version for vendor: {vendor}")
 
@@ -692,11 +720,11 @@ class Context:
         """
         # Initialize the GPU renderD nodes.
         gpu_renderDs = None
-        
+
         # Check if the GPU vendor is AMD.
-        if self.ctx['docker_env_vars']['MAD_GPU_VENDOR'] != 'AMD':
+        if self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] != "AMD":
             return gpu_renderDs
-            
+
         try:
             # Get ROCm version using tool manager for robust detection (PR #54)
             try:
@@ -704,48 +732,65 @@ class Context:
                 rocm_version = tool_manager.get_rocm_version()
                 if not rocm_version:
                     raise RuntimeError("Tool manager returned None for ROCm version")
-            except Exception as e:
+            except Exception:
                 # Fallback to direct file read
                 version_file = os.path.join(self._rocm_path, ".info", "version")
-                rocm_version_str = self.console.sh(f"cat {version_file} | cut -d'-' -f1")
+                rocm_version_str = self.console.sh(
+                    f"cat {version_file} | cut -d'-' -f1"
+                )
                 if not rocm_version_str or rocm_version_str.strip() == "":
-                    raise RuntimeError(f"Failed to retrieve ROCm version from {version_file}")
-                
+                    raise RuntimeError(
+                        f"Failed to retrieve ROCm version from {version_file}"
+                    )
+
                 # Parse version safely
                 try:
                     rocm_version = tuple(map(int, rocm_version_str.strip().split(".")))
                 except (ValueError, AttributeError) as parse_err:
-                    raise RuntimeError(f"Failed to parse ROCm version '{rocm_version_str}': {parse_err}")
-            
+                    raise RuntimeError(
+                        f"Failed to parse ROCm version '{rocm_version_str}': {parse_err}"
+                    )
+
             # Get renderDs from KFD properties
             # Try KFD topology first (preferred), but gracefully handle permission errors
             # On HPC/multi-user systems, KFD topology files may be restricted
             kfd_renderDs = None
             kfd_properties = []
             try:
-                kfd_output = self.console.sh("grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes")
+                kfd_output = self.console.sh(
+                    "grep -r drm_render_minor /sys/devices/virtual/kfd/kfd/topology/nodes"
+                )
                 if kfd_output and kfd_output.strip():
                     kfd_properties = kfd_output.split("\n")
                     # Filter out empty lines and CPU entries (renderD value 0)
                     kfd_properties = [
-                        line for line in kfd_properties 
+                        line
+                        for line in kfd_properties
                         if line.strip() and line.split() and int(line.split()[-1]) != 0
                     ]
                     if kfd_properties:
-                        kfd_renderDs = [int(line.split()[-1]) for line in kfd_properties]
+                        kfd_renderDs = [
+                            int(line.split()[-1]) for line in kfd_properties
+                        ]
             except Exception as kfd_error:
                 # KFD topology read failed (common on HPC clusters with restricted permissions)
                 # Will use amd-smi/rocm-smi fallback which provides renderD info directly
-                print(f"Note: KFD topology not accessible ({kfd_error}), using ROCm tools fallback")
+                print(
+                    f"Note: KFD topology not accessible ({kfd_error}), using ROCm tools fallback"
+                )
 
             # Get gpu id - renderD mapping using unique id if ROCm < 6.4.1 and node id otherwise
             # node id is more robust but is only available from 6.4.1 (PR #54)
             if rocm_version < (6, 4, 1):
                 # Legacy method using unique_id
-                kfd_unique_output = self.console.sh("grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes")
+                kfd_unique_output = self.console.sh(
+                    "grep -r unique_id /sys/devices/virtual/kfd/kfd/topology/nodes"
+                )
                 if not kfd_unique_output:
-                    raise RuntimeError("Failed to retrieve unique_id from KFD properties")
-                
+                    raise RuntimeError(
+                        "Failed to retrieve unique_id from KFD properties"
+                    )
+
                 kfd_unique_ids_raw = kfd_unique_output.split("\n")
                 # Convert unique_ids to hex, filtering empty lines
                 kfd_unique_ids = []
@@ -755,7 +800,9 @@ class Context:
                             unique_id_int = int(item.split()[-1])
                             kfd_unique_ids.append(hex(unique_id_int))
                         except (ValueError, IndexError) as e:
-                            print(f"Warning: Failed to parse unique_id from line '{item}': {e}")
+                            print(
+                                f"Warning: Failed to parse unique_id from line '{item}': {e}"
+                            )
                             continue
 
                 if len(kfd_unique_ids) != len(kfd_renderDs):
@@ -766,54 +813,67 @@ class Context:
 
                 # Map unique ids to renderDs
                 uniqueid_renderD_map = {
-                    unique_id: renderD 
+                    unique_id: renderD
                     for unique_id, renderD in zip(kfd_unique_ids, kfd_renderDs)
                 }
 
                 # Get GPU ID to unique ID mapping from rocm-smi (longer timeout for slow compute nodes)
-                rsmi_output = self.console.sh("rocm-smi --showuniqueid | grep 'Unique.*:'", timeout=180)
+                rsmi_output = self.console.sh(
+                    "rocm-smi --showuniqueid | grep 'Unique.*:'", timeout=180
+                )
                 if not rsmi_output or rsmi_output.strip() == "":
                     raise RuntimeError("Failed to retrieve unique IDs from rocm-smi")
-                
-                rsmi_lines = [line.strip() for line in rsmi_output.split("\n") if line.strip()]
-                
+
+                rsmi_lines = [
+                    line.strip() for line in rsmi_output.split("\n") if line.strip()
+                ]
+
                 # Sort gpu_renderDs based on GPU IDs
                 gpu_renderDs = []
                 for line in rsmi_lines:
                     try:
                         unique_id = line.split()[-1]
                         if unique_id not in uniqueid_renderD_map:
-                            raise KeyError(f"Unique ID '{unique_id}' from rocm-smi not found in KFD mapping")
+                            raise KeyError(
+                                f"Unique ID '{unique_id}' from rocm-smi not found in KFD mapping"
+                            )
                         gpu_renderDs.append(uniqueid_renderD_map[unique_id])
                     except (IndexError, KeyError) as e:
-                        raise RuntimeError(f"Failed to map unique ID from line '{line}': {e}")
+                        raise RuntimeError(
+                            f"Failed to map unique ID from line '{line}': {e}"
+                        )
             else:
                 # Modern method using amd-smi (ROCm >= 6.4.0)
                 # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
                 # Longer timeout (180s) for slow GPU initialization on SLURM compute nodes
-                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1", timeout=180)
+                output = self.console.sh(
+                    "amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1",
+                    timeout=180,
+                )
                 if not output or output.strip() == "":
                     raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
-                
+
                 # amd-smi may output warnings before JSON - extract only JSON part
                 # Look for lines starting with '[' or '{' (JSON start)
                 json_start = -1
-                lines = output.split('\n')
+                lines = output.split("\n")
                 for i, line in enumerate(lines):
-                    if line.strip().startswith('[') or line.strip().startswith('{'):
+                    if line.strip().startswith("[") or line.strip().startswith("{"):
                         json_start = i
                         break
-                
+
                 if json_start >= 0:
-                    json_output = '\n'.join(lines[json_start:])
+                    json_output = "\n".join(lines[json_start:])
                 else:
                     json_output = output
-                
+
                 try:
                     data = json.loads(json_output)
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}")
-                
+                    raise ValueError(
+                        f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}"
+                    )
+
                 if not data or not isinstance(data, list):
                     raise ValueError("amd-smi returned empty or invalid data")
 
@@ -827,9 +887,13 @@ class Context:
                             if match:
                                 kfd_nodeids.append(int(match.group()))
                             else:
-                                print(f"Warning: Could not extract node ID from line: {line}")
+                                print(
+                                    f"Warning: Could not extract node ID from line: {line}"
+                                )
                         except (IndexError, ValueError) as e:
-                            print(f"Warning: Failed to parse node ID from line '{line}': {e}")
+                            print(
+                                f"Warning: Failed to parse node ID from line '{line}': {e}"
+                            )
                             continue
 
                     if len(kfd_nodeids) != len(kfd_renderDs):
@@ -840,7 +904,7 @@ class Context:
 
                     # Map node ids to renderDs
                     nodeid_renderD_map = {
-                        nodeid: renderD 
+                        nodeid: renderD
                         for nodeid, renderD in zip(kfd_nodeids, kfd_renderDs)
                     }
 
@@ -850,12 +914,14 @@ class Context:
                         try:
                             gpuid_nodeid_map[item["gpu"]] = item["node_id"]
                         except KeyError as e:
-                            raise KeyError(f"Failed to parse node_id from amd-smi data: {e}. Item: {item}")
+                            raise KeyError(
+                                f"Failed to parse node_id from amd-smi data: {e}. Item: {item}"
+                            )
 
                     # Sort gpu_renderDs based on gpu ids
                     try:
                         gpu_renderDs = [
-                            nodeid_renderD_map[gpuid_nodeid_map[gpuid]] 
+                            nodeid_renderD_map[gpuid_nodeid_map[gpuid]]
                             for gpuid in sorted(gpuid_nodeid_map.keys())
                         ]
                     except KeyError as e:
@@ -871,7 +937,9 @@ class Context:
                             render_num = int(render_str.replace("renderD", ""))
                             gpu_renderDs.append(render_num)
                         except (KeyError, ValueError) as e:
-                            raise RuntimeError(f"Failed to parse renderD from amd-smi: {e}. Item: {item}")
+                            raise RuntimeError(
+                                f"Failed to parse renderD from amd-smi: {e}. Item: {item}"
+                            )
 
         except (RuntimeError, ValueError, KeyError) as e:
             # Re-raise with context

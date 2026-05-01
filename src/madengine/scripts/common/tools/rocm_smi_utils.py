@@ -6,8 +6,8 @@ This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-import sys
 import logging
+import sys
 from typing import List
 
 sys.path.append("/opt/rocm/libexec/rocm_smi/")

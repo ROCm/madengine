@@ -5,17 +5,17 @@ This module contains the class GetLibraryTrace to get library trace information 
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-# built-in modules
-import sys
+import csv
 import io
 import os
 import re
-from datetime import datetime
-import csv
 import subprocess
-from contextlib import redirect_stdout, redirect_stderr
-import typing
 
+# built-in modules
+import sys
+import typing
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 
 # Global variables of the trace mode
 mode = os.environ.get("TRACE_MODE", "").replace(" ", "").split(",")

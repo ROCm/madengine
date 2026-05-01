@@ -10,24 +10,25 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, mock_open, patch
+
 import pytest
 
+from madengine.core.errors import BuildError
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.execution.dockerfile_utils import (
-    parse_dockerfile_gpu_variables,
-    normalize_architecture_name,
-    is_target_arch_compatible_with_variable,
     is_compilation_arch_compatible,
+    is_target_arch_compatible_with_variable,
+    normalize_architecture_name,
+    parse_dockerfile_gpu_variables,
 )
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.core.errors import BuildError
-
 
 # ============================================================================
 # Multi-Platform Build Tests
 # ============================================================================
+
 
 class TestMultiPlatformBuild:
     """Test build orchestration across different platforms."""
@@ -44,14 +45,16 @@ class TestMultiPlatformBuild:
         ):
             with patch("os.path.exists", return_value=False):
                 orchestrator = BuildOrchestrator(mock_build_args)
-                
+
                 assert orchestrator.args == mock_build_args
                 assert orchestrator.context == multi_platform_context
                 assert orchestrator.credentials is None
 
     @pytest.mark.unit
     @pytest.mark.amd
-    def test_build_amd_gpu_architecture_detection(self, amd_gpu_context, mock_build_args):
+    def test_build_amd_gpu_architecture_detection(
+        self, amd_gpu_context, mock_build_args
+    ):
         """Test AMD GPU architecture is correctly detected and used."""
         with patch(
             "madengine.orchestration.build_orchestrator.Context",
@@ -59,7 +62,7 @@ class TestMultiPlatformBuild:
         ):
             with patch("os.path.exists", return_value=False):
                 orchestrator = BuildOrchestrator(mock_build_args)
-                
+
                 assert orchestrator.context.get_gpu_vendor() == "AMD"
                 assert orchestrator.context.get_system_gpu_architecture() == "gfx90a"
 
@@ -75,7 +78,7 @@ class TestMultiPlatformBuild:
         ):
             with patch("os.path.exists", return_value=False):
                 orchestrator = BuildOrchestrator(mock_build_args)
-                
+
                 assert orchestrator.context.get_gpu_vendor() == "NVIDIA"
                 assert orchestrator.context.get_system_gpu_architecture() == "sm_90"
 
@@ -89,7 +92,7 @@ class TestMultiPlatformBuild:
         ):
             with patch("os.path.exists", return_value=False):
                 orchestrator = BuildOrchestrator(mock_build_args)
-                
+
                 assert orchestrator.context.get_gpu_vendor() == "NONE"
                 assert orchestrator.context.get_system_ngpus() == 0
 
@@ -97,6 +100,7 @@ class TestMultiPlatformBuild:
 # ============================================================================
 # Error Handling and Resilience Tests
 # ============================================================================
+
 
 class TestBuildResilience:
     """Test build resilience and error handling."""
@@ -141,7 +145,9 @@ class TestBuildResilience:
                             mock_builder_instance.export_build_manifest.assert_called_once()
 
                             # Verify successful builds are available
-                            summary = mock_builder_instance.build_all_models.return_value
+                            summary = (
+                                mock_builder_instance.build_all_models.return_value
+                            )
                             assert len(summary["successful_builds"]) == 1
                             assert len(summary["failed_builds"]) == 1
 
@@ -244,6 +250,7 @@ class TestBuildResilience:
 # Multi-Architecture Build Tests
 # ============================================================================
 
+
 class TestMultiArchitectureBuild:
     """Test multi-architecture build scenarios."""
 
@@ -302,7 +309,9 @@ class TestMultiArchitectureBuild:
                             manifest_file = orchestrator.execute()
 
                             # Verify all architectures were built
-                            summary = mock_builder_instance.build_all_models.return_value
+                            summary = (
+                                mock_builder_instance.build_all_models.return_value
+                            )
                             assert len(summary["successful_builds"]) == 3
                             archs = [
                                 b["gpu_architecture"]
@@ -316,6 +325,7 @@ class TestMultiArchitectureBuild:
 # ============================================================================
 # Run Orchestrator Multi-Platform Tests
 # ============================================================================
+
 
 class TestMultiPlatformRun:
     """Test run orchestration across different platforms."""
@@ -397,6 +407,7 @@ class TestMultiPlatformRun:
 # Integration Tests (Full Flow)
 # ============================================================================
 
+
 class TestEndToEndIntegration:
     """Integration tests for complete build + run workflows."""
 
@@ -465,7 +476,9 @@ class TestEndToEndIntegration:
                         "total_runs": 1,
                     },
                 ):
-                    result = run_orchestrator.execute(manifest_file="build_manifest.json")
+                    result = run_orchestrator.execute(
+                        manifest_file="build_manifest.json"
+                    )
 
                     assert len(result["successful_runs"]) == 1
                     assert len(result["failed_runs"]) == 0
@@ -474,6 +487,7 @@ class TestEndToEndIntegration:
 # ============================================================================
 # Platform-Specific Behavior Tests
 # ============================================================================
+
 
 class TestPlatformSpecificBehavior:
     """Test platform-specific behaviors and edge cases."""
@@ -553,6 +567,7 @@ class TestPlatformSpecificBehavior:
 # Multi-GPU architecture (Dockerfile parsing, normalization, image filtering)
 # ============================================================================
 
+
 class TestMultiGPUArch:
     """Multi-arch DockerBuilder logic, dockerfile_utils, and run-phase image filtering."""
 
@@ -573,27 +588,46 @@ class TestMultiGPUArch:
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
     @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
     @patch.object(DockerBuilder, "build_image")
-    def test_multi_arch_build_image_naming(self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles):
+    def test_multi_arch_build_image_naming(
+        self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles
+    ):
         model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
         mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
         mock_check_gpu_vars.return_value = (True, "docker/dummy.Dockerfile")
-        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908", "build_duration": 1.0}
-        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        mock_build_image.return_value = {
+            "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908",
+            "build_duration": 1.0,
+        }
+        result = self.builder._build_model_for_arch(
+            model_info, "gfx908", None, False, None, "", None
+        )
         assert result[0]["docker_image"].endswith("_gfx908")
         mock_check_gpu_vars.return_value = (False, "docker/dummy.Dockerfile")
-        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}
-        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        mock_build_image.return_value = {
+            "docker_image": "ci-dummy_dummy.ubuntu.amd",
+            "build_duration": 1.0,
+        }
+        result = self.builder._build_model_for_arch(
+            model_info, "gfx908", None, False, None, "", None
+        )
         assert not result[0]["docker_image"].endswith("_gfx908")
 
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
     @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
     @patch.object(DockerBuilder, "build_image")
-    def test_multi_arch_manifest_fields(self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles):
+    def test_multi_arch_manifest_fields(
+        self, mock_build_image, mock_check_gpu_vars, mock_get_dockerfiles
+    ):
         model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
         mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
         mock_check_gpu_vars.return_value = (True, "docker/dummy.Dockerfile")
-        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908", "build_duration": 1.0}
-        result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
+        mock_build_image.return_value = {
+            "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx908",
+            "build_duration": 1.0,
+        }
+        result = self.builder._build_model_for_arch(
+            model_info, "gfx908", None, False, None, "", None
+        )
         assert result[0]["gpu_architecture"] == "gfx908"
 
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
@@ -601,17 +635,31 @@ class TestMultiGPUArch:
     def test_legacy_single_arch_build(self, mock_build_image, mock_get_dockerfiles):
         model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
         mock_get_dockerfiles.return_value = ["docker/dummy.Dockerfile"]
-        mock_build_image.return_value = {"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}
-        result = self.builder._build_model_single_arch(model_info, None, False, None, "", None)
+        mock_build_image.return_value = {
+            "docker_image": "ci-dummy_dummy.ubuntu.amd",
+            "build_duration": 1.0,
+        }
+        result = self.builder._build_model_single_arch(
+            model_info, None, False, None, "", None
+        )
         assert result[0]["docker_image"] == "ci-dummy_dummy.ubuntu.amd"
 
     @patch.object(DockerBuilder, "_build_model_single_arch")
     def test_additional_context_overrides_target_archs(self, mock_single_arch):
-        self.context.ctx = {"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx908"}}
+        self.context.ctx = {
+            "docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx908"}
+        }
         model_info = {"name": "dummy", "dockerfile": "docker/dummy.Dockerfile"}
-        mock_single_arch.return_value = [{"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}]
-        result = self.builder.build_all_models([model_info], target_archs=["gfx908", "gfx90a"])
-        assert result["successful_builds"][0]["docker_image"] == "ci-dummy_dummy.ubuntu.amd"
+        mock_single_arch.return_value = [
+            {"docker_image": "ci-dummy_dummy.ubuntu.amd", "build_duration": 1.0}
+        ]
+        result = self.builder.build_all_models(
+            [model_info], target_archs=["gfx908", "gfx90a"]
+        )
+        assert (
+            result["successful_builds"][0]["docker_image"]
+            == "ci-dummy_dummy.ubuntu.amd"
+        )
 
     def test_parse_dockerfile_gpu_variables(self):
         content = """
@@ -640,20 +688,41 @@ class TestMultiGPUArch:
 
     def test_normalize_architecture_name(self):
         cases = {
-            "gfx908": "gfx908", "GFX908": "gfx908", "mi100": "gfx908", "mi-100": "gfx908",
-            "mi200": "gfx90a", "mi-200": "gfx90a", "mi210": "gfx90a", "mi250": "gfx90a",
-            "mi300": "gfx940", "mi-300": "gfx940", "mi300a": "gfx940",
-            "mi300x": "gfx942", "mi-300x": "gfx942", "unknown": "unknown", "": None,
+            "gfx908": "gfx908",
+            "GFX908": "gfx908",
+            "mi100": "gfx908",
+            "mi-100": "gfx908",
+            "mi200": "gfx90a",
+            "mi-200": "gfx90a",
+            "mi210": "gfx90a",
+            "mi250": "gfx90a",
+            "mi300": "gfx940",
+            "mi-300": "gfx940",
+            "mi300a": "gfx940",
+            "mi300x": "gfx942",
+            "mi-300x": "gfx942",
+            "unknown": "unknown",
+            "": None,
         }
         for inp, expected in cases.items():
             assert normalize_architecture_name(inp) == expected
 
     def test_is_target_arch_compatible_with_variable(self):
-        assert is_target_arch_compatible_with_variable("MAD_SYSTEM_GPU_ARCHITECTURE", ["gfx908"], "gfx942")
-        assert is_target_arch_compatible_with_variable("PYTORCH_ROCM_ARCH", ["gfx908", "gfx942"], "gfx942")
-        assert not is_target_arch_compatible_with_variable("PYTORCH_ROCM_ARCH", ["gfx908"], "gfx942")
-        assert is_target_arch_compatible_with_variable("GFX_COMPILATION_ARCH", ["gfx908"], "gfx908")
-        assert not is_target_arch_compatible_with_variable("GFX_COMPILATION_ARCH", ["gfx908"], "gfx942")
+        assert is_target_arch_compatible_with_variable(
+            "MAD_SYSTEM_GPU_ARCHITECTURE", ["gfx908"], "gfx942"
+        )
+        assert is_target_arch_compatible_with_variable(
+            "PYTORCH_ROCM_ARCH", ["gfx908", "gfx942"], "gfx942"
+        )
+        assert not is_target_arch_compatible_with_variable(
+            "PYTORCH_ROCM_ARCH", ["gfx908"], "gfx942"
+        )
+        assert is_target_arch_compatible_with_variable(
+            "GFX_COMPILATION_ARCH", ["gfx908"], "gfx908"
+        )
+        assert not is_target_arch_compatible_with_variable(
+            "GFX_COMPILATION_ARCH", ["gfx908"], "gfx942"
+        )
         assert is_target_arch_compatible_with_variable("UNKNOWN_VAR", ["foo"], "bar")
 
     def test_is_compilation_arch_compatible(self):
@@ -664,4 +733,3 @@ class TestMultiGPUArch:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
-

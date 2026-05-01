@@ -110,10 +110,7 @@ class TestLogTextHasErrorPattern:
         assert log_text_has_error_pattern(log, "RuntimeError:", [], ())
 
     def test_regex_benign_excludes_rocprof_style_line(self):
-        log = (
-            "E12345678  generateRocpd.cpp: noise\n"
-            "clean RuntimeError: real issue\n"
-        )
+        log = "E12345678  generateRocpd.cpp: noise\n" "clean RuntimeError: real issue\n"
         assert log_text_has_error_pattern(
             log,
             "RuntimeError:",

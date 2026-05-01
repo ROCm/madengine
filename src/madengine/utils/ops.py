@@ -9,9 +9,11 @@ functions:
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
+import sys
+
 # built-in modules
 import typing
-import sys
 
 
 # Class to both write and display stream, in "live" mode

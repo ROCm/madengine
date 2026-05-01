@@ -9,28 +9,26 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
-import os
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
 
-from madengine.core.console import Console
-from madengine.core.context import Context
 from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.auth import load_credentials
+from madengine.core.console import Console
+from madengine.core.context import Context
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
     DiscoveryError,
     create_error_context,
 )
-from madengine.utils.discover_models import DiscoverModels
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.execution.dockerfile_utils import (
     dockerfile_requires_explicit_mad_arch_build_arg,
 )
+from madengine.utils.discover_models import DiscoverModels
 
 
 class BuildOrchestrator:
@@ -45,7 +43,12 @@ class BuildOrchestrator:
     - Save deployment_config from --additional-context
     """
 
-    def __init__(self, args, additional_context: Optional[Dict] = None, detect_local_gpu_arch: bool = False):
+    def __init__(
+        self,
+        args,
+        additional_context: Optional[Dict] = None,
+        detect_local_gpu_arch: bool = False,
+    ):
         """
         Initialize build orchestrator.
 
@@ -63,7 +66,7 @@ class BuildOrchestrator:
 
         # Merge additional_context from args and parameter
         merged_context = {}
-        
+
         # Load from file first if provided
         if hasattr(args, "additional_context_file") and args.additional_context_file:
             try:
@@ -71,7 +74,7 @@ class BuildOrchestrator:
                     merged_context = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 print(f"Warning: Could not load additional_context_file: {e}")
-        
+
         # Then merge string additional_context (overrides file)
         if hasattr(args, "additional_context") and args.additional_context:
             try:
@@ -79,6 +82,7 @@ class BuildOrchestrator:
                     # Use ast.literal_eval for Python dict syntax (single quotes)
                     # This matches what Context class expects
                     import ast
+
                     context_from_string = ast.literal_eval(args.additional_context)
                     merged_context.update(context_from_string)
                 elif isinstance(args.additional_context, dict):
@@ -95,31 +99,42 @@ class BuildOrchestrator:
         apply_build_context_defaults(merged_context)
 
         self.additional_context = merged_context
-        
+
         # Apply ConfigLoader to infer deploy type, validate, and apply defaults
         if self.additional_context:
             try:
                 from madengine.deployment.config_loader import ConfigLoader
+
                 # This will:
                 # 1. Infer deploy type from k8s/slurm presence
                 # 2. Validate for conflicts (e.g., both k8s and slurm)
                 # 3. Apply appropriate defaults
                 # 4. Add 'deploy' field for internal use
-                self.additional_context = ConfigLoader.load_config(self.additional_context)
+                self.additional_context = ConfigLoader.load_config(
+                    self.additional_context
+                )
             except ValueError as e:
                 # Re-raise as ConfigurationError so the CLI layer handles the exit code
                 raise ConfigurationError(str(e))
             except Exception as e:
                 # Other errors during config loading - warn but continue
-                self.rich_console.print(f"[yellow]Warning: Could not apply config defaults: {e}[/yellow]")
+                self.rich_console.print(
+                    f"[yellow]Warning: Could not apply config defaults: {e}[/yellow]"
+                )
 
         self.rich_console.print("[bold blue]Build additional context[/bold blue]\n")
-        self.rich_console.print(Panel(
-            json.dumps(self.additional_context, indent=2) if self.additional_context else "(empty)",
-            title="[bold]Context[/bold] (from --additional-context / --additional-context-file)",
-            border_style="dim",
-            padding=(0, 1),
-        ))
+        self.rich_console.print(
+            Panel(
+                (
+                    json.dumps(self.additional_context, indent=2)
+                    if self.additional_context
+                    else "(empty)"
+                ),
+                title="[bold]Context[/bold] (from --additional-context / --additional-context-file)",
+                border_style="dim",
+                padding=(0, 1),
+            )
+        )
         self.rich_console.print()
 
         # Initialize context in build-only mode (no GPU detection by default).
@@ -140,7 +155,7 @@ class BuildOrchestrator:
 
     def _copy_scripts(self):
         """[DEPRECATED] Copy common scripts to model directories.
-        
+
         This method is no longer called during build phase as it's not needed.
         Build phase only creates Docker images - script execution happens in run phase.
         Scripts are copied by run_orchestrator._copy_scripts() for local execution.
@@ -247,14 +262,18 @@ class BuildOrchestrator:
             )
             self._warn_if_mad_arch_unresolved_for_dockerfiles(models, builder)
 
-            resolved_arch = self.context.ctx.get("docker_build_arg", {}).get("MAD_SYSTEM_GPU_ARCHITECTURE")
+            resolved_arch = self.context.ctx.get("docker_build_arg", {}).get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            )
             if resolved_arch:
                 self.rich_console.print(
                     f"[green]✓ MAD_SYSTEM_GPU_ARCHITECTURE resolved: {resolved_arch}[/green]\n"
                 )
 
             # Step 3: Build Docker images
-            self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")
+            self.rich_console.print(
+                "[bold cyan]🏗️  Building Docker images...[/bold cyan]"
+            )
 
             # Determine phase suffix for log files
             # Build phase always uses .build suffix to avoid conflicts with run logs
@@ -302,8 +321,12 @@ class BuildOrchestrator:
                     self.rich_console.print(f"  [red]• {model_name}: {error_msg}[/red]")
 
             # Step 4: ALWAYS generate manifest (even with partial failures)
-            self.rich_console.print("\n[bold cyan]📄 Generating build manifest...[/bold cyan]")
-            builder.export_build_manifest(manifest_output, registry, batch_build_metadata)
+            self.rich_console.print(
+                "\n[bold cyan]📄 Generating build manifest...[/bold cyan]"
+            )
+            builder.export_build_manifest(
+                manifest_output, registry, batch_build_metadata
+            )
 
             # Step 5: Save build summary to manifest
             self._save_build_summary(manifest_output, build_summary)
@@ -311,7 +334,9 @@ class BuildOrchestrator:
             # Step 6: Save deployment_config to manifest
             self._save_deployment_config(manifest_output)
 
-            self.rich_console.print(f"[green]✓ Build complete: {manifest_output}[/green]")
+            self.rich_console.print(
+                f"[green]✓ Build complete: {manifest_output}[/green]"
+            )
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
             # Step 7: Check if we should fail (only if ALL builds failed)
@@ -369,12 +394,16 @@ class BuildOrchestrator:
                 json.dump(manifest, f, indent=2)
 
         except Exception as e:
-            self.rich_console.print(f"[yellow]Warning: Could not save build summary: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: Could not save build summary: {e}[/yellow]"
+            )
 
     def _save_deployment_config(self, manifest_file: str):
         """Save deployment_config from --additional-context to manifest."""
         if not self.additional_context:
-            self.rich_console.print("[dim]No additional_context provided, skipping deployment config[/dim]")
+            self.rich_console.print(
+                "[dim]No additional_context provided, skipping deployment config[/dim]"
+            )
             return
 
         try:
@@ -388,18 +417,22 @@ class BuildOrchestrator:
                 # Auto-detect based on config presence
                 if self.additional_context.get("slurm"):
                     target = "slurm"
-                elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
+                elif self.additional_context.get("k8s") or self.additional_context.get(
+                    "kubernetes"
+                ):
                     target = "k8s"
                 else:
                     target = "local"
-            
+
             # Get env_vars and filter out MIOPEN_USER_DB_PATH
             # This variable must be set per-process in multi-GPU training to avoid database conflicts
             env_vars = self.additional_context.get("env_vars", {}).copy()
             if "MIOPEN_USER_DB_PATH" in env_vars:
                 del env_vars["MIOPEN_USER_DB_PATH"]
-                print("ℹ️  Filtered MIOPEN_USER_DB_PATH from env_vars (will be set per-process in training)")
-            
+                print(
+                    "ℹ️  Filtered MIOPEN_USER_DB_PATH from env_vars (will be set per-process in training)"
+                )
+
             deployment_config = {
                 "target": target,
                 "slurm": self.additional_context.get("slurm"),
@@ -416,17 +449,25 @@ class BuildOrchestrator:
                 k: v for k, v in deployment_config.items() if v is not None
             }
 
-            if deployment_config and deployment_config != {"target": "local", "env_vars": {}}:
+            if deployment_config and deployment_config != {
+                "target": "local",
+                "env_vars": {},
+            }:
                 manifest["deployment_config"] = deployment_config
 
                 with open(manifest_file, "w") as f:
                     json.dump(manifest, f, indent=2)
 
-                self.rich_console.print(f"[green]✓ Saved deployment config to {manifest_file}[/green]")
+                self.rich_console.print(
+                    f"[green]✓ Saved deployment config to {manifest_file}[/green]"
+                )
             else:
-                self.rich_console.print("[dim]No deployment config to save (local execution)[/dim]")
+                self.rich_console.print(
+                    "[dim]No deployment config to save (local execution)[/dim]"
+                )
 
         except Exception as e:
             # Non-fatal - just warn
-            self.rich_console.print(f"[yellow]Warning: Could not save deployment config: {e}[/yellow]")
-
+            self.rich_console.print(
+                f"[yellow]Warning: Could not save deployment config: {e}[/yellow]"
+            )

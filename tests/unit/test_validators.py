@@ -11,12 +11,12 @@ import tempfile
 import pytest
 import typer
 
+from madengine.cli.constants import ExitCode
+from madengine.cli.validators import validate_additional_context
 from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
     DEFAULT_GUEST_OS,
 )
-from madengine.cli.validators import validate_additional_context
-from madengine.cli.constants import ExitCode
 
 
 class TestValidateAdditionalContext:

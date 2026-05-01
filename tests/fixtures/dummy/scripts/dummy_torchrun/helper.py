@@ -148,8 +148,8 @@ class BenchmarkConfig:
 
 def print_distributed_info(rank, local_rank, world_size):
     """Print distributed training information"""
-    import socket
     import os
+    import socket
     
     print(f"\n[Rank {rank}] Distributed Training Info:")
     print(f"  Hostname: {socket.gethostname()}")

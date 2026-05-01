@@ -16,8 +16,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import importlib
 import json
 import os
-from io import StringIO
 import tempfile
+from io import StringIO
 from unittest.mock import MagicMock, patch
 
 # third-party modules
@@ -28,33 +28,33 @@ from typer.testing import CliRunner
 
 # project modules
 from madengine.cli import (
-    app,
-    setup_logging,
-    create_args_namespace,
-    validate_additional_context,
-    save_summary_with_feedback,
-    display_results_table,
-    ExitCode,
-    VALID_GPU_VENDORS,
-    VALID_GUEST_OS,
+    DEFAULT_DATA_CONFIG,
     DEFAULT_MANIFEST_FILE,
     DEFAULT_PERF_OUTPUT,
-    DEFAULT_DATA_CONFIG,
-    DEFAULT_TOOLS_CONFIG,
     DEFAULT_TIMEOUT,
+    DEFAULT_TOOLS_CONFIG,
+    VALID_GPU_VENDORS,
+    VALID_GUEST_OS,
+    ExitCode,
+    app,
+    create_args_namespace,
+    display_results_table,
+    save_summary_with_feedback,
+    setup_logging,
+    validate_additional_context,
 )
 from tests.fixtures.utils import (
     BASE_DIR,
     MODEL_DIR,
+    generate_additional_context_for_machine,
     has_gpu,
     requires_gpu,
-    generate_additional_context_for_machine,
 )
-
 
 # ============================================================================
 # CLI Utilities Tests
 # ============================================================================
+
 
 class TestSetupLogging:
     """Test the setup_logging function."""
@@ -159,8 +159,16 @@ class TestDisplayResultsTable:
         """Multi-arch builds record gpu_architecture; table must show it, not N/A."""
         summary = {
             "successful_builds": [
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a", "gpu_architecture": "gfx90a"},
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942", "gpu_architecture": "gfx942"},
+                {
+                    "model": "dummy",
+                    "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a",
+                    "gpu_architecture": "gfx90a",
+                },
+                {
+                    "model": "dummy",
+                    "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942",
+                    "gpu_architecture": "gfx942",
+                },
             ],
             "failed_builds": [],
         }
@@ -208,6 +216,7 @@ class TestDisplayResultsTable:
 # ============================================================================
 # CLI Validation Tests
 # ============================================================================
+
 
 class TestValidateAdditionalContext:
     """Test the validate_additional_context function."""
@@ -283,20 +292,20 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_valid_mixed_build_new(self):
         """Test processing batch manifest with mixed build_new values - core functionality."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {"model_name": "model1", "build_new": True},
             {"model_name": "model2", "build_new": False},
             {"model_name": "model3", "build_new": True},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # Only models with build_new=True should be in build_tags
             assert result["build_tags"] == ["model1", "model3"]
             # All models should be in all_tags
@@ -308,19 +317,19 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_default_build_new_false(self):
         """Test that build_new defaults to false when not specified."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {"model_name": "model1"},  # No build_new field
             {"model_name": "model2", "build_new": True},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # model1 should not be in build_tags (defaults to false)
             assert result["build_tags"] == ["model2"]
             assert result["all_tags"] == ["model1", "model2"]
@@ -330,28 +339,24 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_with_registry_fields(self):
         """Test per-model registry override - key feature."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {
                 "model_name": "model1",
                 "build_new": True,
                 "registry": "docker.io/myorg",
-                "registry_image": "myorg/model1"
+                "registry_image": "myorg/model1",
             },
-            {
-                "model_name": "model2",
-                "build_new": True,
-                "registry": "gcr.io/myproject"
-            },
+            {"model_name": "model2", "build_new": True, "registry": "gcr.io/myproject"},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # Verify registry metadata is preserved
             assert result["manifest_data"][0]["registry"] == "docker.io/myorg"
             assert result["manifest_data"][0]["registry_image"] == "myorg/model1"
@@ -362,17 +367,17 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_error_handling(self):
         """Test error handling for various invalid inputs."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         # File not found
         with pytest.raises(FileNotFoundError) as exc_info:
             process_batch_manifest("non_existent_file.json")
         assert "Batch manifest file not found" in str(exc_info.value)
-        
+
         # Invalid JSON
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("invalid json content{")
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
@@ -383,26 +388,26 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_validation(self):
         """Test validation rules for batch manifest."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         # Not a list
         batch_data = {"model_name": "model1", "build_new": True}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
             assert "must be a list" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
-        
+
         # Missing model_name
         batch_data = [{"build_new": True}]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
@@ -414,6 +419,7 @@ class TestProcessBatchManifest:
 # ============================================================================
 # CLI exit code and error handling tests (CI / Jenkins smoke)
 # ============================================================================
+
 
 @pytest.fixture
 def runner() -> CliRunner:

@@ -23,6 +23,7 @@ from rich.table import Table
 
 class NodeHealth(Enum):
     """Health status of a compute node."""
+
     CLEAN = "clean"  # No stale processes, ready to use
     DIRTY = "dirty"  # Has stale Ray/vLLM processes
     UNREACHABLE = "unreachable"  # Cannot connect to node
@@ -32,18 +33,19 @@ class NodeHealth(Enum):
 @dataclass
 class NodeStatus:
     """Status of a compute node's GPUs."""
+
     node: str
     health: NodeHealth
     gpu_memory_used_gb: float
     gpu_memory_total_gb: float
     process_count: int
     error_message: Optional[str] = None
-    
+
     @property
     def memory_free_gb(self) -> float:
         """Calculate free GPU memory."""
         return self.gpu_memory_total_gb - self.gpu_memory_used_gb
-    
+
     @property
     def memory_usage_percent(self) -> float:
         """Calculate memory usage percentage."""
@@ -55,17 +57,17 @@ class NodeStatus:
 class SlurmNodeSelector:
     """
     Selects clean GPU nodes for SLURM job allocation.
-    
+
     Checks candidate nodes for stale Ray/vLLM processes that would cause
     OOM errors. Can automatically clean dirty nodes or recommend exclusion.
     """
-    
+
     # Memory threshold: nodes with >50GB used are considered dirty
     MEMORY_THRESHOLD_GB = 50.0
-    
+
     # Process patterns that indicate stale processes
     STALE_PATTERNS = ["ray::", "RayWorkerWrapper", "raylet", "vllm"]
-    
+
     def __init__(
         self,
         console: Optional[Console] = None,
@@ -75,7 +77,7 @@ class SlurmNodeSelector:
     ):
         """
         Initialize node selector.
-        
+
         Args:
             console: Rich console for output
             auto_cleanup: Automatically clean dirty nodes
@@ -86,7 +88,7 @@ class SlurmNodeSelector:
         self.auto_cleanup = auto_cleanup
         self.verbose = verbose
         self.timeout = timeout
-    
+
     # Max candidates to check (avoids excessive checks on large clusters)
     MAX_CANDIDATES_CAP = 100
 
@@ -111,11 +113,14 @@ class SlurmNodeSelector:
         """
         cmd = [
             "sinfo",
-            "-p", partition,
+            "-p",
+            partition,
             "-N",  # Node-oriented format
             "-h",  # No header
-            "-o", "%N",  # Node name only
-            "-t", "idle",  # Idle nodes only
+            "-o",
+            "%N",  # Node name only
+            "-t",
+            "idle",  # Idle nodes only
         ]
 
         if constraint:
@@ -138,14 +143,14 @@ class SlurmNodeSelector:
 
             # Parse nodes
             all_nodes = set()
-            for line in result.stdout.strip().split('\n'):
+            for line in result.stdout.strip().split("\n"):
                 line = line.strip()
                 if line:
                     all_nodes.add(line)
 
             # Remove excluded nodes
             if exclude:
-                excluded = set(exclude.split(','))
+                excluded = set(exclude.split(","))
                 all_nodes -= excluded
 
             # Return all idle nodes, capped to avoid excessive checks
@@ -159,8 +164,10 @@ class SlurmNodeSelector:
             if self.verbose:
                 self.console.print(f"[yellow]⚠ Query failed: {e}[/yellow]")
             return None
-    
-    def check_node_health(self, node: str, job_name: Optional[str] = None) -> NodeStatus:
+
+    def check_node_health(
+        self, node: str, job_name: Optional[str] = None
+    ) -> NodeStatus:
         """
         Check GPU health on a node using srun.
 
@@ -218,7 +225,7 @@ echo "===END_PROCESSES==="
                 text=True,
                 timeout=self.timeout,
             )
-            
+
             if result.returncode != 0:
                 return NodeStatus(
                     node=node,
@@ -228,27 +235,29 @@ echo "===END_PROCESSES==="
                     process_count=0,
                     error_message=f"srun failed: {result.stderr[:100]}",
                 )
-            
+
             # Parse output
             output = result.stdout
-            
+
             # Extract GPU info
-            gpu_info = self._extract_section(output, "===GPU_INFO===", "===END_GPU_INFO===")
-            processes = self._extract_section(output, "===PROCESSES===", "===END_PROCESSES===")
-            
+            self._extract_section(output, "===GPU_INFO===", "===END_GPU_INFO===")
+            processes = self._extract_section(
+                output, "===PROCESSES===", "===END_PROCESSES==="
+            )
+
             # Parse GPU memory (simplified - in production would parse actual output)
             # For MI300X: typically 192GB per GPU
             total_memory_gb = 192.0 * 4  # Assume 4 GPUs
-            
+
             # Count processes
             process_count = 0
             if processes and "NO_PROCESSES" not in processes:
-                process_count = len([l for l in processes.split('\n') if l.strip()])
-            
+                process_count = len([l for l in processes.split("\n") if l.strip()])
+
             # Estimate memory usage
             # Rough heuristic: each process uses ~45GB (observed from Job 2437)
             used_memory_gb = process_count * 45.0
-            
+
             # Determine health
             if process_count == 0:
                 health = NodeHealth.CLEAN
@@ -256,7 +265,7 @@ echo "===END_PROCESSES==="
                 health = NodeHealth.DIRTY
             else:
                 health = NodeHealth.CLEAN  # Minor processes, should be OK
-            
+
             return NodeStatus(
                 node=node,
                 health=health,
@@ -264,7 +273,7 @@ echo "===END_PROCESSES==="
                 gpu_memory_total_gb=total_memory_gb,
                 process_count=process_count,
             )
-            
+
         except subprocess.TimeoutExpired:
             return NodeStatus(
                 node=node,
@@ -283,7 +292,7 @@ echo "===END_PROCESSES==="
                 process_count=0,
                 error_message=str(e)[:100],
             )
-    
+
     def cleanup_node(self, node: str, job_name: Optional[str] = None) -> bool:
         """
         Clean up stale processes on a node using srun.
@@ -332,19 +341,21 @@ echo "CLEANUP_OK"
                 text=True,
                 timeout=self.timeout,
             )
-            
+
             success = result.returncode == 0 and "CLEANUP_OK" in result.stdout
-            
+
             if success and self.verbose:
                 self.console.print(f"[green]    ✓ Cleaned {node}[/green]")
-            
+
             return success
-            
+
         except Exception as e:
             if self.verbose:
-                self.console.print(f"[yellow]    ⚠ Cleanup failed for {node}: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]    ⚠ Cleanup failed for {node}: {e}[/yellow]"
+                )
             return False
-    
+
     def select_nodes(
         self,
         partition: str,
@@ -376,10 +387,14 @@ echo "CLEANUP_OK"
         )
 
         # Unique job name for all health-check srun invocations (enables cleanup)
-        self._health_check_job_name = f"madengine_nodecheck_{os.getpid()}_{int(time.time())}"
+        self._health_check_job_name = (
+            f"madengine_nodecheck_{os.getpid()}_{int(time.time())}"
+        )
 
         # Get all idle candidate nodes
-        candidates = self.get_candidate_nodes(partition, nodes_needed, exclude, constraint)
+        candidates = self.get_candidate_nodes(
+            partition, nodes_needed, exclude, constraint
+        )
 
         if not candidates:
             self.console.print(
@@ -389,7 +404,9 @@ echo "CLEANUP_OK"
             return [], exclude or ""
 
         if self.verbose:
-            self.console.print(f"[dim]Idle candidates: {len(candidates)} (checking on-demand until {nodes_needed} clean)[/dim]\n")
+            self.console.print(
+                f"[dim]Idle candidates: {len(candidates)} (checking on-demand until {nodes_needed} clean)[/dim]\n"
+            )
 
         # On-demand check: stop as soon as we have enough clean nodes
         statuses: List[NodeStatus] = []
@@ -434,22 +451,30 @@ echo "CLEANUP_OK"
                 self.console.print("[yellow]Running automatic cleanup...[/yellow]\n")
                 for status in dirty_nodes:
                     self.console.print(f"  Cleaning {status.node}...")
-                    if self.cleanup_node(status.node, job_name=self._health_check_job_name):
+                    if self.cleanup_node(
+                        status.node, job_name=self._health_check_job_name
+                    ):
                         time.sleep(2)
-                        new_status = self.check_node_health(status.node, job_name=self._health_check_job_name)
+                        new_status = self.check_node_health(
+                            status.node, job_name=self._health_check_job_name
+                        )
                         if new_status.health == NodeHealth.CLEAN:
                             clean_nodes.append(new_status.node)
                             nodes_to_exclude.discard(status.node)
-                            self.console.print(f"    [green]✓ {status.node} is now clean[/green]")
+                            self.console.print(
+                                f"    [green]✓ {status.node} is now clean[/green]"
+                            )
                         else:
-                            self.console.print(f"    [red]✗ {status.node} still dirty[/red]")
+                            self.console.print(
+                                f"    [red]✗ {status.node} still dirty[/red]"
+                            )
                     else:
                         self.console.print(f"    [red]✗ Cleanup failed[/red]")
 
         # Build updated exclude list (dirty + unreachable + unknown)
-        existing_exclude = set(exclude.split(',')) if exclude else set()
+        existing_exclude = set(exclude.split(",")) if exclude else set()
         existing_exclude.update(nodes_to_exclude)
-        updated_exclude = ','.join(sorted(existing_exclude))
+        updated_exclude = ",".join(sorted(existing_exclude))
 
         if unreachable_nodes or unknown_nodes:
             bad = [s.node for s in unreachable_nodes] + [s.node for s in unknown_nodes]
@@ -473,17 +498,17 @@ echo "CLEANUP_OK"
                 f"\n[yellow]⚠ Only {len(clean_nodes)} clean nodes found "
                 f"(need {nodes_needed})[/yellow]"
             )
-            self.console.print("[yellow]Job may wait for additional nodes to become available[/yellow]\n")
-        else:
             self.console.print(
-                "\n[red]❌ No clean nodes available[/red]"
+                "[yellow]Job may wait for additional nodes to become available[/yellow]\n"
             )
+        else:
+            self.console.print("\n[red]❌ No clean nodes available[/red]")
             self.console.print(
                 "[yellow]Recommendation: Wait for nodes to be cleaned or run manual cleanup[/yellow]\n"
             )
 
         return clean_nodes, updated_exclude
-    
+
     def _extract_section(self, text: str, start_marker: str, end_marker: str) -> str:
         """Extract section between markers."""
         try:
@@ -492,17 +517,17 @@ echo "CLEANUP_OK"
             return text[start:end].strip()
         except ValueError:
             return ""
-    
+
     def _display_status_table(self, statuses: List[NodeStatus]):
         """Display node status in a table."""
         table = Table(title="Node Health Status")
-        
+
         table.add_column("Node", style="cyan", no_wrap=True)
         table.add_column("Health", style="bold")
         table.add_column("Memory Used", justify="right")
         table.add_column("Processes", justify="right")
         table.add_column("Notes", style="dim")
-        
+
         for status in statuses:
             health_style = {
                 NodeHealth.CLEAN: "green",
@@ -510,18 +535,24 @@ echo "CLEANUP_OK"
                 NodeHealth.UNREACHABLE: "red",
                 NodeHealth.UNKNOWN: "dim",
             }[status.health]
-            
+
             health_text = {
                 NodeHealth.CLEAN: "✓ Clean",
                 NodeHealth.DIRTY: "⚠ Dirty",
                 NodeHealth.UNREACHABLE: "✗ Unreachable",
                 NodeHealth.UNKNOWN: "? Unknown",
             }[status.health]
-            
-            memory_text = f"{status.gpu_memory_used_gb:.0f} GB" if status.gpu_memory_used_gb > 0 else "-"
-            processes_text = str(status.process_count) if status.process_count > 0 else "-"
+
+            memory_text = (
+                f"{status.gpu_memory_used_gb:.0f} GB"
+                if status.gpu_memory_used_gb > 0
+                else "-"
+            )
+            processes_text = (
+                str(status.process_count) if status.process_count > 0 else "-"
+            )
             notes = status.error_message if status.error_message else ""
-            
+
             table.add_row(
                 status.node,
                 f"[{health_style}]{health_text}[/{health_style}]",
@@ -529,12 +560,14 @@ echo "CLEANUP_OK"
                 processes_text,
                 notes,
             )
-        
+
         self.console.print(table)
         self.console.print()
 
     @staticmethod
-    def cancel_health_check_jobs(job_name: Optional[str], console: Optional[Console] = None) -> None:
+    def cancel_health_check_jobs(
+        job_name: Optional[str], console: Optional[Console] = None
+    ) -> None:
         """
         Cancel any SLURM jobs created by the node health check (srun invocations).
 
@@ -568,6 +601,8 @@ echo "CLEANUP_OK"
                         timeout=5,
                     )
             if job_ids and _console:
-                _console.print(f"[dim]Cancelled {len(job_ids)} health-check job(s)[/dim]")
+                _console.print(
+                    f"[dim]Cancelled {len(job_ids)} health-check job(s)[/dim]"
+                )
         except Exception:
             pass

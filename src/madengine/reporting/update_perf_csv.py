@@ -111,10 +111,12 @@ def handle_multiple_results(
 
     # Check that the multiple results CSV has the following required columns:
     # model, performance, metric
-    headings = ['model', 'performance', 'metric']
+    headings = ["model", "performance", "metric"]
     for heading in headings:
-        if not(heading in multiple_results_header):
-            raise RuntimeError(multiple_results + " file is missing the " + heading + " column")
+        if not (heading in multiple_results_header):
+            raise RuntimeError(
+                multiple_results + " file is missing the " + heading + " column"
+            )
 
     common_info_json = read_json(common_info)
     flatten_tags(common_info_json)
@@ -125,7 +127,7 @@ def handle_multiple_results(
         row = common_info_json.copy()
         model = r.pop("model")
         row["model"] = model_name + "_" + str(model)
-        
+
         # Extract all columns from CSV result to ensure proper column alignment
         # This ensures all result columns (benchmark, tp, inp, out, dtype, etc.) are captured
         for key, value in r.items():
@@ -140,7 +142,7 @@ def handle_multiple_results(
         for key, value in row.items():
             if isinstance(value, (list, tuple)):
                 row[key] = ",".join(str(v) for v in value)
-        
+
         # Create a single-row DataFrame from the row dict
         row_df = pd.DataFrame([row])
         final_multiple_results_df = pd.concat(
@@ -152,24 +154,28 @@ def handle_multiple_results(
         desired_columns = perf_csv_df.columns.tolist()
         # Add any additional columns from final_multiple_results_df
         desired_columns = desired_columns + [
-            col for col in final_multiple_results_df.columns if col not in desired_columns
+            col
+            for col in final_multiple_results_df.columns
+            if col not in desired_columns
         ]
         # Only select columns that actually exist in final_multiple_results_df to avoid KeyError
-        available_columns = [col for col in desired_columns if col in final_multiple_results_df.columns]
+        available_columns = [
+            col for col in desired_columns if col in final_multiple_results_df.columns
+        ]
         final_multiple_results_df = final_multiple_results_df[available_columns]
 
     perf_entry_df_to_csv(final_multiple_results_df)
-    
+
     # Also save as JSON for consistency with single result workflow
     # This ensures perf_entry.json is always up-to-date regardless of result type
-    perf_entry_list = final_multiple_results_df.to_dict(orient='records')
+    perf_entry_list = final_multiple_results_df.to_dict(orient="records")
     with open("perf_entry.json", "w") as f:
         # If multiple entries, save as array; if single, save as object for consistency
         if len(perf_entry_list) == 1:
             json.dump(perf_entry_list[0], f, indent=2)
         else:
             json.dump(perf_entry_list, f, indent=2)
-    
+
     if perf_csv_df.empty:
         perf_csv_df = final_multiple_results_df
     else:

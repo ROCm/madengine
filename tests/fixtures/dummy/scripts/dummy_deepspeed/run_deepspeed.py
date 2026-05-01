@@ -12,15 +12,16 @@ Launch with deepspeed launcher:
   deepspeed --num_gpus=2 run_deepspeed.py
 """
 
+import argparse
 import os
+import socket
 import sys
 import time
-import socket
-import argparse
-import torch
-import torch.nn as nn
-import torch.distributed as dist
+
 import deepspeed
+import torch
+import torch.distributed as dist
+import torch.nn as nn
 
 # Configuration
 NUM_EPOCHS = 3

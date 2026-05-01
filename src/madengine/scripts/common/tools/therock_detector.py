@@ -203,9 +203,9 @@ class TherockDetector:
         self.log("Checking Python site-packages...")
         
         try:
-            import site
             import importlib.util
-            
+            import site
+
             # Check for rocm_sdk package
             spec = importlib.util.find_spec("rocm_sdk")
             if spec and spec.origin:

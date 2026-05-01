@@ -36,18 +36,18 @@ def get_gpu_tool_manager(
 
     Returns:
         GPU tool manager instance for the specified vendor
-        
+
     Raises:
         ValueError: If vendor is unknown or unsupported
         ImportError: If vendor-specific manager module cannot be imported
-        
+
     Example:
         >>> from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
         >>> from madengine.utils.gpu_validator import GPUVendor
-        >>> 
+        >>>
         >>> # Auto-detect vendor
         >>> manager = get_gpu_tool_manager()
-        >>> 
+        >>>
         >>> # Explicit vendor
         >>> amd_manager = get_gpu_tool_manager(GPUVendor.AMD)
         >>> nvidia_manager = get_gpu_tool_manager(GPUVendor.NVIDIA)
@@ -69,6 +69,7 @@ def get_gpu_tool_manager(
     if vendor == GPUVendor.AMD:
         try:
             from madengine.utils.rocm_tool_manager import ROCmToolManager
+
             manager = ROCmToolManager(rocm_path=rocm_path)
             logger.info(f"Created new ROCm tool manager")
         except ImportError as e:
@@ -77,21 +78,22 @@ def get_gpu_tool_manager(
     elif vendor == GPUVendor.NVIDIA:
         try:
             from madengine.utils.nvidia_tool_manager import NvidiaToolManager
+
             manager = NvidiaToolManager()
             logger.info(f"Created new NVIDIA tool manager")
         except ImportError as e:
             raise ImportError(f"Failed to import NVIDIA tool manager: {e}")
-            
+
     elif vendor == GPUVendor.UNKNOWN:
         raise ValueError(
             "Unable to detect GPU vendor. Ensure GPU drivers and tools are installed.\n"
             "For AMD: Install ROCm (https://github.com/ROCm/ROCm)\n"
             "For NVIDIA: Install CUDA toolkit"
         )
-        
+
     else:
         raise ValueError(f"Unsupported GPU vendor: {vendor.value}")
-    
+
     # Cache the manager instance
     _manager_instances[cache_key] = manager
 
@@ -100,18 +102,18 @@ def get_gpu_tool_manager(
 
 def clear_manager_cache() -> None:
     """Clear all cached manager instances.
-    
+
     Useful for testing or when GPU configuration changes during runtime.
     This will force recreation of managers on next call to get_gpu_tool_manager().
-    
+
     Also clears internal caches within each manager before removing them.
     """
     global _manager_instances
-    
+
     # Clear caches within managers before removing them
     for manager in _manager_instances.values():
         manager.clear_cache()
-    
+
     _manager_instances.clear()
     logger.debug("Cleared all GPU tool manager instances")
 
@@ -126,4 +128,3 @@ def get_cached_managers() -> Dict[tuple, BaseGPUToolManager]:
         Dictionary mapping (vendor, rocm_path) to manager instances
     """
     return _manager_instances.copy()
-

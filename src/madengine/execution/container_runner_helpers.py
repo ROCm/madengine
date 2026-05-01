@@ -205,19 +205,13 @@ def _docker_image_ref_for_log_naming(docker_image: str) -> str:
     ref_without_digest = s.split("@", 1)[0]
     last_slash = ref_without_digest.rfind("/")
     tail = (
-        ref_without_digest[last_slash + 1 :]
-        if last_slash >= 0
-        else ref_without_digest
+        ref_without_digest[last_slash + 1 :] if last_slash >= 0 else ref_without_digest
     )
     if ":" in tail:
         _, tag = tail.split(":", 1)
         if tag.startswith("ci-"):
             return tag
-    return (
-        ref_without_digest.replace("/", "_")
-        .replace(":", "_")
-        .replace("@", "_")
-    )
+    return ref_without_digest.replace("/", "_").replace(":", "_").replace("@", "_")
 
 
 def make_run_log_file_path(

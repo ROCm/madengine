@@ -7,34 +7,24 @@ enabling distributed workflows where containers are run on remote nodes
 using pre-built images.
 """
 
+import json
 import os
 import re
 import shlex
 import subprocess
 import time
-import json
 import typing
 import warnings
+from contextlib import redirect_stderr, redirect_stdout
+
 from rich.console import Console as RichConsole
-from contextlib import redirect_stdout, redirect_stderr
+
 from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
+from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
 from madengine.core.timeout import Timeout
-from madengine.core.dataprovider import Data
-from madengine.utils.ops import PythonicTee, file_print
-from madengine.reporting.update_perf_csv import (
-    PERF_CSV_HEADER,
-    update_perf_csv,
-    flatten_tags,
-)
-from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
-from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.utils.config_parser import ConfigParser
-from madengine.utils.path_utils import scripts_base_dir_from
-from madengine.utils.run_details import get_build_number, get_pipeline
-from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
@@ -42,6 +32,21 @@ from madengine.execution.container_runner_helpers import (
     resolve_log_error_scan_config,
     resolve_run_timeout,
 )
+from madengine.reporting.update_perf_csv import (
+    PERF_CSV_HEADER,
+    flatten_tags,
+    update_perf_csv,
+)
+from madengine.reporting.update_perf_super import (
+    update_perf_super_csv,
+    update_perf_super_json,
+)
+from madengine.utils.config_parser import ConfigParser
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.ops import PythonicTee, file_print
+from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.utils.therock_markers import is_therock_tree
 
 
 def _print_run_env_table(
@@ -86,8 +91,7 @@ def _print_run_env_table(
         host_install_type = (
             "therock"
             if _host_rocm_path.is_dir() and is_therock_tree(_host_rocm_path)
-            else "apt install" if _host_rocm_path.is_dir()
-            else "unknown"
+            else "apt install" if _host_rocm_path.is_dir() else "unknown"
         )
         try:
             host_rocm_ver = context._get_tool_manager().get_version() or "unknown"
@@ -108,14 +112,13 @@ def _print_run_env_table(
 
         # ROCm root: prefer rocm-sdk, then ROCM_PATH env, then /opt/rocm
         ctr_rocm_root = _sh(
-            "rocm-sdk path --root 2>/dev/null "
-            "|| echo \"${ROCM_PATH:-/opt/rocm}\""
+            "rocm-sdk path --root 2>/dev/null " '|| echo "${ROCM_PATH:-/opt/rocm}"'
         )
 
         # ROCm version: prefer rocm-sdk, then .info/version, then rocminfo
         ctr_rocm_ver = _sh(
             "rocm-sdk version 2>/dev/null "
-            "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
+            '|| cat "${ROCM_PATH:-/opt/rocm}/.info/version" 2>/dev/null '
             "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | sed 's/.*[Vv]ersion:[[:space:]]*//;s/[[:space:]].*//;s/[^0-9.]//g' 2>/dev/null "
             "|| echo unknown"
         )
@@ -129,14 +132,16 @@ def _print_run_env_table(
         # ── Host side ──────────────────────────────────────────────
         def _host_sh(cmd: str) -> str:
             try:
-                return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, text=True).strip()
+                return subprocess.check_output(
+                    cmd, shell=True, stderr=subprocess.DEVNULL, text=True
+                ).strip()
             except Exception:
                 return "unknown"
 
         host_cuda_root = _host_sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 | "
             "xargs -I{} dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
+            '|| echo "${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}"'
         )
         host_cuda_ver = _host_sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
@@ -147,7 +152,7 @@ def _print_run_env_table(
         # ── Container side ─────────────────────────────────────────
         ctr_cuda_root = _sh(
             "dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
+            '|| echo "${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}"'
         )
         ctr_cuda_ver = _sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
@@ -164,7 +169,9 @@ def _print_run_env_table(
     rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
-def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
+def _resolve_multiple_results_path(
+    multiple_results: str, model_dir: str
+) -> typing.Optional[str]:
     """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
     if not multiple_results:
         return None
@@ -199,9 +206,7 @@ def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
     """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
     rel = (relative_path or "").strip()
     src = os.path.normpath(os.path.join(model_dir, rel)).replace("\\", "/")
-    return (
-        f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
-    )
+    return f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
 
 
 class ContainerRunner:
@@ -272,36 +277,42 @@ class ContainerRunner:
 
         # Resolve GPU count using hierarchical resolution
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
-        
+
         # Convert -1 (all GPUs) to actual system GPU count for accurate reporting
         if resolved_gpu_count == -1 and self.context:
             try:
-                system_ngpus = int(self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"])
+                system_ngpus = int(
+                    self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]
+                )
                 resolved_gpu_count = system_ngpus
-                print(f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}")
+                print(
+                    f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}"
+                )
             except (KeyError, ValueError, TypeError):
                 # If system GPU count not available, keep -1
                 pass
-        
+
         # Determine number of nodes and GPUs per node
         # Priority: 1. SLURM env vars, 2. additional_context, 3. model_info, 4. default (1)
         nnodes = "1"  # Default for local execution
         gpus_per_node = str(resolved_gpu_count)
-        
+
         # Check for SLURM multi-node environment
         if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
             # Get from SLURM environment variables (most accurate for SLURM jobs)
             slurm_nnodes = os.environ.get("NNODES") or os.environ.get("SLURM_NNODES")
-            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get("SLURM_GPUS_PER_NODE")
-            
+            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get(
+                "SLURM_GPUS_PER_NODE"
+            )
+
             if slurm_nnodes:
                 nnodes = str(slurm_nnodes)
                 print(f"ℹ️  Detected SLURM multi-node: {nnodes} nodes")
-            
+
             if slurm_gpus_per_node:
                 gpus_per_node = str(slurm_gpus_per_node)
                 print(f"ℹ️  GPUs per node: {gpus_per_node}")
-        
+
         # Fallback to additional_context (for non-SLURM or if env vars not set)
         if nnodes == "1" and self.additional_context:
             slurm_config = self.additional_context.get("slurm", {})
@@ -312,43 +323,43 @@ class ContainerRunner:
                     nnodes = str(ctx_nodes)
                 if ctx_gpus:
                     gpus_per_node = str(ctx_gpus)
-        
+
         # Final fallback to model_info
         if nnodes == "1":
             nnodes = model_info.get("nnodes", "1")
-        
+
         # Calculate total GPUs
         try:
             total_gpus = int(nnodes) * int(gpus_per_node)
         except (ValueError, TypeError):
             total_gpus = resolved_gpu_count
-        
+
         # Extract launcher from multiple sources in priority order:
         # 1. additional_context (passed via --additional-context CLI arg)
         # 2. model_info distributed config (in models.json)
         # 3. MAD_LAUNCHER environment variable
         # 4. Default to 'docker' for local deployments
         launcher = ""
-        
+
         # Check additional_context first (highest priority)
         if self.additional_context:
             distributed_config = self.additional_context.get("distributed", {})
             launcher = distributed_config.get("launcher", "")
             if launcher:
                 print(f"🚀 Launcher from additional_context: {launcher}")
-        
+
         # Check model_info distributed config
         if not launcher and model_info.get("distributed"):
             launcher = model_info["distributed"].get("launcher", "")
             if launcher:
                 print(f"🚀 Launcher from model_info: {launcher}")
-        
+
         # Fallback to environment variable
         if not launcher:
             launcher = os.environ.get("MAD_LAUNCHER", "")
             if launcher:
                 print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
-        
+
         # Apply deployment-specific defaults if no launcher specified
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         if not launcher:
@@ -363,13 +374,15 @@ class ContainerRunner:
             elif deployment_type == "local":
                 launcher = "docker"
                 print(f"🚀 Launcher defaulted to 'docker' for local deployment")
-        
+
         # Print final launcher selection
         if launcher:
-            print(f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})")
+            print(
+                f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})"
+            )
         else:
             print(f"⚠️  No launcher specified (deployment_type: {deployment_type})")
-        
+
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
@@ -383,10 +396,14 @@ class ContainerRunner:
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
-            "docker_image": run_results.get("docker_image", build_info.get("docker_image", "")),
+            "docker_image": run_results.get(
+                "docker_image", build_info.get("docker_image", "")
+            ),
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
-            "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
+            "deployment_type": os.environ.get(
+                "MAD_DEPLOYMENT_TYPE", "local"
+            ),  # local, slurm, etc.
             "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
                 (self.context.ctx.get("docker_env_vars") or {}).get(
@@ -420,8 +437,7 @@ class ContainerRunner:
             scripts_base_dir = scripts_base_dir_from(scripts_path)
             config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
             run_details["configs"] = config_parser.parse_and_load(
-                model_info.get("args", ""),
-                scripts_path
+                model_info.get("args", ""), scripts_path
             )
         except Exception as e:
             print(f"⚠️  Warning: Could not parse config file: {e}")
@@ -544,40 +560,50 @@ class ContainerRunner:
         if registry and credentials:
             self.login_to_registry(registry, credentials)
 
-        self.rich_console.print(f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]")
+        self.rich_console.print(
+            f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]"
+        )
         print(f"📍 Registry: {registry or 'Default'}")
         print(f"🏷️  Image: {registry_image}")
-        
+
         # Force fresh pull on SLURM compute nodes to avoid corrupted cached layers
         # This prevents "permission denied" errors from corrupted image layers
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
-        
+
         if deployment_type == "slurm" and in_slurm_job:
-            print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
+            print(
+                f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)"
+            )
             # Remove any existing cached image to force fresh pull
             try:
                 self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
             except Exception:
                 pass  # It's okay if image doesn't exist
-        
+
         try:
             self.console.sh(f"docker pull {registry_image}")
 
             if local_name:
                 self.console.sh(f"docker tag {registry_image} {local_name}")
                 print(f"🏷️  Tagged as: {local_name}")
-                self.rich_console.print(f"[bold green]✅ Successfully pulled and tagged image[/bold green]")
+                self.rich_console.print(
+                    f"[bold green]✅ Successfully pulled and tagged image[/bold green]"
+                )
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
                 return local_name
 
-            self.rich_console.print(f"[bold green]✅ Successfully pulled image:[/bold green] [cyan]{registry_image}[/cyan]")
+            self.rich_console.print(
+                f"[bold green]✅ Successfully pulled image:[/bold green] [cyan]{registry_image}[/cyan]"
+            )
             self.rich_console.print(f"[dim]{'='*80}[/dim]")
             return registry_image
 
         except Exception as e:
-            self.rich_console.print(f"[red]❌ Failed to pull image {registry_image}: {e}[/red]")
+            self.rich_console.print(
+                f"[red]❌ Failed to pull image {registry_image}: {e}[/red]"
+            )
             raise
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
@@ -755,7 +781,7 @@ class ContainerRunner:
             # Update environment variables (always apply, even if cmd is duplicate)
             if "env_vars" in tool_config:
                 run_env.update(tool_config["env_vars"])
-            
+
             # Only add cmd if it hasn't been added yet
             # This prevents duplicate wrappers like get_library_trace.py
             if "cmd" in tool_config:
@@ -763,13 +789,13 @@ class ContainerRunner:
                 if cmd not in added_cmds:
                     # Prepend encapsulate cmd
                     pre_encapsulate_post_scripts["encapsulate_script"] = (
-                        cmd
-                        + " "
-                        + pre_encapsulate_post_scripts["encapsulate_script"]
+                        cmd + " " + pre_encapsulate_post_scripts["encapsulate_script"]
                     )
                     added_cmds.add(cmd)
                 else:
-                    print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
+                    print(
+                        f"  Note: Command '{cmd}' already added by another tool, skipping duplicate."
+                    )
 
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
@@ -861,7 +887,9 @@ class ContainerRunner:
         Returns:
             dict: Execution results including performance metrics
         """
-        self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
+        self.rich_console.print(
+            f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]"
+        )
 
         # Resolve image: if model-specific image is missing, try shared primus_pretrain image (one build for all configs)
         docker_image = self._resolve_docker_image(docker_image, model_info["name"])
@@ -933,11 +961,11 @@ class ContainerRunner:
 
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
-        if model_info.get('multiple_results'):
-            docker_options += f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
-        docker_options += (
-            f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
-        )
+        if model_info.get("multiple_results"):
+            docker_options += (
+                f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
+            )
+        docker_options += f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
 
         # Gather data and environment
         run_env = {}
@@ -947,12 +975,14 @@ class ContainerRunner:
         # Also check shell environment for SLURM-passed variables
         if "docker_env_vars" not in self.context.ctx:
             self.context.ctx["docker_env_vars"] = {}
-        
+
         # For SLURM jobs, check shell environment and populate additional_context with GPU info
         # This ensures GPU resolution works correctly
         if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
             if "NPROC_PER_NODE" in os.environ or "GPUS_PER_NODE" in os.environ:
-                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get("GPUS_PER_NODE")
+                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get(
+                    "GPUS_PER_NODE"
+                )
                 if gpus_per_node_str:
                     try:
                         gpus = int(gpus_per_node_str)
@@ -962,44 +992,65 @@ class ContainerRunner:
                             self.additional_context = {}
                         if "gpus_per_node" not in self.additional_context:
                             self.additional_context["gpus_per_node"] = gpus
-                            print(f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)")
+                            print(
+                                f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)"
+                            )
                     except ValueError:
                         pass
-        
+
         # List of environment variables to pass from shell to Docker (for SLURM jobs)
         slurm_env_vars = [
-            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
-            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
-            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
-            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "WORLD_SIZE",
+            "RANK",
+            "NODE_RANK",
+            "NNODES",
+            "NPROC_PER_NODE",
+            "MAD_MULTI_NODE_RUNNER",
+            "MAD_COLLECT_METRICS",
+            "NCCL_SOCKET_IFNAME",
+            "GLOO_SOCKET_IFNAME",
+            "NCCL_DEBUG",
+            "NCCL_IB_DISABLE",
+            "NCCL_NET_GDR_LEVEL",
             # Primus launcher (config path and optional CLI extra args)
-            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
+            "PRIMUS_CONFIG_PATH",
+            "PRIMUS_CLI_EXTRA",
             # Rendezvous timeout so all nodes can join after pull
-            'TORCH_ELASTIC_RDZV_TIMEOUT',
+            "TORCH_ELASTIC_RDZV_TIMEOUT",
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
-            'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
         ]
-        
+
         # Check shell environment and add to docker_env_vars
         merged_from_env = 0
         for var_name in slurm_env_vars:
             if var_name in os.environ:
                 self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
                 merged_from_env += 1
-        
+
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
         # which tells Ray to IGNORE HIP_VISIBLE_DEVICES. We must explicitly override it.
         # This is only needed if HIP_VISIBLE_DEVICES is set (indicating AMD GPU usage with Ray)
-        if 'HIP_VISIBLE_DEVICES' in self.context.ctx["docker_env_vars"]:
+        if "HIP_VISIBLE_DEVICES" in self.context.ctx["docker_env_vars"]:
             # Set to empty string to disable Ray's behavior of ignoring HIP_VISIBLE_DEVICES
-            self.context.ctx["docker_env_vars"]['RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES'] = ''
-            print("ℹ️  Overriding RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES to enable HIP_VISIBLE_DEVICES")
-        
+            self.context.ctx["docker_env_vars"][
+                "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"
+            ] = ""
+            print(
+                "ℹ️  Overriding RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES to enable HIP_VISIBLE_DEVICES"
+            )
+
         if merged_from_env > 0:
-            print(f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker")
-        
+            print(
+                f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker"
+            )
+
         # Also merge from additional_context if present
         if self.additional_context and "docker_env_vars" in self.additional_context:
             merged_count = 0
@@ -1007,11 +1058,14 @@ class ContainerRunner:
                 self.context.ctx["docker_env_vars"][key] = value
                 merged_count += 1
             if merged_count > 0:
-                print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
+                print(
+                    f"ℹ️  Merged {merged_count} environment variables from additional_context"
+                )
 
-        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
-            "AMD"
-        ) != -1:
+        if (
+            self.context
+            and str(self.context.ctx.get("gpu_vendor", "")).upper().find("AMD") != -1
+        ):
             from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
 
             # Determine whether the user explicitly supplied ROCM_PATH for the container.
@@ -1020,13 +1074,11 @@ class ContainerRunner:
             # If they did not, clear any ROCM_PATH left from a previous model run so
             # finalize always re-resolves for the current docker_image (OCI config →
             # in-image probe → /opt/rocm default).
-            user_supplied_rocm_path = (
-                str(
-                    (self.additional_context or {})
-                    .get("docker_env_vars", {})
-                    .get("ROCM_PATH", "")
-                ).strip()
-            )
+            user_supplied_rocm_path = str(
+                (self.additional_context or {})
+                .get("docker_env_vars", {})
+                .get("ROCM_PATH", "")
+            ).strip()
             if not user_supplied_rocm_path:
                 self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
 
@@ -1056,7 +1108,9 @@ class ContainerRunner:
         # Add system environment collection script to pre_scripts
         # Context can explicitly disable via gen_sys_env_details: false in additional_context
         ctx_sys_env = self.context.ctx.get("gen_sys_env_details")
-        should_collect_sys_env = ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
+        should_collect_sys_env = (
+            ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
+        )
         if should_collect_sys_env:
             self.gather_system_env_details(
                 pre_encapsulate_post_scripts, model_info["name"]
@@ -1067,19 +1121,28 @@ class ContainerRunner:
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
-        
+
         # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
         # It should be passed via docker_env_vars in context instead
         if "MIOPEN_USER_DB_PATH" in run_env:
             del run_env["MIOPEN_USER_DB_PATH"]
-            print("ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)")
-        
+            print(
+                "ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)"
+            )
+
         # Add MIOPEN_USER_DB_PATH from shell environment to context.docker_env_vars
         # This is set by SLURM script with ${LOCAL_RANK} variable for per-process paths
-        if "MIOPEN_USER_DB_PATH" in os.environ and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]:
-            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
-            print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
-        
+        if (
+            "MIOPEN_USER_DB_PATH" in os.environ
+            and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]
+        ):
+            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ[
+                "MIOPEN_USER_DB_PATH"
+            ]
+            print(
+                f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}"
+            )
+
         docker_options += self.get_env_arg(run_env)
         docker_options += self.get_mount_arg(mount_datapaths)
         docker_options += f" {model_info.get('additional_docker_run_options', '')}"
@@ -1088,7 +1151,7 @@ class ContainerRunner:
         base_container_name = "container_" + re.sub(
             ".*:", "", docker_image.replace("/", "_").replace(":", "_")
         )
-        
+
         # For multi-node SLURM jobs, add node rank to avoid name conflicts
         node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
         if node_rank is not None:
@@ -1098,7 +1161,9 @@ class ContainerRunner:
 
         print(f"Docker options: {docker_options}")
 
-        self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
+        self.rich_console.print(
+            f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]"
+        )
         print(f"🏷️  Image: {docker_image}")
         print(f"📦 Container: {container_name}")
         print(f"📝 Log file: {log_file_path}")
@@ -1108,12 +1173,13 @@ class ContainerRunner:
         # Run the container with logging
         try:
             with open(log_file_path, mode="w", buffering=1) as outlog:
-                with redirect_stdout(
-                    PythonicTee(outlog, self.live_output)
-                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                with (
+                    redirect_stdout(PythonicTee(outlog, self.live_output)),
+                    redirect_stderr(PythonicTee(outlog, self.live_output)),
+                ):
                     # set timeout (print inside log redirection so it appears in log file)
                     print(f"⏰ Setting timeout to {str(timeout)} seconds.")
-                    
+
                     with Timeout(timeout):
                         model_docker = Docker(
                             docker_image,
@@ -1142,7 +1208,9 @@ class ContainerRunner:
                             model_docker.sh("/usr/bin/nvidia-smi || true")
 
                         # Print host vs container environment summary table
-                        _print_run_env_table(gpu_vendor, self.context, model_docker, self.rich_console)
+                        _print_run_env_table(
+                            gpu_vendor, self.context, model_docker, self.rich_console
+                        )
 
                         # Prepare model directory
                         model_dir = "run_directory"
@@ -1254,20 +1322,33 @@ class ContainerRunner:
                             and self.data
                         ):
                             self.data.prepare_data(model_info["data"], model_docker)
-                            
+
                             # Capture data provider information from selected_data_provider
                             if (
                                 hasattr(self.data, "selected_data_provider")
                                 and self.data.selected_data_provider
                             ):
                                 if "dataname" in self.data.selected_data_provider:
-                                    run_results["dataname"] = self.data.selected_data_provider["dataname"]
-                                if "data_provider_type" in self.data.selected_data_provider:
-                                    run_results["data_provider_type"] = self.data.selected_data_provider["data_provider_type"]
+                                    run_results["dataname"] = (
+                                        self.data.selected_data_provider["dataname"]
+                                    )
+                                if (
+                                    "data_provider_type"
+                                    in self.data.selected_data_provider
+                                ):
+                                    run_results["data_provider_type"] = (
+                                        self.data.selected_data_provider[
+                                            "data_provider_type"
+                                        ]
+                                    )
                                 if "duration" in self.data.selected_data_provider:
-                                    run_results["data_download_duration"] = self.data.selected_data_provider["duration"]
+                                    run_results["data_download_duration"] = (
+                                        self.data.selected_data_provider["duration"]
+                                    )
                                 if "size" in self.data.selected_data_provider:
-                                    run_results["data_size"] = self.data.selected_data_provider["size"]
+                                    run_results["data_size"] = (
+                                        self.data.selected_data_provider["size"]
+                                    )
                                 print(
                                     f"Data Provider Details: {run_results.get('dataname', '')}, "
                                     f"{run_results.get('data_provider_type', '')}, "
@@ -1280,7 +1361,9 @@ class ContainerRunner:
 
                         # Run the model
                         test_start_time = time.time()
-                        self.rich_console.print("[bold blue]Running model...[/bold blue]")
+                        self.rich_console.print(
+                            "[bold blue]Running model...[/bold blue]"
+                        )
 
                         model_args = self.context.ctx.get(
                             "model_args", model_info["args"]
@@ -1310,7 +1393,9 @@ class ContainerRunner:
 
                         # When model writes performance to a file in run_directory, copy to cwd
                         # so the host can read it (e.g. bind-mounted workspace) before extraction.
-                        multiple_results_file = (model_info.get("multiple_results") or "").strip()
+                        multiple_results_file = (
+                            model_info.get("multiple_results") or ""
+                        ).strip()
                         if multiple_results_file:
                             try:
                                 model_docker.sh(
@@ -1344,27 +1429,39 @@ class ContainerRunner:
                                     # Validate multiple results file format using proper CSV parsing
                                     try:
                                         import csv
+
                                         with open(resolved_path, "r") as f:
                                             csv_reader = csv.DictReader(f)
 
                                             # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                            csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
+                                            csv_reader.fieldnames = [
+                                                f.strip() for f in csv_reader.fieldnames
+                                            ]
 
                                             # Check if 'performance' column exists
-                                            if 'performance' not in csv_reader.fieldnames:
-                                                print("Error: 'performance' column not found in multiple results file.")
+                                            if (
+                                                "performance"
+                                                not in csv_reader.fieldnames
+                                            ):
+                                                print(
+                                                    "Error: 'performance' column not found in multiple results file."
+                                                )
                                                 run_results["performance"] = None
                                             else:
                                                 # Check if at least one row has a non-empty performance value
                                                 has_valid_perf = False
                                                 for row in csv_reader:
-                                                    if row.get('performance', '').strip():
+                                                    if row.get(
+                                                        "performance", ""
+                                                    ).strip():
                                                         has_valid_perf = True
                                                         break
-                                                
+
                                                 if not has_valid_perf:
                                                     run_results["performance"] = None
-                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
+                                                    print(
+                                                        "Error: Performance metric is empty in all rows of multiple results file."
+                                                    )
                                     except Exception as e:
                                         self.rich_console.print(
                                             f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
@@ -1377,46 +1474,73 @@ class ContainerRunner:
                                 # Extract from log file
                                 try:
                                     # Note: re and os are already imported at module level (lines 10, 15)
-                                    
+
                                     # Verify log file exists and is readable
                                     if not os.path.exists(log_file_path):
-                                        print(f"Warning: Log file not found: {log_file_path}")
+                                        print(
+                                            f"Warning: Log file not found: {log_file_path}"
+                                        )
                                         run_results["performance"] = None
                                         run_results["metric"] = None
                                     else:
                                         # Read the log file once (avoids rocprofv3 crash from shell pipelines)
                                         # This approach matches the Kubernetes implementation pattern
-                                        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        with open(
+                                            log_file_path,
+                                            "r",
+                                            encoding="utf-8",
+                                            errors="ignore",
+                                        ) as f:
                                             log_content = f.read()
-                                        
+
                                         # Try multiple patterns to match different log formats
-                                        
+
                                         # Pattern 1: "performance: <value>[<unit>][,] <metric>"
                                         # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
-                                        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
-                                        
+                                        match = re.search(
+                                            PERFORMANCE_LOG_PATTERN, log_content
+                                        )
+
                                         if match:
-                                            run_results["performance"] = match.group(1).strip()
-                                            run_results["metric"] = match.group(2).strip()
-                                            print(f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}")
+                                            run_results["performance"] = match.group(
+                                                1
+                                            ).strip()
+                                            run_results["metric"] = match.group(
+                                                2
+                                            ).strip()
+                                            print(
+                                                f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}"
+                                            )
                                         else:
                                             # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
                                             # This matches the actual output from HuggingFace Trainer
                                             hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
-                                            hf_match = re.search(hf_pattern, log_content)
-                                            
+                                            hf_match = re.search(
+                                                hf_pattern, log_content
+                                            )
+
                                             if hf_match:
-                                                run_results["performance"] = hf_match.group(1).strip()
-                                                run_results["metric"] = "samples_per_second"
-                                                print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
+                                                run_results["performance"] = (
+                                                    hf_match.group(1).strip()
+                                                )
+                                                run_results["metric"] = (
+                                                    "samples_per_second"
+                                                )
+                                                print(
+                                                    f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}"
+                                                )
                                             else:
                                                 # No performance metrics found
-                                                print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                print(
+                                                    "Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'"
+                                                )
                                                 run_results["performance"] = None
                                                 run_results["metric"] = None
-                                            
+
                                 except Exception as e:
-                                    print(f"Warning: Error extracting performance metrics: {e}")
+                                    print(
+                                        f"Warning: Error extracting performance metrics: {e}"
+                                    )
                                     run_results["performance"] = None
                                     run_results["metric"] = None
                                     # Performance extraction is optional - don't fail the entire run
@@ -1500,9 +1624,12 @@ class ContainerRunner:
                                 and performance_value.strip()
                                 and performance_value.strip() != "N/A"
                             )
-                            
+
                             # Check if this is a worker node (not collecting metrics)
-                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
+                            is_worker_node = (
+                                os.environ.get("MAD_COLLECT_METRICS", "true").lower()
+                                == "false"
+                            )
 
                             if has_errors:
                                 run_results["status"] = "FAILURE"
@@ -1522,13 +1649,20 @@ class ContainerRunner:
                                 )
                             else:
                                 run_results["status"] = "FAILURE"
-                                self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
+                                self.rich_console.print(
+                                    f"[red]Status: FAILURE (no performance metrics)[/red]"
+                                )
 
                         except Exception as e:
-                            self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
+                            self.rich_console.print(
+                                f"[yellow]Warning: Error in status determination: {e}[/yellow]"
+                            )
                             # Fallback to simple performance check
                             # Worker nodes don't need performance metrics
-                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
+                            is_worker_node = (
+                                os.environ.get("MAD_COLLECT_METRICS", "true").lower()
+                                == "false"
+                            )
                             run_results["status"] = (
                                 "SUCCESS"
                                 if run_results.get("performance") or is_worker_node
@@ -1544,8 +1678,10 @@ class ContainerRunner:
                         # =============================================================================
                         # For distributed training, only master node should collect metrics
                         # Check skip_perf_collection flag from additional_context
-                        skip_perf = self.additional_context.get("skip_perf_collection", False)
-                        
+                        skip_perf = self.additional_context.get(
+                            "skip_perf_collection", False
+                        )
+
                         if skip_perf:
                             self.rich_console.print(
                                 "[cyan]ℹ️  Worker node: Skipping performance metric collection "
@@ -1561,9 +1697,13 @@ class ContainerRunner:
                                 )
 
                                 # Handle multiple results if specified
-                                multiple_results = model_info.get("multiple_results", None)
+                                multiple_results = model_info.get(
+                                    "multiple_results", None
+                                )
                                 resolved_multiple_results = (
-                                    _resolve_multiple_results_path(multiple_results, model_dir)
+                                    _resolve_multiple_results_path(
+                                        multiple_results, model_dir
+                                    )
                                     if multiple_results
                                     else None
                                 )
@@ -1574,7 +1714,12 @@ class ContainerRunner:
                                     # Generate common info JSON for multiple results
                                     common_info = run_details_dict.copy()
                                     # Remove model-specific fields for common info
-                                    for key in ["model", "performance", "metric", "status"]:
+                                    for key in [
+                                        "model",
+                                        "performance",
+                                        "metric",
+                                        "status",
+                                    ]:
                                         common_info.pop(key, None)
 
                                     with open("common_info.json", "w") as f:
@@ -1594,8 +1739,10 @@ class ContainerRunner:
                                     # Update perf_super.json with multiple results
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
-                                        
+                                        scripts_base_dir = scripts_base_dir_from(
+                                            scripts_path
+                                        )
+
                                         # Reuse common_info.json for super files (no need for duplicate)
                                         num_entries = update_perf_super_json(
                                             multiple_results=resolved_multiple_results,
@@ -1604,15 +1751,17 @@ class ContainerRunner:
                                             common_info="common_info.json",
                                             scripts_base_dir=scripts_base_dir,
                                         )
-                                        
+
                                         # Generate CSV and JSON files from perf_super.json
                                         update_perf_super_csv(
                                             perf_super_json="perf_super.json",
                                             perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries
+                                            num_entries=num_entries,
                                         )
                                     except Exception as e:
-                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
+                                        print(
+                                            f"⚠️  Warning: Could not update perf_super files: {e}"
+                                        )
                                 else:
                                     # Generate single result JSON
                                     with open("perf_entry.json", "w") as f:
@@ -1636,8 +1785,10 @@ class ContainerRunner:
                                     # Update perf_super.json with single result
                                     try:
                                         scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
-                                        
+                                        scripts_base_dir = scripts_base_dir_from(
+                                            scripts_path
+                                        )
+
                                         # Use perf_entry.json as input (already created above)
                                         if run_results.get("status") == "SUCCESS":
                                             num_entries = update_perf_super_json(
@@ -1651,18 +1802,22 @@ class ContainerRunner:
                                                 perf_super_json="perf_super.json",
                                                 scripts_base_dir=scripts_base_dir,
                                             )
-                                        
+
                                         # Generate CSV and JSON files from perf_super.json
                                         update_perf_super_csv(
                                             perf_super_json="perf_super.json",
                                             perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries
+                                            num_entries=num_entries,
                                         )
                                     except Exception as e:
-                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
+                                        print(
+                                            f"⚠️  Warning: Could not update perf_super files: {e}"
+                                        )
 
                             except Exception as e:
-                                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+                                self.rich_console.print(
+                                    f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]"
+                                )
 
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
@@ -1681,9 +1836,11 @@ class ContainerRunner:
                                 f"{_bash_quote_path('.')} 2>/dev/null || true"
                             )
                             model_docker.sh(
-                                _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
+                                _cp_model_dir_file_to_cwd_cmd(
+                                    model_dir, "library_trace.csv"
+                                )
                             )
-                        except Exception as e:
+                        except Exception:
                             # Ignore errors if no profiler/trace output files exist
                             pass
 
@@ -1745,25 +1902,27 @@ class ContainerRunner:
                 try:
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
-                    
+
                     # Use perf_entry.json as input (already created above)
                     num_entries = update_perf_super_json(
                         exception_result="perf_entry.json",
                         perf_super_json="perf_super.json",
                         scripts_base_dir=scripts_base_dir,
                     )
-                    
+
                     # Generate CSV and JSON files from perf_super.json
                     update_perf_super_csv(
                         perf_super_json="perf_super.json",
                         perf_super_csv="perf_super.csv",
-                        num_entries=num_entries
+                        num_entries=num_entries,
                     )
                 except Exception as e:
                     print(f"⚠️  Warning: Could not update perf_super files: {e}")
 
             except Exception as csv_e:
-                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]")
+                self.rich_console.print(
+                    f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]"
+                )
 
         return run_results
 
@@ -1799,80 +1958,109 @@ class ContainerRunner:
         Returns:
             dict: Execution summary with successful and failed runs
         """
-        self.rich_console.print(f"[bold blue]📦 Loading manifest:[/bold blue] {manifest_file}")
-        
+        self.rich_console.print(
+            f"[bold blue]📦 Loading manifest:[/bold blue] {manifest_file}"
+        )
+
         # Load manifest
         manifest = self.load_build_manifest(manifest_file)
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
-        
+
         # Load deployment_config from manifest for GPU resolution
         if "deployment_config" in manifest and not self.additional_context:
-            self.additional_context = {"deployment_config": manifest["deployment_config"]}
+            self.additional_context = {
+                "deployment_config": manifest["deployment_config"]
+            }
         # Merge manifest context (e.g. skip_perf_collection for multi-node SLURM aggregation)
         if "context" in manifest and isinstance(manifest["context"], dict):
-            self.additional_context = {**(self.additional_context or {}), **manifest["context"]}
+            self.additional_context = {
+                **(self.additional_context or {}),
+                **manifest["context"],
+            }
 
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")
             return {"successful_runs": [], "failed_runs": []}
-        
-        self.rich_console.print(f"[green]Found {len(built_images)} image(s) to run[/green]\n")
-        
+
+        self.rich_console.print(
+            f"[green]Found {len(built_images)} image(s) to run[/green]\n"
+        )
+
         # Login to registry if needed
         if registry or any(img.get("registry") for img in built_images.values()):
             effective_registry = registry or next(
-                (img.get("registry") for img in built_images.values() if img.get("registry")), 
-                None
+                (
+                    img.get("registry")
+                    for img in built_images.values()
+                    if img.get("registry")
+                ),
+                None,
             )
             if effective_registry:
                 try:
                     self.login_to_registry(effective_registry, self.credentials)
                 except Exception as e:
-                    self.rich_console.print(f"[yellow]Warning: Registry login failed: {e}[/yellow]")
-                    self.rich_console.print("[yellow]Proceeding with local images only[/yellow]\n")
-        
+                    self.rich_console.print(
+                        f"[yellow]Warning: Registry login failed: {e}[/yellow]"
+                    )
+                    self.rich_console.print(
+                        "[yellow]Proceeding with local images only[/yellow]\n"
+                    )
+
         # Track results
         successful_runs = []
         failed_runs = []
-        
+
         # Run each model
         for image_name, build_info in built_images.items():
             model_info = built_models.get(image_name, {})
             if not model_info:
-                self.rich_console.print(f"[yellow]⚠️  No model info for {image_name}, skipping[/yellow]")
+                self.rich_console.print(
+                    f"[yellow]⚠️  No model info for {image_name}, skipping[/yellow]"
+                )
                 continue
-            
+
             try:
                 # Handle different image sources
                 if build_info.get("local_image"):
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
-                    self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
+                    self.rich_console.print(
+                        f"[yellow]🏠 Using local image: {run_image}[/yellow]"
+                    )
+
                     # Verify image exists
                     try:
-                        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except (subprocess.CalledProcessError, RuntimeError) as e:
-                        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
+                        self.console.sh(
+                            f"docker image inspect {run_image} > /dev/null 2>&1"
+                        )
+                    except (subprocess.CalledProcessError, RuntimeError):
+                        self.rich_console.print(
+                            f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]"
+                        )
                         try:
                             self.pull_image(run_image)
                         except Exception as e:
-                            raise RuntimeError(f"Failed to find or pull local image {run_image}: {e}")
-                
+                            raise RuntimeError(
+                                f"Failed to find or pull local image {run_image}: {e}"
+                            )
+
                 elif build_info.get("registry_image"):
                     # Registry image: Pull from registry
                     try:
                         self.pull_image(build_info["registry_image"])
                         # Update docker_image to use registry image
                         run_image = build_info["registry_image"]
-                    except Exception as pull_error:
-                        self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
+                    except Exception:
+                        self.rich_console.print(
+                            f"[yellow]Warning: Could not pull from registry, using local image[/yellow]"
+                        )
                         run_image = image_name
                 else:
                     # Normal built image: Use the image name directly
                     run_image = image_name
-                
+
                 # Run the container
                 run_results = self.run_container(
                     model_info=model_info,
@@ -1883,38 +2071,49 @@ class ContainerRunner:
                     timeout=timeout,
                     phase_suffix=phase_suffix,
                 )
-                
+
                 # Check actual status and track accordingly
                 status = run_results.get("status", "SUCCESS")
                 if status == "SUCCESS":
-                    successful_runs.append({
-                        "model": model_info["name"],
-                        "image": run_image,
-                        "status": status,
-                        "performance": run_results.get("performance"),
-                        "duration": run_results.get("test_duration"),
-                    })
+                    successful_runs.append(
+                        {
+                            "model": model_info["name"],
+                            "image": run_image,
+                            "status": status,
+                            "performance": run_results.get("performance"),
+                            "duration": run_results.get("test_duration"),
+                        }
+                    )
                 else:
                     # Status is FAILURE - track as failed
-                    failed_runs.append({
-                        "model": model_info["name"],
-                        "image": run_image,
-                        "status": status,
-                        "error": "Container execution failed - check logs for details",
-                    })
-                    self.rich_console.print(f"[red]❌ Run failed for {model_info['name']}: Status={status}[/red]")
-                
+                    failed_runs.append(
+                        {
+                            "model": model_info["name"],
+                            "image": run_image,
+                            "status": status,
+                            "error": "Container execution failed - check logs for details",
+                        }
+                    )
+                    self.rich_console.print(
+                        f"[red]❌ Run failed for {model_info['name']}: Status={status}[/red]"
+                    )
+
             except Exception as e:
-                self.rich_console.print(f"[red]❌ Failed to run {model_info['name']}: {e}[/red]")
+                self.rich_console.print(
+                    f"[red]❌ Failed to run {model_info['name']}: {e}[/red]"
+                )
                 error_msg = str(e)
-                failed_runs.append({
-                    "model": model_info.get("name", image_name),
-                    "image": image_name,
-                    "error": error_msg,
-                })
+                failed_runs.append(
+                    {
+                        "model": model_info.get("name", image_name),
+                        "image": image_name,
+                        "error": error_msg,
+                    }
+                )
                 # Record failure in performance table so status is consistent and table is complete
                 try:
                     import tempfile
+
                     self.ensure_perf_csv_exists()
                     perf_entry = self._create_setup_failure_perf_entry(
                         model_info=model_info,
@@ -1941,12 +2140,14 @@ class ContainerRunner:
                     self.rich_console.print(
                         f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
                     )
-        
+
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")
-        self.rich_console.print(f"  [green]✓ Successful:[/green] {len(successful_runs)}")
+        self.rich_console.print(
+            f"  [green]✓ Successful:[/green] {len(successful_runs)}"
+        )
         self.rich_console.print(f"  [red]✗ Failed:[/red] {len(failed_runs)}")
-        
+
         return {
             "successful_runs": successful_runs,
             "failed_runs": failed_runs,
