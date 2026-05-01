@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .common import normalize_launcher
-from .k8s_names import sanitize_k8s_container_name
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 

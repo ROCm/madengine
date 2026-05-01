@@ -10,7 +10,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -611,10 +610,13 @@ class KubernetesTemplateContextMixin:
             class ConsoleLogger:
                 def __init__(self, console):
                     self.console = console
+
                 def info(self, msg):
                     self.console.print(f"[cyan]{msg}[/cyan]")
+
                 def warning(self, msg):
                     self.console.print(f"[yellow]{msg}[/yellow]")
+
                 def debug(self, msg):
                     pass  # Skip debug messages in console
 

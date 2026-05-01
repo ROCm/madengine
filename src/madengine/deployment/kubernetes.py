@@ -337,7 +337,7 @@ class KubernetesDeployment(
             f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
         )
 
-    
+
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
         # Delete existing Job
@@ -359,7 +359,7 @@ class KubernetesDeployment(
             )
         except ApiException:
             pass
-        
+
         # Delete existing ConfigMap
         try:
             self.core_v1.delete_namespaced_config_map(
@@ -370,7 +370,7 @@ class KubernetesDeployment(
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Delete existing Service
         if hasattr(self, 'service_yaml') and self.service_yaml:
             try:
@@ -382,7 +382,7 @@ class KubernetesDeployment(
             except ApiException as e:
                 if e.status != 404:
                     pass
-        
+
         # Delete existing collector pod (must be done before PVC to allow PVC deletion)
         collector_pod_name = f"collector-{self.job_name}"
         try:
@@ -397,7 +397,7 @@ class KubernetesDeployment(
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Delete existing PVC
         pvc_name = f"{self.job_name}-results"
         try:
@@ -406,7 +406,7 @@ class KubernetesDeployment(
                 namespace=self.namespace
             )
             self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
-            
+
             # Wait for PVC to be fully deleted (not just marked for deletion)
             max_wait = 90  # Maximum 90 seconds (PV can take time to detach)
             wait_interval = 1  # Check every 1 second
@@ -428,7 +428,7 @@ class KubernetesDeployment(
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Wait a moment for other resources to be deleted
         time.sleep(1)
 
@@ -437,13 +437,13 @@ class KubernetesDeployment(
         try:
             # Clean up any existing resources first
             self._cleanup_existing_resources()
-            
+
             # 1. Create PVC for results storage
             self.console.print("[blue]Creating PVC for results storage...[/blue]")
             nnodes_deploy = getattr(self, "_nnodes", 1)
             pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
             self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
-            
+
             # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
             if hasattr(self, '_data_config') and self._data_config:
                 # Check if we set the PVC name during prepare (auto-creation case)
@@ -452,7 +452,7 @@ class KubernetesDeployment(
                     # Auto-creation mode: create/reuse the PVC
                     nnodes = getattr(self, '_nnodes', 1)
                     self._create_or_get_data_pvc(nnodes=nnodes)
-            
+
             # 2. Create Secrets from local credential.json (strategy: from_local_credentials)
             merged_sec = merge_secrets_config(self.k8s_config)
             strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
@@ -521,18 +521,18 @@ class KubernetesDeployment(
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """
         Monitor Job status using Python API.
-        
+
         If live_output is enabled, streams pod logs in real-time.
         Otherwise, polls status periodically.
         """
         # Check if live output is requested
         live_output = self.config.additional_context.get("live_output", False)
-        
+
         if live_output:
             return self._monitor_with_live_logs(deployment_id)
         else:
             return self._monitor_status_only(deployment_id)
-    
+
     def _monitor_status_only(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job status without streaming logs."""
         try:
@@ -578,21 +578,21 @@ class KubernetesDeployment(
                     message=f"Job {deployment_id} not found",
                 )
             raise
-    
+
     def _monitor_with_live_logs(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job and stream logs in real-time."""
         self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
-        
+
         pod_name = None
         log_position = 0
-        
+
         while True:
             try:
                 # Check job status
                 job = self.batch_v1.read_namespaced_job_status(
                     name=deployment_id, namespace=self.namespace
                 )
-                
+
                 # Get pod if we don't have it yet
                 if not pod_name:
                     pods = self.core_v1.list_namespaced_pod(
@@ -602,7 +602,7 @@ class KubernetesDeployment(
                     if pods.items:
                         pod_name = pods.items[0].metadata.name
                         self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
-                
+
                 # Stream logs if we have a pod
                 if pod_name:
                     try:
@@ -612,7 +612,7 @@ class KubernetesDeployment(
                             namespace=self.namespace,
                             tail_lines=100 if log_position == 0 else None
                         )
-                        
+
                         # Print new log lines and trigger artifact collection
                         if logs:
                             log_lines = logs.split('\n')
@@ -621,11 +621,11 @@ class KubernetesDeployment(
                                     if line.strip():
                                         print(line)
                                 log_position = len(log_lines)
-                    
+
                     except ApiException as e:
                         if e.status != 400:  # Ignore "container not ready" errors
                             pass
-                
+
                 # Check if job completed
                 if job.status.succeeded:
                     self.console.print(f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n")
@@ -634,7 +634,7 @@ class KubernetesDeployment(
                         deployment_id=deployment_id,
                         message=f"Job {deployment_id} completed successfully",
                     )
-                
+
                 if job.status.failed:
                     self.console.print(f"\n[red]✗ Job {deployment_id} failed[/red]\n")
                     # Print final logs
@@ -645,9 +645,9 @@ class KubernetesDeployment(
                         deployment_id=deployment_id,
                         message=f"Job {deployment_id} failed",
                     )
-                
+
                 time.sleep(2)  # Poll every 2 seconds
-                
+
             except ApiException as e:
                 if e.status == 404:
                     return DeploymentResult(
@@ -656,17 +656,17 @@ class KubernetesDeployment(
                         message=f"Job {deployment_id} not found",
                     )
                 raise
-    
+
     def _print_pod_logs_on_failure(self, deployment_id: str):
         """Print pod logs when job fails (for debugging)."""
         try:
             self.console.print(f"\n[yellow]═══ Pod logs (last 50 lines) ═══[/yellow]\n")
-            
+
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
                 label_selector=_pod_job_name_label_selector(deployment_id),
             )
-            
+
             for pod in pods.items:
                 pod_name = pod.metadata.name
                 try:
@@ -776,4 +776,3 @@ class KubernetesDeployment(
             pass
 
         return success
-
