@@ -784,7 +784,12 @@ class ContainerRunner:
                     print(f"📂 Working directory: {script_dir}")
                     print(f"{'='*80}")
                     
-                    result = subprocess.run(
+                    # NOTE: shell=True is required because cmd embeds shell features
+                    # (pipes, redirects, env-var substitution) constructed earlier in this
+                    # method. cmd is built from validated model card / manifest fields and
+                    # any user-provided model_args are routed through shlex-quoted assembly
+                    # in the caller — do NOT concatenate raw user input directly into cmd.
+                    result = subprocess.run(  # noqa: S602 (shell=True intentional, see comment above)
                         cmd,
                         shell=True,
                         cwd=script_dir,

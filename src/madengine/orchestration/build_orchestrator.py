@@ -600,8 +600,9 @@ class BuildOrchestrator:
                 },
             }
 
-            # Add each discovered model with the pre-built image
-            # Use the image name as the key (matches how madengine build does it)
+            # Add each discovered model with the pre-built image.
+            # Key by model_name (not use_image) so multiple models sharing
+            # the same pre-built image are all preserved in the manifest.
             for model in models:
                 model_name = model.get("name", "unknown")
                 model_distributed = model.get("distributed", {})
@@ -610,8 +611,7 @@ class BuildOrchestrator:
                 model_env_vars = model.get("env_vars", {}).copy()
                 model_env_vars["DOCKER_IMAGE_NAME"] = use_image
                 
-                # Use image name as key so slurm.py can find docker_image
-                manifest["built_models"][use_image] = {
+                manifest["built_models"][model_name] = {
                     "name": model_name,
                     "image": use_image,
                     "docker_image": use_image,
@@ -648,7 +648,15 @@ class BuildOrchestrator:
                 if "deployment_config" not in saved_manifest:
                     saved_manifest["deployment_config"] = {}
                 
-                # Merge model's distributed config
+                # Merge model's distributed config from the first model.
+                # If multiple models have differing distributed configs, warn — only the first wins here.
+                if len(models) > 1:
+                    distinct_distributed = {tuple(sorted((m.get("distributed") or {}).items())) for m in models}
+                    if len(distinct_distributed) > 1:
+                        self.rich_console.print(
+                            "[yellow]Warning: discovered models have differing distributed configs; "
+                            f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
+                        )
                 model_distributed = models[0].get("distributed", {})
                 if model_distributed:
                     if "distributed" not in saved_manifest["deployment_config"]:
@@ -659,8 +667,16 @@ class BuildOrchestrator:
                         if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
                             saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
                 
-                # Merge model's slurm config into deployment_config.slurm
-                # This enables run phase to auto-detect SLURM deployment without --additional-context
+                # Merge model's slurm config into deployment_config.slurm from the first model.
+                # This enables run phase to auto-detect SLURM deployment without --additional-context.
+                # Warn when multiple models have differing slurm configs (only the first wins here).
+                if len(models) > 1:
+                    distinct_slurm = {tuple(sorted((m.get("slurm") or {}).items())) for m in models}
+                    if len(distinct_slurm) > 1:
+                        self.rich_console.print(
+                            "[yellow]Warning: discovered models have differing slurm configs; "
+                            f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
+                        )
                 model_slurm = models[0].get("slurm", {})
                 if model_slurm:
                     if "slurm" not in saved_manifest["deployment_config"]:
@@ -810,6 +826,22 @@ class BuildOrchestrator:
         self.rich_console.print("[cyan]Building on 1 compute node, pushing to registry...[/cyan]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
+        # registry is required for the build-on-compute flow (it must be pushed somewhere
+        # so the run phase on other nodes can pull it). The signature accepts Optional[str]
+        # to keep the call-site signature flexible, but we must reject None up front.
+        if not registry:
+            raise ConfigurationError(
+                "Registry is required for --build-on-compute (image must be pushed for run-phase pull).",
+                context=create_error_context(
+                    operation="build_on_compute",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Pass --registry <host[/path]> on the build CLI",
+                    'Or set "registry" in the model card / additional-context',
+                ],
+            )
+
         # Discover models first to get SLURM config from model card
         self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
         discover_models = DiscoverModels(args=self.args)
@@ -899,6 +931,39 @@ class BuildOrchestrator:
         registry_lower = registry.lower() if registry else ""
         
         # For docker.io pushes, authentication is always required
+        # Per-registry guidance for the missing-credentials error message.
+        # Today only Docker Hub credentials (MAD_DOCKERHUB_USER/PASSWORD or credential.json)
+        # are wired into this code path, but the error suggestion should at least name the
+        # right token type for ghcr.io / quay.io / nvcr.io / gcr.io users.
+        _registry_hints = {
+            "docker.io": [
+                "Set environment variables: MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD",
+                'Or create credential.json: {"dockerhub": {"username": "...", "password": "..."}}',
+                "For Docker Hub, use a Personal Access Token (PAT) as password",
+                "Example: export MAD_DOCKERHUB_USER=myuser",
+                "Example: export MAD_DOCKERHUB_PASSWORD=dckr_pat_xxxxx",
+            ],
+            "ghcr.io": [
+                "GitHub Container Registry: use a GitHub PAT with read:packages (and write:packages to push)",
+                "Set MAD_DOCKERHUB_USER=<github-username>, MAD_DOCKERHUB_PASSWORD=<ghp_xxx>",
+            ],
+            "gcr.io": [
+                "Google Container Registry: use a service-account JSON key as password",
+                "Set MAD_DOCKERHUB_USER=_json_key, MAD_DOCKERHUB_PASSWORD=\"$(cat key.json)\"",
+            ],
+            "quay.io": [
+                "Quay.io: use a robot account or encrypted password",
+                "Set MAD_DOCKERHUB_USER=<robot-account>, MAD_DOCKERHUB_PASSWORD=<robot-token>",
+            ],
+            "nvcr.io": [
+                "NVIDIA NGC: use $oauthtoken as username and an NGC API key as password",
+                "Set MAD_DOCKERHUB_USER=\\$oauthtoken, MAD_DOCKERHUB_PASSWORD=<ngc-api-key>",
+            ],
+        }
+        _matched_hints = next(
+            (hints for reg_key, hints in _registry_hints.items() if reg_key in registry_lower),
+            _registry_hints["docker.io"],
+        )
         if any(pub_reg in registry_lower for pub_reg in public_registries):
             if not dockerhub_user or not dockerhub_password:
                 raise ConfigurationError(
@@ -908,13 +973,7 @@ class BuildOrchestrator:
                         component="BuildOrchestrator",
                         registry=registry,
                     ),
-                    suggestions=[
-                        "Set environment variables: MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD",
-                        'Or create credential.json: {"dockerhub": {"username": "...", "password": "..."}}',
-                        "For Docker Hub, use a Personal Access Token (PAT) as password",
-                        f"Example: export MAD_DOCKERHUB_USER=myuser",
-                        f"Example: export MAD_DOCKERHUB_PASSWORD=dckr_pat_xxxxx",
-                    ],
+                    suggestions=_matched_hints,
                 )
             self.rich_console.print(f"  Auth: Will login to registry before push")
         else:

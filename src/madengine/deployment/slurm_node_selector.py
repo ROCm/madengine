@@ -328,21 +328,11 @@ echo "CLEANUP_OK"
         ]
         if job_name:
             srun_cmd.append(f"--job-name={job_name}")
+        if self.reservation:
+            srun_cmd.append(f"--reservation={self.reservation}")
         srun_cmd.extend(["bash", "-c", cleanup_script])
 
         try:
-            srun_cmd = [
-                "srun",
-                f"--nodelist={node}",
-                "--ntasks=1",
-                "--time=00:01:00",
-                "--overlap",
-                "--quiet",
-            ]
-            if self.reservation:
-                srun_cmd.append(f"--reservation={self.reservation}")
-            srun_cmd.extend(["bash", "-c", cleanup_script])
-            
             result = subprocess.run(
                 srun_cmd,
                 capture_output=True,

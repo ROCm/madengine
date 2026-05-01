@@ -24,7 +24,6 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
 import json
-from typing import Optional
 
 SLURM_MULTI_ALIASES = [
     "slurm_multi",
@@ -431,8 +430,10 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --ntasks={self.nodes}",
             f"#SBATCH --gpus-per-node={self.gpus_per_node}",
             f"#SBATCH --time={self.time_limit}",
-            "#SBATCH --exclusive",
         ]
+        # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
+        if self.slurm_config.get("exclusive", True):
+            script_lines.append("#SBATCH --exclusive")
         
         # Add reservation if specified
         if self.reservation:

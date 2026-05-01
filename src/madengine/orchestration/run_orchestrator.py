@@ -231,16 +231,27 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use).
-            # For dict-valued keys (slurm, k8s, etc.), deep-merge so manifest
-            # values fill in gaps while runtime --additional-context wins on conflicts.
+            # For dict-valued keys (slurm, k8s, etc.), recursively deep-merge so
+            # manifest values fill in nested gaps while runtime --additional-context
+            # still wins on per-leaf conflicts.
+            def _deep_merge(base, override):
+                """Recursive merge: override wins at leaves; nested dicts are merged."""
+                result = dict(base)
+                for k, v in override.items():
+                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                        result[k] = _deep_merge(result[k], v)
+                    else:
+                        result[k] = v
+                return result
+
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config:
                     if key not in self.additional_context:
                         self.additional_context[key] = deployment_config[key]
                     elif isinstance(deployment_config[key], dict) and isinstance(self.additional_context[key], dict):
-                        merged = dict(deployment_config[key])
-                        merged.update(self.additional_context[key])
-                        self.additional_context[key] = merged
+                        self.additional_context[key] = _deep_merge(
+                            deployment_config[key], self.additional_context[key]
+                        )
             
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
