@@ -22,14 +22,15 @@ Usage:
 """
 
 import os
+import pathlib
+import socket
 import sys
 import time
-import socket
-import pathlib
+
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Configuration

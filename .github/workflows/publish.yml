@@ -1,0 +1,109 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Publish target'
+        required: true
+        default: 'testpypi'
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install build tools
+        run: pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test-install:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install wheel
+        run: pip install dist/*.whl
+      - name: Verify CLI entry point
+        run: madengine --help
+      - name: Verify import and version
+        run: python -c "import madengine; print(madengine.__version__)"
+      - name: Verify package assets
+        run: |
+          python -c "
+          from pathlib import Path
+          import madengine
+          pkg = Path(madengine.__file__).parent
+          missing = []
+          for p in [
+              'scripts/common/tools.json',
+              'deployment/templates/kubernetes/job.yaml.j2',
+              'deployment/templates/slurm/job.sh.j2',
+              'py.typed',
+          ]:
+              if not (pkg / p).exists():
+                  missing.append(p)
+          if missing:
+              raise SystemExit(f'Missing package assets: {missing}')
+          print('All package assets verified')
+          "
+
+  publish-testpypi:
+    needs: test-install
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: test-install
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

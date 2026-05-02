@@ -14,11 +14,11 @@ Launch modes:
   Multi-node: Use Ray backend with proper configuration
 """
 
+import argparse
 import os
+import socket
 import sys
 import time
-import argparse
-import socket
 from typing import List, Optional
 
 # Configure environment before importing vLLM
@@ -30,8 +30,8 @@ os.environ.setdefault("VLLM_USE_V1", "1")  # Explicitly use V1 engine
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 try:
-    from vllm import LLM, SamplingParams
     import torch
+    from vllm import LLM, SamplingParams
 except ImportError as e:
     print(f"Error importing required libraries: {e}")
     print("Please ensure vLLM and PyTorch are installed")

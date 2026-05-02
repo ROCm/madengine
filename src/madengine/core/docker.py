@@ -5,6 +5,7 @@ This module provides a class to run commands inside docker.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import os
 import re
@@ -68,17 +69,13 @@ class Docker:
         )
         # if container name exists, clean it up automatically
         if container_name_exists:
-            print(
-                f"⚠️  Container '{container_name}' already exists. Cleaning up..."
-            )
+            print(f"⚠️  Container '{container_name}' already exists. Cleaning up...")
             # Stop the container (with timeout)
             self.console.sh(
                 f"docker stop -t 1 {container_name_quoted} 2>/dev/null || true"
             )
             # Remove the container
-            self.console.sh(
-                f"docker rm -f {container_name_quoted} 2>/dev/null || true"
-            )
+            self.console.sh(f"docker rm -f {container_name_quoted} 2>/dev/null || true")
             print(f"✓ Cleaned up existing container '{container_name}'")
 
         # run docker command
@@ -107,7 +104,7 @@ class Docker:
         command += "--workdir /myworkspace/ "
         command += "--name " + container_name + " "
         command += image + " "
-        
+
         # Use 'cat' to keep container alive (blocks waiting for stdin)
         # Works reliably across all deployment types (local, k8s, slurm)
         # with fresh image pulls preventing corrupted layer issues
@@ -116,9 +113,7 @@ class Docker:
 
         # find container sha — use the same exact-match filter as the existence
         # check above to avoid false positives from substring/regex matches.
-        self.docker_sha = self.console.sh(
-            f"docker ps -aqf name={container_name_regex}"
-        )
+        self.docker_sha = self.console.sh(f"docker ps -aqf name={container_name_regex}")
 
     def sh(self, command: str, timeout: int = 60, secret: bool = False) -> str:
         """Run shell command inside docker.

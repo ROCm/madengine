@@ -10,7 +10,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
-import os
 import subprocess
 import time
 from datetime import datetime
@@ -35,7 +34,23 @@ except ImportError:
 
 from jinja2 import Template
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from madengine.core.dataprovider import Data
+from madengine.core.errors import ConfigurationError
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
+from madengine.utils.run_details import (
+    flatten_tags_in_place,
+    get_build_number,
+    get_pipeline,
+)
+
+from .base import (
+    BaseDeployment,
+    DeploymentConfig,
+    DeploymentResult,
+    DeploymentStatus,
+    create_jinja_env,
+)
 from .common import (
     configure_multi_node_profiling,
     normalize_launcher,
@@ -44,24 +59,22 @@ from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_FROM_LOCAL,
+    build_registry_secret_data,
     create_or_update_secrets_from_credentials,
     delete_job_secrets_if_exist,
     estimate_configmap_payload_bytes,
     merge_secrets_config,
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
-    build_registry_secret_data,
 )
-from madengine.core.dataprovider import Data
-from madengine.core.context import Context
-from madengine.core.errors import ConfigurationError
-from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
-from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
 try:
     from madengine.reporting.update_perf_csv import update_perf_csv
-    from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+    from madengine.reporting.update_perf_super import (
+        update_perf_super_csv,
+        update_perf_super_json,
+    )
+
     REPORTING_AVAILABLE = True
 except ImportError:
     REPORTING_AVAILABLE = False
@@ -78,6 +91,8 @@ from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 def _pod_job_name_label_selector(deployment_id: str) -> str:
     """Selector for the ``job-name`` pod label; value must be a valid ≤63-char label value."""
     return f"job-name={sanitize_k8s_label_value(deployment_id)}"
+
+
 from .primus_backend import (
     infer_primus_backend_from_model_name,
     infer_primus_examples_overlay_subdirs,
@@ -107,7 +122,9 @@ def match_pvc_subdir_to_k8s_pod(
     return sorted(prefixed)[0]
 
 
-def assign_pvc_subdirs_to_pods(pod_dirs: List[str], pod_names: List[str]) -> Dict[str, str]:
+def assign_pvc_subdirs_to_pods(
+    pod_dirs: List[str], pod_names: List[str]
+) -> Dict[str, str]:
     """
     Assign each PVC subdir to at most one pod. Process longest names first so
     short prefixes do not steal pods (e.g. ``foo-0`` before ``foo``).
@@ -162,8 +179,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
 
         if not YAML_AVAILABLE:
             raise ImportError(
-                "PyYAML library not installed.\n"
-                "Install with: pip install pyyaml"
+                "PyYAML library not installed.\n" "Install with: pip install pyyaml"
             )
 
         apply_deployment_config(config, ConfigLoader.load_k8s_config)
@@ -208,7 +224,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         self.job_name = None
         self.job_label = None  # pod label job-name + label selectors; ≤63 chars (sanitize_k8s_label_value)
         self.service_name = None  # headless Service metadata.name + Pod subdomain; DNS label ≤63 (no dots)
-        self.main_container_name = None  # same string as service_name (container names are DNS labels)
+        self.main_container_name = (
+            None  # same string as service_name (container names are DNS labels)
+        )
         self.configmap_name = None
         self.configmap_yaml = None
         self.job_yaml = None
@@ -347,9 +365,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
     ) -> None:
         """
         Gather system environment details by adding rocEnvTool to pre-scripts.
-        
+
         This ensures K8s deployment collects the same system info as local execution.
-        
+
         Args:
             pre_scripts: List of pre-script configurations
             model_name: The model name (used for output file naming)
@@ -357,18 +375,22 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         # Add rocEnvTool pre-script with model-specific output name
         pre_env_details = {
             "path": "scripts/common/pre_scripts/run_rocenv_tool.sh",
-            "args": model_name.replace("/", "_") + "_env"
+            "args": model_name.replace("/", "_") + "_env",
         }
         pre_scripts.append(pre_env_details)
-        self.console.print(f"[dim]Added rocEnvTool to pre-scripts with args: {pre_env_details['args']}[/dim]")
-    
-    def _add_tool_scripts(self, pre_scripts: List[Dict], post_scripts: List[Dict]) -> None:
+        self.console.print(
+            f"[dim]Added rocEnvTool to pre-scripts with args: {pre_env_details['args']}[/dim]"
+        )
+
+    def _add_tool_scripts(
+        self, pre_scripts: List[Dict], post_scripts: List[Dict]
+    ) -> None:
         """
         Add tool pre/post scripts to execution lists (similar to local execution).
-        
+
         Extracts pre_scripts and post_scripts from tools.json definitions and adds them
         to the pre_scripts and post_scripts lists for execution in K8s pods.
-        
+
         Args:
             pre_scripts: List to append tool pre-scripts to
             post_scripts: List to append tool post-scripts to
@@ -376,95 +398,108 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         tools_config = self._get_tools_config()
         if not tools_config:
             return
-        
+
         # Load tools.json to get pre/post script definitions
         tools_json_path = get_madengine_root() / "scripts" / "common" / "tools.json"
         if not tools_json_path.exists():
             return
-        
+
         with open(tools_json_path, "r") as f:
             tools_definitions = json.load(f)
-        
+
         # Add pre/post scripts from each configured tool
         for tool in tools_config:
             tool_name = tool.get("name")
             if not tool_name or tool_name not in tools_definitions.get("tools", {}):
                 continue
-            
+
             tool_def = tools_definitions["tools"][tool_name]
-            
+
             # Add pre-scripts (at beginning, like local execution)
             if "pre_scripts" in tool_def:
                 pre_scripts[:0] = tool_def["pre_scripts"]
-            
+
             # Add post-scripts (at end, like local execution)
             if "post_scripts" in tool_def:
                 post_scripts.extend(tool_def["post_scripts"])
-    
+
     def _load_common_scripts(self, script_list: List[Dict]) -> Dict[str, str]:
         """
         Load common script contents from madengine package for embedding in ConfigMap.
-        
+
         Since madengine is not installed in model Docker images, we need to embed
         the common scripts (pre_scripts, post_scripts, and tool wrapper scripts) in the ConfigMap.
-        
+
         Args:
             script_list: List of script configurations with 'path' field
-            
+
         Returns:
             Dict mapping relative script paths to their contents
         """
-        import os
         script_contents = {}
         madengine_root = get_madengine_root()
-        
+
         for script_config in script_list:
             script_path = script_config.get("path", "")
             if not script_path:
                 continue
-            
+
             # Convert to absolute path from madengine root
             abs_script_path = madengine_root / script_path
-            
+
             if abs_script_path.exists() and abs_script_path.is_file():
                 with open(abs_script_path, "r") as f:
                     script_contents[script_path] = f.read()
                 self.console.print(f"[dim]Loaded common script: {script_path}[/dim]")
-                
+
                 # If it's run_rocenv_tool.sh, also load the entire rocEnvTool directory
                 if "run_rocenv_tool.sh" in script_path:
                     rocenv_dir = abs_script_path.parent / "rocEnvTool"
                     if rocenv_dir.exists() and rocenv_dir.is_dir():
                         # Load all Python files
                         for py_file in rocenv_dir.glob("*.py"):
-                            rel_path = f"scripts/common/pre_scripts/rocEnvTool/{py_file.name}"
+                            rel_path = (
+                                f"scripts/common/pre_scripts/rocEnvTool/{py_file.name}"
+                            )
                             with open(py_file, "r") as f:
                                 script_contents[rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
-                        
+                            self.console.print(
+                                f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]"
+                            )
+
                         # Load all JSON files (e.g., env_tags.json)
                         for json_file in rocenv_dir.glob("*.json"):
                             rel_path = f"scripts/common/pre_scripts/rocEnvTool/{json_file.name}"
                             with open(json_file, "r") as f:
                                 script_contents[rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
+                            self.console.print(
+                                f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]"
+                            )
             else:
-                self.console.print(f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]")
-        
+                self.console.print(
+                    f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]"
+                )
+
         # Load tool wrapper scripts if tools are configured
         tools_config = self._get_tools_config()
         if tools_config:
-            self._load_tool_wrapper_scripts(script_contents, tools_config, madengine_root)
-        
+            self._load_tool_wrapper_scripts(
+                script_contents, tools_config, madengine_root
+            )
+
         return script_contents
-    
-    def _load_tool_wrapper_scripts(self, script_contents: Dict[str, str], 
-                                   tools_config: List[Dict], madengine_root: Path) -> None:
+
+    def _load_tool_wrapper_scripts(
+        self,
+        script_contents: Dict[str, str],
+        tools_config: List[Dict],
+        madengine_root: Path,
+    ) -> None:
         """
         Load tool wrapper scripts and tools.json for K8s ConfigMap.
-        
+
         This enables profiling tools like rocprof to work in K8s deployments.
-        
+
         Args:
             script_contents: Dict to populate with script contents
             tools_config: List of tool configurations from manifest
@@ -475,28 +510,34 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if tools_json_path.exists():
             with open(tools_json_path, "r") as f:
                 tools_definitions = json.load(f)
-                script_contents["scripts/common/tools.json"] = json.dumps(tools_definitions, indent=2)
+                script_contents["scripts/common/tools.json"] = json.dumps(
+                    tools_definitions, indent=2
+                )
             self.console.print(f"[dim]Loaded tools.json[/dim]")
         else:
-            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]"
+            )
             return
-        
+
         # Extract and load wrapper scripts referenced in tool commands
         for tool in tools_config:
             tool_name = tool.get("name")
             if not tool_name:
                 continue
-            
+
             # Get tool definition from tools.json
             if tool_name not in tools_definitions.get("tools", {}):
-                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]"
+                )
                 continue
-            
+
             tool_def = tools_definitions["tools"][tool_name]
-            
+
             # Extract cmd - could be from tool config override or tool definition
             cmd = tool.get("cmd", tool_def.get("cmd", ""))
-            
+
             # Check if cmd references a script in scripts/common/tools/
             if "scripts/common/tools/" in cmd:
                 # Parse script path from command (e.g., "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace")
@@ -508,29 +549,43 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         # Remove ../ prefix if present
                         script_rel_path = part.replace("../", "")
                         abs_script_path = madengine_root / script_rel_path
-                        
+
                         if abs_script_path.exists() and abs_script_path.is_file():
                             with open(abs_script_path, "r") as f:
                                 script_contents[script_rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded tool script: {script_rel_path}[/dim]")
-                            
+                            self.console.print(
+                                f"[dim]Loaded tool script: {script_rel_path}[/dim]"
+                            )
+
                             # If it's a Python script, also load utility modules it might depend on
-                            if script_rel_path.endswith('.py'):
+                            if script_rel_path.endswith(".py"):
                                 tools_dir = abs_script_path.parent
                                 # Load common utility modules that profiling tools depend on
-                                utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                utility_modules = [
+                                    "amd_smi_utils.py",
+                                    "rocm_smi_utils.py",
+                                    "pynvml_utils.py",
+                                ]
                                 for util_file in utility_modules:
                                     util_path = tools_dir / util_file
                                     if util_path.exists():
-                                        util_rel_path = f"scripts/common/tools/{util_file}"
+                                        util_rel_path = (
+                                            f"scripts/common/tools/{util_file}"
+                                        )
                                         if util_rel_path not in script_contents:
                                             with open(util_path, "r") as f:
-                                                script_contents[util_rel_path] = f.read()
-                                            self.console.print(f"[dim]Loaded tool utility module: {util_rel_path}[/dim]")
+                                                script_contents[util_rel_path] = (
+                                                    f.read()
+                                                )
+                                            self.console.print(
+                                                f"[dim]Loaded tool utility module: {util_rel_path}[/dim]"
+                                            )
                         else:
-                            self.console.print(f"[yellow]Warning: Tool script not found: {script_rel_path} (at {abs_script_path})[/yellow]")
+                            self.console.print(
+                                f"[yellow]Warning: Tool script not found: {script_rel_path} (at {abs_script_path})[/yellow]"
+                            )
                         break
-            
+
             # Also load any tool-specific pre_scripts and post_scripts
             for script_config in tool_def.get("pre_scripts", []):
                 script_path = script_config.get("path", "")
@@ -539,8 +594,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_contents[script_path] = f.read()
-                        self.console.print(f"[dim]Loaded tool pre-script: {script_path}[/dim]")
-            
+                        self.console.print(
+                            f"[dim]Loaded tool pre-script: {script_path}[/dim]"
+                        )
+
             for script_config in tool_def.get("post_scripts", []):
                 script_path = script_config.get("path", "")
                 if script_path and script_path not in script_contents:
@@ -548,8 +605,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_contents[script_path] = f.read()
-                        self.console.print(f"[dim]Loaded tool post-script: {script_path}[/dim]")
-            
+                        self.console.print(
+                            f"[dim]Loaded tool post-script: {script_path}[/dim]"
+                        )
+
             # NEW: Scan pre-scripts for dependencies on scripts/common/tools/ files
             # This handles cases like gpu_info_vram_profiler where the pre-script
             # calls python3 scripts/common/tools/gpu_info_profiler.py but the tool
@@ -564,30 +623,51 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                             script_content = f.read()
                             # Look for references to scripts/common/tools/ in the pre-script
                             import re
+
                             # Use non-capturing group (?:...) to avoid capturing just the ../ part
-                            tool_refs = re.findall(r'(?:\.\./)?scripts/common/tools/[\w_]+\.py', script_content)
+                            tool_refs = re.findall(
+                                r"(?:\.\./)?scripts/common/tools/[\w_]+\.py",
+                                script_content,
+                            )
                             for tool_ref in tool_refs:
                                 # Clean up the path
-                                tool_script_path = tool_ref.strip('"\'').replace("../", "")
+                                tool_script_path = tool_ref.strip("\"'").replace(
+                                    "../", ""
+                                )
                                 abs_tool_path = madengine_root / tool_script_path
-                                
-                                if abs_tool_path.exists() and tool_script_path not in script_contents:
+
+                                if (
+                                    abs_tool_path.exists()
+                                    and tool_script_path not in script_contents
+                                ):
                                     with open(abs_tool_path, "r") as tf:
                                         script_contents[tool_script_path] = tf.read()
-                                    self.console.print(f"[dim]Loaded tool dependency: {tool_script_path}[/dim]")
-                                    
+                                    self.console.print(
+                                        f"[dim]Loaded tool dependency: {tool_script_path}[/dim]"
+                                    )
+
                                     # Also load utility modules for this Python script
-                                    if tool_script_path.endswith('.py'):
+                                    if tool_script_path.endswith(".py"):
                                         tools_dir = abs_tool_path.parent
-                                        utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                        utility_modules = [
+                                            "amd_smi_utils.py",
+                                            "rocm_smi_utils.py",
+                                            "pynvml_utils.py",
+                                        ]
                                         for util_file in utility_modules:
                                             util_path = tools_dir / util_file
                                             if util_path.exists():
-                                                util_rel_path = f"scripts/common/tools/{util_file}"
+                                                util_rel_path = (
+                                                    f"scripts/common/tools/{util_file}"
+                                                )
                                                 if util_rel_path not in script_contents:
                                                     with open(util_path, "r") as uf:
-                                                        script_contents[util_rel_path] = uf.read()
-                                                    self.console.print(f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]")
+                                                        script_contents[
+                                                            util_rel_path
+                                                        ] = uf.read()
+                                                    self.console.print(
+                                                        f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]"
+                                                    )
 
     def _bundle_primus_k8s_examples_overlay(
         self, model_scripts_contents: Dict[str, str], model_name: str = ""
@@ -644,7 +724,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         req = primus_repo / "requirements.txt"
         if req.is_file():
             if _add_primus_file(req):
-                self.console.print("[dim]Primus K8s: bundled Primus/requirements.txt[/dim]")
+                self.console.print(
+                    "[dim]Primus K8s: bundled Primus/requirements.txt[/dim]"
+                )
 
         ex_scripts = primus_repo / "examples" / "scripts"
         if ex_scripts.is_dir():
@@ -661,7 +743,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         run_pre = primus_repo / "examples" / "run_pretrain.sh"
         if run_pre.is_file():
             if _add_primus_file(run_pre):
-                self.console.print("[dim]Primus K8s: bundled Primus/examples/run_pretrain.sh[/dim]")
+                self.console.print(
+                    "[dim]Primus K8s: bundled Primus/examples/run_pretrain.sh[/dim]"
+                )
 
         for sub in subdirs:
             base = primus_repo / "examples" / sub
@@ -709,7 +793,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if credential_path.exists():
             with open(credential_path, "r") as f:
                 credential_content = f.read()
-        
+
         # Load data.json content if exists
         data_json_content = None
         data_path = Path("data.json")
@@ -720,17 +804,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
 
         # Load model scripts directory content (entire folder, not just one file)
         # This matches local execution which mounts the entire MODEL_DIR/scripts folder
-        model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run_data_minio.sh"
+        model_script_path = model_info.get(
+            "scripts"
+        )  # e.g., "scripts/dummy/run_data_minio.sh"
         model_script_dir = None
         model_script_filename = None
         model_scripts_contents = {}  # Store all scripts in the directory
-        
+
         if model_script_path:
             script_file = Path(model_script_path)
             # Extract directory and filename
             model_script_dir = str(script_file.parent)  # e.g., "scripts/dummy"
-            model_script_filename = script_file.name     # e.g., "run_data_minio.sh"
-            
+            model_script_filename = script_file.name  # e.g., "run_data_minio.sh"
+
             # Bundle entire scripts/<model> directory recursively for reliability across
             # different model types (vllm, sglang, etc.) with varying file types and subdirs
             scripts_dir_path = Path(model_script_dir)
@@ -758,19 +844,23 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 # Fallback: load single file if directory doesn't exist
                 with open(script_file, "r") as f:
                     model_scripts_contents[model_script_path] = f.read()
-                self.console.print(f"[dim]Loaded single script: {model_script_path}[/dim]")
+                self.console.print(
+                    f"[dim]Loaded single script: {model_script_path}[/dim]"
+                )
             else:
-                self.console.print(f"[yellow]Warning: Script not found: {model_script_path}[/yellow]")
-        
+                self.console.print(
+                    f"[yellow]Warning: Script not found: {model_script_path}[/yellow]"
+                )
+
         # Load K8s tools configuration
         k8s_tools_config = self._load_k8s_tools()
-        
+
         # Prepare data configuration first
         data_config = self._prepare_data_config(model_info)
-        
+
         # Store for use in deploy() method
         self._data_config = data_config
-        
+
         # K8s best practice: Auto-create shared data PVC if needed
         # K8s philosophy: Separate compute (pods) from storage (PVC)
         if data_config and not self.k8s_config.get("data_pvc"):
@@ -790,7 +880,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             )
             # Set PVC name now so templates are rendered with correct value
             self.k8s_config["data_pvc"] = "madengine-shared-data"
-        
+
         # Determine data provider script if model needs data
         data_provider_script = None
         data_provider_script_content = None
@@ -798,16 +888,20 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             provider_type = data_config.get("provider_type", "local")
             if provider_type in k8s_tools_config.get("data_providers", {}):
                 data_provider_script = k8s_tools_config["data_providers"][provider_type]
-                
+
                 # Load K8s data provider script content
                 k8s_script_path = get_madengine_root() / data_provider_script["script"]
                 if k8s_script_path.exists():
                     with open(k8s_script_path, "r") as f:
                         data_provider_script_content = f.read()
-                    self.console.print(f"[dim]Loaded K8s data provider: {data_provider_script['script']}[/dim]")
+                    self.console.print(
+                        f"[dim]Loaded K8s data provider: {data_provider_script['script']}[/dim]"
+                    )
                 else:
-                    self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
-        
+                    self.console.print(
+                        f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]"
+                    )
+
         # Get launcher configuration from manifest's deployment_config or additional_context
         deployment_config = self.manifest.get("deployment_config", {})
         distributed_config = deployment_config.get("distributed", {})
@@ -816,86 +910,130 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         # Merge manifest and runtime launcher config (runtime overrides)
         # Use explicit None checking to handle 0 values correctly
         launcher_type = (
-            launcher_config.get("type") 
-            if launcher_config.get("type") is not None 
+            launcher_config.get("type")
+            if launcher_config.get("type") is not None
             else distributed_config.get("launcher")
         )
-        
+
         nnodes = (
             launcher_config.get("nnodes")
             if launcher_config.get("nnodes") is not None
             else distributed_config.get("nnodes", 1)
         )
-        
+
         # Store for use in deploy() method
         self._nnodes = nnodes
-        
+
         nproc_per_node = (
             launcher_config.get("nproc_per_node")
             if launcher_config.get("nproc_per_node") is not None
-            else distributed_config.get("nproc_per_node")
-            if distributed_config.get("nproc_per_node") is not None
-            else int(model_info.get("n_gpus", 1))
+            else (
+                distributed_config.get("nproc_per_node")
+                if distributed_config.get("nproc_per_node") is not None
+                else int(model_info.get("n_gpus", 1))
+            )
         )
-        
+
         master_port = launcher_config.get("master_port", 29500)
 
         # Validate configuration
         if launcher_type == "torchrun":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
-        
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
+
         elif launcher_type == "deepspeed":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring DeepSpeed: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring DeepSpeed: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "torchtitan":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring TorchTitan: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring TorchTitan: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "vllm":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring vLLM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring vLLM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "sglang":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "megatron":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "primus":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
-            
-            self.console.print(f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
+
+            self.console.print(
+                f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
             self._bundle_primus_k8s_examples_overlay(model_scripts_contents, model_name)
 
         # Determine if we need multi-node setup
@@ -905,32 +1043,38 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if launcher_type == "torchrun":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node detected: Creating headless service for pod discovery[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node detected: Creating headless service for pod discovery[/dim]"
+                )
+
             # Generate torchrun launcher command
             launcher_command = self._generate_torchrun_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
-        
+
         elif launcher_type == "deepspeed":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]"
+                )
+
             model_script = model_info.get("scripts", "run.sh")
-            
+
             # Check if script is a bash script - if so, execute it directly
             # as it will handle the launcher internally
-            if model_script.endswith('.sh'):
-                self.console.print(f"[dim]Detected bash script ({model_script}), will execute directly[/dim]")
+            if model_script.endswith(".sh"):
+                self.console.print(
+                    f"[dim]Detected bash script ({model_script}), will execute directly[/dim]"
+                )
                 launcher_command = self._generate_bash_script_command(
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
                 )
             else:
                 # Python script - use DeepSpeed launcher
@@ -938,27 +1082,31 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
                 )
 
         elif launcher_type == "torchtitan":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node TorchTitan: Creating headless service for pod discovery[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node TorchTitan: Creating headless service for pod discovery[/dim]"
+                )
+
             # Generate TorchTitan launcher command
             launcher_command = self._generate_torchtitan_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "vllm":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node vLLM: Creating headless service for Ray cluster[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node vLLM: Creating headless service for Ray cluster[/dim]"
+                )
+
             # Generate vLLM launcher command (pass model args so run.sh gets --model_repo etc.)
             launcher_command = self._generate_vllm_command(
                 nnodes=nnodes,
@@ -971,8 +1119,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         elif launcher_type == "sglang":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node SGLang: Creating headless service for Ray cluster[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node SGLang: Creating headless service for Ray cluster[/dim]"
+                )
+
             # Generate SGLang launcher command (pass model args so run.sh gets CLI args)
             launcher_command = self._generate_sglang_command(
                 nnodes=nnodes,
@@ -988,38 +1138,46 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     f"SGLang Disaggregated requires minimum 3 nodes "
                     f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
                 )
-            
+
             # Always create headless service for disaggregated architecture
             create_headless_service = True
-            self.console.print(f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]")
-            self.console.print(f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]")
-            
+            self.console.print(
+                f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]"
+            )
+            self.console.print(
+                f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]"
+            )
+
             # Generate SGLang Disaggregated launcher command
             launcher_command = self._generate_sglang_disagg_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "megatron":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]"
+                )
+
             # Generate Megatron-LM launcher command
             launcher_command = self._generate_megatron_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "primus":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]")
-            
+                self.console.print(
+                    f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]"
+                )
+
             # Generate Primus launcher command (env-only: PRIMUS_CONFIG_PATH, PRIMUS_CLI_EXTRA)
             launcher_command = self._generate_primus_command(
                 nnodes=nnodes,
@@ -1029,7 +1187,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 model_args=model_info.get("args", "") or "",
                 model_name=model_info.get("name", "") or "",
             )
-            primus_cfg = merged_primus_config(self.manifest, self.config.additional_context)
+            primus_cfg = merged_primus_config(
+                self.manifest, self.config.additional_context
+            )
             backend_hint = (primus_cfg.get("backend") or "").strip().lower()
             inferred_backend = infer_primus_backend_from_model_name(
                 model_info.get("name", "") or ""
@@ -1050,23 +1210,25 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         # Prepare pre/post scripts (similar to local execution)
         pre_scripts = []
         post_scripts = []
-        
+
         # Get pre/post scripts from manifest context if available
         if "context" in self.manifest:
             if "pre_scripts" in self.manifest["context"]:
                 pre_scripts.extend(self.manifest["context"]["pre_scripts"])
             if "post_scripts" in self.manifest["context"]:
                 post_scripts.extend(self.manifest["context"]["post_scripts"])
-        
+
         # Add system environment collection (rocEnvTool) - same as local execution
         # This is controlled by generate_sys_env_details flag (default: True)
-        generate_sys_env_details = self.config.additional_context.get("generate_sys_env_details", True)
+        generate_sys_env_details = self.config.additional_context.get(
+            "generate_sys_env_details", True
+        )
         if generate_sys_env_details:
             self.gather_system_env_details(pre_scripts, model_info["name"])
-        
+
         # Add tool pre/post scripts to the execution lists (like local execution)
         self._add_tool_scripts(pre_scripts, post_scripts)
-        
+
         # Load pre/post script contents for ConfigMap (since madengine not installed in container)
         pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
 
@@ -1122,9 +1284,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             # Job metadata
             "job_name": self.job_name,
             "job_label": self.job_label,
-            "main_container_name": getattr(
-                self, "main_container_name", None
-            )
+            "main_container_name": getattr(self, "main_container_name", None)
             or sanitize_k8s_container_name(self.job_name),
             "namespace": self.namespace,
             "model_name": model_name,
@@ -1169,7 +1329,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "host_ipc": nnodes > 1,  # Enable for multi-node
             "subdomain": subdomain_val,
             # Execution
-            "gpu_visibility": ",".join(str(i) for i in range(gpu_count)),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
+            "gpu_visibility": ",".join(
+                str(i) for i in range(gpu_count)
+            ),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
@@ -1184,7 +1346,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "env_vars": self._prepare_env_vars(model_info),
             # Volumes
             "results_pvc": f"{self.job_name}-results",  # Always create a PVC for results
-            "pvc_name": f"{self.job_name}-results",      # PVC name for template
+            "pvc_name": f"{self.job_name}-results",  # PVC name for template
             "data_pvc": self.k8s_config.get("data_pvc"),
             # Multi-node
             "create_headless_service": create_headless_service,
@@ -1195,9 +1357,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
             # Tool command chains (pre-built for template)
-            "launcher_tool_chain": self._build_tool_command_chain(
-                self._get_tools_config(), "bash /tmp/run_launcher.sh"
-            ) if launcher_command else None,
+            "launcher_tool_chain": (
+                self._build_tool_command_chain(
+                    self._get_tools_config(), "bash /tmp/run_launcher.sh"
+                )
+                if launcher_command
+                else None
+            ),
             "direct_script_tool_chain": self._build_tool_command_chain(
                 self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
             ),
@@ -1218,98 +1384,101 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             )
 
         return context
-    
+
     def _get_tools_config(self) -> List[Dict]:
         """
         Get tools configuration from manifest.context or additional_context.
-        
+
         Prioritizes runtime additional_context, falls back to manifest.context.
-        
+
         For multi-node runs:
         - Checks rocprofv3 availability (required for MPI profiling)
         - Upgrades "rocprof" to "rocprofv3" for multi-node compatibility
         - Logs warnings if rocprofv3 not available
-        
+
         Returns:
             List of tool configurations (enriched with cmd from tools.json)
         """
         # Cache the result to avoid repeated expensive checks and duplicate warnings
-        if hasattr(self, '_cached_tools_config'):
+        if hasattr(self, "_cached_tools_config"):
             return self._cached_tools_config
-        
+
         # Check runtime additional_context first (allows runtime override)
         tools = self.config.additional_context.get("tools", [])
-        
+
         # Fall back to manifest.context if no runtime tools
         if not tools and "context" in self.manifest:
             tools = self.manifest["context"].get("tools", [])
-        
+
         # Apply multi-node profiling logic if applicable
         distributed_config = self.config.additional_context.get("distributed", {})
         nnodes = distributed_config.get("nnodes", 1)
-        
+
         if nnodes > 1 and tools:
             # Configure multi-node profiling (handles rocprofv3 detection and tool upgrades)
             # Create a simple logger wrapper for configure_multi_node_profiling
             class ConsoleLogger:
                 def __init__(self, console):
                     self.console = console
+
                 def info(self, msg):
                     self.console.print(f"[cyan]{msg}[/cyan]")
+
                 def warning(self, msg):
                     self.console.print(f"[yellow]{msg}[/yellow]")
+
                 def debug(self, msg):
                     pass  # Skip debug messages in console
-            
+
             profiling_config = configure_multi_node_profiling(
-                nnodes=nnodes,
-                tools_config=tools,
-                logger=ConsoleLogger(self.console)
+                nnodes=nnodes, tools_config=tools, logger=ConsoleLogger(self.console)
             )
-            
+
             if profiling_config["enabled"]:
                 tools = profiling_config["tools"]
             else:
                 # rocprofv3 not available - skip profiling for multi-node
                 tools = []
-        
+
         # Enrich tools with cmd from tools.json for K8s template usage
         result = self._enrich_tools_with_cmd(tools)
-        
+
         # Cache the result for subsequent calls
         self._cached_tools_config = result
         return result
-    
-    def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
+
+    def _build_tool_command_chain(
+        self, tools_config: List[Dict], base_command: str
+    ) -> str:
         """
         Build a command chain from multiple tools, wrapping the base command.
-        
+
         Tools are chained from outermost to innermost:
         tool_n wraps tool_2 wraps tool_1 wraps base_command
-        
+
         Each tool's OUTPUT_FILE env var is set inline to avoid conflicts.
-        
+
         Args:
             tools_config: List of enriched tool configurations
             base_command: The base command to wrap (e.g., "bash /tmp/run_launcher.sh")
-            
+
         Returns:
             Complete command chain string
         """
         if not tools_config:
             return base_command
-        
+
         # Filter tools that have a cmd field
         tools_with_cmd = [t for t in tools_config if t.get("cmd")]
-        
+
         if not tools_with_cmd:
             return base_command
-        
+
         # Build command chain from inside out (reverse order)
         cmd_chain = base_command
         for tool in reversed(tools_with_cmd):
             tool_cmd = tool["cmd"].replace("../scripts/common/", "scripts/common/")
-            
+
             # Set OUTPUT_FILE inline for this specific tool (if defined in tool's env_vars)
             tool_env_vars = tool.get("env_vars", {})
             if "OUTPUT_FILE" in tool_env_vars:
@@ -1318,196 +1487,224 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 cmd_chain = f"OUTPUT_FILE={output_file} {tool_cmd} {cmd_chain}"
             else:
                 cmd_chain = f"{tool_cmd} {cmd_chain}"
-        
+
         return cmd_chain
-    
+
     def _enrich_tools_with_cmd(self, tools: List[Dict]) -> List[Dict]:
         """
         Enrich tools configuration with cmd field from tools.json.
-        
+
         This is needed for K8s template to generate the correct encapsulation command.
-        
+
         Args:
             tools: List of tool configurations (may only have 'name' field)
-            
+
         Returns:
             Enriched list with 'cmd' field added from tools.json
         """
         if not tools:
             return tools
-        
+
         # Load tools.json
-        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        tools_json_path = (
+            Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        )
         if not tools_json_path.exists():
-            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]"
+            )
             return tools
-        
+
         with open(tools_json_path, "r") as f:
             tools_definitions = json.load(f)
-        
+
         enriched_tools = []
         for tool in tools:
             tool_name = tool.get("name")
             if not tool_name:
                 enriched_tools.append(tool)
                 continue
-            
+
             # Get tool definition from tools.json
             if tool_name not in tools_definitions.get("tools", {}):
-                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]"
+                )
                 enriched_tools.append(tool)
                 continue
-            
+
             tool_def = tools_definitions["tools"][tool_name]
-            
+
             # Create enriched tool config with cmd
             enriched_tool = tool.copy()
             if "cmd" not in enriched_tool and "cmd" in tool_def:
                 enriched_tool["cmd"] = tool_def["cmd"]
-            
+
             # Also copy env_vars if present
             if "env_vars" not in enriched_tool and "env_vars" in tool_def:
                 enriched_tool["env_vars"] = tool_def["env_vars"]
-            
+
             enriched_tools.append(enriched_tool)
-        
+
         return enriched_tools
 
     def _load_k8s_tools(self) -> Dict:
         """
         Load K8s-specific tools configuration.
-        
+
         Returns:
             Dict with K8s tools configuration
         """
         k8s_tools_file = Path(__file__).parent.parent / "scripts" / "k8s" / "tools.json"
-        
+
         if k8s_tools_file.exists():
             try:
                 with open(k8s_tools_file, "r") as f:
                     return json.load(f)
             except Exception as e:
-                self.console.print(f"[yellow]Warning: Failed to load K8s tools config: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Failed to load K8s tools config: {e}[/yellow]"
+                )
                 return {}
         else:
-            self.console.print(f"[yellow]Warning: K8s tools.json not found at {k8s_tools_file}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: K8s tools.json not found at {k8s_tools_file}[/yellow]"
+            )
             return {}
-    
+
     def _prepare_env_vars(self, model_info: Dict) -> Dict[str, str]:
         """
         Prepare environment variables from multiple sources.
-        
+
         Merges env vars from:
         1. Base additional_context
         2. Data provider
         3. Tools configuration
-        
+
         Args:
             model_info: Model configuration
-            
+
         Returns:
             Merged environment variables dict
         """
         env_vars = {}
-        
+
         # 1. Base environment variables from additional_context
         base_env = self.config.additional_context.get("env_vars", {})
         env_vars.update(base_env)
-        
+
         # 1b. Critical ROCm environment variable (if not already set)
         # HSA_NO_SCRATCH_RECLAIM=1 required for AMD MI300X and newer GPUs
         # Prevents performance degradation and NCCL errors
         if "HSA_NO_SCRATCH_RECLAIM" not in env_vars:
             env_vars["HSA_NO_SCRATCH_RECLAIM"] = "1"
-        
+
         # 2. Data provider environment variables
         data_config = self._prepare_data_config(model_info)
         if data_config:
             if "env_vars" in data_config:
                 # Exclude MAD_DATAHOME from data provider's env vars (we set it explicitly below for K8s)
-                data_provider_env = {k: v for k, v in data_config["env_vars"].items() if k != "MAD_DATAHOME"}
+                data_provider_env = {
+                    k: v
+                    for k, v in data_config["env_vars"].items()
+                    if k != "MAD_DATAHOME"
+                }
                 env_vars.update(data_provider_env)
             # Always set MAD_DATAHOME for K8s (PVC mount point /data, not /data_dlm_0)
             if "datahome" in data_config:
                 env_vars["MAD_DATAHOME"] = data_config["datahome"]
-        
+
         # 3. Tools configuration environment variables
         # Check both additional_context and manifest.context for tools
         tools_config = self.config.additional_context.get("tools", [])
         if not tools_config and "context" in self.manifest:
             tools_config = self.manifest["context"].get("tools", [])
-        
+
         for tool in tools_config:
             if "env_vars" in tool:
                 # Skip OUTPUT_FILE as it's set inline in command chain to avoid conflicts
-                tool_env_vars = {k: v for k, v in tool["env_vars"].items() if k != "OUTPUT_FILE"}
+                tool_env_vars = {
+                    k: v for k, v in tool["env_vars"].items() if k != "OUTPUT_FILE"
+                }
                 env_vars.update(tool_env_vars)
-        
+
         return env_vars
-    
+
     def _prepare_data_config(self, model_info: Dict) -> Optional[Dict]:
         """
         Prepare data provider configuration for K8s pod.
-        
+
         Args:
             model_info: Model configuration
-            
+
         Returns:
             Data configuration dict or None
         """
         if "data" not in model_info or not model_info["data"]:
             return None
-        
+
         # Initialize data provider if needed
         if not self.data:
             try:
                 # Create minimal context for data provider
                 # We only need the data.json file to be present
                 import os
+
                 data_json_file = "data.json"
                 if os.path.exists(data_json_file):
                     # Import Context and create minimal instance
                     # Data provider needs this to function
-                    self.context_for_data = type('obj', (object,), {
-                        'ctx': {},
-                        'sh': lambda cmd: os.popen(cmd).read().strip()
-                    })()
+                    self.context_for_data = type(
+                        "obj",
+                        (object,),
+                        {"ctx": {}, "sh": lambda cmd: os.popen(cmd).read().strip()},
+                    )()
                     self.data = Data(
                         self.context_for_data,
                         filename=data_json_file,
-                        force_mirrorlocal=False
+                        force_mirrorlocal=False,
                     )
                 else:
-                    self.console.print("[yellow]Warning: data.json not found, data provider unavailable[/yellow]")
+                    self.console.print(
+                        "[yellow]Warning: data.json not found, data provider unavailable[/yellow]"
+                    )
                     return None
             except Exception as e:
-                self.console.print(f"[yellow]Warning: Could not initialize data provider: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Could not initialize data provider: {e}[/yellow]"
+                )
                 return None
-        
+
         try:
             # Get data environment variables
             data_env = self.data.get_env(model_info["data"])
-            
+
             # Find data provider for this data
             dp = self.data.find_dataprovider(model_info["data"])
             if not dp:
-                self.console.print(f"[yellow]Warning: Data provider not found for {model_info['data']}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Data provider not found for {model_info['data']}[/yellow]"
+                )
                 return None
-            
+
             # Get provider type and source path
-            provider_type = dp.provider_type if hasattr(dp, 'provider_type') else "local"
-            source_url = dp.config.get("path", "") if hasattr(dp, 'config') else ""
-            
+            provider_type = (
+                dp.provider_type if hasattr(dp, "provider_type") else "local"
+            )
+            source_url = dp.config.get("path", "") if hasattr(dp, "config") else ""
+
             # K8s best practice: Always use /data (PVC mount point)
             # PVC provides persistent, shared storage across all pods/nodes
             # Separation of storage (PVC) from compute (pods) is K8s standard
             # FORCE datahome to /data for K8s (override data provider's default /data_dlm_0)
-            
+
             # Filter out MAD_DATAHOME from data provider env vars (will be set explicitly below)
-            filtered_data_env = {k: v for k, v in (data_env or {}).items() if k != "MAD_DATAHOME"}
+            filtered_data_env = {
+                k: v for k, v in (data_env or {}).items() if k != "MAD_DATAHOME"
+            }
             # Add MAD_DATAHOME with correct K8s value
             filtered_data_env["MAD_DATAHOME"] = "/data"
-            
+
             return {
                 "data_name": model_info["data"],
                 "env_vars": filtered_data_env,
@@ -1516,7 +1713,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 "datahome": "/data",  # Always use PVC mount point for K8s
             }
         except Exception as e:
-            self.console.print(f"[yellow]Warning: Could not prepare data config: {e}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: Could not prepare data config: {e}[/yellow]"
+            )
             return None
 
     def _save_debug_manifests(self):
@@ -1534,9 +1733,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if self.service_yaml:
             (output_dir / "service.yaml").write_text(self.service_yaml)
 
-        self.console.print(
-            f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
-        )
+        self.console.print(f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]")
 
     def _k8s_data_storage_class(self) -> Optional[str]:
         """StorageClass for long-lived ``madengine-shared-data`` (NFS RWX recommended)."""
@@ -1598,7 +1795,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             storage_size=self.k8s_config.get("results_storage_size", "10Gi"),
             storage_class=storage_class,
         )
-        
+
         # Create PVC (retry on 409 "object is being deleted" until it is gone)
         pvc_dict = yaml.safe_load(pvc_yaml)
         max_create_retries = 6
@@ -1610,7 +1807,11 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 )
                 return pvc_name
             except ApiException as e:
-                if e.status == 409 and e.body and "object is being deleted" in (e.body or ""):
+                if (
+                    e.status == 409
+                    and e.body
+                    and "object is being deleted" in (e.body or "")
+                ):
                     if attempt < max_create_retries - 1:
                         self.console.print(
                             f"[dim]PVC still terminating, waiting {create_wait_seconds}s before retry ({attempt + 1}/{max_create_retries})[/dim]"
@@ -1620,7 +1821,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         raise
                 else:
                     raise
-    
+
     def _wait_for_pvc_deleted(self, pvc_name: str, max_wait: int = 90) -> None:
         """Block until the PVC is fully removed (or timeout)."""
         for i in range(max_wait):
@@ -1744,7 +1945,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             )
 
         return pvc_name
-    
+
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
         # Delete existing Job
@@ -1752,7 +1953,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             self.batch_v1.delete_namespaced_job(
                 name=self.job_name,
                 namespace=self.namespace,
-                propagation_policy="Background"
+                propagation_policy="Background",
             )
             self.console.print(f"[dim]Deleted existing Job: {self.job_name}[/dim]")
         except ApiException as e:
@@ -1766,62 +1967,64 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             )
         except ApiException:
             pass
-        
+
         # Delete existing ConfigMap
         try:
             self.core_v1.delete_namespaced_config_map(
-                name=self.configmap_name,
-                namespace=self.namespace
+                name=self.configmap_name, namespace=self.namespace
             )
-            self.console.print(f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]")
+            self.console.print(
+                f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]"
+            )
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Delete existing Service
-        if hasattr(self, 'service_yaml') and self.service_yaml:
+        if hasattr(self, "service_yaml") and self.service_yaml:
             try:
                 self.core_v1.delete_namespaced_service(
-                    name=self.service_name,
-                    namespace=self.namespace
+                    name=self.service_name, namespace=self.namespace
                 )
-                self.console.print(f"[dim]Deleted existing Service: {self.service_name}[/dim]")
+                self.console.print(
+                    f"[dim]Deleted existing Service: {self.service_name}[/dim]"
+                )
             except ApiException as e:
                 if e.status != 404:
                     pass
-        
+
         # Delete existing collector pod (must be done before PVC to allow PVC deletion)
         collector_pod_name = f"collector-{self.job_name}"
         try:
             self.core_v1.delete_namespaced_pod(
                 name=collector_pod_name,
                 namespace=self.namespace,
-                grace_period_seconds=0
+                grace_period_seconds=0,
             )
-            self.console.print(f"[dim]Deleted existing collector pod: {collector_pod_name}[/dim]")
+            self.console.print(
+                f"[dim]Deleted existing collector pod: {collector_pod_name}[/dim]"
+            )
             # Wait a moment for pod to release the PVC
             time.sleep(2)
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Delete existing PVC
         pvc_name = f"{self.job_name}-results"
         try:
             self.core_v1.delete_namespaced_persistent_volume_claim(
-                name=pvc_name,
-                namespace=self.namespace
+                name=pvc_name, namespace=self.namespace
             )
             self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
-            
+
             # Wait for PVC to be fully deleted (not just marked for deletion)
             max_wait = 90  # Maximum 90 seconds (PV can take time to detach)
             wait_interval = 1  # Check every 1 second
             for i in range(max_wait):
                 try:
                     self.core_v1.read_namespaced_persistent_volume_claim(
-                        name=pvc_name,
-                        namespace=self.namespace
+                        name=pvc_name, namespace=self.namespace
                     )
                     if i > 0 and i % 10 == 0:
                         self.console.print(
@@ -1835,7 +2038,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         except ApiException as e:
             if e.status != 404:
                 pass
-        
+
         # Wait a moment for other resources to be deleted
         time.sleep(1)
 
@@ -1844,22 +2047,22 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         try:
             # Clean up any existing resources first
             self._cleanup_existing_resources()
-            
+
             # 1. Create PVC for results storage
             self.console.print("[blue]Creating PVC for results storage...[/blue]")
             nnodes_deploy = getattr(self, "_nnodes", 1)
             pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
             self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
-            
+
             # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
-            if hasattr(self, '_data_config') and self._data_config:
+            if hasattr(self, "_data_config") and self._data_config:
                 # Check if we set the PVC name during prepare (auto-creation case)
                 data_pvc_name = self.k8s_config.get("data_pvc")
                 if data_pvc_name == "madengine-shared-data":
                     # Auto-creation mode: create/reuse the PVC
-                    nnodes = getattr(self, '_nnodes', 1)
+                    nnodes = getattr(self, "_nnodes", 1)
                     self._create_or_get_data_pvc(nnodes=nnodes)
-            
+
             # 2. Create Secrets from local credential.json (strategy: from_local_credentials)
             merged_sec = merge_secrets_config(self.k8s_config)
             strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
@@ -1890,14 +2093,14 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 self.core_v1.create_namespaced_service(
                     namespace=self.namespace, body=service_dict
                 )
-                self.console.print(f"[green]✓ Created Service: {self.service_name}[/green]")
+                self.console.print(
+                    f"[green]✓ Created Service: {self.service_name}[/green]"
+                )
 
             # 5. Create Job
             self.console.print("[blue]Creating Job...[/blue]")
             job_dict = yaml.safe_load(self.job_yaml)
-            job = self.batch_v1.create_namespaced_job(
-                namespace=self.namespace, body=job_dict
-            )
+            self.batch_v1.create_namespaced_job(namespace=self.namespace, body=job_dict)
 
             # Extract image for display
             image = job_dict["spec"]["template"]["spec"]["containers"][0]["image"]
@@ -1928,18 +2131,18 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """
         Monitor Job status using Python API.
-        
+
         If live_output is enabled, streams pod logs in real-time.
         Otherwise, polls status periodically.
         """
         # Check if live output is requested
         live_output = self.config.additional_context.get("live_output", False)
-        
+
         if live_output:
             return self._monitor_with_live_logs(deployment_id)
         else:
             return self._monitor_status_only(deployment_id)
-    
+
     def _monitor_status_only(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job status without streaming logs."""
         try:
@@ -1985,21 +2188,23 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     message=f"Job {deployment_id} not found",
                 )
             raise
-    
+
     def _monitor_with_live_logs(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job and stream logs in real-time."""
-        self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
-        
+        self.console.print(
+            f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n"
+        )
+
         pod_name = None
         log_position = 0
-        
+
         while True:
             try:
                 # Check job status
                 job = self.batch_v1.read_namespaced_job_status(
                     name=deployment_id, namespace=self.namespace
                 )
-                
+
                 # Get pod if we don't have it yet
                 if not pod_name:
                     pods = self.core_v1.list_namespaced_pod(
@@ -2008,8 +2213,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     )
                     if pods.items:
                         pod_name = pods.items[0].metadata.name
-                        self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
-                
+                        self.console.print(
+                            f"[dim]Following logs from pod: {pod_name}[/dim]\n"
+                        )
+
                 # Stream logs if we have a pod
                 if pod_name:
                     try:
@@ -2017,31 +2224,33 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         logs = self.core_v1.read_namespaced_pod_log(
                             name=pod_name,
                             namespace=self.namespace,
-                            tail_lines=100 if log_position == 0 else None
+                            tail_lines=100 if log_position == 0 else None,
                         )
-                        
+
                         # Print new log lines and trigger artifact collection
                         if logs:
-                            log_lines = logs.split('\n')
+                            log_lines = logs.split("\n")
                             if len(log_lines) > log_position:
                                 for line in log_lines[log_position:]:
                                     if line.strip():
                                         print(line)
                                 log_position = len(log_lines)
-                    
+
                     except ApiException as e:
                         if e.status != 400:  # Ignore "container not ready" errors
                             pass
-                
+
                 # Check if job completed
                 if job.status.succeeded:
-                    self.console.print(f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n")
+                    self.console.print(
+                        f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n"
+                    )
                     return DeploymentResult(
                         status=DeploymentStatus.SUCCESS,
                         deployment_id=deployment_id,
                         message=f"Job {deployment_id} completed successfully",
                     )
-                
+
                 if job.status.failed:
                     self.console.print(f"\n[red]✗ Job {deployment_id} failed[/red]\n")
                     # Print final logs
@@ -2052,9 +2261,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         deployment_id=deployment_id,
                         message=f"Job {deployment_id} failed",
                     )
-                
+
                 time.sleep(2)  # Poll every 2 seconds
-                
+
             except ApiException as e:
                 if e.status == 404:
                     return DeploymentResult(
@@ -2063,24 +2272,22 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         message=f"Job {deployment_id} not found",
                     )
                 raise
-    
+
     def _print_pod_logs_on_failure(self, deployment_id: str):
         """Print pod logs when job fails (for debugging)."""
         try:
             self.console.print(f"\n[yellow]═══ Pod logs (last 50 lines) ═══[/yellow]\n")
-            
+
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
                 label_selector=_pod_job_name_label_selector(deployment_id),
             )
-            
+
             for pod in pods.items:
                 pod_name = pod.metadata.name
                 try:
                     logs = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name,
-                        namespace=self.namespace,
-                        tail_lines=50
+                        name=pod_name, namespace=self.namespace, tail_lines=50
                     )
                     self.console.print(f"[dim]Pod: {pod_name}[/dim]")
                     print(logs)
@@ -2135,17 +2342,17 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
         Enhanced results collection from K8s pods following vLLM multi-node best practices.
-        
+
         For Data Parallel deployments (vLLM, SGLang):
         - Each pod runs an independent replica
         - Only pod-0 reports metrics to avoid duplicates
         - Total throughput = pod-0 throughput × num_replicas
-        
+
         Collects:
         1. Pod logs (``k8s_results/<job>/<pod>/pod.log``)
         2. PVC mirror per pod (``.../<pod>/pvc/``), mapped from ``/results/<subdir>/``
         3. File artifacts via kubectl cp when pods are still running (keep-alive path)
-        
+
         Returns:
             Dict with logs, artifacts, and performance results
         """
@@ -2161,8 +2368,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         # Create results directory for this deployment
         results_dir = Path(f"./k8s_results/{deployment_id}")
         results_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.console.print(f"[cyan]📦 Collecting results from K8s job: {deployment_id}[/cyan]")
+
+        self.console.print(
+            f"[cyan]📦 Collecting results from K8s job: {deployment_id}[/cyan]"
+        )
 
         try:
             # Get pods for this job
@@ -2178,7 +2387,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 model_info = self.manifest["built_models"][model_key]
             else:
                 model_info = {}
-            
+
             # Get build info from built_images
             image_keys = list(self.manifest.get("built_images", {}).keys())
             if image_keys:
@@ -2193,21 +2402,21 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             is_distributed = distributed_config.get("enabled", False)
             nnodes = distributed_config.get("nnodes", 1)
             is_multinode = is_distributed and nnodes > 1
-            
+
             # Determine launcher_type the same way as _prepare_template_context does
             # (deployment_config doesn't store launcher_type directly)
             launcher_config = self.config.additional_context.get("launcher", {})
             launcher_type = (
-                launcher_config.get("type") 
-                if launcher_config.get("type") is not None 
+                launcher_config.get("type")
+                if launcher_config.get("type") is not None
                 else distributed_config.get("launcher")
             )
-            
+
             # Normalize launcher based on deployment type and validity
             launcher_type = normalize_launcher(launcher_type, "kubernetes")
-            
+
             is_ray_launcher = launcher_type in ["vllm", "sglang"]
-            
+
             # Sort pods by name to ensure consistent ordering (pod-0 is master)
             sorted_pods = sorted(pods.items, key=lambda p: p.metadata.name)
 
@@ -2217,31 +2426,33 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             # Parse performance from ALL nodes (each reports node-local metrics)
             # Aggregate metrics based on type (sum for throughput, etc.)
             # ========================================================================
-            
+
             per_node_metrics = []  # Store performance from each node
             results["nodes"] = []  # Store per-node details for display
-            
+
             # Special handling for Ray-based launchers (vLLM, SGLang)
             # These report per-replica metrics, need scaling
             if is_multinode and is_ray_launcher:
                 self.console.print(
                     f"[cyan]Multi-node Ray deployment: {nnodes} nodes (Data Parallel mode)[/cyan]"
                 )
-            
+
             # Collect from ALL pods
             for pod_index, pod in enumerate(sorted_pods):
                 pod_name = pod.metadata.name
                 pod_dir = results_dir / pod_name
                 pod_dir.mkdir(exist_ok=True)
-                
+
                 # Extract node rank from pod name (e.g., madengine-dummy-torchrun-0 -> 0)
                 try:
-                    node_rank = int(pod_name.rsplit('-', 1)[-1])
+                    node_rank = int(pod_name.rsplit("-", 1)[-1])
                 except (ValueError, IndexError):
                     node_rank = pod_index
-                
-                self.console.print(f"[dim]  Collecting from pod: {pod_name} (node-{node_rank})[/dim]")
-                
+
+                self.console.print(
+                    f"[dim]  Collecting from pod: {pod_name} (node-{node_rank})[/dim]"
+                )
+
                 try:
                     # 1. Collect pod logs
                     log = self.core_v1.read_namespaced_pod_log(
@@ -2249,37 +2460,41 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     )
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
-                    results["logs"].append({
-                        "pod": pod_name,
-                        "log": log,
-                        "file": str(log_file)
-                    })
-                    
+                    results["logs"].append(
+                        {"pod": pod_name, "log": log, "file": str(log_file)}
+                    )
+
                     # 2. Parse NODE-LOCAL performance from log
                     perf_data = self._parse_performance_from_log(
                         log, model_info.get("name", "")
                     )
-                    
+
                     # Pod phase/exit can lag right after Job success; poll until terminal or timeout
                     pod = self._refresh_pod_until_terminal_phase(pod_name)
                     pod_status = pod.status.phase if pod else "Unknown"
                     pod_exit_code = (
                         self._primary_workload_container_exit_code(pod) if pod else -1
                     )
-                    
+
                     # Store per-node info for display table
                     node_info = {
                         "node_id": node_rank,
                         "pod_name": pod_name,
-                        "status": "SUCCESS" if pod_status == "Succeeded" and pod_exit_code == 0 else "FAILED",
+                        "status": (
+                            "SUCCESS"
+                            if pod_status == "Succeeded" and pod_exit_code == 0
+                            else "FAILED"
+                        ),
                         "exit_code": pod_exit_code,
-                        "performance": perf_data.get("performance") if perf_data else None,
+                        "performance": (
+                            perf_data.get("performance") if perf_data else None
+                        ),
                         "metric": perf_data.get("metric") if perf_data else None,
                         "duration": perf_data.get("duration") if perf_data else None,
-                        "log_file": str(log_file)
+                        "log_file": str(log_file),
                     }
                     results["nodes"].append(node_info)
-                    
+
                     if perf_data:
                         # For Ray launchers, this is per-replica metric
                         if is_multinode and is_ray_launcher:
@@ -2293,42 +2508,48 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         self.console.print(
                             f"[dim]  No performance metric found in node-{node_rank} log[/dim]"
                         )
-                        
+
                 except ApiException as e:
                     self.console.print(
                         f"[red]✗ Failed to get logs for pod {pod_name}: {e.reason}[/red]"
                     )
-                    results["nodes"].append({
-                        "node_id": node_rank,
-                        "pod_name": pod_name,
-                        "status": "FAILED",
-                        "exit_code": -1,
-                        "performance": None,
-                        "metric": None,
-                        "error": f"Failed to get logs: {e.reason}"
-                    })
+                    results["nodes"].append(
+                        {
+                            "node_id": node_rank,
+                            "pod_name": pod_name,
+                            "status": "FAILED",
+                            "exit_code": -1,
+                            "performance": None,
+                            "metric": None,
+                            "error": f"Failed to get logs: {e.reason}",
+                        }
+                    )
                 except Exception as e:
                     self.console.print(
                         f"[red]✗ Error collecting from pod {pod_name}: {e}[/red]"
                     )
-                    results["nodes"].append({
-                        "node_id": node_rank,
-                        "pod_name": pod_name,
-                        "status": "FAILED",
-                        "exit_code": -1,
-                        "performance": None,
-                        "metric": None,
-                        "error": str(e)
-                    })
-            
+                    results["nodes"].append(
+                        {
+                            "node_id": node_rank,
+                            "pod_name": pod_name,
+                            "status": "FAILED",
+                            "exit_code": -1,
+                            "performance": None,
+                            "metric": None,
+                            "error": str(e),
+                        }
+                    )
+
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
             )
-            
+
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
             k8s_pod_names = [p.metadata.name for p in sorted_pods]
-            self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
-            
+            self._collect_from_pvc(
+                deployment_id, results_dir, results, pod_names=k8s_pod_names
+            )
+
             # ========================================================================
             # Aggregate per-node metrics
             # ========================================================================
@@ -2343,7 +2564,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     self.console.print(
                         f"[green]  Total capacity: {aggregated_perf:.1f} req/s ({nnodes} nodes)[/green]"
                     )
-                    
+
                     # Create aggregated record manually for Ray
                     aggregated_record = {
                         "model": per_node_metrics[0]["model"],
@@ -2354,21 +2575,23 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         "nnodes": nnodes,
                         "launcher": launcher_type or "N/A",
                         "deployment_type": "kubernetes",
-                        "gpu_architecture": per_node_metrics[0].get("gpu_architecture", "N/A"),
+                        "gpu_architecture": per_node_metrics[0].get(
+                            "gpu_architecture", "N/A"
+                        ),
                         "duration": per_node_metrics[0].get("duration", "N/A"),
                         "data_name": per_node_metrics[0].get("data_name", "N/A"),
-                        "data_provider": per_node_metrics[0].get("data_provider", "N/A"),
+                        "data_provider": per_node_metrics[0].get(
+                            "data_provider", "N/A"
+                        ),
                         "aggregation_method": "scaled_by_nnodes",
-                        "nodes_contributing": nnodes
+                        "nodes_contributing": nnodes,
                     }
                 else:
                     # Use new aggregation logic for other launchers
                     aggregated_record = self._aggregate_node_metrics(
-                        per_node_metrics, 
-                        nnodes,
-                        launcher_type
+                        per_node_metrics, nnodes, launcher_type
                     )
-                
+
                 if aggregated_record:
                     # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
                     self._ensure_perf_csv_exists()
@@ -2379,9 +2602,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     with open(perf_entry_path, "w", encoding="utf-8") as f:
                         json.dump(run_details_dict, f, indent=2)
                     if run_details_dict.get("status") == "SUCCESS":
-                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv", single_result=str(perf_entry_path)
+                        )
                     else:
-                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv", exception_result=str(perf_entry_path)
+                        )
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
                     try:
@@ -2403,13 +2630,17 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                             num_entries=num_entries,
                         )
                     except Exception as e:
-                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
-                    results["successful_runs"].append({
-                        "model": model_info.get("name"),
-                        "perf_data": aggregated_record,
-                        "nodes": results["nodes"],
-                        "per_node_metrics": per_node_metrics
-                    })
+                        self.console.print(
+                            f"[yellow]⚠ Could not update perf_super: {e}[/yellow]"
+                        )
+                    results["successful_runs"].append(
+                        {
+                            "model": model_info.get("name"),
+                            "perf_data": aggregated_record,
+                            "nodes": results["nodes"],
+                            "per_node_metrics": per_node_metrics,
+                        }
+                    )
                     self.console.print(
                         f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
                     )
@@ -2427,6 +2658,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     gpu_arch = "N/A"
                     if results.get("logs"):
                         import re
+
                         log_content = results["logs"][0].get("log", "")
                         m = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
                         if m:
@@ -2460,15 +2692,20 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     )
                     # Build successful_runs for display (one entry per CSV row)
                     import csv as _csv
+
                     model_name = model_info.get("name", "")
-                    with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(
+                        resolved_csv_path, "r", encoding="utf-8", errors="ignore"
+                    ) as f:
                         reader = _csv.DictReader(f)
                         for row in reader:
                             row = {k.strip(): v for k, v in row.items() if k}
                             if row.get("performance") and row.get("metric"):
                                 display_model = f"{model_name}_{row.get('model', '')}"
                                 record = self._create_multiple_result_row_record(
-                                    model_info, build_info, deployment_id,
+                                    model_info,
+                                    build_info,
+                                    deployment_id,
                                     {
                                         "model": display_model,
                                         "performance": row.get("performance"),
@@ -2478,12 +2715,22 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                                     },
                                 )
                                 if record:
-                                    results["successful_runs"].append({
-                                        "model": display_model,
-                                        "perf_data": record,
-                                        "nodes": [],
-                                        "per_node_metrics": [{"model": display_model, "performance": row.get("performance"), "metric": row.get("metric", "")}],
-                                    })
+                                    results["successful_runs"].append(
+                                        {
+                                            "model": display_model,
+                                            "perf_data": record,
+                                            "nodes": [],
+                                            "per_node_metrics": [
+                                                {
+                                                    "model": display_model,
+                                                    "performance": row.get(
+                                                        "performance"
+                                                    ),
+                                                    "metric": row.get("metric", ""),
+                                                }
+                                            ],
+                                        }
+                                    )
                     self.console.print(
                         f"[green]✓ Updated perf.csv, perf_entry.*, perf_super.* (Docker-compatible)[/green]"
                     )
@@ -2499,12 +2746,14 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                             )
                             if record:
                                 self._write_to_perf_csv(record)
-                                results["successful_runs"].append({
-                                    "model": item["model"],
-                                    "perf_data": record,
-                                    "nodes": [],
-                                    "per_node_metrics": [item],
-                                })
+                                results["successful_runs"].append(
+                                    {
+                                        "model": item["model"],
+                                        "perf_data": record,
+                                        "nodes": [],
+                                        "per_node_metrics": [item],
+                                    }
+                                )
                         self.console.print(
                             f"[green]✓ Wrote {len(fallback_metrics)} row(s) from multiple_results to perf.csv[/green]"
                         )
@@ -2515,30 +2764,38 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         model_info, build_info, deployment_id, error_msg
                     )
                     self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
                     self.console.print(
                         f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
                     )
-                elif resolved_csv_path and not REPORTING_AVAILABLE and not results.get("successful_runs"):
+                elif (
+                    resolved_csv_path
+                    and not REPORTING_AVAILABLE
+                    and not results.get("successful_runs")
+                ):
                     # Legacy path ran but produced no valid rows
                     error_msg = "No performance metrics found from any node"
                     failure_record = self._create_failure_record(
                         model_info, build_info, deployment_id, error_msg
                     )
                     self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
                     self.console.print(
                         f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
                     )
-            
+
             # 4. Generate summary
             self._generate_results_summary(results, results_dir)
 
@@ -2546,7 +2803,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             self.console.print(f"[yellow]⚠ Results collection incomplete: {e}[/yellow]")
 
         return results
-    
+
     def _collect_artifacts_immediately(self, deployment_id: str, pod_name: str) -> None:
         """
         Collect artifacts immediately from a running pod during the sleep period.
@@ -2556,41 +2813,45 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             # Create results directory
             results_dir = Path("k8s_results") / deployment_id
             results_dir.mkdir(parents=True, exist_ok=True)
-            
+
             pod_dir = results_dir / pod_name
             pod_dir.mkdir(exist_ok=True)
-            
+
             # Collect artifacts
             artifacts = self._collect_pod_artifacts(pod_name, pod_dir)
-            
+
             if artifacts:
-                self.console.print(f"[green]✓ Collected {len(artifacts)} artifacts from {pod_name}[/green]")
+                self.console.print(
+                    f"[green]✓ Collected {len(artifacts)} artifacts from {pod_name}[/green]"
+                )
             else:
-                self.console.print(f"[yellow]⚠ No artifacts collected from {pod_name}[/yellow]")
-                
+                self.console.print(
+                    f"[yellow]⚠ No artifacts collected from {pod_name}[/yellow]"
+                )
+
         except Exception as e:
             self.console.print(f"[yellow]⚠ Error collecting artifacts: {e}[/yellow]")
-    
+
     def _collect_pod_artifacts(self, pod_name: str, dest_dir: Path) -> List[Dict]:
         """
         Collect file artifacts from pod using kubectl cp.
-        
+
         Collects:
         - perf.csv (performance results)
         - *_env.csv (environment details from rocEnvTool)
         - profiling outputs (rocprof*, results*, *.db)
         - tracing outputs (*_output/ directories)
         - tool-specific outputs
-        
+
         Args:
             pod_name: Name of the Kubernetes pod
             dest_dir: Local directory to save artifacts
-            
+
         Returns:
             List of collected artifact metadata
         """
         artifacts = []
-        
+
         # Define artifact patterns to collect
         artifact_patterns = [
             {"pattern": "perf.csv", "type": "performance"},
@@ -2598,55 +2859,69 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             {"pattern": "results*", "type": "profiling"},
             {"pattern": "*.db", "type": "profiling"},
             {"pattern": "trace.*", "type": "tracing"},
-            {"pattern": "prof.csv", "type": "profiling"},  # Raw profiler output before post-script renames it
+            {
+                "pattern": "prof.csv",
+                "type": "profiling",
+            },  # Raw profiler output before post-script renames it
             {"pattern": "gpu_info_*.csv", "type": "profiling"},
             {"pattern": "library_trace.csv", "type": "tracing"},
         ]
-        
+
         for artifact_def in artifact_patterns:
             pattern = artifact_def["pattern"]
             artifact_type = artifact_def["type"]
-            
+
             try:
                 # Try direct kubectl cp without exec (works during the sleep period)
                 # For patterns with wildcards, try common specific filenames
-                if '*' in pattern:
+                if "*" in pattern:
                     # Expand pattern to specific known files
                     if pattern == "*_env.csv":
-                        specific_files = ["dummy_prof_env.csv", "dummy_data_minio_env.csv"]
+                        specific_files = [
+                            "dummy_prof_env.csv",
+                            "dummy_data_minio_env.csv",
+                        ]
                     elif pattern == "gpu_info_*.csv":
-                        specific_files = ["gpu_info_power_profiler_output.csv", "gpu_info_vram_profiler_output.csv"]
+                        specific_files = [
+                            "gpu_info_power_profiler_output.csv",
+                            "gpu_info_vram_profiler_output.csv",
+                        ]
                     elif pattern == "results*":
                         specific_files = ["results.csv", "results.txt", "results.json"]
                     elif pattern == "trace.*":
                         specific_files = ["trace.txt", "trace.csv", "trace.json"]
                     else:
                         specific_files = []
-                    
+
                     for filename in specific_files:
                         local_path = dest_dir / filename
                         cp_cmd = [
-                            "kubectl", "cp",
+                            "kubectl",
+                            "cp",
                             f"{self.namespace}/{pod_name}:/workspace/{filename}",
-                            str(local_path)
+                            str(local_path),
                         ]
-                        
+
                         cp_result = subprocess.run(
                             cp_cmd, capture_output=True, text=True, timeout=30
                         )
-                        
+
                         if cp_result.returncode == 0 and local_path.exists():
-                            artifacts.append({
-                                "pod": pod_name,
-                                "type": artifact_type,
-                                "source": f"/workspace/{filename}",
-                                "local_path": str(local_path),
-                                "size": local_path.stat().st_size
-                            })
+                            artifacts.append(
+                                {
+                                    "pod": pod_name,
+                                    "type": artifact_type,
+                                    "source": f"/workspace/{filename}",
+                                    "local_path": str(local_path),
+                                    "size": local_path.stat().st_size,
+                                }
+                            )
                             self.console.print(
                                 f"[dim]    ✓ Collected {artifact_type}: {filename}[/dim]"
                             )
-                        elif cp_result.stderr and "No such file" not in cp_result.stderr:
+                        elif (
+                            cp_result.stderr and "No such file" not in cp_result.stderr
+                        ):
                             # Log unexpected errors (but not "file not found")
                             self.console.print(
                                 f"[yellow]    ⚠ Failed to collect {filename}: {cp_result.stderr.strip()}[/yellow]"
@@ -2655,23 +2930,26 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     # Direct file - try to copy it
                     local_path = dest_dir / pattern
                     cp_cmd = [
-                        "kubectl", "cp",
+                        "kubectl",
+                        "cp",
                         f"{self.namespace}/{pod_name}:/workspace/{pattern}",
-                        str(local_path)
+                        str(local_path),
                     ]
-                    
+
                     cp_result = subprocess.run(
                         cp_cmd, capture_output=True, text=True, timeout=30
                     )
-                    
+
                     if cp_result.returncode == 0 and local_path.exists():
-                        artifacts.append({
-                            "pod": pod_name,
-                            "type": artifact_type,
-                            "source": f"/workspace/{pattern}",
-                            "local_path": str(local_path),
-                            "size": local_path.stat().st_size
-                        })
+                        artifacts.append(
+                            {
+                                "pod": pod_name,
+                                "type": artifact_type,
+                                "source": f"/workspace/{pattern}",
+                                "local_path": str(local_path),
+                                "size": local_path.stat().st_size,
+                            }
+                        )
                         self.console.print(
                             f"[dim]    ✓ Collected {artifact_type}: {pattern}[/dim]"
                         )
@@ -2680,48 +2958,55 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         self.console.print(
                             f"[yellow]    ⚠ Failed to collect {pattern}: {cp_result.stderr.strip()}[/yellow]"
                         )
-                        
+
             except subprocess.TimeoutExpired:
                 pass  # Timeout - skip this file
             except Exception:
                 pass  # File not found or not accessible - this is expected
-        
+
         # Try to collect known output directories using kubectl cp directly (during sleep period)
         output_directories = ["rocprof_output", "rpd_output", "trace_output"]
         for dir_name in output_directories:
             try:
                 local_dir = dest_dir / dir_name
                 cp_cmd = [
-                    "kubectl", "cp",
+                    "kubectl",
+                    "cp",
                     f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
-                    str(local_dir)
+                    str(local_dir),
                 ]
-                
+
                 cp_result = subprocess.run(
                     cp_cmd, capture_output=True, text=True, timeout=60
                 )
-                
+
                 if cp_result.returncode == 0 and local_dir.exists():
                     # Count files in directory
-                    file_count = sum(1 for _ in local_dir.rglob('*') if _.is_file())
+                    file_count = sum(1 for _ in local_dir.rglob("*") if _.is_file())
                     if file_count > 0:
-                        total_size = sum(f.stat().st_size for f in local_dir.rglob('*') if f.is_file())
-                        artifacts.append({
-                            "pod": pod_name,
-                            "type": "tool_output_directory",
-                            "source": f"/workspace/{dir_name}",
-                            "local_path": str(local_dir),
-                            "file_count": file_count,
-                            "size": total_size
-                        })
+                        total_size = sum(
+                            f.stat().st_size
+                            for f in local_dir.rglob("*")
+                            if f.is_file()
+                        )
+                        artifacts.append(
+                            {
+                                "pod": pod_name,
+                                "type": "tool_output_directory",
+                                "source": f"/workspace/{dir_name}",
+                                "local_path": str(local_dir),
+                                "file_count": file_count,
+                                "size": total_size,
+                            }
+                        )
                         self.console.print(
                             f"[dim]    ✓ Collected directory: {dir_name} ({file_count} files, {total_size} bytes)[/dim]"
                         )
             except Exception:
                 pass  # Directory not found - this is expected
-        
+
         return artifacts
-    
+
     def _collect_from_pvc(
         self,
         deployment_id: str,
@@ -2748,22 +3033,31 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             pod_names: Full Kubernetes pod names for this job (ordered)
         """
         pvc_name = f"{deployment_id}-results"
-        
+
         try:
             # Create a temporary pod to access PVC
             collector_pod_name = f"collector-{deployment_id[:15]}"
-            
-            self.console.print(f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]")
-            
+
+            self.console.print(
+                f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]"
+            )
+
             collector_spec: Dict[str, Any] = {
                 "restartPolicy": "Never",
-                "containers": [{
-                    "name": "collector",
-                    "image": "busybox:latest",
-                    "command": ["sh", "-c", "sleep 600"],
-                    "volumeMounts": [{"name": "results", "mountPath": "/results"}]
-                }],
-                "volumes": [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
+                "containers": [
+                    {
+                        "name": "collector",
+                        "image": "busybox:latest",
+                        "command": ["sh", "-c", "sleep 600"],
+                        "volumeMounts": [{"name": "results", "mountPath": "/results"}],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "results",
+                        "persistentVolumeClaim": {"claimName": pvc_name},
+                    }
+                ],
             }
             ips = getattr(self, "_image_pull_secrets_for_pods", None) or []
             if ips:
@@ -2785,10 +3079,10 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             except ApiException as e:
                 if e.status != 404:  # 404 means pod doesn't exist, which is fine
                     pass
-            
+
             # Create collector pod
             self.core_v1.create_namespaced_pod(self.namespace, collector_pod_spec)
-            
+
             # Wait for pod to be ready
             for _ in range(30):  # Wait up to 30 seconds
                 try:
@@ -2800,7 +3094,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 except ApiException as e:
                     # Pod not found yet or not ready - this is expected during startup
                     if e.status != 404:
-                        self.console.print(f"[dim]Waiting for collector pod (status: {e.status})...[/dim]")
+                        self.console.print(
+                            f"[dim]Waiting for collector pod (status: {e.status})...[/dim]"
+                        )
                 time.sleep(1)
             else:
                 raise Exception("Collector pod did not start in time")
@@ -2874,11 +3170,15 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         str(local_pod_dir),
                     ]
 
-                    cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
+                    cp_result = subprocess.run(
+                        cp_cmd, capture_output=True, text=True, timeout=60
+                    )
 
                     if cp_result.returncode == 0:
                         # Count collected files
-                        file_count = sum(1 for _ in local_pod_dir.rglob('*') if _.is_file())
+                        file_count = sum(
+                            1 for _ in local_pod_dir.rglob("*") if _.is_file()
+                        )
                         if file_count > 0:
                             art: Dict[str, Any] = {
                                 "source": f"PVC:{pvc_name}/{pod_dir_name}",
@@ -2899,7 +3199,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                             self.console.print(
                                 f"[dim]    ✓ Collected {file_count} files from {pod_dir_name} → {dest_hint}[/dim]"
                             )
-                
+
                 self.console.print(f"[green]✓ Collected artifacts from PVC[/green]")
             else:
                 hint = ""
@@ -2916,19 +3216,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 self.console.print(
                     f"[yellow]⚠ No results found in PVC after retries{hint}[/yellow]"
                 )
-            
+
             # Cleanup collector pod
             self.core_v1.delete_namespaced_pod(
                 collector_pod_name, self.namespace, grace_period_seconds=0
             )
-            
+
         except Exception as e:
             self.console.print(f"[yellow]⚠ Could not collect from PVC: {e}[/yellow]")
-    
+
     def _generate_results_summary(self, results: Dict, results_dir: Path):
         """
         Generate a summary JSON of all collected artifacts.
-        
+
         Args:
             results: Results dict with logs and artifacts
             results_dir: Directory where results are saved
@@ -2950,44 +3250,47 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "successful_runs": len(results["successful_runs"]),
             "failed_runs": len(results["failed_runs"]),
         }
-        
+
         # Group artifacts by type
         for artifact in results["artifacts"]:
             artifact_type = artifact.get("type", "unknown")
-            summary["artifacts_by_type"][artifact_type] = summary["artifacts_by_type"].get(artifact_type, 0) + 1
-        
+            summary["artifacts_by_type"][artifact_type] = (
+                summary["artifacts_by_type"].get(artifact_type, 0) + 1
+            )
+
         summary_file = results_dir / "results_summary.json"
         summary_file.write_text(json.dumps(summary, indent=2))
-        
+
         self.console.print(f"[green]✓ Results summary: {summary_file}[/green]")
-        
+
         # Print summary table if artifacts were collected
         if summary["artifacts_by_type"]:
             from rich.table import Table
+
             table = Table(title="Collected Artifacts")
             table.add_column("Type", style="cyan")
             table.add_column("Count", justify="right", style="green")
-            
+
             for artifact_type, count in sorted(summary["artifacts_by_type"].items()):
                 table.add_row(artifact_type, str(count))
-            
+
             self.console.print(table)
-    
-    def _create_failure_record(self, model_info: Dict, build_info: Dict, pod_name: str, error_msg: str) -> Dict:
+
+    def _create_failure_record(
+        self, model_info: Dict, build_info: Dict, pod_name: str, error_msg: str
+    ) -> Dict:
         """
         Create a failure record for perf.csv when performance metrics are missing.
-        
+
         Args:
             model_info: Model information from manifest
             build_info: Build information from manifest
             pod_name: Kubernetes pod name
             error_msg: Error message describing the failure
-            
+
         Returns:
             Dict with all perf.csv fields marked as FAILED
         """
-        import os
-        
         # Get topology information for failure record
         deployment_config = self.manifest.get("deployment_config", {})
         distributed_config = deployment_config.get("distributed", {})
@@ -2997,7 +3300,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             nproc_per_node = int(model_info.get("n_gpus", 1))
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
         launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
-        
+
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
         result = {
@@ -3006,45 +3309,40 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "n_gpus": str(nnodes * nproc_per_node),
             "nnodes": str(nnodes),
             "gpus_per_node": str(nproc_per_node),
-            
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
-
             # Build information
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
-
             # Runtime information
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
             "launcher": launcher,
             "gpu_architecture": "",
-
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
-
             # Timing
             "build_duration": build_info.get("build_duration", ""),
             "test_duration": "",
-
             # Data information
             "dataname": model_info.get("data", ""),
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-
             # Build tracking
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
@@ -3082,12 +3380,16 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
         launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
-        test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
+        test_duration = aggregated_record.get("test_duration") or aggregated_record.get(
+            "duration", ""
+        )
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
             "n_gpus": str(aggregated_record.get("n_gpus", nnodes * nproc_per_node)),
             "nnodes": str(aggregated_record.get("nnodes", nnodes)),
-            "gpus_per_node": str(aggregated_record.get("gpus_per_node", nproc_per_node)),
+            "gpus_per_node": str(
+                aggregated_record.get("gpus_per_node", nproc_per_node)
+            ),
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
@@ -3112,7 +3414,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(run_details)
         try:
@@ -3174,7 +3478,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
@@ -3190,15 +3496,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         Build one perf.csv row for a single row from a multiple_results CSV.
         Same shape as _create_failure_record but with SUCCESS and item's performance/metric/model.
         """
-        import os
-        
         deployment_config = self.manifest.get("deployment_config", {})
         distributed_config = deployment_config.get("distributed", {})
         nnodes = distributed_config.get("nnodes", 1)
         nproc_per_node = distributed_config.get("nproc_per_node")
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
-        
+
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
         launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
         result = {
@@ -3230,11 +3534,13 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
-    
+
     def _parse_multiple_results_from_artifacts(
         self,
         results_dir: Path,
@@ -3246,17 +3552,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         Parse performance from a multiple_results CSV (e.g. perf_dummy.csv) collected from PVC.
         Used when the model only writes CSV and does not print 'performance: X Y' to the log
         (same contract as local container_runner multiple_results handling).
-        
+
         Returns:
             List of perf_data dicts (same shape as _parse_node_performance), or empty list.
         """
         import csv as csv_module
+
         multiple_results_file = model_info.get("multiple_results")
         filename = Path(multiple_results_file).name if multiple_results_file else None
         # Try to get gpu_architecture from first pod log
         gpu_arch = "N/A"
         if results.get("logs"):
             import re
+
             log_content = results["logs"][0].get("log", "")
             gpu_arch_match = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
             if gpu_arch_match:
@@ -3279,7 +3587,11 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                 with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
                     reader = csv_module.DictReader(f)
                     reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
-                    if not reader.fieldnames or "performance" not in reader.fieldnames or "metric" not in reader.fieldnames:
+                    if (
+                        not reader.fieldnames
+                        or "performance" not in reader.fieldnames
+                        or "metric" not in reader.fieldnames
+                    ):
                         continue
                     for row_idx, row in enumerate(reader):
                         perf_val = row.get("performance", "").strip()
@@ -3293,17 +3605,19 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                         # Same model naming as local handle_multiple_results: model_name + "_" + str(model)
                         row_model = row.get("model", row_idx)
                         display_model = f"{model_info.get('name')}_{row_model}"
-                        parsed_list.append({
-                            "model": display_model,
-                            "performance": perf_float,
-                            "metric": metric_val,
-                            "node_id": row_idx,
-                            "local_gpus": 1,
-                            "duration": "N/A",
-                            "gpu_architecture": gpu_arch,
-                            "data_name": "N/A",
-                            "data_provider": "N/A",
-                        })
+                        parsed_list.append(
+                            {
+                                "model": display_model,
+                                "performance": perf_float,
+                                "metric": metric_val,
+                                "node_id": row_idx,
+                                "local_gpus": 1,
+                                "duration": "N/A",
+                                "gpu_architecture": gpu_arch,
+                                "data_name": "N/A",
+                                "data_provider": "N/A",
+                            }
+                        )
                 if parsed_list:
                     self.console.print(
                         f"[green]  ✓ Parsed performance from {csv_path.name} ({len(parsed_list)} row(s))[/green]"
@@ -3323,21 +3637,43 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         """
         col = column_name.lower().strip()
         # Sum: counts, totals, throughput-like
-        if any(k in col for k in [
-            "count", "total", "samples", "tokens", "throughput",
-            "requests", "images", "bandwidth", "ops"
-        ]):
+        if any(
+            k in col
+            for k in [
+                "count",
+                "total",
+                "samples",
+                "tokens",
+                "throughput",
+                "requests",
+                "images",
+                "bandwidth",
+                "ops",
+            ]
+        ):
             return "sum"
         # Average: rates per unit, utilization, ratios
-        if any(k in col for k in [
-            "utilization", "usage", "percent", "ratio", "latency",
-            "time_ms", "ttft", "tpot", "accuracy", "loss"
-        ]):
+        if any(
+            k in col
+            for k in [
+                "utilization",
+                "usage",
+                "percent",
+                "ratio",
+                "latency",
+                "time_ms",
+                "ttft",
+                "tpot",
+                "accuracy",
+                "loss",
+            ]
+        ):
             return "average"
         # Max: duration (slowest node), memory, capacity
-        if any(k in col for k in [
-            "duration", "time", "seconds", "memory", "bytes", "mb", "gb"
-        ]):
+        if any(
+            k in col
+            for k in ["duration", "time", "seconds", "memory", "bytes", "mb", "gb"]
+        ):
             return "max"
         return "first"
 
@@ -3420,7 +3756,11 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     continue
                 values = [r.get(col) for r in group]
                 try:
-                    nums = [float(str(v).strip()) for v in values if v is not None and str(v).strip()]
+                    nums = [
+                        float(str(v).strip())
+                        for v in values
+                        if v is not None and str(v).strip()
+                    ]
                 except (ValueError, TypeError):
                     nums = []
                 if nums:
@@ -3441,7 +3781,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             return False
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv_module.DictWriter(f, fieldnames=all_columns, extrasaction="ignore")
+            writer = csv_module.DictWriter(
+                f, fieldnames=all_columns, extrasaction="ignore"
+            )
             writer.writeheader()
             writer.writerows(merged_rows)
         self.console.print(
@@ -3495,7 +3837,9 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             self.console.print(f"[yellow]Deleted K8s Job: {deployment_id}[/yellow]")
         except ApiException as e:
             if e.status != 404:
-                self.console.print(f"[yellow]⚠ Job cleanup warning: {e.reason}[/yellow]")
+                self.console.print(
+                    f"[yellow]⚠ Job cleanup warning: {e.reason}[/yellow]"
+                )
                 success = False
         except Exception as e:
             self.console.print(f"[yellow]⚠ Job cleanup error: {e}[/yellow]")
@@ -3507,9 +3851,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             self.core_v1.delete_namespaced_config_map(
                 name=configmap_name, namespace=self.namespace
             )
-            self.console.print(
-                f"[yellow]Deleted ConfigMap: {configmap_name}[/yellow]"
-            )
+            self.console.print(f"[yellow]Deleted ConfigMap: {configmap_name}[/yellow]")
         except ApiException as e:
             if e.status != 404:
                 self.console.print(
@@ -3532,4 +3874,3 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             pass
 
         return success
-

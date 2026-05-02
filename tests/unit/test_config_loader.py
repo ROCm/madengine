@@ -14,9 +14,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
-import pytest
 from pathlib import Path
 
+import pytest
 from jinja2 import Template
 
 from madengine.deployment.config_loader import ConfigLoader, apply_deployment_config
@@ -42,24 +42,20 @@ def load_config_file(relative_path):
     full_path = get_project_root() / relative_path
     if not full_path.exists():
         pytest.skip(f"Config file not found: {relative_path}")
-    
+
     with open(full_path) as f:
         return json.load(f)
 
 
 class TestConfigLoaderBasics:
     """Test basic ConfigLoader functionality."""
-    
+
     def test_minimal_single_gpu(self):
         """Test minimal single GPU config gets proper defaults."""
-        user_config = {
-            "k8s": {
-                "gpu_count": 1
-            }
-        }
-        
+        user_config = {"k8s": {"gpu_count": 1}}
+
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate defaults applied
         assert result["k8s"]["gpu_count"] == 1
         assert result["k8s"]["memory"] == "16Gi"
@@ -67,22 +63,16 @@ class TestConfigLoaderBasics:
         assert result["k8s"]["namespace"] == "default"
         assert result["gpu_vendor"] == "AMD"
         assert "OMP_NUM_THREADS" in result["env_vars"]
-    
+
     def test_minimal_multi_gpu(self):
         """Test minimal multi-GPU config gets proper defaults."""
         user_config = {
-            "k8s": {
-                "gpu_count": 2
-            },
-            "distributed": {
-                "launcher": "torchrun",
-                "nnodes": 1,
-                "nproc_per_node": 2
-            }
+            "k8s": {"gpu_count": 2},
+            "distributed": {"launcher": "torchrun", "nnodes": 1, "nproc_per_node": 2},
         }
-        
+
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate multi-GPU defaults
         assert result["k8s"]["gpu_count"] == 2
         assert result["k8s"]["memory"] == "64Gi"
@@ -91,63 +81,49 @@ class TestConfigLoaderBasics:
         assert result["env_vars"]["NCCL_DEBUG"] == "WARN"
         assert "MIOPEN_FIND_MODE" in result["env_vars"]
         assert result["distributed"]["backend"] == "nccl"
-    
+
     def test_minimal_multi_node(self):
         """Test minimal multi-node config gets proper defaults."""
         user_config = {
-            "k8s": {
-                "gpu_count": 2
-            },
-            "distributed": {
-                "launcher": "torchrun",
-                "nnodes": 2,
-                "nproc_per_node": 2
-            }
+            "k8s": {"gpu_count": 2},
+            "distributed": {"launcher": "torchrun", "nnodes": 2, "nproc_per_node": 2},
         }
-        
+
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate multi-node defaults
         assert result["k8s"]["host_ipc"] == True
         assert "NCCL_DEBUG_SUBSYS" in result["env_vars"]
         assert "NCCL_TIMEOUT" in result["env_vars"]
-    
+
     def test_nvidia_config(self):
         """Test NVIDIA GPU config gets proper defaults."""
         user_config = {
             "gpu_vendor": "NVIDIA",
-            "k8s": {
-                "gpu_count": 4
-            },
-            "distributed": {
-                "launcher": "torchrun",
-                "nnodes": 1,
-                "nproc_per_node": 4
-            }
+            "k8s": {"gpu_count": 4},
+            "distributed": {"launcher": "torchrun", "nnodes": 1, "nproc_per_node": 4},
         }
-        
+
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate NVIDIA defaults
         assert result["k8s"]["gpu_resource_name"] == "nvidia.com/gpu"
         assert "NCCL_P2P_DISABLE" in result["env_vars"]
         assert result["env_vars"]["OMP_NUM_THREADS"] == "12"
-    
+
     def test_override_behavior(self):
         """Test that user overrides work correctly."""
         user_config = {
             "k8s": {
                 "gpu_count": 1,
                 "namespace": "custom-namespace",
-                "memory": "32Gi"  # Override default 16Gi
+                "memory": "32Gi",  # Override default 16Gi
             },
-            "env_vars": {
-                "CUSTOM_VAR": "custom_value"
-            }
+            "env_vars": {"CUSTOM_VAR": "custom_value"},
         }
-        
+
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate overrides
         assert result["k8s"]["namespace"] == "custom-namespace"
         assert result["k8s"]["memory"] == "32Gi"  # Overridden
@@ -161,8 +137,10 @@ class TestApplyDeploymentConfig:
 
     def test_apply_slurm_config_mutates_and_returns(self):
         """apply_deployment_config mutates config.additional_context and returns full config."""
+
         class FakeConfig:
             additional_context = {"slurm": {"nodes": 2}}
+
         config = FakeConfig()
         result = apply_deployment_config(config, ConfigLoader.load_slurm_config)
         assert result is config.additional_context
@@ -171,8 +149,10 @@ class TestApplyDeploymentConfig:
 
     def test_apply_k8s_config_mutates_and_returns(self):
         """apply_deployment_config with load_k8s_config mutates and returns full config."""
+
         class FakeConfig:
             additional_context = {"k8s": {"gpu_count": 1}}
+
         config = FakeConfig()
         result = apply_deployment_config(config, ConfigLoader.load_k8s_config)
         assert result is config.additional_context
@@ -182,31 +162,39 @@ class TestApplyDeploymentConfig:
 
 class TestConfigLoaderK8sConfigs:
     """Test with actual K8s config files (if they exist)."""
-    
+
     @pytest.mark.skipif(
-        not config_exists("examples/k8s-configs/basic/01-native-single-node-single-gpu.json"),
-        reason="K8s config file not found"
+        not config_exists(
+            "examples/k8s-configs/basic/01-native-single-node-single-gpu.json"
+        ),
+        reason="K8s config file not found",
     )
     def test_k8s_single_gpu_config(self):
         """Test K8s single GPU config file."""
-        user_config = load_config_file("examples/k8s-configs/basic/01-native-single-node-single-gpu.json")
+        user_config = load_config_file(
+            "examples/k8s-configs/basic/01-native-single-node-single-gpu.json"
+        )
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate key fields are preserved
         assert result["k8s"]["gpu_count"] == 1
         assert "memory" in result["k8s"]
         assert "namespace" in result["k8s"]
         assert result["gpu_vendor"] in ["AMD", "NVIDIA"]
-    
+
     @pytest.mark.skipif(
-        not config_exists("examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json"),
-        reason="K8s multi-GPU config file not found"
+        not config_exists(
+            "examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json"
+        ),
+        reason="K8s multi-GPU config file not found",
     )
     def test_k8s_multi_gpu_config(self):
         """Test K8s multi-GPU config file."""
-        user_config = load_config_file("examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json")
+        user_config = load_config_file(
+            "examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json"
+        )
         result = ConfigLoader.load_k8s_config(user_config)
-        
+
         # Validate multi-GPU config
         assert result["k8s"]["gpu_count"] >= 2
         assert "distributed" in result
@@ -216,36 +204,42 @@ class TestConfigLoaderK8sConfigs:
 
 class TestConfigLoaderSlurmConfigs:
     """Test with actual SLURM config files (if they exist)."""
-    
+
     @pytest.mark.skipif(
-        not config_exists("examples/slurm-configs/basic/01-single-node-single-gpu.json"),
-        reason="SLURM config file not found"
+        not config_exists(
+            "examples/slurm-configs/basic/01-single-node-single-gpu.json"
+        ),
+        reason="SLURM config file not found",
     )
     def test_slurm_single_gpu_config(self):
         """Test SLURM single GPU config file."""
-        user_config = load_config_file("examples/slurm-configs/basic/01-single-node-single-gpu.json")
+        user_config = load_config_file(
+            "examples/slurm-configs/basic/01-single-node-single-gpu.json"
+        )
         result = ConfigLoader.load_slurm_config(user_config)
-        
+
         # Validate SLURM config structure
         assert "slurm" in result
         assert result["slurm"]["nodes"] == 1
         assert result["slurm"]["gpus_per_node"] >= 1
-    
+
     @pytest.mark.skipif(
         not config_exists("examples/slurm-configs/basic/06-vllm-multi-node.json"),
-        reason="SLURM vLLM multi-node config file not found"
+        reason="SLURM vLLM multi-node config file not found",
     )
     def test_slurm_vllm_multi_node_config(self):
         """Test SLURM vLLM multi-node config file."""
-        user_config = load_config_file("examples/slurm-configs/basic/06-vllm-multi-node.json")
+        user_config = load_config_file(
+            "examples/slurm-configs/basic/06-vllm-multi-node.json"
+        )
         result = ConfigLoader.load_slurm_config(user_config)
-        
+
         # Validate multi-node vLLM config
         assert "slurm" in result
         assert result["slurm"]["nodes"] >= 2
         assert result["slurm"]["gpus_per_node"] >= 1
         assert "distributed" in result
-        
+
         # Check for new preflight node check parameters
         if "enable_node_check" in result["slurm"]:
             assert isinstance(result["slurm"]["enable_node_check"], bool)
@@ -290,88 +284,66 @@ class TestSlurmNodelist:
 
 class TestConfigLoaderDeploymentType:
     """Test deployment type inference and validation."""
-    
+
     def test_auto_infer_k8s(self):
         """Test k8s deployment type is auto-inferred from k8s field presence."""
-        user_config = {
-            "k8s": {
-                "gpu_count": 1
-            }
-        }
-        
+        user_config = {"k8s": {"gpu_count": 1}}
+
         result = ConfigLoader.load_config(user_config)
-        
+
         # Validate k8s config was loaded and defaults applied
         assert "k8s" in result
         assert result["k8s"]["gpu_count"] == 1
         assert "memory" in result["k8s"]  # Default was applied
-    
+
     def test_auto_infer_slurm(self):
         """Test slurm deployment type is auto-inferred from slurm field presence."""
-        user_config = {
-            "slurm": {
-                "nodes": 1,
-                "gpus_per_node": 4
-            }
-        }
-        
+        user_config = {"slurm": {"nodes": 1, "gpus_per_node": 4}}
+
         result = ConfigLoader.load_config(user_config)
-        
+
         # Validate slurm config was loaded and defaults applied
         assert "slurm" in result
         assert result["slurm"]["nodes"] == 1
         assert result["slurm"]["gpus_per_node"] == 4
-    
+
     def test_auto_infer_local(self):
         """Test local deployment when no k8s/slurm present."""
-        user_config = {
-            "env_vars": {"MY_VAR": "value"}
-        }
-        
+        user_config = {"env_vars": {"MY_VAR": "value"}}
+
         result = ConfigLoader.load_config(user_config)
-        
+
         # Validate local config (no k8s or slurm fields)
         assert "k8s" not in result or result.get("k8s") == {}
         assert "slurm" not in result or result.get("slurm") == {}
         assert result["env_vars"]["MY_VAR"] == "value"
-    
+
     def test_conflict_k8s_and_slurm(self):
         """Test error when both k8s and slurm fields present."""
-        user_config = {
-            "k8s": {"gpu_count": 1},
-            "slurm": {"nodes": 2}
-        }
-        
+        user_config = {"k8s": {"gpu_count": 1}, "slurm": {"nodes": 2}}
+
         with pytest.raises(ValueError, match="Both 'k8s' and 'slurm'"):
             ConfigLoader.load_config(user_config)
-    
+
     def test_conflict_explicit_deploy_mismatch(self):
         """Test error when explicit deploy field conflicts with config presence."""
-        user_config = {
-            "deploy": "slurm",
-            "k8s": {"gpu_count": 1}
-        }
-        
+        user_config = {"deploy": "slurm", "k8s": {"gpu_count": 1}}
+
         with pytest.raises(ValueError, match="Conflicting deployment"):
             ConfigLoader.load_config(user_config)
-    
+
     def test_explicit_deploy_matching(self):
         """Test that explicit deploy field works when it matches config."""
-        user_config = {
-            "deploy": "k8s",
-            "k8s": {"gpu_count": 1}
-        }
-        
+        user_config = {"deploy": "k8s", "k8s": {"gpu_count": 1}}
+
         result = ConfigLoader.load_config(user_config)
-        
+
         # Should work fine since deploy matches k8s presence
         # The deploy field may or may not be preserved in result
         assert result["k8s"]["gpu_count"] == 1
         assert "memory" in result["k8s"]  # Defaults applied
 
 
-
 # Run pytest if executed directly
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
-

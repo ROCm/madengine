@@ -5,19 +5,20 @@ This script provides a command-line interface to profile GPU usage of running LL
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+import csv
+import datetime
+import logging
+
 # built-in modules
 import multiprocessing
-import threading
-import time
-import datetime
+import os
+import signal
 import subprocess
 import sys
-import csv
-import os
-import logging
+import threading
+import time
 import typing
-import signal
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 
 def check_amd_smi_available() -> bool:

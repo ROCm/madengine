@@ -5,11 +5,12 @@ Simple ResNet50 Training Benchmark for TheRock
 This script benchmarks ResNet50 training performance using PyTorch
 on TheRock's ROCm distribution.
 """
+import sys
+import time
+
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import time
-import sys
 
 # Configuration
 BATCH_SIZE = 64

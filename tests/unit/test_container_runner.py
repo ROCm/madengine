@@ -12,7 +12,6 @@ import pytest
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner import ContainerRunner
 
-
 PERF_PATTERN = PERFORMANCE_LOG_PATTERN
 
 
@@ -26,19 +25,34 @@ class TestPerformanceRegex:
     # --- formats that were already handled before the regex change ---
 
     def test_basic_integer(self):
-        assert self._match("performance: 12345 samples_per_second") == ("12345", "samples_per_second")
+        assert self._match("performance: 12345 samples_per_second") == (
+            "12345",
+            "samples_per_second",
+        )
 
     def test_decimal(self):
-        assert self._match("performance: 100.5 samples_per_second") == ("100.5", "samples_per_second")
+        assert self._match("performance: 100.5 samples_per_second") == (
+            "100.5",
+            "samples_per_second",
+        )
 
     def test_scientific_lowercase_e(self):
-        assert self._match("performance: 1.23e+4 samples_per_second") == ("1.23e+4", "samples_per_second")
+        assert self._match("performance: 1.23e+4 samples_per_second") == (
+            "1.23e+4",
+            "samples_per_second",
+        )
 
     def test_scientific_negative_exponent(self):
-        assert self._match("performance: 1.23e-4 samples_per_second") == ("1.23e-4", "samples_per_second")
+        assert self._match("performance: 1.23e-4 samples_per_second") == (
+            "1.23e-4",
+            "samples_per_second",
+        )
 
     def test_zero(self):
-        assert self._match("performance: 0 samples_per_second") == ("0", "samples_per_second")
+        assert self._match("performance: 0 samples_per_second") == (
+            "0",
+            "samples_per_second",
+        )
 
     def test_metric_with_digits(self):
         assert self._match("performance: 123 metric123") == ("123", "metric123")
@@ -50,15 +64,24 @@ class TestPerformanceRegex:
 
     def test_unit_suffix_slash_s(self):
         """Value followed by /s unit suffix: suffix is stripped, metric parsed correctly."""
-        assert self._match("performance: 14164/s samples_per_second") == ("14164", "samples_per_second")
+        assert self._match("performance: 14164/s samples_per_second") == (
+            "14164",
+            "samples_per_second",
+        )
 
     def test_unit_suffix_and_comma(self):
         """Value with /s suffix and comma separator."""
-        assert self._match("performance: 14164.5/s, samples_per_second") == ("14164.5", "samples_per_second")
+        assert self._match("performance: 14164.5/s, samples_per_second") == (
+            "14164.5",
+            "samples_per_second",
+        )
 
     def test_comma_separator_no_suffix(self):
         """Comma after value without a unit suffix."""
-        assert self._match("performance: 100.5, samples_per_second") == ("100.5", "samples_per_second")
+        assert self._match("performance: 100.5, samples_per_second") == (
+            "100.5",
+            "samples_per_second",
+        )
 
     def test_comma_before_suffix(self):
         """Comma immediately before /s suffix: 123,/s metric."""
@@ -72,25 +95,40 @@ class TestPerformanceRegex:
 
     def test_scientific_uppercase_e(self):
         """Uppercase E in scientific notation (v1 supported, old v2 broke on this)."""
-        assert self._match("performance: 1.23E+4 samples_per_second") == ("1.23E+4", "samples_per_second")
+        assert self._match("performance: 1.23E+4 samples_per_second") == (
+            "1.23E+4",
+            "samples_per_second",
+        )
 
     def test_positive_sign(self):
         """Explicitly signed positive value (v1 supported via [+|-]? prefix)."""
-        assert self._match("performance: +123.45 samples_per_second") == ("+123.45", "samples_per_second")
+        assert self._match("performance: +123.45 samples_per_second") == (
+            "+123.45",
+            "samples_per_second",
+        )
 
     def test_negative_sign(self):
         """Signed negative value (v1 supported)."""
-        assert self._match("performance: -123.45 samples_per_second") == ("-123.45", "samples_per_second")
+        assert self._match("performance: -123.45 samples_per_second") == (
+            "-123.45",
+            "samples_per_second",
+        )
 
     def test_leading_dot_decimal(self):
         """Leading-dot decimal without integer part (v1 supported via [0-9]*[.]?[0-9]*)."""
-        assert self._match("performance: .5 samples_per_second") == (".5", "samples_per_second")
+        assert self._match("performance: .5 samples_per_second") == (
+            ".5",
+            "samples_per_second",
+        )
 
     # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
 
     def test_metric_samples_per_sec_slash(self):
         """samples/sec metric (used by _determine_aggregation_method) is parsed."""
-        assert self._match("performance: 1234.5 samples/sec") == ("1234.5", "samples/sec")
+        assert self._match("performance: 1234.5 samples/sec") == (
+            "1234.5",
+            "samples/sec",
+        )
 
     def test_metric_tokens_per_sec_slash(self):
         """tokens/sec metric (used by _determine_aggregation_method) is parsed."""
@@ -137,7 +175,9 @@ class TestCreateSetupFailurePerfEntry:
     def test_returns_dict_with_status_failure(self):
         """Entry has status FAILURE and model name."""
         runner = ContainerRunner(context=MagicMock(), console=MagicMock())
-        runner.context.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        runner.context.ctx = {
+            "docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}
+        }
 
         model_info = {"name": "org/model1", "tags": "v1", "n_gpus": "2"}
         build_info = {"dockerfile": "Dockerfile", "docker_image": "img:latest"}
@@ -195,9 +235,16 @@ class TestRunModelsFromManifestSetupFailureRecordsToPerfCsv:
                 )
 
             manifest = {
-                "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+                "built_images": {
+                    "img1": {"docker_image": "local/img1", "dockerfile": "D"}
+                },
                 "built_models": {
-                    "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+                    "img1": {
+                        "name": "test/model",
+                        "tags": "t1",
+                        "n_gpus": "1",
+                        "args": "",
+                    }
                 },
             }
             with open(manifest_path, "w") as f:

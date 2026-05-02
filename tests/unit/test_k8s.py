@@ -17,11 +17,11 @@ from madengine.deployment.k8s_secrets import (
     SECRETS_STRATEGY_EXISTING,
     SECRETS_STRATEGY_FROM_LOCAL,
     SECRETS_STRATEGY_OMIT,
+    build_registry_secret_data,
     estimate_configmap_payload_bytes,
     merge_secrets_config,
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
-    build_registry_secret_data,
 )
 from madengine.deployment.kubernetes import (
     _pod_job_name_label_selector,
@@ -102,9 +102,7 @@ def test_resolve_runtime_secret_name_existing():
 
 
 def test_resolve_runtime_secret_name_omit_optional():
-    assert (
-        resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
-    )
+    assert resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
 
 
 def test_estimate_skips_credential_when_not_in_configmap():
@@ -123,9 +121,15 @@ def test_estimate_skips_credential_when_not_in_configmap():
 
 def test_pvc_match_exact():
     assigned: set = set()
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod"
+    )
     assigned.add("my-pod")
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod-0-abc"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod-0-abc"
+    )
 
 
 def test_pvc_match_prefix_indexed_job():

@@ -5,6 +5,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+
 import pytest
 
 from madengine.core.constants import get_rocm_path
@@ -70,18 +71,21 @@ class TestContextRocmPath:
 
     def test_context_runtime_includes_rocm_path_in_ctx(self):
         """Context stores host rocm_path; in-container ROCM_PATH is set at run time."""
-        from madengine.core.context import Context
         from unittest.mock import patch
+
+        from madengine.core.context import Context
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
 
         ac = repr({MAD_ROCM_PATH: "/my/rocm"})
-        with patch.object(Context, "get_gpu_vendor", return_value="AMD"), \
-             patch.object(Context, "get_system_ngpus", return_value=2), \
-             patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a"), \
-             patch.object(Context, "get_system_gpu_product_name", return_value="MI250"), \
-             patch.object(Context, "get_system_hip_version", return_value="5.4"), \
-             patch.object(Context, "get_docker_gpus", return_value="0-1"), \
-             patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
+        with (
+            patch.object(Context, "get_gpu_vendor", return_value="AMD"),
+            patch.object(Context, "get_system_ngpus", return_value=2),
+            patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a"),
+            patch.object(Context, "get_system_gpu_product_name", return_value="MI250"),
+            patch.object(Context, "get_system_hip_version", return_value="5.4"),
+            patch.object(Context, "get_docker_gpus", return_value="0-1"),
+            patch.object(Context, "get_gpu_renderD_nodes", return_value=None),
+        ):
             ctx = Context(additional_context=ac)
             exp = normalize_rocm_path("/my/rocm")
             assert ctx.ctx.get("rocm_path") == exp
@@ -90,8 +94,9 @@ class TestContextRocmPath:
 
     def test_context_container_rocm_path_preserved_at_init(self):
         """docker_env_vars.ROCM_PATH is preserved at context init; finalize normalizes at run time."""
-        from madengine.core.context import Context
         from unittest.mock import patch
+
+        from madengine.core.context import Context
         from madengine.utils.rocm_path_resolver import normalize_rocm_path
 
         ac = repr(
@@ -100,13 +105,15 @@ class TestContextRocmPath:
                 "docker_env_vars": {"ROCM_PATH": "/in/image"},
             }
         )
-        with patch.object(Context, "get_gpu_vendor", return_value="AMD"), \
-             patch.object(Context, "get_system_ngpus", return_value=2), \
-             patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a"), \
-             patch.object(Context, "get_system_gpu_product_name", return_value="MI250"), \
-             patch.object(Context, "get_system_hip_version", return_value="5.4"), \
-             patch.object(Context, "get_docker_gpus", return_value="0-1"), \
-             patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
+        with (
+            patch.object(Context, "get_gpu_vendor", return_value="AMD"),
+            patch.object(Context, "get_system_ngpus", return_value=2),
+            patch.object(Context, "get_system_gpu_architecture", return_value="gfx90a"),
+            patch.object(Context, "get_system_gpu_product_name", return_value="MI250"),
+            patch.object(Context, "get_system_hip_version", return_value="5.4"),
+            patch.object(Context, "get_docker_gpus", return_value="0-1"),
+            patch.object(Context, "get_gpu_renderD_nodes", return_value=None),
+        ):
             ctx = Context(additional_context=ac)
         assert ctx._rocm_path == normalize_rocm_path("/on/host")
         # User-supplied ROCM_PATH is kept in docker_env_vars at init; finalize normalizes at run time.
@@ -257,9 +264,7 @@ class TestTheRockVersionedContainerLayout:
         smi.chmod(0o755)
         assert _rocm_root_from_bin_tool(str(smi.resolve())) == root.resolve()
 
-    def test_auto_detect_finds_injected_versioned_opt_rocm(
-        self, monkeypatch, tmp_path
-    ):
+    def test_auto_detect_finds_injected_versioned_opt_rocm(self, monkeypatch, tmp_path):
         """Simulate /opt/rocm-7.13.0 without depending on the host /opt tree."""
         vroot = (tmp_path / "rocm-7.13.0").resolve()
         (vroot / "bin").mkdir(parents=True)
@@ -287,15 +292,11 @@ class TestTheRockVersionedContainerLayout:
             return real_looks(p)
 
         monkeypatch.setattr(rpr, "_looks_like_rocm_root", merged_looks)
-        monkeypatch.setattr(
-            rpr, "_versioned_opt_rocm_dirs", lambda: [vroot]
-        )
+        monkeypatch.setattr(rpr, "_versioned_opt_rocm_dirs", lambda: [vroot])
         out = auto_detect_rocm_path()
         assert out == normalize_rocm_path(str(vroot))
 
-    def test_infer_root_from_path_tools_amd_smi(
-        self, monkeypatch, tmp_path
-    ):
+    def test_infer_root_from_path_tools_amd_smi(self, monkeypatch, tmp_path):
         """`which(amd-smi)` → .../rocm-7.13.0/bin/amd-smi` yields root with both smi tools."""
         vroot = (tmp_path / "rocm-7.13.0").resolve()
         (vroot / "bin").mkdir(parents=True)

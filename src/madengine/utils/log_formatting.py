@@ -9,8 +9,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import pandas as pd
-from rich.table import Table
 from rich.console import Console as RichConsole
+from rich.table import Table
 
 
 def format_dataframe_for_log(

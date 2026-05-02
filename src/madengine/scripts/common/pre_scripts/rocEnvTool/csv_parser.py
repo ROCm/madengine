@@ -5,6 +5,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import os
 import shlex
 import shutil
+
 from console import Console
 
 '''

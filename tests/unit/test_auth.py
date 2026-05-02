@@ -1,8 +1,9 @@
 """Unit tests for madengine.core.auth module."""
 
 import os
-import pytest
 from unittest.mock import MagicMock, mock_open, patch
+
+import pytest
 
 from madengine.core.auth import load_credentials, login_to_registry
 
@@ -134,14 +135,22 @@ class TestLoginToRegistry:
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
         with pytest.raises(RuntimeError, match="myregistry.io"):
-            login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
+            login_to_registry(
+                "myregistry.io",
+                credentials,
+                console,
+                rich_console,
+                raise_on_failure=True,
+            )
         console.sh.assert_not_called()
 
     def test_missing_registry_key_returns_when_not_raise_on_failure(self):
         """Returns silently when registry key absent and raise_on_failure=False."""
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
-        login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=False)
+        login_to_registry(
+            "myregistry.io", credentials, console, rich_console, raise_on_failure=False
+        )
         console.sh.assert_not_called()
 
     def test_invalid_credentials_format_raises(self):
@@ -149,14 +158,18 @@ class TestLoginToRegistry:
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
         with pytest.raises(RuntimeError, match="username|password"):
-            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+            login_to_registry(
+                "docker.io", credentials, console, rich_console, raise_on_failure=True
+            )
         console.sh.assert_not_called()
 
     def test_invalid_credentials_format_returns_when_not_raise_on_failure(self):
         """Returns silently when credentials format invalid and raise_on_failure=False."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
-        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=False)
+        login_to_registry(
+            "docker.io", credentials, console, rich_console, raise_on_failure=False
+        )
         console.sh.assert_not_called()
 
     def test_docker_io_normalised_to_dockerhub(self):
@@ -184,12 +197,16 @@ class TestLoginToRegistry:
         console.sh.side_effect = RuntimeError("auth failed")
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
         with pytest.raises(RuntimeError, match="auth failed"):
-            login_to_registry(None, credentials, console, rich_console, raise_on_failure=True)
+            login_to_registry(
+                None, credentials, console, rich_console, raise_on_failure=True
+            )
 
     def test_login_failure_suppressed_when_not_raise_on_failure(self):
         """docker login error is suppressed when raise_on_failure=False."""
         console, rich_console = self._mocks()
         console.sh.side_effect = RuntimeError("auth failed")
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
-        login_to_registry(None, credentials, console, rich_console, raise_on_failure=False)
+        login_to_registry(
+            None, credentials, console, rich_console, raise_on_failure=False
+        )
         # Should not propagate the exception

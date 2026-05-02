@@ -29,4 +29,3 @@ DEFAULT_PERF_OUTPUT = "perf.csv"
 DEFAULT_DATA_CONFIG = "data.json"
 DEFAULT_TOOLS_CONFIG = "./scripts/common/tools.json"
 DEFAULT_TIMEOUT = -1
-

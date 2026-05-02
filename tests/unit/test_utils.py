@@ -6,15 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
-from madengine.utils.path_utils import scripts_base_dir_from, get_madengine_root
+from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
 from madengine.utils.run_details import (
-    get_pipeline,
-    get_build_number,
     flatten_tags_in_place,
+    get_build_number,
+    get_pipeline,
 )
 
-
 # ---- path_utils ----
+
 
 class TestScriptsBaseDirFrom:
     """Test scripts_base_dir_from helper."""
@@ -51,8 +51,11 @@ class TestGetMadengineRoot:
 
 # ---- run_details ----
 
+
 class TestGetPipeline:
-    @pytest.mark.parametrize("env_val,expected", [({}, ""), ({"pipeline": "ci-mad"}, "ci-mad")])
+    @pytest.mark.parametrize(
+        "env_val,expected", [({}, ""), ({"pipeline": "ci-mad"}, "ci-mad")]
+    )
     def test_pipeline_from_env_or_default(self, env_val, expected):
         with patch.dict(os.environ, env_val, clear=False):
             if not env_val and "pipeline" in os.environ:
@@ -61,7 +64,9 @@ class TestGetPipeline:
 
 
 class TestGetBuildNumber:
-    @pytest.mark.parametrize("env_val,expected", [({}, "0"), ({"BUILD_NUMBER": "42"}, "42")])
+    @pytest.mark.parametrize(
+        "env_val,expected", [({}, "0"), ({"BUILD_NUMBER": "42"}, "42")]
+    )
     def test_build_number_from_env_or_default(self, env_val, expected):
         with patch.dict(os.environ, env_val, clear=False):
             if not env_val and "BUILD_NUMBER" in os.environ:

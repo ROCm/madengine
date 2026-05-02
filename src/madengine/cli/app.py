@@ -8,7 +8,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import sys
-from importlib.metadata import PackageNotFoundError, version as pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 
 import typer
 from rich.traceback import install
@@ -18,7 +19,7 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from .commands import build, run, discover, report_app, database
+from .commands import build, database, discover, report_app, run
 from .constants import ExitCode
 from .utils import console
 
@@ -89,4 +90,3 @@ def cli_main() -> None:
 
 if __name__ == "__main__":
     cli_main()
-

@@ -40,7 +40,10 @@ def load_credentials() -> Optional[Dict]:
             with open(credential_file) as f:
                 loaded = json.load(f)
             if not isinstance(loaded, dict):
-                raise ValueError("credential.json must contain a JSON object, not " + type(loaded).__name__)
+                raise ValueError(
+                    "credential.json must contain a JSON object, not "
+                    + type(loaded).__name__
+                )
             credentials = loaded
             print(
                 f"Loaded credentials from {credential_file}: "
@@ -163,7 +166,7 @@ def login_to_registry(
     # Pass the password via an environment variable so it never appears in
     # the process argument list (visible via /proc or ps to other users).
     quoted_username = shlex.quote(username)
-    login_command = "printf %s \"$MAD_REGISTRY_PASSWORD\" | docker login"
+    login_command = 'printf %s "$MAD_REGISTRY_PASSWORD" | docker login'
     if registry and registry.lower() not in ["docker.io", "dockerhub"]:
         login_command += f" {shlex.quote(str(registry))}"
     login_command += f" --username {quoted_username} --password-stdin"
@@ -177,8 +180,6 @@ def login_to_registry(
             f"{registry or 'DockerHub'}[/green]"
         )
     except Exception as e:
-        rich_console.print(
-            f"[red]Failed to login to registry {registry}: {e}[/red]"
-        )
+        rich_console.print(f"[red]Failed to login to registry {registry}: {e}[/red]")
         if raise_on_failure:
             raise

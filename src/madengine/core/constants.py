@@ -22,10 +22,12 @@ Configuration Loading:
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-# built-in modules
-import os
+
 import json
 import logging
+
+# built-in modules
+import os
 
 
 # Utility function for optional verbose logging of configuration
@@ -46,14 +48,14 @@ MODEL_DIR = os.environ.get("MODEL_DIR", ".")
 
 def _setup_model_dir():
     """Setup model directory if MODEL_DIR environment variable is set.
-    
+
     MODEL_DIR defaults to "." (current directory) if not set.
     Only copies if MODEL_DIR points to a different directory than current working directory.
     """
     # Get absolute paths to compare
     model_dir_abs = os.path.abspath(MODEL_DIR)
     cwd_abs = os.path.abspath(".")
-    
+
     # Only copy if MODEL_DIR points to a different directory (not current dir)
     if model_dir_abs != cwd_abs:
         # Copy MODEL_DIR to the current working directory.

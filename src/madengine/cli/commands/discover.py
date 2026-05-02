@@ -18,13 +18,20 @@ except ImportError:
 from madengine.utils.discover_models import DiscoverModels
 
 from ..constants import ExitCode
-from ..utils import console, setup_logging, split_comma_separated_tags, create_args_namespace
+from ..utils import (
+    console,
+    create_args_namespace,
+    setup_logging,
+    split_comma_separated_tags,
+)
 
 
 def discover(
     tags: Annotated[
         List[str],
-        typer.Option("--tags", "-t", help="Model tags to discover (can specify multiple)"),
+        typer.Option(
+            "--tags", "-t", help="Model tags to discover (can specify multiple)"
+        ),
     ] = [],
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -58,17 +65,18 @@ def discover(
     try:
         # Create args namespace similar to mad.py
         args = create_args_namespace(tags=processed_tags)
-        
+
         # Use DiscoverModels class
         # Note: DiscoverModels prints output directly and returns None
         discover_models_instance = DiscoverModels(args=args)
-        result = discover_models_instance.run()
-        
-        console.print("✅ [bold green]Model discovery completed successfully[/bold green]")
+        discover_models_instance.run()
+
+        console.print(
+            "✅ [bold green]Model discovery completed successfully[/bold green]"
+        )
 
     except Exception as e:
         console.print(f"💥 [bold red]Model discovery failed: {e}[/bold red]")
         if verbose:
             console.print_exception()
         raise typer.Exit(ExitCode.FAILURE)
-

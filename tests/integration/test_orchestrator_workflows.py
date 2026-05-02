@@ -18,14 +18,14 @@ from typer.testing import CliRunner
 
 # project modules
 from madengine.cli import app
+from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
-
 
 # ============================================================================
 # Batch manifest (CLI build options)
 # ============================================================================
+
 
 class TestBatchManifestBuildIntegration:
     """Batch manifest and --tags are mutually exclusive."""
@@ -42,9 +42,12 @@ class TestBatchManifestBuildIntegration:
                 app,
                 [
                     "build",
-                    "--batch-manifest", batch_file,
-                    "--tags", "dummy",
-                    "--additional-context", '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                    "--batch-manifest",
+                    batch_file,
+                    "--tags",
+                    "dummy",
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
                 ],
             )
             assert result.exit_code != 0
@@ -56,6 +59,7 @@ class TestBatchManifestBuildIntegration:
 # ============================================================================
 # Build orchestrator
 # ============================================================================
+
 
 class TestBuildOrchestrator:
     """Test the Build Orchestrator module."""
@@ -163,7 +167,9 @@ class TestBuildOrchestrator:
 
         # Mock context
         mock_context = MagicMock()
-        mock_context.ctx = {"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        mock_context.ctx = {
+            "docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}
+        }
         mock_context_class.return_value = mock_context
 
         # Mock discover models
@@ -356,9 +362,7 @@ class TestRunOrchestrator:
             orchestrator.execute(manifest_file=None, tags=None)
 
     @patch("madengine.orchestration.build_orchestrator.BuildOrchestrator")
-    def test_run_execute_triggers_build_phase(
-        self, mock_build_orchestrator
-    ):
+    def test_run_execute_triggers_build_phase(self, mock_build_orchestrator):
         """Test run execution triggers build phase when no manifest exists."""
         mock_args = MagicMock()
         mock_args.additional_context = None
@@ -378,9 +382,13 @@ class TestRunOrchestrator:
         orchestrator = RunOrchestrator(mock_args)
 
         # Mock file operations and execution
-        with patch("os.path.exists", side_effect=lambda p: p == "build_manifest.json"), \
-             patch("builtins.open", mock_open(read_data=json.dumps(manifest_data))), \
-             patch.object(orchestrator, "_execute_local", return_value={}) as mock_execute_local:
+        with (
+            patch("os.path.exists", side_effect=lambda p: p == "build_manifest.json"),
+            patch("builtins.open", mock_open(read_data=json.dumps(manifest_data))),
+            patch.object(
+                orchestrator, "_execute_local", return_value={}
+            ) as mock_execute_local,
+        ):
             orchestrator.execute(manifest_file=None, tags=["test"])
 
         mock_build_instance.execute.assert_called_once()
@@ -442,9 +450,7 @@ class TestRunOrchestrator:
         read_data='{"built_images": {"model1": {"name": "model1"}}, "context": {}}',
     )
     @patch("os.path.exists", return_value=True)
-    def test_execute_local_with_mock(
-        self, mock_exists, mock_file
-    ):
+    def test_execute_local_with_mock(self, mock_exists, mock_file):
         """Test local execution workflow (mocked)."""
         mock_args = MagicMock()
         mock_args.additional_context = '{"deploy": "local"}'
@@ -470,9 +476,20 @@ class TestRunOrchestrator:
         orchestrator = RunOrchestrator(mock_args)
 
         built_images = {
-            "model1": {"name": "model1", "gpu_architecture": "gfx90a", "gpu_vendor": "AMD"},
-            "model2": {"name": "model2", "gpu_architecture": "gfx908", "gpu_vendor": "AMD"},
-            "model3": {"name": "model3", "gpu_architecture": ""},  # Legacy - no gpu_vendor
+            "model1": {
+                "name": "model1",
+                "gpu_architecture": "gfx90a",
+                "gpu_vendor": "AMD",
+            },
+            "model2": {
+                "name": "model2",
+                "gpu_architecture": "gfx908",
+                "gpu_vendor": "AMD",
+            },
+            "model3": {
+                "name": "model3",
+                "gpu_architecture": "",
+            },  # Legacy - no gpu_vendor
         }
 
         # Filter for gfx90a
@@ -483,4 +500,3 @@ class TestRunOrchestrator:
         assert "model1" in compatible
         assert "model2" not in compatible
         assert "model3" in compatible  # Legacy images without gpu_vendor pass through
-
