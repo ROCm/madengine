@@ -21,32 +21,6 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-_MADENGINE_THEROCK_MARKER = Path("madengine") / "utils" / "therock_markers.py"
-
-
-def _prepend_madengine_to_sys_path() -> None:
-    """Add the directory that contains the ``madengine`` package to ``sys.path`` if found."""
-    for p in Path(__file__).resolve().parents:
-        if (p / _MADENGINE_THEROCK_MARKER).is_file():
-            s = str(p)
-            if s not in sys.path:
-                sys.path.insert(0, s)
-            return
-
-
-_prepend_madengine_to_sys_path()
-try:
-    from madengine.utils.therock_markers import (
-        therock_dist_info_path,
-        therock_manifest_path,
-    )
-except ImportError:  # pragma: no cover — script copied outside a package tree
-    def therock_manifest_path(path: Path) -> Path:  # keep in sync with therock_markers
-        return path / "share" / "therock" / "therock_manifest.json"
-
-    def therock_dist_info_path(path: Path) -> Path:
-        return path / "share" / "therock" / "dist_info.json"
-
 
 class TherockDetector:
     """Detects TheRock ROCm installations on the system."""
@@ -106,7 +80,7 @@ class TherockDetector:
         details = {}
 
         # Marker 1: therock_manifest.json
-        manifest_path = therock_manifest_path(path)
+        manifest_path = path / "share" / "therock" / "therock_manifest.json"
         if manifest_path.exists():
             self.log(f"Found therock_manifest.json at {manifest_path}")
             try:
@@ -120,7 +94,7 @@ class TherockDetector:
                 self.log(f"Error reading manifest: {e}")
 
         # Marker 2: dist_info.json
-        dist_info_path = therock_dist_info_path(path)
+        dist_info_path = path / "share" / "therock" / "dist_info.json"
         if dist_info_path.exists():
             self.log(f"Found dist_info.json at {dist_info_path}")
             try:

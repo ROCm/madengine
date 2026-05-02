@@ -147,16 +147,6 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     if show_gpu_arch:
         table.add_column("GPU Architecture", style="blue")
 
-    def build_gpu_arch_display(item: Dict) -> str:
-        """Prefer gpu_architecture (DockerBuilder) then architecture (failures / legacy)."""
-        if not isinstance(item, dict):
-            return "N/A"
-        return (
-            item.get("gpu_architecture")
-            or item.get("architecture")
-            or "N/A"
-        )
-
     # Helper function to extract model name from build result
     def extract_model_name(item):
         if isinstance(item, dict):
@@ -175,7 +165,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 else:
                     model_name = docker_image
                 return model_name
-        return str(item)[:20]
+        return str(item)
 
     # Helper function to format numbers
     def format_number(value):
@@ -252,12 +242,12 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 status = "✅ Success"
                 row = [str(row_index), status, model_name]
                 if show_gpu_arch:
-                    row.append(build_gpu_arch_display(item))
+                    row.append(item.get("architecture", "N/A"))
                 table.add_row(*row)
                 row_index += 1
         else:
             # Fallback for non-dict items
-            model_name = str(item)[:20]
+            model_name = str(item)
             if has_node_data:
                 row = [str(row_index), "✅ Success", model_name, "node-0", "-", "-"]
             else:
@@ -298,7 +288,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 # BUILD results - simple format
                 row = [str(row_index), "❌ Failed", model_name]
                 if show_gpu_arch:
-                    row.append(build_gpu_arch_display(item))
+                    row.append(item.get("architecture", "N/A"))
                 table.add_row(*row)
                 row_index += 1
         else:
@@ -387,7 +377,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
-        perf_table.add_column("Launcher", justify="center", style="magenta")
+        perf_table.add_column("Workload", justify="center", style="magenta")
         perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
@@ -425,10 +415,8 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                     return f"{val:,.0f}"
                 elif val >= 10:
                     return f"{val:.1f}"
-                elif val >= 0.01:
-                    return f"{val:.4f}"
                 else:
-                    return f"{val:.4g}"
+                    return f"{val:.2f}"
             except (ValueError, TypeError):
                 return str(perf)
         
@@ -494,7 +482,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
-                launcher,           # Distributed launcher (docker, torchrun, vllm, etc.)
+                launcher,           # Workload type (sglang-disagg, vllm, torchrun, etc.)
                 deployment_type,
                 gpu_arch,
                 performance,

@@ -152,6 +152,13 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
+    rocm_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--rocm-path",
+            help="ROCm installation path (overrides ROCM_PATH env; default: /opt/rocm). Use when ROCm is not under /opt/rocm (e.g. Rock tar/whl).",
+        ),
+    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -167,7 +174,7 @@ def run(
     # Input validation
     if timeout < -1:
         console.print(
-            "❌ [red]Timeout must be -1 (default), 0 (no timeout), or a positive integer[/red]"
+            "❌ [red]Timeout must be -1 (default) or a positive integer[/red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
@@ -187,11 +194,6 @@ def run(
     # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
     if timeout == -1:
         timeout = 7200
-    # 0 means "no timeout" per the help text — map to None so subprocess never expires
-    elif timeout == 0:
-        timeout = None
-
-    timeout_display = "disabled" if timeout is None else f"{timeout}s"
 
     try:
         # Check if we're doing execution-only or full workflow
@@ -209,7 +211,7 @@ def run(
                     f"🚀 [bold cyan]Running Models (Execution Only)[/bold cyan]\n"
                     f"Manifest: [yellow]{manifest_file}[/yellow]\n"
                     f"Registry: [yellow]{registry or 'Auto-detected'}[/yellow]\n"
-                    f"Timeout: [yellow]{timeout_display}[/yellow]",
+                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s",
                     title="Execution Configuration",
                     border_style="green",
                 )
@@ -235,6 +237,7 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
+                rocm_path=rocm_path,
                 skip_model_run=skip_model_run,
                 _separate_phases=True,
             )
@@ -311,7 +314,7 @@ def run(
                     f"🔨🚀 [bold cyan]Complete Workflow (Build + Run)[/bold cyan]\n"
                     f"Tags: [yellow]{', '.join(processed_tags) if processed_tags else 'All models'}[/yellow]\n"
                     f"Registry: [yellow]{registry or 'Local only'}[/yellow]\n"
-                    f"Timeout: [yellow]{timeout_display}[/yellow]"
+                    f"Timeout: [yellow]{timeout if timeout != -1 else 'Default'}[/yellow]s"
                     f"{skip_note}",
                     title="Workflow Configuration",
                     border_style="magenta",
@@ -339,6 +342,7 @@ def run(
                 disable_skip_gpu_arch=disable_skip_gpu_arch,
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
+                rocm_path=rocm_path,
                 skip_model_run=skip_model_run,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )

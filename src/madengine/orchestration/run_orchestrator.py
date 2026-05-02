@@ -21,7 +21,6 @@ from rich.console import Console as RichConsole
 from rich.panel import Panel
 
 from madengine.core.console import Console
-from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.errors import (
@@ -29,7 +28,9 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
     create_error_context,
+    handle_error,
 )
+from madengine.core.constants import get_rocm_path
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
@@ -112,9 +113,11 @@ class RunOrchestrator:
         else:
             context_string = None
             
+        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
+            rocm_path=rocm_path,
         )
 
         # Initialize data provider if data config exists
@@ -227,10 +230,28 @@ class RunOrchestrator:
             if not self.additional_context:
                 self.additional_context = {}
             
-            # Merge deployment_config into additional_context (for deployment layer to use)
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # For dict-valued keys (slurm, k8s, etc.), recursively deep-merge so
+            # manifest values fill in nested gaps while runtime --additional-context
+            # still wins on per-leaf conflicts.
+            def _deep_merge(base, override):
+                """Recursive merge: override wins at leaves; nested dicts are merged."""
+                result = dict(base)
+                for k, v in override.items():
+                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                        result[k] = _deep_merge(result[k], v)
+                    else:
+                        result[k] = v
+                return result
+
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
-                if key in deployment_config and key not in self.additional_context:
-                    self.additional_context[key] = deployment_config[key]
+                if key in deployment_config:
+                    if key not in self.additional_context:
+                        self.additional_context[key] = deployment_config[key]
+                    elif isinstance(deployment_config[key], dict) and isinstance(self.additional_context[key], dict):
+                        self.additional_context[key] = _deep_merge(
+                            deployment_config[key], self.additional_context[key]
+                        )
             
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
@@ -342,16 +363,7 @@ class RunOrchestrator:
         # Update args with tags
         self.args.tags = tags
 
-        # detect_local_gpu_arch=True: full workflow on a local single node — auto-detect
-        # MAD_SYSTEM_GPU_ARCHITECTURE before the build so Dockerfiles that require it
-        # (ARG MAD_SYSTEM_GPU_ARCHITECTURE with no default) are built correctly without
-        # requiring the user to manually pass --additional-context.
-        # The user's explicitly provided value (if any) is still respected and not overridden.
-        build_orch = BuildOrchestrator(
-            self.args,
-            self.additional_context,
-            detect_local_gpu_arch=True,
-        )
+        build_orch = BuildOrchestrator(self.args, self.additional_context)
         manifest_file = build_orch.execute(
             registry=registry,
             clean_cache=getattr(self.args, "clean_docker_cache", False),
@@ -429,9 +441,11 @@ class RunOrchestrator:
         # Initialize build-only context for manifest generation
         # (we need context structure, but skip GPU detection since we're not building)
         context_string = repr(self.additional_context) if self.additional_context else None
+        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         build_context = Context(
             additional_context=context_string,
             build_only_mode=True,
+            rocm_path=rocm_path,
         )
         
         # Create manifest structure
@@ -509,10 +523,17 @@ class RunOrchestrator:
             # Merge deployment_config
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
-                # Runtime --additional-context overrides stored config
+                # Runtime --additional-context overrides stored config.
+                # For dict-valued keys, deep-merge so manifest values fill
+                # in gaps (e.g. nodes, time) while runtime values win on conflicts.
                 for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
-                        stored_config[key] = self.additional_context[key]
+                        if key in stored_config and isinstance(stored_config[key], dict) and isinstance(self.additional_context[key], dict):
+                            merged = dict(stored_config[key])
+                            merged.update(self.additional_context[key])
+                            stored_config[key] = merged
+                        else:
+                            stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config
             
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
@@ -558,7 +579,7 @@ class RunOrchestrator:
         from madengine.execution.container_runner import ContainerRunner
 
         # Load credentials
-        credentials = load_credentials()
+        credentials = self._load_credentials()
 
         # Restore context from manifest if present
         if "context" in manifest:
@@ -571,13 +592,7 @@ class RunOrchestrator:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
                 self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
-            # Restore docker_env_vars from build context (e.g. MAD_SECRET_HFTOKEN for Primus HF-backed configs)
-            if "docker_env_vars" in manifest_context and manifest_context["docker_env_vars"]:
-                if "docker_env_vars" not in self.context.ctx:
-                    self.context.ctx["docker_env_vars"] = {}
-                for k, v in manifest_context["docker_env_vars"].items():
-                    self.context.ctx["docker_env_vars"][k] = v
-
+        
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
         if self.additional_context:
@@ -996,6 +1011,35 @@ class RunOrchestrator:
         # Note: K8s and Slurm deployments have their own script handling mechanisms
         # and do not rely on this local filesystem operation
 
+    def _load_credentials(self) -> Optional[Dict]:
+        """Load credentials from credential.json and environment."""
+        credentials = None
+
+        credential_file = "credential.json"
+        if os.path.exists(credential_file):
+            try:
+                with open(credential_file) as f:
+                    credentials = json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load credentials: {e}")
+
+        # Override with environment variables
+        docker_hub_user = os.environ.get("MAD_DOCKERHUB_USER")
+        docker_hub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD")
+        docker_hub_repo = os.environ.get("MAD_DOCKERHUB_REPO")
+
+        if docker_hub_user and docker_hub_password:
+            if credentials is None:
+                credentials = {}
+            credentials["dockerhub"] = {
+                "username": docker_hub_user,
+                "password": docker_hub_password,
+            }
+            if docker_hub_repo:
+                credentials["dockerhub"]["repository"] = docker_hub_repo
+
+        return credentials
+
     def _filter_images_by_gpu_compatibility(
         self, built_images: Dict, runtime_gpu_vendor: str, runtime_gpu_arch: str
     ) -> Dict:
@@ -1108,4 +1152,70 @@ class RunOrchestrator:
         else:
             return "local"
     
+    def _filter_images_by_dockerfile_context(self, built_images: Dict) -> Dict:
+        """Filter images by dockerfile context matching runtime context.
+        
+        This implements the legacy behavior where dockerfiles are filtered
+        at runtime based on their CONTEXT header matching the current runtime context.
+        
+        Args:
+            built_images: Dictionary of built images from manifest
+            
+        Returns:
+            Dictionary of images that match the runtime context
+        """
+        if not self.context:
+            return built_images
+        
+        compatible_images = {}
+        
+        for image_name, image_info in built_images.items():
+            dockerfile = image_info.get("dockerfile", "")
+            
+            if not dockerfile:
+                # No dockerfile info, include by default (legacy compatibility)
+                compatible_images[image_name] = image_info
+                continue
+            
+            # Check if dockerfile exists
+            if not os.path.exists(dockerfile):
+                self.rich_console.print(
+                    f"[dim]  Warning: Dockerfile {dockerfile} not found. Including by default.[/dim]"
+                )
+                compatible_images[image_name] = image_info
+                continue
+            
+            # Read dockerfile context header
+            try:
+                dockerfile_context_str = self.console.sh(
+                    f"head -n5 {dockerfile} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
+                ).strip()
+                
+                if not dockerfile_context_str:
+                    # No context header, include by default
+                    compatible_images[image_name] = image_info
+                    continue
+                
+                # Create a dict with this dockerfile and its context
+                dockerfile_dict = {dockerfile: dockerfile_context_str}
+                
+                # Use context.filter() to check if this dockerfile matches runtime context
+                filtered = self.context.filter(dockerfile_dict)
+                
+                if filtered:
+                    # Dockerfile matches runtime context
+                    compatible_images[image_name] = image_info
+                else:
+                    self.rich_console.print(
+                        f"[dim]  Skipping {image_name}: dockerfile context doesn't match runtime context[/dim]"
+                    )
+                    
+            except Exception as e:
+                # If we can't read the dockerfile, include it by default
+                self.rich_console.print(
+                    f"[dim]  Warning: Could not read context for {dockerfile}: {e}. Including by default.[/dim]"
+                )
+                compatible_images[image_name] = image_info
+        
+        return compatible_images
 

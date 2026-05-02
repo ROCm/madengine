@@ -152,7 +152,7 @@ class ProfUtils:
                     avg_power = power_info.get('average_socket_power', -1)
                     if current_power == 0 and avg_power == 0:
                         return True
-            except Exception:
+            except:
                 # If we can't get power info, might be secondary die
                 return True
             

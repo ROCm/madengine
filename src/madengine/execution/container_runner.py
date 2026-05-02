@@ -9,18 +9,23 @@ using pre-built images.
 
 import os
 import re
-import shlex
 import subprocess
 import time
 import json
 import typing
 import warnings
+
+SLURM_MULTI_ALIASES = [
+    "slurm_multi",
+    "slurm-multi",
+]
+SELF_MANAGED_LAUNCHERS = SLURM_MULTI_ALIASES
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
-from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker
+from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -34,134 +39,12 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
-from madengine.utils.therock_markers import is_therock_tree
-from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
     resolve_run_timeout,
 )
-
-
-def _print_run_env_table(
-    gpu_vendor: str,
-    context,
-    model_docker,
-    rich_console,
-) -> None:
-    """Print a side-by-side environment table for host and container.
-
-    Covers AMD (installation type, ROCm root, ROCm version) and NVIDIA
-    (installation type, CUDA root, CUDA version) for both sides.
-    Follows container_runner.py convention: rich_console for styled borders,
-    plain print() for data rows (so they appear in the run log file).
-    """
-    from pathlib import Path
-
-    COL_W = 36  # width of each data column
-
-    def row(label: str, host_val: str, container_val: str) -> str:
-        return f"  {label:<26}  {host_val:<{COL_W}}  {container_val:<{COL_W}}"
-
-    def separator() -> str:
-        return "  " + "-" * (26 + 2 + COL_W + 2 + COL_W)
-
-    def _sh(cmd: str) -> str:
-        """Run a command in the container and return stripped output."""
-        try:
-            return (model_docker.sh(cmd) or "").strip()
-        except Exception:
-            return "N/A"
-
-    rich_console.print("\n[bold blue]🖥️   RUN PHASE ENVIRONMENT[/bold blue]")
-    rich_console.print(f"[dim]{'=' * 80}[/dim]")
-    print(row("", "HOST", "CONTAINER"))
-    print(separator())
-
-    if "AMD" in gpu_vendor:
-        # ── Host side ──────────────────────────────────────────────
-        host_rocm_root = getattr(context, "_rocm_path", None) or "unknown"
-        _host_rocm_path = Path(host_rocm_root)
-        host_install_type = (
-            "therock"
-            if _host_rocm_path.is_dir() and is_therock_tree(_host_rocm_path)
-            else "apt install" if _host_rocm_path.is_dir()
-            else "unknown"
-        )
-        try:
-            host_rocm_ver = context._get_tool_manager().get_version() or "unknown"
-        except Exception:
-            host_rocm_ver = "unknown"
-
-        # ── Container side ─────────────────────────────────────────
-        # Installation type: if rocm-sdk resolves a root it is TheRock;
-        # otherwise fall back to the traditional .info/version marker.
-        # Avoids nested quoting issues by not embedding $(...) inside [ -f "..." ].
-        ctr_install_type = _sh(
-            "if command -v rocm-sdk >/dev/null 2>&1 "
-            "&& rocm-sdk path --root >/dev/null 2>&1; "
-            "then echo therock; "
-            "elif [ -f /opt/rocm/.info/version ]; then echo 'apt install'; "
-            "else echo unknown; fi"
-        )
-
-        # ROCm root: prefer rocm-sdk, then ROCM_PATH env, then /opt/rocm
-        ctr_rocm_root = _sh(
-            "rocm-sdk path --root 2>/dev/null "
-            "|| echo \"${ROCM_PATH:-/opt/rocm}\""
-        )
-
-        # ROCm version: prefer rocm-sdk, then .info/version, then rocminfo
-        ctr_rocm_ver = _sh(
-            "rocm-sdk version 2>/dev/null "
-            "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
-            "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | sed 's/.*[Vv]ersion:[[:space:]]*//;s/[[:space:]].*//;s/[^0-9.]//g' 2>/dev/null "
-            "|| echo unknown"
-        )
-
-        print(row("GPU Vendor", "AMD", "AMD"))
-        print(row("Installation Type", host_install_type, ctr_install_type))
-        print(row("ROCm Root", host_rocm_root, ctr_rocm_root))
-        print(row("ROCm Version", host_rocm_ver, ctr_rocm_ver))
-
-    elif "NVIDIA" in gpu_vendor:
-        # ── Host side ──────────────────────────────────────────────
-        def _host_sh(cmd: str) -> str:
-            try:
-                return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, text=True).strip()
-            except Exception:
-                return "unknown"
-
-        host_cuda_root = _host_sh(
-            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 | "
-            "xargs -I{} dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
-        )
-        host_cuda_ver = _host_sh(
-            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
-            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
-            "|| echo unknown"
-        )
-
-        # ── Container side ─────────────────────────────────────────
-        ctr_cuda_root = _sh(
-            "dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
-        )
-        ctr_cuda_ver = _sh(
-            "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
-            "|| nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
-            "|| echo unknown"
-        )
-
-        print(row("GPU Vendor", "NVIDIA", "NVIDIA"))
-        print(row("Installation Type", "CUDA toolkit", "CUDA toolkit"))
-        print(row("CUDA Root", host_cuda_root, ctr_cuda_root))
-        print(row("CUDA Version", host_cuda_ver, ctr_cuda_ver))
-
-    print(separator())
-    rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
 def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
@@ -174,34 +57,6 @@ def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typ
     if os.path.isfile(path_in_model_dir):
         return path_in_model_dir
     return None
-
-
-def _docker_image_exists_locally(image: str) -> bool:
-    """Return True if ``docker image inspect`` succeeds for *image* (argv list; no shell)."""
-    try:
-        subprocess.run(
-            ["docker", "image", "inspect", image],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, OSError):
-        return False
-
-
-def _bash_quote_path(path: str) -> str:
-    """Shell-escape a path for ``bash -c`` in the container (POSIX)."""
-    return shlex.quote(os.path.normpath((path or "").replace("\\", "/")))
-
-
-def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
-    """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
-    rel = (relative_path or "").strip()
-    src = os.path.normpath(os.path.join(model_dir, rel)).replace("\\", "/")
-    return (
-        f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
-    )
 
 
 class ContainerRunner:
@@ -383,15 +238,13 @@ class ContainerRunner:
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
-            "docker_image": run_results.get("docker_image", build_info.get("docker_image", "")),
+            "docker_image": build_info.get("docker_image", ""),
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
             "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
-                (self.context.ctx.get("docker_env_vars") or {}).get(
-                    "MAD_SYSTEM_GPU_ARCHITECTURE", ""
-                )
+                self.context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
                 if self.context
                 else ""
             ),
@@ -511,16 +364,72 @@ class ContainerRunner:
     def login_to_registry(self, registry: str, credentials: typing.Dict = None) -> None:
         """Login to a Docker registry for pulling images.
 
-        Delegates to :func:`madengine.core.auth.login_to_registry`.
-        Does not raise on failure so public images can still be pulled.
+        Args:
+            registry: Registry URL (e.g., "localhost:5000", "docker.io")
+            credentials: Optional credentials dictionary containing username/password
         """
-        login_to_registry(
-            registry,
-            credentials,
-            console=self.console,
-            rich_console=self.rich_console,
-            raise_on_failure=False,
-        )
+        if not credentials:
+            self.rich_console.print("[yellow]No credentials provided for registry login[/yellow]")
+            return
+
+        # Check if registry credentials are available
+        registry_key = registry if registry else "dockerhub"
+
+        # Handle docker.io as dockerhub
+        if registry and registry.lower() == "docker.io":
+            registry_key = "dockerhub"
+
+        if registry_key not in credentials:
+            error_msg = f"No credentials found for registry: {registry_key}"
+            if registry_key == "dockerhub":
+                error_msg += f"\nPlease add dockerhub credentials to credential.json:\n"
+                error_msg += "{\n"
+                error_msg += '  "dockerhub": {\n'
+                error_msg += '    "repository": "your-repository",\n'
+                error_msg += '    "username": "your-dockerhub-username",\n'
+                error_msg += '    "password": "your-dockerhub-password-or-token"\n'
+                error_msg += "  }\n"
+                error_msg += "}"
+            else:
+                error_msg += (
+                    f"\nPlease add {registry_key} credentials to credential.json:\n"
+                )
+                error_msg += "{\n"
+                error_msg += f'  "{registry_key}": {{\n'
+                error_msg += f'    "repository": "your-repository",\n'
+                error_msg += f'    "username": "your-{registry_key}-username",\n'
+                error_msg += f'    "password": "your-{registry_key}-password"\n'
+                error_msg += "  }\n"
+                error_msg += "}"
+            print(error_msg)
+            raise RuntimeError(error_msg)
+
+        creds = credentials[registry_key]
+
+        if "username" not in creds or "password" not in creds:
+            error_msg = f"Invalid credentials format for registry: {registry_key}"
+            error_msg += f"\nCredentials must contain 'username' and 'password' fields"
+            print(error_msg)
+            raise RuntimeError(error_msg)
+
+        # Ensure credential values are strings
+        username = str(creds["username"])
+        password = str(creds["password"])
+
+        # Perform docker login
+        login_command = f"echo '{password}' | docker login"
+
+        if registry and registry.lower() not in ["docker.io", "dockerhub"]:
+            login_command += f" {registry}"
+
+        login_command += f" --username {username} --password-stdin"
+
+        try:
+            self.console.sh(login_command, secret=True)
+            self.rich_console.print(f"[green]✅ Successfully logged in to registry: {registry or 'DockerHub'}[/green]")
+        except Exception as e:
+            self.rich_console.print(f"[red]❌ Failed to login to registry {registry}: {e}[/red]")
+            # Don't raise exception here, as public images might still be pullable
 
     def pull_image(
         self,
@@ -559,7 +468,7 @@ class ContainerRunner:
             try:
                 self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
-            except Exception:
+            except:
                 pass  # It's okay if image doesn't exist
         
         try:
@@ -656,8 +565,6 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
-    _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
     def get_env_arg(self, run_env: typing.Dict) -> str:
         """Get the environment arguments for docker run."""
         env_args = ""
@@ -665,18 +572,14 @@ class ContainerRunner:
         # Add custom environment variables
         if run_env:
             for env_arg in run_env:
-                if not self._ENV_KEY_RE.match(env_arg):
-                    raise ValueError(f"Invalid environment variable name: {env_arg!r}")
-                env_args += f"--env {env_arg}={shlex.quote(str(run_env[env_arg]))} "
+                env_args += f"--env {env_arg}='{str(run_env[env_arg])}' "
 
         # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                if not self._ENV_KEY_RE.match(env_arg):
-                    raise ValueError(f"Invalid environment variable name: {env_arg!r}")
-                value = self.context.ctx["docker_env_vars"][env_arg]
-                env_args += f"--env {env_arg}={shlex.quote(str(value))} "
+                env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
 
+        print(f"Env arguments: {env_args}")
         return env_args
 
     def get_mount_arg(self, mount_datapaths: typing.List) -> str:
@@ -771,6 +674,156 @@ class ContainerRunner:
                 else:
                     print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
+    def _run_self_managed(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        log_file_path: str,
+        timeout: int,
+        run_results: typing.Dict,
+        pre_encapsulate_post_scripts: typing.Dict,
+        run_env: typing.Dict,
+    ) -> typing.Dict:
+        """
+        Run script directly on the host (self-managed launcher, not inside madengine Docker).
+        
+        Used for slurm_multi launchers that manage their own Docker containers
+        via SLURM srun commands. The script is executed directly on the node.
+        
+        Args:
+            model_info: Model configuration from manifest
+            build_info: Build information from manifest
+            log_file_path: Path to log file
+            timeout: Execution timeout in seconds
+            run_results: Dictionary to store run results
+            pre_encapsulate_post_scripts: Pre/post script configuration
+            run_env: Environment variables for the script
+            
+        Returns:
+            Dictionary with run results
+        """
+        import shutil
+        
+        self.rich_console.print(f"[dim]{'='*80}[/dim]")
+        
+        # Prepare script path
+        scripts_arg = model_info["scripts"]
+        
+        # Get the current working directory (might be temp workspace)
+        cwd = os.getcwd()
+        print(f"📂 Current directory: {cwd}")
+        
+        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+            script_path = scripts_arg
+            script_name = os.path.basename(scripts_arg)
+        elif scripts_arg.endswith(".py"):
+            script_path = scripts_arg
+            script_name = os.path.basename(scripts_arg)
+        else:
+            # Directory specified - look for run.sh
+            script_path = os.path.join(scripts_arg, "run.sh")
+            script_name = "run.sh"
+        
+        # If script path is relative, make it absolute from cwd
+        if not os.path.isabs(script_path):
+            script_path = os.path.join(cwd, script_path)
+        
+        # Check script exists
+        if not os.path.exists(script_path):
+            print(f"⚠️ Script not found at: {script_path}")
+            # Try alternative locations
+            alt_path = os.path.join(cwd, os.path.basename(scripts_arg))
+            if os.path.exists(alt_path):
+                script_path = alt_path
+                print(f"✓ Found at alternative location: {script_path}")
+            else:
+                raise FileNotFoundError(f"Script not found: {script_path}")
+        
+        script_dir = os.path.dirname(script_path) or cwd
+        print(f"📜 Script: {script_path}")
+        print(f"📁 Working directory: {script_dir}")
+        
+        # Prepare model arguments
+        model_args = self.context.ctx.get("model_args", model_info.get("args", ""))
+        print(f"📝 Arguments: {model_args}")
+        
+        # Build command
+        if script_path.endswith(".py"):
+            cmd = f"python3 {script_path} {model_args}"
+        else:
+            cmd = f"bash {script_path} {model_args}"
+        
+        print(f"🔧 Command: {cmd}")
+        
+        # Prepare environment
+        env = os.environ.copy()
+        env.update(run_env)
+        
+        # Add model-specific env vars from model_info
+        if "env_vars" in model_info and model_info["env_vars"]:
+            for key, value in model_info["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}={value}")
+        
+        # Add env vars from additional_context
+        if self.additional_context and "env_vars" in self.additional_context:
+            for key, value in self.additional_context["env_vars"].items():
+                env[key] = str(value)
+        
+        # Run script with logging
+        test_start_time = time.time()
+        self.rich_console.print("\n[bold blue]Running script (self-managed launcher)...[/bold blue]")
+        
+        try:
+            with open(log_file_path, mode="w", buffering=1) as outlog:
+                with redirect_stdout(
+                    PythonicTee(outlog, self.live_output)
+                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                    print(f"⏰ Setting timeout to {timeout} seconds.")
+                    print(f"🚀 Executing: {cmd}")
+                    print(f"📂 Working directory: {script_dir}")
+                    print(f"{'='*80}")
+                    
+                    # NOTE: shell=True is required because cmd embeds shell features
+                    # (pipes, redirects, env-var substitution) constructed earlier in this
+                    # method. cmd is built from validated model card / manifest fields and
+                    # any user-provided model_args are routed through shlex-quoted assembly
+                    # in the caller — do NOT concatenate raw user input directly into cmd.
+                    result = subprocess.run(  # noqa: S602 (shell=True intentional, see comment above)
+                        cmd,
+                        shell=True,
+                        cwd=script_dir,
+                        env=env,
+                        timeout=timeout if timeout > 0 else None,
+                    )
+                    
+                    run_results["test_duration"] = time.time() - test_start_time
+                    print(f"\n{'='*80}")
+                    print(f"⏱️ Test Duration: {run_results['test_duration']:.2f} seconds")
+                    
+                    if result.returncode == 0:
+                        run_results["status"] = "SUCCESS"
+                        self.rich_console.print("[bold green]✓ Script completed successfully[/bold green]")
+                    else:
+                        run_results["status"] = "FAILURE"
+                        run_results["status_detail"] = f"Exit code {result.returncode}"
+                        self.rich_console.print(f"[bold red]✗ Script failed with exit code {result.returncode}[/bold red]")
+                        raise subprocess.CalledProcessError(result.returncode, cmd)
+                        
+        except subprocess.TimeoutExpired:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = f"Timeout after {timeout}s"
+            run_results["test_duration"] = time.time() - test_start_time
+            self.rich_console.print(f"[bold red]✗ Script timed out after {timeout}s[/bold red]")
+            raise
+        except Exception as e:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = str(e)
+            run_results["test_duration"] = time.time() - test_start_time
+            raise
+        
+        return run_results
+
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
     ) -> None:
@@ -813,26 +866,6 @@ class ContainerRunner:
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
-    def _resolve_docker_image(self, docker_image: str, model_name: str) -> str:
-        """Resolve Docker image: use requested image if present, else primus_pretrain fallback with clear error."""
-        if _docker_image_exists_locally(docker_image):
-            return docker_image
-        if model_name.startswith("primus_pretrain/"):
-            fallback = "ci-primus_pretrain_primus.ubuntu.amd"
-            if _docker_image_exists_locally(fallback):
-                print(
-                    f"ℹ️  Using shared Primus image (one build for all primus_pretrain configs): {fallback}"
-                )
-                return fallback
-            raise RuntimeError(
-                f"Docker image '{docker_image}' not found and fallback '{fallback}' not found. "
-                "Build the Primus image first: madengine build --tags primus_pretrain --additional-context-file <config>.json"
-            ) from None
-        raise RuntimeError(
-            f"Docker image '{docker_image}' not found. "
-            "Build it first: madengine build --tags <model_tag> --additional-context-file <config>.json"
-        ) from None
-
     def run_container(
         self,
         model_info: typing.Dict,
@@ -863,9 +896,6 @@ class ContainerRunner:
         """
         self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
 
-        # Resolve image: if model-specific image is missing, try shared primus_pretrain image (one build for all configs)
-        docker_image = self._resolve_docker_image(docker_image, model_info["name"])
-
         timeout = resolve_run_timeout(model_info, timeout)
         log_file_path = make_run_log_file_path(model_info, docker_image, phase_suffix)
         print(f"Run log will be written to: {log_file_path}")
@@ -889,8 +919,6 @@ class ContainerRunner:
         # If build info provided, merge it
         if build_info:
             run_results.update(build_info)
-        # Preserve actual image used (resolved, possibly fallback) for perf reporting
-        run_results["docker_image"] = docker_image
 
         # Prepare docker run options
         gpu_vendor = self.context.ctx["gpu_vendor"]
@@ -933,8 +961,6 @@ class ContainerRunner:
 
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
-        if model_info.get('multiple_results'):
-            docker_options += f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
         docker_options += (
             f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
         )
@@ -972,10 +998,7 @@ class ContainerRunner:
             'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
             'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
             'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
-            # Primus launcher (config path and optional CLI extra args)
-            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
-            # Rendezvous timeout so all nodes can join after pull
-            'TORCH_ELASTIC_RDZV_TIMEOUT',
+            'TORCH_ELASTIC_RDZV_TIMEOUT',  # Rendezvous timeout so all nodes can join after pull
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
             'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
@@ -1009,31 +1032,14 @@ class ContainerRunner:
             if merged_count > 0:
                 print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
-        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
-            "AMD"
-        ) != -1:
-            from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
-
-            # Determine whether the user explicitly supplied ROCM_PATH for the container.
-            # If they did (via docker_env_vars.ROCM_PATH in additional_context), the
-            # re-merge above already restored it — keep it so finalize uses it directly.
-            # If they did not, clear any ROCM_PATH left from a previous model run so
-            # finalize always re-resolves for the current docker_image (OCI config →
-            # in-image probe → /opt/rocm default).
-            user_supplied_rocm_path = (
-                str(
-                    (self.additional_context or {})
-                    .get("docker_env_vars", {})
-                    .get("ROCM_PATH", "")
-                ).strip()
-            )
-            if not user_supplied_rocm_path:
-                self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
-
-            finalize_container_rocm_path(
-                self.context.ctx["docker_env_vars"],
-                docker_image,
-            )
+        # Merge env_vars from model_info (models.json) into docker_env_vars
+        if "env_vars" in model_info and model_info["env_vars"]:
+            model_env_count = 0
+            for key, value in model_info["env_vars"].items():
+                self.context.ctx["docker_env_vars"][key] = str(value)
+                model_env_count += 1
+            if model_env_count > 0:
+                print(f"ℹ️  Merged {model_env_count} environment variables from model_info (models.json)")
 
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
@@ -1053,11 +1059,9 @@ class ContainerRunner:
         if os.path.exists(tools_json_file):
             self.apply_tools(pre_encapsulate_post_scripts, run_env, tools_json_file)
 
-        # Add system environment collection script to pre_scripts
-        # Context can explicitly disable via gen_sys_env_details: false in additional_context
-        ctx_sys_env = self.context.ctx.get("gen_sys_env_details")
-        should_collect_sys_env = ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
-        if should_collect_sys_env:
+        # Add system environment collection script to pre_scripts (equivalent to generate_sys_env_details)
+        # This ensures distributed runs have the same system environment logging as standard runs
+        if generate_sys_env_details or self.context.ctx.get("gen_sys_env_details"):
             self.gather_system_env_details(
                 pre_encapsulate_post_scripts, model_info["name"]
             )
@@ -1098,6 +1102,44 @@ class ContainerRunner:
 
         print(f"Docker options: {docker_options}")
 
+        # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
+        # slurm_multi launchers run scripts directly on the host,
+        # not inside a madengine-managed Docker. The script manages its own containers via srun.
+        launcher = ""
+        
+        # Debug: Print all sources
+        print(f"🔍 Self-managed launcher check...")
+        print(f"   MAD_LAUNCHER_TYPE env: {os.environ.get('MAD_LAUNCHER_TYPE', '<not set>')}")
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+            print(f"   additional_context.distributed.launcher: {launcher or '<not set>'}")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+            print(f"   model_info.distributed.launcher: {launcher or '<not set>'}")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+            print(f"   Fallback to MAD_LAUNCHER_TYPE: {launcher or '<not set>'}")
+        
+        print(f"   Final launcher detected: {launcher or '<none>'}")
+        
+        # Normalize launcher name (replace underscores with hyphens)
+        launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
+        
+        if launcher_normalized and launcher_normalized in [l.lower().replace("_", "-") for l in SELF_MANAGED_LAUNCHERS]:
+            self.rich_console.print(f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]")
+            self.rich_console.print(f"[dim]Script will manage its own Docker containers via SLURM[/dim]")
+            return self._run_self_managed(
+                model_info=model_info,
+                build_info=build_info,
+                log_file_path=log_file_path,
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
+                run_env=run_env,
+            )
+        # ========== END SELF-MANAGED CHECK ==========
+
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")
         print(f"📦 Container: {container_name}")
@@ -1127,22 +1169,24 @@ class ContainerRunner:
                         whoami = model_docker.sh("whoami")
                         print(f"👤 Running as user: {whoami}")
 
-                        # Show GPU info — let the container resolve its own tool paths via
-                        # PATH rather than using host-resolved paths, which break on
-                        # TheRock images where amd-smi/rocm-smi live in a Python venv
-                        # (e.g. /opt/python/bin/) rather than /opt/rocm/bin/.
+                        # Show GPU info with version-aware tool selection (PR #54)
                         if gpu_vendor.find("AMD") != -1:
                             print(f"🎮 Checking AMD GPU status...")
-                            model_docker.sh(
-                                "amd-smi 2>/dev/null || rocm-smi 2>/dev/null || "
-                                "echo 'GPU SMI tool not available in container PATH'"
-                            )
+                            rocm_path = self.context.ctx.get("rocm_path") or get_rocm_path()
+                            amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
+                            rocm_smi_path = os.path.join(rocm_path, "bin", "rocm-smi")
+                            try:
+                                tool_manager = self.context._get_tool_manager()
+                                preferred_tool = tool_manager.get_preferred_smi_tool()
+                                if preferred_tool == "amd-smi":
+                                    model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
+                                else:
+                                    model_docker.sh(f"{rocm_smi_path} || {amd_smi_path} || true")
+                            except Exception:
+                                model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
                         elif gpu_vendor.find("NVIDIA") != -1:
                             print(f"🎮 Checking NVIDIA GPU status...")
                             model_docker.sh("/usr/bin/nvidia-smi || true")
-
-                        # Print host vs container environment summary table
-                        _print_run_env_table(gpu_vendor, self.context, model_docker, self.rich_console)
 
                         # Prepare model directory
                         model_dir = "run_directory"
@@ -1214,8 +1258,8 @@ class ContainerRunner:
 
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
-                        if scripts_arg.endswith(".sh"):
-                            # Shell script specified directly
+                        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+                            # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):
@@ -1308,26 +1352,11 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
-                        # When model writes performance to a file in run_directory, copy to cwd
-                        # so the host can read it (e.g. bind-mounted workspace) before extraction.
-                        multiple_results_file = (model_info.get("multiple_results") or "").strip()
-                        if multiple_results_file:
-                            try:
-                                model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(
-                                        model_dir, multiple_results_file
-                                    )
-                                )
-                            except Exception:
-                                pass
-
                         # Extract performance metrics from logs
                         # Look for performance data in the log output similar to original run_models.py
                         try:
                             # Check if multiple results file is specified in model_info
                             multiple_results = model_info.get("multiple_results", None)
-                            if multiple_results:
-                                multiple_results = multiple_results.strip()
 
                             if multiple_results:
                                 resolved_path = _resolve_multiple_results_path(
@@ -1346,10 +1375,7 @@ class ContainerRunner:
                                         import csv
                                         with open(resolved_path, "r") as f:
                                             csv_reader = csv.DictReader(f)
-
-                                            # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                            csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
-
+                                            
                                             # Check if 'performance' column exists
                                             if 'performance' not in csv_reader.fieldnames:
                                                 print("Error: 'performance' column not found in multiple results file.")
@@ -1391,9 +1417,9 @@ class ContainerRunner:
                                         
                                         # Try multiple patterns to match different log formats
                                         
-                                        # Pattern 1: "performance: <value>[<unit>][,] <metric>"
-                                        # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
-                                        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
+                                        # Pattern 1: "performance: 12345 metric_name" (original expected format)
+                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+                                        match = re.search(perf_pattern, log_content)
                                         
                                         if match:
                                             run_results["performance"] = match.group(1).strip()
@@ -1667,34 +1693,20 @@ class ContainerRunner:
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
                         try:
-                            _md = model_dir.replace("\\", "/")
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
-                            )
+                            model_docker.sh(f"cp {model_dir}/*_profiler_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/*_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/*_trace.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {model_dir}/library_trace.csv . 2>/dev/null || true")
                         except Exception as e:
                             # Ignore errors if no profiler/trace output files exist
                             pass
 
                         # Copy multiple_results CSV to workspace root before run_directory is removed
                         # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
-                        mult_res = (model_info.get("multiple_results") or "").strip()
+                        mult_res = model_info.get("multiple_results")
                         if mult_res:
                             try:
-                                model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
-                                )
+                                model_docker.sh(f"cp {model_dir}/{mult_res} . 2>/dev/null || true")
                             except Exception:
                                 pass
 

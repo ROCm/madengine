@@ -14,11 +14,8 @@ Priority (highest to lowest):
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import logging
 import warnings
 from typing import Dict, Any, Optional, Tuple
-
-logger = logging.getLogger(__name__)
 
 
 class GPUConfigResolver:
@@ -160,18 +157,17 @@ class GPUConfigResolver:
         # Warn if multiple GPU fields found
         if len(found_fields) > 1:
             field_list = ", ".join([f"{name}={val}" for name, val in found_fields])
-            logger.warning(
-                "Multiple GPU fields in %s: %s. Using %s=%s",
-                context, field_list, found_fields[0][0], found_fields[0][1],
+            print(
+                f"⚠️  Multiple GPU fields in {context}: {field_list}. "
+                f"Using {found_fields[0][0]}={found_fields[0][1]}"
             )
         
         # Convert to int (handle string values like "8")
         try:
             return int(found_fields[0][1])
         except (ValueError, TypeError):
-            logger.warning(
-                "Invalid GPU count in %s: %s. Using default.",
-                context, found_fields[0][1],
+            print(
+                f"⚠️  Invalid GPU count in {context}: {found_fields[0][1]}. Using default."
             )
             return None
     
@@ -235,9 +231,10 @@ class GPUConfigResolver:
             
             if is_deployment_override:
                 # This is normal - deployment config overriding model default
-                logger.info(
-                    "GPU configuration override: %s=%s (overriding model default: %s)",
-                    sources[0][0], sources[0][1], mismatch_details.split(",")[-1].strip(),
+                # Use print instead of warnings.warn for cleaner output
+                print(
+                    f"ℹ️  GPU configuration override: {sources[0][0]}={sources[0][1]} "
+                    f"(overriding model default: {mismatch_details.split(',')[-1].strip()})"
                 )
             else:
                 # Potentially unexpected mismatch - use warning for actual errors
@@ -305,7 +302,7 @@ def resolve_runtime_gpus(
         validate=True,
     )
     
-    logger.info("Resolved GPU count: %s (from %s)", gpu_count, source)
+    print(f"ℹ️  Resolved GPU count: {gpu_count} (from {source})")
     
     return gpu_count
 

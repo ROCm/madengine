@@ -3,8 +3,6 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 import os
-import shlex
-import shutil
 from console import Console
 
 '''
@@ -23,25 +21,21 @@ pip_list
 numa_balancing
 '''
 class CSVParser:
-    def __init__(self, filename, sys_config_files_path, tags, path_resolver=None):
+    def __init__(self, filename, sys_config_files_path, tags):
         self.filename = filename
         self.path = sys_config_files_path
         self.tags = tags
         self.sys_config_info_list = []
-        self.path_resolver = path_resolver
         self.gpu_device_type = self.determine_gpu_device_type()
 
     def determine_gpu_device_type(self):
         console = Console()
         gpu_device_type = ""
-        # Use PATH resolution first so TheRock images (where rocm-smi lives
-        # under a Python venv, not /opt/rocm/bin/) are handled correctly.
-        rocm_smi_cmd = shutil.which("rocm-smi") or "/opt/rocm/bin/rocm-smi"
-        rocm_smi_out = console.sh(shlex.quote(rocm_smi_cmd) + " || true")
+        rocm_smi_out = console.sh("/opt/rocm/bin/rocm-smi || true")
         nv_smi_out = console.sh("nvidia-smi -L || true")
-        if "not found" not in rocm_smi_out and "No such file" not in rocm_smi_out:
+        if not "not found" in rocm_smi_out:
             gpu_device_type = "AMD"
-        if "not found" not in nv_smi_out and "No such file" not in nv_smi_out:
+        if not "not found" in nv_smi_out:
             gpu_device_type = "NVIDIA"
         return gpu_device_type
 
@@ -120,10 +114,8 @@ class CSVParser:
             for j in range(1, len(lines)):
                 line = lines[j].rstrip()
                 if "GPU" in line:
-                    values = line.split(":")
-                    if len(values) < 3:
-                        continue
                     num_gpu += 1
+                    values = line.split(":")
                     name = values[1].split("(UUID")[0]
                     uuid = values[2]
             info_list.append("Name|" + name)
@@ -162,14 +154,8 @@ class CSVParser:
         lines = self.get_log_file_data(rocm_info_path)
         info_list = []
         info_list.append(lines[0].rstrip())
-        if self.path_resolver is not None:
-            rocm_version = self.path_resolver.get_version()
-        else:
-            version_path = os.path.join("/opt/rocm", ".info", "version")
-            try:
-                rocm_version = open(version_path).read().rstrip()
-            except FileNotFoundError:
-                rocm_version = "unknown"
+        version_path = os.path.join("/opt/rocm", ".info", "version")
+        rocm_version = open(version_path).read().rstrip()
         info_list.append("ROCm version|" + rocm_version)
         return info_list
 
