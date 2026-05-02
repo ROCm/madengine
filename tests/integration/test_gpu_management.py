@@ -13,7 +13,8 @@ import os
 import json
 import stat
 import pytest
-from unittest.mock import Mock, patch
+import unittest.mock
+from unittest.mock import Mock, MagicMock, patch, call, mock_open
 
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 from madengine.utils.rocm_tool_manager import ROCmToolManager, ROCM_VERSION_THRESHOLD
@@ -36,7 +37,7 @@ def is_amd_gpu():
         import subprocess
         result = subprocess.run(['rocm-smi'], capture_output=True, timeout=5)
         return result.returncode == 0
-    except Exception:
+    except:
         return False
 
 
@@ -266,12 +267,9 @@ class TestGPUToolFactory:
     
     def test_auto_detect_vendor(self):
         """Test auto-detection of GPU vendor."""
-        with patch(
-            "madengine.utils.gpu_tool_factory.detect_gpu_vendor",
-            return_value=GPUVendor.AMD,
-        ):
+        with patch('madengine.utils.gpu_validator.detect_gpu_vendor', return_value=GPUVendor.AMD):
             manager = get_gpu_tool_manager(vendor=None)
-
+            
             assert isinstance(manager, ROCmToolManager)
     
     def test_unknown_vendor_raises_error(self):
@@ -447,20 +445,11 @@ class TestGetGpuRenderDNodesIntegration:
     @pytest.mark.skipif(is_amd_gpu(), reason="Test requires non-AMD GPU or no GPU")
     def test_returns_none_for_non_amd_gpu(self):
         """Test that the function returns None for non-AMD GPUs."""
-        from unittest.mock import patch
-
-        with patch.object(Context, "get_gpu_vendor", return_value="NVIDIA"), \
-             patch.object(Context, "get_system_ngpus", return_value=0), \
-             patch.object(Context, "get_system_gpu_architecture", return_value=""), \
-             patch.object(Context, "get_system_gpu_product_name", return_value=""), \
-             patch.object(Context, "get_system_hip_version", return_value="5.0"), \
-             patch.object(Context, "get_docker_gpus", return_value="0"), \
-             patch.object(Context, "get_gpu_renderD_nodes", return_value=None):
-            context = Context()
-
+        context = Context()
+        
         # Should return None for non-AMD GPUs
-        if context.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] != "AMD":
-            assert context.ctx["gpu_renderDs"] is None
+        if context.ctx['docker_env_vars']['MAD_GPU_VENDOR'] != 'AMD':
+            assert context.ctx['gpu_renderDs'] is None
 
     @pytest.mark.skipif(not is_amd_gpu(), reason="Test requires AMD GPU")
     def test_returns_list_for_amd_gpu(self):

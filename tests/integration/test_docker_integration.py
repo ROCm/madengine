@@ -8,8 +8,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import json
-import shlex
 import tempfile
+import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
 # third-party modules
@@ -19,6 +19,7 @@ import pytest
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.core.context import Context
 from madengine.core.console import Console
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestDockerBuilder:
@@ -121,24 +122,6 @@ class TestDockerBuilder:
     @patch.object(Context, "get_system_hip_version", return_value="5.4")
     @patch.object(Context, "get_docker_gpus", return_value="all")
     @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
-    def test_get_context_path_primus_uses_repo_root(
-        self, mock_render, mock_docker_gpu, mock_hip, mock_arch, mock_ngpus, mock_vendor
-    ):
-        """Primus Dockerfile COPYs scripts/Primus; build context must be repo root."""
-        context = Context()
-        builder = DockerBuilder(context)
-
-        info = {"dockerfile": "docker/primus", "dockercontext": ""}
-        result = builder.get_context_path(info)
-
-        assert result == "."
-
-    @patch.object(Context, "get_gpu_vendor", return_value="AMD")
-    @patch.object(Context, "get_system_ngpus", return_value=1)
-    @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
-    @patch.object(Context, "get_system_hip_version", return_value="5.4")
-    @patch.object(Context, "get_docker_gpus", return_value="all")
-    @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
     def test_get_build_arg_no_args(
         self, mock_render, mock_docker_gpu, mock_hip, mock_arch, mock_ngpus, mock_vendor
     ):
@@ -168,8 +151,8 @@ class TestDockerBuilder:
 
         result = builder.get_build_arg()
 
-        assert f"--build-arg ARG1={shlex.quote('value1')}" in result
-        assert f"--build-arg ARG2={shlex.quote('value2')}" in result
+        assert "--build-arg ARG1='value1'" in result
+        assert "--build-arg ARG2='value2'" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -187,7 +170,7 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert f"--build-arg RUNTIME_ARG={shlex.quote('runtime_value')}" in result
+        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -206,8 +189,8 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert f"--build-arg CONTEXT_ARG={shlex.quote('context_value')}" in result
-        assert f"--build-arg RUNTIME_ARG={shlex.quote('runtime_value')}" in result
+        assert "--build-arg CONTEXT_ARG='context_value'" in result
+        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)

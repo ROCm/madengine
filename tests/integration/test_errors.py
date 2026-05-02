@@ -1,4 +1,4 @@
-"""Unit tests for error handling: CLI integration, workflow, unified system, backward compat.
+"""Integration tests for error handling: CLI integration, workflow, unified system, backward compat.
 
 Merged from test_cli_error_integration and test_error_system_integration.
 Deduplicated: single setup_logging/handler test, one context serialization test.
@@ -6,9 +6,13 @@ Deduplicated: single setup_logging/handler test, one context serialization test.
 
 import json
 import os
-from unittest.mock import Mock, patch
+import sys
+from unittest.mock import Mock, patch, MagicMock
 
 import pytest
+
+# Ensure src on path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from madengine.core.errors import (
     ErrorHandler,
@@ -122,7 +126,7 @@ class TestErrorWorkflow:
 
     def test_error_context_serialization(self):
         """Error context can be serialized for logging."""
-        from madengine.core.errors import ExecutionError
+        from madengine.core.errors import RuntimeError
 
         context = create_error_context(
             operation="model_execution",
@@ -132,7 +136,7 @@ class TestErrorWorkflow:
             node_id="worker-node-01",
             additional_info={"container_id": "abc123", "gpu_count": 2},
         )
-        error = ExecutionError("Model execution failed", context=context)
+        error = RuntimeError("Model execution failed", context=context)
         data = json.dumps(error.context.__dict__, default=str)
         assert "model_execution" in data and "ContainerRunner" in data and "abc123" in data
 
@@ -180,28 +184,28 @@ class TestUnifiedErrorSystem:
         """All error types inherit MADEngineError and have context/category/recoverable."""
         from madengine.core.errors import (
             ValidationError,
-            NetworkError,
+            ConnectionError,
             AuthenticationError,
-            ExecutionError,
+            RuntimeError,
             BuildError,
             DiscoveryError,
             OrchestrationError,
             RunnerError,
             ConfigurationError,
-            DeploymentTimeoutError,
+            TimeoutError,
         )
 
         for error_class in [
             ValidationError,
-            NetworkError,
+            ConnectionError,
             AuthenticationError,
-            ExecutionError,
+            RuntimeError,
             BuildError,
             DiscoveryError,
             OrchestrationError,
             RunnerError,
             ConfigurationError,
-            DeploymentTimeoutError,
+            TimeoutError,
         ]:
             err = error_class("Test error message")
             assert isinstance(err, MADEngineError)
@@ -241,9 +245,9 @@ class TestUnifiedErrorSystem:
 
     def test_nested_error_handling(self):
         """Nested errors with cause chain are handled."""
-        from madengine.core.errors import ExecutionError as MADRuntimeError, OrchestrationError, NetworkError
+        from madengine.core.errors import RuntimeError as MADRuntimeError, OrchestrationError
 
-        orig = NetworkError("Network timeout")
+        orig = ConnectionError("Network timeout")
         runtime = MADRuntimeError("Operation failed", cause=orig)
         final = OrchestrationError("Orchestration failed", cause=runtime)
         assert final.cause == runtime and runtime.cause == orig

@@ -6,26 +6,34 @@ Tests the core error handling functionality including error types,
 context management, Rich console integration, and error propagation.
 """
 
-import re
-
 import pytest
-from unittest.mock import Mock
+import json
+import io
+import re
+from unittest.mock import Mock, patch, MagicMock
 from rich.console import Console
+from rich.text import Text
+
+# Add src to path for imports
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from madengine.core.errors import (
     ErrorCategory,
     ErrorContext,
     MADEngineError,
     ValidationError,
-    NetworkError,
+    ConnectionError,
     AuthenticationError,
     ExecutionError,
+    RuntimeError,  # Backward compatibility alias
     BuildError,
     DiscoveryError,
     OrchestrationError,
     RunnerError,
     ConfigurationError,
-    DeploymentTimeoutError,
+    TimeoutError,
     ErrorHandler,
     set_error_handler,
     get_error_handler,
@@ -79,7 +87,7 @@ class TestMADEngineErrorHierarchy:
     
     @pytest.mark.parametrize("error_class,category,recoverable,message", [
         (ValidationError, ErrorCategory.VALIDATION, True, "Invalid input"),
-        (NetworkError, ErrorCategory.CONNECTION, True, "Connection failed"),
+        (ConnectionError, ErrorCategory.CONNECTION, True, "Connection failed"),
         (BuildError, ErrorCategory.BUILD, False, "Build failed"),
         (RunnerError, ErrorCategory.RUNNER, True, "Runner execution failed"),
         (AuthenticationError, ErrorCategory.AUTHENTICATION, True, "Auth failed"),
@@ -102,9 +110,9 @@ class TestMADEngineErrorHierarchy:
         assert mad_error.cause == original_error
         assert str(mad_error) == "Runtime failure"
 
-    def test_execution_error_is_mad_engine_error(self):
-        """Test that ExecutionError is a MADEngineError."""
-        error = ExecutionError("Test error")
+    def test_backward_compatibility_alias(self):
+        """Test that RuntimeError alias still works."""
+        error = RuntimeError("Test error")
         assert isinstance(error, ExecutionError)
         assert isinstance(error, MADEngineError)
 

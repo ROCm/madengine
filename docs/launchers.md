@@ -16,7 +16,6 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **DeepSpeed** | Training | ZeRO optimization training | ✅ | ✅ | ✅ |
 | **Megatron-LM** | Training | Large-scale transformer training | ✅ | ✅ | ✅ |
 | **TorchTitan** | Training | LLM pre-training (FSDP2+TP+PP) | ✅ | ✅ | ✅ |
-| **Primus** | Training | Megatron/TorchTitan/Jax via Primus config | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
@@ -240,48 +239,7 @@ seq_len = 8192
 
 ---
 
-### 5. Primus
-
-**Purpose**: Unified pretrain entry for Megatron-LM, TorchTitan, and Jax/MaxText via Primus experiment YAML.
-
-**When to Use**:
-- Run Primus example configs (e.g. `examples/megatron/configs/MI300X/*.yaml`) via madengine
-- Single image plus config path; scheduling and tools/metrics from madengine
-
-**Configuration**:
-```json
-{
-  "distributed": {
-    "launcher": "primus",
-    "nnodes": 2,
-    "nproc_per_node": 8,
-    "primus": {
-      "config_path": "examples/megatron/configs/MI300X/deepseek_v2_lite-BF16-pretrain.yaml",
-      "cli_extra": "",
-      "backend": "megatron"
-    }
-  }
-}
-```
-
-Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND=...` before your model script when path-based detection is not enough. If omitted, madengine infers `BACKEND` from the **model name** when it follows `primus_pretrain/<launcher>_<arch>_...` (e.g. `primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain` → `torchtitan`), matching `scripts/primus_pretrain/get_models_json.py` in MAD-internal.
-
-**Features**:
-- Launcher sets `PRIMUS_ROOT` (default `/workspace/Primus` on K8s after init), `PRIMUS_CONFIG_PATH`, optional `PRIMUS_CLI_EXTRA`, and optional `BACKEND` (from `primus.backend` or inferred from `primus_pretrain/...` model names); no `MAD_MULTI_NODE_RUNNER`
-- Model script (e.g. `run.sh`) sets `EXP` and calls Primus `run_pretrain.sh`
-- NNODES, NODE_RANK, MASTER_ADDR, etc. set by madengine job template
-- Use with MAD-Internal Primus submodule and `scripts/primus_pretrain/run.sh`
-
-**Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
-
-**Examples**:
-- SLURM: `examples/slurm-configs/minimal/primus-minimal.json`
-- K8s: `examples/k8s-configs/minimal/primus-minimal.json`
-- K8s (Primus vs upstream workload API, MaxText caveats, TorchTitan/Megatron/MaxText sample JSON): `examples/k8s-configs/README.md` section **Primus on Kubernetes**
-
----
-
-### 6. vLLM
+### 5. vLLM
 
 **Purpose**: High-throughput LLM inference serving
 
@@ -328,7 +286,7 @@ VLLM_DISTRIBUTED_BACKEND="auto"  # or "ray" for multi-node
 
 ---
 
-### 7. SGLang
+### 6. SGLang
 
 **Purpose**: Fast LLM inference with structured generation
 
@@ -373,7 +331,7 @@ SGLANG_PIPELINE_PARALLEL_SIZE=1
 
 ---
 
-### 8. SGLang Disaggregated (NEW!)
+### 7. SGLang Disaggregated (NEW!)
 
 **Purpose**: Large-scale disaggregated LLM inference with specialized prefill/decode clusters
 
@@ -406,7 +364,7 @@ SGLang Disaggregated separates inference into specialized node pools:
 ```json
 {
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 5,
     "nproc_per_node": 8,
     "sglang_disagg": {
@@ -445,7 +403,7 @@ Override automatic split based on workload characteristics:
 ```json
 {
   "distributed": {
-    "launcher": "sglang-disagg",
+    "launcher": "slurm_multi",
     "nnodes": 7,
     "nproc_per_node": 8,
     "sglang_disagg": {
@@ -478,6 +436,18 @@ Override automatic split based on workload characteristics:
 - Ray cluster coordination
 - No torchrun needed (manages own processes)
 
+**Registry Requirement (SLURM)**:
+
+Models using `slurm_multi` launcher **require** `--registry` or `--use-image` during build:
+
+```bash
+madengine build --tags model --registry docker.io/myorg
+# OR
+madengine build --tags model --use-image
+```
+
+This ensures all compute nodes can pull the image in parallel during `madengine run`.
+
 **Environment Variables (K8s)**:
 ```bash
 POD_INDEX=${JOB_COMPLETION_INDEX}  # Pod index for role assignment
@@ -499,12 +469,12 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 ```
 
 **Examples**:
-- K8s Minimal: `examples/k8s-configs/minimal/sglang-disagg-minimal.json`
-- K8s Basic: `examples/k8s-configs/basic/sglang-disagg-multi-node-basic.json`
-- K8s Custom: `examples/k8s-configs/basic/sglang-disagg-custom-split.json`
-- SLURM Minimal: `examples/slurm-configs/minimal/sglang-disagg-minimal.json`
-- SLURM Basic: `examples/slurm-configs/basic/sglang-disagg-multi-node.json`
-- SLURM Custom: `examples/slurm-configs/basic/sglang-disagg-custom-split.json`
+- K8s Minimal: `examples/k8s-configs/minimal/slurm-multi-minimal.json`
+- K8s Basic: `examples/k8s-configs/basic/slurm-multi-multi-node-basic.json`
+- K8s Custom: `examples/k8s-configs/basic/slurm-multi-custom-split.json`
+- SLURM Minimal: `examples/slurm-configs/minimal/slurm-multi-minimal.json`
+- SLURM Basic: `examples/slurm-configs/basic/slurm-multi-multi-node.json`
+- SLURM Custom: `examples/slurm-configs/basic/slurm-multi-custom-split.json`
 
 **Comparison: SGLang vs SGLang Disaggregated**:
 
@@ -561,16 +531,16 @@ madengine run --tags model --config custom-split-config.json
 
 ### Training Launchers
 
-| Feature | torchrun | DeepSpeed | Megatron-LM | TorchTitan | Primus |
-|---------|----------|-----------|-------------|------------|--------|
-| **Data Parallel** | ✅ DDP | ✅ ZeRO | ✅ | ✅ FSDP2 | via config |
-| **Tensor Parallel** | ❌ | ❌ | ✅ | ✅ | via config |
-| **Pipeline Parallel** | ❌ | ✅ | ✅ | ✅ | via config |
-| **Memory Efficiency** | Medium | High (ZeRO) | High | Very High | config-driven |
-| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| **Model Size** | Small-Medium | Medium-Large | Very Large | Very Large | config-driven |
-| **K8s Support** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **SLURM Support** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | torchrun | DeepSpeed | Megatron-LM | TorchTitan |
+|---------|----------|-----------|-------------|------------|
+| **Data Parallel** | ✅ DDP | ✅ ZeRO | ✅ | ✅ FSDP2 |
+| **Tensor Parallel** | ❌ | ❌ | ✅ | ✅ |
+| **Pipeline Parallel** | ❌ | ✅ | ✅ | ✅ |
+| **Memory Efficiency** | Medium | High (ZeRO) | High | Very High |
+| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
+| **Model Size** | Small-Medium | Medium-Large | Very Large | Very Large |
+| **K8s Support** | ✅ | ✅ | ✅ | ✅ |
+| **SLURM Support** | ✅ | ✅ | ✅ | ✅ |
 
 ### Inference Launchers
 
@@ -688,15 +658,6 @@ TORCHTITAN_FSDP_ENABLED=1
 MAD_MULTI_NODE_RUNNER="torchrun ..."
 ```
 
-**Primus**:
-```bash
-PRIMUS_ROOT=/workspace/Primus          # default; K8s overlays Primus/examples from ConfigMap here
-PRIMUS_CONFIG_PATH="examples/megatron/configs/MI300X/..."
-PRIMUS_CLI_EXTRA=""                   # optional
-BACKEND="megatron"                    # optional; from distributed.primus.backend or model-name inference
-# No MAD_MULTI_NODE_RUNNER (model script calls Primus run_pretrain.sh)
-```
-
 **vLLM**:
 ```bash
 VLLM_TENSOR_PARALLEL_SIZE=4
@@ -732,7 +693,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `slurm_multi`
 
 **2. Multi-Node Communication Fails**
 ```bash
@@ -777,8 +738,6 @@ madengine provides `$MAD_MULTI_NODE_RUNNER` for frameworks that use torchrun:
 
 # For torchrun/deepspeed/megatron/torchtitan
 $MAD_MULTI_NODE_RUNNER your_training_script.py --args
-
-# For primus (no MAD_MULTI_NODE_RUNNER; use run.sh → run_pretrain.sh; PRIMUS_* / BACKEND set by madengine)
 
 # For vLLM/sglang (no MAD_MULTI_NODE_RUNNER)
 python your_inference_script.py --args

@@ -11,6 +11,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import json
+import tempfile
 import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -21,6 +22,8 @@ import pytest
 from madengine.execution.container_runner import ContainerRunner
 from madengine.core.context import Context
 from madengine.core.console import Console
+from madengine.core.dataprovider import Data
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestContainerRunner:
@@ -156,18 +159,8 @@ class TestContainerRunner:
     @patch("madengine.execution.container_runner.Docker")
     @patch("builtins.open", new_callable=mock_open)
     @patch("os.path.exists")
-    @patch(
-        "madengine.execution.container_runner._docker_image_exists_locally",
-        return_value=True,
-    )
     def test_run_container_success(
-        self,
-        _mock_image_exists,
-        mock_exists,
-        mock_file,
-        mock_docker_class,
-        mock_sh,
-        mock_context_class,
+        self, mock_exists, mock_file, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test successful container run."""
         # Mock context to avoid GPU detection
@@ -222,12 +215,8 @@ class TestContainerRunner:
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
     @patch("madengine.execution.container_runner.Docker")
-    @patch(
-        "madengine.execution.container_runner._docker_image_exists_locally",
-        return_value=True,
-    )
     def test_run_container_timeout(
-        self, _mock_image_exists, mock_docker_class, mock_sh, mock_context_class
+        self, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test container run with timeout."""
         # Mock context to avoid GPU detection
@@ -267,12 +256,8 @@ class TestContainerRunner:
     @patch("madengine.core.context.Context")
     @patch.object(Console, "sh")
     @patch("madengine.execution.container_runner.Docker")
-    @patch(
-        "madengine.execution.container_runner._docker_image_exists_locally",
-        return_value=True,
-    )
     def test_run_container_failure(
-        self, _mock_image_exists, mock_docker_class, mock_sh, mock_context_class
+        self, mock_docker_class, mock_sh, mock_context_class
     ):
         """Test container run failure."""
         # Mock context to avoid GPU detection

@@ -5,6 +5,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 # built-in modules
 import os
+import sys
 import csv
 
 # third-party modules
@@ -102,6 +103,13 @@ class TestContexts:
                 "All dockerfiles matching context is not executed. Executed dockerfiles are "
                 + " ".join(foundDockerfiles)
             )
+
+    def test_dockerfile_executed_if_contexts_keys_are_not_common(self):
+        """
+        Dockerfile is executed even if all context keys are not common but common keys match
+        """
+        # already tested in test_dockerfile_picked_on_detected_context_0
+        pass
 
     @pytest.mark.parametrize(
         "clean_test_temp_files", [DEFAULT_CLEAN_FILES], indirect=True
@@ -351,7 +359,7 @@ class TestContexts:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7', 'gen_sys_env_details': False}\" "
+            + "python3 -m madengine.cli.app run --live-output --tags dummy_gpubind --additional-context \"{'docker_gpus':'0,2-4,5-5,7'}\" "
         )
 
         gpu_nodeid_map = get_gpu_nodeid_map()

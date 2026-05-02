@@ -2,9 +2,7 @@
 
 import pytest
 
-from madengine.core.timeout import Timeout
 from madengine.execution.container_runner_helpers import (
-    _docker_image_ref_for_log_naming,
     make_run_log_file_path,
     resolve_run_timeout,
 )
@@ -15,26 +13,6 @@ from madengine.execution.dockerfile_utils import (
     normalize_architecture_name,
     parse_dockerfile_gpu_variables,
 )
-
-
-# ---- Timeout ----
-
-class TestTimeout:
-    """Timeout context manager: None/0 must not arm signal.alarm."""
-
-    def test_none_seconds_does_not_raise(self):
-        with Timeout(None):
-            pass  # must not crash
-
-    def test_zero_seconds_does_not_raise(self):
-        with Timeout(0):
-            pass  # must not crash
-
-    def test_positive_seconds_raises_on_expiry(self):
-        with pytest.raises(TimeoutError):
-            with Timeout(1):
-                import time
-                time.sleep(2)
 
 
 # ---- container_runner_helpers ----
@@ -61,32 +39,6 @@ class TestResolveRunTimeout:
     def test_custom_default_cli(self):
         assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
         assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
-
-    def test_no_timeout_sentinel_none_passthrough(self):
-        # --timeout 0 is converted to None by the CLI; resolve_run_timeout must
-        # pass None through unchanged (model timeout must NOT override "no timeout").
-        assert resolve_run_timeout({"timeout": 3600}, None) is None
-        assert resolve_run_timeout({}, None) is None
-
-
-class TestDockerImageRefForLogNaming:
-    """_docker_image_ref_for_log_naming: CI tag extraction vs stable non-ci refs."""
-
-    def test_ci_tag_from_registry_ref(self):
-        assert (
-            _docker_image_ref_for_log_naming("rocm/ns/img:ci-m_model_df")
-            == "ci-m_model_df"
-        )
-
-    def test_non_ci_tag_sanitizes_full_ref(self):
-        assert _docker_image_ref_for_log_naming("ubuntu:22.04") == "ubuntu_22.04"
-        assert (
-            _docker_image_ref_for_log_naming("registry/ns/myimg:latest")
-            == "registry_ns_myimg_latest"
-        )
-
-    def test_short_ci_tag_unchanged(self):
-        assert _docker_image_ref_for_log_naming("ci-model_ubuntu") == "ci-model_ubuntu"
 
 
 class TestMakeRunLogFilePath:
@@ -119,19 +71,6 @@ class TestMakeRunLogFilePath:
             {"name": "other/model"}, "ci-some_ubuntu_22", "",
         )
         assert out == "other_model_some_ubuntu_22.live.log"
-
-    def test_full_registry_ref_matches_short_ci_tag(self):
-        """Run log name must match build log base when image is registry/name:ci-…."""
-        model = {"name": "primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain"}
-        short = "ci-primus_pretrain_torchtitan_mi300x_qwen3_4b-pretrain_primus.ubuntu.amd"
-        full = f"rocm/mad-private:{short}"
-        assert make_run_log_file_path(model, short, ".run") == make_run_log_file_path(
-            model, full, ".run"
-        )
-        assert make_run_log_file_path(model, short, ".run") == (
-            "primus_pretrain_torchtitan_MI300X_qwen3_4B-pretrain_"
-            "primus.ubuntu.amd.run.live.log"
-        )
 
 
 # ---- dockerfile_utils ----

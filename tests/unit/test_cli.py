@@ -16,14 +16,15 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import importlib
 import json
 import os
-from io import StringIO
+import sys
 import tempfile
-from unittest.mock import MagicMock, patch
+import unittest.mock
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch, mock_open
 
 # third-party modules
 import pytest
 import typer
-from rich.console import Console as RichConsole
 from typer.testing import CliRunner
 
 # project modules
@@ -155,28 +156,6 @@ class TestDisplayResultsTable:
 
             mock_console.print.assert_called()
 
-    def test_display_results_table_build_shows_gpu_arch_from_docker_builder(self):
-        """Multi-arch builds record gpu_architecture; table must show it, not N/A."""
-        summary = {
-            "successful_builds": [
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a", "gpu_architecture": "gfx90a"},
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942", "gpu_architecture": "gfx942"},
-            ],
-            "failed_builds": [],
-        }
-
-        with patch("madengine.cli.utils.console") as mock_console:
-            display_results_table(summary, "Build Results", show_gpu_arch=True)
-
-            mock_console.print.assert_called()
-            table_arg = mock_console.print.call_args[0][0]
-            buf = StringIO()
-            RichConsole(file=buf, width=120, force_terminal=True).print(table_arg)
-            rendered = buf.getvalue()
-            assert "gfx90a" in rendered
-            assert "gfx942" in rendered
-            assert "N/A" not in rendered
-
     def test_display_results_table_build_failures(self):
         """Test displaying build results table with failures."""
         summary = {
@@ -241,6 +220,15 @@ class TestValidateAdditionalContext:
                 mock_console.print.assert_called()
         finally:
             os.unlink(temp_file)
+
+    def test_validate_additional_context_invalid_json(self):
+        """Test validation with invalid JSON."""
+        with patch("madengine.cli.validators.console") as mock_console:
+            with pytest.raises(typer.Exit) as exc_info:
+                validate_additional_context("invalid json")
+
+            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+            mock_console.print.assert_called()
 
     def test_validate_additional_context_defaults_fill_partial_fields(self):
         """Missing gpu_vendor or guest_os is filled from defaults (no error)."""

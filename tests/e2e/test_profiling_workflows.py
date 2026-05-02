@@ -8,6 +8,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import re
+import sys
+import csv
+import json
 
 # third-party modules
 import pytest
@@ -69,37 +72,6 @@ class TestProfilingFunctionality:
         if not os.path.exists(legacy_output) and not rocprofv3_output_found:
             pytest.fail(
                 "Neither rocprof_output/results.csv (legacy) nor *_results.db (rocprofv3) generated with rocprof profiling run."
-            )
-
-    @requires_gpu("rocm_trace_lite profiling requires GPU hardware")
-    @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")
-    @pytest.mark.parametrize(
-        "clean_test_temp_files",
-        [["perf.csv", "perf.html", "rocm_trace_lite_output"]],
-        indirect=True,
-    )
-    def test_rocm_trace_lite_profiling_tool_runs_correctly(
-        self, global_data, clean_test_temp_files
-    ):
-        """
-        rocm_trace_lite runs pre/post trace scripts and produces SQLite under rocm_trace_lite_output/.
-        Same contract as test_rocprof_profiling_tool_runs_correctly (canFail: workload may exit non-zero).
-        """
-        global_data["console"].sh(
-            "cd "
-            + BASE_DIR
-            + "; "
-            + "MODEL_DIR="
-            + MODEL_DIR
-            + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocm_trace_lite\"}]}' ",
-            canFail=True,
-        )
-
-        trace_db = os.path.join(BASE_DIR, "rocm_trace_lite_output", "trace.db")
-        if not os.path.isfile(trace_db):
-            pytest.fail(
-                "rocm_trace_lite_output/trace.db not generated with rocm_trace_lite profiling run."
             )
 
     @pytest.mark.skipif(is_nvidia(), reason="test does not run on NVIDIA")

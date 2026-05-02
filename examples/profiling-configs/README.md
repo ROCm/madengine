@@ -1,6 +1,6 @@
-# Profiling configurations
+# ROCprofv3 Profiling Configurations
 
-This directory contains pre-configured profiling setups for madengine. Most files target **ROCprofv3**; **`rocm_trace_lite.json`** / **`rocm_trace_lite_default.json`** enable [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (not rocprofv3—do not combine with `rocprof` / `rocprofv3_*` on the same run).
+This directory contains pre-configured profiling setups for different AI model benchmarking scenarios using madengine and ROCprofv3.
 
 ## Available Profiles
 
@@ -86,31 +86,7 @@ madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocprofv3_lightweight.json
 ```
 
-### 6. rocm-trace-lite (`rocm_trace_lite.json`, `rocm_trace_lite_default.json`)
-
-**Use Case**: GPU kernel dispatch tracing without rocprofiler-sdk (SQLite output compatible with RPD-style tools). See the [rocm-trace-lite documentation](https://sunway513.github.io/rocm-trace-lite/index.html) and [Quick Start](https://sunway513.github.io/rocm-trace-lite/quickstart.html).
-
-- **`rocm_trace_lite.json`** — tool `rocm_trace_lite`: RTL **`lite`** mode (typically lower overhead).
-- **`rocm_trace_lite_default.json`** — tool `rocm_trace_lite_default`: RTL **`default`** mode (broader coverage; compare overhead vs `lite`).
-
-**Do not** combine with `rocprof` / `rocprofv3_*` on the same run.
-
-**Requirements / notes:**
-
-- madengine wraps the workload with `rtl_trace_wrapper.sh` and writes under `rocm_trace_lite_output/` (see [Profiling Guide](../../docs/profiling.md)).
-- On the first run, the trace pre-script installs `rocm-trace-lite` from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). The container needs **HTTPS access to GitHub**, unless the wheel is already installed in the image.
-- Default install uses a **pinned** wheel URL in the trace pre-script. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to pull the latest release via the GitHub API instead (needs `curl`). Override with **`ROCM_TRACE_LITE_WHEEL_URL`** (direct `.whl` URL) for air-gapped or custom platforms. Automation targets **linux x86_64** wheels.
-
-**Usage**:
-```bash
-madengine run --tags your_model \
-  --additional-context-file examples/profiling-configs/rocm_trace_lite.json
-
-madengine run --tags your_model \
-  --additional-context-file examples/profiling-configs/rocm_trace_lite_default.json
-```
-
-### 7. Multi-Node Distributed (`rocprofv3_multi_node.json`)
+### 6. Multi-Node Distributed (`rocprofv3_multinode.json`)
 
 **Use Case**: Large-scale distributed training on SLURM clusters
 
@@ -126,7 +102,7 @@ madengine build --tags your_model --registry your-registry:5000
 
 # Deploy to SLURM
 madengine run --manifest-file build_manifest.json \
-  --additional-context-file examples/profiling-configs/rocprofv3_multi_node.json
+  --additional-context-file examples/profiling-configs/rocprofv3_multinode.json
 ```
 
 ## Direct Tool Usage (Without Config Files)
@@ -215,8 +191,6 @@ The wrapper script auto-detects which profiler is available and formats the comm
 | `rocprofv3_api_overhead` | API call analysis | HIP/HSA/marker traces with stats | Low |
 | `rocprofv3_pc_sampling` | Kernel hotspot analysis | PC sampling at 1000 Hz | Medium |
 
-**Other:** `rocm_trace_lite` (RTL **lite** mode) and `rocm_trace_lite_default` (RTL **default** mode) — kernel dispatch SQLite trace via [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html), installed from **GitHub Release wheels** by the trace pre-script (not PyPI; see [Profiling Guide](../../docs/profiling.md)). Not a rocprofv3 preset; do not combine with `rocprof` / `rocprofv3_*` on the same run.
-
 ## Counter Definition Files
 
 Counter files are located at `src/madengine/scripts/common/tools/counters/`:
@@ -245,8 +219,6 @@ rocprof_output/
 gpu_info_power_profiler_output.csv  # Power consumption over time
 gpu_info_vram_profiler_output.csv   # VRAM usage over time
 library_trace.csv                    # Library API calls (if library tracing enabled)
-
-rocm_trace_lite_output/trace.db       # rocm-trace-lite (also trace.json.gz / trace_summary.txt as emitted by RTL)
 ```
 
 ## Visualization

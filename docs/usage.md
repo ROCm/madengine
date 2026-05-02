@@ -279,6 +279,99 @@ madengine build --batch-manifest batch.json \
 ]
 ```
 
+### Pre-built Image Mode
+
+Skip Docker build entirely and use an existing image:
+
+```bash
+# Auto-detect image from model card's DOCKER_IMAGE_NAME env var
+madengine build --tags sglang_disagg \
+  --use-image \
+  --additional-context-file slurm-config.json
+
+# Or explicitly specify the image
+madengine build --tags sglang_disagg \
+  --use-image lmsysorg/sglang:v0.5.5.post3-rocm700-mi30x \
+  --additional-context-file slurm-config.json
+
+# Then run normally
+madengine run --manifest-file build_manifest.json
+```
+
+**Image Resolution:**
+1. If `--use-image <name>` provided → use that image
+2. If `--use-image` (no value) → auto-detect from model card's `DOCKER_IMAGE_NAME`
+3. If no image found → error with helpful message
+
+**Mutual Exclusivity:**
+- Cannot use with `--registry` (push requires local build)
+- Cannot use with `--build-on-compute` (skip vs. build)
+
+**Use cases:**
+- Official framework images (SGLang, vLLM, PyTorch NGC)
+- Pre-cached images on compute nodes
+- Quick testing without rebuild time
+- CI/CD with external registries
+
+The manifest marks the image as `"prebuilt": true` with zero build time.
+
+### Build on Compute Node
+
+For SLURM environments where login nodes have limited resources:
+
+```bash
+# Build on 1 compute node, push to registry, pull in parallel at runtime
+madengine build --tags model \
+  --build-on-compute \
+  --registry docker.io/myorg \
+  --additional-context '{"slurm": {"reservation": "my-res"}}'
+```
+
+**Required:** `--registry` must be specified.
+
+**SLURM Config Merging:**
+- Model card's `slurm` section provides base configuration
+- `--additional-context` overrides specific fields
+- Only specify what's missing or needs override
+
+**How it works:**
+
+*Build Phase:*
+1. Builds Docker image on **1 compute node**
+2. Pushes image to registry
+3. Stores registry image name in manifest
+
+*Run Phase:*
+1. Pulls image **in parallel on ALL nodes** via `srun docker pull`
+2. Executes model script
+
+**Benefits:**
+- Offloads heavy build to compute resources
+- Build once, distribute via registry pull
+- Respects login node resource policies
+- Parallel pull scales to many nodes
+
+### Multi-Node SLURM (slurm_multi)
+
+Models using the `slurm_multi` launcher **require** either `--registry` or `--use-image`:
+
+```bash
+# Option 1: Build and push
+madengine build --tags sglang_model --registry docker.io/myorg
+
+# Option 2: Use pre-built image
+madengine build --tags sglang_model --use-image
+
+# Option 3: Build on compute
+madengine build --tags sglang_model --build-on-compute --registry docker.io/myorg
+```
+
+**Why?** Multi-node jobs run on multiple compute nodes. Each node needs the Docker image, and local builds only exist on the login node.
+
+**Parallel Pull:** During `madengine run`, registry images are automatically pulled in parallel on all nodes before execution.
+
+**Re-using images:** For subsequent runs with the same image, use `--use-image` to skip building.
+
 ## Run Workflow
 
 ### Skip model run after build
@@ -309,56 +402,21 @@ madengine run --tags model \
 - `gpu_vendor`: "AMD", "NVIDIA"
 - `guest_os`: "UBUNTU", "CENTOS"
 
-### ROCm path (host and container)
+### ROCm path (non-default installs)
 
-By default, **madengine** auto-detects the **host** ROCm root (apt under `/opt/rocm`, TheRock `rocm-sdk` layout, etc.). Disable scanning with `MAD_AUTO_ROCM_PATH=0` (then `ROCM_PATH` / `/opt/rocm` only).
-
-**Host** override: set top-level `MAD_ROCM_PATH` in `--additional-context` to tell madengine where host GPU tools live (`rocminfo`, `amd-smi`, etc.).
-
-**In-container** `ROCM_PATH` (AMD Docker runs) is **not** copied from the host. If you do not set `docker_env_vars.MAD_ROCM_PATH` (or a literal `ROCM_PATH` in `docker_env_vars`), madengine sets it at **run** time from, in order: the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME` via `docker image inspect`), an in-container probe (`docker run --rm`), or `/opt/rocm` with a warning. Override explicitly with `{"docker_env_vars": {"MAD_ROCM_PATH": "/path/inside/image"}}` when the image needs a fixed root. Details: [Configuration — ROCm path](configuration.md#rocm-path-run-only).
-
-The two keys are independent — host and container can point to different ROCm installations:
+When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths:
 
 ```bash
-# Override host ROCm root only
-madengine run --tags model \
-  --additional-context '{"MAD_ROCM_PATH": "/path/to/host/rocm", "gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+# Via environment variable
+export ROCM_PATH=/path/to/rocm
+madengine run --tags model --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 
-# Override host and container paths independently
-madengine run --tags model --additional-context '{
-  "gpu_vendor": "AMD",
-  "guest_os": "UBUNTU",
-  "MAD_ROCM_PATH": "/path/to/host/rocm",
-  "docker_env_vars": {"MAD_ROCM_PATH": "/opt/rocm"}
-}'
+# Via CLI (overrides ROCM_PATH)
+madengine run --tags model --rocm-path /path/to/rocm \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
-See [Configuration - ROCm path](configuration.md#rocm-path-run-only).
-
-### Run phase environment table
-
-At the start of each container run, madengine prints a side-by-side environment summary for the **host** and the **container**:
-
-```
-🖥️   RUN PHASE ENVIRONMENT
-================================================================================
-                            HOST                                  CONTAINER
-  ──────────────────────────────────────────────────────────────────────────────
-  GPU Vendor                AMD                                   AMD
-  Installation Type         apt install                           therock
-  ROCm Root                 /opt/rocm                             /opt/python/lib/python3.13/site-packages/_rocm_sdk_devel
-  ROCm Version              6.4.0                                 7.13.0a20260415
-  ──────────────────────────────────────────────────────────────────────────────
-================================================================================
-```
-
-| Field | AMD values | NVIDIA values |
-|---|---|---|
-| Installation Type | `apt install` (traditional `/opt/rocm`) or `therock` (Python-package layout) | `CUDA toolkit` |
-| ROCm / CUDA Root | Resolved via `RocmPathResolver` (host) or `rocm-sdk path --root` (container) | `nvcc` binary location |
-| ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
-
-The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+`--rocm-path` applies only to the **run** command (not build). See [CLI Reference - run](cli-reference.md#run---execute-models).
 
 ### Deploy to Kubernetes
 
@@ -651,8 +709,7 @@ madengine build --tags model --clean-docker-cache --verbose
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `MODEL_DIR` | MAD package directory | `/path/to/MAD` |
-| `ROCM_PATH` | **Host** ROCm root fallback when `MAD_ROCM_PATH` is not set in additional context and auto-detect is disabled or finds nothing. In-container `ROCM_PATH` for Docker is set separately at run; see [ROCm path (host and container)](#rocm-path-host-and-container). | `/path/to/rocm` |
-| `MAD_AUTO_ROCM_PATH` | Set to `0` to disable **host** auto-detect (use `ROCM_PATH` then `/opt/rocm` only on the host). Default: on. | `0` |
+| `ROCM_PATH` | ROCm installation root (used when `--rocm-path` not set). Use when ROCm is not in `/opt/rocm` (e.g. Rock, pip). | `/path/to/rocm` |
 | `MAD_VERBOSE_CONFIG` | Verbose config logging | `"true"` |
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |
