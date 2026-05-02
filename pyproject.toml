@@ -164,11 +164,22 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_paths = ["src"]
-addopts = "-v --tb=short"
+pythonpath = ["src"]
+addopts = "-v --tb=short -ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "e2e: End-to-end tests (require full environment, Docker, may be very slow)",
+    "gpu: Tests that require GPU hardware",
+    "amd: Tests specific to AMD GPUs",
+    "nvidia: Tests specific to NVIDIA GPUs",
+    "cpu: Tests for CPU-only execution",
+    "requires_docker: Tests that require Docker daemon",
+    "requires_models: Tests that require model fixtures",
 ]
 
 [tool.coverage.run]
