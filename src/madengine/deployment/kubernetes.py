@@ -176,6 +176,8 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
 
         self.namespace = self.k8s_config.get("namespace", "default")
         self.gpu_resource_name = self.k8s_config.get("gpu_resource_name", "amd.com/gpu")
+        self.cluster_config = config.additional_context.get("cluster", {})
+        self.rdma_config = self.cluster_config.get("rdma", {})
 
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
@@ -1070,6 +1072,24 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
         # Load pre/post script contents for ConfigMap (since madengine not installed in container)
         pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
 
+        rdma_enabled = bool(self.rdma_config.get("enabled", False))
+        rdma_strict = bool(self.rdma_config.get("strict", False))
+        rdma_mode = self.rdma_config.get("mode", "recommend")
+        rdma_apply_env = bool(self.rdma_config.get("apply_env", True))
+        rdma_artifact_name = self.rdma_config.get(
+            "artifact_name", "rdma_recommendation.json"
+        )
+        if rdma_enabled:
+            rdma_script = Path(__file__).parent / "rdma_recommender.py"
+            if rdma_script.exists():
+                pre_post_script_contents[
+                    "scripts/common/tools/rdma_recommender.py"
+                ] = rdma_script.read_text(encoding="utf-8")
+            else:
+                self.console.print(
+                    "[yellow]Warning: RDMA recommender module not found; runtime RDMA stage will be skipped.[/yellow]"
+                )
+
         merged_sec = merge_secrets_config(self.k8s_config)
         strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
         cred_path = Path("credential.json")
@@ -1208,6 +1228,12 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "common_script_contents": pre_post_script_contents,
             # Multiple results file (e.g. perf_dummy.csv) - copied to PVC for K8s result collection
             "multiple_results": model_info.get("multiple_results") or "",
+            # Cluster RDMA feature
+            "rdma_enabled": rdma_enabled,
+            "rdma_strict": rdma_strict,
+            "rdma_mode": rdma_mode,
+            "rdma_apply_env": rdma_apply_env,
+            "rdma_artifact_name": rdma_artifact_name,
         }
 
         est = estimate_configmap_payload_bytes(context)
@@ -2156,6 +2182,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             "artifacts": [],
             "successful_runs": [],
             "failed_runs": [],
+            "cluster_features": {},
         }
 
         # Create results directory for this deployment
@@ -2540,6 +2567,31 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
                     )
             
             # 4. Generate summary
+            rdma_cfg = self.config.additional_context.get("cluster", {}).get("rdma", {})
+            if rdma_cfg.get("enabled", False):
+                artifact_name = rdma_cfg.get(
+                    "artifact_name", "rdma_recommendation.json"
+                )
+                rdma_files = sorted(results_dir.glob(f"**/{artifact_name}"))
+                rdma_entries = []
+                for artifact in rdma_files:
+                    try:
+                        payload = json.loads(artifact.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload = {"status": "invalid_json"}
+                    rdma_entries.append(
+                        {
+                            "artifact": str(artifact),
+                            "status": payload.get("status", "unknown"),
+                            "recommended_env": payload.get("recommended_env", {}),
+                        }
+                    )
+                if rdma_entries:
+                    results["cluster_features"]["rdma"] = {
+                        "artifact_name": artifact_name,
+                        "entries": rdma_entries,
+                    }
+
             self._generate_results_summary(results, results_dir)
 
         except Exception as e:

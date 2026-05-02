@@ -119,6 +119,93 @@ madengine run --tags my_unit_test_suite \
 
 Disabling the scan does **not** change performance metric extraction from the log; it only affects the post-hoc grep used to set `has_errors` for status.
 
+## Cluster Feature Layer (`additional_context.cluster`)
+
+`cluster` is an additive feature-flag namespace for RDMA and (SLURM-only) GCM integration.
+Nothing changes unless you explicitly set `cluster.*.enabled: true`.
+
+### Schema
+
+```json
+{
+  "cluster": {
+    "rdma": {
+      "enabled": false,
+      "strict": false,
+      "mode": "recommend",
+      "apply_env": true,
+      "artifact_name": "rdma_recommendation.json"
+    },
+    "gcm": {
+      "enabled": false,
+      "enabled_platforms": ["slurm"],
+      "source": {
+        "repo": "https://github.com/coketaste/gcm",
+        "ref": "9fed02cd0721d3937f8749672951185f31955bd4"
+      },
+      "strict": false,
+      "health_checks": ["check-hca", "check-ibstat"],
+      "collector": {
+        "enabled": false,
+        "command": "slurm_job_monitor",
+        "once": true,
+        "sink": "file",
+        "timeout_sec": 120,
+        "max_retries": 1,
+        "best_effort": true
+      },
+      "artifacts": {
+        "dir": "./slurm_results/cluster_artifacts",
+        "files": {
+          "health_summary_json": "gcm_health_summary.json",
+          "health_raw_log": "gcm_health_raw.log",
+          "collector_output": "gcm_collector_output.log"
+        }
+      }
+    }
+  }
+}
+```
+
+### RDMA behavior (SLURM + Kubernetes)
+
+- `mode: "recommend"` keeps user `env_vars` precedence; only missing RDMA vars are injected.
+- `mode: "enforce"` lets recommender output override existing conflicting RDMA env vars.
+- `strict: true` fails the workload when no valid RDMA recommendation can be produced.
+- Artifacts are written per node/pod and included in deployment result summaries.
+
+### GCM behavior (SLURM only in this phase)
+
+- Health checks run in preflight (`check-hca`, `check-ibstat` allowlist only).
+- `strict: true` gates submission on health-check failures; `strict: false` warns and continues.
+- Collector runs as one-shot `gcm slurm_job_monitor --once` during result collection.
+- Collector defaults to best effort (`best_effort: true`) and does not gate workload success.
+- Source is pinned to `coketaste/gcm` with fixed commit ref for reproducibility checks.
+
+### Rollout guidance
+
+1. Start with `cluster.rdma.enabled=true`, `strict=false`, `mode="recommend"`.
+2. Validate RDMA artifacts and selected env vars on single-node, then multi-node.
+3. Enable `cluster.gcm.enabled=true` with `strict=false` to observe health output.
+4. Turn on `cluster.gcm.strict=true` only after cluster baseline is stable.
+5. Keep collector best-effort initially; tighten only after runtime overhead is validated.
+
+### Smoke configs and one-line runner
+
+Prebuilt smoke configs are available at:
+
+- `examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json`
+- `examples/k8s-configs/configs/smoke-rdma-k8s.json`
+
+Run them with:
+
+```bash
+examples/run-smoke.sh slurm MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+```
+
+Artifact verification commands are documented in `examples/cluster-smoke-checklist.md`.
+
 ## Basic Configuration
 
 **gpu_vendor** (case-insensitive):

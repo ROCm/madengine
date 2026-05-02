@@ -228,7 +228,7 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "cluster", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
@@ -435,13 +435,28 @@ class RunOrchestrator:
         )
         
         # Create manifest structure
+        deployment_config = self.additional_context.get("deployment_config", {}).copy()
+        if not deployment_config and self.additional_context:
+            deployment_config = {
+                "target": self._infer_deployment_target(self.additional_context),
+                "slurm": self.additional_context.get("slurm"),
+                "k8s": self.additional_context.get("k8s"),
+                "kubernetes": self.additional_context.get("kubernetes"),
+                "distributed": self.additional_context.get("distributed"),
+                "vllm": self.additional_context.get("vllm"),
+                "cluster": self.additional_context.get("cluster"),
+                "env_vars": self.additional_context.get("env_vars", {}),
+                "debug": self.additional_context.get("debug", False),
+            }
+            deployment_config = {k: v for k, v in deployment_config.items() if v is not None}
+
         manifest = {
             "built_images": {},
             "built_models": {},
             "context": build_context.ctx,
             "local_image_mode": True,
             "local_image_name": image_name,
-            "deployment_config": self.additional_context.get("deployment_config", {}),
+            "deployment_config": deployment_config,
         }
         
         # For each model, create a synthetic entry using the provided image
@@ -510,7 +525,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "cluster", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config

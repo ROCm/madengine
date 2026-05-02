@@ -180,6 +180,50 @@ spec:
             export MAD_K8S_NAMESPACE={{ namespace }}
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
+
+            {% if rdma_enabled %}
+            echo ""
+            echo "=== Running RDMA recommender ==="
+            RDMA_ARTIFACT="/workspace/{{ rdma_artifact_name }}"
+            RDMA_ENV_FILE="/workspace/rdma_env.list"
+            if [ -f /workspace/scripts/common/tools/rdma_recommender.py ]; then
+                if [ "{{ rdma_strict }}" = "True" ]; then
+                    python3 /workspace/scripts/common/tools/rdma_recommender.py \
+                      --output "${RDMA_ARTIFACT}" \
+                      --env-file "${RDMA_ENV_FILE}" \
+                      --strict
+                else
+                    python3 /workspace/scripts/common/tools/rdma_recommender.py \
+                      --output "${RDMA_ARTIFACT}" \
+                      --env-file "${RDMA_ENV_FILE}"
+                fi
+                RDMA_EXIT=$?
+                if [ ${RDMA_EXIT} -ne 0 ]; then
+                    echo "RDMA recommender failed with exit code ${RDMA_EXIT}"
+                    {% if rdma_strict %}
+                    echo "RDMA strict mode enabled; failing pod."
+                    exit ${RDMA_EXIT}
+                    {% else %}
+                    echo "Continuing (strict=false)."
+                    {% endif %}
+                fi
+                if [ "{{ rdma_apply_env }}" = "True" ] && [ -f "${RDMA_ENV_FILE}" ]; then
+                    while IFS='=' read -r key value; do
+                        [ -z "${key}" ] && continue
+                        if [ "{{ rdma_mode }}" = "enforce" ] || [ -z "${!key+x}" ]; then
+                            export "${key}=${value}"
+                        fi
+                    done < "${RDMA_ENV_FILE}"
+                    echo "Applied RDMA env vars (mode={{ rdma_mode }})."
+                fi
+            else
+                echo "RDMA recommender script not found in workspace."
+                {% if rdma_strict %}
+                echo "RDMA strict mode enabled; failing pod."
+                exit 2
+                {% endif %}
+            fi
+            {% endif %}
             
             {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" or launcher_type == "primus" or launcher_type == "torchtitan" %}
             # {{ launcher_type }} distributed environment (auto-configured from K8s)
@@ -340,6 +384,12 @@ spec:
                 cp perf.csv /results/${HOSTNAME}/perf.csv
                 echo "✓ Copied perf.csv"
             fi
+            {% if rdma_enabled %}
+            if [ -f "/workspace/{{ rdma_artifact_name }}" ]; then
+                cp "/workspace/{{ rdma_artifact_name }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ rdma_artifact_name }}"
+            fi
+            {% endif %}
             {% if multiple_results %}
             # Copy multiple_results CSV (same contract as Docker: file may be in CWD or parent; use absolute paths for reliability)
             if [ -f "/workspace/{{ multiple_results }}" ]; then
@@ -529,6 +579,12 @@ spec:
                 cp perf.csv /results/${HOSTNAME}/perf.csv
                 echo "✓ Copied perf.csv"
             fi
+            {% if rdma_enabled %}
+            if [ -f "/workspace/{{ rdma_artifact_name }}" ]; then
+                cp "/workspace/{{ rdma_artifact_name }}" /results/${HOSTNAME}/
+                echo "✓ Copied {{ rdma_artifact_name }}"
+            fi
+            {% endif %}
             {% if multiple_results %}
             # Copy multiple_results CSV (same contract as Docker: file may be in CWD or parent; use absolute paths for reliability)
             if [ -f "/workspace/{{ multiple_results }}" ]; then
