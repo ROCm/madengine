@@ -22,7 +22,7 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.core.constants import get_rocm_path
+from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
 from madengine.utils.gpu_validator import validate_rocm_installation, GPUInstallationError, GPUVendor
 from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
@@ -82,7 +82,7 @@ class Context:
         additional_context: str = None,
         additional_context_file: str = None,
         build_only_mode: bool = False,
-        rocm_path: str = None,
+        detect_local_gpu_arch: bool = False,
     ) -> None:
         """Constructor of the Context class.
 
@@ -90,16 +90,18 @@ class Context:
             additional_context: The additional context.
             additional_context_file: The additional context file.
             build_only_mode: Whether running in build-only mode (no GPU detection).
-            rocm_path: Optional ROCm installation path (overrides ROCM_PATH env; default /opt/rocm).
+            detect_local_gpu_arch: When True and in build_only_mode, attempt to auto-detect
+                MAD_SYSTEM_GPU_ARCHITECTURE from the local node and inject it into docker_build_arg.
+                Has no effect when build_only_mode=False (runtime mode detects it via init_gpu_context).
 
         Raises:
             RuntimeError: If GPU detection fails and not in build-only mode.
         """
-        self._rocm_path = get_rocm_path(rocm_path)
         # Initialize the console
         self.console = Console()
         self._gpu_context_initialized = False
         self._build_only_mode = build_only_mode
+        self._detect_local_gpu_arch = detect_local_gpu_arch
         self._system_context_initialized = False
         self._gpu_tool_manager = None  # Lazy initialization
 
@@ -130,6 +132,9 @@ class Context:
             dict_additional_context = ast.literal_eval(additional_context)
             update_dict(self.ctx, dict_additional_context)
 
+        # Host ROCm path: top-level MAD_ROCM_PATH in context, then auto-detect
+        self._rocm_path = resolve_host_rocm_path(self.ctx)
+
         # Initialize context based on mode
         # User-provided contexts will not be overridden by detection
         if not build_only_mode:
@@ -137,17 +142,22 @@ class Context:
             self.init_runtime_context()
         else:
             # For build-only mode, only initialize what's needed for building
-            self.init_build_context()
+            self.init_build_context(detect_gpu_arch=self._detect_local_gpu_arch)
 
         ## ADD MORE CONTEXTS HERE ##
 
-    def init_build_context(self) -> None:
+    def init_build_context(self, detect_gpu_arch: bool = False) -> None:
         """Initialize build-specific context.
 
         This method sets up only the context needed for Docker builds,
         avoiding GPU detection that would fail on build-only nodes.
         System-specific contexts (host_os, numa_balancing, etc.) should be
         provided via --additional-context for build-only nodes if needed.
+
+        Args:
+            detect_gpu_arch: When True, attempt to auto-detect MAD_SYSTEM_GPU_ARCHITECTURE
+                from the local node and inject it into docker_build_arg. Fails gracefully
+                if no GPU is present (e.g., on a pure CI build node).
         """
         print("Initializing build-only context...")
 
@@ -168,9 +178,26 @@ class Context:
                     "Consider providing host_os via --additional-context if needed for build"
                 )
 
-        # Don't detect GPU-specific contexts in build-only mode
-        # These should be provided via additional_context if needed for build args
-        # (GPU arch guidance is emitted in BuildOrchestrator after model/Dockerfile discovery.)
+        # Optionally auto-detect GPU architecture for local full-workflow builds (build+run).
+        # Skipped for standalone `madengine build` on non-GPU/CI nodes (detect_gpu_arch=False).
+        if detect_gpu_arch and "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx.get("docker_build_arg", {}):
+            try:
+                from madengine.utils.gpu_validator import detect_gpu_vendor
+                from madengine.execution.dockerfile_utils import normalize_architecture_name
+
+                vendor = detect_gpu_vendor(self._rocm_path)
+                if vendor in (GPUVendor.AMD, GPUVendor.NVIDIA):
+                    manager = get_gpu_tool_manager(vendor, self._rocm_path)
+                    raw_arch = manager.get_gpu_architecture()
+                    arch = normalize_architecture_name(raw_arch) or raw_arch.strip()
+                    self.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] = arch
+                    print(f"Auto-detected GPU architecture for build: {arch}")
+                else:
+                    print("Warning: No supported GPU detected; MAD_SYSTEM_GPU_ARCHITECTURE will not be set automatically.")
+                    print("Consider providing it via --additional-context if needed for build args.")
+            except Exception as e:
+                print(f"Warning: Could not auto-detect GPU architecture for build: {e}")
+                print("Consider providing MAD_SYSTEM_GPU_ARCHITECTURE via --additional-context if needed for build args.")
 
         # Don't initialize NUMA balancing check for build-only nodes
         # This is runtime-specific and should be handled on execution nodes
@@ -255,7 +282,10 @@ class Context:
                 self.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = self.ctx["gpu_vendor"]
 
             self.ctx["rocm_path"] = self._rocm_path
-            self.ctx["docker_env_vars"]["ROCM_PATH"] = self._rocm_path
+            # In-container ROCM_PATH is finalized at run time in run_container
+            # via finalize_container_rocm_path (OCI env → probe → default).
+            # docker_env_vars.ROCM_PATH (user-supplied) is preserved here; finalize
+            # normalizes it at run time. Auto-detection runs in finalize when absent.
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
@@ -387,7 +417,7 @@ class Context:
                 print(f"Warning: nvidia-smi check failed: {e}")
         
         # Check AMD - try amd-smi first, fallback to rocm-smi (PR #54)
-        # Use configurable ROCm path (ROCM_PATH / --rocm-path) for non-default installs
+        # Use configurable ROCm path (MAD_ROCM_PATH / ROCM_PATH) for non-default installs
         amd_smi_paths = [
             os.path.join(self._rocm_path, "bin", "amd-smi"),
             "/usr/local/bin/amd-smi",
@@ -395,11 +425,8 @@ class Context:
         for amd_smi_path in amd_smi_paths:
             if os.path.exists(amd_smi_path):
                 try:
-                    # Debug: log to stderr so SLURM node .err captures where we are if killed
-                    print(f"[DEBUG] get_gpu_vendor: trying amd-smi at {amd_smi_path}", file=sys.stderr, flush=True)
                     # Verify amd-smi actually works (180s timeout for slow GPU initialization)
                     result = self.console.sh(f"{amd_smi_path} list > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
-                    print(f"[DEBUG] get_gpu_vendor: amd-smi returned", file=sys.stderr, flush=True)
                     if result and result.strip() == "AMD":
                         return "AMD"
                 except Exception as e:
@@ -409,9 +436,7 @@ class Context:
         rocm_smi_path = os.path.join(self._rocm_path, "bin", "rocm-smi")
         if os.path.exists(rocm_smi_path):
             try:
-                print(f"[DEBUG] get_gpu_vendor: trying rocm-smi at {rocm_smi_path}", file=sys.stderr, flush=True)
                 result = self.console.sh(f"{rocm_smi_path} --showid > /dev/null 2>&1 && echo 'AMD' || echo ''", timeout=180)
-                print(f"[DEBUG] get_gpu_vendor: rocm-smi returned", file=sys.stderr, flush=True)
                 if result and result.strip() == "AMD":
                     return "AMD"
             except Exception as e:
@@ -439,11 +464,11 @@ class Context:
             "if [ -f \"$(which apt)\" ]; then echo 'HOST_UBUNTU'; elif [ -f \"$(which yum)\" ]; then echo 'HOST_CENTOS'; elif [ -f \"$(which zypper)\" ]; then echo 'HOST_SLES'; elif [ -f \"$(which tdnf)\" ]; then echo 'HOST_AZURE'; else echo 'Unable to detect Host OS'; fi || true"
         )
 
-    def get_numa_balancing(self) -> bool:
+    def get_numa_balancing(self) -> typing.Union[str, bool]:
         """Get NUMA balancing.
 
         Returns:
-            bool: The output of the shell command.
+            Union[str, bool]: The shell command output as a string, or False if the path does not exist.
 
         Raises:
             RuntimeError: If the NUMA balancing is not enabled or disabled.

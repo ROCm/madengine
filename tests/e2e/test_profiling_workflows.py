@@ -8,9 +8,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import re
-import sys
-import csv
-import json
 
 # third-party modules
 import pytest

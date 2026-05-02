@@ -8,8 +8,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import json
+import shlex
 import tempfile
-import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
 # third-party modules
@@ -19,7 +19,6 @@ import pytest
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.core.context import Context
 from madengine.core.console import Console
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
 
 
 class TestDockerBuilder:
@@ -169,8 +168,8 @@ class TestDockerBuilder:
 
         result = builder.get_build_arg()
 
-        assert "--build-arg ARG1='value1'" in result
-        assert "--build-arg ARG2='value2'" in result
+        assert f"--build-arg ARG1={shlex.quote('value1')}" in result
+        assert f"--build-arg ARG2={shlex.quote('value2')}" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -188,7 +187,7 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
+        assert f"--build-arg RUNTIME_ARG={shlex.quote('runtime_value')}" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -207,8 +206,8 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert "--build-arg CONTEXT_ARG='context_value'" in result
-        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
+        assert f"--build-arg CONTEXT_ARG={shlex.quote('context_value')}" in result
+        assert f"--build-arg RUNTIME_ARG={shlex.quote('runtime_value')}" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)

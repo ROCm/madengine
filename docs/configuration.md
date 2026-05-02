@@ -218,12 +218,22 @@ Artifact verification commands are documented in `examples/cluster-smoke-checkli
 
 ### ROCm path (run only)
 
-When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths. Use the **run** command option or environment variable (not JSON context):
+**Host** (where `madengine` runs validation): by default, the ROCm root is **auto-detected** (traditional `/opt/rocm`, [TheRock](https://github.com/ROCm/TheRock) `rocm-sdk` / manifest layout, or `ROCM_PATH`-like env hints). Set `MAD_AUTO_ROCM_PATH=0` to skip auto and use only legacy resolution (`ROCM_PATH` then `/opt/rocm`).
 
-- **CLI:** `madengine run --rocm-path /path/to/rocm ...`
-- **Environment:** `export ROCM_PATH=/path/to/rocm`
+**Overrides** (recommended for CI):
 
-Resolution order: `--rocm-path` → `ROCM_PATH` → `/opt/rocm`. This applies only to the run phase; build does not perform GPU detection.
+- **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"` — controls where madengine looks for host GPU tools (`rocminfo`, `amd-smi`, etc.).
+- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
+
+These two keys are independent, allowing host and container to use different ROCm installations without confusion.
+
+Precedence (host): top-level `MAD_ROCM_PATH` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
+
+Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
+
+This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
+
+At the start of each container run, a **Run Phase Environment** table is printed showing host vs container installation type (`apt install` or `therock`), ROCm/CUDA root, and version side-by-side. See [Run phase environment table](usage.md#run-phase-environment-table).
 
 ## Build Configuration
 

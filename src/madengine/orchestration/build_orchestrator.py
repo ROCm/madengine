@@ -10,7 +10,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -20,12 +19,12 @@ from rich.panel import Panel
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.additional_context_defaults import apply_build_context_defaults
+from madengine.core.auth import load_credentials
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
     DiscoveryError,
     create_error_context,
-    handle_error,
 )
 from madengine.utils.discover_models import DiscoverModels
 from madengine.execution.docker_builder import DockerBuilder
@@ -46,13 +45,17 @@ class BuildOrchestrator:
     - Save deployment_config from --additional-context
     """
 
-    def __init__(self, args, additional_context: Optional[Dict] = None):
+    def __init__(self, args, additional_context: Optional[Dict] = None, detect_local_gpu_arch: bool = False):
         """
         Initialize build orchestrator.
 
         Args:
             args: CLI arguments namespace
             additional_context: Dict from --additional-context (merged with args if present)
+            detect_local_gpu_arch: When True, auto-detect MAD_SYSTEM_GPU_ARCHITECTURE from the
+                local node before building. Intended for full workflow (build+run) on a local
+                single node. Has no effect if the user already provided the value via
+                --additional-context. Default False preserves existing standalone-build behavior.
         """
         self.args = args
         self.console = Console(live_output=getattr(args, "live_output", True))
@@ -104,9 +107,8 @@ class BuildOrchestrator:
                 # 4. Add 'deploy' field for internal use
                 self.additional_context = ConfigLoader.load_config(self.additional_context)
             except ValueError as e:
-                # Configuration validation error - fail fast
-                self.rich_console.print(f"[red]Configuration Error: {e}[/red]")
-                raise SystemExit(1)
+                # Re-raise as ConfigurationError so the CLI layer handles the exit code
+                raise ConfigurationError(str(e))
             except Exception as e:
                 # Other errors during config loading - warn but continue
                 self.rich_console.print(f"[yellow]Warning: Could not apply config defaults: {e}[/yellow]")
@@ -120,7 +122,9 @@ class BuildOrchestrator:
         ))
         self.rich_console.print()
 
-        # Initialize context in build-only mode (no GPU detection)
+        # Initialize context in build-only mode (no GPU detection by default).
+        # Pass detect_local_gpu_arch so Context.init_build_context() can optionally
+        # auto-detect MAD_SYSTEM_GPU_ARCHITECTURE for full workflow (build+run) runs.
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
         # Use self.additional_context (post-ConfigLoader), not pre-defaults merged_context
@@ -128,56 +132,11 @@ class BuildOrchestrator:
         self.context = Context(
             additional_context=context_string,
             build_only_mode=True,
+            detect_local_gpu_arch=detect_local_gpu_arch,
         )
 
         # Load credentials if available
-        self.credentials = self._load_credentials()
-
-    def _load_credentials(self) -> Optional[Dict]:
-        """Load credentials from credential.json and environment variables."""
-        credentials = None
-
-        # Try loading from file
-        credential_file = "credential.json"
-        if os.path.exists(credential_file):
-            try:
-                with open(credential_file) as f:
-                    credentials = json.load(f)
-                print(f"Loaded credentials from {credential_file}: {list(credentials.keys())}")
-            except Exception as e:
-                context = create_error_context(
-                    operation="load_credentials",
-                    component="BuildOrchestrator",
-                    file_path=credential_file,
-                )
-                handle_error(
-                    ConfigurationError(
-                        f"Could not load credentials: {e}",
-                        context=context,
-                        suggestions=[
-                            "Check if credential.json exists and has valid JSON format"
-                        ],
-                    )
-                )
-
-        # Override with environment variables if present
-        docker_hub_user = os.environ.get("MAD_DOCKERHUB_USER")
-        docker_hub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD")
-        docker_hub_repo = os.environ.get("MAD_DOCKERHUB_REPO")
-
-        if docker_hub_user and docker_hub_password:
-            print("Found Docker Hub credentials in environment variables")
-            if credentials is None:
-                credentials = {}
-
-            credentials["dockerhub"] = {
-                "username": docker_hub_user,
-                "password": docker_hub_password,
-            }
-            if docker_hub_repo:
-                credentials["dockerhub"]["repository"] = docker_hub_repo
-
-        return credentials
+        self.credentials = load_credentials()
 
     def _copy_scripts(self):
         """[DEPRECATED] Copy common scripts to model directories.
@@ -287,6 +246,12 @@ class BuildOrchestrator:
                 live_output=getattr(self.args, "live_output", False),
             )
             self._warn_if_mad_arch_unresolved_for_dockerfiles(models, builder)
+
+            resolved_arch = self.context.ctx.get("docker_build_arg", {}).get("MAD_SYSTEM_GPU_ARCHITECTURE")
+            if resolved_arch:
+                self.rich_console.print(
+                    f"[green]✓ MAD_SYSTEM_GPU_ARCHITECTURE resolved: {resolved_arch}[/green]\n"
+                )
 
             # Step 3: Build Docker images
             self.rich_console.print("[bold cyan]🏗️  Building Docker images...[/bold cyan]")

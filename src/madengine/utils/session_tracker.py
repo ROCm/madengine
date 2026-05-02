@@ -47,11 +47,12 @@ class SessionTracker:
             The starting row number (number of rows in CSV before this session)
         """
         if self.perf_csv_path.exists():
-            # Count existing rows (excluding header)
+            # Count existing data rows (excluding header and blank lines)
             with open(self.perf_csv_path, 'r') as f:
                 lines = f.readlines()
+                non_empty = [l for l in lines if l.strip()]
                 # Subtract 1 for header row
-                self.session_start_row = max(0, len(lines) - 1)
+                self.session_start_row = max(0, len(non_empty) - 1)
         else:
             # No existing file, start at 0
             self.session_start_row = 0
@@ -59,15 +60,6 @@ class SessionTracker:
         # Automatically save marker for child processes
         self._save_marker(self.session_start_row)
         
-        return self.session_start_row
-    
-    def get_session_start(self) -> Optional[int]:
-        """
-        Get the session start row.
-        
-        Returns:
-            Session start row number, or None if session not started
-        """
         return self.session_start_row
     
     def get_session_row_count(self) -> int:
@@ -85,7 +77,8 @@ class SessionTracker:
         
         with open(self.perf_csv_path, 'r') as f:
             lines = f.readlines()
-            current_row_count = max(0, len(lines) - 1)  # Exclude header
+            non_empty = [l for l in lines if l.strip()]
+            current_row_count = max(0, len(non_empty) - 1)  # Exclude header
         
         return current_row_count - self.session_start_row
     
@@ -100,23 +93,6 @@ class SessionTracker:
         self.marker_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.marker_file, 'w') as f:
             f.write(str(start_row))
-    
-    def load_marker(self) -> Optional[int]:
-        """
-        Load session start marker from file.
-        
-        Uses the marker file path from this instance's perf_csv_path.
-            
-        Returns:
-            Session start row, or None if file doesn't exist
-        """
-        if self.marker_file.exists():
-            try:
-                with open(self.marker_file, 'r') as f:
-                    return int(f.read().strip())
-            except (ValueError, IOError):
-                return None
-        return None
     
     def cleanup_marker(self):
         """

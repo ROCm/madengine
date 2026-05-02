@@ -43,7 +43,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
-- **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
+- **📂 ROCm Path** - Auto-detect **host** ROCm root (override with top-level `MAD_ROCM_PATH`); in-container `ROCM_PATH` is set independently via `docker_env_vars.MAD_ROCM_PATH` and resolved at Docker run (image OCI env + in-image probe, not host mirroring) — see [Configuration](docs/configuration.md#rocm-path-run-only)
 - **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (RTL), rocblas, MIOpen, RCCL tracing
 - **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
@@ -72,11 +72,14 @@ madengine run --tags dummy \
 
 > **Note**: For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified. For production deployments or non-AMD/Ubuntu environments, explicitly specify these values.
 
-If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
+If auto-detection does not find your **host** ROCm root, set top-level `MAD_ROCM_PATH` in `--additional-context`. For a different ROCm root **inside the container**, set `docker_env_vars.MAD_ROCM_PATH` in additional context. If you omit it, madengine derives in-container `ROCM_PATH` when running Docker (from the image's baked-in env, then an in-container probe, then `/opt/rocm` — it does **not** copy the host path). You can also set `ROCM_PATH` / `MAD_AUTO_ROCM_PATH=0` for **host** behavior as documented in [docs/configuration.md](docs/configuration.md):
 
 ```bash
-madengine run --tags dummy --rocm-path /path/to/rocm
+# Override host ROCm root:
+madengine run --tags dummy --additional-context '{"MAD_ROCM_PATH": "/path/to/rocm"}'
 # or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy
+# Override in-container ROCm root independently:
+madengine run --tags dummy --additional-context '{"docker_env_vars": {"MAD_ROCM_PATH": "/path/in/container"}}'
 ```
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
@@ -645,7 +648,7 @@ madengine run --tags model --keep-alive
 madengine build --tags model --clean-docker-cache --verbose
 ```
 
-**ROCm not in /opt/rocm:** If you use a custom ROCm location (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set `ROCM_PATH` or pass `--rocm-path` to `madengine run` so GPU detection and container env use the correct paths.
+**ROCm not in /opt/rocm:** Set top-level `MAD_ROCM_PATH` in `--additional-context` for the **host**; for **in-container** paths, set `docker_env_vars.MAD_ROCM_PATH`, or let madengine resolve `ROCM_PATH` at run from the image and probe (see [Configuration](docs/configuration.md#rocm-path-run-only)).
 
 **Common Issues:**
 - **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)

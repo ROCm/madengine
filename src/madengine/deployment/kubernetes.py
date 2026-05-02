@@ -37,17 +37,13 @@ from jinja2 import Template
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .common import (
-    VALID_LAUNCHERS,
     configure_multi_node_profiling,
-    is_rocprofv3_available,
     normalize_launcher,
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
-    SECRETS_STRATEGY_EXISTING,
     SECRETS_STRATEGY_FROM_LOCAL,
-    SECRETS_STRATEGY_OMIT,
     create_or_update_secrets_from_credentials,
     delete_job_secrets_if_exist,
     estimate_configmap_payload_bytes,
@@ -58,7 +54,7 @@ from .k8s_secrets import (
 )
 from madengine.core.dataprovider import Data
 from madengine.core.context import Context
-from madengine.core.errors import ConfigurationError, create_error_context
+from madengine.core.errors import ConfigurationError
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
@@ -3334,6 +3330,7 @@ class KubernetesDeployment(KubernetesLauncherMixin, BaseDeployment):
             try:
                 with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
                     reader = csv_module.DictReader(f)
+                    reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
                     if not reader.fieldnames or "performance" not in reader.fieldnames or "metric" not in reader.fieldnames:
                         continue
                     for row_idx, row in enumerate(reader):
