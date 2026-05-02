@@ -470,8 +470,11 @@ class TestRunCommandExitCodes:
         """CLI help is reachable in CI without GPU."""
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == ExitCode.SUCCESS
-        assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
-        assert "--skip-model-run" in result.stdout
+        import re
+
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "run" in clean.lower() or "model" in clean.lower()
+        assert "--skip-model-run" in clean
 
     def test_run_command_build_error_returns_build_failure_exit_code(
         self, runner: CliRunner
