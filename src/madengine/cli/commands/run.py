@@ -5,7 +5,6 @@ Run command for madengine CLI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import ast
 import json
 import os
 from typing import List, Optional
@@ -33,7 +32,6 @@ from ..constants import (
 from ..utils import (
     console,
     create_args_namespace,
-    deep_merge,
     display_performance_table,
     display_results_table,
     save_summary_with_feedback,
@@ -169,13 +167,27 @@ def run(
     # Process tags to handle comma-separated values
     processed_tags = split_comma_separated_tags(tags)
 
-    # Load --config YAML if provided
+    # --config is mutually exclusive with --additional-context and --additional-context-file
     if config:
+        if additional_context and additional_context.strip() not in ("", "{}"):
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+        if additional_context_file:
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+
         from madengine.config import load_config
 
         config_ctx, config_meta = load_config(config)
 
-        # Config values provide defaults; explicit CLI args override
         if not processed_tags and config_meta.get("model", {}).get("tags"):
             processed_tags = config_meta["model"]["tags"]
         if timeout == DEFAULT_TIMEOUT and config_meta.get("model", {}).get("timeout"):
@@ -185,16 +197,7 @@ def run(
         if not registry and config_meta.get("build", {}).get("registry"):
             registry = config_meta["build"]["registry"]
 
-        # Merge: config is base, --additional-context overrides
-        parsed_ac = {}
-        if additional_context and additional_context.strip() != "{}":
-            try:
-                parsed_ac = json.loads(additional_context)
-            except json.JSONDecodeError:
-                parsed_ac = ast.literal_eval(additional_context)
-
-        merged = deep_merge(config_ctx, parsed_ac)
-        additional_context = repr(merged)
+        additional_context = repr(config_ctx)
         additional_context_file = None
 
     # Input validation
