@@ -25,6 +25,7 @@ Thumbs.db
 # Distribution / packaging
 .Python
 build/
+!src/madengine/configs/build/
 develop-eggs/
 dist/
 downloads/
