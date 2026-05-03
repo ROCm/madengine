@@ -73,6 +73,17 @@ def build(
             help="File containing additional context JSON",
         ),
     ] = None,
+    config: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--config",
+            help=(
+                "YAML config file and/or Hydra overrides "
+                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
+                "Cannot be combined with --additional-context or --additional-context-file."
+            ),
+        ),
+    ] = None,
     clean_docker_cache: Annotated[
         bool,
         typer.Option("--clean-docker-cache", help="Rebuild images without using cache"),
@@ -106,6 +117,38 @@ def build(
     # Process tags to handle comma-separated values
     # Supports both: --tags dummy --tags multi AND --tags dummy,multi
     processed_tags = split_comma_separated_tags(tags)
+
+    # --config is mutually exclusive with --additional-context and --additional-context-file
+    if config:
+        if additional_context and additional_context.strip() not in ("", "{}"):
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+        if additional_context_file:
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+
+        from madengine.config import load_config
+
+        config_ctx, config_meta = load_config(config)
+
+        if not processed_tags and config_meta.get("model", {}).get("tags"):
+            processed_tags = config_meta["model"]["tags"]
+        if not registry and config_meta.get("build", {}).get("registry"):
+            registry = config_meta["build"]["registry"]
+        build_meta = config_meta.get("build", {})
+        if not target_archs and build_meta.get("target_archs"):
+            target_archs = build_meta["target_archs"]
+
+        additional_context = repr(config_ctx)
+        additional_context_file = None
 
     # Validate mutually exclusive options
     if batch_manifest and processed_tags:
