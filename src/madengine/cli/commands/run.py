@@ -81,7 +81,11 @@ def run(
         Optional[List[str]],
         typer.Option(
             "--config",
-            help="YAML config file and/or Hydra overrides (e.g., --config my_job.yaml, --config scheduler=slurm launcher=torchrun)",
+            help=(
+                "YAML config file and/or Hydra overrides "
+                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
+                "Cannot be combined with --additional-context or --additional-context-file."
+            ),
         ),
     ] = None,
     keep_alive: Annotated[
