@@ -298,6 +298,30 @@ class BuildOrchestrator:
         discovered_models = discover_models.run()
         
         if discovered_models:
+            # F1: when the discovered model card already declares an image via
+            # env_vars.DOCKER_IMAGE_NAME, treat it as an implicit --use-image so
+            # users do not have to repeat the image on the CLI for slurm_multi.
+            slurm_multi_models = [
+                m for m in discovered_models
+                if (m.get("distributed") or {}).get("launcher", "") in ["slurm_multi", "slurm-multi"]
+            ]
+            if slurm_multi_models and not registry:
+                card_images = {
+                    (m.get("env_vars") or {}).get("DOCKER_IMAGE_NAME", "")
+                    for m in slurm_multi_models
+                    if (m.get("env_vars") or {}).get("DOCKER_IMAGE_NAME")
+                }
+                if len(card_images) == 1:
+                    implicit_image = next(iter(card_images))
+                    self.rich_console.print(
+                        f"[dim]slurm_multi: no --registry/--use-image given; "
+                        f"using DOCKER_IMAGE_NAME from model card -> {implicit_image}[/dim]"
+                    )
+                    return self._execute_with_prebuilt_image(
+                        use_image=implicit_image,
+                        manifest_output=manifest_output,
+                    )
+                # No card image (or divergent images across models): fall through to error.
             for model in discovered_models:
                 launcher = model.get("distributed", {}).get("launcher", "")
                 if launcher in ["slurm_multi", "slurm-multi"] and not registry:
@@ -307,14 +331,14 @@ class BuildOrchestrator:
                         context=create_error_context(
                             operation="build",
                             component="BuildOrchestrator",
-                            model=model_name,
-                            launcher=launcher,
+                            model_name=model_name,
+                            additional_info={"launcher": launcher},
                         ),
                         suggestions=[
                             "Use --registry docker.io/myorg to push image (nodes will pull in parallel)",
                             "Use --use-image to use a pre-built image from registry",
                             "Use --build-on-compute --registry to build on compute and push",
-                            "For subsequent runs with same image, use: --use-image",
+                            "Or set DOCKER_IMAGE_NAME in the model card env_vars (auto-detected for slurm_multi)",
                         ],
                     )
         
@@ -763,7 +787,7 @@ class BuildOrchestrator:
                 context=create_error_context(
                     operation="resolve_image",
                     component="BuildOrchestrator",
-                    model_names=model_names,
+                    additional_info={"model_names": model_names},
                 ),
                 suggestions=[
                     "Add DOCKER_IMAGE_NAME to model's env_vars in models.json",
@@ -971,7 +995,7 @@ class BuildOrchestrator:
                     context=create_error_context(
                         operation="build_on_compute",
                         component="BuildOrchestrator",
-                        registry=registry,
+                        additional_info={"registry": registry},
                     ),
                     suggestions=_matched_hints,
                 )
@@ -1007,7 +1031,7 @@ class BuildOrchestrator:
                 context=create_error_context(
                     operation="build_on_compute",
                     component="BuildOrchestrator",
-                    dockerfile=dockerfile,
+                    additional_info={"dockerfile": dockerfile},
                 ),
                 suggestions=[
                     f"Check if {dockerfile}.ubuntu.amd.Dockerfile exists",

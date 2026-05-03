@@ -1921,8 +1921,13 @@ export MASTER_PORT={master_port}
         flat_out_files = sorted(self.output_dir.glob(f"madengine-*_{deployment_id}_*.out"))
         results["logs"] = [str(f) for f in flat_out_files]
 
-        # Look for model-generated perf.csv
-        # Priority: results_dir config > workspace perf.csv > NFS wait
+        # Look for model-generated perf.csv. Inner scripts in MAD-private write
+        # to one of these locations depending on the workload:
+        #   * SGLang / vLLM disagg: /shared_inference/<user>/<jobid>/perf.csv
+        #   * Large EP / KV cache:  <workspace>/slurm_output/perf_csv/*<jobid>*.csv
+        # Plus the legacy <cwd>/perf.csv path some flows still use.
+        # Priority: results_dir config > shared_inference NFS > slurm_output/perf_csv
+        # > <cwd>/perf.csv (with NFS-propagation retry).
         perf_csv_path = None
         if self.slurm_config.get("results_dir"):
             results_dir = Path(self.slurm_config["results_dir"])
@@ -1931,14 +1936,35 @@ export MASTER_PORT={master_port}
                 perf_csv_path = candidates[0]
 
         if not perf_csv_path:
+            user = os.environ.get("USER", "")
+            shared_candidates = []
+            if user:
+                shared_candidates.extend([
+                    Path(f"/shared_inference/{user}/{deployment_id}/perf.csv"),
+                    Path(f"/shared_inference/{user}/model_blog_logs/{deployment_id}/perf.csv"),
+                ])
+            workspace_perf_dir = Path("slurm_output/perf_csv")
+            workspace_candidates = list(workspace_perf_dir.glob(f"*{deployment_id}*.csv"))
             workspace_perf = Path("perf.csv")
+
             # Retry briefly for NFS propagation after SLURM job completion
             import time
             for _attempt in range(6):
+                for cand in shared_candidates:
+                    if cand.exists() and cand.stat().st_size > 0:
+                        perf_csv_path = cand
+                        break
+                if perf_csv_path:
+                    break
+                if workspace_candidates:
+                    perf_csv_path = workspace_candidates[0]
+                    break
                 if workspace_perf.exists() and workspace_perf.stat().st_size > 0:
                     perf_csv_path = workspace_perf
                     break
                 time.sleep(5)
+                # Re-glob in case the file appeared during the wait.
+                workspace_candidates = list(workspace_perf_dir.glob(f"*{deployment_id}*.csv"))
 
         if perf_csv_path:
             results["perf_files"] = [str(perf_csv_path)]
