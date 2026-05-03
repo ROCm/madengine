@@ -1,0 +1,14 @@
+# Local Docker — DeepSpeed ZeRO distributed training
+# madengine run --config examples/configs/demo/local/deepspeed.yaml
+
+model:
+  tags: [dummy_deepspeed]
+
+distributed:
+  enabled: true
+  launcher: deepspeed
+  nnodes: 1
+  nproc_per_node: 4
+
+env_vars:
+  OMP_NUM_THREADS: "8"

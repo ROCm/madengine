@@ -1,0 +1,40 @@
+# SLURM — multi-node torchrun over InfiniBand (4 nodes × 8 GPUs)
+# madengine run --config examples/configs/demo/slurm/multi-node-torchrun-infiniband.yaml
+
+model:
+  tags: [dummy_torchrun]
+
+slurm:
+  partition: amd-rccl
+  nodes: 4
+  gpus_per_node: 8
+  time: "48:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+  account: my-project
+  qos: high
+  network_interface: ib0
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 4
+  nproc_per_node: 8
+  backend: nccl
+  port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "16"
+  NCCL_DEBUG: WARN
+  NCCL_TIMEOUT: "1200"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
+  TORCH_NCCL_HIGH_PRIORITY: "1"
+  GPU_MAX_HW_QUEUES: "2"
+  HSA_ENABLE_SDMA: "0"
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  MIOPEN_FIND_MODE: "1"
+  MIOPEN_USER_DB_PATH: /tmp/.miopen
+  RCCL_ENABLE_HIPGRAPH: "0"
+  NCCL_IB_DISABLE: "0"
+  NCCL_IB_HCA: "mlx5_0:1,mlx5_1:1"
+  NCCL_SOCKET_IFNAME: ib0

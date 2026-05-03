@@ -678,7 +678,7 @@ madengine build --tags model \
   --registry docker.io/myorg
 ```
 
-See [Configuration Guide](docs/configuration.md#yaml-configuration-config) for full details.
+See [Configuration Guide](docs/configuration.md#yaml-configuration-config) for full details, and [`examples/configs/`](examples/configs/) for annotated templates and ready-to-run demo files.
 
 ## 💡 Tips & Best Practices
 

@@ -1,0 +1,16 @@
+# Kubernetes — single GPU pod (no distribution)
+# madengine run --config examples/configs/demo/k8s/single-gpu.yaml
+
+model:
+  tags: [dummy]
+
+k8s:
+  namespace: default
+  gpu_count: 1
+  memory: 16Gi
+  memory_limit: 32Gi
+  cpu: "8"
+  cpu_limit: "16"
+
+env_vars:
+  OMP_NUM_THREADS: "8"

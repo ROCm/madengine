@@ -546,6 +546,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 }
 ```
 
+See [`examples/configs/templates/k8s.yaml`](../examples/configs/templates/k8s.yaml) for the complete annotated YAML template, or [`examples/configs/demo/k8s/`](../examples/configs/demo/k8s/) for ready-to-run examples.
+
 ## SLURM Deployment
 
 ### Basic Configuration
@@ -571,10 +573,7 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
     "gpus_per_node": 8,
     "nodes": 2,
     "nodelist": "node01,node02",
-    "time": "24:00:00",
-    "mem": "64G",
-    "mail_user": "user@example.com",
-    "mail_type": "ALL"
+    "time": "24:00:00"
   }
 }
 ```
@@ -585,13 +584,16 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `partition` - SLURM partition name (required)
 - `account` - Billing account
 - `qos` - Quality of Service
-- `gpus_per_node` - GPUs per node (default: 1)
+- `gpus_per_node` - GPUs per node (default: 8)
 - `nodes` - Number of nodes (default: 1)
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
-- `time` - Wall time limit HH:MM:SS (required)
-- `mem` - Memory per node (e.g., "64G")
-- `mail_user` - Email for notifications
-- `mail_type` - Notification types (BEGIN, END, FAIL, ALL)
+- `exclude` - Comma-separated node names to exclude
+- `constraint` - Node feature constraint (e.g., `"infiniband"`)
+- `time` - Wall time limit HH:MM:SS (default: `"24:00:00"`)
+- `exclusive` - Request exclusive node access (default: `true`)
+- `modules` - List of environment modules to load
+- `network_interface` - Network interface for NCCL/GLOO (e.g., `"ib0"`)
+- `shared_workspace` - Explicit NFS/Lustre shared workspace path
 
 ### Multi-Node SLURM
 
@@ -611,6 +613,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 }
 ```
 
+See [`examples/configs/templates/slurm.yaml`](../examples/configs/templates/slurm.yaml) for the complete annotated YAML template, or [`examples/configs/demo/slurm/`](../examples/configs/demo/slurm/) for ready-to-run examples.
+
 ## Distributed Training
 
 ### Launcher Configuration
@@ -625,6 +629,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
   }
 }
 ```
+
+> **YAML config note**: When using `--config`, you must also set `distributed.enabled: true` explicitly. The default config loads `launcher: none` which sets `enabled: false`; setting a launcher alone does not override it.
 
 **Launcher Options:**
 - `launcher` - Framework name (required)

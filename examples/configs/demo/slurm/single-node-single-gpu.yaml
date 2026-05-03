@@ -1,0 +1,15 @@
+# SLURM — single node, single GPU (no distribution)
+# madengine run --config examples/configs/demo/slurm/single-node-single-gpu.yaml
+
+model:
+  tags: [dummy]
+
+slurm:
+  partition: amd-rccl
+  nodes: 1
+  gpus_per_node: 1
+  time: "01:00:00"
+  output_dir: ./slurm_results
+
+env_vars:
+  OMP_NUM_THREADS: "8"

@@ -452,7 +452,7 @@ madengine run --tags model \
   --config +profile=mi300x_8gpu
 ```
 
-> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details.
+> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details, and [`examples/configs/`](../examples/configs/) for annotated templates and ready-to-run demos.
 
 ### Custom Timeouts
 

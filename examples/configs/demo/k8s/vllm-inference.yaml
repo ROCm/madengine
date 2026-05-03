@@ -1,0 +1,31 @@
+# Kubernetes — vLLM inference, data parallelism (2 pods × 4 GPUs, one replica per pod)
+# madengine run --config examples/configs/demo/k8s/vllm-inference.yaml
+
+model:
+  tags: [dummy_vllm]
+
+k8s:
+  namespace: default
+  gpu_count: 4
+  memory: 256Gi
+  memory_limit: 384Gi
+  cpu: "64"
+  cpu_limit: "96"
+  host_ipc: true
+  node_selector:
+    feature.node.kubernetes.io/amd-gpu-mi300x: "true"
+
+distributed:
+  enabled: true
+  launcher: vllm
+  nnodes: 2
+  nproc_per_node: 4
+  master_port: 29500
+
+env_vars:
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: spawn
+  VLLM_KV_CACHE_SIZE: "0.7"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  NCCL_TIMEOUT: "600"
+  RAY_health_check_timeout_ms: "60000"

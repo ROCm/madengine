@@ -1,0 +1,32 @@
+# SLURM — SGLang inference, tensor + data parallelism (2 nodes × 4 GPUs)
+# madengine run --config examples/configs/demo/slurm/sglang-inference.yaml
+
+model:
+  tags: [dummy_sglang]
+
+slurm:
+  partition: amd-rccl
+  nodes: 2
+  gpus_per_node: 4
+  time: "04:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+
+distributed:
+  enabled: true
+  launcher: sglang
+  nnodes: 2
+  nproc_per_node: 4
+  backend: nccl
+  port: 29500
+
+env_vars:
+  SGLANG_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  SGLANG_ENABLE_RADIX_CACHE: "1"
+  SGLANG_RADIX_CACHE_SIZE: "0.9"
+  SGLANG_LOGGING_LEVEL: INFO
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  HSA_ENABLE_SDMA: "0"
+  GPU_MAX_HW_QUEUES: "2"
+  NCCL_DEBUG: WARN
+  RAY_DEDUP_LOGS: "1"

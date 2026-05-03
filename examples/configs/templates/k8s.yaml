@@ -1,0 +1,180 @@
+# ============================================================
+# madengine YAML Config Template — Kubernetes
+# ============================================================
+# Copy this file, fill in your model and cluster details, and
+# remove or comment out any sections you don't need.
+#
+# Usage:
+#   madengine run --config k8s.yaml
+#   madengine run --config k8s.yaml --config distributed.nnodes=4
+#
+# Target is inferred automatically from the presence of the
+# 'k8s' (or 'kubernetes') key — no explicit deploy field is needed.
+# ============================================================
+
+# ------------------------------------
+# Model selection
+# ------------------------------------
+model:
+  # Run by tag — discovers matching models from models.json
+  tags: [dummy_torchrun]
+
+  # OR point at a pre-built manifest
+  # manifest_file: build_manifest.json
+
+  # OR use a specific container image directly
+  # container_image: myrepo/myimage:latest
+
+  skip_run: false
+  # timeout: 86400
+
+# ------------------------------------
+# Kubernetes job settings
+# ------------------------------------
+k8s:
+  kubeconfig: ~/.kube/config   # Path to kubeconfig file
+  namespace: default            # Kubernetes namespace for the job
+
+  # GPU resources
+  gpu_count: 8                         # GPUs per pod
+  gpu_resource_name: amd.com/gpu       # Resource name (nvidia.com/gpu for NVIDIA)
+
+  # CPU and memory per pod
+  memory: 256Gi
+  memory_limit: 384Gi
+  cpu: "64"
+  cpu_limit: "96"
+
+  # Pod lifecycle
+  image_pull_policy: Always   # Always | IfNotPresent | Never
+  backoff_limit: 3            # Retry attempts on pod failure
+  # ttl_seconds_after_finished: 3600  # Auto-delete job N seconds after completion
+
+  # IPC namespace sharing (required for multi-GPU NCCL/RCCL)
+  host_ipc: true
+
+  # Re-create shared data PVC on each run (useful when data changes)
+  recreate_shared_data_pvc: false
+
+  # Node selection (optional)
+  node_selector: {}
+  #   feature.node.kubernetes.io/amd-gpu-mi300x: "true"
+  #   topology.kubernetes.io/zone: us-west-2a
+
+  # Tolerations (optional — allow scheduling on tainted nodes)
+  tolerations: []
+  #   - key: gpu
+  #     operator: Equal
+  #     value: amd
+  #     effect: NoSchedule
+
+  # Storage (optional)
+  # results_pvc: my-results-pvc     # PVC for writing results (mounted at /results)
+  # data_pvc: my-data-pvc           # Existing PVC for input data (auto-created if omitted)
+
+  # Storage classes (override cluster defaults)
+  # nfs_storage_class: nfs-banff
+  # local_path_storage_class: local-path
+  # data_storage_class: nfs-banff
+
+  # Output dir for generated Kubernetes manifests
+  # output_dir: ./k8s_manifests
+
+  # Secrets (image pull and runtime credentials)
+  secrets:
+    strategy: from_local_credentials   # from_local_credentials | from_secret
+    image_pull_secret_names: []
+    # runtime_secret_name: my-runtime-secret
+
+  # Allow privileged containers for profiling tools (e.g. rocprofv3)
+  # allow_privileged_profiling: true
+
+# ------------------------------------
+# Distributed launcher
+# ------------------------------------
+distributed:
+  enabled: true
+  launcher: torchrun    # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+  backend: nccl         # nccl | gloo
+  nnodes: 2             # Number of pods (each runs one replica of the job)
+  nproc_per_node: 8     # Must match k8s.gpu_count
+  master_port: 29500
+
+  # SGLang disaggregated only: override default prefill/decode split
+  # sglang_disagg:
+  #   prefill_nodes: 2
+  #   decode_nodes: 2
+
+# ------------------------------------
+# Environment variables
+# ------------------------------------
+env_vars:
+  OMP_NUM_THREADS: "8"
+  NCCL_DEBUG: WARN
+  NCCL_IB_DISABLE: "1"
+  NCCL_SOCKET_IFNAME: eth0
+  TORCH_NCCL_HIGH_PRIORITY: "1"
+  GPU_MAX_HW_QUEUES: "2"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
+  NCCL_TIMEOUT: "600"
+  HSA_ENABLE_SDMA: "0"
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  OMP_NUM_THREADS: "8"
+  MIOPEN_FIND_MODE: "1"
+  MIOPEN_USER_DB_PATH: /tmp/.miopen
+  RCCL_ENABLE_HIPGRAPH: "0"
+
+  # Point to the PVC mount for data provider models
+  # MAD_DATAHOME: /data
+
+# ------------------------------------
+# Hardware (defaults to AMD/Ubuntu)
+# ------------------------------------
+# gpu_vendor: AMD      # AMD | NVIDIA
+# guest_os: UBUNTU     # UBUNTU | CENTOS
+
+# ------------------------------------
+# Profiling tools (optional)
+# Requires allow_privileged_profiling: true in k8s section above
+# ------------------------------------
+# tools: []
+#   - name: rocprofv3_lightweight
+#   - name: rocprofv3_communication
+#     env_vars:
+#       RCCL_DEBUG: INFO
+#   - name: gpu_info_power_profiler
+#     env_vars:
+#       POWER_DEVICE: all
+#       POWER_SAMPLING_RATE: "0.1"
+#   - name: gpu_info_vram_profiler
+#     env_vars:
+#       VRAM_DEVICE: all
+#       VRAM_SAMPLING_RATE: "0.1"
+
+# ------------------------------------
+# Scripts (optional)
+# ------------------------------------
+# pre_scripts: []
+# post_scripts: []
+# encapsulate_script: null
+
+# ------------------------------------
+# Log error scanning (optional)
+# ------------------------------------
+log_error:
+  pattern_scan: true
+  benign_patterns: []
+  patterns: []
+
+# ------------------------------------
+# Output (optional)
+# ------------------------------------
+output: perf.csv
+# summary_output: null
+# data_config: data.json
+
+# ------------------------------------
+# Misc
+# ------------------------------------
+debug: false
+live_output: false

@@ -1,0 +1,19 @@
+# Local Docker — single GPU with ROCm profiling
+# madengine run --config examples/configs/demo/local/profiling.yaml
+
+model:
+  tags: [dummy]
+
+tools:
+  - name: rocprofv3_lightweight
+  - name: gpu_info_power_profiler
+    env_vars:
+      POWER_DEVICE: all
+      POWER_SAMPLING_RATE: "0.1"
+  - name: gpu_info_vram_profiler
+    env_vars:
+      VRAM_DEVICE: all
+      VRAM_SAMPLING_RATE: "0.1"
+
+env_vars:
+  OMP_NUM_THREADS: "8"

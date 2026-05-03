@@ -1,0 +1,36 @@
+# SLURM — multi-GPU run with RCCL communication + power + VRAM profiling
+# madengine run --config examples/configs/demo/slurm/profiling-multi-gpu.yaml
+
+model:
+  tags: [dummy_torchrun]
+
+slurm:
+  partition: amd-rccl
+  nodes: 1
+  gpus_per_node: 4
+  time: "02:00:00"
+  output_dir: ./slurm_results
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 1
+  nproc_per_node: 4
+
+tools:
+  - name: rocprofv3_lightweight
+  - name: rocprofv3_communication
+    env_vars:
+      RCCL_DEBUG: INFO
+  - name: gpu_info_power_profiler
+    env_vars:
+      POWER_DEVICE: all
+      POWER_SAMPLING_RATE: "0.1"
+  - name: gpu_info_vram_profiler
+    env_vars:
+      VRAM_DEVICE: all
+      VRAM_SAMPLING_RATE: "0.1"
+
+env_vars:
+  OMP_NUM_THREADS: "8"
+  NCCL_DEBUG: WARN
