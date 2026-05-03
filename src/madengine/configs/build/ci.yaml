@@ -1,0 +1,8 @@
+# @package _global_
+docker:
+  clean_cache: true
+
+build:
+  registry: null
+  target_archs: []
+  manifest_output: build_manifest.json

@@ -1,0 +1,6 @@
+# @package _global_
+env_vars:
+  NCCL_IB_DISABLE: "0"
+  NCCL_IB_HCA: "mlx5_0:1,mlx5_1:1"
+  NCCL_SOCKET_IFNAME: ib0
+  NCCL_NET_GDR_LEVEL: "3"

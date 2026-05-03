@@ -1,0 +1,8 @@
+# @package _global_
+build:
+  registry: null
+  target_archs:
+    - gfx942
+    - gfx90a
+    - gfx908
+  manifest_output: build_manifest.json
