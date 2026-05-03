@@ -11,21 +11,28 @@ madengine is executed ON the login node, not remotely.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import json
 import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
-from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.utils.run_details import get_build_number, get_pipeline
+
+from .base import (
+    BaseDeployment,
+    DeploymentConfig,
+    DeploymentResult,
+    DeploymentStatus,
+    create_jinja_env,
+)
 from .common import configure_multi_node_profiling, normalize_launcher
 from .config_loader import ConfigLoader, apply_deployment_config
+from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .slurm_node_selector import SlurmNodeSelector
-from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.utils.run_details import get_build_number, get_pipeline
-from madengine.utils.path_utils import scripts_base_dir_from
-import json
 
 
 class SlurmDeployment(BaseDeployment):
@@ -82,9 +89,7 @@ class SlurmDeployment(BaseDeployment):
         """Validate SLURM commands are available locally."""
         # Check required SLURM CLI tools
         for tool in self.REQUIRED_TOOLS:
-            result = subprocess.run(
-                ["which", tool], capture_output=True, timeout=5
-            )
+            result = subprocess.run(["which", tool], capture_output=True, timeout=5)
             if result.returncode != 0:
                 self.console.print(
                     f"[red]✗ Required tool not found: {tool}[/red]\n"
@@ -104,7 +109,9 @@ class SlurmDeployment(BaseDeployment):
             return False
 
         if self.gpus_per_node < 1:
-            self.console.print(f"[red]✗ Invalid GPUs per node: {self.gpus_per_node}[/red]")
+            self.console.print(
+                f"[red]✗ Invalid GPUs per node: {self.gpus_per_node}[/red]"
+            )
             return False
 
         self.console.print("[green]✓ SLURM environment validated[/green]")
@@ -113,10 +120,10 @@ class SlurmDeployment(BaseDeployment):
     def _validate_cli_availability(self) -> bool:
         """
         Validate madengine is available before job submission.
-        
+
         Compute nodes inherit the submission environment, so madengine
         must be available in PATH on the submission node.
-        
+
         Returns:
             bool: True if madengine is available and functional
         """
@@ -126,38 +133,31 @@ class SlurmDeployment(BaseDeployment):
                 capture_output=True,
                 text=True,
                 timeout=5,
-                check=False
+                check=False,
             )
             if result.returncode == 0:
                 version = result.stdout.strip() or "unknown"
                 self.console.print(
                     f"[green]✓[/green] madengine available: [cyan]{version}[/cyan]"
                 )
-                
+
                 # Show path for transparency
                 which_result = subprocess.run(
-                    ["which", "madengine"],
-                    capture_output=True,
-                    text=True,
-                    check=False
+                    ["which", "madengine"], capture_output=True, text=True, check=False
                 )
                 if which_result.returncode == 0:
                     cli_path = which_result.stdout.strip()
                     self.console.print(f"  Path: [dim]{cli_path}[/dim]")
-                
+
                 return True
             else:
-                self.console.print(
-                    "[red]✗ madengine found but returned error[/red]"
-                )
+                self.console.print("[red]✗ madengine found but returned error[/red]")
                 if result.stderr:
                     self.console.print(f"  Error: {result.stderr.strip()}")
                 return False
-                
+
         except FileNotFoundError:
-            self.console.print(
-                "\n[red]✗ ERROR: madengine not found[/red]\n"
-            )
+            self.console.print("\n[red]✗ ERROR: madengine not found[/red]\n")
             self.console.print(
                 "[yellow]Compute nodes need madengine in PATH.[/yellow]\n"
                 "\n[bold]To fix:[/bold]\n"
@@ -184,7 +184,7 @@ class SlurmDeployment(BaseDeployment):
                 "\n[yellow]⚠ Tip: Compute nodes inherit your submission environment[/yellow]"
             )
             return False
-        
+
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -230,17 +230,21 @@ class SlurmDeployment(BaseDeployment):
         additional_context = self.config.additional_context.copy()
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
-        
+
         # Extract launcher configuration
-        launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
-        
+        launcher_type = self.distributed_config.get(
+            "launcher", "torchrun"
+        )  # Default to torchrun
+
         # Normalize launcher based on deployment type and validity
         launcher_type = normalize_launcher(launcher_type, "slurm")
-        
+
         nnodes = self.distributed_config.get("nnodes", self.nodes)
-        nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
+        nproc_per_node = self.distributed_config.get(
+            "nproc_per_node", resolved_gpus_per_node
+        )
         master_port = self.distributed_config.get("port", 29500)
-        
+
         # Apply multi-node profiling logic if tools are configured
         tools = additional_context.get("tools", [])
         if nnodes > 1 and tools:
@@ -249,28 +253,29 @@ class SlurmDeployment(BaseDeployment):
             class ConsoleLogger:
                 def __init__(self, console):
                     self.console = console
+
                 def info(self, msg):
                     self.console.print(f"[cyan]{msg}[/cyan]")
+
                 def warning(self, msg):
                     self.console.print(f"[yellow]{msg}[/yellow]")
+
                 def debug(self, msg):
                     pass  # Skip debug messages in console
-            
+
             profiling_config = configure_multi_node_profiling(
-                nnodes=nnodes,
-                tools_config=tools,
-                logger=ConsoleLogger(self.console)
+                nnodes=nnodes, tools_config=tools, logger=ConsoleLogger(self.console)
             )
-            
+
             if profiling_config["enabled"]:
                 tools = profiling_config["tools"]
             else:
                 # rocprofv3 not available - skip profiling for multi-node
                 tools = []
-            
+
             # Update tools in additional_context
             additional_context["tools"] = tools
-        
+
         # Generate launcher-specific command
         launcher_command = self._generate_launcher_command(
             launcher_type=launcher_type,
@@ -279,7 +284,7 @@ class SlurmDeployment(BaseDeployment):
             master_port=master_port,
             model_name=model_info.get("name", "") or "",
         )
-        
+
         return {
             "model_name": model_info["name"],
             "manifest_file": os.path.abspath(self.config.manifest_file),
@@ -306,9 +311,9 @@ class SlurmDeployment(BaseDeployment):
             "live_output": self.config.additional_context.get("live_output", False),
             "tags": " ".join(model_info.get("tags", [])),
             "multiple_results": model_info.get("multiple_results"),
-            "credential_file": "credential.json"
-            if Path("credential.json").exists()
-            else None,
+            "credential_file": (
+                "credential.json" if Path("credential.json").exists() else None
+            ),
             "data_file": "data.json" if Path("data.json").exists() else None,
             # Launcher configuration
             "launcher_type": launcher_type,
@@ -329,15 +334,15 @@ class SlurmDeployment(BaseDeployment):
     ) -> str:
         """
         Generate launcher-specific command based on launcher type.
-        
+
         Follows k8s pattern: different launchers have different command generation.
-        
+
         Args:
             launcher_type: Type of launcher (torchrun, vllm, sglang, deepspeed, etc.)
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master communication port
-            
+
         Returns:
             Launcher-specific environment setup and command string
         """
@@ -348,13 +353,17 @@ class SlurmDeployment(BaseDeployment):
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
-            return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
+            return self._generate_sglang_disagg_command(
+                nnodes, nproc_per_node, master_port
+            )
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "megatron":
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "torchtitan":
-            return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
+            return self._generate_torchtitan_command(
+                nnodes, nproc_per_node, master_port
+            )
         elif launcher_type == "primus":
             return self._generate_primus_command(
                 nnodes, nproc_per_node, master_port, model_name=model_name
@@ -373,15 +382,15 @@ class SlurmDeployment(BaseDeployment):
     ) -> str:
         """
         Generate torchrun launcher command for SLURM.
-        
+
         For single-node (nnodes=1): Uses standalone mode
         For multi-node (nnodes>1): Uses distributed mode with SLURM environment
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             MAD_MULTI_NODE_RUNNER environment variable setup
         """
@@ -397,81 +406,81 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
     ) -> str:
         """
         Generate vLLM launcher environment variables.
-        
+
         vLLM manages its own process spawning - no torchrun needed.
         Model script directly invokes vLLM with tensor/pipeline parallelism.
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             Environment variable setup for vLLM
         """
         if nnodes == 1:
-            return f'''# vLLM single-node setup (Tensor Parallelism)
+            return f"""# vLLM single-node setup (Tensor Parallelism)
 export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export VLLM_PIPELINE_PARALLEL_SIZE=1
 export VLLM_DISTRIBUTED_BACKEND="auto"
-# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
         else:
             # One vLLM serve per node (TP only on that node), no shared Ray = data parallelism
-            return f'''# vLLM multi-node setup (data parallel: one serve per node, TP only)
+            return f"""# vLLM multi-node setup (data parallel: one serve per node, TP only)
 export VLLM_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export VLLM_PIPELINE_PARALLEL_SIZE=1
 export VLLM_DISTRIBUTED_BACKEND="none"
-# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+# vLLM handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
 
     def _generate_sglang_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
     ) -> str:
         """
         Generate SGLang launcher environment variables.
-        
+
         SGLang similar to vLLM - manages its own process spawning.
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             Environment variable setup for SGLang
         """
         if nnodes == 1:
-            return f'''# SGLang single-node setup (Tensor Parallelism)
+            return f"""# SGLang single-node setup (Tensor Parallelism)
 export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE=1
-# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
         else:
             # One SGLang serve per node (TP only on that node), no cross-node coordination = data parallel
-            return f'''# SGLang multi-node setup (data parallel: one serve per node, TP only)
+            return f"""# SGLang multi-node setup (data parallel: one serve per node, TP only)
 export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE=1
-# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed'''
+# SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
 
     def _generate_sglang_disagg_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
     ) -> str:
         """
         Generate SGLang Disaggregated launcher environment for SLURM.
-        
+
         SGLang Disaggregated Architecture:
         - Node 0: Proxy (load balancer)
         - Nodes 1 to xP: Prefill nodes
         - Nodes xP+1 to xP+yD: Decode nodes
-        
+
         Minimum cluster: 3 nodes (1 proxy + 1 prefill + 1 decode)
-        
+
         Args:
             nnodes: Total number of nodes (must be >= 3)
             nproc_per_node: GPUs per node (tensor parallel size)
             master_port: Master port for coordination
-            
+
         Returns:
             Environment setup with node role assignment
-            
+
         Raises:
             ValueError: If nnodes < 3 (minimum for disagg)
         """
@@ -480,12 +489,14 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
                 f"SGLang Disaggregated requires minimum 3 nodes "
                 f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
             )
-        
+
         # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        sglang_disagg_config = self.config.additional_context.get(
+            "distributed", {}
+        ).get("sglang_disagg", {})
         prefill_nodes = sglang_disagg_config.get("prefill_nodes")
         decode_nodes = sglang_disagg_config.get("decode_nodes")
-        
+
         if prefill_nodes is not None and decode_nodes is not None:
             # User specified custom split - validate
             if prefill_nodes < 1 or decode_nodes < 1:
@@ -506,8 +517,8 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
             # For N total nodes: 1 proxy + ~40% prefill + ~60% decode
             xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% of worker nodes
             yD = nnodes - 1 - xP  # remaining nodes
-        
-        return f'''# SGLang Disaggregated multi-node setup
+
+        return f"""# SGLang Disaggregated multi-node setup
 # ============================================
 # Cluster Configuration:
 #   Total Nodes: {nnodes}
@@ -545,21 +556,21 @@ echo "TP Size: {nproc_per_node}"
 echo "=========================================="
 
 # No MAD_MULTI_NODE_RUNNER - SGLang disagg handles process management
-# Model script should detect SGLANG_DISAGG_MODE and launch appropriately'''
+# Model script should detect SGLANG_DISAGG_MODE and launch appropriately"""
 
     def _generate_deepspeed_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
     ) -> str:
         """
         Generate DeepSpeed launcher command.
-        
+
         DeepSpeed has its own launcher similar to torchrun.
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             MAD_MULTI_NODE_RUNNER with deepspeed launcher
         """
@@ -579,14 +590,14 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SL
     ) -> str:
         """
         Generate Megatron-LM launcher command.
-        
+
         Megatron-LM typically uses torchrun but with specific environment variables.
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             MAD_MULTI_NODE_RUNNER with megatron-specific setup
         """
@@ -609,24 +620,24 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
     ) -> str:
         """
         Generate TorchTitan launcher command for SLURM.
-        
+
         TorchTitan is a PyTorch native platform for LLM pre-training that uses
         torchrun as its underlying launcher but requires additional configuration
         for multi-dimensional parallelism (FSDP2, Tensor Parallel, Pipeline Parallel).
-        
+
         Key TorchTitan features:
         - Uses TOML configuration files for training setup
         - Supports FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel
         - Built on top of torchrun for distributed coordination
-        
+
         For single-node (nnodes=1): Uses standalone torchrun mode
         For multi-node (nnodes>1): Uses distributed torchrun with SLURM environment
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             MAD_MULTI_NODE_RUNNER with torchtitan-specific setup
         """
@@ -664,15 +675,21 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
         We only export PRIMUS_CONFIG_PATH and optional PRIMUS_CLI_EXTRA. No MAD_MULTI_NODE_RUNNER.
         """
         primus_cfg = merged_primus_config(
-            self.manifest if isinstance(getattr(self, "manifest", None), dict) else None,
+            (
+                self.manifest
+                if isinstance(getattr(self, "manifest", None), dict)
+                else None
+            ),
             self.config.additional_context,
         )
         config_path = primus_cfg.get("config_path", "exp_pretrain.yaml")
         cli_extra = primus_cfg.get("cli_extra", "")
         # Safe shell quoting for config_path and cli_extra
         config_path_quoted = config_path.replace('"', '\\"')
-        lines = [f'# Primus launcher (model script runs run_pretrain.sh)',
-                 f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"']
+        lines = [
+            f"# Primus launcher (model script runs run_pretrain.sh)",
+            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
+        ]
         if (cli_extra or "").strip():
             cli_extra_quoted = cli_extra.replace('"', '\\"')
             lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
@@ -690,23 +707,23 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
     ) -> str:
         """
         Generate basic environment variables for unknown launchers.
-        
+
         Provides standard distributed execution environment variables
         and lets the model script handle launcher invocation.
-        
+
         Args:
             nnodes: Number of nodes
             nproc_per_node: GPUs per node
             master_port: Master port
-            
+
         Returns:
             Basic environment variable setup
         """
-        return f'''# Basic distributed environment (custom launcher)
+        return f"""# Basic distributed environment (custom launcher)
 export NNODES={nnodes}
 export NPROC_PER_NODE={nproc_per_node}
 export MASTER_PORT={master_port}
-# Model script should handle launcher invocation'''
+# Model script should handle launcher invocation"""
 
     def deploy(self) -> DeploymentResult:
         """Submit sbatch script to SLURM scheduler (locally)."""
@@ -724,11 +741,17 @@ export MASTER_PORT={master_port}
         # Health-check srun invocations create SLURM jobs; we cancel them after preflight.
         enable_preflight = self.slurm_config.get("enable_node_check", True)
         auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
-        allow_submit_without_clean = self.slurm_config.get("allow_submit_without_clean_nodes", False)
+        allow_submit_without_clean = self.slurm_config.get(
+            "allow_submit_without_clean_nodes", False
+        )
         clean_nodes: List[str] = []
         health_check_job_name: Optional[str] = None
 
-        if enable_preflight and self.nodes >= 1 and not self.slurm_config.get("nodelist"):
+        if (
+            enable_preflight
+            and self.nodes >= 1
+            and not self.slurm_config.get("nodelist")
+        ):
             try:
                 selector = SlurmNodeSelector(
                     console=self.console,
@@ -741,10 +764,14 @@ export MASTER_PORT={master_port}
                     exclude=self.slurm_config.get("exclude"),
                     constraint=self.slurm_config.get("constraint"),
                 )
-                health_check_job_name = getattr(selector, "_health_check_job_name", None)
+                health_check_job_name = getattr(
+                    selector, "_health_check_job_name", None
+                )
 
                 # Update exclude list if we found dirty/unreachable/unknown nodes
-                if updated_exclude and updated_exclude != self.slurm_config.get("exclude", ""):
+                if updated_exclude and updated_exclude != self.slurm_config.get(
+                    "exclude", ""
+                ):
                     self.console.print(
                         f"[dim]Updated exclude list for sbatch: {updated_exclude}[/dim]\n"
                     )
@@ -757,7 +784,9 @@ export MASTER_PORT={master_port}
                     and not allow_submit_without_clean
                     and len(clean_nodes) < self.nodes
                 ):
-                    SlurmNodeSelector.cancel_health_check_jobs(health_check_job_name, self.console)
+                    SlurmNodeSelector.cancel_health_check_jobs(
+                        health_check_job_name, self.console
+                    )
                     return DeploymentResult(
                         status=DeploymentStatus.FAILED,
                         deployment_id="",
@@ -774,13 +803,13 @@ export MASTER_PORT={master_port}
                     self.console.print(f"[dim]Using nodelist: {nodelist_str}[/dim]\n")
                     self.prepare()
             except Exception as e:
-                self.console.print(
-                    f"[yellow]⚠ Node health check failed: {e}[/yellow]"
-                )
+                self.console.print(f"[yellow]⚠ Node health check failed: {e}[/yellow]")
                 self.console.print("[dim]Continuing with job submission[/dim]\n")
             finally:
                 # Always cancel health-check jobs so they do not stay in the queue
-                SlurmNodeSelector.cancel_health_check_jobs(health_check_job_name, self.console)
+                SlurmNodeSelector.cancel_health_check_jobs(
+                    health_check_job_name, self.console
+                )
         # ==================== END PREFLIGHT ====================
 
         try:
@@ -842,7 +871,7 @@ export MASTER_PORT={master_port}
                 return self._check_job_completion(deployment_id)
 
             status = result.stdout.strip().upper()
-            
+
             # Check if live output is enabled
             live_output = self.config.additional_context.get("live_output", False)
 
@@ -881,8 +910,11 @@ export MASTER_PORT={master_port}
                 )
 
         except Exception as e:
-            self.console.print(f"[red]Monitor exception for job {deployment_id}: {e}[/red]")
+            self.console.print(
+                f"[red]Monitor exception for job {deployment_id}: {e}[/red]"
+            )
             import traceback
+
             self.console.print(f"[dim red]{traceback.format_exc()}[/dim red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
@@ -893,80 +925,88 @@ export MASTER_PORT={master_port}
     def _stream_job_output(self, job_id: str, final: bool = False):
         """Stream output from SLURM job output file."""
         # Track last position read from output file
-        if not hasattr(self, '_output_positions'):
+        if not hasattr(self, "_output_positions"):
             self._output_positions = {}
-        
+
         # Find output file
         output_dir = str(self.output_dir)
         output_pattern = f"{output_dir}/madengine-*_{job_id}_*.out"
-        
+
         try:
             import glob
+
             output_files = glob.glob(output_pattern)
-            
+
             if not output_files:
                 return  # Output file not created yet
-            
+
             output_file = output_files[0]  # Use first match
-            
+
             # Read new content from file
             try:
-                with open(output_file, 'r') as f:
+                with open(output_file, "r") as f:
                     # Seek to last position
                     last_pos = self._output_positions.get(job_id, 0)
                     f.seek(last_pos)
-                    
+
                     # Read new lines
                     new_content = f.read()
-                    
+
                     if new_content:
                         # Print new output with prefix
                         for line in new_content.splitlines():
                             if line.strip():  # Skip empty lines
                                 self.console.print(f"[dim cyan]│[/dim cyan] {line}")
-                    
+
                     # Update position
                     self._output_positions[job_id] = f.tell()
-                    
+
             except FileNotFoundError:
                 pass  # File not ready yet
-                
+
         except Exception as e:
             # Silently ignore streaming errors to not disrupt monitoring
             if final:
-                self.console.print(f"[dim yellow]Note: Could not stream output: {e}[/dim yellow]")
+                self.console.print(
+                    f"[dim yellow]Note: Could not stream output: {e}[/dim yellow]"
+                )
 
     def _show_log_summary(self, job_id: str, success: bool = True):
         """Show a summary with pointers to log files instead of streaming verbose output."""
         output_dir = str(self.output_dir)
-        
+
         try:
             import glob
+
             # Find output and error files for this job
             output_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.out")
             error_files = glob.glob(f"{output_dir}/madengine-*_{job_id}_*.err")
-            
+
             if output_files or error_files:
                 status_symbol = "✓" if success else "✗"
                 status_color = "green" if success else "red"
-                
-                self.console.print(f"[{status_color}]{status_symbol}[/{status_color}] SLURM job {job_id} logs saved to:")
-                
+
+                self.console.print(
+                    f"[{status_color}]{status_symbol}[/{status_color}] SLURM job {job_id} logs saved to:"
+                )
+
                 for out_file in output_files:
                     self.console.print(f"  [cyan]→[/cyan] Output: {out_file}")
-                    
+
                 for err_file in error_files:
                     # Check if error file has content
                     if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
                         self.console.print(f"  [yellow]→[/yellow] Errors: {err_file}")
-                
+
                 if not success and error_files:
                     # Show last few lines of error file for failed jobs
                     for err_file in error_files:
                         if os.path.exists(err_file) and os.path.getsize(err_file) > 0:
-                            self.console.print(f"\n[yellow]Last 10 lines of error log:[/yellow]")
+                            self.console.print(
+                                f"\n[yellow]Last 10 lines of error log:[/yellow]"
+                            )
                             try:
-                                with open(err_file, 'r') as f:
+                                with open(err_file, "r") as f:
                                     lines = f.readlines()
                                     for line in lines[-10:]:
                                         if line.strip():
@@ -975,10 +1015,14 @@ export MASTER_PORT={master_port}
                                 pass
                             break  # Only show first error file
             else:
-                self.console.print(f"[dim yellow]Note: Log files for job {job_id} not found in {output_dir}[/dim yellow]")
-                
+                self.console.print(
+                    f"[dim yellow]Note: Log files for job {job_id} not found in {output_dir}[/dim yellow]"
+                )
+
         except Exception as e:
-            self.console.print(f"[dim yellow]Note: Could not locate log files: {e}[/dim yellow]")
+            self.console.print(
+                f"[dim yellow]Note: Could not locate log files: {e}[/dim yellow]"
+            )
 
     def _check_job_completion(self, job_id: str) -> DeploymentResult:
         """Check completed job status using sacct (locally).
@@ -1012,11 +1056,13 @@ export MASTER_PORT={master_port}
 
             if result.returncode == 0:
                 status = result.stdout.strip().upper()
-                self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
-                
+                self.console.print(
+                    f"[dim]SLURM job {job_id} final status: {status}[/dim]"
+                )
+
                 # Check if live output is enabled
                 live_output = self.config.additional_context.get("live_output", False)
-                
+
                 if "COMPLETED" in status:
                     # Show final output or summary based on live_output flag
                     if live_output:
@@ -1082,9 +1128,13 @@ export MASTER_PORT={master_port}
 
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
-            "n_gpus": str(aggregated_record.get("n_gpus", self.nodes * self.gpus_per_node)),
+            "n_gpus": str(
+                aggregated_record.get("n_gpus", self.nodes * self.gpus_per_node)
+            ),
             "nnodes": str(aggregated_record.get("nnodes", self.nodes)),
-            "gpus_per_node": str(aggregated_record.get("gpus_per_node", self.gpus_per_node)),
+            "gpus_per_node": str(
+                aggregated_record.get("gpus_per_node", self.gpus_per_node)
+            ),
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
@@ -1109,7 +1159,9 @@ export MASTER_PORT={master_port}
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags(run_details)
 
@@ -1164,7 +1216,9 @@ export MASTER_PORT={master_port}
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags(result)
         return result
@@ -1202,7 +1256,9 @@ export MASTER_PORT={master_port}
         built_models_dict = self.manifest.get("built_models") or {}
         model_info_for_path = built_models_dict.get(model_key, {}) if model_key else {}
         model_name_for_path = model_info_for_path.get("name", model_key or "unknown")
-        model_name = model_key or "unknown"  # image key for build_info / model_info_for_entry lookups
+        model_name = (
+            model_key or "unknown"
+        )  # image key for build_info / model_info_for_entry lookups
 
         build_info = {}
         built_images = self.manifest.get("built_images") or {}
@@ -1218,7 +1274,9 @@ export MASTER_PORT={master_port}
 
         # Gather log content per node: from job_dir/node_N/ (new) or flat output_dir .out files
         per_node_log_contents: List[tuple] = []
-        flat_out_files = sorted(self.output_dir.glob(f"madengine-*_{deployment_id}_*.out"))
+        flat_out_files = sorted(
+            self.output_dir.glob(f"madengine-*_{deployment_id}_*.out")
+        )
         # Multi-node: only use explicit node logs (_node_N.out) to avoid also picking up
         # SBATCH %t output (madengine-*_<jobid>_0.out, _1.out), which would duplicate metrics.
         if self.nodes > 1:
@@ -1249,7 +1307,9 @@ export MASTER_PORT={master_port}
 
         # Multi-node: keep only log entries for actual node indices [0, nodes-1]
         if self.nodes > 1:
-            per_node_log_contents = [(n, c) for n, c in per_node_log_contents if n < self.nodes]
+            per_node_log_contents = [
+                (n, c) for n, c in per_node_log_contents if n < self.nodes
+            ]
 
         # Copy flat logs into job_dir/node_<task>/ for consistency if not already there.
         # Only create dirs for indices in [0, nodes-1] so we never create extra node_2, etc.
@@ -1293,9 +1353,11 @@ export MASTER_PORT={master_port}
                 )
 
         run_details_dict: Optional[Dict[str, Any]] = None
-        model_info_for_entry = (self.manifest.get("built_models") or {}).get(
-            model_key, {}
-        ) if model_key else {}
+        model_info_for_entry = (
+            (self.manifest.get("built_models") or {}).get(model_key, {})
+            if model_key
+            else {}
+        )
 
         # Multiple results path: resolve CSV from job_dir/node_*, then cwd/run_directory
         mult_res = model_info_for_entry.get("multiple_results")
@@ -1346,22 +1408,29 @@ export MASTER_PORT={master_port}
                 )
                 results["perf_files"] = [str(Path("perf.csv").resolve())]
                 import csv as _csv
+
                 try:
-                    with open(resolved_csv, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(
+                        resolved_csv, "r", encoding="utf-8", errors="ignore"
+                    ) as f:
                         reader = _csv.DictReader(f)
                         for row in reader:
                             row = {k.strip(): v for k, v in row.items() if k}
                             if row.get("performance") and row.get("metric"):
-                                results["successful_runs"].append({
-                                    "model": model_info_for_entry.get("name", "") + "_" + row.get("model", ""),
-                                    "status": "SUCCESS",
-                                    "performance": str(row.get("performance", "")),
-                                    "metric": row.get("metric", ""),
-                                    "duration": row.get("test_duration", ""),
-                                    "gpu_arch": gpu_arch,
-                                    "deployment": "slurm",
-                                    "machine": deployment_id,
-                                })
+                                results["successful_runs"].append(
+                                    {
+                                        "model": model_info_for_entry.get("name", "")
+                                        + "_"
+                                        + row.get("model", ""),
+                                        "status": "SUCCESS",
+                                        "performance": str(row.get("performance", "")),
+                                        "metric": row.get("metric", ""),
+                                        "duration": row.get("test_duration", ""),
+                                        "gpu_arch": gpu_arch,
+                                        "deployment": "slurm",
+                                        "machine": deployment_id,
+                                    }
+                                )
                 except Exception:
                     pass
                 self.console.print(
@@ -1452,9 +1521,13 @@ export MASTER_PORT={master_port}
             perf_csv_path = "perf.csv"
             self._ensure_perf_csv_exists()
             if run_details_dict.get("status") == "SUCCESS":
-                update_perf_csv(perf_csv=perf_csv_path, single_result=str(perf_entry_path))
+                update_perf_csv(
+                    perf_csv=perf_csv_path, single_result=str(perf_entry_path)
+                )
             else:
-                update_perf_csv(perf_csv=perf_csv_path, exception_result=str(perf_entry_path))
+                update_perf_csv(
+                    perf_csv=perf_csv_path, exception_result=str(perf_entry_path)
+                )
             try:
                 scripts_path = model_info_for_entry.get("scripts", "")
                 scripts_base_dir = scripts_base_dir_from(scripts_path)
@@ -1476,7 +1549,9 @@ export MASTER_PORT={master_port}
                     num_entries=num_entries,
                 )
             except Exception as e:
-                self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]⚠ Could not update perf_super: {e}[/yellow]"
+                )
             results["perf_files"] = [str(Path(perf_csv_path).resolve())]
             run_data = {
                 "model": run_details_dict.get("model", ""),
@@ -1558,13 +1633,10 @@ export MASTER_PORT={master_port}
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
         try:
-            subprocess.run(
-                ["scancel", deployment_id], capture_output=True, timeout=10
-            )
+            subprocess.run(["scancel", deployment_id], capture_output=True, timeout=10)
             self.console.print(f"[yellow]Cancelled SLURM job: {deployment_id}[/yellow]")
             return True
 
         except Exception as e:
             self.console.print(f"[yellow]⚠ Cleanup warning: {e}[/yellow]")
             return False
-

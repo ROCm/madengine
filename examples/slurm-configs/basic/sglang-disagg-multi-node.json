@@ -10,10 +10,10 @@
     "tensor_parallel": "8 GPUs per node"
   },
   "_note": "SGLang Disaggregated separates prefill and decode into specialized clusters connected via Mooncake",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 5,
@@ -22,7 +22,7 @@
     "output_dir": "./slurm_results",
     "exclusive": true
   },
-  
+
   "distributed": {
     "launcher": "sglang-disagg",
     "nnodes": 5,
@@ -30,7 +30,7 @@
     "backend": "nccl",
     "port": 29500
   },
-  
+
   "env_vars": {
     "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
     "SGLANG_USE_MODELSCOPE": "False",
@@ -53,4 +53,3 @@
     "MOONCAKE_TEST_MODE": "0"
   }
 }
-

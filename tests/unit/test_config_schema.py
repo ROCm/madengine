@@ -40,12 +40,16 @@ class TestDistributedValidation:
         assert not any("requires distributed.launcher" in e for e in errors)
 
     def test_invalid_nnodes(self):
-        cfg = make_cfg({"distributed": {"enabled": True, "launcher": "torchrun", "nnodes": -1}})
+        cfg = make_cfg(
+            {"distributed": {"enabled": True, "launcher": "torchrun", "nnodes": -1}}
+        )
         errors = ConfigValidator.validate(cfg)
         assert any("positive integer" in e for e in errors)
 
     def test_valid_nnodes(self):
-        cfg = make_cfg({"distributed": {"enabled": True, "launcher": "torchrun", "nnodes": 4}})
+        cfg = make_cfg(
+            {"distributed": {"enabled": True, "launcher": "torchrun", "nnodes": 4}}
+        )
         errors = ConfigValidator.validate(cfg)
         assert not any("positive integer" in e for e in errors)
 

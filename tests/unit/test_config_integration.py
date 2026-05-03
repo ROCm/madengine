@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Integration tests for load_config end-to-end pipeline."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from madengine.config import load_config
 from madengine.core.errors import ConfigurationError
-
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "configs"
 
@@ -29,12 +29,14 @@ class TestLoadConfigEndToEnd:
         assert ctx["distributed"]["launcher"] == "torchrun"
 
     def test_combined_overrides(self):
-        ctx, meta = load_config([
-            "scheduler=slurm",
-            "launcher=torchrun",
-            "distributed.nnodes=4",
-            "+env=nccl_debug",
-        ])
+        ctx, meta = load_config(
+            [
+                "scheduler=slurm",
+                "launcher=torchrun",
+                "distributed.nnodes=4",
+                "+env=nccl_debug",
+            ]
+        )
         assert ctx["distributed"]["nnodes"] == 4
         assert ctx["env_vars"]["NCCL_DEBUG"] == "INFO"
         assert "slurm" in ctx
@@ -74,9 +76,7 @@ class TestLoadConfigEndToEnd:
             load_config(["platform=bare_metal"])
 
     def test_container_image_promoted(self):
-        ctx, meta = load_config(
-            ["model.container_image=myimage:latest"]
-        )
+        ctx, meta = load_config(["model.container_image=myimage:latest"])
         assert ctx["MAD_CONTAINER_IMAGE"] == "myimage:latest"
 
     def test_model_tags_in_metadata(self):

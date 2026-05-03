@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
-
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
 # Separator: optional unit suffix (/[a-zA-Z]+) and/or comma, in any order —
@@ -205,7 +204,9 @@ class BaseDeployment(ABC):
                     metrics = self.collect_results(result.deployment_id)
                     result.metrics = metrics
                 except Exception as e:
-                    self.console.print(f"[yellow]Warning: Could not collect results for {result.deployment_id}: {e}[/yellow]")
+                    self.console.print(
+                        f"[yellow]Warning: Could not collect results for {result.deployment_id}: {e}[/yellow]"
+                    )
                     # Ensure empty metrics dict exists even if collection fails
                     result.metrics = {"successful_runs": [], "failed_runs": []}
 
@@ -214,7 +215,9 @@ class BaseDeployment(ABC):
         except KeyboardInterrupt:
             if result is not None and getattr(result, "deployment_id", None):
                 self.cleanup(result.deployment_id)
-                self.console.print("\n[yellow]Cancelled deployment and cleaned up resources.[/yellow]")
+                self.console.print(
+                    "\n[yellow]Cancelled deployment and cleaned up resources.[/yellow]"
+                )
             raise
         except Exception as e:
             self.console.print(f"[red]Deployment error: {e}[/red]")
@@ -239,13 +242,15 @@ class BaseDeployment(ABC):
         while True:
             status = self.monitor(deployment_id)
 
-            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN]:
+            if status.status in [
+                DeploymentStatus.SUCCESS,
+                DeploymentStatus.FAILED,
+                DeploymentStatus.UNKNOWN,
+            ]:
                 return status
 
             # Still running, wait and check again
-            self.console.print(
-                f"  Status: {status.status.value} - {status.message}"
-            )
+            self.console.print(f"  Status: {status.status.value} - {status.message}")
             time.sleep(30)  # Check every 30 seconds
 
     # Abstract methods to be implemented by subclasses
@@ -388,7 +393,7 @@ class BaseDeployment(ABC):
             return None
 
         value = float(match.group(1))
-        metric = match.group(2).rstrip(',')
+        metric = match.group(2).rstrip(",")
 
         node_id_pattern = r"node_id:\s*(\d+)"
         node_match = re.search(node_id_pattern, log_content)
@@ -503,7 +508,9 @@ class BaseDeployment(ABC):
             aggregated_value = sum(m["performance"] for m in per_node_metrics)
             method_desc = "sum_across_nodes"
         elif aggregation_method == "average":
-            aggregated_value = statistics.mean(m["performance"] for m in per_node_metrics)
+            aggregated_value = statistics.mean(
+                m["performance"] for m in per_node_metrics
+            )
             method_desc = "average_across_nodes"
         elif aggregation_method == "max":
             aggregated_value = max(m["performance"] for m in per_node_metrics)
@@ -543,7 +550,8 @@ class BaseDeployment(ABC):
         durations = [
             m.get("duration", m.get("test_duration", "N/A"))
             for m in per_node_metrics
-            if m.get("duration", "N/A") != "N/A" or m.get("test_duration", "N/A") != "N/A"
+            if m.get("duration", "N/A") != "N/A"
+            or m.get("test_duration", "N/A") != "N/A"
         ]
         if durations:
             duration_values = []
@@ -558,7 +566,9 @@ class BaseDeployment(ABC):
             duration = "N/A"
 
         total_gpus = sum(m.get("local_gpus", 1) for m in per_node_metrics)
-        gpus_per_node = per_node_metrics[0].get("local_gpus", 1) if per_node_metrics else 1
+        gpus_per_node = (
+            per_node_metrics[0].get("local_gpus", 1) if per_node_metrics else 1
+        )
 
         aggregated_record = {
             "model": first_metric["model"],
@@ -660,4 +670,3 @@ class BaseDeployment(ABC):
                 writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerow(row_to_write)
-

@@ -24,14 +24,14 @@ NAS_PASS=${NAS_PASSWORD}
 # If credentials not in environment, try to read from credential.json
 if [ -z "$NAS_PASS" ] && [ -f "/workspace/credential.json" ]; then
     echo "Reading NAS credentials from credential.json..."
-    
+
     # Extract NAS node info (try first node or find by hostname)
     NAS_HOST=$(python3 -c "import json; f=open('/workspace/credential.json'); d=json.load(f); nodes=d.get('NAS_NODES', []); print(nodes[0].get('HOST', 'mlse-nas.amd.com') if nodes else 'mlse-nas.amd.com')" 2>/dev/null || echo "mlse-nas.amd.com")
-    
+
     NAS_PORT=$(python3 -c "import json; f=open('/workspace/credential.json'); d=json.load(f); nodes=d.get('NAS_NODES', []); print(nodes[0].get('PORT', '22') if nodes else '22')" 2>/dev/null || echo "22")
-    
+
     NAS_USER=$(python3 -c "import json; f=open('/workspace/credential.json'); d=json.load(f); nodes=d.get('NAS_NODES', []); print(nodes[0].get('USERNAME', 'datum') if nodes else 'datum')" 2>/dev/null || echo "datum")
-    
+
     NAS_PASS=$(python3 -c "import json; f=open('/workspace/credential.json'); d=json.load(f); nodes=d.get('NAS_NODES', []); print(nodes[0].get('PASSWORD', '') if nodes else '')" 2>/dev/null || echo "")
 fi
 
@@ -86,4 +86,3 @@ echo "MAD_DATA_DOWNLOAD_DURATION=$DURATION" >> /tmp/mad_metrics.env
 echo "MAD_DATA_SIZE=$SIZE" >> /tmp/mad_metrics.env
 echo "MAD_DATA_PROVIDER_TYPE=nas" >> /tmp/mad_metrics.env
 echo "MAD_DATANAME=$DATANAME" >> /tmp/mad_metrics.env
-

@@ -57,7 +57,9 @@ class TestScopedTags:
 
     def test_colon_in_tag_not_treated_as_scoped(self):
         """model:arg keeps legacy behavior (no scope/tag split on /)."""
-        dm = DiscoverModels(args=argparse.Namespace(tags=["MAD-private/foo:batch-size=32"]))
+        dm = DiscoverModels(
+            args=argparse.Namespace(tags=["MAD-private/foo:batch-size=32"])
+        )
         dm.models = [
             {"name": "MAD-private/foo", "tags": [], "args": ""},
         ]
@@ -113,7 +115,8 @@ class TestUnscopedTagSelection:
 
     def test_unscoped_tag_matches_scoped_models_by_tag_field(self):
         """--tags inference matches any model carrying that tag, regardless of scope prefix.
-        Tag-list matching is always scope-agnostic; only name-based matching is scope-strict."""
+        Tag-list matching is always scope-agnostic; only name-based matching is scope-strict.
+        """
         dm = DiscoverModels(args=argparse.Namespace(tags=["inference"]))
         dm.models = [
             {"name": "MAD/pyt_foo", "tags": ["inference"], "args": ""},
@@ -121,7 +124,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_bar", "MAD/pyt_foo"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_bar",
+            "MAD/pyt_foo",
+        ]
 
     def test_unscoped_all_selects_every_model(self):
         """--tags all selects every model regardless of scope."""
@@ -132,7 +138,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_bar", "pyt_foo"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_bar",
+            "pyt_foo",
+        ]
 
     def test_unscoped_tag_matches_root_and_scoped_by_tag_field(self):
         """--tags inference selects root AND scoped models that carry that tag."""
@@ -143,7 +152,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_foo", "root_model"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_foo",
+            "root_model",
+        ]
 
     def test_unscoped_tag_with_extra_args_matches_by_tag_field(self):
         """--tags inference:batch-size=32 selects by tag 'inference', not 'inference:batch-size=32'."""

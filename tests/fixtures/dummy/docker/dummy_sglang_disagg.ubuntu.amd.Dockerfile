@@ -183,4 +183,3 @@ RUN echo "======================================================================
     echo "   Note: This is a dummy/test image for madengine validation" && \
     echo "   For production: Use full Mooncake with RDMA support" && \
     echo ""
-

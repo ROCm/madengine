@@ -29,4 +29,3 @@ $LAUNCHER_CMD run_deepspeed.py --deepspeed_config ds_config.json
 echo "========================================================================"
 echo "Training script completed"
 echo "========================================================================"
-

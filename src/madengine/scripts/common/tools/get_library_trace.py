@@ -5,17 +5,17 @@ This module contains the class GetLibraryTrace to get library trace information 
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-# built-in modules
-import sys
+import csv
 import io
 import os
 import re
-from datetime import datetime
-import csv
 import subprocess
-from contextlib import redirect_stdout, redirect_stderr
-import typing
 
+# built-in modules
+import sys
+import typing
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 
 # Global variables of the trace mode
 mode = os.environ.get("TRACE_MODE", "").replace(" ", "").split(",")
@@ -24,7 +24,7 @@ if os.environ.get("ROCBLAS_TRACE"):
     mode.append("rocblas_trace")
 
 if os.environ.get("HIPBLASLT_TRACE"):
-    mode.append("hipblaslt_trace")    
+    mode.append("hipblaslt_trace")
 
 if os.environ.get("TENSILE_TRACE"):
     mode.append("tensile_trace")
@@ -175,22 +175,20 @@ def process_miopen_trace(output_lines: list) -> bool:
 
 class LibraryFilter(object):
     """Class to filter the library trace information
-    
+
     This class filters the library trace information based on the mode
-    
+
     Args:
         mode: Mode of the trace
         liveOutput: Boolean value
         printConfigs: Boolean value
     """
+
     def __init__(
-            self, 
-            mode: str, 
-            liveOutput: bool=False, 
-            printConfigs: bool=False
-        ) -> None:
+        self, mode: str, liveOutput: bool = False, printConfigs: bool = False
+    ) -> None:
         """Initialize the LibraryFilter class
-        
+
         Args:
             mode: Mode of the trace
             liveOutput: Boolean value
@@ -206,17 +204,14 @@ class LibraryFilter(object):
 
         self.printConfigs = printConfigs
 
-    def write(
-            self, 
-            data: str
-        ) -> None:
+    def write(self, data: str) -> None:
         """Write the data
-        
+
         This function writes the data
-        
+
         Args:
             data: Data to write
-        
+
         Returns:
             None
         """
@@ -230,8 +225,8 @@ class LibraryFilter(object):
             matched |= r_match
 
         if "hipblaslt_trace" in mode:
-            r_match = process_hipblaslt_trace(data.splitlines() )
-            matched |= r_match 
+            r_match = process_hipblaslt_trace(data.splitlines())
+            matched |= r_match
 
         if "tensile_trace" in mode:
             t_match = process_tensile_trace(data.splitlines())
@@ -256,19 +251,17 @@ class LibraryFilter(object):
 
 
 def run_command(
-        commandstring: str, 
-        request_env: typing.Dict[str, str],
-        outlog: typing.Any
-    ):
+    commandstring: str, request_env: typing.Dict[str, str], outlog: typing.Any
+):
     """Run the command
-    
+
     This function runs the command
-    
+
     Args:
         commandstring: Command string
         request_env: Request environment
         outlog: Output log
-    
+
     Returns:
         None
     """
@@ -278,20 +271,20 @@ def run_command(
     # Run subprocess with STDOUT (not PIPE) so output goes directly to our stdout
     # This avoids buffering issues with nested processes
     process = subprocess.Popen(
-        commandstring, 
-        shell=True, 
+        commandstring,
+        shell=True,
         env=modified_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,  # Merge stderr into stdout
         universal_newlines=True,
-        bufsize=1  # Line buffered
+        bufsize=1,  # Line buffered
     )
-    
+
     # Stream output line by line
     for line in process.stdout:
         outlog.write(line)
         outlog.flush()
-    
+
     # Wait for process to complete
     process.wait()
 

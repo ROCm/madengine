@@ -5,20 +5,22 @@ This module tests the Docker image building functionality for distributed execut
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import json
+
 # built-in modules
 import os
-import json
 import shlex
 import tempfile
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
 # third-party modules
 import pytest
 
+from madengine.core.console import Console
+from madengine.core.context import Context
+
 # project modules
 from madengine.execution.docker_builder import DockerBuilder
-from madengine.core.context import Context
-from madengine.core.console import Console
 
 
 class TestDockerBuilder:
@@ -448,7 +450,10 @@ class TestDockerBuilder:
 
         # Set up some built images (key should match real DockerBuilder output)
         builder.built_images = {
-            "ci-model1": {"docker_image": "ci-model1", "dockerfile": "./docker/Dockerfile"}
+            "ci-model1": {
+                "docker_image": "ci-model1",
+                "dockerfile": "./docker/Dockerfile",
+            }
         }
 
         with patch("builtins.open", mock_open()) as mock_file:
@@ -777,8 +782,8 @@ class TestDockerBuilder:
         mock_vendor,
     ):
         """Test that build manifest includes registry_image when pushing to registry."""
-        import tempfile
         import os
+        import tempfile
 
         # Mock successful operations BEFORE creating Context
         # to avoid MagicMock objects being stored during initialization

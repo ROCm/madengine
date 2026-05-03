@@ -16,8 +16,8 @@ from madengine.execution.dockerfile_utils import (
     parse_dockerfile_gpu_variables,
 )
 
-
 # ---- Timeout ----
+
 
 class TestTimeout:
     """Timeout context manager: None/0 must not arm signal.alarm."""
@@ -34,10 +34,12 @@ class TestTimeout:
         with pytest.raises(TimeoutError):
             with Timeout(1):
                 import time
+
                 time.sleep(2)
 
 
 # ---- container_runner_helpers ----
+
 
 class TestResolveRunTimeout:
     """resolve_run_timeout behavior."""
@@ -59,8 +61,13 @@ class TestResolveRunTimeout:
         assert resolve_run_timeout({"timeout": model_timeout}, 7200) == 7200
 
     def test_custom_default_cli(self):
-        assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
-        assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
+        assert (
+            resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
+        )
+        assert (
+            resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000)
+            == 7200
+        )
 
     def test_no_timeout_sentinel_none_passthrough(self):
         # --timeout 0 is converted to None by the CLI; resolve_run_timeout must
@@ -94,7 +101,9 @@ class TestMakeRunLogFilePath:
 
     def test_basic_format(self):
         out = make_run_log_file_path(
-            {"name": "org/model"}, "ci-org_model_ubuntu.22.04", "",
+            {"name": "org/model"},
+            "ci-org_model_ubuntu.22.04",
+            "",
         )
         assert out == "org_model_ubuntu.22.04.live.log"
 
@@ -104,7 +113,9 @@ class TestMakeRunLogFilePath:
 
     def test_slashes_in_model_name_replaced(self):
         out = make_run_log_file_path(
-            {"name": "foo/bar/baz"}, "ci-foo_bar_baz_ubuntu", "",
+            {"name": "foo/bar/baz"},
+            "ci-foo_bar_baz_ubuntu",
+            "",
         )
         assert "/" not in out
         assert out.endswith(".live.log")
@@ -116,14 +127,18 @@ class TestMakeRunLogFilePath:
 
     def test_no_model_prefix_in_image(self):
         out = make_run_log_file_path(
-            {"name": "other/model"}, "ci-some_ubuntu_22", "",
+            {"name": "other/model"},
+            "ci-some_ubuntu_22",
+            "",
         )
         assert out == "other_model_some_ubuntu_22.live.log"
 
     def test_full_registry_ref_matches_short_ci_tag(self):
         """Run log name must match build log base when image is registry/name:ci-…."""
         model = {"name": "primus_pretrain/torchtitan_MI300X_qwen3_4B-pretrain"}
-        short = "ci-primus_pretrain_torchtitan_mi300x_qwen3_4b-pretrain_primus.ubuntu.amd"
+        short = (
+            "ci-primus_pretrain_torchtitan_mi300x_qwen3_4b-pretrain_primus.ubuntu.amd"
+        )
         full = f"rocm/mad-private:{short}"
         assert make_run_log_file_path(model, short, ".run") == make_run_log_file_path(
             model, full, ".run"
@@ -135,6 +150,7 @@ class TestMakeRunLogFilePath:
 
 
 # ---- dockerfile_utils ----
+
 
 class TestGpuArchVariables:
     def test_contains_expected_vars(self):
@@ -183,22 +199,32 @@ class TestNormalizeArchitectureName:
 
 class TestIsTargetArchCompatibleWithVariable:
     def test_mad_system_always_compatible(self):
-        assert is_target_arch_compatible_with_variable(
-            "MAD_SYSTEM_GPU_ARCHITECTURE", ["gfx90a"], "gfx908"
-        ) is True
+        assert (
+            is_target_arch_compatible_with_variable(
+                "MAD_SYSTEM_GPU_ARCHITECTURE", ["gfx90a"], "gfx908"
+            )
+            is True
+        )
 
     def test_multi_arch_target_in_list(self):
-        assert is_target_arch_compatible_with_variable(
-            "PYTORCH_ROCM_ARCH", ["gfx90a", "gfx908"], "gfx90a"
-        ) is True
-        assert is_target_arch_compatible_with_variable(
-            "GPU_TARGETS", ["gfx90a"], "gfx908"
-        ) is False
+        assert (
+            is_target_arch_compatible_with_variable(
+                "PYTORCH_ROCM_ARCH", ["gfx90a", "gfx908"], "gfx90a"
+            )
+            is True
+        )
+        assert (
+            is_target_arch_compatible_with_variable("GPU_TARGETS", ["gfx90a"], "gfx908")
+            is False
+        )
 
     def test_gfx_compilation_exact_match(self):
-        assert is_target_arch_compatible_with_variable(
-            "GFX_COMPILATION_ARCH", ["gfx90a"], "gfx90a"
-        ) is True
+        assert (
+            is_target_arch_compatible_with_variable(
+                "GFX_COMPILATION_ARCH", ["gfx90a"], "gfx90a"
+            )
+            is True
+        )
 
 
 class TestIsCompilationArchCompatible:

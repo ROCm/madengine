@@ -14,7 +14,7 @@ if [ "${SGLANG_DISAGG_MODE:-}" = "enabled" ]; then
     echo "  Node Rank: ${SGLANG_NODE_RANK:-unknown}"
     echo "  Prefill Nodes: ${SGLANG_DISAGG_PREFILL_NODES:-unknown}"
     echo "  Decode Nodes: ${SGLANG_DISAGG_DECODE_NODES:-unknown}"
-    
+
     # Run Python script that handles node roles
     python3 run_sglang_disagg_inference.py
 else
@@ -26,4 +26,3 @@ fi
 echo "============================================"
 echo "✓ SGLang Disagg Test Complete"
 echo "============================================"
-

@@ -19,10 +19,10 @@ cd "$SCRIPT_DIR"
 if [ -z "$MAD_MULTI_NODE_RUNNER" ]; then
     # Get number of GPUs from environment
     N_GPUS="${MAD_RUNTIME_NGPUS:-1}"
-    
+
     echo "ℹ️  MAD_MULTI_NODE_RUNNER not set, using standalone torchrun"
     echo "ℹ️  Using $N_GPUS GPUs"
-    
+
     MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node=$N_GPUS"
 fi
 

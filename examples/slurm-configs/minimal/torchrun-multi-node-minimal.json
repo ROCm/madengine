@@ -4,7 +4,7 @@
 
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 2,
@@ -15,4 +15,3 @@
     "launcher": "torchrun"
   }
 }
-

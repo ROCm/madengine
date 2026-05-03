@@ -19,8 +19,13 @@ class ConfigTranslator:
     }
 
     EXTRACTED_KEYS = {
-        "model", "build", "platform", "output",
-        "summary_output", "data_config", "live_output",
+        "model",
+        "build",
+        "platform",
+        "output",
+        "summary_output",
+        "data_config",
+        "live_output",
     }
 
     @classmethod

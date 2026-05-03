@@ -14,11 +14,11 @@ Launch modes:
   Multi-node: Use Ray backend with proper configuration
 """
 
+import argparse
 import os
+import socket
 import sys
 import time
-import argparse
-import socket
 from typing import List, Optional
 
 # Configure environment before importing vLLM
@@ -30,8 +30,8 @@ os.environ.setdefault("VLLM_USE_V1", "1")  # Explicitly use V1 engine
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 try:
-    from vllm import LLM, SamplingParams
     import torch
+    from vllm import LLM, SamplingParams
 except ImportError as e:
     print(f"Error importing required libraries: {e}")
     print("Please ensure vLLM and PyTorch are installed")
@@ -60,10 +60,10 @@ def print_header(args):
     print("vLLM V1 Engine Distributed Inference Benchmark")
     print("=" * 70)
     print(f"Hostname: {socket.gethostname()}")
-    
+
     nnodes = int(os.environ.get("NNODES", "1"))
     node_rank = int(os.environ.get("NODE_RANK", "0"))
-    
+
     print(f"Model: {args.model}")
     print(f"Tensor Parallel Size: {args.tensor_parallel_size}")
     print(f"Pipeline Parallel Size: {args.pipeline_parallel_size}")
@@ -96,19 +96,21 @@ def run_inference(args):
     print("\n" + "=" * 70)
     print("Initializing vLLM V1 Engine")
     print("=" * 70)
-    
+
     nnodes = int(os.environ.get("NNODES", "1"))
     node_rank = int(os.environ.get("NODE_RANK", "0"))
-    
+
     if args.distributed_backend == "auto":
         distributed_backend = "ray" if nnodes > 1 else None
     else:
-        distributed_backend = args.distributed_backend if args.distributed_backend != "none" else None
-    
+        distributed_backend = (
+            args.distributed_backend if args.distributed_backend != "none" else None
+        )
+
     # Use requested TP and PP (multi-node uses TP+PP from madengine env; no forced PP=1)
     effective_pipeline_size = args.pipeline_parallel_size
     effective_gpu_memory = 0.60 if args.pipeline_parallel_size > 1 else 0.85
-    
+
     if nnodes > 1 and distributed_backend == "ray":
         print("=" * 70)
         print("MULTI-NODE TP + PP (single Ray cluster)")
@@ -118,9 +120,9 @@ def run_inference(args):
         print(f"Pipeline Parallel Size: {effective_pipeline_size}")
         print(f"Total GPUs: {args.tensor_parallel_size * effective_pipeline_size}")
         print("=" * 70)
-    
+
     print(f"Using distributed backend: {distributed_backend or 'default'}")
-    
+
     # Initialize vLLM LLM engine with V1-specific settings
     try:
         llm_kwargs = {
@@ -133,59 +135,62 @@ def run_inference(args):
             "max_model_len": 2048,
             "disable_log_stats": True,  # Reduce logging noise
         }
-        
+
         # Add distributed backend if specified
         if distributed_backend:
             llm_kwargs["distributed_executor_backend"] = distributed_backend
-        
+
         # V1 engine specific: enforce_eager mode for compatibility
         if args.enforce_eager:
             llm_kwargs["enforce_eager"] = True
-        
+
         llm = LLM(**llm_kwargs)
         print("✓ vLLM V1 engine initialized successfully")
         if nnodes > 1:
-            print(f"✓ Multi-node TP={args.tensor_parallel_size} PP={effective_pipeline_size} (Ray)")
+            print(
+                f"✓ Multi-node TP={args.tensor_parallel_size} PP={effective_pipeline_size} (Ray)"
+            )
     except Exception as e:
         print(f"✗ Failed to initialize vLLM engine: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
-    
+
     # Configure sampling parameters
     sampling_params = SamplingParams(
         temperature=TEMPERATURE,
         top_p=TOP_P,
         max_tokens=MAX_TOKENS,
     )
-    
+
     print(f"\n{'=' * 70}")
     print("Running Inference")
     print("=" * 70)
-    
+
     # Generate prompts
     prompts = generate_prompts(NUM_PROMPTS)
-    
+
     # Warmup run (not timed)
     print("\nWarmup: Running 10 prompts...")
     warmup_prompts = prompts[:10]
     _ = llm.generate(warmup_prompts, sampling_params)
     print("✓ Warmup complete")
-    
+
     # Benchmark run (timed)
     print(f"\nBenchmark: Running {NUM_PROMPTS} prompts...")
     start_time = time.time()
-    
+
     outputs = llm.generate(prompts, sampling_params)
-    
+
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
+
     # Calculate metrics
     total_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
     throughput = NUM_PROMPTS / elapsed_time
     tokens_per_second = total_tokens / elapsed_time
-    
+
     print(f"\n{'=' * 70}")
     print("Benchmark Results")
     print("=" * 70)
@@ -195,9 +200,11 @@ def run_inference(args):
     print(f"Token generation: {tokens_per_second:.2f} tokens/second")
     print(f"Average latency: {(elapsed_time / NUM_PROMPTS) * 1000:.2f} ms/request")
     if nnodes > 1:
-        print(f"(Multi-node TP+PP: single replica across {args.tensor_parallel_size * effective_pipeline_size} GPUs)")
+        print(
+            f"(Multi-node TP+PP: single replica across {args.tensor_parallel_size * effective_pipeline_size} GPUs)"
+        )
     print("=" * 70)
-    
+
     # Print sample outputs
     print("\n" + "=" * 70)
     print("Sample Outputs (first 3)")
@@ -207,7 +214,7 @@ def run_inference(args):
         generated_text = output.outputs[0].text
         print(f"\n[Prompt {i+1}]: {prompt}")
         print(f"[Output {i+1}]: {generated_text[:200]}...")  # First 200 chars
-    
+
     # madengine output format
     print(f"\nperformance: {throughput:.2f} requests_per_second")
     print(f"tokens_per_second: {tokens_per_second:.2f}")
@@ -217,7 +224,7 @@ def run_inference(args):
     if nnodes > 1:
         print(f"nnodes: {nnodes}")
     print(f"distributed_backend: {distributed_backend or 'default'}")
-    
+
     return 0
 
 
@@ -230,47 +237,47 @@ def main():
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help=f"Model name or path (default: {DEFAULT_MODEL})"
+        help=f"Model name or path (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--tensor-parallel-size",
         type=int,
         default=1,
-        help="Number of GPUs for tensor parallelism (default: 1)"
+        help="Number of GPUs for tensor parallelism (default: 1)",
     )
     parser.add_argument(
         "--pipeline-parallel-size",
         type=int,
         default=1,
-        help="Number of nodes for pipeline parallelism (default: 1)"
+        help="Number of nodes for pipeline parallelism (default: 1)",
     )
     parser.add_argument(
         "--distributed-backend",
         type=str,
         choices=["auto", "ray", "mp", "none"],
         default="auto",
-        help="Distributed backend: auto (default), ray (multi-node), mp (multiprocessing), none"
+        help="Distributed backend: auto (default), ray (multi-node), mp (multiprocessing), none",
     )
     parser.add_argument(
         "--enforce-eager",
         action="store_true",
-        help="Disable CUDA graph for compatibility"
+        help="Disable CUDA graph for compatibility",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Validate arguments
     if args.tensor_parallel_size < 1:
         print("Error: tensor-parallel-size must be >= 1")
         return 1
-    
+
     if args.pipeline_parallel_size < 1:
         print("Error: pipeline-parallel-size must be >= 1")
         return 1
-    
+
     # Print configuration
     print_header(args)
-    
+
     # Run inference benchmark
     return run_inference(args)
 
@@ -284,6 +291,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
-

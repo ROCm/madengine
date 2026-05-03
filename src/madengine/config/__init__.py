@@ -1,8 +1,8 @@
 """Config-driven YAML configuration system for madengine."""
 
 from madengine.config.loader import HydraConfigLoader
-from madengine.config.translator import ConfigTranslator
 from madengine.config.schema import ConfigValidator
+from madengine.config.translator import ConfigTranslator
 
 
 def load_config(config_args: list) -> tuple:

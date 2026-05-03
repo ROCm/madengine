@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 set -x
 
@@ -38,7 +38,7 @@ if [ ! -f "$OUTPUT" ]; then
     echo "⚠️  Warning: $OUTPUT not found in $(pwd)"
     echo "⚠️  This may be expected if multiple gpu_info tools are stacked together"
     echo "⚠️  and only one ran successfully. Checking for any profiler outputs..."
-    
+
     # Check if prof.csv exists (default output name)
     if [ -f "prof.csv" ]; then
         echo "Found prof.csv - renaming to $OUTPUT"
@@ -47,11 +47,11 @@ if [ ! -f "$OUTPUT" ]; then
         echo "Profiler output saved to: $(pwd)/${OUTPUT}"
         exit 0
     fi
-    
+
     # List all CSV files for debugging
     echo "Available CSV files in directory:"
     ls -la *.csv 2>/dev/null || echo "No CSV files found"
-    
+
     # Don't fail - just warn and exit successfully
     # This allows other stacked tools to complete their post-scripts
     echo "⚠️  Profiler output $OUTPUT not found - skipping (non-fatal)"

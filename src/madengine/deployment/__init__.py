@@ -13,12 +13,7 @@ Architecture:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-from .base import (
-    BaseDeployment,
-    DeploymentConfig,
-    DeploymentResult,
-    DeploymentStatus,
-)
+from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus
 from .factory import DeploymentFactory
 
 __all__ = [
@@ -28,4 +23,3 @@ __all__ = [
     "DeploymentStatus",
     "DeploymentFactory",
 ]
-

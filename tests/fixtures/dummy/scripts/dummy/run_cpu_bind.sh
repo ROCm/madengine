@@ -1,8 +1,8 @@
 #!/bin/bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 cpus=""
 if [ -f "/sys/fs/cgroup/cpuset/cpuset.cpus" ]; then

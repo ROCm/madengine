@@ -26,14 +26,10 @@ class HydraConfigLoader:
         """
         user_file, overrides = HydraConfigLoader._parse_args(config_args)
 
-        config_dir = str(
-            Path(importlib.resources.files("madengine")) / "configs"
-        )
+        config_dir = str(Path(importlib.resources.files("madengine")) / "configs")
 
         if not os.path.isdir(config_dir):
-            config_dir = str(
-                Path(__file__).parent.parent / "configs"
-            )
+            config_dir = str(Path(__file__).parent.parent / "configs")
 
         GlobalHydra.instance().clear()
 
@@ -59,9 +55,7 @@ class HydraConfigLoader:
                 and not arg.startswith("+")
             ):
                 if user_file:
-                    raise ConfigurationError(
-                        "Only one YAML config file allowed"
-                    )
+                    raise ConfigurationError("Only one YAML config file allowed")
                 user_file = arg
             else:
                 overrides.append(arg)

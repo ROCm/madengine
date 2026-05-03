@@ -10,9 +10,28 @@ from madengine.config.translator import ConfigTranslator
 def make_cfg(overrides: dict) -> "DictConfig":
     """Build a DictConfig from a base + overrides for testing."""
     base = {
-        "model": {"tags": [], "manifest_file": None, "container_image": None, "skip_run": False, "timeout": None},
-        "docker": {"build_args": {}, "env_vars": {}, "mounts": {}, "gpus": None, "cpus": None, "additional_run_options": None, "keep_alive": False, "clean_cache": False},
-        "build": {"registry": None, "target_archs": [], "manifest_output": "build_manifest.json"},
+        "model": {
+            "tags": [],
+            "manifest_file": None,
+            "container_image": None,
+            "skip_run": False,
+            "timeout": None,
+        },
+        "docker": {
+            "build_args": {},
+            "env_vars": {},
+            "mounts": {},
+            "gpus": None,
+            "cpus": None,
+            "additional_run_options": None,
+            "keep_alive": False,
+            "clean_cache": False,
+        },
+        "build": {
+            "registry": None,
+            "target_archs": [],
+            "manifest_output": "build_manifest.json",
+        },
         "env_vars": {},
         "debug": False,
         "live_output": False,
@@ -26,7 +45,15 @@ def make_cfg(overrides: dict) -> "DictConfig":
         "summary_output": None,
         "gpu_vendor": "AMD",
         "guest_os": "UBUNTU",
-        "runtime": {"devices": [], "capabilities": [], "security_opts": [], "network_mode": "host", "ipc": "host", "groups": [], "use_gpu_flag": False},
+        "runtime": {
+            "devices": [],
+            "capabilities": [],
+            "security_opts": [],
+            "network_mode": "host",
+            "ipc": "host",
+            "groups": [],
+            "use_gpu_flag": False,
+        },
         "platform": {"type": "docker"},
     }
     merged = {**base, **overrides}
@@ -35,12 +62,38 @@ def make_cfg(overrides: dict) -> "DictConfig":
 
 class TestDockerKeyMapping:
     def test_build_args_mapped(self):
-        cfg = make_cfg({"docker": {"build_args": {"KEY": "val"}, "env_vars": {}, "mounts": {}, "gpus": None, "cpus": None, "additional_run_options": None, "keep_alive": False, "clean_cache": False}})
+        cfg = make_cfg(
+            {
+                "docker": {
+                    "build_args": {"KEY": "val"},
+                    "env_vars": {},
+                    "mounts": {},
+                    "gpus": None,
+                    "cpus": None,
+                    "additional_run_options": None,
+                    "keep_alive": False,
+                    "clean_cache": False,
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["docker_build_arg"] == {"KEY": "val"}
 
     def test_env_vars_mapped(self):
-        cfg = make_cfg({"docker": {"build_args": {}, "env_vars": {"A": "1"}, "mounts": {}, "gpus": None, "cpus": None, "additional_run_options": None, "keep_alive": False, "clean_cache": False}})
+        cfg = make_cfg(
+            {
+                "docker": {
+                    "build_args": {},
+                    "env_vars": {"A": "1"},
+                    "mounts": {},
+                    "gpus": None,
+                    "cpus": None,
+                    "additional_run_options": None,
+                    "keep_alive": False,
+                    "clean_cache": False,
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["docker_env_vars"] == {"A": "1"}
 
@@ -50,19 +103,48 @@ class TestDockerKeyMapping:
         assert "docker_gpus" not in ctx
 
     def test_non_null_gpus_included(self):
-        cfg = make_cfg({"docker": {"build_args": {}, "env_vars": {}, "mounts": {}, "gpus": "0-3", "cpus": None, "additional_run_options": None, "keep_alive": False, "clean_cache": False}})
+        cfg = make_cfg(
+            {
+                "docker": {
+                    "build_args": {},
+                    "env_vars": {},
+                    "mounts": {},
+                    "gpus": "0-3",
+                    "cpus": None,
+                    "additional_run_options": None,
+                    "keep_alive": False,
+                    "clean_cache": False,
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["docker_gpus"] == "0-3"
 
 
 class TestLogErrorMapping:
     def test_pattern_scan_mapped(self):
-        cfg = make_cfg({"log_error": {"pattern_scan": False, "benign_patterns": [], "patterns": []}})
+        cfg = make_cfg(
+            {
+                "log_error": {
+                    "pattern_scan": False,
+                    "benign_patterns": [],
+                    "patterns": [],
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["log_error_pattern_scan"] is False
 
     def test_patterns_mapped(self):
-        cfg = make_cfg({"log_error": {"pattern_scan": True, "benign_patterns": ["OK"], "patterns": ["ERR"]}})
+        cfg = make_cfg(
+            {
+                "log_error": {
+                    "pattern_scan": True,
+                    "benign_patterns": ["OK"],
+                    "patterns": ["ERR"],
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["log_error_benign_patterns"] == ["OK"]
         assert ctx["log_error_patterns"] == ["ERR"]
@@ -97,14 +179,32 @@ class TestPassthroughKeys:
 
 class TestExtractedKeys:
     def test_model_extracted(self):
-        cfg = make_cfg({"model": {"tags": ["dummy"], "manifest_file": None, "container_image": None, "skip_run": False, "timeout": 300}})
+        cfg = make_cfg(
+            {
+                "model": {
+                    "tags": ["dummy"],
+                    "manifest_file": None,
+                    "container_image": None,
+                    "skip_run": False,
+                    "timeout": 300,
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert "model" not in ctx
         assert meta["model"]["tags"] == ["dummy"]
         assert meta["model"]["timeout"] == 300
 
     def test_build_extracted(self):
-        cfg = make_cfg({"build": {"registry": "myregistry.io", "target_archs": ["gfx942"], "manifest_output": "build_manifest.json"}})
+        cfg = make_cfg(
+            {
+                "build": {
+                    "registry": "myregistry.io",
+                    "target_archs": ["gfx942"],
+                    "manifest_output": "build_manifest.json",
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert "build" not in ctx
         assert meta["build"]["registry"] == "myregistry.io"
@@ -116,7 +216,17 @@ class TestExtractedKeys:
         assert meta["platform"]["type"] == "docker"
 
     def test_container_image_promoted(self):
-        cfg = make_cfg({"model": {"tags": [], "manifest_file": None, "container_image": "myimage:latest", "skip_run": False, "timeout": None}})
+        cfg = make_cfg(
+            {
+                "model": {
+                    "tags": [],
+                    "manifest_file": None,
+                    "container_image": "myimage:latest",
+                    "skip_run": False,
+                    "timeout": None,
+                }
+            }
+        )
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["MAD_CONTAINER_IMAGE"] == "myimage:latest"
 

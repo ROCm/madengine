@@ -1,8 +1,8 @@
 #!/bin/bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 echo "model,temperature,performance,metric
 1,$RANDOM,$RANDOM,samples_per_sec

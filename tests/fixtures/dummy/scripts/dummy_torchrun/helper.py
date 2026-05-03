@@ -15,24 +15,33 @@ import torch.nn.functional as F
 
 class ResidualBlock(nn.Module):
     """Residual block with skip connection"""
+
     def __init__(self, in_channels, out_channels, stride=1):
         super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, 
-                               stride=stride, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
-                               stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
         self.bn2 = nn.BatchNorm2d(out_channels)
-        
+
         # Skip connection
         self.skip = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.skip = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, 
-                         stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.Conv2d(
+                    in_channels, out_channels, kernel_size=1, stride=stride, bias=False
+                ),
+                nn.BatchNorm2d(out_channels),
             )
-    
+
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
@@ -44,29 +53,30 @@ class ResidualBlock(nn.Module):
 class ResNetModel(nn.Module):
     """
     ResNet-style model for distributed training benchmark.
-    
+
     This is a more realistic model architecture compared to SimpleCNN,
     demonstrating residual connections and deeper networks.
     """
+
     def __init__(self, num_classes=1000, num_blocks=[2, 2, 2, 2]):
         super(ResNetModel, self).__init__()
         self.in_channels = 64
-        
+
         # Initial convolution
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        
+
         # Residual layers
         self.layer1 = self._make_layer(64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(256, num_blocks[2], stride=2)
         self.layer4 = self._make_layer(512, num_blocks[3], stride=2)
-        
+
         # Classification head
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512, num_classes)
-    
+
     def _make_layer(self, out_channels, num_blocks, stride):
         """Create a layer with multiple residual blocks"""
         strides = [stride] + [1] * (num_blocks - 1)
@@ -75,7 +85,7 @@ class ResNetModel(nn.Module):
             layers.append(ResidualBlock(self.in_channels, out_channels, stride))
             self.in_channels = out_channels
         return nn.Sequential(*layers)
-    
+
     def forward(self, x):
         out = self.pool(F.relu(self.bn1(self.conv1(x))))
         out = self.layer1(out)
@@ -91,31 +101,33 @@ class ResNetModel(nn.Module):
 class SyntheticDataset:
     """
     Synthetic dataset generator for benchmarking.
-    
+
     Generates random data on-the-fly to avoid I/O bottlenecks
     and provide consistent benchmarking results.
     """
+
     def __init__(self, num_samples, batch_size, image_size=224, num_classes=1000):
         self.num_samples = num_samples
         self.batch_size = batch_size
         self.image_size = image_size
         self.num_classes = num_classes
         self.num_batches = num_samples // batch_size
-    
+
     def generate_batch(self, device):
         """Generate a synthetic batch of images and labels"""
-        images = torch.randn(self.batch_size, 3, self.image_size, 
-                            self.image_size, device=device)
-        labels = torch.randint(0, self.num_classes, (self.batch_size,), 
-                              device=device)
+        images = torch.randn(
+            self.batch_size, 3, self.image_size, self.image_size, device=device
+        )
+        labels = torch.randint(0, self.num_classes, (self.batch_size,), device=device)
         return images, labels
-    
+
     def __len__(self):
         return self.num_batches
 
 
 class BenchmarkConfig:
     """Configuration for distributed training benchmark"""
+
     def __init__(self):
         # Training hyperparameters
         self.batch_size = 128
@@ -123,16 +135,16 @@ class BenchmarkConfig:
         self.learning_rate = 0.01
         self.momentum = 0.9
         self.weight_decay = 1e-4
-        
+
         # Data configuration
         self.image_size = 224
         self.num_classes = 1000
         self.num_batches = 100
-        
+
         # Model configuration
         self.model_type = "resnet"  # or "simple_cnn"
         self.resnet_blocks = [2, 2, 2, 2]  # ResNet-18 style
-    
+
     def __str__(self):
         return (
             f"BenchmarkConfig(\n"
@@ -148,9 +160,9 @@ class BenchmarkConfig:
 
 def print_distributed_info(rank, local_rank, world_size):
     """Print distributed training information"""
-    import socket
     import os
-    
+    import socket
+
     print(f"\n[Rank {rank}] Distributed Training Info:")
     print(f"  Hostname: {socket.gethostname()}")
     print(f"  Global Rank: {rank}")
@@ -166,7 +178,9 @@ def print_gpu_info(rank, device):
         print(f"\n[Rank {rank}] GPU Info:")
         print(f"  Device: {device}")
         print(f"  GPU Name: {torch.cuda.get_device_name(device)}")
-        print(f"  GPU Memory: {torch.cuda.get_device_properties(device).total_memory / 1e9:.2f} GB")
+        print(
+            f"  GPU Memory: {torch.cuda.get_device_properties(device).total_memory / 1e9:.2f} GB"
+        )
     else:
         print(f"\n[Rank {rank}] Warning: CUDA not available, using CPU")
 

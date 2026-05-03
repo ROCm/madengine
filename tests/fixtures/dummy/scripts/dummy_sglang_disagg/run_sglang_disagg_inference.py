@@ -8,9 +8,9 @@ requiring actual models or Mooncake infrastructure.
 """
 
 import os
+import socket
 import sys
 import time
-import socket
 from typing import Optional
 
 
@@ -48,23 +48,23 @@ def simulate_proxy_node(info: dict):
     print(f"Prefill Nodes: {info['prefill_nodes']}")
     print(f"Decode Nodes: {info['decode_nodes']}")
     print("-" * 60)
-    
+
     print("\n[Proxy] Initializing load balancer...")
     time.sleep(1)
-    
+
     print("[Proxy] Waiting for prefill nodes to be ready...")
-    for i in range(1, info['prefill_nodes'] + 1):
+    for i in range(1, info["prefill_nodes"] + 1):
         print(f"  ✓ Prefill node {i} connected")
         time.sleep(0.5)
-    
+
     print("[Proxy] Waiting for decode nodes to be ready...")
-    for i in range(info['prefill_nodes'] + 1, info['total_nodes']):
+    for i in range(info["prefill_nodes"] + 1, info["total_nodes"]):
         print(f"  ✓ Decode node {i} connected")
         time.sleep(0.5)
-    
+
     print("\n[Proxy] All nodes connected. Load balancer ready!")
     print("[Proxy] Simulating request routing...")
-    
+
     # Simulate some requests
     for req_id in range(1, 4):
         print(f"\n[Proxy] Request {req_id}:")
@@ -72,10 +72,12 @@ def simulate_proxy_node(info: dict):
         time.sleep(0.3)
         print(f"  → KV cache transferred via Mooncake")
         time.sleep(0.3)
-        print(f"  → Routing to decode node {info['prefill_nodes'] + ((req_id % info['decode_nodes']) + 1)}")
+        print(
+            f"  → Routing to decode node {info['prefill_nodes'] + ((req_id % info['decode_nodes']) + 1)}"
+        )
         time.sleep(0.3)
         print(f"  ✓ Request {req_id} completed")
-    
+
     print("\n[Proxy] Test complete. Shutting down...")
 
 
@@ -89,18 +91,18 @@ def simulate_prefill_node(info: dict):
     print(f"Tensor Parallel Size: {info['tp_size']}")
     print(f"Role: Prompt Processing")
     print("-" * 60)
-    
+
     print("\n[Prefill] Initializing prefill server...")
     time.sleep(1)
-    
+
     print("[Prefill] Loading model shards...")
-    for shard in range(info['tp_size']):
+    for shard in range(info["tp_size"]):
         print(f"  ✓ Shard {shard + 1}/{info['tp_size']} loaded")
         time.sleep(0.3)
-    
+
     print("\n[Prefill] Server ready. Listening for requests...")
     time.sleep(1)
-    
+
     print("[Prefill] Processing prompts...")
     for batch in range(1, 4):
         print(f"\n[Prefill] Batch {batch}:")
@@ -111,7 +113,7 @@ def simulate_prefill_node(info: dict):
         print(f"  → Transferring KV cache via Mooncake...")
         time.sleep(0.3)
         print(f"  ✓ Batch {batch} complete")
-    
+
     print("\n[Prefill] Test complete. Shutting down...")
 
 
@@ -125,18 +127,18 @@ def simulate_decode_node(info: dict):
     print(f"Tensor Parallel Size: {info['tp_size']}")
     print(f"Role: Token Generation")
     print("-" * 60)
-    
+
     print("\n[Decode] Initializing decode server...")
     time.sleep(1)
-    
+
     print("[Decode] Loading model shards...")
-    for shard in range(info['tp_size']):
+    for shard in range(info["tp_size"]):
         print(f"  ✓ Shard {shard + 1}/{info['tp_size']} loaded")
         time.sleep(0.3)
-    
+
     print("\n[Decode] Server ready. Listening for KV caches...")
     time.sleep(1)
-    
+
     print("[Decode] Generating tokens...")
     for batch in range(1, 4):
         print(f"\n[Decode] Batch {batch}:")
@@ -148,7 +150,7 @@ def simulate_decode_node(info: dict):
             time.sleep(0.2)
         print(f"    ✓ Generated 5 tokens")
         print(f"  ✓ Batch {batch} complete")
-    
+
     print("\n[Decode] Test complete. Shutting down...")
 
 
@@ -157,22 +159,24 @@ def main():
     print("\n" + "=" * 60)
     print("SGLang Disaggregated Inference Simulation")
     print("=" * 60 + "\n")
-    
+
     # Get node information
     info = get_node_info()
     role = determine_node_role(info["node_rank"], info["prefill_nodes"])
-    
+
     print(f"Cluster Configuration:")
     print(f"  Total Nodes: {info['total_nodes']}")
     print(f"  Prefill Nodes: {info['prefill_nodes']} (ranks 1-{info['prefill_nodes']})")
-    print(f"  Decode Nodes: {info['decode_nodes']} (ranks {info['prefill_nodes']+1}-{info['total_nodes']-1})")
+    print(
+        f"  Decode Nodes: {info['decode_nodes']} (ranks {info['prefill_nodes']+1}-{info['total_nodes']-1})"
+    )
     print(f"  Proxy Node: 1 (rank 0)")
     print(f"\nThis Node:")
     print(f"  Rank: {info['node_rank']}")
     print(f"  Role: {role.upper()}")
     print(f"  Hostname: {info['hostname']}")
     print()
-    
+
     # Simulate based on role
     try:
         if role == "proxy":
@@ -184,22 +188,22 @@ def main():
         else:
             print(f"❌ ERROR: Unknown role '{role}'")
             sys.exit(1)
-        
+
         print("\n" + "=" * 60)
         print("✅ Simulation Complete")
         print("=" * 60)
         return 0
-        
+
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user")
         return 130
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

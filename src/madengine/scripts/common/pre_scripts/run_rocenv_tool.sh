@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 OUTPUT_FILE_NAME=${1:-"sys_config_info"}
 

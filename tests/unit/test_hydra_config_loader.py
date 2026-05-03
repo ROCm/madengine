@@ -2,10 +2,10 @@
 """Tests for HydraConfigLoader."""
 
 import os
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
 from omegaconf import DictConfig
 
 from madengine.config.loader import HydraConfigLoader
@@ -21,9 +21,7 @@ class TestParseArgs:
         assert overrides == ["scheduler=slurm", "distributed.nnodes=4"]
 
     def test_yaml_file_only(self):
-        user_file, overrides = HydraConfigLoader._parse_args(
-            ["/path/to/config.yaml"]
-        )
+        user_file, overrides = HydraConfigLoader._parse_args(["/path/to/config.yaml"])
         assert user_file == "/path/to/config.yaml"
         assert overrides == []
 
@@ -35,21 +33,15 @@ class TestParseArgs:
         assert overrides == ["distributed.nnodes=8"]
 
     def test_yml_extension_recognized(self):
-        user_file, overrides = HydraConfigLoader._parse_args(
-            ["/path/to/config.yml"]
-        )
+        user_file, overrides = HydraConfigLoader._parse_args(["/path/to/config.yml"])
         assert user_file == "/path/to/config.yml"
 
     def test_multiple_yaml_files_raises(self):
         with pytest.raises(ConfigurationError, match="Only one YAML"):
-            HydraConfigLoader._parse_args(
-                ["/path/a.yaml", "/path/b.yaml"]
-            )
+            HydraConfigLoader._parse_args(["/path/a.yaml", "/path/b.yaml"])
 
     def test_append_override_not_treated_as_file(self):
-        user_file, overrides = HydraConfigLoader._parse_args(
-            ["+profile=mi300x_8gpu"]
-        )
+        user_file, overrides = HydraConfigLoader._parse_args(["+profile=mi300x_8gpu"])
         assert user_file is None
         assert overrides == ["+profile=mi300x_8gpu"]
 
@@ -78,9 +70,7 @@ class TestLoad:
         assert cfg.distributed.launcher == "torchrun"
 
     def test_inline_value_override(self):
-        cfg = HydraConfigLoader.load(
-            ["launcher=torchrun", "distributed.nnodes=4"]
-        )
+        cfg = HydraConfigLoader.load(["launcher=torchrun", "distributed.nnodes=4"])
         assert cfg.distributed.nnodes == 4
 
     def test_append_profile(self):
@@ -89,9 +79,7 @@ class TestLoad:
         assert cfg.distributed.nproc_per_node == 8
 
     def test_user_yaml_file(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("debug: true\nenv_vars:\n  MY_VAR: hello\n")
             f.flush()
             try:
@@ -102,15 +90,11 @@ class TestLoad:
                 os.unlink(f.name)
 
     def test_user_yaml_with_overrides(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("debug: true\n")
             f.flush()
             try:
-                cfg = HydraConfigLoader.load(
-                    [f.name, "scheduler=slurm"]
-                )
+                cfg = HydraConfigLoader.load([f.name, "scheduler=slurm"])
                 assert cfg.debug is True
                 assert "slurm" in cfg
             finally:

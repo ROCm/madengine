@@ -3,10 +3,10 @@
   "_description": "Each pod runs independent vLLM replica for higher throughput",
   "_use_case": "High-throughput LLM inference serving",
   "_reference": "https://github.com/vllm-project/vllm",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "k8s": {
     "gpu_count": 4,
     "memory": "256Gi",
@@ -17,14 +17,14 @@
       "feature.node.kubernetes.io/amd-gpu-mi300x": "true"
     }
   },
-  
+
   "distributed": {
     "launcher": "vllm",
     "nnodes": 2,
     "nproc_per_node": 4,
     "master_port": 29500
   },
-  
+
   "context": {
     "env_vars": {
       "VLLM_KV_CACHE_SIZE": "0.5",
@@ -35,4 +35,3 @@
     }
   }
 }
-

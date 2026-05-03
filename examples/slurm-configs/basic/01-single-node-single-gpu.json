@@ -3,10 +3,10 @@
   "_description": "Configuration for running a model on a single GPU on a SLURM cluster",
   "_use_case": "Testing, small models, quick benchmarks (single GPU, no distributed execution)",
   "_note": "Using 'amd-rccl' partition. Change to your cluster's partition name if different (e.g., 'gpu', 'compute').",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 1,
@@ -15,11 +15,10 @@
     "output_dir": "./slurm_results",
     "exclusive": false
   },
-  
+
   "env_vars": {
     "OMP_NUM_THREADS": "8"
   },
-  
+
   "debug": false
 }
-

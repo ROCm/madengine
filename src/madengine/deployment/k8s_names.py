@@ -36,7 +36,9 @@ def _trim_edges_alnum(s: str) -> str:
     return s or "x"
 
 
-def sanitize_k8s_object_name(prefix: str, raw_model_name: str, max_total_len: int = _MAX_OBJECT_NAME_LEN) -> str:
+def sanitize_k8s_object_name(
+    prefix: str, raw_model_name: str, max_total_len: int = _MAX_OBJECT_NAME_LEN
+) -> str:
     """
     Build a valid ``metadata.name`` substring from a model name.
 
@@ -74,7 +76,9 @@ def sanitize_k8s_object_name(prefix: str, raw_model_name: str, max_total_len: in
     room = max_total_len - len(anchor) - 1
     if room < 8:
         # Extreme: prefix alone too long — fall back to hash-only tail
-        return _trim_edges_alnum(f"{digest}-{hashlib.sha256(raw.encode()).hexdigest()[:20]}")[:max_total_len]
+        return _trim_edges_alnum(
+            f"{digest}-{hashlib.sha256(raw.encode()).hexdigest()[:20]}"
+        )[:max_total_len]
 
     tail = body[:room] if room > 0 else ""
     tail = _trim_edges_alnum(tail) if tail else "m"
@@ -84,7 +88,9 @@ def sanitize_k8s_object_name(prefix: str, raw_model_name: str, max_total_len: in
     return _trim_edges_alnum(out)
 
 
-def sanitize_k8s_container_name(name_hint: str, max_len: int = _MAX_DNS_LABEL_LEN) -> str:
+def sanitize_k8s_container_name(
+    name_hint: str, max_len: int = _MAX_DNS_LABEL_LEN
+) -> str:
     """
     Sanitize for ``spec.containers[].name`` / initContainer names.
 

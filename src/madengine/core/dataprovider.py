@@ -26,9 +26,9 @@ import typing
 
 # madengine modules
 from madengine.core.console import Console
+from madengine.core.constants import MAD_AWS_S3, MAD_MINIO, NAS_NODES
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.constants import NAS_NODES, MAD_AWS_S3, MAD_MINIO
 
 
 class DataSourceException(Exception):
@@ -313,11 +313,11 @@ class NASDataProvider(DataProvider):
         if "mirrorlocal" in self.config:
             # copy data from NAS locally
             cmd = """
-                if [ -f \"$(which apt)\" ]; then 
+                if [ -f \"$(which apt)\" ]; then
                     apt update && apt install -y sshpass sshfs rsync
-                elif [ -f \"$(which yum)\" ]; then 
+                elif [ -f \"$(which yum)\" ]; then
                     yum install -y sshpass rsync
-                else 
+                else
                     echo 'Unable to detect Host OS'
                     exit 1
                 fi
@@ -350,11 +350,11 @@ class NASDataProvider(DataProvider):
             print("Data Download Duration: {} seconds".format(self.duration))
         else:
             cmd = """
-                if [ -f \"$(which apt)\" ]; then 
+                if [ -f \"$(which apt)\" ]; then
                     apt update && apt install -y sshpass sshfs
-                elif [ -f \"$(which yum)\" ]; then 
+                elif [ -f \"$(which yum)\" ]; then
                     yum install -y sshpass sshfs
-                else 
+                else
                     echo 'Unable to detect Host OS'
                     exit 1
                 fi
