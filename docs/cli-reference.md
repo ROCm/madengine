@@ -100,6 +100,7 @@ madengine build [OPTIONS]
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
+| `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
 | `--manifest-output` | `-m` | TEXT | `build_manifest.json` | Output file for build manifest |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for build summary JSON |
@@ -142,6 +143,12 @@ madengine build --tags model \
 
 # Real-time output with verbose logging
 madengine build --tags model --live-output --verbose
+
+# Build with YAML config (mutually exclusive with --additional-context)
+madengine build --tags model --config +build=ci --registry docker.io/myorg
+
+# Build with user YAML file
+madengine build --config my_build.yaml --registry docker.io/myorg
 ```
 
 **Default Values:**
@@ -215,6 +222,7 @@ madengine run [OPTIONS]
 | `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
+| `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run |
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
@@ -326,9 +334,23 @@ madengine run --tags model --output my_perf_results.csv
 # Clean up intermediate perf files after run
 madengine run --tags model --cleanup-perf
 
-# Using configuration file
+# Using JSON configuration file
 madengine run --tags model \
   --additional-context-file k8s-config.json
+
+# Using YAML config (mutually exclusive with --additional-context)
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# YAML config with hardware profile
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# User YAML file with overrides
+madengine run --config my_job.yaml --config distributed.nnodes=8
 ```
 
 **Execution Modes:**
@@ -600,6 +622,23 @@ For complex configurations, use JSON files with `--additional-context-file`:
 ```
 
 To run on specific nodes, add `"nodelist": "node01,node02"` to the `slurm` section. When set, the job runs only on those nodes and node health preflight is skipped. See [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
+
+### YAML Configuration (`--config`)
+
+As an alternative to JSON, use `--config` with composable Hydra-based YAML:
+
+```bash
+# Config group overrides
+madengine run --tags model --config scheduler=slurm --config launcher=torchrun
+
+# User YAML file
+madengine run --config my_job.yaml
+
+# Append-only groups (profiles, tools, env presets)
+madengine run --tags model --config +profile=mi300x_8gpu --config +env=nccl_debug
+```
+
+`--config` is **mutually exclusive** with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups, user YAML format, and full examples.
 
 ### Run phase: log error pattern scan (optional)
 

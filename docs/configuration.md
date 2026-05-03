@@ -11,7 +11,7 @@ madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
-### 2. Configuration File
+### 2. JSON Configuration File
 
 ```bash
 madengine run --tags model --additional-context-file config.json
@@ -25,6 +25,163 @@ madengine run --tags model --additional-context-file config.json
   "timeout_multiplier": 2.0
 }
 ```
+
+### 3. YAML Configuration (`--config`)
+
+```bash
+madengine run --tags model --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
+```
+
+> **Mutual exclusion**: `--config` cannot be combined with `--additional-context` or `--additional-context-file`. Using both produces an error.
+
+See [YAML Configuration](#yaml-configuration-config) below for full details.
+
+## YAML Configuration (`--config`)
+
+The `--config` flag provides composable, Hydra-based YAML configuration as an alternative to JSON strings. It is available on both `run` and `build` commands.
+
+### How It Works
+
+1. madengine loads a base `config.yaml` with sensible defaults (AMD hardware, Docker platform, local scheduler)
+2. **Config group overrides** (e.g., `scheduler=slurm`) swap in pre-built YAML fragments
+3. **Inline overrides** (e.g., `distributed.nnodes=4`) set individual values
+4. **User YAML files** (e.g., `my_job.yaml`) merge on top with highest priority
+
+All four can be combined in a single command:
+
+```bash
+madengine run --config my_job.yaml \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+```
+
+### Config Groups
+
+madengine ships with pre-built config groups under `src/madengine/configs/`:
+
+#### Default Groups (swapped via `group=option`)
+
+| Group | Default | Options | Description |
+|-------|---------|---------|-------------|
+| `platform` | `docker` | `docker`, `bare_metal`, `singularity`, `podman` | Execution platform |
+| `scheduler` | `local` | `local`, `slurm`, `k8s` | Job scheduler — `slurm` and `k8s` add their respective config sections |
+| `hardware` | `amd` | `amd`, `nvidia`, `cpu` | Sets `gpu_vendor`, `guest_os`, runtime device config |
+| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
+
+#### Append-Only Groups (added via `+group=option`)
+
+These are not loaded by default. Use the `+` prefix to add them:
+
+| Group | Options | Description |
+|-------|---------|-------------|
+| `+profile` | `mi300x_8gpu`, `mi300x_single`, `mi250x_4gpu`, `h100_8gpu`, `a100_8gpu` | Hardware profiles — sets GPU type, environment variables, distributed settings |
+| `+env` | `nccl_debug`, `nccl_tuned`, `infiniband`, `miopen_defaults` | Environment variable presets |
+| `+tools` | `rocprofv3_lightweight`, `rocprofv3_comprehensive`, `power_profiler`, `vram_profiler`, `rocm_trace_lite` | Profiling tool presets |
+| `+data` | `local`, `s3`, `minio`, `nas` | Data source configuration |
+| `+build` | `default`, `ci`, `multi_arch` | Build presets for CI or multi-arch builds |
+
+### User YAML Files
+
+Create a job-specific YAML file and pass it via `--config`:
+
+```yaml
+# my_slurm_job.yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  MY_VAR: test_value
+  NCCL_DEBUG: INFO
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+
+slurm:
+  partition: gpu
+  time: "02:00:00"
+```
+
+```bash
+madengine run --config my_slurm_job.yaml
+```
+
+User YAML values merge on top of the base config and any config group selections. You can also combine a user file with overrides:
+
+```bash
+madengine run --config my_slurm_job.yaml --config distributed.nnodes=8
+```
+
+### Priority Order
+
+1. **Inline overrides** (`key=value`) — highest
+2. **User YAML file** — merged on top of composed config
+3. **Config group selections** (`scheduler=slurm`)
+4. **Base config defaults** — lowest
+
+### Examples
+
+```bash
+# Local run with defaults (AMD, Docker, no distribution)
+madengine run --tags dummy --config
+
+# SLURM multi-node training
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# MI300x 8-GPU profile with NCCL debug
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# NVIDIA hardware
+madengine run --tags model --config hardware=nvidia
+
+# Kubernetes with vLLM inference
+madengine run --tags model \
+  --config scheduler=k8s \
+  --config launcher=vllm \
+  --config distributed.nnodes=2
+
+# Build with CI preset and multi-arch
+madengine build --tags model \
+  --config +build=ci \
+  --registry docker.io/myorg
+
+# User YAML with profiling
+madengine run --config my_job.yaml \
+  --config +tools=rocprofv3_lightweight
+```
+
+### Metadata from Config
+
+When using `--config`, certain YAML keys are extracted as metadata rather than passed to the internal context:
+
+- `model.tags` — used as `--tags` if not specified on the CLI
+- `model.timeout` — used as `--timeout` if not specified
+- `model.container_image` — promoted to `MAD_CONTAINER_IMAGE` in context
+- `build.registry` — used as `--registry` if not specified
+- `build.target_archs` — used as `--target-archs` if not specified
+- `platform`, `output`, `summary_output`, `data_config`, `live_output` — extracted to metadata
+
+### Validation
+
+madengine validates the composed config and reports errors for:
+
+- Conflicting scheduler selections (e.g., both `slurm` and `k8s` sections present)
+- `distributed.enabled: true` without a `distributed.launcher`
+- Invalid `distributed.nnodes` (must be a positive integer)
+- Unsupported `platform.type` (currently only `docker` is supported)
+- Unknown top-level config keys (catches typos)
 
 ## Default Configuration Values
 
