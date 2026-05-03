@@ -26,7 +26,7 @@ class HydraConfigLoader:
         """
         user_file, overrides = HydraConfigLoader._parse_args(config_args)
 
-        config_dir = str(Path(importlib.resources.files("madengine")) / "configs")
+        config_dir = str(Path(importlib.resources.files("madengine")) / "configs")  # type: ignore[attr-defined]
 
         if not os.path.isdir(config_dir):
             config_dir = str(Path(__file__).parent.parent / "configs")

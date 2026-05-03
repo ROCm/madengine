@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Tests for ConfigTranslator."""
 
-import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from madengine.config.translator import ConfigTranslator
 
 
-def make_cfg(overrides: dict) -> "DictConfig":
+def make_cfg(overrides: dict) -> DictConfig:
     """Build a DictConfig from a base + overrides for testing."""
     base = {
         "model": {

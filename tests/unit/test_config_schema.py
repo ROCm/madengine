@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Tests for ConfigValidator."""
 
-import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from madengine.config.schema import ConfigValidator
 
 
-def make_cfg(data: dict) -> "DictConfig":
+def make_cfg(data: dict) -> DictConfig:
     return OmegaConf.create(data)
 
 
