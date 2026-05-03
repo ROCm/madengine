@@ -25,5 +25,41 @@ class ConfigTranslator:
 
     @classmethod
     def to_additional_context(cls, cfg: DictConfig) -> tuple:
-        """Placeholder — implemented in Task 5."""
-        return {}, {}
+        """Convert DictConfig to (additional_context, metadata) tuple.
+
+        Returns:
+            additional_context: dict in the format expected by existing pipeline.
+            metadata: dict with model.tags, build.registry, etc. for the CLI layer.
+        """
+        raw = OmegaConf.to_container(cfg, resolve=True)
+
+        context = {}
+        metadata = {}
+
+        for key, value in raw.items():
+            if key in cls.EXTRACTED_KEYS:
+                metadata[key] = value
+            elif key == "docker":
+                for subkey, subval in value.items():
+                    internal_key = cls.KEY_MAP.get(
+                        f"docker.{subkey}", f"docker_{subkey}"
+                    )
+                    if subval is not None:
+                        context[internal_key] = subval
+            elif key == "log_error":
+                for subkey, subval in value.items():
+                    internal_key = cls.KEY_MAP.get(
+                        f"log_error.{subkey}", f"log_error_{subkey}"
+                    )
+                    context[internal_key] = subval
+            elif key == "runtime":
+                metadata["runtime"] = value
+            else:
+                if value is not None:
+                    context[key] = value
+
+        model = metadata.get("model", {})
+        if model and model.get("container_image"):
+            context["MAD_CONTAINER_IMAGE"] = model["container_image"]
+
+        return context, metadata
