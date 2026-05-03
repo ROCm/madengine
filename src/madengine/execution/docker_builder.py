@@ -179,8 +179,8 @@ class DockerBuilder:
 
         build_command = (
             f"docker build {use_cache_str} --network=host "
-            f"-t {docker_image} --pull -f {dockerfile} "
-            f"{build_args} {docker_context}"
+            f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
+            f"{build_args} {shlex.quote(docker_context)}"
         )
 
         # Execute build with log redirection
