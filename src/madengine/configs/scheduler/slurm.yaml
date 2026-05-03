@@ -1,0 +1,21 @@
+# @package _global_
+slurm:
+  partition: amd-rccl
+  nodes: 1
+  gpus_per_node: 8
+  time: "24:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+  modules: []
+  account: null
+  qos: null
+  constraint: null
+  nodelist: null
+  exclude: null
+  results_dir: null
+  shared_workspace: null
+  network_interface: null
+
+env_vars:
+  OMP_NUM_THREADS: "8"
+  MIOPEN_FIND_MODE: "1"
