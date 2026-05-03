@@ -49,13 +49,18 @@ class ConfigTranslator:
                     internal_key = cls.KEY_MAP.get(
                         f"docker.{subkey}", f"docker_{subkey}"
                     )
-                    if subval is not None:
-                        context[internal_key] = subval
+                    if subval is None:
+                        continue
+                    if isinstance(subval, dict) and not subval:
+                        continue
+                    context[internal_key] = subval
             elif key == "log_error":
                 for subkey, subval in value.items():
                     internal_key = cls.KEY_MAP.get(
                         f"log_error.{subkey}", f"log_error_{subkey}"
                     )
+                    if isinstance(subval, list) and not subval:
+                        continue
                     context[internal_key] = subval
             elif key == "runtime":
                 metadata["runtime"] = value
