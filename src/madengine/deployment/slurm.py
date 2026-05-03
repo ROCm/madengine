@@ -510,9 +510,15 @@ class SlurmDeployment(BaseDeployment):
                 "echo ''",
             ])
         
-        # Create completion marker path for robust completion detection
-        # Use absolute path since script will cd to different directory
-        completion_marker = (self.output_dir / f"madengine_{model_info['name']}.complete").resolve()
+        # Create completion marker path for robust completion detection.
+        # Namespace by SLURM_JOB_ID so concurrent / repeat runs of the same model
+        # tag don't collide on each other's marker files. monitor() reconstructs
+        # the same path using the deployment_id returned by sbatch.
+        completion_marker_dir = self.output_dir.resolve()
+        completion_marker_template = (
+            completion_marker_dir
+            / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}.complete"
+        )
         
         script_lines.extend([
             "",
@@ -527,16 +533,24 @@ class SlurmDeployment(BaseDeployment):
             "echo ''",
             "echo 'Script completed.'",
             "",
-            "# Write completion marker for madengine to detect",
-            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker}",
-            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker}",
-            f"echo 'Completion marker written: {completion_marker}'",
+            "# Write completion marker for madengine to detect (job-id namespaced)",
+            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker_template}",
+            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker_template}",
+            f"echo \"Completion marker written: {completion_marker_template}\"",
             "",
             "exit $SCRIPT_EXIT_CODE",
         ])
         
-        # Store marker path for monitor to check
-        self._completion_marker = completion_marker
+        # Store marker info for monitor() to reconstruct the path with deployment_id.
+        self._completion_marker_dir = completion_marker_dir
+        self._completion_marker_basename_template = (
+            f"madengine_{model_info['name']}_{{job_id}}.complete"
+        )
+        # Backward-compat: monitor() falls back to this single path when the
+        # job-id-aware path is unavailable (e.g. inside_allocation flow).
+        self._completion_marker = (
+            completion_marker_dir / f"madengine_{model_info['name']}_local.complete"
+        )
         
         script_content = "\n".join(script_lines)
         
@@ -1204,9 +1218,18 @@ export MASTER_PORT={master_port}
                 message=f"Completed (ran inside existing allocation {deployment_id})",
             )
         
-        # Check for completion marker (robust detection for interactive/salloc jobs)
-        if hasattr(self, '_completion_marker') and self._completion_marker:
+        # Check for completion marker (robust detection for interactive/salloc jobs).
+        # Prefer the job-id-namespaced marker so we don't pick up a stale marker
+        # left behind by a previous run of the same model tag.
+        marker_path = None
+        if hasattr(self, '_completion_marker_dir') and getattr(self, '_completion_marker_basename_template', None):
+            marker_path = self._completion_marker_dir / self._completion_marker_basename_template.format(
+                job_id=deployment_id
+            )
+        if (marker_path is None or not marker_path.exists()) and hasattr(self, '_completion_marker') and self._completion_marker:
+            # Backward-compat fallback: bare marker for inside_allocation / pre-fix runs.
             marker_path = Path(self._completion_marker)
+        if marker_path is not None:
             if marker_path.exists():
                 # Read exit code from marker
                 try:
