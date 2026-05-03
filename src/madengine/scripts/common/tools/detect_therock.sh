@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Quick TheRock ROCm Detection Script
-# 
+#
 # This script checks if TheRock is installed on the system.
 # TheRock does NOT use apt - it uses Python pip or tarballs.
 #
@@ -26,34 +26,34 @@ echo ""
 check_therock_path() {
     path="$1"
     label="$2"
-    
+
     if [ ! -d "$path" ]; then
         return 1
     fi
-    
+
     manifest="$path/share/therock/therock_manifest.json"
     dist_info="$path/share/therock/dist_info.json"
-    
+
     if [ -f "$manifest" ]; then
         printf "${GREEN}✓ Found TheRock installation${NC}\n"
         echo "  Type: $label"
         echo "  Path: $path"
-        
+
         if [ -f "$dist_info" ]; then
             targets=$(grep -oP '(?<="dist_amdgpu_targets": ")[^"]*' "$dist_info" 2>/dev/null || echo "unknown")
             echo "  GPU Targets: $targets"
         fi
-        
+
         if command -v jq > /dev/null 2>&1; then
             commit=$(jq -r '.the_rock_commit' "$manifest" 2>/dev/null || echo "unknown")
             echo "  Commit: $commit"
         fi
-        
+
         echo ""
         FOUND=$((FOUND + 1))
         return 0
     fi
-    
+
     return 1
 }
 
@@ -61,11 +61,11 @@ check_therock_path() {
 printf "${BLUE}[1] Checking for rocm-sdk command...${NC}\n"
 if command -v rocm-sdk > /dev/null 2>&1; then
     printf "${GREEN}✓ Found rocm-sdk command${NC}\n"
-    
+
     # Get version
     version=$(rocm-sdk version 2>/dev/null || echo "unknown")
     echo "  Version: $version"
-    
+
     # Get root path
     if root_path=$(rocm-sdk path --root 2>/dev/null); then
         echo "  Root: $root_path"
@@ -82,7 +82,7 @@ if python3 -c "import rocm_sdk" 2>/dev/null; then
     version=$(python3 -c "import rocm_sdk; print(rocm_sdk.__version__)" 2>/dev/null || echo "unknown")
     printf "${GREEN}✓ Found rocm_sdk Python package${NC}\n"
     echo "  Version: $version"
-    
+
     # Try to find the package path
     pkg_path=$(python3 -c "
 import importlib.util
@@ -91,7 +91,7 @@ spec = importlib.util.find_spec('_rocm_sdk_core')
 if spec and spec.origin:
     print(pathlib.Path(spec.origin).parent)
 " 2>/dev/null || echo "")
-    
+
     if [ -n "$pkg_path" ]; then
         check_therock_path "$pkg_path" "Python Package"
     fi
@@ -132,7 +132,7 @@ if [ -f "version.json" ] && [ -f "CMakeLists.txt" ]; then
     if grep -q "rocm-version" version.json 2>/dev/null; then
         printf "${YELLOW}✓ Found TheRock source directory${NC}\n"
         echo "  Path: $(pwd)"
-        
+
         if [ -d "build/dist" ]; then
             for dist_dir in build/dist/*; do
                 if [ -d "$dist_dir" ]; then
@@ -173,4 +173,3 @@ else
     echo "More info: https://github.com/ROCm/TheRock/blob/main/RELEASES.md"
     exit 1
 fi
-

@@ -1,0 +1,39 @@
+# Kubernetes — multi-node torchrun (2 pods × 8 GPUs = 16 GPUs total)
+# madengine run --config examples/configs/demo/k8s/multi-node-torchrun.yaml
+
+model:
+  tags: [dummy_torchrun]
+
+k8s:
+  namespace: default
+  gpu_count: 8
+  memory: 256Gi
+  memory_limit: 384Gi
+  cpu: "64"
+  cpu_limit: "96"
+  host_ipc: true
+  node_selector:
+    feature.node.kubernetes.io/amd-gpu-mi300x: "true"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 8
+  master_port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "8"
+  NCCL_DEBUG: WARN
+  NCCL_DEBUG_SUBSYS: "INIT,NET"
+  NCCL_IB_DISABLE: "1"
+  NCCL_SOCKET_IFNAME: eth0
+  TORCH_NCCL_HIGH_PRIORITY: "1"
+  GPU_MAX_HW_QUEUES: "2"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
+  NCCL_TIMEOUT: "600"
+  HSA_ENABLE_SDMA: "0"
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  MIOPEN_FIND_MODE: "1"
+  MIOPEN_USER_DB_PATH: /tmp/.miopen
+  RCCL_ENABLE_HIPGRAPH: "0"

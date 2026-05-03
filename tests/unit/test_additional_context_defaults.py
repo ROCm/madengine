@@ -1,8 +1,8 @@
 """Tests for madengine.core.additional_context_defaults."""
 
 from madengine.core.additional_context_defaults import (
-    DEFAULT_GUEST_OS,
     DEFAULT_GPU_VENDOR,
+    DEFAULT_GUEST_OS,
     apply_build_context_defaults,
 )
 

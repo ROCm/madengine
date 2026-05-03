@@ -11,7 +11,7 @@ models locally or remotely with CI. The madengine library supports AI automation
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("madengine")

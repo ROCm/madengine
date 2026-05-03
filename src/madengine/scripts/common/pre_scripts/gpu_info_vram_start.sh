@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 # Start gpu_info_vram_profiler in background mode
 
 set -x
@@ -60,4 +60,3 @@ sleep 2
 touch "$PROFILER_START_FILE"
 
 echo "✓ GPU VRAM profiler initialization complete"
-

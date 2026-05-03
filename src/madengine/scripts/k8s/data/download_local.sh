@@ -41,4 +41,3 @@ echo "MAD_DATA_DOWNLOAD_DURATION=0" >> /tmp/mad_metrics.env
 echo "MAD_DATA_SIZE=$SIZE" >> /tmp/mad_metrics.env
 echo "MAD_DATA_PROVIDER_TYPE=local" >> /tmp/mad_metrics.env
 echo "MAD_DATANAME=$DATANAME" >> /tmp/mad_metrics.env
-

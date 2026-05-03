@@ -3,10 +3,10 @@
   "_description": "SGLang inference with tensor + data parallelism across nodes",
   "_use_case": "High-throughput LLM inference requiring multiple nodes",
   "_note": "SGLang uses tensor parallelism within nodes and data parallelism across nodes",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 2,
@@ -15,7 +15,7 @@
     "output_dir": "./slurm_results",
     "exclusive": true
   },
-  
+
   "distributed": {
     "launcher": "sglang",
     "nnodes": 2,
@@ -23,7 +23,7 @@
     "backend": "nccl",
     "port": 29500
   },
-  
+
   "env_vars": {
     "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
     "SGLANG_USE_MODELSCOPE": "False",
@@ -44,4 +44,3 @@
     "RAY_BACKEND_LOG_LEVEL": "warning"
   }
 }
-

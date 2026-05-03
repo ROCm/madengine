@@ -1,8 +1,8 @@
 #!/bin/bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 # ROCm Profiler Wrapper - Intelligently select between rocprof (legacy) and rocprofv3 (new)
 #
 # This wrapper handles the transition from rocprof to rocprofv3 across ROCm versions.
@@ -39,17 +39,17 @@
 get_rocm_version() {
     # Try multiple methods to detect ROCm version
     local version=""
-    
+
     # Method 1: Check rocm-smi output
     if command -v rocm-smi &> /dev/null; then
         version=$(rocm-smi --version 2>/dev/null | grep -oP 'ROCm version: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     fi
-    
+
     # Method 2: Check /opt/rocm/.info/version file
     if [ -z "$version" ] && [ -f /opt/rocm/.info/version ]; then
         version=$(cat /opt/rocm/.info/version)
     fi
-    
+
     # Method 3: Check ROCM_PATH or default ROCm installation
     if [ -z "$version" ]; then
         local rocm_path="${ROCM_PATH:-/opt/rocm}"
@@ -57,7 +57,7 @@ get_rocm_version() {
             version=$(cat "$rocm_path/.info/version")
         fi
     fi
-    
+
     echo "$version"
 }
 
@@ -72,13 +72,13 @@ version_gte() {
 # Function to detect available profiler
 detect_profiler() {
     local rocm_version=$(get_rocm_version)
-    
+
     # Check if rocprofv3 is available
     if command -v rocprofv3 &> /dev/null; then
         echo "rocprofv3"
         return 0
     fi
-    
+
     # Check if rocprof (legacy) is available
     if command -v rocprof &> /dev/null; then
         # For ROCm >= 7.0, warn that rocprofv3 should be available
@@ -88,7 +88,7 @@ detect_profiler() {
         echo "rocprof"
         return 0
     fi
-    
+
     # No profiler found
     echo "Error: Neither rocprofv3 nor rocprof found in PATH" >&2
     echo "Please ensure ROCm profiler tools are installed" >&2
@@ -99,11 +99,11 @@ detect_profiler() {
 main() {
     local profiler=$(detect_profiler)
     local exit_code=$?
-    
+
     if [ $exit_code -ne 0 ]; then
         return 1
     fi
-    
+
     # Execute the detected profiler with all passed arguments
     if [ "$profiler" = "rocprof" ]; then
         # Legacy rocprof syntax: rocprof [options] <app> [args]
@@ -117,21 +117,21 @@ main() {
         local profiler_opts=()
         local app_cmd=()
         local found_separator=false
-        
+
         for arg in "$@"; do
             if [ "$arg" = "--" ]; then
                 # Found the separator, everything after this is the application command
                 found_separator=true
                 continue
             fi
-            
+
             if [ "$found_separator" = true ]; then
                 app_cmd+=("$arg")
             else
                 profiler_opts+=("$arg")
             fi
         done
-        
+
         # Build command with proper argument placement.
         # Filter known-noisy rocprofv3/generateRocpd stderr: "sql text value for value is empty. Using NULL instead"
         # (ROCm writes this for every empty string->NULL in the SQLite DB; harmless but floods logs.)
@@ -148,4 +148,3 @@ main() {
 
 # Run main function
 main "$@"
-

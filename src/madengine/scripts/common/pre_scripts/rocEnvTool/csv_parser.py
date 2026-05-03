@@ -2,12 +2,14 @@
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 import os
 import shlex
 import shutil
+
 from console import Console
 
-'''
+"""
 CSV Parser - parses various sys config log files and dumps into CSV.
 Only the below tags are supported.
 Enable dumping it via adding --dump-csv in rocEnvTool
@@ -21,7 +23,9 @@ rocm_packages_installed
 rocm_env_variables
 pip_list
 numa_balancing
-'''
+"""
+
+
 class CSVParser:
     def __init__(self, filename, sys_config_files_path, tags, path_resolver=None):
         self.filename = filename
@@ -46,7 +50,7 @@ class CSVParser:
         return gpu_device_type
 
     def get_log_file_data(self, log_file_path):
-        fs = open(log_file_path, 'r')
+        fs = open(log_file_path, "r")
         lines = fs.readlines()
         fs.close()
 
@@ -64,7 +68,7 @@ class CSVParser:
                 info_list.append("Node name|" + values[1])
                 info_list.append("Kernel version| " + values[2])
             if "PRETTY_NAME" in line:
-                info_list.append("OS version|" + line.split("=")[1].replace('"', ''))
+                info_list.append("OS version|" + line.split("=")[1].replace('"', ""))
         return info_list
 
     def dump_cpu_information_in_csv(self, cpu_log_path):
@@ -89,24 +93,24 @@ class CSVParser:
             num_gpu = 0
             for j in range(1, len(lines)):
                 line = lines[j].rstrip()
-                if ("Name:" in line and "gfx" in line):
+                if "Name:" in line and "gfx" in line:
                     name = line.split(":")[1].lstrip()
-                if ("Uuid:" in line):
+                if "Uuid:" in line:
                     uuid = line.split(":")[1].lstrip()
-                if ("Marketing Name:" in line):
+                if "Marketing Name:" in line:
                     marketing_name = line.split(":")[1].lstrip()
-                if ("Vendor Name:" in line):
+                if "Vendor Name:" in line:
                     vendor_name = line.split(":")[1].lstrip()
-                if ("Device Type:" in line):
+                if "Device Type:" in line:
                     device_type = line.split(":")[1].lstrip()
                     if device_type == "GPU":
                         break
 
             for j in range(1, len(lines)):
                 line = lines[j].rstrip()
-                if ("Device Type:" in line):
+                if "Device Type:" in line:
                     device_type = line.split(":")[1].lstrip()
-                    if (device_type == "GPU"):
+                    if device_type == "GPU":
                         num_gpu += 1
             info_list.append("Name|" + name)
             info_list.append("Uuid|" + uuid)
@@ -196,7 +200,7 @@ class CSVParser:
         info_list.append(lines[0].rstrip())
         for j in range(1, len(lines)):
             env_values = lines[j].rstrip().split("=")
-            if (env_values[0]):
+            if env_values[0]:
                 info_list.append(env_values[0] + "|" + env_values[1])
         return info_list
 
@@ -256,7 +260,7 @@ class CSVParser:
 
     def dump_csv_output(self):
         gpu_device_type = self.gpu_device_type
-        fs = open(self.filename, 'w')
+        fs = open(self.filename, "w")
         fs.write("sep=|")
         fs.write("\n")
         sys_config_info = []
@@ -270,23 +274,37 @@ class CSVParser:
                 if tag == "cpu_information":
                     sys_config_info.extend(self.dump_cpu_information_in_csv(log_path))
                 if tag == "gpu_information":
-                    sys_config_info.extend(self.dump_gpu_information_in_csv(log_path, gpu_device_type))
+                    sys_config_info.extend(
+                        self.dump_gpu_information_in_csv(log_path, gpu_device_type)
+                    )
                 if tag == "rocm_smi_gpudeviceid":
-                    sys_config_info.extend(self.dump_rocm_smi_gpudeviceid_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_rocm_smi_gpudeviceid_in_csv(log_path)
+                    )
                 if tag == "memory_information":
-                    sys_config_info.extend(self.dump_memory_information_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_memory_information_in_csv(log_path)
+                    )
                 if tag == "rocm_information":
                     sys_config_info.extend(self.dump_rocm_information_in_csv(log_path))
                 if tag == "rocm_packages_installed":
-                    sys_config_info.extend(self.dump_rocm_packages_installed_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_rocm_packages_installed_in_csv(log_path)
+                    )
                 if tag == "rocm_env_variables":
-                    sys_config_info.extend(self.dump_rocm_env_variables_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_rocm_env_variables_in_csv(log_path)
+                    )
                 if tag == "cuda_information":
                     sys_config_info.extend(self.dump_cuda_information_in_csv(log_path))
                 if tag == "cuda_packages_installed":
-                    sys_config_info.extend(self.dump_cuda_packages_installed_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_cuda_packages_installed_in_csv(log_path)
+                    )
                 if tag == "cuda_env_variables":
-                    sys_config_info.extend(self.dump_cuda_env_variables_in_csv(log_path))
+                    sys_config_info.extend(
+                        self.dump_cuda_env_variables_in_csv(log_path)
+                    )
                 if tag == "pip_list":
                     sys_config_info.extend(self.dump_pip_list_in_csv(log_path))
                 if tag == "numa_balancing":
@@ -298,14 +316,14 @@ class CSVParser:
             fs.write(sys_config_info[j])
             fs.write("\n")
         fs.close()
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(f"✅ SUCCESS: System config data dumped to {self.filename}")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
     def print_csv_output(self):
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("📋 SYSTEM CONFIG INFO - ENVIRONMENT VARIABLES")
-        print("="*80)
+        print("=" * 80)
         if self.sys_config_info_list:
             for j in range(len(self.sys_config_info_list)):
                 line = self.sys_config_info_list[j]
@@ -317,4 +335,4 @@ class CSVParser:
                     print(f"📌 {line}")
         else:
             print("❌ No system config information available")
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")

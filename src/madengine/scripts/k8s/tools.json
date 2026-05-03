@@ -1,7 +1,7 @@
 {
   "_comment": "madengine K8s Tools Configuration",
   "_description": "Configuration for K8s-specific tools and data providers",
-  
+
   "data_providers": {
     "minio": {
       "script": "scripts/k8s/data/download_minio.sh",
@@ -31,7 +31,7 @@
       "env_vars": {}
     }
   },
-  
+
   "wrappers": {
     "gpu_profiler": {
       "script": "scripts/k8s/wrappers/run_profiler.sh",
@@ -48,7 +48,7 @@
       "env_vars": {}
     }
   },
-  
+
   "shared_tools": {
     "_note": "These tools from scripts/common/ work directly in K8s without wrappers",
     "tools": [
@@ -78,7 +78,7 @@
       }
     ]
   },
-  
+
   "pre_scripts": [
     {
       "name": "gpu_info_pre",
@@ -87,7 +87,7 @@
       "description": "Pre-execution GPU status check"
     }
   ],
-  
+
   "post_scripts": [
     {
       "name": "gpu_info_post",
@@ -97,4 +97,3 @@
     }
   ]
 }
-

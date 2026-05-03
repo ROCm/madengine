@@ -5,15 +5,15 @@ import os
 from unittest.mock import patch
 
 from madengine.core.constants import (
-    NAS_NODES,
-    MAD_AWS_S3,
-    MAD_MINIO,
-    PUBLIC_GITHUB_ROCM_KEY,
-    _get_env_or_creds_or_default,
-    _DEFAULT_NAS_NODES,
     _DEFAULT_MAD_AWS_S3,
     _DEFAULT_MAD_MINIO,
+    _DEFAULT_NAS_NODES,
     _DEFAULT_PUBLIC_GITHUB_ROCM_KEY,
+    MAD_AWS_S3,
+    MAD_MINIO,
+    NAS_NODES,
+    PUBLIC_GITHUB_ROCM_KEY,
+    _get_env_or_creds_or_default,
 )
 
 
@@ -25,6 +25,7 @@ class TestGetEnvOrCredsOrDefault:
         with patch.dict(os.environ, {"TEST_KEY": '[{"a": 1}]'}, clear=False):
             # Need to pass creds - we patch CREDS via the module
             import madengine.core.constants as constants_module
+
             with patch.object(constants_module, "CREDS", {}):
                 result = _get_env_or_creds_or_default(
                     "TEST_KEY", "TEST_KEY", _DEFAULT_NAS_NODES
@@ -35,6 +36,7 @@ class TestGetEnvOrCredsOrDefault:
         """When env is set with invalid JSON, default is returned."""
         with patch.dict(os.environ, {"TEST_KEY": "not json"}, clear=False):
             import madengine.core.constants as constants_module
+
             with patch.object(constants_module, "CREDS", {}):
                 result = _get_env_or_creds_or_default(
                     "TEST_KEY", "TEST_KEY", _DEFAULT_NAS_NODES
@@ -51,6 +53,7 @@ class TestGetEnvOrCredsOrDefault:
             except Exception:
                 pass
         import madengine.core.constants as constants_module
+
         with patch.object(constants_module, "CREDS", {"TEST_KEY": [{"from": "creds"}]}):
             result = _get_env_or_creds_or_default(
                 "TEST_KEY", "TEST_KEY", _DEFAULT_NAS_NODES
@@ -60,6 +63,7 @@ class TestGetEnvOrCredsOrDefault:
     def test_default_when_env_and_creds_unset(self):
         """When env unset and creds missing key, default is returned."""
         import madengine.core.constants as constants_module
+
         with patch.dict(os.environ, {}, clear=False):
             if "TEST_KEY" in os.environ:
                 del os.environ["TEST_KEY"]
@@ -98,6 +102,7 @@ class TestConstantsPublicAPI:
     def test_public_github_rocm_key_has_expected_keys(self):
         """PUBLIC_GITHUB_ROCM_KEY has username and token (no value assert to avoid leaking secrets)."""
         assert isinstance(PUBLIC_GITHUB_ROCM_KEY, dict)
-        assert set(PUBLIC_GITHUB_ROCM_KEY.keys()) >= {"username", "token"}, (
-            "PUBLIC_GITHUB_ROCM_KEY must have at least keys 'username' and 'token'"
-        )
+        assert set(PUBLIC_GITHUB_ROCM_KEY.keys()) >= {
+            "username",
+            "token",
+        }, "PUBLIC_GITHUB_ROCM_KEY must have at least keys 'username' and 'token'"

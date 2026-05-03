@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 gpu_vendor=""
 if [ -f "/usr/bin/nvidia-smi" ]; then

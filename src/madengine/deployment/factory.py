@@ -89,6 +89,7 @@ def register_default_deployments():
         DeploymentFactory.register("kubernetes", KubernetesDeployment)
     except ImportError:
         import warnings
+
         warnings.warn(
             "Kubernetes deployment target is unavailable: the 'kubernetes' library is not "
             "installed. Install it with: pip install madengine[kubernetes] "
@@ -100,4 +101,3 @@ def register_default_deployments():
 
 # Auto-register on module import
 register_default_deployments()
-

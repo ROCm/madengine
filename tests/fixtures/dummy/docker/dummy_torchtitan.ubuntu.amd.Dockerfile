@@ -69,4 +69,3 @@ RUN python3 -c "import torch; print(f'✓ PyTorch version: {torch.__version__}')
     rocminfo > /dev/null 2>&1 || echo "ROCm check (OK in build env)"
 
 WORKDIR /workspace
-

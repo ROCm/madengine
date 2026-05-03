@@ -24,6 +24,7 @@ from madengine.core.errors import (
 
 # ---- CLI error integration ----
 
+
 class TestCLIErrorIntegration:
     """CLI error handling setup and display."""
 
@@ -50,7 +51,9 @@ class TestCLIErrorIntegration:
 
         setup_logging(verbose=False)
         error = Exception("Test build error")
-        context = create_error_context(operation="build", phase="build", component="CLI")
+        context = create_error_context(
+            operation="build", phase="build", component="CLI"
+        )
         handle_error(error, context=context)
 
     @patch("madengine.cli.utils.console")
@@ -62,13 +65,16 @@ class TestCLIErrorIntegration:
         handler = get_error_handler()
         error = ConfigurationError(
             "Invalid configuration",
-            context=create_error_context(operation="cli_command", component="CLI", phase="validation"),
+            context=create_error_context(
+                operation="cli_command", component="CLI", phase="validation"
+            ),
         )
         handler.handle_error(error)
         assert handler.console is not None
 
 
 # ---- Error workflow ----
+
 
 class TestErrorWorkflow:
     """End-to-end error flow and logging."""
@@ -134,10 +140,13 @@ class TestErrorWorkflow:
         )
         error = ExecutionError("Model execution failed", context=context)
         data = json.dumps(error.context.__dict__, default=str)
-        assert "model_execution" in data and "ContainerRunner" in data and "abc123" in data
+        assert (
+            "model_execution" in data and "ContainerRunner" in data and "abc123" in data
+        )
 
 
 # ---- Unified error system ----
+
 
 class TestUnifiedErrorSystem:
     """Unified error handling system."""
@@ -147,7 +156,9 @@ class TestUnifiedErrorSystem:
         mock_console = Mock()
         handler = ErrorHandler(console=mock_console, verbose=False)
         context = create_error_context(
-            operation="test_operation", component="TestComponent", model_name="test_model"
+            operation="test_operation",
+            component="TestComponent",
+            model_name="test_model",
         )
         error = ValidationError("Test validation error", context=context)
         handler.handle_error(error)
@@ -218,7 +229,9 @@ class TestUnifiedErrorSystem:
         set_error_handler(handler)
         error = ValidationError(
             "Global handler test",
-            context=create_error_context(operation="global_test", component="TestGlobalHandler"),
+            context=create_error_context(
+                operation="global_test", component="TestGlobalHandler"
+            ),
         )
         handle_error(error)
         mock_console.print.assert_called_once()
@@ -241,14 +254,20 @@ class TestUnifiedErrorSystem:
 
     def test_nested_error_handling(self):
         """Nested errors with cause chain are handled."""
-        from madengine.core.errors import ExecutionError as MADRuntimeError, OrchestrationError, NetworkError
+        from madengine.core.errors import (
+            ExecutionError as MADRuntimeError,
+            OrchestrationError,
+            NetworkError,
+        )
 
         orig = NetworkError("Network timeout")
         runtime = MADRuntimeError("Operation failed", cause=orig)
         final = OrchestrationError("Orchestration failed", cause=runtime)
         assert final.cause == runtime and runtime.cause == orig
         mock_console = Mock()
-        ErrorHandler(console=mock_console, verbose=True).handle_error(final, show_traceback=True)
+        ErrorHandler(console=mock_console, verbose=True).handle_error(
+            final, show_traceback=True
+        )
         assert mock_console.print.call_count >= 1
 
     def test_error_performance(self):
@@ -261,7 +280,9 @@ class TestUnifiedErrorSystem:
         for i in range(100):
             err = ValidationError(
                 f"Test error {i}",
-                context=create_error_context(operation=f"test_op_{i}", component="PerformanceTest"),
+                context=create_error_context(
+                    operation=f"test_op_{i}", component="PerformanceTest"
+                ),
             )
             handler.handle_error(err)
         assert time.time() - start < 1.0
@@ -269,6 +290,7 @@ class TestUnifiedErrorSystem:
 
 
 # ---- Performance (lightweight) ----
+
 
 class TestErrorHandlingPerformance:
     """Error handler and context creation performance."""
@@ -290,12 +312,16 @@ class TestErrorHandlingPerformance:
         start = time.time()
         for i in range(1000):
             create_error_context(
-                operation=f"op_{i}", component=f"C_{i}", phase="test", model_name=f"m_{i}"
+                operation=f"op_{i}",
+                component=f"C_{i}",
+                phase="test",
+                model_name=f"m_{i}",
             )
         assert time.time() - start < 0.1
 
 
 # ---- Backward compatibility ----
+
 
 class TestErrorSystemBackwardCompatibility:
     """Backward compatibility of the error system."""
@@ -307,7 +333,9 @@ class TestErrorSystemBackwardCompatibility:
         except Exception as e:
             mock_console = Mock()
             handler = ErrorHandler(console=mock_console)
-            context = create_error_context(operation="legacy_handling", component="LegacyTest")
+            context = create_error_context(
+                operation="legacy_handling", component="LegacyTest"
+            )
             handler.handle_error(e, context=context)
             mock_console.print.assert_called_once()
 

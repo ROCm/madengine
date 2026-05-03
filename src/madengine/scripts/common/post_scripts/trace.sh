@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 set -e
 set -x
@@ -28,7 +28,7 @@ rpd)
 		# Still create output directory and copy what we can
 		touch "$OUTPUT/trace.rpd"  # Create empty file so test can find directory structure
 	fi
-	
+
 	echo "RPD post-script: Checking for rpd2tracing.py script..."
 	if [ -f "./rocmProfileData/tools/rpd2tracing.py" ]; then
 		echo "RPD post-script: rpd2tracing.py found"
@@ -38,7 +38,7 @@ rpd)
 		else
 			echo "RPD post-script: Skipping rpd2tracing.py because trace.rpd is missing or empty"
 			# Create empty files so the directory structure exists
-			touch "$OUTPUT/trace.rpd"  
+			touch "$OUTPUT/trace.rpd"
 			touch "$OUTPUT/trace.json"
 		fi
 	else
@@ -49,14 +49,14 @@ rpd)
 		touch "$OUTPUT/trace.rpd"
 		touch "$OUTPUT/trace.json"
 	fi
-	
+
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE"
 	;;
 
 rocprof)
 	# Handle both legacy rocprof (results*) and rocprofv3 (different output format)
 	echo "ROCprof post-script: Collecting profiling output..."
-	
+
 	# Check for legacy rocprof results files
 	if ls results* 1> /dev/null 2>&1; then
 		echo "Found rocprof results files"
@@ -64,7 +64,7 @@ rocprof)
 	else
 		echo "No rocprof results* files found (may be using rocprofv3)"
 	fi
-	
+
 	# Check for rocprofv3 output directories (UUID pattern like 1e4d92661463/)
 	# rocprofv3 creates directories with hex UUIDs containing .db files
 	found_rocprofv3_output=false
@@ -79,18 +79,18 @@ rocprof)
 			fi
 		fi
 	done
-	
+
 	# Also check for other rocprofv3 output patterns
 	if ls rocprofv3-* 1> /dev/null 2>&1; then
 		echo "Found rocprofv3-* files"
 		mv rocprofv3-* "$OUTPUT" 2>/dev/null || true
 		found_rocprofv3_output=true
 	fi
-	
+
 	if [ "$found_rocprofv3_output" = true ]; then
 		echo "Collected rocprofv3 profiling data"
 	fi
-	
+
 	# Check for CSV trace files in subdirectories (rocprof can create hostname subdirectories)
 	# Look for patterns like: hostname/pid_kernel_trace.csv, hostname/pid_hip_api_trace.csv, etc.
 	csv_found=false
@@ -106,11 +106,11 @@ rocprof)
 			fi
 		fi
 	done
-	
+
 	if [ "$csv_found" = true ]; then
 		echo "Collected rocprof CSV trace files from subdirectories"
 	fi
-	
+
 	# Consolidate rocprofv3 CSV files so MAD-agent finds rocprofv3_output_* names.
 	# rocprofv3 may write agent_info in -o prefix but kernel_trace/stats with PID prefix or under hostname/pid.
 	for base in agent_info domain_stats kernel_stats kernel_trace hip_api_trace counter_collection; do
@@ -123,7 +123,7 @@ rocprof)
 			cp -v "$first" "$canonical"
 		fi
 	done
-	
+
 	# Generate instruction_histogram.json from counter/domain_stats CSV so MAD-agent gets real instruction mix.
 	if [ -f "${OUTPUT}/rocprofv3_output_counter_collection.csv" ] || [ -f "${OUTPUT}/rocprofv3_output_domain_stats.csv" ]; then
 		CONVERTER="$(cd "$(dirname "$0")/../tools" 2>/dev/null && pwd)/rocprof_counter_csv_to_instruction_histogram.py"

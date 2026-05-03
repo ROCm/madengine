@@ -101,11 +101,11 @@ echo
 echo "Test 7: Output directory validation"
 if [ -d ".test_basic" ]; then
     pass "Output directory created"
-    
+
     # Count subdirectories
     NUM_SECTIONS=$(find .test_basic -mindepth 1 -maxdepth 1 -type d | wc -l)
     info "Generated $NUM_SECTIONS information sections"
-    
+
     if [ "$NUM_SECTIONS" -gt 5 ]; then
         pass "Sufficient sections generated ($NUM_SECTIONS)"
     else
@@ -136,16 +136,16 @@ echo
 echo "Test 9: ROCm-specific sections"
 if [ -d ".test_basic/rocm_information" ]; then
     pass "ROCm information section generated"
-    
+
     # Check content
     if [ -f ".test_basic/rocm_information/rocm_information.txt" ]; then
         CONTENT=$(cat .test_basic/rocm_information/rocm_information.txt)
-        
+
         if echo "$CONTENT" | grep -q "Installation Type:"; then
             DETECTED_TYPE=$(echo "$CONTENT" | grep "Installation Type:" | head -1)
             pass "ROCm installation type detected: $DETECTED_TYPE"
         fi
-        
+
         if echo "$CONTENT" | grep -q "ROCm Root:"; then
             DETECTED_ROOT=$(echo "$CONTENT" | grep "ROCm Root:" | head -1)
             pass "ROCm root identified: $DETECTED_ROOT"
@@ -161,10 +161,10 @@ echo "Test 10: CSV generation"
 if python3 rocenv_tool_v2.py --output-name test_csv --dump-csv > /dev/null 2>&1; then
     if [ -f "test_csv.csv" ]; then
         pass "CSV file generated"
-        
+
         LINE_COUNT=$(wc -l < test_csv.csv)
         info "CSV contains $LINE_COUNT lines"
-        
+
         if [ "$LINE_COUNT" -gt 10 ]; then
             pass "CSV contains data"
         fi
@@ -231,4 +231,3 @@ echo "- README_v2.md - Usage guide"
 echo "- THEROCK_COMPATIBILITY.md - Compatibility details"
 echo "- IMPLEMENTATION_SUMMARY.md - Implementation overview"
 echo
-

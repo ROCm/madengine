@@ -11,10 +11,10 @@
     "custom_override": "4 prefill + 2 decode (4/2 split)"
   },
   "_note": "Custom split allows optimization for prompt-heavy workloads",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 7,
@@ -23,7 +23,7 @@
     "output_dir": "./slurm_results",
     "exclusive": true
   },
-  
+
   "distributed": {
     "launcher": "sglang-disagg",
     "nnodes": 7,
@@ -35,7 +35,7 @@
       "decode_nodes": 2
     }
   },
-  
+
   "env_vars": {
     "SGLANG_ALLOW_LONG_MAX_MODEL_LEN": "1",
     "SGLANG_USE_MODELSCOPE": "False",
@@ -56,4 +56,3 @@
     "RAY_BACKEND_LOG_LEVEL": "warning"
   }
 }
-

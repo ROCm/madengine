@@ -29,6 +29,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 - [Performance Profiling](#-performance-profiling)
 - [Reporting and Database](#-reporting-and-database)
 - [Installation](#-installation)
+- [YAML Configuration (`--config`)](#-yaml-configuration-config)
 - [Tips & Best Practices](#-tips--best-practices)
   - [Log error pattern scan](#log-error-pattern-scan)
   - [Exit codes and CI](#exit-codes-and-ci)
@@ -39,6 +40,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 ## ✨ Key Features
 
 - **🚀 Modern CLI** - Rich terminal output with Typer and Rich
+- **📝 YAML Config** - Composable [Hydra-based YAML configs](#-yaml-configuration-config) with config groups, hardware profiles, and CLI overrides — alternative to `--additional-context` JSON
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
 - **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
@@ -64,12 +66,16 @@ madengine discover --tags dummy
 # Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
-# Or with explicit configuration
+# Or with explicit JSON configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or with YAML config (Hydra-based, composable)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note**: For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified. For production deployments or non-AMD/Ubuntu environments, explicitly specify these values.
+> **Note**: `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified.
 
 If auto-detection does not find your **host** ROCm root, set top-level `MAD_ROCM_PATH` in `--additional-context`. For a different ROCm root **inside the container**, set `docker_env_vars.MAD_ROCM_PATH` in additional context. If you omit it, madengine derives in-container `ROCM_PATH` when running Docker (from the image's baked-in env, then an in-container probe, then `/opt/rocm` — it does **not** copy the host path). You can also set `ROCM_PATH` / `MAD_AUTO_ROCM_PATH=0` for **host** behavior as documented in [docs/configuration.md](docs/configuration.md):
 
@@ -127,7 +133,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | [Usage Guide](docs/usage.md) | Commands, workflows, and examples ([`--skip-model-run`](docs/usage.md#skip-model-run-after-build)) |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
-| [Configuration](docs/configuration.md) | Advanced options; [run log error pattern scan](docs/configuration.md#run-phase-log-error-pattern-scan) |
+| [Configuration](docs/configuration.md) | Advanced options; [YAML config (`--config`)](docs/configuration.md#yaml-configuration-config); [run log error pattern scan](docs/configuration.md#run-phase-log-error-pattern-scan) |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed training frameworks |
 | [Profiling](docs/profiling.md) | Performance analysis tools |
@@ -564,6 +570,115 @@ cd madengine && pip install -e ".[dev]"
 ```
 
 See [Installation Guide](docs/installation.md) for detailed instructions.
+
+## 📝 YAML Configuration (`--config`)
+
+The `--config` flag provides a composable, Hydra-based YAML alternative to `--additional-context` JSON strings. It is available on both `run` and `build` commands.
+
+> **Note**: `--config` is **mutually exclusive** with `--additional-context` and `--additional-context-file`. Using them together produces an error.
+
+### Basic Usage
+
+```bash
+# Use a config group override
+madengine run --tags dummy --config scheduler=slurm
+
+# Combine multiple overrides
+madengine run --tags dummy \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# Use a user YAML file
+madengine run --config my_job.yaml
+
+# User YAML file with overrides
+madengine run --config my_job.yaml --config distributed.nnodes=8
+
+# Append optional config groups with '+' prefix
+madengine run --tags dummy \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug \
+  --config +tools=rocprofv3_lightweight
+```
+
+### Config Groups
+
+madengine ships with pre-built config groups that compose together:
+
+| Group | Default | Options | Description |
+|-------|---------|---------|-------------|
+| `platform` | `docker` | docker, bare_metal, singularity, podman | Execution platform |
+| `scheduler` | `local` | local, slurm, k8s | Job scheduler |
+| `hardware` | `amd` | amd, nvidia, cpu | GPU vendor and runtime settings |
+| `launcher` | `none` | none, torchrun, deepspeed, megatron, torchtitan, vllm, sglang, sglang_disagg, primus, native | Distributed launcher |
+| `+profile` | *(none)* | mi300x_8gpu, mi300x_single, mi250x_4gpu, h100_8gpu, a100_8gpu | Hardware profiles (append-only) |
+| `+env` | *(none)* | nccl_debug, nccl_tuned, infiniband, miopen_defaults | Environment presets (append-only) |
+| `+tools` | *(none)* | rocprofv3_lightweight, rocprofv3_comprehensive, power_profiler, vram_profiler, rocm_trace_lite | Profiling tools (append-only) |
+| `+data` | *(none)* | local, s3, minio, nas | Data source config (append-only) |
+| `+build` | *(none)* | default, ci, multi_arch | Build presets (append-only) |
+
+Groups with `+` prefix are append-only — they are not loaded by default and must be explicitly added.
+
+### User YAML Files
+
+Create a YAML file for your job and pass it via `--config`:
+
+```yaml
+# my_job.yaml
+model:
+  tags: [dummy]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  MY_VAR: test_value
+  NCCL_DEBUG: INFO
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+
+slurm:
+  partition: gpu
+  time: "02:00:00"
+```
+
+```bash
+madengine run --config my_job.yaml
+```
+
+User YAML values are merged on top of the base config and config group selections, giving them highest priority.
+
+### Examples
+
+```bash
+# SLURM multi-node with torchrun
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# MI300x 8-GPU profile with NCCL debug
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# NVIDIA hardware with profiling
+madengine run --tags model \
+  --config hardware=nvidia \
+  --config +tools=rocprofv3_lightweight
+
+# Build with CI preset
+madengine build --tags model \
+  --config +build=ci \
+  --registry docker.io/myorg
+```
+
+See [Configuration Guide](docs/configuration.md#yaml-configuration-config) for full details, and [`examples/configs/`](examples/configs/) for annotated templates and ready-to-run demo files.
 
 ## 💡 Tips & Best Practices
 

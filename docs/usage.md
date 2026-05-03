@@ -27,12 +27,16 @@ madengine discover --tags dummy
 # Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
-# Or with explicit configuration
+# Or with explicit JSON configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or with YAML config (composable, Hydra-based)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
+> **Note**: `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations.
 
 Results are saved to `perf_entry.csv`.
 
@@ -395,6 +399,8 @@ Deployment target is automatically detected from `slurm` key in configuration. T
 
 Use configuration files for complex settings:
 
+**JSON format** (`--additional-context-file`):
+
 **config.json:**
 ```json
 {
@@ -411,6 +417,42 @@ Use configuration files for complex settings:
 ```bash
 madengine run --tags model --additional-context-file config.json
 ```
+
+**YAML format** (`--config`):
+
+**my_job.yaml:**
+```yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  PYTORCH_TUNABLEOP_ENABLED: "1"
+  HSA_ENABLE_SDMA: "0"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+```
+
+```bash
+madengine run --config my_job.yaml
+
+# With additional overrides
+madengine run --config my_job.yaml --config distributed.nnodes=4
+
+# Or use config groups without a file
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config +profile=mi300x_8gpu
+```
+
+> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details, and [`examples/configs/`](../examples/configs/) for annotated templates and ready-to-run demos.
 
 ### Custom Timeouts
 

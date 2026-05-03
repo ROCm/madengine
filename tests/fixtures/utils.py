@@ -5,14 +5,15 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 # built-in modules
 import csv
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import json
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 MODEL_DIR = "tests/fixtures/dummy"
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
@@ -48,11 +49,11 @@ def has_gpu() -> bool:
         # This is safe for pytest collection and avoids hanging
         nvidia_exists = os.path.exists("/usr/bin/nvidia-smi")
         from madengine.core.constants import get_rocm_path
+
         rocm_path = get_rocm_path()
-        amd_rocm_exists = (
-            os.path.exists(os.path.join(rocm_path, "bin", "rocm-smi"))
-            or os.path.exists("/usr/local/bin/rocm-smi")
-        )
+        amd_rocm_exists = os.path.exists(
+            os.path.join(rocm_path, "bin", "rocm-smi")
+        ) or os.path.exists("/usr/local/bin/rocm-smi")
 
         _has_gpu_cache = nvidia_exists or amd_rocm_exists
 
@@ -89,18 +90,18 @@ def global_data():
 def clean_test_temp_files(request):
     """
     Fixture to clean up test temporary files and Docker containers.
-    
+
     Cleans up both before (to ensure clean state) and after (to avoid conflicts).
     """
     import subprocess
-    
+
     # Clean up Docker containers BEFORE test (ensure clean state)
     try:
         subprocess.run(
             "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
             shell=True,
             capture_output=True,
-            timeout=30
+            timeout=30,
         )
     except Exception:
         pass  # Ignore cleanup errors before test
@@ -115,14 +116,14 @@ def clean_test_temp_files(request):
                 shutil.rmtree(file_path)
             else:
                 os.remove(file_path)
-    
+
     # Clean up Docker containers AFTER test (avoid conflicts with next test)
     try:
         subprocess.run(
             "docker ps -a | grep 'container_ci-dummy' | awk '{print $1}' | xargs -r docker rm -f",
             shell=True,
             capture_output=True,
-            timeout=30
+            timeout=30,
         )
     except Exception:
         pass  # Ignore cleanup errors after test
@@ -184,13 +185,14 @@ def is_nvidia() -> bool:
         bool: True if NVIDIA GPU is present, False otherwise.
     """
     global _gpu_vendor_cache
-    
+
     if _gpu_vendor_cache is not None:
         return _gpu_vendor_cache == "NVIDIA"
-    
+
     try:
         # Lazy import to avoid collection issues
         from madengine.core.context import Context
+
         context = Context()
         _gpu_vendor_cache = context.ctx["gpu_vendor"]
         return _gpu_vendor_cache == "NVIDIA"
@@ -216,6 +218,7 @@ def get_gpu_arch() -> str:
 
     try:
         from madengine.core.console import Console
+
         console = Console(live_output=True)
         if is_nvidia():
             arch = console.sh(
@@ -224,9 +227,10 @@ def get_gpu_arch() -> str:
             arch = arch.strip() if arch else ""
             # Normalize "NVIDIA A100-SXM4-40GB" -> "A100", "NVIDIA H100 PCIe" -> "H100"
             if arch.startswith("NVIDIA "):
-                arch = arch[len("NVIDIA "):].split("-")[0].split()[0]
+                arch = arch[len("NVIDIA ") :].split("-")[0].split()[0]
         else:
             from madengine.core.constants import get_rocm_path
+
             rocm_path = get_rocm_path()
             arch = console.sh(f"{rocm_path}/bin/rocminfo |grep -o -m 1 'gfx.*'")
             arch = arch.strip() if arch else ""
@@ -244,17 +248,18 @@ def get_gpu_nodeid_map() -> dict:
         dict: GPU node id map mapping node_id strings to GPU indices.
     """
     global _gpu_nodeid_map_cache
-    
+
     if _gpu_nodeid_map_cache is not None:
         return _gpu_nodeid_map_cache
-    
+
     try:
         # Lazy import to avoid collection issues
         from madengine.core.console import Console
+
         gpu_map = {}
         console = Console(live_output=True)
         nvidia = is_nvidia()
-        
+
         if nvidia:
             command = "nvidia-smi --list-gpus"
             output = console.sh(command)
@@ -280,14 +285,18 @@ def get_gpu_nodeid_map() -> dict:
                     # Parse version as tuple for proper comparison (6.4.1 vs 6.4.0)
                     version_parts = rocm_version_str.split(".")
                     if len(version_parts) >= 3:
-                        rocm_version = tuple(int(p.split('-')[0]) for p in version_parts[:3])
+                        rocm_version = tuple(
+                            int(p.split("-")[0]) for p in version_parts[:3]
+                        )
                     else:
                         # Fallback to float comparison for versions without patch
                         rocm_version = (int(version_parts[0]), int(version_parts[1]), 0)
-                    
+
                     # Use appropriate rocm-smi command based on version (PR #54: threshold is 6.4.1)
                     command = (
-                        "rocm-smi --showuniqueid" if rocm_version < (6, 4, 1) else "rocm-smi --showhw"
+                        "rocm-smi --showuniqueid"
+                        if rocm_version < (6, 4, 1)
+                        else "rocm-smi --showhw"
                     )
                     output = console.sh(command)
                     lines = output.split("\n")
@@ -295,7 +304,9 @@ def get_gpu_nodeid_map() -> dict:
                     for line in lines:
                         if rocm_version < (6, 4, 1):
                             if "Unique ID:" in line:
-                                gpu_id = int(line.split(":")[0].split("[")[1].split("]")[0])
+                                gpu_id = int(
+                                    line.split(":")[0].split("[")[1].split("]")[0]
+                                )
                                 unique_id = line.split(":")[2].strip()
                                 gpu_map[unique_id] = gpu_id
                         else:
@@ -306,13 +317,22 @@ def get_gpu_nodeid_map() -> dict:
                 except Exception:
                     # If all else fails, return empty map
                     pass
-        
+
         _gpu_nodeid_map_cache = gpu_map
         return gpu_map
-    
+
     except Exception:
         # If detection fails during collection, return a default mapping
-        _gpu_nodeid_map_cache = {'2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, '9': 7}
+        _gpu_nodeid_map_cache = {
+            "2": 0,
+            "3": 1,
+            "4": 2,
+            "5": 3,
+            "6": 4,
+            "7": 5,
+            "8": 6,
+            "9": 7,
+        }
         return _gpu_nodeid_map_cache
 
 
@@ -323,10 +343,10 @@ def get_num_gpus() -> int:
         int: Number of GPUs present.
     """
     global _num_gpus_cache
-    
+
     if _num_gpus_cache is not None:
         return _num_gpus_cache
-    
+
     try:
         gpu_map = get_gpu_nodeid_map()
         _num_gpus_cache = len(gpu_map)
@@ -351,8 +371,11 @@ def get_num_cpus() -> int:
     try:
         # Lazy import to avoid collection issues
         from madengine.core.console import Console
+
         console = Console(live_output=True)
-        _num_cpus_cache = int(console.sh("lscpu | grep \"^CPU(s):\" | awk '{print $2}'"))
+        _num_cpus_cache = int(
+            console.sh("lscpu | grep \"^CPU(s):\" | awk '{print $2}'")
+        )
         return _num_cpus_cache
     except Exception:
         # Default to 64 CPUs if detection fails during collection
@@ -423,7 +446,9 @@ def assert_model_in_perf_csv(csv_path, model, status="SUCCESS", performance=None
                 pytest.fail(
                     f"model {model} in perf CSV did not run successfully (status={row.get('status')})."
                 )
-            if performance is not None and str(row.get("performance", "")) != str(performance):
+            if performance is not None and str(row.get("performance", "")) != str(
+                performance
+            ):
                 pytest.fail(
                     f"model {model} expected performance {performance}, got {row.get('performance')}."
                 )

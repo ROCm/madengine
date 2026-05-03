@@ -3,10 +3,10 @@
   "_description": "Configuration for large-scale distributed workloads with advanced options",
   "_use_case": "Production-scale multi-node training with custom workspace and results collection",
   "_note": "Using 'amd-rccl' partition. Adjust for your cluster if needed.",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 4,
@@ -25,7 +25,7 @@
       "openmpi/4.1.4"
     ]
   },
-  
+
   "distributed": {
     "launcher": "torchrun",
     "backend": "nccl",
@@ -33,7 +33,7 @@
     "nnodes": 4,
     "nproc_per_node": 8
   },
-  
+
   "env_vars": {
     "NCCL_DEBUG": "INFO",
     "NCCL_DEBUG_SUBSYS": "INIT,NET",
@@ -53,9 +53,9 @@
     "NCCL_BUFFSIZE": "8388608",
     "NCCL_P2P_LEVEL": "NVL"
   },
-  
+
   "shared_data": "/shared/datasets",
-  
+
   "_notes": {
     "description": "Advanced configuration with InfiniBand, shared storage, and custom SLURM settings",
     "modules": "Load required environment modules before job execution",
@@ -65,7 +65,6 @@
     "shared_workspace": "Shared filesystem for job execution (NFS/Lustre)",
     "shared_data": "Shared dataset location accessible from all nodes"
   },
-  
+
   "debug": false
 }
-

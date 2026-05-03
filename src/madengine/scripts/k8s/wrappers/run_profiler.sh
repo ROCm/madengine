@@ -47,4 +47,3 @@ if [ -d "$OUTPUT_DIR" ]; then
     echo "Output files:"
     ls -lh $OUTPUT_DIR
 fi
-

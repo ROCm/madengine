@@ -10,25 +10,30 @@ UPDATED: Refactored to use python3 -m madengine.cli.app instead of legacy mad.py
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-# built-in modules
-import os
 import csv
 import json
+
+# built-in modules
+import os
+
+# project modules
+import shutil
+
 import pandas as pd
 
 # 3rd party modules
 import pytest
 
-# project modules
-import shutil
-
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
-from tests.fixtures.utils import global_data
-from tests.fixtures.utils import clean_test_temp_files
-from tests.fixtures.utils import DEFAULT_CLEAN_FILES
-from tests.fixtures.utils import generate_additional_context_for_machine
-from tests.fixtures.utils import get_gpu_arch
-from tests.fixtures.utils import requires_gpu
+from tests.fixtures.utils import (
+    BASE_DIR,
+    DEFAULT_CLEAN_FILES,
+    MODEL_DIR,
+    clean_test_temp_files,
+    generate_additional_context_for_machine,
+    get_gpu_arch,
+    global_data,
+    requires_gpu,
+)
 
 
 @pytest.fixture
@@ -58,10 +63,10 @@ def dynamic_skip_gpu_arch_model_dir(tmp_path):
     return str(temp_model_dir)
 
 
-
 # ============================================================================
 # Build CLI Features Tests
 # ============================================================================
+
 
 class TestCLIFeatures:
     """Test various CLI features and command-line argument behaviors."""
@@ -99,7 +104,9 @@ class TestCLIFeatures:
         if not success:
             pytest.fail("model, dummy, not found in perf_test.csv.")
 
-    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
+    @requires_gpu(
+        "skip_gpu_arch filtering requires GPU hardware to detect current architecture"
+    )
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )
@@ -124,7 +131,9 @@ class TestCLIFeatures:
         if "Skipping model" not in output:
             pytest.fail("Enable skipping gpu arch for running model is failed.")
 
-    @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
+    @requires_gpu(
+        "skip_gpu_arch filtering requires GPU hardware to detect current architecture"
+    )
     @pytest.mark.parametrize(
         "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
     )
@@ -158,40 +167,45 @@ class TestCLIFeatures:
         UPDATED: Now uses python3 -m madengine.cli.app instead of legacy mad.py
         """
         context = generate_additional_context_for_machine()
-        output = global_data['console'].sh(
-            "cd " + BASE_DIR + "; " + 
-            "MODEL_DIR=" + MODEL_DIR + " " + 
-            f"python3 -m madengine.cli.app run --tags dummy_multi --live-output --additional-context '{json.dumps(context)}'"
+        output = global_data["console"].sh(
+            "cd "
+            + BASE_DIR
+            + "; "
+            + "MODEL_DIR="
+            + MODEL_DIR
+            + " "
+            + f"python3 -m madengine.cli.app run --tags dummy_multi --live-output --additional-context '{json.dumps(context)}'"
         )
         # Check if multiple results are written to perf_dummy.csv
         success = False
         # Read the csv file to a dataframe using pandas
-        multi_df = pd.read_csv(os.path.join(BASE_DIR, 'perf_dummy.csv'))
+        multi_df = pd.read_csv(os.path.join(BASE_DIR, "perf_dummy.csv"))
         # Check the number of rows in the dataframe is 4, and columns is 4
         if multi_df.shape == (4, 4):
             success = True
         if not success:
             pytest.fail("The generated multi results is not correct.")
         # Check if multiple results from perf_dummy.csv get copied over to perf.csv
-        perf_df = pd.read_csv(os.path.join(BASE_DIR, 'perf.csv'))
+        perf_df = pd.read_csv(os.path.join(BASE_DIR, "perf.csv"))
         # Get the corresponding rows and columns from perf.csv
         perf_df = perf_df[multi_df.columns]
         perf_df = perf_df.iloc[-4:, :]
         # Drop model columns from both dataframes; these will not match
         # if multiple results csv has {model}, then perf csv has {tag_name}_{model}
-        multi_df = multi_df.drop('model', axis=1)
-        perf_df = perf_df.drop('model', axis=1)
+        multi_df = multi_df.drop("model", axis=1)
+        perf_df = perf_df.drop("model", axis=1)
         if all(perf_df.columns == multi_df.columns):
             success = True
         if not success:
-            pytest.fail("The columns of the generated multi results do not match perf.csv.")
-
-
+            pytest.fail(
+                "The columns of the generated multi results do not match perf.csv."
+            )
 
 
 # ============================================================================
 # Model Discovery Tests
 # ============================================================================
+
 
 class TestDiscover:
     """Test the model discovery feature."""
@@ -316,5 +330,3 @@ class TestDiscover:
                         success = True
         if not success:
             pytest.fail("multiple tags did not run successfully.")
-
-

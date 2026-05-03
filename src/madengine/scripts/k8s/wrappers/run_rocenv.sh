@@ -57,4 +57,3 @@ echo "Results saved to: /workspace/$OUTPUT_NAME.csv"
 if [ -f "/workspace/$OUT_CSV" ]; then
     echo "CSV file size: $(du -h /workspace/$OUT_CSV | cut -f1)"
 fi
-

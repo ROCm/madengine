@@ -10,10 +10,10 @@
     "total": "7 pods total",
     "note": "Custom split overrides default 40/60 ratio"
   },
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "k8s": {
     "gpu_count": 8,
     "memory": "256Gi",
@@ -24,7 +24,7 @@
       "feature.node.kubernetes.io/amd-gpu-mi300x": "true"
     }
   },
-  
+
   "distributed": {
     "launcher": "sglang-disagg",
     "nnodes": 7,
@@ -35,7 +35,7 @@
       "decode_nodes": 2
     }
   },
-  
+
   "context": {
     "env_vars": {
       "SGLANG_ENABLE_RADIX_CACHE": "1",
@@ -45,4 +45,3 @@
     }
   }
 }
-

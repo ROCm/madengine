@@ -15,13 +15,13 @@ import pytest
 # project modules
 from tests.fixtures.utils import (
     BASE_DIR,
-    MODEL_DIR,
     DEFAULT_CLEAN_FILES,
-    global_data,
+    MODEL_DIR,
     clean_test_temp_files,
-    requires_gpu,
-    is_nvidia,
     generate_additional_context_for_machine,
+    global_data,
+    is_nvidia,
+    requires_gpu,
 )
 
 
@@ -47,14 +47,14 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocprof"}]}\' ',
             canFail=True,
         )
 
         # Check for both legacy rocprof (results.csv) and rocprofv3 (.db files) output
         rocprof_output_dir = os.path.join(BASE_DIR, "rocprof_output")
         legacy_output = os.path.join(rocprof_output_dir, "results.csv")
-        
+
         # Check for rocprofv3 .db files in subdirectories
         rocprofv3_output_found = False
         if os.path.exists(rocprof_output_dir):
@@ -65,7 +65,7 @@ class TestProfilingFunctionality:
                         break
                 if rocprofv3_output_found:
                     break
-        
+
         if not os.path.exists(legacy_output) and not rocprofv3_output_found:
             pytest.fail(
                 "Neither rocprof_output/results.csv (legacy) nor *_results.db (rocprofv3) generated with rocprof profiling run."
@@ -92,7 +92,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocm_trace_lite\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocm_trace_lite"}]}\' ',
             canFail=True,
         )
 
@@ -122,7 +122,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rpd\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rpd"}]}\' ',
             canFail=True,
         )
 
@@ -148,7 +148,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"gpu_info_power_profiler\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "gpu_info_power_profiler"}]}\' ',
             canFail=False,
         )
 
@@ -178,7 +178,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"gpu_info_vram_profiler\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "gpu_info_vram_profiler"}]}\' ',
             canFail=False,
         )
 
@@ -206,7 +206,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocblas_trace\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocblas_trace"}]}\' ',
             canFail=False,
         )
 
@@ -242,7 +242,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"tensile_trace\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "tensile_trace"}]}\' ',
             canFail=True,  # Allow failure due to missing performance metrics (trace tools suppress performance output)
         )
 
@@ -278,7 +278,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"miopen_trace\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "miopen_trace"}]}\' ',
             canFail=False,
         )
 
@@ -312,7 +312,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof_rccl --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rccl_trace\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof_rccl --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rccl_trace"}]}\' ',
             canFail=False,
         )
 
@@ -353,7 +353,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"test_tools_A\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "test_tools_A"}]}\' ',
             canFail=False,
         )
 
@@ -399,7 +399,7 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"test_tools_A\"}, {\"name\": \"test_tools_B\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "test_tools_A"}, {"name": "test_tools_B"}]}\' ',
             canFail=False,
         )
 
@@ -462,13 +462,13 @@ class TestProfilingFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            + "python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context '{\"gpu_vendor\": \"AMD\", \"guest_os\": \"UBUNTU\", \"tools\": [{\"name\": \"rocprof\", \"cmd\": \"bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --\"}]}' ",
+            + 'python3 -m madengine.cli.app run --live-output --tags dummy_prof --additional-context \'{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocprof", "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --sys-trace --"}]}\' ',
             canFail=True,
         )
 
         # Check for profiling output (either legacy or rocprofv3 format)
         rocprof_output_dir = os.path.join(BASE_DIR, "rocprof_output")
-        
+
         # For rocprofv3 with --sys-trace, check for .db files
         rocprofv3_output_found = False
         if os.path.exists(rocprof_output_dir):
@@ -479,10 +479,12 @@ class TestProfilingFunctionality:
                         break
                 if rocprofv3_output_found:
                     break
-        
+
         # Legacy check for results files
-        legacy_output = os.path.exists(os.path.join(BASE_DIR, "rocprof_output", "results.csv"))
-        
+        legacy_output = os.path.exists(
+            os.path.join(BASE_DIR, "rocprof_output", "results.csv")
+        )
+
         if not legacy_output and not rocprofv3_output_found:
             pytest.fail(
                 "No profiling output generated with custom rocprof command override."

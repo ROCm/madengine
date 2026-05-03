@@ -215,11 +215,11 @@ echo "Verifying madengine availability..."
 if command -v madengine >/dev/null 2>&1; then
     MAD_CLI_VERSION=$(madengine --version 2>&1 | head -n1 || echo "unknown")
     MAD_CLI_PATH=$(which madengine 2>/dev/null || echo "unknown")
-    
+
     echo "  ✓ madengine available"
     echo "  Version: $MAD_CLI_VERSION"
     echo "  Path: $MAD_CLI_PATH"
-    
+
     # Verify it's executable
     if madengine --help >/dev/null 2>&1; then
         export MAD_CLI_COMMAND="madengine"
@@ -263,15 +263,15 @@ if 'deployment_config' in manifest:
     gpus_per_node = None
     if 'slurm' in manifest['deployment_config']:
         gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
-    
+
     # Set to 'docker' instead of 'local' to force container execution
     manifest['deployment_config']['target'] = 'docker'
-    
+
     # Remove scheduler configs (but keep built_images!)
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
-    
+
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 
@@ -490,11 +490,11 @@ echo "Verifying madengine availability..."
 if command -v madengine >/dev/null 2>&1; then
     MAD_CLI_VERSION=$(madengine --version 2>&1 | head -n1 || echo "unknown")
     MAD_CLI_PATH=$(which madengine 2>/dev/null || echo "unknown")
-    
+
     echo "✓ madengine available"
     echo "  Version: $MAD_CLI_VERSION"
     echo "  Path: $MAD_CLI_PATH"
-    
+
     # Verify it's executable
     if madengine --help >/dev/null 2>&1; then
         echo "  ✓ Verified: madengine is functional"
@@ -542,15 +542,15 @@ if 'deployment_config' in manifest:
     gpus_per_node = None
     if 'slurm' in manifest['deployment_config']:
         gpus_per_node = manifest['deployment_config']['slurm'].get('gpus_per_node')
-    
+
     # Set to 'docker' instead of 'local' to force container execution
     manifest['deployment_config']['target'] = 'docker'
-    
+
     # Remove scheduler configs (but keep built_images!)
     manifest['deployment_config'].pop('slurm', None)
     manifest['deployment_config'].pop('k8s', None)
     manifest['deployment_config'].pop('kubernetes', None)
-    
+
     if gpus_per_node:
         manifest['deployment_config']['gpus_per_node'] = gpus_per_node
 
@@ -819,4 +819,3 @@ else
 fi
 
 exit $EXIT_CODE
-

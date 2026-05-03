@@ -5,7 +5,7 @@
 
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 4,
@@ -14,11 +14,10 @@
     "mem": "512G",
     "constraint": "MI300X"
   },
-  
+
   "distributed": {
     "launcher": "torchtitan",
     "nnodes": 4,
     "nproc_per_node": 8
   }
 }
-

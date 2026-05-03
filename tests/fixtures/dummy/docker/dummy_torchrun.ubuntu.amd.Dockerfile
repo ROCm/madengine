@@ -43,4 +43,3 @@ RUN rocminfo > /dev/null 2>&1 || echo "ROCm info check failed (expected in non-G
 # Note: The K8s deployment config should override these env vars if needed:
 # - MIOPEN_FIND_MODE is already set in deployment_config.env_vars
 # - MIOPEN_USER_DB_PATH is already set in deployment_config.env_vars
-

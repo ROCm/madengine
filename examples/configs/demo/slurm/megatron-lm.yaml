@@ -1,0 +1,26 @@
+# SLURM — Megatron-LM large-scale transformer training (4 nodes × 8 GPUs)
+# madengine run --config examples/configs/demo/slurm/megatron-lm.yaml
+
+model:
+  tags: [dummy_megatron_lm]
+
+slurm:
+  partition: gpu
+  account: research
+  nodes: 4
+  gpus_per_node: 8
+  time: "24:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+
+distributed:
+  enabled: true
+  launcher: megatron
+  nnodes: 4
+  nproc_per_node: 8
+  master_port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "16"
+  NCCL_DEBUG: INFO
+  NCCL_IB_DISABLE: "0"

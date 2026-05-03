@@ -1,0 +1,28 @@
+# Kubernetes — Megatron-LM large-scale transformer training (4 pods × 8 GPUs)
+# madengine run --config examples/configs/demo/k8s/megatron-lm.yaml
+
+model:
+  tags: [dummy_megatron_lm]
+
+k8s:
+  namespace: ml-training
+  gpu_count: 8
+  memory: 256Gi
+  memory_limit: 512Gi
+  cpu: "64"
+  cpu_limit: "128"
+  host_ipc: true
+  image_pull_policy: IfNotPresent
+  node_selector:
+    feature.node.kubernetes.io/amd-gpu-mi300x: "true"
+
+distributed:
+  enabled: true
+  launcher: megatron
+  nnodes: 4
+  nproc_per_node: 8
+  master_port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "16"
+  NCCL_DEBUG: INFO

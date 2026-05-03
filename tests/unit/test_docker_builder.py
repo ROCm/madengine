@@ -35,7 +35,9 @@ def test_create_registry_image_name_uses_dockerhub_repository(docker_builder):
     assert out == "myorg/ci:ci-dummy_dummy.ubuntu.amd"
 
 
-def test_create_registry_image_name_without_credentials_matches_local_tag(docker_builder):
+def test_create_registry_image_name_without_credentials_matches_local_tag(
+    docker_builder,
+):
     out = docker_builder._create_registry_image_name(
         "ci-dummy_dummy.ubuntu.amd",
         "dockerhub",

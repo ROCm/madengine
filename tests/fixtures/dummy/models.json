@@ -255,7 +255,7 @@
     "name": "dummy_torchrun",
     "dockerfile": "docker/dummy_torchrun",
     "scripts": "scripts/dummy_torchrun/run.sh",
-    "n_gpus": "1",
+    "n_gpus": "4",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [
@@ -268,7 +268,7 @@
     "name": "dummy_torchrun_multi",
     "dockerfile": "docker/dummy_torchrun",
     "scripts": "scripts/dummy_torchrun/run_multi.sh",
-    "n_gpus": "1",
+    "n_gpus": "4",
     "owner": "mad.support@amd.com",
     "training_precision": "",
     "tags": [

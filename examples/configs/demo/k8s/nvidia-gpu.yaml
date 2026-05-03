@@ -1,0 +1,32 @@
+# Kubernetes — NVIDIA GPU cluster (A100/H100), single node × 4 GPUs
+# madengine run --config examples/configs/demo/k8s/nvidia-gpu.yaml
+
+model:
+  tags: [dummy_torchrun]
+
+gpu_vendor: NVIDIA
+guest_os: UBUNTU
+
+k8s:
+  namespace: default
+  gpu_count: 4
+  gpu_resource_name: nvidia.com/gpu
+  memory: 128Gi
+  memory_limit: 256Gi
+  cpu: "48"
+  cpu_limit: "96"
+  node_selector:
+    accelerator: nvidia-tesla-a100
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 1
+  nproc_per_node: 4
+  master_port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "12"
+  NCCL_DEBUG: WARN
+  NCCL_IB_DISABLE: "1"
+  NCCL_SOCKET_IFNAME: eth0

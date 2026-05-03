@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 # Stop gpu_info_power_profiler and collect output
 
 set -x
@@ -32,23 +32,23 @@ if ! kill -0 "$PROFILER_PID" 2>/dev/null; then
     echo "⚠️  Warning: Power profiler process (PID: $PROFILER_PID) is not running"
 else
     echo "Sending termination signal to power profiler (PID: $PROFILER_PID)..."
-    
+
     # Send SIGTERM to gracefully stop the profiler
     kill -TERM "$PROFILER_PID" 2>/dev/null || true
-    
+
     # Wait for profiler to finish writing output (max 10 seconds)
     WAIT_COUNT=0
     while kill -0 "$PROFILER_PID" 2>/dev/null && [ $WAIT_COUNT -lt 20 ]; do
         sleep 0.5
         WAIT_COUNT=$((WAIT_COUNT + 1))
     done
-    
+
     # Force kill if still running
     if kill -0 "$PROFILER_PID" 2>/dev/null; then
         echo "⚠️  Profiler did not stop gracefully, force killing..."
         kill -9 "$PROFILER_PID" 2>/dev/null || true
     fi
-    
+
     echo "✓ GPU power profiler stopped"
 fi
 
@@ -63,4 +63,3 @@ if [ -f "/tmp/gpu_info_power_profiler.log" ]; then
     tail -20 /tmp/gpu_info_power_profiler.log || true
     echo "=========================="
 fi
-

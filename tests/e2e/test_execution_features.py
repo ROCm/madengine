@@ -22,10 +22,10 @@ from tests.fixtures.utils import (
 )
 
 
-
 # ============================================================================
 # Timeout Feature Tests
 # ============================================================================
+
 
 class TestCustomTimeoutsFunctionality:
 
@@ -42,7 +42,13 @@ class TestCustomTimeoutsFunctionality:
         ],
     )
     def test_timeout_value_in_log(
-        self, global_data, clean_test_temp_files, tags, log_base_name, expected_seconds, extra_args
+        self,
+        global_data,
+        clean_test_temp_files,
+        tags,
+        log_base_name,
+        expected_seconds,
+        extra_args,
     ):
         """
         Timeout is set as expected (default 2h, model override, CLI override).
@@ -113,10 +119,10 @@ class TestCustomTimeoutsFunctionality:
         assert test_duration == pytest.approx(120, 20)
 
 
-
 # ============================================================================
 # Debugging Feature Tests
 # ============================================================================
+
 
 class TestDebuggingFunctionality:
     """"""
@@ -284,9 +290,11 @@ class TestDebuggingFunctionality:
                 "model directory left over after not specifying keep-model-dir (or keep-alive) argument."
             )
 
+
 # ============================================================================
 # Live Output Feature Tests
 # ============================================================================
+
 
 class TestLiveOutputFunctionality:
     """Test the live output functionality."""
@@ -344,5 +352,3 @@ class TestLiveOutputFunctionality:
 
         if "ARG BASE_DOCKER=" not in output:
             pytest.fail("default run is silent")
-
-

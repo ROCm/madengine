@@ -5,7 +5,7 @@
 
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 1,
@@ -13,9 +13,8 @@
     "time": "24:00:00",
     "mem": "256G"
   },
-  
+
   "distributed": {
     "launcher": "torchtitan"
   }
 }
-

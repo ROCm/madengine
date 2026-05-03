@@ -123,4 +123,3 @@ LABEL description="TheRock PyTorch Benchmark - The HIP Environment and ROCm Kit 
 LABEL version="nightly"
 LABEL gpu_architecture="${MAD_SYSTEM_GPU_ARCHITECTURE}"
 LABEL components="core_runtime,hip_runtime,blas,prim,rand,pytorch"
-

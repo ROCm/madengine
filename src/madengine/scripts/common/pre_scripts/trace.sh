@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 
+#
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
-# 
+#
 
 set -e
 set -x
@@ -40,7 +40,7 @@ rpd)
 	else
 		echo "rocmProfileData directory already exists, skipping clone"
 	fi
-	
+
 	# Build RPD tracer locally without system install
 	cd ./rocmProfileData
 	# Workaround for upstream rocmProfileData Makefile typo: UStringTable.o -> StringTable.o
@@ -52,7 +52,7 @@ rpd)
 		echo "Error: Failed to build RPD tracer"
 		exit 1
 	fi
-	
+
 	# Install rocpd Python module locally
 	cd rocpd_python
 	python3 setup.py install
@@ -61,7 +61,7 @@ rpd)
 		exit 1
 	fi
 	cd ../..
-	
+
 	echo "RPD setup completed successfully"
 	;;
 

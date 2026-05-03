@@ -3,7 +3,7 @@
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "debug": false,
-  
+
   "k8s": {
     "kubeconfig": "~/.kube/config",
     "namespace": "default",
@@ -21,9 +21,8 @@
       "runtime_secret_name": null
     }
   },
-  
+
   "env_vars": {
     "OMP_NUM_THREADS": "8"
   }
 }
-

@@ -3,10 +3,10 @@
   "_description": "vLLM inference with tensor parallelism on single node",
   "_use_case": "High-throughput LLM inference on single node with multiple GPUs",
   "_note": "vLLM uses tensor parallelism to split model across GPUs",
-  
+
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  
+
   "slurm": {
     "partition": "amd-rccl",
     "nodes": 1,
@@ -15,15 +15,15 @@
     "output_dir": "./slurm_results",
     "exclusive": true
   },
-  
+
   "distributed": {
     "launcher": "vllm",
     "nnodes": 1,
     "nproc_per_node": 4
   },
-  
+
   "pre_scripts": [],
-  
+
   "env_vars": {
     "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
     "VLLM_USE_MODELSCOPE": "False",
@@ -34,4 +34,3 @@
     "NCCL_DEBUG": "WARN"
   }
 }
-

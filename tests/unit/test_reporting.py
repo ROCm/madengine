@@ -1,15 +1,12 @@
 """Unit tests for reporting: update_perf_csv and PERF_CSV_HEADER."""
 
+import json
 import os
 import tempfile
 
-import json
 import pandas as pd
 
-from madengine.reporting.update_perf_csv import (
-    PERF_CSV_HEADER,
-    update_perf_csv,
-)
+from madengine.reporting.update_perf_csv import PERF_CSV_HEADER, update_perf_csv
 
 
 class TestPerfCsvHeader:

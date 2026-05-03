@@ -43,13 +43,19 @@ def filter_images_by_gpu_compatibility(
                     compatible[model_name] = image_info
                 else:
                     skipped.append(
-                        (model_name, f"architecture mismatch ({image_arch} != {runtime_gpu_arch})")
+                        (
+                            model_name,
+                            f"architecture mismatch ({image_arch} != {runtime_gpu_arch})",
+                        )
                     )
             else:
                 compatible[model_name] = image_info
         else:
             skipped.append(
-                (model_name, f"GPU vendor mismatch ({image_gpu_vendor} != {runtime_gpu_vendor})")
+                (
+                    model_name,
+                    f"GPU vendor mismatch ({image_gpu_vendor} != {runtime_gpu_vendor})",
+                )
             )
 
     return compatible, skipped

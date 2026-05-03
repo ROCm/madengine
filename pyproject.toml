@@ -26,6 +26,8 @@ dependencies = [
   "click>=8.0.0",
   "jinja2>=3.0.0",
   "pyyaml>=6.0",
+  "hydra-core>=1.3",
+  "omegaconf>=2.3",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -80,6 +82,7 @@ all = [
 [tool.hatch.build.targets.wheel.force-include]
 "src/madengine/scripts" = "madengine/scripts"
 "src/madengine/deployment/templates" = "madengine/deployment/templates"
+"src/madengine/configs" = "madengine/configs"
 
 [tool.hatch.version]
 source = "versioningit"

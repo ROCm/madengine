@@ -1,0 +1,5 @@
+# @package _global_
+build:
+  registry: null
+  target_archs: []
+  manifest_output: build_manifest.json

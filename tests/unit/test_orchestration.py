@@ -1,24 +1,24 @@
 """Unit tests for orchestration: image_filtering and orchestrator init/validation."""
 
 import json
-
-import pytest
 from unittest.mock import MagicMock, patch
 
-from madengine.orchestration.image_filtering import (
-    filter_images_by_gpu_compatibility,
-    filter_images_by_skip_gpu_arch,
-)
+import pytest
+
 from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
     DEFAULT_GUEST_OS,
 )
-from madengine.orchestration.build_orchestrator import BuildOrchestrator
-from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import ConfigurationError
-
+from madengine.orchestration.build_orchestrator import BuildOrchestrator
+from madengine.orchestration.image_filtering import (
+    filter_images_by_gpu_compatibility,
+    filter_images_by_skip_gpu_arch,
+)
+from madengine.orchestration.run_orchestrator import RunOrchestrator
 
 # ---- image_filtering ----
+
 
 class TestFilterImagesByGpuCompatibility:
     """filter_images_by_gpu_compatibility behavior."""
@@ -94,9 +94,7 @@ class TestFilterImagesBySkipGpuArch:
     def test_skip_gpu_arch_nvidia_prefix_normalized(self):
         built = {"m1": {}}
         models = {"m1": {"skip_gpu_arch": "A100"}}
-        compat, skipped = filter_images_by_skip_gpu_arch(
-            built, models, "NVIDIA A100"
-        )
+        compat, skipped = filter_images_by_skip_gpu_arch(built, models, "NVIDIA A100")
         assert compat == {}
         assert skipped[0][2] == "NVIDIA A100"
 
@@ -109,6 +107,7 @@ class TestFilterImagesBySkipGpuArch:
 
 
 # ---- orchestrator init and validation ----
+
 
 @pytest.mark.unit
 class TestBuildOrchestratorInit:
@@ -221,7 +220,9 @@ class TestSkipModelRunPolicyA:
 
         orchestrator = RunOrchestrator(mock_args)
 
-        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+        with patch.object(
+            RunOrchestrator, "_build_phase", return_value=str(manifest_path)
+        ):
             with patch.object(
                 RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
             ):
@@ -267,7 +268,9 @@ class TestSkipModelRunPolicyA:
                 "successful_runs": [],
                 "failed_runs": [],
             }
-            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+            orchestrator.execute(
+                manifest_file=str(manifest_path), tags=None, timeout=60
+            )
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
