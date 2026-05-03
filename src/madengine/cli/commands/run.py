@@ -42,6 +42,7 @@ from ..utils import (
     save_summary_with_feedback,
     display_results_table,
     display_performance_table,
+    deep_merge,
 )
 from ..validators import (
     additional_context_needs_cli_validation,
@@ -196,16 +197,7 @@ def run(
             except json.JSONDecodeError:
                 parsed_ac = ast.literal_eval(additional_context)
 
-        def _deep_merge(base: dict, override: dict) -> dict:
-            result = base.copy()
-            for k, v in override.items():
-                if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                    result[k] = _deep_merge(result[k], v)
-                else:
-                    result[k] = v
-            return result
-
-        merged = _deep_merge(config_ctx, parsed_ac)
+        merged = deep_merge(config_ctx, parsed_ac)
         additional_context = repr(merged)
         additional_context_file = None
 

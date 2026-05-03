@@ -29,6 +29,7 @@ from ..utils import (
     create_args_namespace,
     save_summary_with_feedback,
     display_results_table,
+    deep_merge,
 )
 from ..validators import validate_additional_context, process_batch_manifest, process_batch_manifest_entries
 
@@ -134,16 +135,7 @@ def build(
             except json.JSONDecodeError:
                 parsed_ac = ast.literal_eval(additional_context)
 
-        def _deep_merge(base: dict, override: dict) -> dict:
-            result = base.copy()
-            for k, v in override.items():
-                if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                    result[k] = _deep_merge(result[k], v)
-                else:
-                    result[k] = v
-            return result
-
-        merged = _deep_merge(config_ctx, parsed_ac)
+        merged = deep_merge(config_ctx, parsed_ac)
         additional_context = repr(merged)
         additional_context_file = None
 
