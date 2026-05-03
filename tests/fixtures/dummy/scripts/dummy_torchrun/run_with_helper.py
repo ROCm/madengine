@@ -10,24 +10,23 @@ This script demonstrates:
 """
 
 import os
-import socket
 import sys
 import time
-
+import socket
 import torch
-import torch.distributed as dist
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Import from helper module
 from helper import (
-    BenchmarkConfig,
     ResNetModel,
     SyntheticDataset,
-    calculate_model_size,
+    BenchmarkConfig,
     print_distributed_info,
     print_gpu_info,
+    calculate_model_size,
 )
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Get distributed environment variables (set by torchrun)
 rank = int(os.environ.get("RANK", 0))

@@ -12,9 +12,9 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from enum import Enum
 
 import pandas as pd
 import pymongo
@@ -22,11 +22,11 @@ from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError, ConnectionFailure, PyMongoError
 from rich.console import Console
 from rich.progress import (
-    BarColumn,
     Progress,
     SpinnerColumn,
-    TaskProgressColumn,
     TextColumn,
+    BarColumn,
+    TaskProgressColumn,
 )
 
 logger = logging.getLogger(__name__)

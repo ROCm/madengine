@@ -3,25 +3,24 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import pytest
 import json
 import os
 import re
 import time
 
-import pytest
-
+from tests.fixtures.utils import BASE_DIR, MODEL_DIR
+from tests.fixtures.utils import global_data
+from tests.fixtures.utils import clean_test_temp_files
+from tests.fixtures.utils import is_nvidia
+from tests.fixtures.utils import generate_additional_context_for_machine
 from tests.fixtures.utils import (
-    BASE_DIR,
     DEFAULT_CLEAN_FILES,
-    MODEL_DIR,
     build_run_command,
-    clean_test_temp_files,
-    generate_additional_context_for_machine,
     get_run_live_log_path,
     get_timeout_seconds_from_log,
-    global_data,
-    is_nvidia,
 )
+
 
 # ============================================================================
 # Timeout Feature Tests

@@ -20,9 +20,9 @@ from madengine.utils.discover_models import DiscoverModels
 from ..constants import ExitCode
 from ..utils import (
     console,
-    create_args_namespace,
     setup_logging,
     split_comma_separated_tags,
+    create_args_namespace,
 )
 
 

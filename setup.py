@@ -2,7 +2,7 @@
 """
 Simplified setup.py for madengine
 
-This setup.py provides compatibility with environments that require traditional
+This setup.py provides compatibility with environments that require traditional 
 setup.py installations while reading configuration from pyproject.toml.
 
 For modern installations, prefer:
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 try:
-    from setuptools import find_packages, setup
+    from setuptools import setup, find_packages
 except ImportError:
     print("setuptools is required for setup.py")
     print("Install it using: pip install setuptools")
@@ -147,8 +147,8 @@ def get_fallback_config():
 def get_version():
     """Get version from git tags or fallback to a default."""
     try:
-        import re
         import subprocess
+        import re
 
         # Try to get version from git describe first (more accurate)
         try:

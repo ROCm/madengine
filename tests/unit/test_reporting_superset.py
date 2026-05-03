@@ -10,26 +10,23 @@ Tests the reporting layer's superset functionality including:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import json
-
 # built-in modules
 import os
-import shutil
+import json
 import tempfile
-
-import pandas as pd
+import shutil
 
 # 3rd party modules
 import pytest
-
-from madengine.reporting.update_perf_super import (
-    convert_super_json_to_csv,
-    update_perf_super_csv,
-    update_perf_super_json,
-)
+import pandas as pd
 
 # project modules
 from madengine.utils.config_parser import ConfigParser
+from madengine.reporting.update_perf_super import (
+    update_perf_super_json,
+    update_perf_super_csv,
+    convert_super_json_to_csv,
+)
 
 
 class TestConfigParser:

@@ -18,25 +18,29 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from madengine.core.errors import BuildError, ConfigurationError, ExecutionError
 from madengine.orchestration.run_orchestrator import RunOrchestrator
+from madengine.core.errors import (
+    BuildError,
+    ConfigurationError,
+    ExecutionError,
+)
 
 from ..constants import (
-    DEFAULT_DATA_CONFIG,
+    ExitCode,
     DEFAULT_MANIFEST_FILE,
     DEFAULT_PERF_OUTPUT,
-    DEFAULT_TIMEOUT,
+    DEFAULT_DATA_CONFIG,
     DEFAULT_TOOLS_CONFIG,
-    ExitCode,
+    DEFAULT_TIMEOUT,
 )
 from ..utils import (
     console,
-    create_args_namespace,
-    display_performance_table,
-    display_results_table,
-    save_summary_with_feedback,
     setup_logging,
     split_comma_separated_tags,
+    create_args_namespace,
+    save_summary_with_feedback,
+    display_results_table,
+    display_performance_table,
 )
 from ..validators import (
     additional_context_needs_cli_validation,
@@ -75,17 +79,6 @@ def run(
             "--additional-context-file",
             "-f",
             help="File containing additional context JSON",
-        ),
-    ] = None,
-    config: Annotated[
-        Optional[List[str]],
-        typer.Option(
-            "--config",
-            help=(
-                "YAML config file and/or Hydra overrides "
-                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
-                "Cannot be combined with --additional-context or --additional-context-file."
-            ),
         ),
     ] = None,
     keep_alive: Annotated[
@@ -170,39 +163,6 @@ def run(
 
     # Process tags to handle comma-separated values
     processed_tags = split_comma_separated_tags(tags)
-
-    # --config is mutually exclusive with --additional-context and --additional-context-file
-    if config:
-        if additional_context and additional_context.strip() not in ("", "{}"):
-            console.print(
-                "[red]Error:[/red] --config cannot be used together with --additional-context. "
-                "Use one or the other.",
-                style="bold",
-            )
-            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
-        if additional_context_file:
-            console.print(
-                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
-                "Use one or the other.",
-                style="bold",
-            )
-            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
-
-        from madengine.config import load_config
-
-        config_ctx, config_meta = load_config(config)
-
-        if not processed_tags and config_meta.get("model", {}).get("tags"):
-            processed_tags = config_meta["model"]["tags"]
-        if timeout == DEFAULT_TIMEOUT and config_meta.get("model", {}).get("timeout"):
-            timeout = config_meta["model"]["timeout"]
-        if not manifest_file and config_meta.get("model", {}).get("manifest_file"):
-            manifest_file = config_meta["model"]["manifest_file"]
-        if not registry and config_meta.get("build", {}).get("registry"):
-            registry = config_meta["build"]["registry"]
-
-        additional_context = repr(config_ctx)
-        additional_context_file = None
 
     # Input validation
     if timeout < -1:
@@ -516,7 +476,7 @@ def run(
         if verbose:
             console.print_exception()
 
-        from madengine.core.errors import create_error_context, handle_error
+        from madengine.core.errors import handle_error, create_error_context
 
         context = create_error_context(
             operation="run", phase="run", component="run_command"

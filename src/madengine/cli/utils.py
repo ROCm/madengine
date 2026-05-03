@@ -16,8 +16,8 @@ from rich.logging import RichHandler
 from rich.table import Table
 
 from madengine.core.errors import ErrorHandler, set_error_handler
-
 from .constants import ExitCode
+
 
 # Initialize Rich console
 console = Console()
@@ -372,17 +372,6 @@ def display_results_table(
                 )
 
 
-def deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base. Override wins on conflicts."""
-    result = base.copy()
-    for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = deep_merge(result[k], v)
-        else:
-            result[k] = v
-    return result
-
-
 def display_performance_table(
     perf_csv_path: str = "perf.csv", session_start_row: int = None
 ) -> None:
@@ -400,7 +389,6 @@ def display_performance_table(
 
     try:
         import pandas as pd
-
         from madengine.utils.session_tracker import SessionTracker
 
         # Read CSV file

@@ -11,8 +11,8 @@ import os
 from pathlib import Path
 
 import typer
-from rich.console import Console
 from rich.panel import Panel
+from rich.console import Console
 
 try:
     from typing import Annotated
@@ -20,11 +20,10 @@ except ImportError:
     from typing_extensions import Annotated
 
 from madengine.database.mongodb import (
+    upload_file_to_mongodb,
     MongoDBConfig,
     UploadOptions,
-    upload_file_to_mongodb,
 )
-
 from ..constants import ExitCode
 from ..utils import setup_logging
 

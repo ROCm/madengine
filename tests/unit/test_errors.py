@@ -11,15 +11,16 @@ from unittest.mock import Mock, patch
 import pytest
 
 from madengine.core.errors import (
-    ConfigurationError,
     ErrorHandler,
     MADEngineError,
-    RunnerError,
     ValidationError,
-    create_error_context,
-    get_error_handler,
+    ConfigurationError,
+    RunnerError,
     set_error_handler,
+    get_error_handler,
+    create_error_context,
 )
+
 
 # ---- CLI error integration ----
 
@@ -30,9 +31,8 @@ class TestCLIErrorIntegration:
     @patch("madengine.cli.utils.Console")
     def test_setup_logging_creates_error_handler(self, mock_console_class):
         """setup_logging initializes the unified error handler; verbose flag is respected."""
-        from rich.console import Console
-
         from madengine.cli import setup_logging
+        from rich.console import Console
 
         mock_console = Mock(spec=Console)
         mock_console_class.return_value = mock_console
@@ -190,16 +190,16 @@ class TestUnifiedErrorSystem:
     def test_error_hierarchy_consistency(self):
         """All error types inherit MADEngineError and have context/category/recoverable."""
         from madengine.core.errors import (
-            AuthenticationError,
-            BuildError,
-            ConfigurationError,
-            DeploymentTimeoutError,
-            DiscoveryError,
-            ExecutionError,
+            ValidationError,
             NetworkError,
+            AuthenticationError,
+            ExecutionError,
+            BuildError,
+            DiscoveryError,
             OrchestrationError,
             RunnerError,
-            ValidationError,
+            ConfigurationError,
+            DeploymentTimeoutError,
         )
 
         for error_class in [
@@ -254,8 +254,11 @@ class TestUnifiedErrorSystem:
 
     def test_nested_error_handling(self):
         """Nested errors with cause chain are handled."""
-        from madengine.core.errors import ExecutionError as MADRuntimeError
-        from madengine.core.errors import NetworkError, OrchestrationError
+        from madengine.core.errors import (
+            ExecutionError as MADRuntimeError,
+            OrchestrationError,
+            NetworkError,
+        )
 
         orig = NetworkError("Network timeout")
         runtime = MADRuntimeError("Operation failed", cause=orig)
@@ -295,7 +298,6 @@ class TestErrorHandlingPerformance:
     def test_error_handler_initialization_performance(self):
         """Create 100 handlers in under 1 second."""
         import time
-
         from rich.console import Console
 
         start = time.time()

@@ -125,8 +125,8 @@ class RocmPathResolver:
     def infer_from_path_tools(self) -> OptionalPathStr:
         """Use ``which`` on rocminfo, amd-smi, rocm-smi; return first plausible root."""
         from madengine.utils import (
-            rocm_path_resolver as m,  # same module; for patch hooks
-        )
+            rocm_path_resolver as m,
+        )  # same module; for patch hooks
 
         for name in ("rocminfo", "amd-smi", "rocm-smi"):
             w = self._which(name)  # type: ignore[operator]
@@ -140,8 +140,8 @@ class RocmPathResolver:
     def auto_detect(self) -> OptionalPathStr:
         """Heuristic search for a usable ROCm installation (see class doc + module doc)."""
         from madengine.utils import (
-            rocm_path_resolver as m,  # same module; for patch hooks
-        )
+            rocm_path_resolver as m,
+        )  # same module; for patch hooks
 
         opt = Path("/opt/rocm")
         if m._looks_like_rocm_root(opt):

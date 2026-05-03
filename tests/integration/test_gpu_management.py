@@ -9,24 +9,23 @@ This module tests the new GPU tool manager architecture including:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import json
 import os
+import json
 import stat
+import pytest
 from unittest.mock import Mock, patch
 
-import pytest
-
-from madengine.core.console import Console
-from madengine.core.context import Context
+from madengine.utils.gpu_tool_manager import BaseGPUToolManager
+from madengine.utils.rocm_tool_manager import ROCmToolManager, ROCM_VERSION_THRESHOLD
+from madengine.utils.nvidia_tool_manager import NvidiaToolManager
 from madengine.utils.gpu_tool_factory import (
+    get_gpu_tool_manager,
     clear_manager_cache,
     get_cached_managers,
-    get_gpu_tool_manager,
 )
-from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 from madengine.utils.gpu_validator import GPUVendor
-from madengine.utils.nvidia_tool_manager import NvidiaToolManager
-from madengine.utils.rocm_tool_manager import ROCM_VERSION_THRESHOLD, ROCmToolManager
+from madengine.core.context import Context
+from madengine.core.console import Console
 
 
 def is_amd_gpu():

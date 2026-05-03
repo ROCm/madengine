@@ -7,30 +7,30 @@ context management, Rich console integration, and error propagation.
 """
 
 import re
-from unittest.mock import Mock
 
 import pytest
+from unittest.mock import Mock
 from rich.console import Console
 
 from madengine.core.errors import (
-    AuthenticationError,
-    BuildError,
-    ConfigurationError,
-    DeploymentTimeoutError,
-    DiscoveryError,
     ErrorCategory,
     ErrorContext,
-    ErrorHandler,
-    ExecutionError,
     MADEngineError,
+    ValidationError,
     NetworkError,
+    AuthenticationError,
+    ExecutionError,
+    BuildError,
+    DiscoveryError,
     OrchestrationError,
     RunnerError,
-    ValidationError,
-    create_error_context,
+    ConfigurationError,
+    DeploymentTimeoutError,
+    ErrorHandler,
+    set_error_handler,
     get_error_handler,
     handle_error,
-    set_error_handler,
+    create_error_context,
 )
 
 

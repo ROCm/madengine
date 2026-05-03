@@ -20,8 +20,8 @@ from typing import Dict, Optional
 from rich.console import Console as RichConsole
 from rich.panel import Panel
 
-from madengine.core.auth import load_credentials
 from madengine.core.console import Console
+from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.errors import (
@@ -30,13 +30,11 @@ from madengine.core.errors import (
     ExecutionError,
     create_error_context,
 )
+from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
-)
-from madengine.orchestration.image_filtering import (
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
-from madengine.utils.session_tracker import SessionTracker
 
 
 class RunOrchestrator:
@@ -425,8 +423,8 @@ class RunOrchestrator:
             DiscoveryError: If no models are found
             RuntimeError: If image validation fails
         """
-        from madengine.core.errors import DiscoveryError
         from madengine.utils.discover_models import DiscoverModels
+        from madengine.core.errors import DiscoveryError
 
         self.rich_console.print(
             f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]"
@@ -793,8 +791,8 @@ class RunOrchestrator:
         self.rich_console.print(f"[cyan]Deploying to {target}...[/cyan]\n")
 
         # Import from deployment layer
-        from madengine.deployment.base import DeploymentConfig
         from madengine.deployment.factory import DeploymentFactory
+        from madengine.deployment.base import DeploymentConfig
 
         # Add runtime flags to additional_context for deployment layer
         if "live_output" not in self.additional_context:
@@ -1205,10 +1203,9 @@ class RunOrchestrator:
             gpu_arch: GPU architecture that caused the skip
         """
         try:
+            from madengine.reporting.update_perf_csv import update_perf_csv
             import json
             import tempfile
-
-            from madengine.reporting.update_perf_csv import update_perf_csv
 
             # Create a perf entry for the skipped model
             perf_entry = {

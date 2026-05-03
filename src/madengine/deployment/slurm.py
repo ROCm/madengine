@@ -11,16 +11,11 @@ madengine is executed ON the login node, not remotely.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import json
 import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.utils.path_utils import scripts_base_dir_from
-from madengine.utils.run_details import get_build_number, get_pipeline
 
 from .base import (
     BaseDeployment,
@@ -29,10 +24,14 @@ from .base import (
     DeploymentStatus,
     create_jinja_env,
 )
+from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .common import configure_multi_node_profiling, normalize_launcher
 from .config_loader import ConfigLoader, apply_deployment_config
-from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .slurm_node_selector import SlurmNodeSelector
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.utils.path_utils import scripts_base_dir_from
+import json
 
 
 class SlurmDeployment(BaseDeployment):

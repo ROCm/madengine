@@ -13,8 +13,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 # built-in modules
 import ast
-import collections.abc
 import json
+import collections.abc
 import os
 import re
 import sys
@@ -22,14 +22,14 @@ import typing
 
 # third-party modules
 from madengine.core.console import Console
-from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
-from madengine.utils.gpu_tool_manager import BaseGPUToolManager
+from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
 from madengine.utils.gpu_validator import (
+    validate_rocm_installation,
     GPUInstallationError,
     GPUVendor,
-    validate_rocm_installation,
 )
-from madengine.utils.rocm_path_resolver import resolve_host_rocm_path
+from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
 
 def update_dict(d: typing.Dict, u: typing.Dict) -> typing.Dict:
@@ -188,10 +188,10 @@ class Context:
             "docker_build_arg", {}
         ):
             try:
+                from madengine.utils.gpu_validator import detect_gpu_vendor
                 from madengine.execution.dockerfile_utils import (
                     normalize_architecture_name,
                 )
-                from madengine.utils.gpu_validator import detect_gpu_vendor
 
                 vendor = detect_gpu_vendor(self._rocm_path)
                 if vendor in (GPUVendor.AMD, GPUVendor.NVIDIA):
