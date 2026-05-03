@@ -5,6 +5,7 @@ Build command for madengine CLI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import ast
 import json
 from typing import List, Optional
 
@@ -69,6 +70,13 @@ def build(
             help="File containing additional context JSON",
         ),
     ] = None,
+    config: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--config",
+            help="YAML config file and/or Hydra overrides (e.g., --config my_job.yaml, --config scheduler=slurm)",
+        ),
+    ] = None,
     clean_docker_cache: Annotated[
         bool,
         typer.Option("--clean-docker-cache", help="Rebuild images without using cache"),
@@ -102,7 +110,43 @@ def build(
     # Process tags to handle comma-separated values
     # Supports both: --tags dummy --tags multi AND --tags dummy,multi
     processed_tags = split_comma_separated_tags(tags)
-    
+
+    # Load --config YAML if provided
+    if config:
+        from madengine.config import load_config
+
+        config_ctx, config_meta = load_config(config)
+
+        # Config values provide defaults; explicit CLI args override
+        if not processed_tags and config_meta.get("model", {}).get("tags"):
+            processed_tags = config_meta["model"]["tags"]
+        if not registry and config_meta.get("build", {}).get("registry"):
+            registry = config_meta["build"]["registry"]
+        build_meta = config_meta.get("build", {})
+        if not target_archs and build_meta.get("target_archs"):
+            target_archs = build_meta["target_archs"]
+
+        # Merge: config is base, --additional-context overrides
+        parsed_ac = {}
+        if additional_context and additional_context.strip() != "{}":
+            try:
+                parsed_ac = json.loads(additional_context)
+            except json.JSONDecodeError:
+                parsed_ac = ast.literal_eval(additional_context)
+
+        def _deep_merge(base: dict, override: dict) -> dict:
+            result = base.copy()
+            for k, v in override.items():
+                if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                    result[k] = _deep_merge(result[k], v)
+                else:
+                    result[k] = v
+            return result
+
+        merged = _deep_merge(config_ctx, parsed_ac)
+        additional_context = repr(merged)
+        additional_context_file = None
+
     # Validate mutually exclusive options
     if batch_manifest and processed_tags:
         console.print(
