@@ -468,13 +468,12 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 ```
 
-**Examples**:
-- K8s Minimal: `examples/k8s-configs/minimal/slurm-multi-minimal.json`
-- K8s Basic: `examples/k8s-configs/basic/slurm-multi-multi-node-basic.json`
-- K8s Custom: `examples/k8s-configs/basic/slurm-multi-custom-split.json`
+**Examples** (SLURM only — `slurm_multi` is a SLURM-side launcher; the K8s
+deployment of disagg workloads continues to use the existing
+`sglang-disagg-*.json` configs):
 - SLURM Minimal: `examples/slurm-configs/minimal/slurm-multi-minimal.json`
-- SLURM Basic: `examples/slurm-configs/basic/slurm-multi-multi-node.json`
-- SLURM Custom: `examples/slurm-configs/basic/slurm-multi-custom-split.json`
+- SLURM Basic:   `examples/slurm-configs/basic/slurm-multi-multi-node.json`
+- SLURM Custom:  `examples/slurm-configs/basic/slurm-multi-custom-split.json`
 
 **Comparison: SGLang vs SGLang Disaggregated**:
 

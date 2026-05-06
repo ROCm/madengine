@@ -537,8 +537,8 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 
 ## Next Steps
 
-- [Distributed Launchers Guide](distributed-launchers.md) - Multi-node training frameworks
+- [Distributed Launchers Guide](launchers.md) - Multi-node training frameworks
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations
-- [User Guide](user-guide.md) - General usage instructions
+- [Usage Guide](usage.md) - General usage instructions
 

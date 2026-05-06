@@ -154,7 +154,7 @@ madengine discover
 
 ## Next Steps
 
-- [User Guide](user-guide.md) - Learn how to use madengine
+- [Usage Guide](usage.md) - Learn how to use madengine (includes Quick Start)
 - [Deployment Guide](deployment.md) - Deploy to Kubernetes or SLURM
-- [Quick Start](how-to-quick-start.md) - Run your first model
+- [CLI Reference](cli-reference.md) - Full command-line reference
 
