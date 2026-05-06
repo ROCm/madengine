@@ -13,7 +13,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
 import pytest
-import pandas as pd
 
 from madengine.database.mongodb import (
     MongoDBConfig,

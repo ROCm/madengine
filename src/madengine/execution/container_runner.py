@@ -1018,6 +1018,37 @@ class ContainerRunner:
             if model_env_count > 0:
                 print(f"ℹ️  Merged {model_env_count} environment variables from model_info (models.json)")
 
+        # In-container ROCM_PATH finalization (upstream: develop's PR #110).
+        # After all docker_env_vars merging is complete, normalize ROCM_PATH
+        # for the running container via OCI image inspect → in-image probe →
+        # /opt/rocm default. This keeps tooling working on TheRock and other
+        # non-`/opt/rocm` layouts without the host's ROCm path leaking in.
+        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
+            "AMD"
+        ) != -1:
+            from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
+
+            # Determine whether the user explicitly supplied ROCM_PATH for the container.
+            # If they did (via docker_env_vars.ROCM_PATH in additional_context), the
+            # re-merge above already restored it — keep it so finalize uses it directly.
+            # If they did not, clear any ROCM_PATH left from a previous model run so
+            # finalize always re-resolves for the current docker_image (OCI config →
+            # in-image probe → /opt/rocm default).
+            user_supplied_rocm_path = (
+                str(
+                    (self.additional_context or {})
+                    .get("docker_env_vars", {})
+                    .get("ROCM_PATH", "")
+                ).strip()
+            )
+            if not user_supplied_rocm_path:
+                self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
+
+            finalize_container_rocm_path(
+                self.context.ctx["docker_env_vars"],
+                docker_image,
+            )
+
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
@@ -1669,10 +1700,15 @@ class ContainerRunner:
                         # Copy profiler/trace output files from run_directory to base directory before cleanup
                         # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
                         try:
-                            model_docker.sh(f"cp {model_dir}/*_profiler_output.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/*_output.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/*_trace.csv . 2>/dev/null || true")
-                            model_docker.sh(f"cp {model_dir}/library_trace.csv . 2>/dev/null || true")
+                            # Quote model_dir so a path with whitespace/metacharacters cannot
+                            # break the cp command or be interpreted by the shell. The trailing
+                            # `/*.csv` glob is left unquoted intentionally so the shell still
+                            # expands it inside the (quoted) directory.
+                            _md_q = shlex.quote(model_dir)
+                            model_docker.sh(f"cp {_md_q}/*_profiler_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {_md_q}/*_output.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {_md_q}/*_trace.csv . 2>/dev/null || true")
+                            model_docker.sh(f"cp {_md_q}/library_trace.csv . 2>/dev/null || true")
                         except Exception as e:
                             # Ignore errors if no profiler/trace output files exist
                             pass
@@ -1682,7 +1718,13 @@ class ContainerRunner:
                         mult_res = model_info.get("multiple_results")
                         if mult_res:
                             try:
-                                model_docker.sh(f"cp {model_dir}/{mult_res} . 2>/dev/null || true")
+                                # `mult_res` originates in model metadata; quote both
+                                # path components defensively so a name with whitespace or
+                                # shell metacharacters cannot be re-interpreted.
+                                model_docker.sh(
+                                    f"cp {shlex.quote(model_dir)}/{shlex.quote(mult_res)} . "
+                                    "2>/dev/null || true"
+                                )
                             except Exception:
                                 pass
 
