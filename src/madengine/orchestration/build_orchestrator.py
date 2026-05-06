@@ -1039,9 +1039,14 @@ class BuildOrchestrator:
                 ],
             )
         
-        # Generate image name for registry
+        # Generate image name for registry.
+        # Docker repository names must be lowercase, so .lower() the final
+        # local image name. This also covers the edge case where the
+        # dockerfile filename is just `Dockerfile` (no `.ubuntu.amd.Dockerfile`
+        # suffix to strip), which would otherwise leave an uppercase `D` in
+        # `ci-<model>_Dockerfile` and make `docker build -t` reject the tag.
         dockerfile_basename = Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
-        local_image_name = f"ci-{model_name}_{dockerfile_basename}"
+        local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
         
         # Determine registry image name based on registry format
         # docker.io/namespace/repo -> use model name as tag: docker.io/namespace/repo:model_name
