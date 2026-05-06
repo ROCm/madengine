@@ -364,7 +364,10 @@ class BaseDeployment(ABC):
         """
         import re
 
-        perf_pattern = r"performance:\s*([\d.]+)\s+(\S+)"
+        # Accept plain decimals AND scientific notation (1.23e4, 4E+5, etc.)
+        # for the value, and any non-whitespace token for the metric name
+        # (covers "tokens/sec", "samples_per_second", "tok/s", etc.).
+        perf_pattern = r"performance:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(\S+)"
         match = re.search(perf_pattern, log_content)
         if not match:
             return None

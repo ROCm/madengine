@@ -11,12 +11,19 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import subprocess
 from typing import Any, Dict, List, Optional
 
-# Valid distributed launchers (used by normalize_launcher)
+# Valid distributed launchers (used by normalize_launcher).
+# NOTE: keep this in sync with the launcher branches in
+# deployment/{slurm.py,kubernetes.py}, the templates/{slurm,kubernetes}/*.j2
+# Jinja conditions, and examples/**/launcher fields. Currently the rest of
+# the codebase (and shipped examples) use the bare "megatron" / "primus"
+# strings, while "megatron-lm" is the docs-friendly synonym.
 VALID_LAUNCHERS = [
     "torchrun",
     "torchtitan",
     "deepspeed",
+    "megatron",
     "megatron-lm",
+    "primus",
     "vllm",
     "sglang",
     "slurm_multi",
@@ -118,29 +125,30 @@ def configure_multi_node_profiling(
         }
 
     if not is_rocprofv3_available():
-        logger.warning(
-            "╔════════════════════════════════════════════════════════════════════════════╗\n"
-            "║ Multi-Node Profiling Requirements Not Met                                 ║\n"
-            "╠════════════════════════════════════════════════════════════════════════════╣\n"
-            "║ Multi-node profiling requires rocprofv3 (MPI-aware profiling support).    ║\n"
-            "║                                                                            ║\n"
-            "║ Current Status: rocprofv3 NOT FOUND on system                             ║\n"
-            "║                                                                            ║\n"
-            "║ Profiling will be SKIPPED for this multi-node run.                        ║\n"
-            "║                                                                            ║\n"
-            "║ To enable multi-node profiling:                                           ║\n"
-            "║   • Install rocprofiler-sdk package (ROCm >= 6.4.1)                       ║\n"
-            "║   • Command: apt install rocprofiler-sdk                                  ║\n"
-            "║   • Or upgrade to ROCm 6.4.1 or later                                     ║\n"
-            "║                                                                            ║\n"
-            "║ Note: Single-node profiling uses rocprof (no rocprofv3 required)          ║\n"
-            "╚════════════════════════════════════════════════════════════════════════════╝"
-        )
+        # Only `rocprof` requires rocprofv3 (MPI-aware) for multi-node runs.
+        # Other tools (rccl_trace, rocblas_trace, etc.) work independently and
+        # must not be silently dropped just because rocprofv3 is missing.
+        non_rocprof_tools = [
+            t for t in tools_config
+            if not (isinstance(t, dict) and t.get("name") == "rocprof")
+        ]
+        dropped = len(tools_config) - len(non_rocprof_tools)
+        if dropped:
+            logger.warning(
+                "╔════════════════════════════════════════════════════════════════════════════╗\n"
+                "║ Multi-Node rocprof Skipped                                                ║\n"
+                "╠════════════════════════════════════════════════════════════════════════════╣\n"
+                "║ rocprofv3 (MPI-aware) NOT FOUND. The 'rocprof' tool will be SKIPPED for   ║\n"
+                "║ this multi-node run; other tools (rccl_trace, rocblas_trace, ...) keep    ║\n"
+                "║ running. To enable multi-node rocprof: install rocprofiler-sdk            ║\n"
+                "║ (ROCm >= 6.4.1, e.g. 'apt install rocprofiler-sdk').                      ║\n"
+                "╚════════════════════════════════════════════════════════════════════════════╝"
+            )
         return {
-            "enabled": False,
-            "mode": "multi_node_unsupported",
-            "tools": [],
-            "per_node_collection": False
+            "enabled": bool(non_rocprof_tools),
+            "mode": "multi_node_no_rocprofv3" if dropped else "multi_node",
+            "tools": non_rocprof_tools,
+            "per_node_collection": bool(non_rocprof_tools),
         }
 
     logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")

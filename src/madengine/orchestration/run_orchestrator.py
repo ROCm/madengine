@@ -38,6 +38,23 @@ from madengine.orchestration.image_filtering import (
 )
 
 
+def _deep_merge(base: Dict, override: Dict) -> Dict:
+    """Recursive merge: override wins at leaves; nested dicts are merged per-leaf.
+
+    Used to combine manifest's stored ``deployment_config`` with runtime
+    ``--additional-context``. Without recursion, an override touching a single
+    leaf inside e.g. ``slurm.node_selector`` or ``distributed.primus`` would
+    wholesale-replace the inner object, dropping the manifest's other leaves.
+    """
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
 class RunOrchestrator:
     """
     Orchestrates the run workflow.
@@ -234,16 +251,6 @@ class RunOrchestrator:
             # For dict-valued keys (slurm, k8s, etc.), recursively deep-merge so
             # manifest values fill in nested gaps while runtime --additional-context
             # still wins on per-leaf conflicts.
-            def _deep_merge(base, override):
-                """Recursive merge: override wins at leaves; nested dicts are merged."""
-                result = dict(base)
-                for k, v in override.items():
-                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                        result[k] = _deep_merge(result[k], v)
-                    else:
-                        result[k] = v
-                return result
-
             for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config:
                     if key not in self.additional_context:
@@ -524,14 +531,15 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config.
-                # For dict-valued keys, deep-merge so manifest values fill
-                # in gaps (e.g. nodes, time) while runtime values win on conflicts.
+                # For dict-valued keys, recursively deep-merge so manifest values
+                # fill in nested gaps (e.g. slurm.node_selector, distributed.primus)
+                # while runtime values win on per-leaf conflicts.
                 for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         if key in stored_config and isinstance(stored_config[key], dict) and isinstance(self.additional_context[key], dict):
-                            merged = dict(stored_config[key])
-                            merged.update(self.additional_context[key])
-                            stored_config[key] = merged
+                            stored_config[key] = _deep_merge(
+                                stored_config[key], self.additional_context[key]
+                            )
                         else:
                             stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config
@@ -592,7 +600,15 @@ class RunOrchestrator:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
                 self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
-        
+            # Restore docker_env_vars captured at build time (e.g. MAD_SECRETS*,
+            # model-specific values) so manifest-only runs are self-contained
+            # and ContainerRunner can render --env flags from them.
+            if "docker_env_vars" in manifest_context and manifest_context["docker_env_vars"]:
+                if "docker_env_vars" not in self.context.ctx:
+                    self.context.ctx["docker_env_vars"] = {}
+                for k, v in manifest_context["docker_env_vars"].items():
+                    self.context.ctx["docker_env_vars"][k] = v
+
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
         if self.additional_context:
@@ -1012,33 +1028,17 @@ class RunOrchestrator:
         # and do not rely on this local filesystem operation
 
     def _load_credentials(self) -> Optional[Dict]:
-        """Load credentials from credential.json and environment."""
-        credentials = None
+        """Load credentials from credential.json and environment.
 
-        credential_file = "credential.json"
-        if os.path.exists(credential_file):
-            try:
-                with open(credential_file) as f:
-                    credentials = json.load(f)
-            except Exception as e:
-                print(f"Warning: Could not load credentials: {e}")
+        Delegates to :func:`madengine.core.auth.load_credentials` so the
+        ``credential.json must be a JSON object`` validation and env-var merge
+        rules stay consistent across the codebase (see Copilot review:
+        avoiding a cryptic subscript/attribute error later in registry auth
+        when the file contains an array/string).
+        """
+        from madengine.core.auth import load_credentials
 
-        # Override with environment variables
-        docker_hub_user = os.environ.get("MAD_DOCKERHUB_USER")
-        docker_hub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD")
-        docker_hub_repo = os.environ.get("MAD_DOCKERHUB_REPO")
-
-        if docker_hub_user and docker_hub_password:
-            if credentials is None:
-                credentials = {}
-            credentials["dockerhub"] = {
-                "username": docker_hub_user,
-                "password": docker_hub_password,
-            }
-            if docker_hub_repo:
-                credentials["dockerhub"]["repository"] = docker_hub_repo
-
-        return credentials
+        return load_credentials()
 
     def _filter_images_by_gpu_compatibility(
         self, built_images: Dict, runtime_gpu_vendor: str, runtime_gpu_arch: str
