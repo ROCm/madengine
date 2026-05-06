@@ -3,8 +3,6 @@
 import os
 import tempfile
 
-import pytest
-
 import json
 
 import pandas as pd

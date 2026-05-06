@@ -86,7 +86,7 @@ madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocprofv3_lightweight.json
 ```
 
-### 6. Multi-Node Distributed (`rocprofv3_multinode.json`)
+### 6. Multi-Node Distributed (`rocprofv3_multi_node.json`)
 
 **Use Case**: Large-scale distributed training on SLURM clusters
 
@@ -102,7 +102,7 @@ madengine build --tags your_model --registry your-registry:5000
 
 # Deploy to SLURM
 madengine run --manifest-file build_manifest.json \
-  --additional-context-file examples/profiling-configs/rocprofv3_multinode.json
+  --additional-context-file examples/profiling-configs/rocprofv3_multi_node.json
 ```
 
 ## Direct Tool Usage (Without Config Files)
