@@ -866,6 +866,66 @@ class BuildOrchestrator:
                 ],
             )
 
+        # Normalize and validate --registry input shape.
+        #
+        # Downstream code derives the registry HOST from `registry.split("/")[0]`
+        # (used as the `docker login <host>` argument). Users routinely pass
+        # Dockerhub-shorthand like `rocm/pytorch-private` without the
+        # `docker.io/` prefix, and that would `docker login rocm` -> DNS NXDOMAIN.
+        #
+        # Auto-prepend `docker.io/` when the first path segment doesn't look
+        # like an FQDN/host:port. Then validate the resulting first segment is
+        # a plausible host (contains '.' or ':' or is 'localhost'), and reject
+        # otherwise with an actionable error.
+        _registry_invalid_msg = lambda r, fs: ConfigurationError(  # noqa: E731
+            f"Invalid --registry value: {r!r}. "
+            + (
+                f"First segment '{fs}' is not a valid registry host."
+                if fs
+                else "Registry value is empty after whitespace/trailing-slash trim."
+            ),
+            context=create_error_context(
+                operation="build_on_compute",
+                component="BuildOrchestrator",
+                additional_info={"registry": r},
+            ),
+            suggestions=[
+                'Dockerhub: --registry docker.io/<namespace>(/<repo>)',
+                'GHCR:      --registry ghcr.io/<owner>(/<repo>)',
+                'Quay:      --registry quay.io/<namespace>(/<repo>)',
+                'NGC:       --registry nvcr.io/<org>(/<team>)',
+                'Self-hosted: --registry <fqdn>(:<port>)(/<path>)',
+                'Local:     --registry localhost:5000(/<path>)',
+            ],
+        )
+        normalized = registry.strip().rstrip("/")
+        if not normalized:
+            raise _registry_invalid_msg(registry, "")
+        first_seg = normalized.split("/", 1)[0]
+        # Reject blatantly invalid characters BEFORE the auto-prepend step,
+        # because auto-prepend would overwrite first_seg to "docker.io" and
+        # mask path-side garbage. `@` and whitespace are never valid in a
+        # Dockerhub-style namespace/repo; subtler cases (uppercase letters,
+        # other illegal chars deeper in the path) get caught later by
+        # `docker push` itself.
+        if " " in normalized or "@" in normalized:
+            raise _registry_invalid_msg(registry, first_seg)
+        looks_like_host = (
+            "." in first_seg or ":" in first_seg or first_seg == "localhost"
+        )
+        if not looks_like_host:
+            # Treat as Dockerhub shorthand: prepend docker.io/.
+            self.rich_console.print(
+                f"  [dim]Registry: {registry!r} has no host segment; "
+                f"auto-prefixing 'docker.io/' (treat as Dockerhub).[/dim]"
+            )
+            normalized = f"docker.io/{normalized}"
+            first_seg = "docker.io"
+        if not first_seg:
+            raise _registry_invalid_msg(registry, first_seg)
+        if normalized != registry:
+            registry = normalized
+
         # Discover models first to get SLURM config from model card
         self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
         discover_models = DiscoverModels(args=self.args)
