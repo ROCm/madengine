@@ -147,6 +147,16 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     if show_gpu_arch:
         table.add_column("GPU Architecture", style="blue")
 
+    def build_gpu_arch_display(item: Dict) -> str:
+        """Prefer gpu_architecture (DockerBuilder) then architecture (failures / legacy)."""
+        if not isinstance(item, dict):
+            return "N/A"
+        return (
+            item.get("gpu_architecture")
+            or item.get("architecture")
+            or "N/A"
+        )
+
     # Helper function to extract model name from build result
     def extract_model_name(item):
         if isinstance(item, dict):
@@ -242,7 +252,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 status = "✅ Success"
                 row = [str(row_index), status, model_name]
                 if show_gpu_arch:
-                    row.append(item.get("architecture", "N/A"))
+                    row.append(build_gpu_arch_display(item))
                 table.add_row(*row)
                 row_index += 1
         else:
@@ -288,7 +298,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
                 # BUILD results - simple format
                 row = [str(row_index), "❌ Failed", model_name]
                 if show_gpu_arch:
-                    row.append(item.get("architecture", "N/A"))
+                    row.append(build_gpu_arch_display(item))
                 table.add_row(*row)
                 row_index += 1
         else:

@@ -40,10 +40,10 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 
 - **🚀 Modern CLI** - Rich terminal output with Typer and Rich
 - **🎯 Simple Deployment** - Run locally or deploy to Kubernetes/SLURM via configuration
-- **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, vLLM, SGLang
+- **🔧 Distributed Launchers** - Full support for torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** - Docker-based execution with GPU support (ROCm, CUDA)
-- **📂 ROCm Path** - Support for non-default ROCm installs via `--rocm-path` or `ROCM_PATH` (e.g. Rock, pip)
-- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, rocblas, MIOpen, RCCL tracing
+- **📂 ROCm Path** - Auto-detect **host** ROCm root (override with top-level `MAD_ROCM_PATH`); in-container `ROCM_PATH` is set independently via `docker_env_vars.MAD_ROCM_PATH` and resolved at Docker run (image OCI env + in-image probe, not host mirroring) — see [Configuration](docs/configuration.md#rocm-path-run-only)
+- **📊 Performance Tools** - Integrated profiling with rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite) (RTL), rocblas, MIOpen, RCCL tracing
 - **🎯 ROCprofv3 Profiles** - 8 pre-configured profiles for compute/memory/communication bottleneck analysis
 - **🔍 Environment Validation** - TheRock ROCm detection and validation tools
 - **⚙️ Intelligent Defaults** - Minimal K8s configs with automatic preset application
@@ -71,11 +71,14 @@ madengine run --tags dummy \
 
 > **Note**: For build operations, `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` if not specified. For production deployments or non-AMD/Ubuntu environments, explicitly specify these values.
 
-If ROCm is not installed under `/opt/rocm` (e.g. Rock or pip install), use `--rocm-path` or set `ROCM_PATH`:
+If auto-detection does not find your **host** ROCm root, set top-level `MAD_ROCM_PATH` in `--additional-context`. For a different ROCm root **inside the container**, set `docker_env_vars.MAD_ROCM_PATH` in additional context. If you omit it, madengine derives in-container `ROCM_PATH` when running Docker (from the image's baked-in env, then an in-container probe, then `/opt/rocm` — it does **not** copy the host path). You can also set `ROCM_PATH` / `MAD_AUTO_ROCM_PATH=0` for **host** behavior as documented in [docs/configuration.md](docs/configuration.md):
 
 ```bash
-madengine run --tags dummy --rocm-path /path/to/rocm
+# Override host ROCm root:
+madengine run --tags dummy --additional-context '{"MAD_ROCM_PATH": "/path/to/rocm"}'
 # or: export ROCM_PATH=/path/to/rocm && madengine run --tags dummy
+# Override in-container ROCm root independently:
+madengine run --tags dummy --additional-context '{"docker_env_vars": {"MAD_ROCM_PATH": "/path/in/container"}}'
 ```
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`). The file is created automatically if missing. Failed runs (including pre-run setup failures) are recorded with status `FAILURE` so every attempted model appears in the table. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI/script usage.
@@ -155,7 +158,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
   └─────────────────────────────────┼───────────────────────────────────────────────────────┘
                                     ▼
   ┌──────────────────────────────────── Launcher Layer (Distribution) ──────────────────────┐
-  │  Train: torchrun · DeepSpeed · TorchTitan · Megatron-LM                                 │
+  │  Train: torchrun · DeepSpeed · Megatron-LM · TorchTitan · Primus                         │
   │  Infer: vLLM · SGLang · SGLang Disagg                                                   │
   └─────────────────────────────────┬───────────────────────────────────────────────────────┘
                                     ▼
@@ -177,7 +180,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
 4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
-5. **Distributed Launchers** - Training (torchrun, DeepSpeed, TorchTitan, Megatron-LM) and Inference (vLLM, SGLang)
+5. **Distributed Launchers** - Training (torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
 
@@ -191,6 +194,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | **DeepSpeed** | ✅ | ✅ | ✅ | Training | ZeRO optimization, pipeline parallelism |
 | **Megatron-LM** | ✅ | ✅ | ✅ | Training | Tensor+Pipeline parallel, large transformers |
 | **TorchTitan** | ✅ | ✅ | ✅ | Training | FSDP2+TP+PP+CP, Llama 3.1 (8B-405B) |
+| **Primus** | ✅ | ✅ | ✅ | Training | Megatron / TorchTitan / MaxText via Primus YAML; `distributed.primus` |
 | **vLLM** | ✅ | ✅ | ✅ | Inference | v1 engine, PagedAttention, Ray cluster |
 | **SGLang** | ✅ | ✅ | ✅ | Inference | RadixAttention, structured generation |
 | **SGLang Disagg** | ❌ | ✅ | ✅ | Inference | Disaggregated prefill/decode, Mooncake, 3+ nodes |
@@ -205,6 +209,7 @@ For detailed command options, see the **[CLI Command Reference](docs/cli-referen
 | **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
 | **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
 | **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **Primus** | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❌No | Unified pretrain (experiment YAML; backend-specific) |
 | **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
 | **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
 | **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |
@@ -433,6 +438,12 @@ madengine run --tags model \
 madengine run --tags model \
   --additional-context '{"tools": [{"name": "rocblas_trace"}]}'
 
+# rocm-trace-lite — lightweight kernel dispatch trace (SQLite; no rocprofiler-sdk)
+# Requires outbound HTTPS to GitHub on first run unless the wheel is baked into the image
+# (see docs/profiling.md). Do not combine with rocprof / rocprofv3_* on the same run.
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "rocm_trace_lite"}]}'
+
 # Power and VRAM monitoring
 madengine run --tags model \
   --additional-context '{"tools": [
@@ -458,6 +469,8 @@ madengine run --tags model \
 | `rocprofv3_memory` | Memory-bound analysis (ROCm 7.0+) | Cache hits, bandwidth |
 | `rocprofv3_communication` | Multi-GPU communication (ROCm 7.0+) | RCCL traces, inter-GPU transfers |
 | `rocprofv3_lightweight` | Minimal overhead profiling (ROCm 7.0+) | HIP and kernel traces |
+| `rocm_trace_lite` | RTL **`lite`** mode — kernel dispatch trace (HSA, SQLite/RPD-style); [`rtl trace --mode lite`](https://sunway513.github.io/rocm-trace-lite/quickstart.html) via `rtl_trace_wrapper.sh` | `rocm_trace_lite_output/trace.db` (and optional `trace.json.gz`, `trace_summary.txt`) |
+| `rocm_trace_lite_default` | RTL **`default`** mode — broader dispatch coverage; higher overhead than `lite` (same outputs paths) | Same as `rocm_trace_lite` |
 | `rocblas_trace` | rocBLAS library calls | Function calls, arguments |
 | `miopen_trace` | MIOpen library calls | Conv/pooling operations |
 | `tensile_trace` | Tensile GEMM library | Matrix multiply details |
@@ -480,6 +493,12 @@ madengine provides 8 pre-configured ROCprofv3 profiles for different bottleneck 
 - `rocprofv3_pc_sampling` - Kernel hotspot identification
 
 See [`examples/profiling-configs/`](examples/profiling-configs/) for ready-to-use configuration files.
+
+**rocm-trace-lite (`rocm_trace_lite` / `rocm_trace_lite_default`):**
+
+- madengine runs workloads under `scripts/common/tools/rtl_trace_wrapper.sh`, which invokes the `rtl` CLI (or `python3 -m rocm_trace_lite.cli`) with **`RTL_MODE=lite`** or **`RTL_MODE=default`** and writes traces under `rocm_trace_lite_output/`.
+- The trace **pre-script** installs the package from a **[GitHub Release wheel](https://github.com/sunway513/rocm-trace-lite/releases)** (not PyPI). By default it uses a **pinned** `linux_x86_64` wheel for reproducible installs. Set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** to resolve the latest wheel via the GitHub API, or **`ROCM_TRACE_LITE_WHEEL_URL`** to a direct `.whl` URL for air-gapped installs or non-x86_64 platforms.
+- Choose **either** `rocm_trace_lite` **or** rocprof / `rocprofv3_*` for a given run—not both. Details: [Profiling Guide](docs/profiling.md) (section *rocm-trace-lite (RTL)*).
 
 **TheRock Validation:**
 
@@ -603,7 +622,7 @@ madengine run --tags model --keep-alive
 madengine build --tags model --clean-docker-cache --verbose
 ```
 
-**ROCm not in /opt/rocm:** If you use a custom ROCm location (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set `ROCM_PATH` or pass `--rocm-path` to `madengine run` so GPU detection and container env use the correct paths.
+**ROCm not in /opt/rocm:** Set top-level `MAD_ROCM_PATH` in `--additional-context` for the **host**; for **in-container** paths, set `docker_env_vars.MAD_ROCM_PATH`, or let madengine resolve `ROCM_PATH` at run from the image and probe (see [Configuration](docs/configuration.md#rocm-path-run-only)).
 
 **Common Issues:**
 - **False failures with profiling**: If models show FAILURE but have performance metrics, see [Profiling Troubleshooting](docs/profiling.md#false-failure-detection-with-rocprof)
