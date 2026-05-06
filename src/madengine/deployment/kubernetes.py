@@ -37,7 +37,7 @@ from .k8s_names import (
     sanitize_k8s_object_name,
 )
 from .k8s_pvc import KubernetesPVCMixin
-from .k8s_results import KubernetesResultsMixin
+from .k8s_results import KubernetesResultsMixin, collector_pod_name
 from .k8s_scripts import KubernetesScriptsMixin
 from .k8s_secrets import (
     SECRETS_STRATEGY_FROM_LOCAL,
@@ -384,14 +384,14 @@ class KubernetesDeployment(
                     pass
 
         # Delete existing collector pod (must be done before PVC to allow PVC deletion)
-        collector_pod_name = f"collector-{self.job_name}"
+        coll_pod_name = collector_pod_name(self.job_name)
         try:
             self.core_v1.delete_namespaced_pod(
-                name=collector_pod_name,
+                name=coll_pod_name,
                 namespace=self.namespace,
                 grace_period_seconds=0
             )
-            self.console.print(f"[dim]Deleted existing collector pod: {collector_pod_name}[/dim]")
+            self.console.print(f"[dim]Deleted existing collector pod: {coll_pod_name}[/dim]")
             # Wait a moment for pod to release the PVC
             time.sleep(2)
         except ApiException as e:

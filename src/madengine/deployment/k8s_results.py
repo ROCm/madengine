@@ -40,6 +40,11 @@ def _pod_job_name_label_selector(deployment_id: str) -> str:
     return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
+def collector_pod_name(deployment_id: str) -> str:
+    """Consistent name for the temporary PVC collector pod."""
+    return f"collector-{deployment_id[:15]}"
+
+
 class KubernetesResultsMixin:
     """Results collection and performance reporting for Kubernetes deployments."""
 
@@ -672,7 +677,7 @@ class KubernetesResultsMixin:
 
         try:
             # Create a temporary pod to access PVC
-            collector_pod_name = f"collector-{deployment_id[:15]}"
+            coll_pod_name = collector_pod_name(deployment_id)
 
             self.console.print(f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]")
 
@@ -693,14 +698,14 @@ class KubernetesResultsMixin:
             collector_pod_spec = {
                 "apiVersion": "v1",
                 "kind": "Pod",
-                "metadata": {"name": collector_pod_name, "namespace": self.namespace},
+                "metadata": {"name": coll_pod_name, "namespace": self.namespace},
                 "spec": collector_spec,
             }
 
             # Delete existing collector pod if it exists (prevents 409 Conflict)
             try:
                 self.core_v1.delete_namespaced_pod(
-                    collector_pod_name, self.namespace, grace_period_seconds=0
+                    coll_pod_name, self.namespace, grace_period_seconds=0
                 )
                 time.sleep(2)  # Wait for pod to be deleted
             except ApiException as e:
@@ -714,7 +719,7 @@ class KubernetesResultsMixin:
             for _ in range(30):  # Wait up to 30 seconds
                 try:
                     pod_status = self.core_v1.read_namespaced_pod_status(
-                        collector_pod_name, self.namespace
+                        coll_pod_name, self.namespace
                     )
                     if pod_status.status.phase == "Running":
                         break
@@ -733,7 +738,7 @@ class KubernetesResultsMixin:
             list_cmd = [
                 "kubectl",
                 "exec",
-                collector_pod_name,
+                coll_pod_name,
                 "-n",
                 self.namespace,
                 "-c",
@@ -791,7 +796,7 @@ class KubernetesResultsMixin:
                         "cp",
                         "-c",
                         "collector",
-                        f"{self.namespace}/{collector_pod_name}:/results/{pod_dir_name}",
+                        f"{self.namespace}/{coll_pod_name}:/results/{pod_dir_name}",
                         str(local_pod_dir),
                     ]
 
@@ -840,7 +845,7 @@ class KubernetesResultsMixin:
 
             # Cleanup collector pod
             self.core_v1.delete_namespaced_pod(
-                collector_pod_name, self.namespace, grace_period_seconds=0
+                coll_pod_name, self.namespace, grace_period_seconds=0
             )
 
         except Exception as e:

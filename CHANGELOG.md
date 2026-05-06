@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Kubernetes deployment refactor**: Decomposed the monolithic `kubernetes.py` (~2800 lines) into focused mixin modules — `k8s_pvc.py` (PVC lifecycle), `k8s_results.py` (log/artifact collection and performance aggregation), `k8s_scripts.py` (script extraction and ConfigMap building), and `k8s_template_context.py` (Jinja2 template context assembly). `KubernetesDeployment` now composes these mixins; no functional changes.
 
+### Fixed
+
+- **K8s collector pod name mismatch**: The cleanup code in `kubernetes.py` used the full job name (`collector-{job_name}`) while the creation code in `k8s_results.py` truncated it (`collector-{deployment_id[:15]}`). For any job name longer than 15 characters (i.e. virtually all real jobs), cleanup would fail to delete the collector pod, leaving it running and potentially blocking PVC deletion on the next deploy. Extracted a shared `collector_pod_name()` helper so both sites use the same truncated name.
+
 ### Known Issues
 
 - **K8s multi-node: node reported as FAILED due to log collection error**: In multi-node Kubernetes jobs, a node may be reported as `FAILED` in the results table even though the pod completed successfully (`Status: Succeeded`). This happens when the kubelet on the node becomes unreachable (502 Bad Gateway) between job completion and log collection — madengine cannot retrieve stdout logs and therefore cannot parse performance metrics for that node. The PVC artifacts are still collected. Check `kubectl describe pod <pod>` to confirm the pod actually succeeded; the issue is infrastructure-level (kubelet/API server), not a workload failure.
