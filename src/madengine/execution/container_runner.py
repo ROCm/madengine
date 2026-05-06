@@ -364,72 +364,25 @@ class ContainerRunner:
     def login_to_registry(self, registry: str, credentials: typing.Dict = None) -> None:
         """Login to a Docker registry for pulling images.
 
+        Delegates to :func:`madengine.core.auth.login_to_registry` so that
+        password handling is consistent with `DockerBuilder.login_to_registry`
+        and never embeds the password in the shell command line (the previous
+        ``echo '<password>' | docker login ...`` form leaked the password
+        through ``ps`` / ``/proc`` despite using ``--password-stdin``).
+
         Args:
             registry: Registry URL (e.g., "localhost:5000", "docker.io")
             credentials: Optional credentials dictionary containing username/password
         """
-        if not credentials:
-            self.rich_console.print("[yellow]No credentials provided for registry login[/yellow]")
-            return
+        from madengine.core.auth import login_to_registry as _login_to_registry
 
-        # Check if registry credentials are available
-        registry_key = registry if registry else "dockerhub"
-
-        # Handle docker.io as dockerhub
-        if registry and registry.lower() == "docker.io":
-            registry_key = "dockerhub"
-
-        if registry_key not in credentials:
-            error_msg = f"No credentials found for registry: {registry_key}"
-            if registry_key == "dockerhub":
-                error_msg += f"\nPlease add dockerhub credentials to credential.json:\n"
-                error_msg += "{\n"
-                error_msg += '  "dockerhub": {\n'
-                error_msg += '    "repository": "your-repository",\n'
-                error_msg += '    "username": "your-dockerhub-username",\n'
-                error_msg += '    "password": "your-dockerhub-password-or-token"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            else:
-                error_msg += (
-                    f"\nPlease add {registry_key} credentials to credential.json:\n"
-                )
-                error_msg += "{\n"
-                error_msg += f'  "{registry_key}": {{\n'
-                error_msg += f'    "repository": "your-repository",\n'
-                error_msg += f'    "username": "your-{registry_key}-username",\n'
-                error_msg += f'    "password": "your-{registry_key}-password"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            print(error_msg)
-            raise RuntimeError(error_msg)
-
-        creds = credentials[registry_key]
-
-        if "username" not in creds or "password" not in creds:
-            error_msg = f"Invalid credentials format for registry: {registry_key}"
-            error_msg += f"\nCredentials must contain 'username' and 'password' fields"
-            print(error_msg)
-            raise RuntimeError(error_msg)
-
-        # Ensure credential values are strings
-        username = str(creds["username"])
-        password = str(creds["password"])
-
-        # Perform docker login
-        login_command = f"echo '{password}' | docker login"
-
-        if registry and registry.lower() not in ["docker.io", "dockerhub"]:
-            login_command += f" {registry}"
-
-        login_command += f" --username {username} --password-stdin"
-
-        try:
-            self.console.sh(login_command, secret=True)
-            self.rich_console.print(f"[green]✅ Successfully logged in to registry: {registry or 'DockerHub'}[/green]")
-        except Exception as e:
-            self.rich_console.print(f"[red]❌ Failed to login to registry {registry}: {e}[/red]")
-            # Don't raise exception here, as public images might still be pullable
+        _login_to_registry(
+            registry,
+            credentials,
+            console=self.console,
+            rich_console=self.rich_console,
+            raise_on_failure=False,
+        )
 
     def pull_image(
         self,
@@ -579,7 +532,11 @@ class ContainerRunner:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
                 env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
 
-        print(f"Env arguments: {env_args}")
+        # Print only the count, not the values, since values can include
+        # secrets (HF tokens, registry passwords, MAD_SECRETS_*, etc.).
+        # The full string is still passed to `docker run` and visible in the
+        # container env, but we don't want it dumped into stdout / CI artifacts.
+        print(f"Env arguments: {env_args.count('--env')} variables set")
         return env_args
 
     def get_mount_arg(self, mount_datapaths: typing.List) -> str:
@@ -747,12 +704,24 @@ class ContainerRunner:
         model_args = self.context.ctx.get("model_args", model_info.get("args", ""))
         print(f"📝 Arguments: {model_args}")
         
-        # Build command
+        # Build command. The eventual `subprocess.run(..., shell=True)` below
+        # interprets shell metacharacters in `script_path` and `model_args`,
+        # so quote each piece explicitly. `model_args` is a CLI/manifest-
+        # supplied free-form string -- shlex.split + per-arg shlex.quote
+        # passes literal arguments to the script even when the input contains
+        # `$()`, backticks, `;`, etc.
+        import shlex
+        _script_q = shlex.quote(script_path)
+        _args_q = (
+            " ".join(shlex.quote(a) for a in shlex.split(model_args))
+            if model_args
+            else ""
+        )
         if script_path.endswith(".py"):
-            cmd = f"python3 {script_path} {model_args}"
+            cmd = f"python3 {_script_q} {_args_q}".rstrip()
         else:
-            cmd = f"bash {script_path} {model_args}"
-        
+            cmd = f"bash {_script_q} {_args_q}".rstrip()
+
         print(f"🔧 Command: {cmd}")
         
         # Prepare environment
@@ -1417,8 +1386,12 @@ class ContainerRunner:
                                         
                                         # Try multiple patterns to match different log formats
                                         
-                                        # Pattern 1: "performance: 12345 metric_name" (original expected format)
-                                        perf_pattern = r'performance:\s+([0-9][0-9.eE+-]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+                                        # Pattern 1: "performance: 12345 metric_name" (original expected format).
+                                        # Value accepts plain decimals AND scientific notation (1.23e4, 4E+5).
+                                        # Metric accepts any non-whitespace token to cover `tokens/sec`,
+                                        # `tok/s`, `samples_per_second`, etc. (mirrors the regex in
+                                        # deployment/base.py:_parse_node_log_for_perf).
+                                        perf_pattern = r'performance:\s+([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(\S+)'
                                         match = re.search(perf_pattern, log_content)
                                         
                                         if match:

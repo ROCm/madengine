@@ -142,7 +142,7 @@ This creates:
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 
-See [Distributed Launchers Guide](distributed-launchers.md) for details.
+See [Distributed Launchers Guide](launchers.md) for details.
 
 ### Monitoring
 
