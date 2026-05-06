@@ -171,10 +171,12 @@ def run(
     # Process tags to handle comma-separated values
     processed_tags = split_comma_separated_tags(tags)
 
-    # Input validation
+    # Input validation. The accepted shape (mirrored in the --timeout help
+    # string above) is: -1 (use the built-in default of 7200s), 0 (no
+    # timeout), or any positive integer in seconds.
     if timeout < -1:
         console.print(
-            "❌ [red]Timeout must be -1 (default) or a positive integer[/red]"
+            "❌ [red]Timeout must be -1 (default), 0 (no timeout), or a positive integer[/red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 

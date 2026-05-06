@@ -19,7 +19,6 @@ dependencies = [
   "setuptools-rust",
   "paramiko",
   "tqdm",
-  "pytest",
   "typing-extensions",
   "pymongo",
   "toml",

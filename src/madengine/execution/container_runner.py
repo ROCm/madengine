@@ -9,6 +9,7 @@ using pre-built images.
 
 import os
 import re
+import shlex
 import subprocess
 import time
 import json
@@ -25,7 +26,6 @@ from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.constants import get_rocm_path
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -421,7 +421,7 @@ class ContainerRunner:
             try:
                 self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
-            except:
+            except Exception:
                 pass  # It's okay if image doesn't exist
         
         try:
@@ -519,18 +519,27 @@ class ContainerRunner:
         return f"--cpuset-cpus {cpus} "
 
     def get_env_arg(self, run_env: typing.Dict) -> str:
-        """Get the environment arguments for docker run."""
+        """Get the environment arguments for docker run.
+
+        Values are passed through ``shlex.quote`` so that single quotes,
+        whitespace, and other shell metacharacters in env values do not
+        break the assembled ``docker run ... --env KEY=VALUE ...`` shell
+        command. ``shlex.quote`` returns the value unchanged when the
+        input is shell-safe and wraps it in correctly-escaped single
+        quotes otherwise.
+        """
         env_args = ""
 
-        # Add custom environment variables
         if run_env:
             for env_arg in run_env:
-                env_args += f"--env {env_arg}='{str(run_env[env_arg])}' "
+                env_args += f"--env {env_arg}={shlex.quote(str(run_env[env_arg]))} "
 
-        # Add context environment variables
         if "docker_env_vars" in self.context.ctx:
             for env_arg in self.context.ctx["docker_env_vars"].keys():
-                env_args += f"--env {env_arg}='{str(self.context.ctx['docker_env_vars'][env_arg])}' "
+                env_args += (
+                    f"--env {env_arg}="
+                    f"{shlex.quote(str(self.context.ctx['docker_env_vars'][env_arg]))} "
+                )
 
         # Print only the count, not the values, since values can include
         # secrets (HF tokens, registry passwords, MAD_SECRETS_*, etc.).
@@ -710,7 +719,6 @@ class ContainerRunner:
         # supplied free-form string -- shlex.split + per-arg shlex.quote
         # passes literal arguments to the script even when the input contains
         # `$()`, backticks, `;`, etc.
-        import shlex
         _script_q = shlex.quote(script_path)
         _args_q = (
             " ".join(shlex.quote(a) for a in shlex.split(model_args))
@@ -1138,21 +1146,16 @@ class ContainerRunner:
                         whoami = model_docker.sh("whoami")
                         print(f"👤 Running as user: {whoami}")
 
-                        # Show GPU info with version-aware tool selection (PR #54)
                         if gpu_vendor.find("AMD") != -1:
                             print(f"🎮 Checking AMD GPU status...")
-                            rocm_path = self.context.ctx.get("rocm_path") or get_rocm_path()
-                            amd_smi_path = os.path.join(rocm_path, "bin", "amd-smi")
-                            rocm_smi_path = os.path.join(rocm_path, "bin", "rocm-smi")
-                            try:
-                                tool_manager = self.context._get_tool_manager()
-                                preferred_tool = tool_manager.get_preferred_smi_tool()
-                                if preferred_tool == "amd-smi":
-                                    model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
-                                else:
-                                    model_docker.sh(f"{rocm_smi_path} || {amd_smi_path} || true")
-                            except Exception:
-                                model_docker.sh(f"{amd_smi_path} || {rocm_smi_path} || true")
+                            # Use bare tool names (PATH-resolved inside the container).
+                            # Host ROCm path is not appropriate here because the
+                            # container's ROCm install location can differ from the
+                            # host's (matches origin/develop behaviour).
+                            model_docker.sh(
+                                "amd-smi 2>/dev/null || rocm-smi 2>/dev/null || "
+                                "echo 'GPU SMI tool not available in container PATH'"
+                            )
                         elif gpu_vendor.find("NVIDIA") != -1:
                             print(f"🎮 Checking NVIDIA GPU status...")
                             model_docker.sh("/usr/bin/nvidia-smi || true")
@@ -1390,7 +1393,7 @@ class ContainerRunner:
                                         # Value accepts plain decimals AND scientific notation (1.23e4, 4E+5).
                                         # Metric accepts any non-whitespace token to cover `tokens/sec`,
                                         # `tok/s`, `samples_per_second`, etc. (mirrors the regex in
-                                        # deployment/base.py:_parse_node_log_for_perf).
+                                        # deployment/base.py:_parse_performance_from_log).
                                         perf_pattern = r'performance:\s+([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(\S+)'
                                         match = re.search(perf_pattern, log_content)
                                         

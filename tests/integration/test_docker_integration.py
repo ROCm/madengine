@@ -151,8 +151,11 @@ class TestDockerBuilder:
 
         result = builder.get_build_arg()
 
-        assert "--build-arg ARG1='value1'" in result
-        assert "--build-arg ARG2='value2'" in result
+        # DockerBuilder.get_build_arg() now uses shlex.quote() (defends against
+        # shell metacharacters in build-arg values). For shell-safe values
+        # like "value1", shlex.quote returns the value unchanged (no quotes).
+        assert "--build-arg ARG1=value1" in result
+        assert "--build-arg ARG2=value2" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -170,7 +173,7 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
+        assert "--build-arg RUNTIME_ARG=runtime_value" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
@@ -189,8 +192,8 @@ class TestDockerBuilder:
         run_build_arg = {"RUNTIME_ARG": "runtime_value"}
         result = builder.get_build_arg(run_build_arg)
 
-        assert "--build-arg CONTEXT_ARG='context_value'" in result
-        assert "--build-arg RUNTIME_ARG='runtime_value'" in result
+        assert "--build-arg CONTEXT_ARG=context_value" in result
+        assert "--build-arg RUNTIME_ARG=runtime_value" in result
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
