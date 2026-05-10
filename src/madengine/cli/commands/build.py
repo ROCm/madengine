@@ -55,6 +55,12 @@ def build(
             "--batch-manifest", help="Input batch.json file for batch build mode"
         ),
     ] = None,
+    # NOTE: `is_flag=False, flag_value="auto"` lets `--use-image` (no value)
+    # mean "auto-detect from the model card's DOCKER_IMAGE_NAME", matching
+    # MAD-private PR #186's documented UX. Typer is deprecating this pattern
+    # for a future release; when removed, switch to requiring an explicit
+    # value (e.g. `--use-image auto` as the documented sentinel) and update
+    # MAD-private's docs in lockstep.
     use_image: Annotated[
         Optional[str],
         typer.Option(
