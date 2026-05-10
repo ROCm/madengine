@@ -2128,6 +2128,29 @@ export MASTER_PORT={master_port}
         if perf_csv_path:
             results["perf_files"] = [str(perf_csv_path)]
             self._collect_results_parse_perf_csv(results, session_start_row)
+            # Aggregate per-job perf rows into cwd perf.csv so the dashboard
+            # reporter (display_performance_table, report to-html, etc.)
+            # finds them under the conventional path. Local + classic-SLURM
+            # flows already leave a cumulative perf.csv in cwd via
+            # update_perf_csv(); slurm_multi flows did not, so this mirrors
+            # that convention without modifying the original per-job file.
+            import shutil
+            cwd_perf = Path("perf.csv")
+            try:
+                if cwd_perf.exists():
+                    with open(perf_csv_path, "r") as src, open(cwd_perf, "a") as dst:
+                        next(src, None)  # skip per-job header so cwd CSV stays single-headed
+                        for line in src:
+                            dst.write(line)
+                else:
+                    shutil.copy(str(perf_csv_path), str(cwd_perf))
+                self.console.print(
+                    f"[green]✓ Aggregated per-job perf into {cwd_perf}[/green]"
+                )
+            except Exception as e:
+                self.console.print(
+                    f"[yellow]⚠ Could not aggregate per-job perf into cwd perf.csv: {e}[/yellow]"
+                )
         else:
             self.console.print("[yellow]No perf.csv found from slurm_multi model script[/yellow]")
 
