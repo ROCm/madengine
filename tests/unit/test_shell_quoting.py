@@ -6,10 +6,7 @@ properly quote user-controlled values interpolated into shell commands.
 
 import os
 import shlex
-import tempfile
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from madengine.core.console import Console
 
@@ -130,9 +127,6 @@ class TestDockerBuilderQuoting:
         model_info = {"name": "test/model"}
 
         builder.get_context_path = MagicMock(return_value=docker_context)
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".live.log", delete=False) as f:
-            log_path = f.name
 
         try:
             with patch("builtins.open", create=True) as mock_open:
