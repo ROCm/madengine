@@ -802,31 +802,24 @@ class ContainerRunner:
             run_results: Dictionary to store run results
             pre_encapsulate_post_scripts: Pre/post script configuration
             run_env: Environment variables for the script
-            
+
         Returns:
             Dictionary with run results
         """
-        import shutil
-        
         self.rich_console.print(f"[dim]{'='*80}[/dim]")
-        
+
         # Prepare script path
         scripts_arg = model_info["scripts"]
-        
+
         # Get the current working directory (might be temp workspace)
         cwd = os.getcwd()
         print(f"📂 Current directory: {cwd}")
-        
-        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+
+        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm") or scripts_arg.endswith(".py"):
             script_path = scripts_arg
-            script_name = os.path.basename(scripts_arg)
-        elif scripts_arg.endswith(".py"):
-            script_path = scripts_arg
-            script_name = os.path.basename(scripts_arg)
         else:
             # Directory specified - look for run.sh
             script_path = os.path.join(scripts_arg, "run.sh")
-            script_name = "run.sh"
         
         # If script path is relative, make it absolute from cwd
         if not os.path.isabs(script_path):
@@ -874,12 +867,14 @@ class ContainerRunner:
         env = os.environ.copy()
         env.update(run_env)
         
-        # Add model-specific env vars from model_info
+        # Add model-specific env vars from model_info.
+        # Log keys only (not values) so credentials in env_vars (HF_TOKEN, MAD_DOCKERHUB_PASSWORD,
+        # CONNECT_*_TOKEN, etc.) carried via the model card don't leak into the run log.
         if "env_vars" in model_info and model_info["env_vars"]:
             for key, value in model_info["env_vars"].items():
                 env[key] = str(value)
-                print(f"  ENV: {key}={value}")
-        
+                print(f"  ENV: {key}=<set>")
+
         # Add env vars from additional_context
         if self.additional_context and "env_vars" in self.additional_context:
             for key, value in self.additional_context["env_vars"].items():

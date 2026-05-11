@@ -10,7 +10,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -498,15 +497,12 @@ class BuildOrchestrator:
             self.rich_console.print("[bold cyan]📄 Generating manifest for pre-built image...[/bold cyan]")
             
             manifest = {
-                "built_images": {
-                    use_image: {
-                        "image_name": use_image,
-                        "docker_image": use_image,
-                        "dockerfile": "",
-                        "build_time": 0,
-                        "prebuilt": True,
-                    }
-                },
+                # built_images and built_models MUST share the same key set so
+                # ContainerRunner.run_models_from_manifest() can join them via
+                # `built_models.get(image_name, {})`. Key both by model_name and
+                # write one built_images entry per model (all pointing at the
+                # same pre-built use_image) so multi-model --use-image runs work.
+                "built_images": {},
                 "built_models": {},
                 "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
                 "credentials_required": [],
@@ -519,17 +515,22 @@ class BuildOrchestrator:
                 },
             }
 
-            # Add each discovered model with the pre-built image.
-            # Key by model_name (not use_image) so multiple models sharing
-            # the same pre-built image are all preserved in the manifest.
             for model in models:
                 model_name = model.get("name", "unknown")
                 model_distributed = model.get("distributed", {})
-                
+
                 # Merge DOCKER_IMAGE_NAME into env_vars for parallel pull in run phase
                 model_env_vars = model.get("env_vars", {}).copy()
                 model_env_vars["DOCKER_IMAGE_NAME"] = use_image
-                
+
+                manifest["built_images"][model_name] = {
+                    "image_name": use_image,
+                    "docker_image": use_image,
+                    "dockerfile": "",
+                    "build_time": 0,
+                    "prebuilt": True,
+                }
+
                 manifest["built_models"][model_name] = {
                     "name": model_name,
                     "image": use_image,
@@ -569,8 +570,13 @@ class BuildOrchestrator:
                 
                 # Merge model's distributed config from the first model.
                 # If multiple models have differing distributed configs, warn — only the first wins here.
+                # Use json.dumps for the hash key so nested dicts (e.g. sglang_disagg / vllm_disagg)
+                # don't trigger TypeError: unhashable type: 'dict' from `tuple(sorted(items()))`.
                 if len(models) > 1:
-                    distinct_distributed = {tuple(sorted((m.get("distributed") or {}).items())) for m in models}
+                    distinct_distributed = {
+                        json.dumps(m.get("distributed") or {}, sort_keys=True, default=str)
+                        for m in models
+                    }
                     if len(distinct_distributed) > 1:
                         self.rich_console.print(
                             "[yellow]Warning: discovered models have differing distributed configs; "
@@ -589,8 +595,12 @@ class BuildOrchestrator:
                 # Merge model's slurm config into deployment_config.slurm from the first model.
                 # This enables run phase to auto-detect SLURM deployment without --additional-context.
                 # Warn when multiple models have differing slurm configs (only the first wins here).
+                # json.dumps key for the same unhashable-nested-dict reason as above.
                 if len(models) > 1:
-                    distinct_slurm = {tuple(sorted((m.get("slurm") or {}).items())) for m in models}
+                    distinct_slurm = {
+                        json.dumps(m.get("slurm") or {}, sort_keys=True, default=str)
+                        for m in models
+                    }
                     if len(distinct_slurm) > 1:
                         self.rich_console.print(
                             "[yellow]Warning: discovered models have differing slurm configs; "
@@ -905,7 +915,6 @@ class BuildOrchestrator:
             self.rich_console.print(f"  Credentials: Found in environment (MAD_DOCKERHUB_USER)")
         
         # Determine if registry requires authentication
-        requires_auth = True
         public_registries = ["docker.io", "ghcr.io", "gcr.io", "quay.io", "nvcr.io"]
         registry_lower = registry.lower() if registry else ""
         
@@ -958,7 +967,6 @@ class BuildOrchestrator:
         else:
             # Private/internal registry - may not need auth
             self.rich_console.print(f"  Auth: Private registry (auth may not be required)")
-            requires_auth = dockerhub_user and dockerhub_password
         
         self.rich_console.print("")
         

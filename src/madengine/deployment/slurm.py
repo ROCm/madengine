@@ -534,15 +534,23 @@ class SlurmDeployment(BaseDeployment):
             / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}.complete"
         )
         
+        # Disable `set -e` around the model script bash invocation below so a
+        # non-zero exit doesn't terminate the wrapper before SCRIPT_EXIT_CODE is
+        # captured and the completion marker is written. monitor() relies on the
+        # marker to distinguish 'failed' from 'still running'; without this,
+        # a failed model run would look like a hang.
         script_lines.extend([
             "",
             "# Change to script directory",
             f"cd {model_script_path.parent}",
             "",
-            "# Run the model script directly on the host",
+            "# Run the model script directly on the host (with -e disabled so we",
+            "# can capture the exit code and write the completion marker even on failure).",
             f"echo 'Executing: bash {model_script_path.name} {model_args}'",
+            "set +e",
             f"bash {model_script_path.name} {model_args}",
             "SCRIPT_EXIT_CODE=$?",
+            "set -e",
             "",
             "echo ''",
             "echo 'Script completed.'",
