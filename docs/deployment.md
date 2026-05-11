@@ -405,6 +405,22 @@ kubectl get secrets -n your-namespace
 kubectl describe pod <pod-name> -n your-namespace
 ```
 
+**Node Reported as FAILED but Pod Succeeded:**
+
+In multi-node jobs, madengine may report a node as `FAILED` even though Kubernetes shows the pod as `Succeeded`. This occurs when the kubelet on the node becomes unreachable after the job completes, preventing madengine from collecting stdout logs (and therefore parsing performance metrics).
+
+To verify:
+```bash
+# Check actual pod status — if Succeeded, the workload ran fine
+kubectl describe pod <pod-name> | grep Status
+
+# Check the node's kubelet health
+kubectl get nodes
+kubectl describe node <node-name> | grep -A5 Conditions
+```
+
+PVC artifacts are still collected in this scenario. Only the API-based pod log retrieval fails, which means performance metrics for that node will be missing from the results table.
+
 **Resource Issues:**
 ```bash
 # Check node resources
