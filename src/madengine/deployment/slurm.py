@@ -1538,8 +1538,17 @@ export MASTER_PORT={master_port}
         ``performance`` rows lets downstream aggregation use the richest
         available data without depending on node-0 winning every race.
 
-        Falls back to the first candidate when none has a ``performance``
-        column or when counting fails, preserving previous behavior.
+        Selection order:
+
+        1. Highest count of non-empty ``performance`` rows wins. Candidates
+           without a ``performance`` column score ``0`` (effectively tied
+           at the bottom).
+        2. Ties are broken by total row count — when no candidate has any
+           performance data, this still surfaces the most-populated CSV
+           rather than always falling back to ``candidates[0]``, so
+           downstream diagnostics see real rows.
+        3. ``candidates[0]`` is only used as the ultimate fallback when
+           every read raises (``best_candidate`` remained ``None``).
         """
         if not candidates:
             return None

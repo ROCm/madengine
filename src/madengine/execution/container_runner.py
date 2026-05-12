@@ -973,6 +973,34 @@ class ContainerRunner:
             timeout_s=timeout_s,
         )
 
+    @staticmethod
+    def _recv_line(sock: socket.socket, max_len: int = 128) -> str:
+        """Read one newline-terminated line from ``sock``.
+
+        ``socket.recv`` is allowed to return a partial read (TCP is a byte
+        stream, not a datagram channel). Using it directly to parse a
+        protocol line like ``READY <token> <rank>\\n`` can therefore reject
+        valid peers when the line is split across two reads, manifesting
+        as flaky multi-node barrier timeouts.
+
+        This helper loops on ``recv`` until it sees ``\\n`` or until
+        ``max_len`` bytes have been buffered, honoring the socket's
+        existing timeout. The trailing ``\\n`` and surrounding whitespace
+        are stripped from the returned string. An empty string is
+        returned on EOF before any data.
+        """
+        buf = bytearray()
+        while len(buf) < max_len:
+            chunk = sock.recv(max_len - len(buf))
+            if not chunk:
+                break
+            buf.extend(chunk)
+            nl = buf.find(b"\n")
+            if nl != -1:
+                buf = buf[:nl]
+                break
+        return buf.decode("utf-8", errors="ignore").strip()
+
     def _tcp_image_ready_barrier(
         self, nnodes: int, node_rank: str, timeout_s: int
     ) -> None:
@@ -1026,7 +1054,12 @@ class ContainerRunner:
 
         if rank_int == 0:
             accepted = 0
-            peers: typing.List[str] = []
+            # ``peers`` is keyed by ``worker_rank`` so a reconnecting worker
+            # (e.g. one that hit its connect timeout before the master called
+            # ``accept()`` and looped back) replaces its previous entry
+            # instead of duplicating it. This keeps the diagnostic log
+            # honest about how many distinct peers actually joined.
+            peers: typing.Dict[int, str] = {}
             waiting: typing.Dict[int, socket.socket] = {}
             server = None
             port = None
@@ -1074,7 +1107,9 @@ class ContainerRunner:
                     try:
                         conn, addr = server.accept()
                         conn.settimeout(2.0)
-                        payload = conn.recv(128).decode("utf-8", errors="ignore").strip()
+                        # Read until newline; ``recv`` alone can return a
+                        # partial line and reject otherwise valid peers.
+                        payload = self._recv_line(conn)
                         parts = payload.split()
                         if len(parts) != 3 or parts[0] != "READY" or parts[1] != token:
                             conn.close()
@@ -1093,7 +1128,7 @@ class ContainerRunner:
                             except Exception:
                                 pass
                         waiting[worker_rank] = conn
-                        peers.append(f"{addr[0]}:r{worker_rank}")
+                        peers[worker_rank] = f"{addr[0]}:r{worker_rank}"
                         accepted = len(waiting)
                     except socket.timeout:
                         continue
@@ -1120,10 +1155,13 @@ class ContainerRunner:
                             pass
                 # Diagnostic: log which peers joined so multi-node deadlocks /
                 # missing-rank issues can be debugged from the master log alone.
+                # Iterate by sorted rank so the log line is deterministic and
+                # easy to diff between runs.
                 if peers:
+                    pretty = ", ".join(peers[r] for r in sorted(peers))
                     self.rich_console.print(
                         f"[dim]TCP barrier master: released {accepted} peer(s): "
-                        f"{', '.join(peers)} (port={port})[/dim]"
+                        f"{pretty} (port={port})[/dim]"
                     )
                 return
             finally:
@@ -1149,7 +1187,9 @@ class ContainerRunner:
                     sock.sendall(f"READY {token} {rank_int}\n".encode("utf-8"))
                     remaining_s = max(1.0, deadline - time.time())
                     sock.settimeout(remaining_s)
-                    ack = sock.recv(128).decode("utf-8", errors="ignore").strip()
+                    # Same partial-read concern as the master path: read the
+                    # ``GO <token> <rank>\n`` line by newline, not by length.
+                    ack = self._recv_line(sock)
                     if ack == expected_ack:
                         return
                     last_error = f"unexpected_ack={ack!r} port={candidate}"
