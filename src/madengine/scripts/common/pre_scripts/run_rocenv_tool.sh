@@ -10,6 +10,20 @@ ROCENV_MODE=${2:-"lite"}
 LITE_FLAG="--lite"
 if [ "$ROCENV_MODE" = "full" ]; then
     LITE_FLAG=""
+    # Install diagnostic tools on-demand if missing (best-effort)
+    # These are needed for hardware_information, bios_settings,
+    # dmsg_gpu_drm_atom_logs, and amdgpu_modinfo sections
+    MISSING_PKGS=""
+    command -v lshw      >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS lshw"
+    command -v dmidecode >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS dmidecode"
+    command -v modinfo   >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS kmod"
+    command -v dmesg     >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS util-linux"
+    if [ -n "$MISSING_PKGS" ]; then
+        echo "rocenv full mode: installing missing diagnostic tools:$MISSING_PKGS"
+        apt-get update -qq >/dev/null 2>&1 && \
+            apt-get install -y -qq --no-install-recommends $MISSING_PKGS >/dev/null 2>&1 || \
+            echo "Warning: could not install some diagnostic tools (network or permissions issue)"
+    fi
 fi
 
 # Determine the script's directory
