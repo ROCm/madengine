@@ -230,3 +230,39 @@ class TestSanitizeK8sContainerName:
         long_hint = "a" * 200
         c = sanitize_k8s_container_name(long_hint)
         assert len(c) <= 63
+
+
+class TestGatherSystemEnvDetailsK8sRocenvMode:
+    """K8s gather_system_env_details passes rocenv_mode to run_rocenv_tool.sh args."""
+
+    def _make_mixin(self):
+        from unittest.mock import MagicMock
+        from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
+
+        mixin = KubernetesScriptsMixin()
+        mixin.console = MagicMock()
+        return mixin
+
+    def test_default_mode_is_lite(self):
+        mixin = self._make_mixin()
+        pre_scripts = []
+        mixin.gather_system_env_details(pre_scripts, "my_model")
+        assert pre_scripts[0]["args"] == "my_model_env lite"
+
+    def test_full_mode(self):
+        mixin = self._make_mixin()
+        pre_scripts = []
+        mixin.gather_system_env_details(pre_scripts, "org/my_model", rocenv_mode="full")
+        assert pre_scripts[0]["args"] == "org_my_model_env full"
+
+    def test_explicit_lite_mode(self):
+        mixin = self._make_mixin()
+        pre_scripts = []
+        mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="lite")
+        assert pre_scripts[0]["args"] == "my_model_env lite"
+
+    def test_invalid_mode_falls_back_to_lite(self):
+        mixin = self._make_mixin()
+        pre_scripts = []
+        mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="bogus")
+        assert pre_scripts[0]["args"] == "my_model_env lite"

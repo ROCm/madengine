@@ -231,3 +231,44 @@ class TestRunModelsFromManifestSetupFailureRecordsToPerfCsv:
             call_kw = mock_update_perf_csv.call_args[1]
             assert call_kw.get("perf_csv") == perf_csv_path
             assert "exception_result" in call_kw
+
+
+class TestGatherSystemEnvDetailsRocenvMode:
+    """gather_system_env_details passes rocenv_mode to run_rocenv_tool.sh args."""
+
+    def _make_runner(self, ctx_overrides=None):
+        ctx = MagicMock()
+        ctx.ctx = ctx_overrides or {}
+        return ContainerRunner(context=ctx, console=MagicMock())
+
+    def test_default_mode_is_lite(self):
+        """When rocenv_mode is absent, args should end with 'lite'."""
+        runner = self._make_runner()
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite"
+
+    def test_explicit_lite_mode(self):
+        """When rocenv_mode is 'lite', args should end with 'lite'."""
+        runner = self._make_runner({"rocenv_mode": "lite"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite"
+
+    def test_full_mode(self):
+        """When rocenv_mode is 'full', args should end with 'full'."""
+        runner = self._make_runner({"rocenv_mode": "full"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "org/my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "org_my_model_env full"
+
+    def test_invalid_mode_falls_back_to_lite(self):
+        """When rocenv_mode is invalid, should fall back to 'lite'."""
+        runner = self._make_runner({"rocenv_mode": "invalid"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite"

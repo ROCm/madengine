@@ -26,7 +26,7 @@ class KubernetesScriptsMixin:
     """Script and tool loading for Kubernetes ConfigMap embedding."""
 
     def gather_system_env_details(
-        self, pre_scripts: List[Dict], model_name: str
+        self, pre_scripts: List[Dict], model_name: str, rocenv_mode: str = "lite"
     ) -> None:
         """
         Gather system environment details by adding rocEnvTool to pre-scripts.
@@ -36,13 +36,18 @@ class KubernetesScriptsMixin:
         Args:
             pre_scripts: List of pre-script configurations
             model_name: The model name (used for output file naming)
+            rocenv_mode: Collection mode - "lite" (default) or "full"
         """
+        if rocenv_mode not in ("lite", "full"):
+            self.console.print(f"[yellow]Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'[/yellow]")
+            rocenv_mode = "lite"
+        output_name = model_name.replace("/", "_") + "_env"
         pre_env_details = {
             "path": "scripts/common/pre_scripts/run_rocenv_tool.sh",
-            "args": model_name.replace("/", "_") + "_env"
+            "args": f"{output_name} {rocenv_mode}"
         }
         pre_scripts.append(pre_env_details)
-        self.console.print(f"[dim]Added rocEnvTool to pre-scripts with args: {pre_env_details['args']}[/dim]")
+        self.console.print(f"[dim]Added rocEnvTool (mode={rocenv_mode}) to pre-scripts with args: {pre_env_details['args']}[/dim]")
 
     def _add_tool_scripts(self, pre_scripts: List[Dict], post_scripts: List[Dict]) -> None:
         """

@@ -809,7 +809,12 @@ class ContainerRunner:
         # initialize pre_env_details
         pre_env_details = {}
         pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
-        pre_env_details["args"] = model_name.replace("/", "_") + "_env"
+        output_name = model_name.replace("/", "_") + "_env"
+        rocenv_mode = self.context.ctx.get("rocenv_mode", "lite")
+        if rocenv_mode not in ("lite", "full"):
+            print(f"Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'")
+            rocenv_mode = "lite"
+        pre_env_details["args"] = f"{output_name} {rocenv_mode}"
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 

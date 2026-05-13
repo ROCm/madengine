@@ -5,6 +5,12 @@
 # 
 
 OUTPUT_FILE_NAME=${1:-"sys_config_info"}
+ROCENV_MODE=${2:-"lite"}
+
+LITE_FLAG="--lite"
+if [ "$ROCENV_MODE" = "full" ]; then
+    LITE_FLAG=""
+fi
 
 # Determine the script's directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -d "$SCRIPT_DIR/rocEnvTool" ]; then
     # K8s execution: rocEnvTool is already in place
     cd "$SCRIPT_DIR/rocEnvTool"
-    python3 rocenv_tool.py --lite --dump-csv --print-csv --output-name $OUTPUT_FILE_NAME
+    python3 rocenv_tool.py $LITE_FLAG --dump-csv --print-csv --output-name $OUTPUT_FILE_NAME
     out_dir="."$OUTPUT_FILE_NAME
     out_csv=$OUTPUT_FILE_NAME".csv"
     # Copy results back to workspace root
@@ -27,7 +33,7 @@ else
     # Local execution: copy rocEnvTool from relative path
     cp -r ../scripts/common/pre_scripts/rocEnvTool .
     cd rocEnvTool
-    python3 rocenv_tool.py --lite --dump-csv --print-csv --output-name $OUTPUT_FILE_NAME
+    python3 rocenv_tool.py $LITE_FLAG --dump-csv --print-csv --output-name $OUTPUT_FILE_NAME
     out_dir="."$OUTPUT_FILE_NAME
     out_csv=$OUTPUT_FILE_NAME".csv"
     cp -r $out_dir ../../
