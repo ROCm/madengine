@@ -316,7 +316,8 @@ class TestProfilingFunctionality:
             canFail=False,
         )
 
-        regexp = re.compile(r"NCCL INFO AllReduce:")
+        # RCCL log prefix/format varies slightly by RCCL build; keep assertion anchored on NCCL + AllReduce.
+        regexp = re.compile(r"NCCL\s+INFO\s+.*AllReduce", re.IGNORECASE)
         foundMatch = None
         with open(
             os.path.join(
