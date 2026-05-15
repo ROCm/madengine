@@ -247,22 +247,30 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
         mixin = self._make_mixin()
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model")
-        assert pre_scripts[0]["args"] == "my_model_env lite"
+        assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"
 
     def test_full_mode(self):
         mixin = self._make_mixin()
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "org/my_model", rocenv_mode="full")
-        assert pre_scripts[0]["args"] == "org_my_model_env full"
+        assert pre_scripts[0]["args"] == "org_my_model_env full UBUNTU"
 
     def test_explicit_lite_mode(self):
         mixin = self._make_mixin()
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="lite")
-        assert pre_scripts[0]["args"] == "my_model_env lite"
+        assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"
+
+    def test_guest_os_centos(self):
+        mixin = self._make_mixin()
+        pre_scripts = []
+        mixin.gather_system_env_details(
+            pre_scripts, "my_model", rocenv_mode="lite", guest_os="centos"
+        )
+        assert pre_scripts[0]["args"] == "my_model_env lite CENTOS"
 
     def test_invalid_mode_falls_back_to_lite(self):
         mixin = self._make_mixin()
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="bogus")
-        assert pre_scripts[0]["args"] == "my_model_env lite"
+        assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"

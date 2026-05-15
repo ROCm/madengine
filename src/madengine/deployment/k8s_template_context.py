@@ -28,6 +28,7 @@ from .primus_backend import (
     infer_primus_backend_from_model_name,
     merged_primus_config,
 )
+from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.core.dataprovider import Data
 from madengine.core.errors import ConfigurationError
 from madengine.utils.gpu_config import resolve_runtime_gpus
@@ -419,7 +420,15 @@ class KubernetesTemplateContextMixin:
         generate_sys_env_details = self.config.additional_context.get("generate_sys_env_details", True)
         if generate_sys_env_details:
             rocenv_mode = self.config.additional_context.get("rocenv_mode", "lite")
-            self.gather_system_env_details(pre_scripts, model_info["name"], rocenv_mode=rocenv_mode)
+            guest_os = str(
+                self.config.additional_context.get("guest_os") or DEFAULT_GUEST_OS
+            ).strip().upper() or DEFAULT_GUEST_OS
+            self.gather_system_env_details(
+                pre_scripts,
+                model_info["name"],
+                rocenv_mode=rocenv_mode,
+                guest_os=guest_os,
+            )
 
         # Add tool pre/post scripts to the execution lists (like local execution)
         self._add_tool_scripts(pre_scripts, post_scripts)

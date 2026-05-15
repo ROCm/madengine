@@ -12,8 +12,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.utils.path_utils import get_madengine_root
 
 from .primus_backend import (
@@ -26,7 +27,11 @@ class KubernetesScriptsMixin:
     """Script and tool loading for Kubernetes ConfigMap embedding."""
 
     def gather_system_env_details(
-        self, pre_scripts: List[Dict], model_name: str, rocenv_mode: str = "lite"
+        self,
+        pre_scripts: List[Dict],
+        model_name: str,
+        rocenv_mode: str = "lite",
+        guest_os: Optional[str] = None,
     ) -> None:
         """
         Gather system environment details by adding rocEnvTool to pre-scripts.
@@ -37,14 +42,16 @@ class KubernetesScriptsMixin:
             pre_scripts: List of pre-script configurations
             model_name: The model name (used for output file naming)
             rocenv_mode: Collection mode - "lite" (default) or "full"
+            guest_os: UBUNTU / CENTOS (madengine additional_context); defaults to UBUNTU
         """
         if rocenv_mode not in ("lite", "full"):
             self.console.print(f"[yellow]Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'[/yellow]")
             rocenv_mode = "lite"
+        go = (guest_os or DEFAULT_GUEST_OS).strip().upper() or DEFAULT_GUEST_OS
         output_name = model_name.replace("/", "_") + "_env"
         pre_env_details = {
             "path": "scripts/common/pre_scripts/run_rocenv_tool.sh",
-            "args": f"{output_name} {rocenv_mode}"
+            "args": f"{output_name} {rocenv_mode} {go}",
         }
         pre_scripts.append(pre_env_details)
         self.console.print(f"[dim]Added rocEnvTool (mode={rocenv_mode}) to pre-scripts with args: {pre_env_details['args']}[/dim]")

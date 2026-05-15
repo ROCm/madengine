@@ -242,28 +242,47 @@ class TestGatherSystemEnvDetailsRocenvMode:
         return ContainerRunner(context=ctx, console=MagicMock())
 
     def test_default_mode_is_lite(self):
-        """When rocenv_mode is absent, args should end with 'lite'."""
+        """When rocenv_mode is absent, args should end with 'lite' and default guest_os UBUNTU."""
         runner = self._make_runner()
         pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
         runner.gather_system_env_details(pep, "my_model")
         args = pep["pre_scripts"][0]["args"]
-        assert args == "my_model_env lite"
+        assert args == "my_model_env lite UBUNTU"
 
     def test_explicit_lite_mode(self):
-        """When rocenv_mode is 'lite', args should end with 'lite'."""
+        """When rocenv_mode is 'lite', args should end with 'lite' and guest_os."""
         runner = self._make_runner({"rocenv_mode": "lite"})
         pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
         runner.gather_system_env_details(pep, "my_model")
         args = pep["pre_scripts"][0]["args"]
-        assert args == "my_model_env lite"
+        assert args == "my_model_env lite UBUNTU"
 
     def test_full_mode(self):
-        """When rocenv_mode is 'full', args should end with 'full'."""
+        """When rocenv_mode is 'full', args should end with 'full' and guest_os."""
         runner = self._make_runner({"rocenv_mode": "full"})
         pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
         runner.gather_system_env_details(pep, "org/my_model")
         args = pep["pre_scripts"][0]["args"]
-        assert args == "org_my_model_env full"
+        assert args == "org_my_model_env full UBUNTU"
+
+    def test_guest_os_centos(self):
+        """guest_os in context is passed as third arg (uppercased)."""
+        runner = self._make_runner({"rocenv_mode": "lite", "guest_os": "centos"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        assert pep["pre_scripts"][0]["args"] == "my_model_env lite CENTOS"
+
+    def test_mad_guest_os_overrides_guest_os(self):
+        """docker_env_vars MAD_GUEST_OS wins over top-level guest_os for script args."""
+        runner = self._make_runner(
+            {
+                "guest_os": "UBUNTU",
+                "docker_env_vars": {"MAD_GUEST_OS": "CENTOS"},
+            }
+        )
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        assert pep["pre_scripts"][0]["args"] == "my_model_env lite CENTOS"
 
     def test_invalid_mode_falls_back_to_lite(self):
         """When rocenv_mode is invalid, should fall back to 'lite'."""
@@ -271,4 +290,4 @@ class TestGatherSystemEnvDetailsRocenvMode:
         pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
         runner.gather_system_env_details(pep, "my_model")
         args = pep["pre_scripts"][0]["args"]
-        assert args == "my_model_env lite"
+        assert args == "my_model_env lite UBUNTU"
