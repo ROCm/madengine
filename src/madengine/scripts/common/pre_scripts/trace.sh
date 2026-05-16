@@ -28,12 +28,12 @@ rpd)
 			apt-get update -qq
 			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
-				git build-essential pkg-config
+				git build-essential pkg-config xxd
 		elif command -v sudo >/dev/null 2>&1; then
 			sudo apt-get update -qq
 			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
-				git build-essential pkg-config
+				git build-essential pkg-config xxd
 		else
 			echo 'RPD pre-script: need root or sudo for apt-get' >&2
 			exit 1
@@ -41,10 +41,10 @@ rpd)
 	elif [ "$os" == 'centos' ]; then
 		if [ "$(id -u)" -eq 0 ]; then
 			yum install -y gcc gcc-c++ make git \
-				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel
+				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
 		elif command -v sudo >/dev/null 2>&1; then
 			sudo yum install -y gcc gcc-c++ make git \
-				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel
+				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
 		else
 			echo 'RPD pre-script: need root or sudo for yum' >&2
 			exit 1
