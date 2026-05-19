@@ -5,7 +5,13 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.3] - 2026-05-06
+## [2.0.3] - 2026-05-19
+
+### Added
+
+- **rocEnvTool full mode** (`rocenv_mode` in `--additional-context`, default `"lite"`): set `"rocenv_mode": "full"` to also collect `hardware_information` (lshw), `bios_settings` (dmidecode), `dmsg_gpu_drm_atom_logs` (dmesg), and `amdgpu_modinfo` (modinfo). Missing diagnostic tools are auto-installed best-effort using the `guest_os`-native package manager — `apt-get` on `UBUNTU`, `microdnf`/`dnf`/`yum` (first one found) on `CENTOS`. Install failures (no network, unprivileged container, unsupported guest) are non-fatal: the affected sections are simply omitted. Wired through both local Docker runs (`container_runner.py`) and Kubernetes deployments (`k8s_scripts.py`, `k8s_template_context.py`). See [System environment collection](docs/configuration.md#system-environment-collection-rocenvtool).
+
+- **`MAD_GUEST_OS` in container env**: `container_runner` now exports the run's `guest_os` as `MAD_GUEST_OS` so in-container pre-scripts (notably `run_rocenv_tool.sh`) can select the correct package manager without re-detecting from `/etc/os-release`.
 
 ### Changed
 
@@ -13,9 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Kubernetes deployment refactor**: Decomposed the monolithic `kubernetes.py` (~2800 lines) into focused mixin modules — `k8s_pvc.py` (PVC lifecycle), `k8s_results.py` (log/artifact collection and performance aggregation), `k8s_scripts.py` (script extraction and ConfigMap building), and `k8s_template_context.py` (Jinja2 template context assembly). `KubernetesDeployment` now composes these mixins; no functional changes.
 
+- **`run_rocenv_tool.sh` argument signature**: now accepts `<output_basename> <rocenv_mode> <guest_os>` (was just `<output_basename>`). `rocenv_mode` and `guest_os` default to `lite` and `UBUNTU` respectively when omitted, so existing direct callers remain functional. `container_runner` and the K8s scripts mixin pass all three.
+
 ### Fixed
 
 - **K8s collector pod name mismatch**: The cleanup code in `kubernetes.py` used the full job name (`collector-{job_name}`) while the creation code in `k8s_results.py` truncated it (`collector-{deployment_id[:15]}`). For any job name longer than 15 characters (i.e. virtually all real jobs), cleanup would fail to delete the collector pod, leaving it running and potentially blocking PVC deletion on the next deploy. Extracted a shared `collector_pod_name()` helper so both sites use the same truncated name.
+
+- **rocEnvTool full-mode dumps crashed on empty tool output**: `dump_hardware_information_in_csv`, `dump_bios_settings_in_csv`, `dump_dmsg_gpu_drm_atom_logs_in_csv`, and `dump_amdgpu_modinfo_in_csv` indexed `lines[0]` unconditionally. In unprivileged containers, `dmesg` (no `CAP_SYSLOG`) and `dmidecode` (no `/dev/mem`) commonly emit empty output, which raised `IndexError` and aborted the entire CSV dump — losing the sections that had succeeded. Each handler now returns `[]` early when the source file is empty.
+
+- **RPD pre-script: `xxd` missing in rocm/pytorch base image**: upstream `rocmProfileData/rpd_tracer/Makefile` uses `xxd -i` to embed `tableSchema.cmd`/`utilitySchema.cmd` as C arrays, so `make rpd` exited 127 and the e2e suite saw no `trace.rpd`. `trace.sh` now installs `xxd` on Ubuntu and `vim-common` (provides `xxd`) on CentOS.
+
+- **RPD pre-script: failed as root with no `sudo`**: the install path used `sudo apt`/`sudo yum` unconditionally, which is missing in many CI containers running as `root`. `trace.sh` now branches on `id -u` — direct `apt-get`/`yum` when root, `sudo` otherwise — and adds the build deps the upstream Makefile expects (`git`, `build-essential`, `pkg-config` on Ubuntu; `gcc`, `gcc-c++`, `make`, `git` on CentOS).
+
+### Tests
+
+- **Dummy `dummy_rocenv_full` fixture**: new Dockerfile installs `lshw`, `dmidecode`, `kmod`, and `util-linux` so e2e tests can exercise rocenv full mode end-to-end inside the container.
+
+- **RCCL profiling e2e stabilization**: `tests/fixtures/dummy/scripts/dummy/run_nccl_trace.sh` now pins `HIP_VISIBLE_DEVICES`/`NCCL_IB_DISABLE`/`NCCL_SOCKET_IFNAME` defaults to avoid topology-detection hangs in CI. The `rccl_trace` log assertion in `tests/e2e/test_profiling_workflows.py` was relaxed for minor NCCL log-format drift.
 
 ### Known Issues
 
