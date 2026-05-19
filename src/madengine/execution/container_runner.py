@@ -558,16 +558,16 @@ class ContainerRunner:
             print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
             # Remove any existing cached image to force fresh pull
             try:
-                self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
+                self.console.sh(f"docker rmi -f {shlex.quote(registry_image)} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
             except Exception:
                 pass  # It's okay if image doesn't exist
         
         try:
-            self.console.sh(f"docker pull {registry_image}")
+            self.console.sh(f"docker pull {shlex.quote(registry_image)}")
 
             if local_name:
-                self.console.sh(f"docker tag {registry_image} {local_name}")
+                self.console.sh(f"docker tag {shlex.quote(registry_image)} {shlex.quote(local_name)}")
                 print(f"🏷️  Tagged as: {local_name}")
                 self.rich_console.print(f"[bold green]✅ Successfully pulled and tagged image[/bold green]")
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
@@ -689,7 +689,7 @@ class ContainerRunner:
             for mount_datapath in mount_datapaths:
                 if mount_datapath:
                     mount_args += (
-                        f"-v {mount_datapath['path']}:{mount_datapath['home']}"
+                        f"-v {shlex.quote(mount_datapath['path'])}:{shlex.quote(mount_datapath['home'])}"
                     )
                     if (
                         "readwrite" in mount_datapath
@@ -703,7 +703,7 @@ class ContainerRunner:
         if "docker_mounts" in self.context.ctx:
             for mount_arg in self.context.ctx["docker_mounts"].keys():
                 mount_args += (
-                    f"-v {self.context.ctx['docker_mounts'][mount_arg]}:{mount_arg} "
+                    f"-v {shlex.quote(self.context.ctx['docker_mounts'][mount_arg])}:{shlex.quote(mount_arg)} "
                 )
 
         return mount_args

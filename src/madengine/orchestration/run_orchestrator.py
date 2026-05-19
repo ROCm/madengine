@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Dict, Optional
@@ -391,12 +392,12 @@ class RunOrchestrator:
         
         # Validate that the image exists locally or can be pulled
         try:
-            self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
+            self.console.sh(f"docker image inspect {shlex.quote(image_name)} > /dev/null 2>&1")
             self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
         except (subprocess.CalledProcessError, RuntimeError) as e:
             self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
             try:
-                self.console.sh(f"docker pull {image_name}")
+                self.console.sh(f"docker pull {shlex.quote(image_name)}")
                 self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
             except Exception as e:
                 raise RuntimeError(

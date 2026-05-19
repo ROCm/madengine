@@ -179,8 +179,8 @@ class DockerBuilder:
 
         build_command = (
             f"docker build {use_cache_str} --network=host "
-            f"-t {docker_image} --pull -f {dockerfile} "
-            f"{build_args} {docker_context}"
+            f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
+            f"{build_args} {shlex.quote(docker_context)}"
         )
 
         # Execute build with log redirection
@@ -207,7 +207,7 @@ class DockerBuilder:
                     base_docker = self.context.ctx["docker_build_arg"]["BASE_DOCKER"]
                 else:
                     base_docker = self.console.sh(
-                        f"grep '^ARG BASE_DOCKER=' {dockerfile} | sed -E 's/ARG BASE_DOCKER=//g'"
+                        f"grep '^ARG BASE_DOCKER=' {shlex.quote(dockerfile)} | sed -E 's/ARG BASE_DOCKER=//g'"
                     )
 
                 print(f"BASE DOCKER is {base_docker}")
@@ -216,7 +216,7 @@ class DockerBuilder:
                 docker_sha = ""
                 try:
                     docker_sha = self.console.sh(
-                        f'docker manifest inspect {base_docker} | grep digest | head -n 1 | cut -d \\" -f 4'
+                        f'docker manifest inspect {shlex.quote(base_docker)} | grep digest | head -n 1 | cut -d \\" -f 4'
                     )
                     print(f"BASE DOCKER SHA is {docker_sha}")
                 except Exception as e:
@@ -297,7 +297,7 @@ class DockerBuilder:
             # Tag the image if different from local name
             if registry_image != docker_image:
                 print(f"Tagging image: docker tag {docker_image} {registry_image}")
-                tag_command = f"docker tag {docker_image} {registry_image}"
+                tag_command = f"docker tag {shlex.quote(docker_image)} {shlex.quote(registry_image)}"
                 self.console.sh(tag_command)
             else:
                 print(
@@ -305,7 +305,7 @@ class DockerBuilder:
                 )
 
             # Push the image
-            push_command = f"docker push {registry_image}"
+            push_command = f"docker push {shlex.quote(registry_image)}"
             self.rich_console.print(f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]")
             print(f"📤 Registry: {registry}")
             print(f"🏷️  Image: {registry_image}")
@@ -559,7 +559,7 @@ class DockerBuilder:
             for cur_docker_file in all_dockerfiles:
                 # Get context of dockerfile
                 dockerfiles[cur_docker_file] = self.console.sh(
-                    f"head -n5 {cur_docker_file} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
+                    f"head -n5 {shlex.quote(cur_docker_file)} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
                 )
 
             # Filter dockerfiles based on context
