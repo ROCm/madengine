@@ -34,6 +34,7 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.execution.container_runner_helpers import (
@@ -793,6 +794,12 @@ class ContainerRunner:
     ) -> None:
         """Gather system environment details.
 
+        Appends ``run_rocenv_tool.sh`` to pre_scripts with args:
+        ``<output_basename> <rocenv_mode> <guest_os>`` (e.g. ``my_model_env lite UBUNTU``).
+        ``guest_os`` comes from ``docker_env_vars.MAD_GUEST_OS`` (if set) else
+        ``context.ctx['guest_os']``, defaulting to ``UBUNTU`` — aligned with
+        ``MAD_GUEST_OS`` injected for the container before this runs.
+
         Args:
             pre_encapsulate_post_scripts: The pre, encapsulate and post scripts.
             model_name: The model name.
@@ -809,7 +816,16 @@ class ContainerRunner:
         # initialize pre_env_details
         pre_env_details = {}
         pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
-        pre_env_details["args"] = model_name.replace("/", "_") + "_env"
+        output_name = model_name.replace("/", "_") + "_env"
+        rocenv_mode = self.context.ctx.get("rocenv_mode", "lite")
+        if rocenv_mode not in ("lite", "full"):
+            print(f"Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'")
+            rocenv_mode = "lite"
+        dv = self.context.ctx.get("docker_env_vars") or {}
+        guest_os = str(
+            dv.get("MAD_GUEST_OS") or self.context.ctx.get("guest_os", DEFAULT_GUEST_OS)
+        ).strip().upper()
+        pre_env_details["args"] = f"{output_name} {rocenv_mode} {guest_os}"
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
@@ -947,7 +963,7 @@ class ContainerRunner:
         # Also check shell environment for SLURM-passed variables
         if "docker_env_vars" not in self.context.ctx:
             self.context.ctx["docker_env_vars"] = {}
-        
+
         # For SLURM jobs, check shell environment and populate additional_context with GPU info
         # This ensures GPU resolution works correctly
         if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
@@ -1008,6 +1024,12 @@ class ContainerRunner:
                 merged_count += 1
             if merged_count > 0:
                 print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
+
+        # rocEnvTool full-mode installs: align container with madengine guest_os (after docker_env_vars merge)
+        if "MAD_GUEST_OS" not in self.context.ctx["docker_env_vars"]:
+            self.context.ctx["docker_env_vars"]["MAD_GUEST_OS"] = str(
+                self.context.ctx.get("guest_os", DEFAULT_GUEST_OS)
+            ).strip().upper()
 
         if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
             "AMD"
