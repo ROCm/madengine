@@ -657,6 +657,31 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
+    def _generate_local_launcher_command(self, launcher_type: str, nproc_per_node: int) -> str:
+        """Generate distributed process launcher command for Docker local deployment.
+
+        Docker local is always single-node. This parallels
+        SlurmDeployer._generate_launcher_command() and
+        KubernetesLauncherMixin._generate_torchrun_command() for the
+        Docker local path.
+
+        Args:
+            launcher_type: Distributed launcher (torchrun, megatron, deepspeed, etc.)
+            nproc_per_node: Number of GPUs (processes) per node.
+
+        Returns:
+            Launcher command string, or empty string for launchers that
+            manage their own process spawning (vllm, sglang).
+        """
+        if launcher_type in ("torchrun", "megatron", "megatron-lm", "torchtitan"):
+            return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
+        elif launcher_type == "deepspeed":
+            return f"deepspeed --num_gpus={nproc_per_node}"
+        elif launcher_type in ("vllm", "sglang", "sglang-disagg", "primus"):
+            return ""
+        else:
+            return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
+
     _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     def get_env_arg(self, run_env: typing.Dict) -> str:
@@ -1089,7 +1114,29 @@ class ContainerRunner:
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
-        
+
+        # Generate MAD_MULTI_NODE_RUNNER for Docker local deployment.
+        # SLURM and K8s generate this in their deployment layers (slurm.py,
+        # kubernetes_launcher_mixin.py). Docker local has no such layer, so
+        # we generate it here after GPU resolution provides MAD_RUNTIME_NGPUS.
+        # Reuses the `launcher` variable already resolved at lines 327-372.
+        # Defaults to torchrun when launcher is a deployment-level value
+        # ("docker", "native") rather than a distributed launcher.
+        # For models that hardcode their own launcher (e.g. HuggingFace scripts
+        # calling torchrun directly), this env var is simply unused.
+        if "MAD_MULTI_NODE_RUNNER" not in self.context.ctx["docker_env_vars"]:
+            dist_launcher = launcher if launcher in (
+                "torchrun", "megatron", "megatron-lm", "torchtitan",
+                "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
+            ) else "torchrun"
+            runtime_ngpus = int(self.context.ctx["docker_env_vars"].get(
+                "MAD_RUNTIME_NGPUS", str(resolved_gpu_count)))
+            launcher_cmd = self._generate_local_launcher_command(dist_launcher, runtime_ngpus)
+            if launcher_cmd:
+                self.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] = launcher_cmd
+                print(f"ℹ️  Set MAD_MULTI_NODE_RUNNER for local deployment "
+                      f"(launcher={dist_launcher}): {launcher_cmd}")
+
         # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
         # It should be passed via docker_env_vars in context instead
         if "MIOPEN_USER_DB_PATH" in run_env:
