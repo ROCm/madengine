@@ -119,6 +119,47 @@ madengine run --tags my_unit_test_suite \
 
 Disabling the scan does **not** change performance metric extraction from the log; it only affects the post-hoc grep used to set `has_errors` for status.
 
+## System environment collection (rocEnvTool)
+
+Before each container run, madengine appends `scripts/common/pre_scripts/run_rocenv_tool.sh` to the model's pre-scripts. It captures a CSV snapshot of the container's environment (OS, CPU, GPU, ROCm/CUDA, packages, env vars, NUMA). The output ends up at `<model_name>_env.csv` in the workspace root.
+
+Two collection modes, selected via `rocenv_mode` in `--additional-context`:
+
+| `rocenv_mode` | Sections collected | In-container tool requirements |
+|---|---|---|
+| `"lite"` (default) | OS, CPU, GPU, memory, ROCm/CUDA info, packages, env vars, NUMA balancing | Already present in standard ROCm/CUDA base images |
+| `"full"` | Lite **plus** `hardware_information` (lshw), `bios_settings` (dmidecode), `dmsg_gpu_drm_atom_logs` (dmesg), `amdgpu_modinfo` (modinfo) | Auto-installed best-effort if missing |
+
+**Full-mode auto-install** uses the `guest_os`-native package manager:
+
+- `UBUNTU` → `apt-get install -y -qq lshw dmidecode kmod util-linux`
+- `CENTOS` → `microdnf` / `dnf` / `yum install -y …` (first one found)
+
+The install is **best-effort**: if the package manager is missing, the network is unreachable, or the container lacks permissions, the pre-script logs a warning and continues — the affected sections are simply omitted from the CSV. Empty tool output (for example, `dmesg` in a container without `CAP_SYSLOG`, or `dmidecode` without `/dev/mem` access) is also handled gracefully — the section is skipped and the rest of the CSV still parses.
+
+**Examples:**
+
+```bash
+# Default (lite): low overhead, works in any ROCm/CUDA base image
+madengine run --tags model
+
+# Full: include hardware/BIOS/dmesg/amdgpu modinfo
+madengine run --tags model \
+  --additional-context '{"rocenv_mode": "full"}'
+
+# CentOS guest with full mode (auto-install uses microdnf/dnf/yum)
+madengine run --tags model \
+  --additional-context '{"guest_os": "CENTOS", "rocenv_mode": "full"}'
+
+# Skip system-env collection entirely (e.g. GPU-binding smoke tests)
+madengine run --tags model \
+  --additional-context '{"generate_sys_env_details": false}'
+```
+
+`guest_os` from `--additional-context` (default `UBUNTU`) controls which package manager is used. The same value is also exported into the container as `MAD_GUEST_OS`, so the pre-script picks the correct package manager without re-detecting from `/etc/os-release`.
+
+Unknown `rocenv_mode` values fall back to `lite` with a warning.
+
 ## Basic Configuration
 
 **gpu_vendor** (case-insensitive):
