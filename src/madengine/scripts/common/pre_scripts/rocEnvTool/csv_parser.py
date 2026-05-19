@@ -224,6 +224,8 @@ class CSVParser:
     def dump_hardware_information_in_csv(self, log_path):
         """Parse lshw output, extracting key hardware fields."""
         lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
         info_list = []
         info_list.append(lines[0].rstrip())
         keywords = ("product:", "vendor:", "serial:", "width:", "size:",
@@ -243,6 +245,8 @@ class CSVParser:
     def dump_bios_settings_in_csv(self, log_path):
         """Parse dmidecode output, extracting key:value pairs."""
         lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
         info_list = []
         info_list.append(lines[0].rstrip())
         for j in range(1, len(lines)):
@@ -259,6 +263,8 @@ class CSVParser:
     def dump_dmsg_gpu_drm_atom_logs_in_csv(self, log_path):
         """Parse dmesg filtered log lines."""
         lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
         info_list = []
         info_list.append(lines[0].rstrip())
         count = 0
@@ -275,6 +281,8 @@ class CSVParser:
     def dump_amdgpu_modinfo_in_csv(self, log_path):
         """Parse modinfo output (key:value per line, like lscpu)."""
         lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
         info_list = []
         info_list.append(lines[0].rstrip())
         for j in range(1, len(lines)):
