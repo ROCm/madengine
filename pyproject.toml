@@ -152,7 +152,7 @@ ignore_missing_imports = true
 testpaths = ["tests/unit", "tests/integration", "tests/e2e"]
 pythonpath = ["src"]
 addopts = "-v --tb=short -ra --strict-markers -W default"
-minversion = "3.8"
+minversion = "7.0"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
