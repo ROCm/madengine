@@ -12,7 +12,7 @@
     "ttl_seconds_after_finished": null,
     "allow_privileged_profiling": null,
     "nfs_storage_class": "nfs-banff",
-    "local_path_storage_class": "local-path",
+    "storage_class": "nfs-banff",
     "data_storage_class": "nfs-banff",
     "recreate_shared_data_pvc": false,
     "secrets": {

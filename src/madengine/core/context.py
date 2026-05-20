@@ -758,6 +758,12 @@ class Context:
                             print(f"Warning: Failed to parse unique_id from line '{item}': {e}")
                             continue
 
+                if kfd_renderDs is None:
+                    raise RuntimeError(
+                        "KFD topology not accessible and required for ROCm < 6.4.1 GPU mapping. "
+                        "Check permissions on /sys/devices/virtual/kfd/kfd/topology/nodes"
+                    )
+
                 if len(kfd_unique_ids) != len(kfd_renderDs):
                     raise RuntimeError(
                         f"Mismatch between unique_ids count ({len(kfd_unique_ids)}) "

@@ -241,7 +241,7 @@ class BaseDeployment(ABC):
         while True:
             status = self.monitor(deployment_id)
 
-            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN]:
+            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN, DeploymentStatus.CANCELLED]:
                 return status
 
             # Still running, wait and check again
