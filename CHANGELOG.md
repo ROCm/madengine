@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`MAD_GUEST_OS` in container env**: `container_runner` now exports the run's `guest_os` as `MAD_GUEST_OS` so in-container pre-scripts (notably `run_rocenv_tool.sh`) can select the correct package manager without re-detecting from `/etc/os-release`.
 
+- **K8s `storage_class` field**: New generic `storage_class` key in the K8s preset defaults (`src/madengine/deployment/presets/k8s/defaults.json`). It is the broadest fallback for both the data PVC and the single-node results PVC, behind the more specific `data_storage_class` / `nfs_storage_class` and `single_node_results_storage_class` / `local_path_storage_class` keys. The legacy `local_path_storage_class` key continues to be honoured for backward compatibility. **Default change**: the bundled preset now sets `storage_class: "nfs-banff"` in place of `local_path_storage_class: "local-path"`, so out-of-the-box single-node results PVCs land on the NFS class instead of `local-path`. Clusters that still want local-path should set `"local_path_storage_class": "local-path"` (or `"single_node_results_storage_class": "local-path"`) in `--additional-context`. See [K8s storage classes](examples/k8s-configs/README.md).
+
 ### Changed
 
 - **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kubernetes deployment refactor**: Decomposed the monolithic `kubernetes.py` (~2800 lines) into focused mixin modules — `k8s_pvc.py` (PVC lifecycle), `k8s_results.py` (log/artifact collection and performance aggregation), `k8s_scripts.py` (script extraction and ConfigMap building), and `k8s_template_context.py` (Jinja2 template context assembly). `KubernetesDeployment` now composes these mixins; no functional changes.
 
 - **`run_rocenv_tool.sh` argument signature**: now accepts `<output_basename> <rocenv_mode> <guest_os>` (was just `<output_basename>`). `rocenv_mode` and `guest_os` default to `lite` and `UBUNTU` respectively when omitted, so existing direct callers remain functional. `container_runner` and the K8s scripts mixin pass all three.
+
+- **Pytest configuration consolidation**: pytest settings now live solely in `[tool.pytest.ini_options]` in `pyproject.toml`; the redundant `pytest.ini` was removed. `tests/conftest.py` lost its `sys.path` hack and duplicate marker registration (markers are declared in `pyproject.toml`). The `minversion` value was also corrected from `"3.8"` (which was the Python version) to `"7.0"` — the actual pytest floor required for the `pythonpath` option used by the config.
 
 ### Fixed
 
@@ -31,11 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **RPD pre-script: failed as root with no `sudo`**: the install path used `sudo apt`/`sudo yum` unconditionally, which is missing in many CI containers running as `root`. `trace.sh` now branches on `id -u` — direct `apt-get`/`yum` when root, `sudo` otherwise — and adds the build deps the upstream Makefile expects (`git`, `build-essential`, `pkg-config` on Ubuntu; `gcc`, `gcc-c++`, `make`, `git` on CentOS).
 
+- **`TypeError` on restricted ROCm < 6.4.1 systems**: `Context` assumed every `/dev/dri/renderD*` entry exposed a non-`None` `kfd_renderDs` value. On restricted hosts (ROCm < 6.4.1, certain VFIO/passthrough setups) this returned `None` and crashed downstream consumers. `core/context.py` now guards the iteration so missing/`None` entries are skipped instead of raising.
+
+- **Deployment monitor infinite loop on cancelled jobs**: `BaseDeployment._monitor_job` treated only `COMPLETED`/`FAILED` as terminal, so a `CANCELLED` job (manual `scancel`, K8s job deletion, etc.) would loop forever waiting for a state that never arrived. `CANCELLED` is now in the terminal-state set in `deployment/base.py`.
+
+### Security
+
+- **Shell injection hardening (extended)**: `shlex.quote()` is now applied to every shell interpolation of a user-controlled value across `core/docker.py`, `execution/container_runner.py`, `execution/docker_builder.py`, and `orchestration/run_orchestrator.py` (image names, paths, container names, build-args). A follow-up pass closed the last remaining sites in `docker_builder.py` (`grep`, `docker manifest inspect`, `docker tag`, `docker push`, `head`). This is a defence-in-depth extension of the v2.0.2 build-arg quoting work — values that flow through `--additional-context`, model configs, or registry credentials can no longer break out of the shell command they are embedded in.
+
 ### Tests
 
 - **Dummy `dummy_rocenv_full` fixture**: new Dockerfile installs `lshw`, `dmidecode`, `kmod`, and `util-linux` so e2e tests can exercise rocenv full mode end-to-end inside the container.
 
 - **RCCL profiling e2e stabilization**: `tests/fixtures/dummy/scripts/dummy/run_nccl_trace.sh` now pins `HIP_VISIBLE_DEVICES`/`NCCL_IB_DISABLE`/`NCCL_SOCKET_IFNAME` defaults to avoid topology-detection hangs in CI. The `rccl_trace` log assertion in `tests/e2e/test_profiling_workflows.py` was relaxed for minor NCCL log-format drift.
+
+- **New `test_shell_quoting.py`**: 11-test suite covering the shell-quoting behaviour described above end-to-end across `docker.py`, `container_runner.py`, `docker_builder.py`, and `run_orchestrator.py`. Includes regression coverage for spaces, `$`, backticks, command-substitution, and quote characters in interpolated values.
+
+- **Test isolation fix**: `tests/unit/test_error_handling.py` was leaking the global error-handler state across tests, so test order could mask or fabricate failures. The handler is now reset around the affected tests.
 
 ### Known Issues
 

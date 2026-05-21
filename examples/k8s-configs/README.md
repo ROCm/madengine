@@ -405,10 +405,12 @@ madengine separates **per-job results** from **long-lived shared data**:
 
 | Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
 |--------|-------------|----------------------------|----------------------------|
-| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `local_path_storage_class` or `single_node_results_storage_class` (e.g. `local-path`) | **RWX** — `nfs_storage_class` or `multi_node_results_storage_class` (e.g. `nfs-banff`) |
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** — `multi_node_results_storage_class` → `nfs_storage_class` → `storage_class` (e.g. `nfs-banff`) |
 | **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
 
-**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, `local_path_storage_class` → `local-path`, `recreate_shared_data_pvc` → `false`. You do not need to set these unless you use another cluster — then override in additional context.
+**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, generic `storage_class` → `nfs-banff` (broad fallback for both data and single-node results PVCs), `recreate_shared_data_pvc` → `false`. The legacy `local_path_storage_class` key is still honoured as a single-node-results fallback for backward compatibility but is no longer set in the preset. You do not need to set any of these unless you use another cluster — then override in additional context.
+
+> **2.0.3 default change:** Before 2.0.3 the preset set `local_path_storage_class: "local-path"`, so single-node results PVCs landed on `local-path` by default. The preset now sets `storage_class: "nfs-banff"` instead, so both the data PVC and the single-node results PVC default to `nfs-banff` unless you override. If you actually want `local-path` for single-node results, set `"local_path_storage_class": "local-path"` (or `"single_node_results_storage_class": "local-path"`) in your `--additional-context`.
 
 Example override for a different cluster:
 
@@ -423,7 +425,8 @@ Example override for a different cluster:
 ```
 
 - **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
-- **`local_path_storage_class`**: RWO class for **single-node only** results PVC.
+- **`local_path_storage_class`**: RWO class for **single-node only** results PVC. Still accepted for backward compatibility; new configs should prefer `single_node_results_storage_class` or rely on `storage_class`.
+- **`storage_class`**: Generic broad fallback used for **both** the data PVC and single-node results PVC when no more-specific key is set. Added in 2.0.3.
 - **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
 - **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
 - **`recreate_shared_data_pvc`**: If `true`, deletes existing `madengine-shared-data` before create (**destroys data** — backup first). Use when migrating from RWO `local-path` to RWX NFS.
@@ -563,11 +566,11 @@ To use an existing PVC instead of auto-creation:
 |-------|------|---------|-------------|
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
 | `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
-| `storage_class` | string | `null` | Optional fallback if the keys below are unset |
+| `storage_class` | string | **`nfs-banff`** (preset, since 2.0.3) | Generic broad fallback for both the data PVC and the single-node results PVC when no more-specific key is set |
 | `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
-| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` |
+| `local_path_storage_class` | string | `null` (not in preset since 2.0.3; was **`local-path`** in ≤ 2.0.2) | Optional RWO class for single-node `{job}-results`. Still honoured for backward compatibility |
 | `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
-| `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (`local_path_storage_class` if unset) |
+| `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (falls back to `local_path_storage_class`, then `storage_class`) |
 | `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
 | `recreate_shared_data_pvc` | boolean | **`false`** (preset) | If `true`, delete `madengine-shared-data` before create (data loss) |
 
