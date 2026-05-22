@@ -1119,12 +1119,18 @@ class ContainerRunner:
         # SLURM and K8s generate this in their deployment layers (slurm.py,
         # kubernetes_launcher_mixin.py). Docker local has no such layer, so
         # we generate it here after GPU resolution provides MAD_RUNTIME_NGPUS.
-        # Reuses the `launcher` variable already resolved at lines 327-372.
         # Defaults to torchrun when launcher is a deployment-level value
         # ("docker", "native") rather than a distributed launcher.
         # For models that hardcode their own launcher (e.g. HuggingFace scripts
         # calling torchrun directly), this env var is simply unused.
         if "MAD_MULTI_NODE_RUNNER" not in self.context.ctx["docker_env_vars"]:
+            launcher = ""
+            if self.additional_context:
+                launcher = self.additional_context.get("distributed", {}).get("launcher", "")
+            if not launcher and model_info.get("distributed"):
+                launcher = model_info["distributed"].get("launcher", "")
+            if not launcher:
+                launcher = os.environ.get("MAD_LAUNCHER", "")
             dist_launcher = launcher if launcher in (
                 "torchrun", "megatron", "megatron-lm", "torchtitan",
                 "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
