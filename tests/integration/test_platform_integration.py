@@ -585,6 +585,31 @@ class TestMultiGPUArch:
         result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
         assert not result[0]["docker_image"].endswith("_gfx908")
 
+    def test_create_base_image_name_sanitizes_slashes(self):
+        """Model names with '/' must be sanitized so Docker tags stay valid.
+
+        Regression: ``ci-dummy/dummy_dummy/dummy.ubuntu.amd_gfx950`` is rejected
+        by ``docker tag`` because '/' is a repository separator, not a tag
+        character. The base name must mirror the single-arch convention.
+        """
+        model_info = {"name": "dummy/dummy"}
+        dockerfile = "docker/dummy.ubuntu.amd.Dockerfile"
+        base = self.builder._create_base_image_name(model_info, dockerfile)
+        assert "/" not in base
+        assert base == "ci-dummy_dummy_dummy.ubuntu.amd"
+
+    @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
+    @patch.object(DockerBuilder, "build_image")
+    def test_multi_arch_build_image_naming_slashed_model(self, mock_build_image, mock_get_dockerfiles):
+        """End-to-end naming through ``_build_model_for_arch`` for slashed names."""
+        model_info = {"name": "dummy/dummy"}
+        mock_get_dockerfiles.return_value = ["docker/dummy.ubuntu.amd.Dockerfile"]
+        mock_build_image.return_value = {"docker_image": "unused", "build_duration": 1.0}
+        self.builder._build_model_for_arch(model_info, "gfx950", None, False, None, "", None)
+        override = mock_build_image.call_args.kwargs["override_image_name"]
+        assert "/" not in override
+        assert override == "ci-dummy_dummy_dummy.ubuntu.amd_gfx950"
+
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
     @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
     @patch.object(DockerBuilder, "build_image")
