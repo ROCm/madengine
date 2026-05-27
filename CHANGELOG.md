@@ -5,7 +5,7 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.3] - 2026-05-19
+## [2.0.3] - 2026-05-26
 
 ### Added
 
@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TypeError` on restricted ROCm < 6.4.1 systems**: `Context` assumed every `/dev/dri/renderD*` entry exposed a non-`None` `kfd_renderDs` value. On restricted hosts (ROCm < 6.4.1, certain VFIO/passthrough setups) this returned `None` and crashed downstream consumers. `core/context.py` now guards the iteration so missing/`None` entries are skipped instead of raising.
 
 - **Deployment monitor infinite loop on cancelled jobs**: `BaseDeployment._monitor_job` treated only `COMPLETED`/`FAILED` as terminal, so a `CANCELLED` job (manual `scancel`, K8s job deletion, etc.) would loop forever waiting for a state that never arrived. `CANCELLED` is now in the terminal-state set in `deployment/base.py`.
+
+- **Docker local: missing `MAD_MULTI_NODE_RUNNER`**: SLURM (`job.sh.j2`) and Kubernetes (`kubernetes_launcher_mixin.py`) already export `MAD_MULTI_NODE_RUNNER` with the appropriate distributed launcher command, but local Docker runs had no equivalent. Models that delegate process spawning to `$MAD_MULTI_NODE_RUNNER` (e.g. Megatron-LM `train_7b.sh`) failed on `madengine run` with `MULTI_NODE_RUNNER is not defined`. `ContainerRunner` now resolves the launcher from `--additional-context` → model `distributed.launcher` → `MAD_LAUNCHER` (same priority chain as elsewhere), treats deployment-level values (`docker`, `native`) as `torchrun`, and sets `MAD_MULTI_NODE_RUNNER` via `_generate_local_launcher_command()` after GPU resolution (`MAD_RUNTIME_NGPUS`). Supports torchrun, megatron-lm, torchtitan, deepspeed, vllm, sglang, and primus; models that hardcode their own launcher (e.g. HuggingFace scripts) simply ignore the variable. Skipped when `MAD_MULTI_NODE_RUNNER` is already set in `docker_env_vars`.
 
 ### Security
 
