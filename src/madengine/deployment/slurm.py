@@ -19,18 +19,13 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
-from .common import configure_multi_node_profiling, normalize_launcher
+from .common import configure_multi_node_profiling, is_self_managed_launcher, normalize_launcher
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
 import json
-
-SLURM_MULTI_ALIASES = [
-    "slurm_multi",
-    "slurm-multi",
-]
 
 
 class SlurmDeployment(BaseDeployment):
@@ -292,9 +287,11 @@ class SlurmDeployment(BaseDeployment):
 
     def prepare(self) -> bool:
         """Generate sbatch script from template."""
-        # slurm_multi early dispatch: peek at the model's launcher type so slurm_multi
-        # can take a self-managed path without requiring madengine on compute nodes.
-        # Other launchers fall through to the standard template flow unchanged.
+        # Escape-hatch early dispatch: slurm_multi is a self-managed launcher that runs the
+        # model's own .slurm script on the head node (no madengine wrapper on compute nodes).
+        # Peek at the launcher type; if it's a self-managed launcher, take the bypass path.
+        # All other launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan,
+        # primus) fall through to the standard Jinja2 template flow unchanged.
         try:
             model_keys_peek = list((self.manifest or {}).get("built_models", {}).keys())
             if model_keys_peek:
@@ -304,11 +301,7 @@ class SlurmDeployment(BaseDeployment):
                     model_distributed_peek.get("launcher")
                     or self.distributed_config.get("launcher", "torchrun")
                 )
-                launcher_normalized_peek = launcher_type_peek.lower().replace("_", "-")
-                slurm_multi_aliases_normalized = [
-                    a.lower().replace("_", "-") for a in SLURM_MULTI_ALIASES
-                ]
-                if launcher_normalized_peek in slurm_multi_aliases_normalized:
+                if is_self_managed_launcher(launcher_type_peek):
                     self.output_dir.mkdir(parents=True, exist_ok=True)
                     self.console.print(
                         f"[cyan]Detected slurm_multi launcher: {launcher_type_peek}[/cyan]"
@@ -369,12 +362,15 @@ class SlurmDeployment(BaseDeployment):
 
     def _prepare_slurm_multi_script(self, model_info: Dict, docker_image_name: str = None) -> bool:
         """
-        Generate a simple wrapper script for slurm_multi (self-managed) launchers.
-        
-        These launchers (slurm_multi, sglang-disagg, vllm-disagg) run the model's 
-        .slurm script directly on the host, which then manages Docker containers 
-        via srun. No madengine wrapper needed.
-        
+        Escape hatch for self-orchestrating multi-container SLURM topologies.
+
+        slurm_multi bypasses the standard sbatch template entirely: the model's own
+        .slurm script runs on the head node and manages its per-node Docker containers
+        via srun internally (e.g. SGLang Disaggregated proxy + prefill + decode). No
+        madengine wrapper is injected on compute nodes. This is NOT a peer of the
+        templated launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan,
+        primus) — those continue to flow through the standard template path unchanged.
+
         Args:
             model_info: Model configuration from manifest
             docker_image_name: The built Docker image name from manifest key
@@ -409,8 +405,10 @@ class SlurmDeployment(BaseDeployment):
         model_distributed = model_info.get("distributed", {})
         sglang_disagg_config = model_distributed.get("sglang_disagg", {}) or self.distributed_config.get("sglang_disagg", {})
         if sglang_disagg_config:
-            env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
-            env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
+            if "xP" not in env_vars:
+                env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
+            if "yD" not in env_vars:
+                env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
         
         # Override DOCKER_IMAGE_NAME with the built image from manifest
         # This ensures the run uses the freshly built image, not the base image
@@ -711,8 +709,6 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type.lower().replace("_", "-") in [a.lower().replace("_", "-") for a in SLURM_MULTI_ALIASES]:
-            return self._generate_slurm_multi_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "megatron":
@@ -842,102 +838,6 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
         if nnodes < 3:
             raise ValueError(
                 f"SGLang Disaggregated requires minimum 3 nodes "
-                f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
-            )
-        
-        # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
-        prefill_nodes = sglang_disagg_config.get("prefill_nodes")
-        decode_nodes = sglang_disagg_config.get("decode_nodes")
-        
-        if prefill_nodes is not None and decode_nodes is not None:
-            # User specified custom split - validate
-            if prefill_nodes < 1 or decode_nodes < 1:
-                raise ValueError(
-                    f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
-                    f"got prefill={prefill_nodes}, decode={decode_nodes}"
-                )
-            if prefill_nodes + decode_nodes + 1 != nnodes:
-                raise ValueError(
-                    f"Custom split validation failed: "
-                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
-                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
-                )
-            xP = prefill_nodes
-            yD = decode_nodes
-        else:
-            # Default split: use golden ratio for prefill/decode
-            # For N total nodes: 1 proxy + ~40% prefill + ~60% decode
-            xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% of worker nodes
-            yD = nnodes - 1 - xP  # remaining nodes
-        
-        return f'''# SGLang Disaggregated multi-node setup
-# ============================================
-# Cluster Configuration:
-#   Total Nodes: {nnodes}
-#   Proxy: 1 node (NODE_RANK=0)
-#   Prefill: {xP} nodes (NODE_RANK=1 to {xP})
-#   Decode: {yD} nodes (NODE_RANK={xP+1} to {nnodes-1})
-# ============================================
-
-# Export cluster topology
-export SGLANG_DISAGG_MODE="enabled"
-export SGLANG_DISAGG_PREFILL_NODES={xP}
-export SGLANG_DISAGG_DECODE_NODES={yD}
-export SGLANG_DISAGG_TOTAL_NODES={nnodes}
-export SGLANG_TP_SIZE={nproc_per_node}
-
-# Master coordination
-export MASTER_PORT={master_port}
-
-# Build node IP list from SLURM
-SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
-    getent hosts "$node" | awk '{{print $1}}'
-done | tr '\\n' ',' | sed 's/,$//')
-
-export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
-export SGLANG_NODE_RANK=${{SLURM_PROCID}}
-
-echo "=========================================="
-echo "SGLang Disaggregated Cluster Info"
-echo "=========================================="
-echo "Node Rank: $SGLANG_NODE_RANK"
-echo "Node IPs: $SGLANG_NODE_IPS"
-echo "Prefill Nodes: {xP}"
-echo "Decode Nodes: {yD}"
-echo "TP Size: {nproc_per_node}"
-echo "=========================================="
-
-# No MAD_MULTI_NODE_RUNNER - SGLang disagg handles process management
-# Model script should detect SGLANG_DISAGG_MODE and launch appropriately'''
-
-    def _generate_slurm_multi_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int
-    ) -> str:
-        """
-        Generate slurm_multi launcher environment for SLURM.
-        
-        slurm_multi Architecture (self-managed multi-node):
-        - Node 0: Proxy (load balancer)
-        - Nodes 1 to xP: Prefill nodes
-        - Nodes xP+1 to xP+yD: Decode nodes
-        
-        Minimum cluster: 3 nodes (1 proxy + 1 prefill + 1 decode)
-        
-        Args:
-            nnodes: Total number of nodes (must be >= 3)
-            nproc_per_node: GPUs per node (tensor parallel size)
-            master_port: Master port for coordination
-            
-        Returns:
-            Environment setup with node role assignment
-            
-        Raises:
-            ValueError: If nnodes < 3
-        """
-        if nnodes < 3:
-            raise ValueError(
-                f"slurm_multi requires minimum 3 nodes "
                 f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
             )
         
@@ -1749,11 +1649,7 @@ export MASTER_PORT={master_port}
         if model_key:
             _mi = built_models_dict.get(model_key, {}) or {}
             _launcher_type = (_mi.get("distributed") or {}).get("launcher", "")
-            _launcher_normalized = _launcher_type.lower().replace("_", "-")
-            _slurm_multi_aliases_normalized = [
-                a.lower().replace("_", "-") for a in SLURM_MULTI_ALIASES
-            ]
-            if _launcher_normalized in _slurm_multi_aliases_normalized:
+            if is_self_managed_launcher(_launcher_type):
                 return self._collect_slurm_multi_results(
                     deployment_id, results, session_start_row
                 )

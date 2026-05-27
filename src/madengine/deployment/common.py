@@ -91,6 +91,22 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
     return "docker"
 
 
+_SELF_MANAGED_LAUNCHERS: frozenset = frozenset({"slurm_multi"})
+
+
+def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
+    """Return True if the launcher manages its own per-node containers.
+
+    Self-managed launchers (e.g. slurm_multi) run the model's own .slurm script
+    directly on the head node and orchestrate Docker containers via srun internally.
+    They bypass the standard sbatch template entirely and are an escape hatch — not
+    peers of the templated launchers (torchrun, vllm, sglang, etc.).
+    """
+    if not launcher_type:
+        return False
+    return normalize_launcher(launcher_type, "slurm") in _SELF_MANAGED_LAUNCHERS
+
+
 @functools.lru_cache(maxsize=None)
 def is_rocprofv3_available() -> bool:
     """

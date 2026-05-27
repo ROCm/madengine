@@ -37,19 +37,13 @@ from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
     resolve_run_timeout,
 )
-
-
-SLURM_MULTI_ALIASES = [
-    "slurm_multi",
-    "slurm-multi",
-]
-SELF_MANAGED_LAUNCHERS = SLURM_MULTI_ALIASES
 
 
 def _print_run_env_table(
@@ -1294,10 +1288,7 @@ class ContainerRunner:
             launcher = model_info["distributed"].get("launcher", "")
         if not launcher:
             launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
-        launcher_normalized = launcher.lower().replace("_", "-") if launcher else ""
-        if launcher_normalized and launcher_normalized in [
-            l.lower().replace("_", "-") for l in SELF_MANAGED_LAUNCHERS
-        ]:
+        if is_self_managed_launcher(launcher):
             self.rich_console.print(
                 f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]"
             )

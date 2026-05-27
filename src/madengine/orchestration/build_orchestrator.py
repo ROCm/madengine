@@ -10,6 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -26,6 +27,7 @@ from madengine.core.errors import (
     DiscoveryError,
     create_error_context,
 )
+from madengine.deployment.common import is_self_managed_launcher
 from madengine.utils.discover_models import DiscoverModels
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.execution.dockerfile_utils import (
@@ -265,7 +267,7 @@ class BuildOrchestrator:
             # users do not have to repeat the image on the CLI for slurm_multi.
             slurm_multi_models = [
                 m for m in _discovered_models
-                if (m.get("distributed") or {}).get("launcher", "") in ["slurm_multi", "slurm-multi"]
+                if is_self_managed_launcher((m.get("distributed") or {}).get("launcher", ""))
             ]
             if slurm_multi_models and not registry:
                 card_images = {
@@ -286,7 +288,7 @@ class BuildOrchestrator:
                 # No card image (or divergent images across models): fall through to error.
             for model in _discovered_models:
                 launcher = (model.get("distributed") or {}).get("launcher", "")
-                if launcher in ["slurm_multi", "slurm-multi"] and not registry:
+                if is_self_managed_launcher(launcher) and not registry:
                     model_name = model.get("name", "unknown")
                     raise ConfigurationError(
                         "slurm_multi launcher requires --registry or --use-image",
@@ -849,23 +851,20 @@ class BuildOrchestrator:
                 ],
             )
         
-        model = models[0]
-        model_name = model.get("name", "unknown")
-        self.rich_console.print(f"[green]✓ Found model: {model_name}[/green]\n")
-        
-        # Merge SLURM config: model card (base) + additional-context (override)
-        model_slurm_config = model.get("slurm", {})
+        # SLURM config is derived from the first model card + --additional-context overrides.
+        # All models are built in a single sbatch job, so one SLURM config applies to all.
+        first_model = models[0]
+        model_slurm_config = first_model.get("slurm", {})
         context_slurm_config = self.additional_context.get("slurm", {})
-        
-        # Start with model card config, then override with command-line context
         slurm_config = {**model_slurm_config, **context_slurm_config}
-        
+
+        self.rich_console.print(f"[green]✓ Found {len(models)} model(s)[/green]\n")
         self.rich_console.print("[bold cyan]📋 SLURM Configuration (merged):[/bold cyan]")
         if model_slurm_config:
             self.rich_console.print(f"  [dim]From model card:[/dim] {list(model_slurm_config.keys())}")
         if context_slurm_config:
             self.rich_console.print(f"  [dim]From --additional-context (overrides):[/dim] {list(context_slurm_config.keys())}")
-        
+
         # Validate required fields
         partition = slurm_config.get("partition")
         if not partition:
@@ -880,7 +879,7 @@ class BuildOrchestrator:
                     'Or specify via --additional-context \'{"slurm": {"partition": "gpu"}}\'',
                 ],
             )
-        
+
         reservation = slurm_config.get("reservation", "")
         time_limit = slurm_config.get("time", "02:00:00")
         
@@ -973,69 +972,98 @@ class BuildOrchestrator:
         # Check if we're inside an existing allocation
         inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         existing_job_id = os.environ.get("SLURM_JOB_ID", "")
-        
-        # Find Dockerfile
-        dockerfile = model.get("dockerfile", "")
-        dockerfile_path = ""
-        dockerfile_patterns = [
-            f"{dockerfile}.ubuntu.amd.Dockerfile",
-            f"{dockerfile}.Dockerfile",
-            f"{dockerfile}",
-        ]
-        for pattern in dockerfile_patterns:
-            matches = glob.glob(pattern)
-            if matches:
-                dockerfile_path = matches[0]
-                break
-        
-        if not dockerfile_path:
-            raise ConfigurationError(
-                f"Dockerfile not found for model {model_name}",
-                context=create_error_context(
-                    operation="build_on_compute",
-                    component="BuildOrchestrator",
-                    additional_info={"dockerfile": dockerfile},
-                ),
-                suggestions=[
-                    f"Check if {dockerfile}.ubuntu.amd.Dockerfile exists",
-                    "Verify the dockerfile path in models.json",
-                ],
-            )
-        
-        # Generate image name for registry.
-        # Docker repository names must be lowercase, so .lower() the final
-        # local image name. This also covers the edge case where the
-        # dockerfile filename is just `Dockerfile` (no `.ubuntu.amd.Dockerfile`
-        # suffix to strip), which would otherwise leave an uppercase `D` in
-        # `ci-<model>_Dockerfile` and make `docker build -t` reject the tag.
-        dockerfile_basename = Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
-        local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
-        
-        # Determine registry image name based on registry format
-        # docker.io/namespace/repo -> use model name as tag: docker.io/namespace/repo:model_name
-        # docker.io/namespace -> use model name as repo: docker.io/namespace/model_name:latest
-        registry_parts = registry.replace("docker.io/", "").split("/")
-        if len(registry_parts) >= 2:
-            # Registry already includes repo name (e.g., rocm/pytorch-private)
-            # Use model name as tag
-            registry_image_name = f"{registry}:{model_name}"
-            self.rich_console.print(f"  [dim]Registry format: namespace/repo -> using model name as tag[/dim]")
-        else:
-            # Registry is just namespace (e.g., myuser)
-            # Use model name as repo
-            registry_image_name = f"{registry}/{model_name}:latest"
-            self.rich_console.print(f"  [dim]Registry format: namespace -> using model name as repo[/dim]")
-        
-        self.rich_console.print("[bold cyan]🐳 Docker Configuration:[/bold cyan]")
-        self.rich_console.print(f"  Dockerfile: {dockerfile_path}")
-        self.rich_console.print(f"  Local image: {local_image_name}")
-        self.rich_console.print(f"  Registry image: {registry_image_name}")
-        self.rich_console.print("")
-        
-        # Determine registry host for docker login
+
+        # Determine registry host for docker login (shared across all models)
         registry_host = registry.split("/")[0] if "/" in registry else registry
-        
-        # Build script content - builds on 1 node, pushes to registry
+        registry_parts = registry.replace("docker.io/", "").split("/")
+
+        # Collect per-model build data (Dockerfile, image names) for all discovered models
+        per_model_data: List[Dict] = []
+        self.rich_console.print("[bold cyan]🐳 Docker Configuration:[/bold cyan]")
+        for model in models:
+            model_name = model.get("name", "unknown")
+            dockerfile = model.get("dockerfile", "")
+            dockerfile_path = ""
+            for pattern in [
+                f"{dockerfile}.ubuntu.amd.Dockerfile",
+                f"{dockerfile}.Dockerfile",
+                f"{dockerfile}",
+            ]:
+                matches = glob.glob(pattern)
+                if matches:
+                    dockerfile_path = matches[0]
+                    break
+            if not dockerfile_path:
+                raise ConfigurationError(
+                    f"Dockerfile not found for model {model_name}",
+                    context=create_error_context(
+                        operation="build_on_compute",
+                        component="BuildOrchestrator",
+                        additional_info={"dockerfile": dockerfile},
+                    ),
+                    suggestions=[
+                        f"Check if {dockerfile}.ubuntu.amd.Dockerfile exists",
+                        "Verify the dockerfile path in models.json",
+                    ],
+                )
+            # Docker repository names must be lowercase; cover the edge case where the
+            # Dockerfile filename is just `Dockerfile` (no suffix to strip).
+            dockerfile_basename = (
+                Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
+            )
+            local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
+            if len(registry_parts) >= 2:
+                registry_image_name = f"{registry}:{model_name}"
+            else:
+                registry_image_name = f"{registry}/{model_name}:latest"
+            self.rich_console.print(f"  {model_name}: {dockerfile_path} -> {registry_image_name}")
+            per_model_data.append({
+                "model": model,
+                "model_name": model_name,
+                "dockerfile_path": dockerfile_path,
+                "local_image_name": local_image_name,
+                "registry_image_name": registry_image_name,
+            })
+        self.rich_console.print("")
+
+        # Shell-quote values that end up inside bash commands (defense-in-depth,
+        # consistent with _run_self_managed and the v2.0.3 shlex hardening pass).
+        registry_host_q = shlex.quote(str(registry_host))
+        cwd_q = shlex.quote(str(Path.cwd().absolute()))
+        no_cache_flag = "--no-cache" if clean_cache else ""
+
+        # Build one build+tag+push block per model, all in a single sbatch job.
+        build_steps = ""
+        for idx, pmd in enumerate(per_model_data, start=1):
+            local_q = shlex.quote(str(pmd["local_image_name"]))
+            reg_img_q = shlex.quote(str(pmd["registry_image_name"]))
+            df_q = shlex.quote(str(pmd["dockerfile_path"]))
+            build_steps += f"""
+# --- Model {idx}/{len(per_model_data)}: {pmd["model_name"]} ---
+echo "=== Building {pmd["model_name"]} ==="
+echo "Dockerfile: {pmd["dockerfile_path"]}"
+echo "Local image: {pmd["local_image_name"]}"
+docker build --network=host -t {local_q} {no_cache_flag} --pull -f {df_q} ./docker
+BUILD_RC=$?
+if [ $BUILD_RC -ne 0 ]; then
+    echo "❌ Docker build FAILED for {pmd["model_name"]} (exit $BUILD_RC)"
+    exit $BUILD_RC
+fi
+echo "✅ Build OK: {pmd["model_name"]}"
+echo "Tagging: {pmd["local_image_name"]} -> {pmd["registry_image_name"]}"
+docker tag {local_q} {reg_img_q}
+echo "Pushing: {pmd["registry_image_name"]}"
+docker push {reg_img_q}
+PUSH_RC=$?
+if [ $PUSH_RC -ne 0 ]; then
+    echo "❌ Docker push FAILED for {pmd["model_name"]} (exit $PUSH_RC)"
+    exit $PUSH_RC
+fi
+echo "✅ Push OK: {pmd["registry_image_name"]}"
+echo ""
+"""
+
+        # Build script content — runs on 1 compute node, builds+pushes all models
         build_script_content = f"""#!/bin/bash
 #SBATCH --job-name=madengine-build
 #SBATCH --partition={partition}
@@ -1049,22 +1077,19 @@ class BuildOrchestrator:
 echo "============================================================"
 echo "=== MADENGINE BUILD ON COMPUTE NODE ==="
 echo "============================================================"
-echo ""
 echo "Job ID: $SLURM_JOB_ID"
 echo "Build Node: $(hostname)"
-echo "Working directory: $(pwd)"
 echo "Registry: {registry}"
 echo ""
 
 # Change to submission directory
-cd {Path.cwd().absolute()}
+cd {cwd_q}
 
 # Step 0: Docker login for registry push
 echo "=== Step 0: Docker Registry Authentication ==="
 DOCKER_USER="${{MAD_DOCKERHUB_USER:-}}"
 DOCKER_PASS="${{MAD_DOCKERHUB_PASSWORD:-}}"
 
-# Try credential.json if env vars not set
 if [ -z "$DOCKER_USER" ] && [ -f "credential.json" ]; then
     echo "Reading credentials from credential.json..."
     DOCKER_USER=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('username', ''))" 2>/dev/null || echo "")
@@ -1072,17 +1097,11 @@ if [ -z "$DOCKER_USER" ] && [ -f "credential.json" ]; then
 fi
 
 if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASS" ]; then
-    echo "Logging in to registry as $DOCKER_USER..."
-    echo "$DOCKER_PASS" | docker login {registry_host} -u "$DOCKER_USER" --password-stdin
+    echo "Logging in as $DOCKER_USER..."
+    echo "$DOCKER_PASS" | docker login {registry_host_q} -u "$DOCKER_USER" --password-stdin
     LOGIN_RC=$?
     if [ $LOGIN_RC -ne 0 ]; then
-        echo ""
-        echo "❌ Docker login FAILED with exit code $LOGIN_RC"
-        echo ""
-        echo "Troubleshooting:"
-        echo "  - Verify MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD are correct"
-        echo "  - For Docker Hub, use a Personal Access Token (PAT) not your password"
-        echo "  - Check if the registry URL is correct: {registry_host}"
+        echo "❌ Docker login FAILED (exit $LOGIN_RC)"
         exit $LOGIN_RC
     fi
     echo "✅ Docker login SUCCESS"
@@ -1091,55 +1110,13 @@ else
 fi
 echo ""
 
-# Step 1: Build Docker image
-echo ""
-echo "=== Step 1: Building Docker image ==="
-echo "Dockerfile: {dockerfile_path}"
-echo "Local image name: {local_image_name}"
-echo ""
-
-docker build --network=host -t {local_image_name} {"--no-cache" if clean_cache else ""} --pull -f {dockerfile_path} ./docker
-BUILD_RC=$?
-
-if [ $BUILD_RC -ne 0 ]; then
-    echo ""
-    echo "❌ Docker build FAILED on $(hostname) with exit code $BUILD_RC"
-    exit $BUILD_RC
-fi
-
-echo ""
-echo "✅ Docker build SUCCESS on $(hostname)"
-echo ""
-
-# Step 2: Tag and push to registry
-echo "=== Step 2: Pushing to registry ==="
-echo "Tagging: {local_image_name} -> {registry_image_name}"
-docker tag {local_image_name} {registry_image_name}
-
-echo "Pushing: {registry_image_name}"
-docker push {registry_image_name}
-PUSH_RC=$?
-
-if [ $PUSH_RC -ne 0 ]; then
-    echo ""
-    echo "❌ Docker push FAILED with exit code $PUSH_RC"
-    echo ""
-    echo "Troubleshooting:"
-    echo "  - Check if you have push access to {registry}"
-    echo "  - Verify credentials are correct (MAD_DOCKERHUB_USER, MAD_DOCKERHUB_PASSWORD)"
-    echo "  - For Docker Hub, ensure the repository exists or you have create permissions"
-    exit $PUSH_RC
-fi
-
-echo ""
+# Steps 1-N: Build, tag, and push each model image
+{build_steps}
 echo "============================================================"
-echo "✅ BUILD AND PUSH COMPLETE"
+echo "✅ ALL BUILDS COMPLETE"
 echo "============================================================"
-echo ""
 echo "Build Node: $(hostname)"
-echo "Registry Image: {registry_image_name}"
-echo ""
-echo "Run phase will pull this image in parallel on all nodes."
+echo "Run phase will pull images in parallel on all nodes."
 echo "============================================================"
 
 exit 0
@@ -1182,57 +1159,64 @@ exit 0
                     ],
                 )
             
-            # Generate manifest with registry image name
+            # Generate manifest keyed by model_name — same shape as _execute_with_prebuilt_image
+            # so ContainerRunner.run_models_from_manifest() can join via built_models.get(key).
             self.rich_console.print(f"\n[bold cyan]📄 Generating manifest...[/bold cyan]")
-            
+
+            built_images: Dict = {}
+            built_models: Dict = {}
+            for pmd in per_model_data:
+                mn = pmd["model_name"]
+                rim = pmd["registry_image_name"]
+                m = pmd["model"]
+                built_images[mn] = {
+                    "image_name": rim,
+                    "docker_image": rim,
+                    "local_image": pmd["local_image_name"],
+                    "dockerfile": pmd["dockerfile_path"],
+                    "build_time": 0,
+                    "built_on_compute": True,
+                    "registry": registry,
+                }
+                built_models[mn] = {
+                    "name": mn,
+                    "image": rim,
+                    "docker_image": rim,
+                    "dockerfile": pmd["dockerfile_path"],
+                    "scripts": m.get("scripts", ""),
+                    "data": m.get("data", ""),
+                    "n_gpus": m.get("n_gpus", "8"),
+                    "tags": m.get("tags", []),
+                    "slurm": slurm_config,
+                    "distributed": m.get("distributed", {}),
+                    "env_vars": {**m.get("env_vars", {}), "DOCKER_IMAGE_NAME": rim},
+                    "built_on_compute": True,
+                }
+
             manifest = {
-                "built_images": {
-                    registry_image_name: {
-                        "image_name": registry_image_name,
-                        "docker_image": registry_image_name,
-                        "local_image": local_image_name,
-                        "dockerfile": dockerfile_path,
-                        "build_time": 0,
-                        "built_on_compute": True,
-                        "registry": registry,
-                    }
-                },
-                "built_models": {
-                    registry_image_name: {
-                        "name": model_name,
-                        "image": registry_image_name,
-                        "docker_image": registry_image_name,
-                        "dockerfile": dockerfile_path,
-                        "scripts": model.get("scripts", ""),
-                        "data": model.get("data", ""),
-                        "n_gpus": model.get("n_gpus", "8"),
-                        "tags": model.get("tags", []),
-                        "slurm": slurm_config,
-                        "distributed": model.get("distributed", {}),
-                        "env_vars": {**model.get("env_vars", {}), "DOCKER_IMAGE_NAME": registry_image_name},
-                        "built_on_compute": True,
-                    }
-                },
-                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "built_images": built_images,
+                "built_models": built_models,
+                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
                 "deployment_config": {
                     "slurm": slurm_config,
-                    "distributed": model.get("distributed", {}),
+                    "distributed": first_model.get("distributed", {}),
                 },
                 "credentials_required": [],
                 "summary": {
-                    "successful_builds": [model_name],
+                    "successful_builds": list(built_models.keys()),
                     "failed_builds": [],
                     "total_build_time": 0,
-                    "successful_pushes": [registry_image_name],
+                    "successful_pushes": [pmd["registry_image_name"] for pmd in per_model_data],
                     "failed_pushes": [],
                 },
             }
-            
+
             with open(manifest_output, "w") as f:
                 json.dump(manifest, f, indent=2)
-            
+
             self.rich_console.print(f"[green]✓ Build completed on compute node[/green]")
-            self.rich_console.print(f"[green]✓ Image pushed: {registry_image_name}[/green]")
+            for pmd in per_model_data:
+                self.rich_console.print(f"[green]✓ Image pushed: {pmd['registry_image_name']}[/green]")
             self.rich_console.print(f"[green]✓ Manifest: {manifest_output}[/green]")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
             

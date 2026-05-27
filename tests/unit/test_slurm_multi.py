@@ -24,9 +24,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from madengine.deployment.common import VALID_LAUNCHERS, normalize_launcher
+from madengine.deployment.common import VALID_LAUNCHERS, is_self_managed_launcher, normalize_launcher
 from madengine.deployment.base import DeploymentConfig
-from madengine.deployment.slurm import SLURM_MULTI_ALIASES, SlurmDeployment
+from madengine.deployment.slurm import SlurmDeployment
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +38,18 @@ class TestSlurmMultiRegistration:
     def test_slurm_multi_in_valid_launchers(self):
         assert "slurm_multi" in VALID_LAUNCHERS
 
-    def test_aliases_constant(self):
-        assert SLURM_MULTI_ALIASES == ["slurm_multi", "slurm-multi"]
+    @pytest.mark.parametrize("launcher,expected", [
+        ("slurm_multi", True),
+        ("slurm-multi", True),   # hyphen alias normalized via normalize_launcher
+        ("torchrun", False),
+        ("vllm", False),
+        ("sglang-disagg", False),
+        ("", False),
+        (None, False),
+    ])
+    def test_is_self_managed_launcher(self, launcher, expected):
+        """is_self_managed_launcher must accept both aliases and reject all other launchers."""
+        assert is_self_managed_launcher(launcher) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +384,143 @@ class TestPrebuiltImageManifestShape:
         # Manifest should still be valid JSON with both models present
         manifest = json.loads(manifest_path.read_text())
         assert len(manifest["built_models"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 5. xP/yD skip-if-set: model card wins over distributed.sglang_disagg
+
+class TestXpYdSkipIfSet:
+    """xP/yD in model card env_vars must not be overwritten by distributed.sglang_disagg."""
+
+    @pytest.fixture
+    def slurm_deployment(self, tmp_path: Path) -> SlurmDeployment:
+        """SlurmDeployment with model card that has xP=2/yD=3 while sglang_disagg says 1/1."""
+        model_info = {
+            **PR186_MODEL_ENTRY,
+            "env_vars": {**PR186_MODEL_ENTRY["env_vars"], "xP": "2", "yD": "3"},
+            "distributed": {
+                **PR186_MODEL_ENTRY["distributed"],
+                "sglang_disagg": {"prefill_nodes": 1, "decode_nodes": 1},
+            },
+        }
+        script_abs = tmp_path / PR186_MODEL_ENTRY["scripts"]
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text("#!/bin/bash\n")
+
+        image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
+        manifest = {
+            "built_images": {image_key: {"image_name": image_key, "docker_image": image_key}},
+            "built_models": {image_key: model_info},
+            "context": {
+                "docker_env_vars": {}, "docker_mounts": {}, "docker_build_arg": {},
+                "gpu_vendor": "AMD", "guest_os": "UBUNTU", "docker_gpus": "all",
+            },
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        additional_context = {
+            "deploy": "slurm",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "slurm": dict(PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")),
+            "distributed": model_info["distributed"],
+        }
+        cfg = DeploymentConfig(target="slurm", manifest_file=str(manifest_path),
+                               additional_context=additional_context)
+        return SlurmDeployment(cfg)
+
+    def test_model_card_xp_yd_wins(self, slurm_deployment):
+        """When env_vars already contains xP/yD, distributed.sglang_disagg must not override them."""
+        slurm_deployment.prepare()
+        script_text = Path(slurm_deployment.script_path).read_text()
+
+        assert 'export xP="2"' in script_text, "model card xP=2 must not be overwritten"
+        assert 'export yD="3"' in script_text, "model card yD=3 must not be overwritten"
+        assert 'export xP="1"' not in script_text, "distributed.sglang_disagg xP=1 must not win"
+        assert 'export yD="1"' not in script_text, "distributed.sglang_disagg yD=1 must not win"
+
+
+# ---------------------------------------------------------------------------
+# 6. _execute_build_on_compute manifest-shape contract (multi-model parity)
+
+class TestBuildOnComputeManifestShape:
+    """_execute_build_on_compute must produce the same key contract as _execute_with_prebuilt_image.
+
+    built_images.keys() == built_models.keys() == set of model names, so
+    ContainerRunner.run_models_from_manifest() can join them.
+    """
+
+    def _build_orchestrator_stub(self, tmp_path: Path):
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock()
+        orch.console = MagicMock()
+        orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = {}
+        orch.additional_context = {"slurm": {"partition": "gpu", "time": "01:00:00"}}
+        orch._original_user_slurm_keys = set()
+        orch.credentials = {}
+        return orch
+
+    def test_two_model_manifest_keys_match(self, tmp_path):
+        """built_images and built_models must share the same key set (model names)."""
+        fake_models = [
+            {
+                "name": "model_a",
+                "dockerfile": "docker/model_a",
+                "scripts": "scripts/model_a/run.sh",
+                "n_gpus": "8",
+                "tags": ["model_a"],
+                "slurm": {"partition": "gpu", "time": "01:00:00"},
+                "distributed": {"launcher": "slurm_multi"},
+                "env_vars": {},
+            },
+            {
+                "name": "model_b",
+                "dockerfile": "docker/model_b",
+                "scripts": "scripts/model_b/run.sh",
+                "n_gpus": "8",
+                "tags": ["model_b"],
+                "slurm": {"partition": "gpu", "time": "01:00:00"},
+                "distributed": {"launcher": "slurm_multi"},
+                "env_vars": {},
+            },
+        ]
+        # Write dummy Dockerfiles so glob finds them
+        for m in fake_models:
+            df = tmp_path / f"{m['dockerfile']}.ubuntu.amd.Dockerfile"
+            df.parent.mkdir(parents=True, exist_ok=True)
+            df.write_text("FROM scratch\n")
+
+        manifest_path = tmp_path / "build_manifest.json"
+        orch = self._build_orchestrator_stub(tmp_path)
+
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+                mock_dm.return_value.run.return_value = fake_models
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    # Use localhost:5000 (private-registry path) so the test
+                    # doesn't hit the public-registry credential gate at
+                    # build_orchestrator.py:954. The manifest-shape contract
+                    # this test locks in is registry-agnostic.
+                    orch._execute_build_on_compute(
+                        registry="localhost:5000/myrepo",
+                        manifest_output=str(manifest_path),
+                    )
+        finally:
+            os.chdir(orig_cwd)
+
+        manifest = json.loads(manifest_path.read_text())
+        assert set(manifest["built_images"].keys()) == set(manifest["built_models"].keys()), (
+            "built_images and built_models must share the same key set"
+        )
+        assert set(manifest["built_models"].keys()) == {"model_a", "model_b"}
+        for mn in ("model_a", "model_b"):
+            assert manifest["built_models"][mn]["built_on_compute"] is True
+            assert "DOCKER_IMAGE_NAME" in manifest["built_models"][mn]["env_vars"]
