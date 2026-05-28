@@ -179,6 +179,7 @@ class DockerBuilder:
 
         build_command = (
             f"docker build {use_cache_str} --network=host "
+            f"--build-context tools=./tools "
             f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
             f"{build_args} {shlex.quote(docker_context)}"
         )
