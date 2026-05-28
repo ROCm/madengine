@@ -253,12 +253,17 @@ class BuildOrchestrator:
                 batch_build_metadata=batch_build_metadata,
             )
 
-        # For normal build: check if slurm_multi launcher requires registry
-        # Discover models first to check launcher
+        # For normal build: check if slurm_multi launcher requires registry.
+        # Discover models once here and reuse below for the actual build, so we
+        # don't repeat dynamic get_models_json.py execution, MODEL_DIR copies,
+        # or duplicate "Selected Models" output.
+        _discovered_models = None
+        _discovery_error: Optional[Exception] = None
         try:
             _disc = DiscoverModels(args=self.args)
             _discovered_models = _disc.run()
-        except Exception:
+        except Exception as e:
+            _discovery_error = e
             _discovered_models = []
 
         if _discovered_models:
@@ -312,10 +317,15 @@ class BuildOrchestrator:
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
         try:
-            # Step 1: Discover models
+            # Step 1: Discover models (reuse early discovery; retry only if it
+            # failed or returned nothing, so a real discovery error still surfaces
+            # as DiscoveryError rather than a swallowed Exception).
             self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
-            discover_models = DiscoverModels(args=self.args)
-            models = discover_models.run()
+            if _discovered_models:
+                models = _discovered_models
+            else:
+                discover_models = DiscoverModels(args=self.args)
+                models = discover_models.run()
 
             if not models:
                 raise DiscoveryError(
@@ -323,6 +333,11 @@ class BuildOrchestrator:
                     context=create_error_context(
                         operation="discover_models",
                         component="BuildOrchestrator",
+                        additional_info=(
+                            {"early_discovery_error": str(_discovery_error)}
+                            if _discovery_error
+                            else None
+                        ),
                     ),
                     suggestions=[
                         "Check if models.json exists",
