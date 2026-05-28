@@ -540,9 +540,16 @@ class BuildOrchestrator:
                 model_env_vars = model.get("env_vars", {}).copy()
                 model_env_vars["DOCKER_IMAGE_NAME"] = use_image
 
+                # `local_image: True` routes through the local-image branch in
+                # ContainerRunner.run_models_from_manifest(), which uses
+                # build_info["docker_image"] as run_image (and pulls it if not
+                # present locally). Without this, the else branch would set
+                # run_image = image_name -- which is now keyed by model_name --
+                # and _resolve_docker_image() would fail to find any such image.
                 manifest["built_images"][model_name] = {
                     "image_name": use_image,
                     "docker_image": use_image,
+                    "local_image": True,
                     "dockerfile": "",
                     "build_time": 0,
                     "prebuilt": True,
@@ -1050,31 +1057,38 @@ class BuildOrchestrator:
         # Build one build+tag+push block per model, all in a single sbatch job.
         build_steps = ""
         for idx, pmd in enumerate(per_model_data, start=1):
+            # All values destined for the bash script are shell-quoted, including
+            # those embedded only in echo lines: a `"` or `$` in model_name or
+            # dockerfile_path would otherwise break the surrounding bash string
+            # or trigger expansion. The leading comment line is the only raw
+            # interpolation; `#` starts a shell comment so its contents are
+            # ignored by bash regardless of metacharacters.
             local_q = shlex.quote(str(pmd["local_image_name"]))
             reg_img_q = shlex.quote(str(pmd["registry_image_name"]))
             df_q = shlex.quote(str(pmd["dockerfile_path"]))
+            model_q = shlex.quote(str(pmd["model_name"]))
             build_steps += f"""
-# --- Model {idx}/{len(per_model_data)}: {pmd["model_name"]} ---
-echo "=== Building {pmd["model_name"]} ==="
-echo "Dockerfile: {pmd["dockerfile_path"]}"
-echo "Local image: {pmd["local_image_name"]}"
+# --- Model {idx}/{len(per_model_data)} ---
+echo "=== Building" {model_q} "==="
+echo "Dockerfile:" {df_q}
+echo "Local image:" {local_q}
 docker build --network=host -t {local_q} {no_cache_flag} --pull -f {df_q} ./docker
 BUILD_RC=$?
 if [ $BUILD_RC -ne 0 ]; then
-    echo "❌ Docker build FAILED for {pmd["model_name"]} (exit $BUILD_RC)"
+    echo "❌ Docker build FAILED for" {model_q} "(exit $BUILD_RC)"
     exit $BUILD_RC
 fi
-echo "✅ Build OK: {pmd["model_name"]}"
-echo "Tagging: {pmd["local_image_name"]} -> {pmd["registry_image_name"]}"
+echo "✅ Build OK:" {model_q}
+echo "Tagging:" {local_q} "->" {reg_img_q}
 docker tag {local_q} {reg_img_q}
-echo "Pushing: {pmd["registry_image_name"]}"
+echo "Pushing:" {reg_img_q}
 docker push {reg_img_q}
 PUSH_RC=$?
 if [ $PUSH_RC -ne 0 ]; then
-    echo "❌ Docker push FAILED for {pmd["model_name"]} (exit $PUSH_RC)"
+    echo "❌ Docker push FAILED for" {model_q} "(exit $PUSH_RC)"
     exit $PUSH_RC
 fi
-echo "✅ Push OK: {pmd["registry_image_name"]}"
+echo "✅ Push OK:" {reg_img_q}
 echo ""
 """
 

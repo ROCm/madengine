@@ -12,6 +12,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -427,8 +428,18 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
             env_vars["DOCKER_IMAGE_NAME"] = built_image
         
-        # Get model args
+        # Get model args. The wrapper script below is executed by bash, so the
+        # script name and free-form args string must be shell-quoted to prevent
+        # embedded metacharacters ($(), backticks, ;, etc.) from being evaluated
+        # by the host shell. Mirrors the hardening in container_runner._run_self_managed.
         model_args = model_info.get("args", "")
+        _script_name_q = shlex.quote(model_script_path.name)
+        _model_args_q = (
+            " ".join(shlex.quote(a) for a in shlex.split(model_args))
+            if model_args
+            else ""
+        )
+        _bash_invocation = f"bash {_script_name_q} {_model_args_q}".rstrip()
         
         # Generate simple wrapper script
         # IMPORTANT: SBATCH directives MUST be at the top, right after #!/bin/bash
@@ -467,7 +478,7 @@ class SlurmDeployment(BaseDeployment):
         ])
         
         for key, value in env_vars.items():
-            script_lines.append(f"export {key}=\"{value}\"")
+            script_lines.append(f"export {key}={shlex.quote(str(value))}")
         
         script_lines.append("")
         script_lines.extend([
@@ -544,9 +555,9 @@ class SlurmDeployment(BaseDeployment):
             "",
             "# Run the model script directly on the host (with -e disabled so we",
             "# can capture the exit code and write the completion marker even on failure).",
-            f"echo 'Executing: bash {model_script_path.name} {model_args}'",
+            f"echo 'Executing: {_bash_invocation}'",
             "set +e",
-            f"bash {model_script_path.name} {model_args}",
+            _bash_invocation,
             "SCRIPT_EXIT_CODE=$?",
             "set -e",
             "",

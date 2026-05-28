@@ -895,10 +895,13 @@ class ContainerRunner:
                 env[key] = str(value)
                 print(f"  ENV: {key}=<set>")
 
-        # Add env vars from additional_context
+        # Add env vars from additional_context.
+        # Log keys only (not values) for consistency with model_info env vars and to avoid
+        # leaking sensitive values while still showing operators what was applied.
         if self.additional_context and "env_vars" in self.additional_context:
             for key, value in self.additional_context["env_vars"].items():
                 env[key] = str(value)
+                print(f"  ENV: {key}=<set>")
         
         # Run script with logging
         test_start_time = time.time()
