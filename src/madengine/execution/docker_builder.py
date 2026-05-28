@@ -736,18 +736,14 @@ class DockerBuilder:
         return ""
 
     def _create_base_image_name(self, model_info: typing.Dict, dockerfile: str) -> str:
-        """Create base image name from model info and dockerfile."""
-        # Extract dockerfile context suffix (e.g., "ubuntu.amd" from "dummy.ubuntu.amd.Dockerfile")
-        dockerfile_name = os.path.basename(dockerfile)
-        if '.' in dockerfile_name:
-            # Remove the .Dockerfile extension and get context
-            context_parts = dockerfile_name.replace('.Dockerfile', '').split('.')[1:]  # Skip model name
-            context_suffix = '.'.join(context_parts) if context_parts else 'default'
-        else:
-            context_suffix = 'default'
-        
-        # Create base image name: ci-{model}_{model}.{context}
-        return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
+        """Create base image name from model info and dockerfile.
+
+        Mirrors the single-arch naming in ``build_image`` so multi-arch builds
+        produce valid Docker references when the model name contains ``/``.
+        """
+        safe_name = model_info["name"].replace("/", "_").lower()
+        dockerfile_base = os.path.basename(dockerfile).replace(".Dockerfile", "")
+        return f"ci-{safe_name}_{dockerfile_base}"
 
     def _create_registry_image_name(
         self,

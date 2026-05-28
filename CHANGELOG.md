@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-05-28
+
 ### Added
 
 - **`slurm_multi` SLURM escape-hatch launcher**: New self-managed multi-node launcher for workloads that orchestrate their own per-node Docker containers via `srun` (e.g. SGLang Disaggregated proxy + prefill + decode topologies). Selected via `distributed.launcher: "slurm_multi"` (or `"slurm-multi"` alias). Generates a wrapper SBATCH script that runs the model's `.slurm` script directly on baremetal so `srun`/`scontrol` work inside it; performs parallel `srun docker pull` of the registry image on all allocated nodes when the model card sets `env_vars.DOCKER_IMAGE_NAME`. Honors model-card and `--additional-context` `slurm` fields (`partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `nodelist`). This launcher coexists with the standard templated launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan, primus) — those continue to flow through the standard sbatch template unchanged; only `slurm_multi`/`slurm-multi` takes the self-managed bypass path.
@@ -31,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **slurm_multi: cwd `perf.csv` aggregation**: After a successful slurm_multi run, `madengine run` previously printed a cosmetic `Performance CSV not found: perf.csv` warning even though `_collect_slurm_multi_results` had ingested the per-job CSV from `/shared_inference/$USER/$JOBID/perf.csv`. The reporter (`display_performance_table`) reads cwd `perf.csv` by default. Now `_collect_slurm_multi_results` also writes the per-job rows into cwd `perf.csv` (copy if absent, append-data-rows if present) so reporting and HTML generation work without extra args. Local + classic-SLURM flows are unchanged.
 
-## [2.0.3] - 2026-05-19
+## [2.0.3] - 2026-05-26
 
 ### Added
 
@@ -53,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Multi-arch image names broken for slashed model names**: `_create_base_image_name` in `execution/docker_builder.py` interpolated `model_info["name"]` directly into the image tag, so a model named `dummy/dummy` built with `--target-archs gfx950` produced `ci-dummy/dummy_dummy/dummy.ubuntu.amd_gfx950`. Docker image tags cannot contain `/` (it is a repository separator), so the subsequent `docker tag … rocm/mad-private:<image>` failed with `invalid reference format` and the registry push was skipped, even though the local build succeeded. Single-arch builds were unaffected because `build_image()` already sanitised the name. The helper now mirrors the single-arch convention — lowercase the model name, replace `/` with `_`, and append the dockerfile basename — yielding `ci-dummy_dummy_dummy.ubuntu.amd_gfx950`. Regression tests added in `tests/integration/test_platform_integration.py` cover both the helper and the end-to-end multi-arch path with a slashed model name (existing tests used `"name": "dummy"` and never tripped the bug).
+
 - **K8s collector pod name mismatch**: The cleanup code in `kubernetes.py` used the full job name (`collector-{job_name}`) while the creation code in `k8s_results.py` truncated it (`collector-{deployment_id[:15]}`). For any job name longer than 15 characters (i.e. virtually all real jobs), cleanup would fail to delete the collector pod, leaving it running and potentially blocking PVC deletion on the next deploy. Extracted a shared `collector_pod_name()` helper so both sites use the same truncated name.
 
 - **rocEnvTool full-mode dumps crashed on empty tool output**: `dump_hardware_information_in_csv`, `dump_bios_settings_in_csv`, `dump_dmsg_gpu_drm_atom_logs_in_csv`, and `dump_amdgpu_modinfo_in_csv` indexed `lines[0]` unconditionally. In unprivileged containers, `dmesg` (no `CAP_SYSLOG`) and `dmidecode` (no `/dev/mem`) commonly emit empty output, which raised `IndexError` and aborted the entire CSV dump — losing the sections that had succeeded. Each handler now returns `[]` early when the source file is empty.
@@ -64,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TypeError` on restricted ROCm < 6.4.1 systems**: `Context` assumed every `/dev/dri/renderD*` entry exposed a non-`None` `kfd_renderDs` value. On restricted hosts (ROCm < 6.4.1, certain VFIO/passthrough setups) this returned `None` and crashed downstream consumers. `core/context.py` now guards the iteration so missing/`None` entries are skipped instead of raising.
 
 - **Deployment monitor infinite loop on cancelled jobs**: `BaseDeployment._monitor_job` treated only `COMPLETED`/`FAILED` as terminal, so a `CANCELLED` job (manual `scancel`, K8s job deletion, etc.) would loop forever waiting for a state that never arrived. `CANCELLED` is now in the terminal-state set in `deployment/base.py`.
+
+- **Docker local: missing `MAD_MULTI_NODE_RUNNER`**: SLURM (`job.sh.j2`) and Kubernetes (`kubernetes_launcher_mixin.py`) already export `MAD_MULTI_NODE_RUNNER` with the appropriate distributed launcher command, but local Docker runs had no equivalent. Models that delegate process spawning to `$MAD_MULTI_NODE_RUNNER` (e.g. Megatron-LM `train_7b.sh`) failed on `madengine run` with `MULTI_NODE_RUNNER is not defined`. `ContainerRunner` now resolves the launcher from `--additional-context` → model `distributed.launcher` → `MAD_LAUNCHER` (same priority chain as elsewhere), treats deployment-level values (`docker`, `native`) as `torchrun`, and sets `MAD_MULTI_NODE_RUNNER` via `_generate_local_launcher_command()` after GPU resolution (`MAD_RUNTIME_NGPUS`). Supports torchrun, megatron-lm, torchtitan, deepspeed, vllm, sglang, and primus; models that hardcode their own launcher (e.g. HuggingFace scripts) simply ignore the variable. Skipped when `MAD_MULTI_NODE_RUNNER` is already set in `docker_env_vars`.
 
 ### Security
 
