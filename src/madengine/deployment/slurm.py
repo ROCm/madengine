@@ -483,7 +483,7 @@ class SlurmDeployment(BaseDeployment):
         ])
         
         for key, value in env_vars.items():
-            script_lines.append(f'export {key}="{value}"')
+            script_lines.append(f"export {key}={shlex.quote(str(value))}")
         
         script_lines.append("")
         script_lines.extend([
@@ -610,6 +610,9 @@ class SlurmDeployment(BaseDeployment):
         # Extract launcher configuration
         launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
         
+        # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
+        # passes through normalize_launcher instead of being mapped to "docker".
+        launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
         # Normalize launcher based on deployment type and validity
         launcher_type = normalize_launcher(launcher_type, "slurm")
         

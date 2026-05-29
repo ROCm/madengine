@@ -42,6 +42,7 @@ def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
         return launcher
     return _LAUNCHER_ALIASES.get(launcher, launcher)
 
+
 # Tool names that use rocprof / rocprofv3 wrapping and need MPI-aware rocprofv3 on multi-node.
 _ROCPROF_FAMILY_TOOL_NAMES = frozenset(
     {
