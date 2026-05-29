@@ -38,6 +38,7 @@ from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
@@ -838,6 +839,165 @@ class ContainerRunner:
                 else:
                     print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
+    def _run_self_managed(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        log_file_path: str,
+        timeout: int,
+        run_results: typing.Dict,
+        pre_encapsulate_post_scripts: typing.Dict,
+        run_env: typing.Dict,
+    ) -> typing.Dict:
+        """
+        Run script directly on the host (self-managed launcher, not inside madengine Docker).
+        
+        Used for slurm_multi launchers that manage their own Docker containers
+        via SLURM srun commands. The script is executed directly on the node.
+        
+        Args:
+            model_info: Model configuration from manifest
+            build_info: Build information from manifest
+            log_file_path: Path to log file
+            timeout: Execution timeout in seconds
+            run_results: Dictionary to store run results
+            pre_encapsulate_post_scripts: Pre/post script configuration
+            run_env: Environment variables for the script
+
+        Returns:
+            Dictionary with run results
+        """
+        self.rich_console.print(f"[dim]{'='*80}[/dim]")
+
+        # Prepare script path
+        scripts_arg = model_info["scripts"]
+
+        # Get the current working directory (might be temp workspace)
+        cwd = os.getcwd()
+        print(f"📂 Current directory: {cwd}")
+
+        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm") or scripts_arg.endswith(".py"):
+            script_path = scripts_arg
+        else:
+            # Directory specified - look for run.sh
+            script_path = os.path.join(scripts_arg, "run.sh")
+        
+        # If script path is relative, make it absolute from cwd
+        if not os.path.isabs(script_path):
+            script_path = os.path.join(cwd, script_path)
+        
+        # Check script exists
+        if not os.path.exists(script_path):
+            print(f"⚠️ Script not found at: {script_path}")
+            # Try alternative locations
+            alt_path = os.path.join(cwd, os.path.basename(scripts_arg))
+            if os.path.exists(alt_path):
+                script_path = alt_path
+                print(f"✓ Found at alternative location: {script_path}")
+            else:
+                raise FileNotFoundError(f"Script not found: {script_path}")
+        
+        script_dir = os.path.dirname(script_path) or cwd
+        print(f"📜 Script: {script_path}")
+        print(f"📁 Working directory: {script_dir}")
+        
+        # Prepare model arguments
+        model_args = self.context.ctx.get("model_args", model_info.get("args", ""))
+        print(f"📝 Arguments: {model_args}")
+        
+        # Build command. The eventual `subprocess.run(..., shell=True)` below
+        # interprets shell metacharacters in `script_path` and `model_args`,
+        # so quote each piece explicitly. `model_args` is a CLI/manifest-
+        # supplied free-form string -- shlex.split + per-arg shlex.quote
+        # passes literal arguments to the script even when the input contains
+        # `$()`, backticks, `;`, etc.
+        _script_q = shlex.quote(script_path)
+        _args_q = (
+            " ".join(shlex.quote(a) for a in shlex.split(model_args))
+            if model_args
+            else ""
+        )
+        if script_path.endswith(".py"):
+            cmd = f"python3 {_script_q} {_args_q}".rstrip()
+        else:
+            cmd = f"bash {_script_q} {_args_q}".rstrip()
+
+        print(f"🔧 Command: {cmd}")
+        
+        # Prepare environment
+        env = os.environ.copy()
+        env.update(run_env)
+        
+        # Add model-specific env vars from model_info.
+        # Log keys only (not values) so credentials in env_vars (HF_TOKEN, MAD_DOCKERHUB_PASSWORD,
+        # CONNECT_*_TOKEN, etc.) carried via the model card don't leak into the run log.
+        if "env_vars" in model_info and model_info["env_vars"]:
+            for key, value in model_info["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}=<set>")
+
+        # Add env vars from additional_context.
+        # Log keys only (not values) for consistency with model_info env vars and to avoid
+        # leaking sensitive values while still showing operators what was applied.
+        if self.additional_context and "env_vars" in self.additional_context:
+            for key, value in self.additional_context["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}=<set>")
+        
+        # Run script with logging
+        test_start_time = time.time()
+        self.rich_console.print("\n[bold blue]Running script (self-managed launcher)...[/bold blue]")
+        
+        try:
+            with open(log_file_path, mode="w", buffering=1) as outlog:
+                with redirect_stdout(
+                    PythonicTee(outlog, self.live_output)
+                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                    print(f"⏰ Setting timeout to {timeout} seconds.")
+                    print(f"🚀 Executing: {cmd}")
+                    print(f"📂 Working directory: {script_dir}")
+                    print(f"{'='*80}")
+                    
+                    # NOTE: shell=True is required because cmd embeds shell features
+                    # (pipes, redirects, env-var substitution) constructed earlier in this
+                    # method. cmd is built from validated model card / manifest fields and
+                    # any user-provided model_args are routed through shlex-quoted assembly
+                    # in the caller — do NOT concatenate raw user input directly into cmd.
+                    result = subprocess.run(  # noqa: S602 (shell=True intentional, see comment above)
+                        cmd,
+                        shell=True,
+                        cwd=script_dir,
+                        env=env,
+                        timeout=timeout if timeout > 0 else None,
+                    )
+                    
+                    run_results["test_duration"] = time.time() - test_start_time
+                    print(f"\n{'='*80}")
+                    print(f"⏱️ Test Duration: {run_results['test_duration']:.2f} seconds")
+                    
+                    if result.returncode == 0:
+                        run_results["status"] = "SUCCESS"
+                        self.rich_console.print("[bold green]✓ Script completed successfully[/bold green]")
+                    else:
+                        run_results["status"] = "FAILURE"
+                        run_results["status_detail"] = f"Exit code {result.returncode}"
+                        self.rich_console.print(f"[bold red]✗ Script failed with exit code {result.returncode}[/bold red]")
+                        raise subprocess.CalledProcessError(result.returncode, cmd)
+                        
+        except subprocess.TimeoutExpired:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = f"Timeout after {timeout}s"
+            run_results["test_duration"] = time.time() - test_start_time
+            self.rich_console.print(f"[bold red]✗ Script timed out after {timeout}s[/bold red]")
+            raise
+        except Exception as e:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = str(e)
+            run_results["test_duration"] = time.time() - test_start_time
+            raise
+        
+        return run_results
+
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
     ) -> None:
@@ -1192,6 +1352,35 @@ class ContainerRunner:
 
         print(f"Docker options: {docker_options}")
 
+        # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
+        # slurm_multi launchers run scripts directly on the host,
+        # not inside a madengine-managed Docker. The script manages its own containers via srun.
+        launcher = ""
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+        if is_self_managed_launcher(launcher):
+            self.rich_console.print(
+                f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]"
+            )
+            self.rich_console.print(
+                "[dim]Script will manage its own Docker containers via SLURM[/dim]"
+            )
+            return self._run_self_managed(
+                model_info=model_info,
+                build_info=build_info,
+                log_file_path=log_file_path,
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
+                run_env=run_env,
+            )
+        # ========== END SELF-MANAGED CHECK ==========
+
         self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")
         print(f"📦 Container: {container_name}")
@@ -1308,8 +1497,8 @@ class ContainerRunner:
 
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
-                        if scripts_arg.endswith(".sh"):
-                            # Shell script specified directly
+                        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+                            # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):

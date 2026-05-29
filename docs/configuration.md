@@ -472,6 +472,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `gpus_per_node` - GPUs per node (default: 1)
 - `nodes` - Number of nodes (default: 1)
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
+- `reservation` - SLURM reservation name; forwarded to srun health/cleanup commands and SBATCH directives
+- `exclusive` - Exclusive node access (default: `true`)
 - `time` - Wall time limit HH:MM:SS (required)
 - `mem` - Memory per node (e.g., "64G")
 - `mail_user` - Email for notifications
@@ -521,8 +523,11 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `deepspeed` - ZeRO optimization
 - `megatron` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated SGLang
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 

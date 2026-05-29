@@ -298,6 +298,7 @@ def additional_context_needs_cli_validation(
 def validate_additional_context(
     additional_context: str,
     additional_context_file: Optional[str] = None,
+    use_image: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Validate and parse additional context.
@@ -305,6 +306,10 @@ def validate_additional_context(
     Args:
         additional_context: JSON string containing additional context
         additional_context_file: Optional file containing additional context
+        use_image: Pre-built image override forwarded by build.py for CLI signature
+            compatibility. Currently informational only -- validation behavior is
+            unchanged when this is set; callers wanting to skip required-field
+            checks should adjust ``finalize_additional_context_dict`` directly.
 
     Returns:
         Dict containing parsed additional context

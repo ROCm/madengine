@@ -20,6 +20,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
+| **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
 
 ---
 
@@ -557,6 +558,108 @@ madengine run --tags model --config custom-split-config.json
 
 ---
 
+### 9. slurm_multi (Self-Managed Escape Hatch)
+
+**Purpose**: Run workloads that manage their own per-node Docker containers via `srun` — an escape hatch for topologies that don't fit the standard templated launchers.
+
+**When to Use**:
+- ✅ Multi-container SLURM topologies (e.g. SGLang Disaggregated proxy + prefill + decode)
+- ✅ Workloads whose `.slurm` script orchestrates Docker containers via `srun` internally
+- ✅ Scenarios requiring baremetal `srun`/`scontrol` access from the model script
+- ❌ NOT a peer of templated launchers — use torchrun, vllm, sglang, etc. for standard workloads
+
+**Configuration**:
+```json
+{
+  "distributed": {
+    "launcher": "slurm_multi",
+    "nnodes": 3,
+    "nproc_per_node": 8
+  },
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "gpus_per_node": 8,
+    "time": "04:00:00",
+    "exclusive": true,
+    "reservation": "my-reservation"
+  }
+}
+```
+
+**How It Works**:
+
+Unlike templated launchers that inject `MAD_MULTI_NODE_RUNNER` and wrap the model script inside a Docker container, slurm_multi:
+
+1. Generates a wrapper SBATCH script that exports `env_vars` from the model card
+2. Runs the model's own `.slurm` script directly on baremetal (head node)
+3. The model script orchestrates per-node Docker containers via `srun` internally
+4. Performs parallel `srun docker pull` on all allocated nodes when using registry images
+5. Writes a completion marker file for robust job completion detection
+
+```
+┌─────────────────────────────────────────────────┐
+│  madengine build --use-image <image>             │
+│  → Generates manifest with pre-built image       │
+│  → Merges model card slurm/distributed config    │
+└───────────────────┬─────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────┐
+│  madengine run --manifest-file manifest.json     │
+│  → Detects slurm_multi launcher                  │
+│  → Generates wrapper SBATCH script               │
+│  → Parallel docker pull on all nodes (if needed) │
+│  → Submits sbatch (or runs bash if inside salloc)│
+└───────────────────┬─────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────┐
+│  Model's .slurm script runs on head node         │
+│  → Orchestrates Docker containers via srun       │
+│  → Manages its own topology (proxy/prefill/...)  │
+│  → Writes perf.csv (collected by madengine)      │
+└─────────────────────────────────────────────────┘
+```
+
+**Build Phase**:
+
+slurm_multi models typically use pre-built images. The build phase has a **registry gate**: if no `--registry`, `--use-image`, or `--build-on-compute` is given, the orchestrator either auto-detects `DOCKER_IMAGE_NAME` from the model card (implicit `--use-image`) or raises a `ConfigurationError` with supported options.
+
+```bash
+# Use a pre-built image (recommended for slurm_multi)
+madengine build --tags my_model --use-image lmsysorg/sglang:latest
+
+# Auto-detect image from model card's DOCKER_IMAGE_NAME
+madengine build --tags my_model --use-image
+
+# Build on compute node and push to registry
+madengine build --tags my_model --build-on-compute --registry docker.io/myorg
+```
+
+**Run Phase — salloc support**:
+
+When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` inside `salloc` (no behavior change).
+
+```bash
+# Inside salloc: runs synchronously with bash
+salloc --nodes=3 --gpus-per-node=8 --partition=gpu
+madengine run --manifest-file build_manifest.json
+```
+
+**Alias**: `"slurm-multi"` (hyphen) is normalized to `"slurm_multi"` (underscore).
+
+**Features**:
+- Wrapper SBATCH script with shell-quoted env_vars (injection-safe)
+- Parallel `srun docker pull` on all nodes for registry images
+- Completion marker for robust job status detection
+- bash-in-salloc synchronous execution path
+- `DeploymentResult.skip_monitoring` for synchronous runs
+- Model card slurm/distributed config auto-merged into manifest
+
+**Examples**:
+- SLURM: `examples/slurm-configs/minimal/slurm-multi-minimal.json`
+
+---
+
 ## Comparison Matrix
 
 ### Training Launchers
@@ -732,7 +835,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
 
 **2. Multi-Node Communication Fails**
 ```bash
@@ -782,6 +885,9 @@ $MAD_MULTI_NODE_RUNNER your_training_script.py --args
 
 # For vLLM/sglang (no MAD_MULTI_NODE_RUNNER)
 python your_inference_script.py --args
+
+# For slurm_multi (no MAD_MULTI_NODE_RUNNER; script runs on baremetal and manages Docker via srun)
+# The model's .slurm script is executed directly — it handles srun, docker run, etc. internally
 ```
 
 ### Launcher Detection

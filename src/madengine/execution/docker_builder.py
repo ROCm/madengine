@@ -179,6 +179,7 @@ class DockerBuilder:
 
         build_command = (
             f"docker build {use_cache_str} --network=host "
+            f"--build-context tools=./tools "
             f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
             f"{build_args} {shlex.quote(docker_context)}"
         )
@@ -365,6 +366,31 @@ class DockerBuilder:
                 build_info["registry"] = batch_build_metadata[model_name].get(
                     "registry"
                 )
+
+        # Update built_models with registry image name for parallel pull in slurm_multi
+        # Map local image to registry image for env_vars
+        for image_name, build_info in self.built_images.items():
+            registry_image = build_info.get("registry_image")
+            if not registry_image:
+                continue
+            if image_name not in self.built_models:
+                # built_images and built_models are keyed by docker_image in the
+                # normal build path (see _build_single_model). If a future code
+                # path keys them differently, this injection would silently no-op
+                # and slurm_multi parallel pulls would fall back to the local
+                # image tag. Surface the mismatch so it's caught early.
+                self.rich_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"No built_models entry found for local image key '{image_name}' "
+                    f"while setting DOCKER_IMAGE_NAME='{registry_image}'. "
+                    "built_images and built_models may be keyed differently."
+                )
+                continue
+            model_data = self.built_models[image_name]
+            if "env_vars" not in model_data:
+                model_data["env_vars"] = {}
+            # Set DOCKER_IMAGE_NAME to registry image for parallel pull
+            model_data["env_vars"]["DOCKER_IMAGE_NAME"] = registry_image
 
         manifest = {
             "built_images": self.built_images,

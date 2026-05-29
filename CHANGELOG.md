@@ -5,6 +5,52 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.1.0] - 2026-05-28
+
+### Added
+
+- **`slurm_multi` SLURM escape-hatch launcher**: New self-managed multi-node launcher for workloads that orchestrate their own per-node Docker containers via `srun` (e.g. SGLang Disaggregated proxy + prefill + decode topologies). Selected via `distributed.launcher: "slurm_multi"` (or `"slurm-multi"` alias). Generates a wrapper SBATCH script that runs the model's `.slurm` script directly on baremetal so `srun`/`scontrol` work inside it; performs parallel `srun docker pull` of the registry image on all allocated nodes when the model card sets `env_vars.DOCKER_IMAGE_NAME`. Honors model-card and `--additional-context` `slurm` fields (`partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `nodelist`). This launcher coexists with the standard templated launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan, primus) — those continue to flow through the standard sbatch template unchanged; only `slurm_multi`/`slurm-multi` takes the self-managed bypass path.
+
+- **`madengine build --use-image [IMAGE | auto]`**: Skip the local Docker build and use a pre-built image instead. With no value, resolves to the model card's `env_vars.DOCKER_IMAGE_NAME` automatically. Mutually exclusive with `--registry` and `--build-on-compute`. Manifest entries are keyed by model name with `local_image: True` so `ContainerRunner.run_models_from_manifest()` resolves `run_image` correctly and pulls on demand.
+
+- **`madengine build --build-on-compute`**: Build Docker images on a SLURM compute node and push to a registry, then have `madengine run` pull the image in parallel on all allocated nodes. Requires `--registry`. The resulting manifest carries `built_on_compute: true`.
+
+- **slurm_multi build registry gate**: When `madengine build` discovers a `slurm_multi` model and no `--registry`/`--use-image`/`--build-on-compute` is given, the orchestrator either auto-uses `env_vars.DOCKER_IMAGE_NAME` from the model card (implicit `--use-image` fallback) or raises a structured `ConfigurationError` with the four supported options listed.
+
+- **bash-in-salloc execution path** for slurm_multi: when `madengine run` detects `SLURM_JOB_ID` (i.e. running inside an existing `salloc`), the slurm_multi launcher runs the generated wrapper synchronously with `bash` instead of nesting another `sbatch` job. Other launchers continue to use `sbatch` even inside `salloc` (no behavior change for non-slurm_multi).
+
+- **Local self-managed launcher execution** (`container_runner.py`): `ContainerRunner._run_self_managed()` runs the model script directly on the host for self-managed launchers, bypassing madengine's Docker wrapper. Used when `madengine run` detects a `slurm_multi` launcher in local/non-SLURM contexts. Environment variables from the model card and `--additional-context` are injected; keys are logged without values to avoid leaking credentials.
+
+- **Model card config merge into manifest `deployment_config`**: `_execute_with_prebuilt_image` now merges the model card's `distributed` and `slurm` sections into the manifest's `deployment_config`, so the run phase auto-detects SLURM deployment and launcher settings without requiring `--additional-context`. User-supplied CLI values take precedence over model card defaults.
+
+- **`DockerBuilder` registry image injection for parallel pull**: After a successful registry push, `DockerBuilder.generate_manifest()` now sets `DOCKER_IMAGE_NAME` in each `built_models` entry's `env_vars` to the registry image, enabling slurm_multi parallel `srun docker pull` on all nodes without requiring manual image specification.
+
+- **`DeploymentResult.skip_monitoring`** (`deployment/base.py`): new dataclass field so synchronous deploy paths (e.g. slurm_multi's bash-in-salloc) can skip the monitor poll.
+
+- **`SlurmNodeSelector` `reservation` parameter**: optional reservation name forwarded to srun health/cleanup commands so node-prep srun calls run inside the reservation.
+
+- **`tests/unit/test_slurm_multi.py`**: contract tests for `slurm_multi` registry membership, hyphen alias normalization, end-to-end env_vars-export contract against MAD-private PR #186's `pyt_sglang_disagg_qwen3-32b_short` model card, and `_execute_with_prebuilt_image` manifest key-set contract (`built_images.keys() == built_models.keys()`).
+
+- **`examples/slurm-configs/minimal/slurm-multi-minimal.json`**: minimal reference config for the new launcher.
+
+- **Docker build context — shared `tools/` API access**: `docker build` now passes `--build-context tools=./tools`, making the `./tools` directory available as a named build context inside every Dockerfile. This allows Dockerfiles to `COPY --from=tools` shared helper scripts and APIs without duplicating them into each model's build context.
+
+### Changed
+
+- **Early model discovery reuse in `BuildOrchestrator`**: The `DiscoverModels` result from the slurm_multi registry-gate check is now cached and reused for the actual build step, avoiding duplicate `get_models_json.py` execution and duplicate console output.
+
+- **E2E test cleanup defaults expanded**: `DEFAULT_CLEAN_FILES` in `tests/fixtures/utils.py` now includes `build_manifest.json` and related perf artefacts (`perf_super.json`, `perf_entry.csv`, etc.) so stale manifests from prior e2e tests cannot silently cause the wrong image to be executed.
+
+### Fixed
+
+- **slurm_multi: cwd `perf.csv` aggregation**: After a successful slurm_multi run, `madengine run` previously printed a cosmetic `Performance CSV not found: perf.csv` warning even though `_collect_slurm_multi_results` had ingested the per-job CSV from `/shared_inference/$USER/$JOBID/perf.csv`. The reporter (`display_performance_table`) reads cwd `perf.csv` by default. Now `_collect_slurm_multi_results` also writes the per-job rows into cwd `perf.csv` (copy if absent, append-data-rows if present) so reporting and HTML generation work without extra args. Local + classic-SLURM flows are unchanged.
+
+### Security
+
+- **Shell injection hardening in slurm_multi wrapper scripts**: `shlex.quote()` is applied to env_var values, the model script name, and model args in the generated SBATCH wrapper script (`slurm.py::_prepare_slurm_multi_script`) and the local self-managed runner (`container_runner.py::_run_self_managed`), preventing shell metacharacters (`$()`, backticks, `;`, `"`, etc.) in user-supplied inputs from triggering host-shell expansion.
+
 ## [2.0.3] - 2026-05-26
 
 ### Added
