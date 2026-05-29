@@ -19,7 +19,11 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
-from .common import configure_multi_node_profiling, normalize_launcher
+from .common import (
+    canonicalize_distributed_launcher,
+    configure_multi_node_profiling,
+    normalize_launcher,
+)
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
@@ -347,7 +351,7 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+        elif canonicalize_distributed_launcher(launcher_type) == "sglang-disagg":
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
