@@ -97,6 +97,8 @@ madengine build [OPTIONS]
 | `--tags` | `-t` | TEXT | `[]` | Model tags to build (can specify multiple) |
 | `--target-archs` | `-a` | TEXT | `[]` | Target GPU architectures (e.g., gfx908,gfx90a,gfx942) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
+| `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Omit value or pass `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
+| `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
@@ -142,6 +144,15 @@ madengine build --tags model \
 
 # Real-time output with verbose logging
 madengine build --tags model --live-output --verbose
+
+# Use a pre-built image (skip Docker build)
+madengine build --tags model --use-image lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x
+
+# Auto-detect image from model card's DOCKER_IMAGE_NAME
+madengine build --tags model --use-image
+
+# Build on SLURM compute node and push to registry
+madengine build --tags model --build-on-compute --registry docker.io/myorg
 ```
 
 **Default Values:**
@@ -658,6 +669,6 @@ madengine recognizes these environment variables:
 
 ---
 
-**Version:** 2.0.0  
-**Last Updated:** December 2025
+**Version:** 2.1.0  
+**Last Updated:** May 2026
 

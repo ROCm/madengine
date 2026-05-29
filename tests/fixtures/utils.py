@@ -364,8 +364,23 @@ def get_num_cpus() -> int:
 # E2E test helpers (run command, perf CSV, log path, timeout from log)
 # =============================================================================
 
-# Default list of perf output files to clean before/after e2e tests.
-DEFAULT_CLEAN_FILES = ["perf.csv", "perf.html"]
+# Default list of files to clean before/after e2e tests.
+# Includes perf outputs AND build_manifest.json + perf_super/entry siblings,
+# since `madengine run` will silently reuse a stale build_manifest.json from a
+# previous test if it is left in cwd, causing later tests to execute the wrong
+# image.
+DEFAULT_CLEAN_FILES = [
+    "perf.csv",
+    "perf.html",
+    "build_manifest.json",
+    "perf_super.json",
+    "perf_super.csv",
+    "perf_entry.csv",
+    "perf_entry.json",
+    "perf_entry_super.csv",
+    "perf_entry_super.json",
+    "perf_dummy.csv",
+]
 
 
 def build_run_command(tags, extra_args="", output_file=None, additional_context=None):

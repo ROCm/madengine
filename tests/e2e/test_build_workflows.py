@@ -67,7 +67,9 @@ class TestCLIFeatures:
     """Test various CLI features and command-line argument behaviors."""
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_test.csv", "perf_test.html"]],
+        indirect=True,
     )
     def test_output_commandline_argument_writes_csv_correctly(
         self, global_data, clean_test_temp_files
@@ -101,7 +103,9 @@ class TestCLIFeatures:
 
     @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_test.csv", "perf_test.html"]],
+        indirect=True,
     )
     def test_commandline_argument_skip_gpu_arch(
         self, global_data, clean_test_temp_files, dynamic_skip_gpu_arch_model_dir
@@ -126,7 +130,9 @@ class TestCLIFeatures:
 
     @requires_gpu("skip_gpu_arch filtering requires GPU hardware to detect current architecture")
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_test.csv", "perf_test.html"]],
+        indirect=True,
     )
     def test_commandline_argument_disable_skip_gpu_arch_fail(
         self, global_data, clean_test_temp_files, dynamic_skip_gpu_arch_model_dir
@@ -150,7 +156,9 @@ class TestCLIFeatures:
             pytest.fail("Disable skipping gpu arch for running model is failed.")
 
     @pytest.mark.parametrize(
-        "clean_test_temp_files", [["perf_test.csv", "perf_test.html"]], indirect=True
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_test.csv", "perf_test.html"]],
+        indirect=True,
     )
     def test_output_multi_results(self, global_data, clean_test_temp_files):
         """
