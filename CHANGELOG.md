@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`examples/slurm-configs/minimal/slurm-multi-minimal.json`**: minimal reference config for the new launcher.
 
+- **Docker build context — shared `tools/` API access**: `docker build` now passes `--build-context tools=./tools`, making the `./tools` directory available as a named build context inside every Dockerfile. This allows Dockerfiles to `COPY --from=tools` shared helper scripts and APIs without duplicating them into each model's build context.
+
 ### Changed
 
 - **Early model discovery reuse in `BuildOrchestrator`**: The `DiscoverModels` result from the slurm_multi registry-gate check is now cached and reused for the actual build step, avoiding duplicate `get_models_json.py` execution and duplicate console output.
