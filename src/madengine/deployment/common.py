@@ -8,6 +8,7 @@ profiling configuration so logic is not duplicated across deployment modules.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import functools
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +21,8 @@ VALID_LAUNCHERS = [
     "primus",
     "vllm",
     "sglang",
-    "sglang-disagg"
+    "sglang-disagg",
+    "slurm_multi",
 ]
 
 # Tool names that use rocprof / rocprofv3 wrapping and need MPI-aware rocprofv3 on multi-node.
@@ -61,6 +63,8 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
 
     Logic:
     - If launcher is in VALID_LAUNCHERS: keep as-is
+    - If launcher's hyphen/underscore variant is in VALID_LAUNCHERS: normalize
+      (e.g. "slurm-multi" -> "slurm_multi")
     - If launcher is None/empty/invalid:
         * local → "docker" (runs in Docker container)
         * slurm → "docker" (typically uses containers on compute nodes)
@@ -75,6 +79,9 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
     """
     if launcher_type and launcher_type in VALID_LAUNCHERS:
         return launcher_type
+    # Normalize hyphen variant: slurm-multi -> slurm_multi
+    if launcher_type and launcher_type.replace("-", "_") in VALID_LAUNCHERS:
+        return launcher_type.replace("-", "_")
     if deployment_type == "local":
         return "docker"
     if deployment_type == "slurm":
@@ -84,6 +91,23 @@ def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> st
     return "docker"
 
 
+_SELF_MANAGED_LAUNCHERS: frozenset = frozenset({"slurm_multi"})
+
+
+def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
+    """Return True if the launcher manages its own per-node containers.
+
+    Self-managed launchers (e.g. slurm_multi) run the model's own .slurm script
+    directly on the head node and orchestrate Docker containers via srun internally.
+    They bypass the standard sbatch template entirely and are an escape hatch — not
+    peers of the templated launchers (torchrun, vllm, sglang, etc.).
+    """
+    if not launcher_type:
+        return False
+    return normalize_launcher(launcher_type, "slurm") in _SELF_MANAGED_LAUNCHERS
+
+
+@functools.lru_cache(maxsize=None)
 def is_rocprofv3_available() -> bool:
     """
     Check if rocprofv3 is available on the system.

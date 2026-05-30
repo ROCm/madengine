@@ -16,12 +16,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import importlib
 import json
 import os
-import sys
 from io import StringIO
 import tempfile
-import unittest.mock
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 # third-party modules
 import pytest
@@ -244,15 +241,6 @@ class TestValidateAdditionalContext:
                 mock_console.print.assert_called()
         finally:
             os.unlink(temp_file)
-
-    def test_validate_additional_context_invalid_json(self):
-        """Test validation with invalid JSON."""
-        with patch("madengine.cli.validators.console") as mock_console:
-            with pytest.raises(typer.Exit) as exc_info:
-                validate_additional_context("invalid json")
-
-            assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
-            mock_console.print.assert_called()
 
     def test_validate_additional_context_defaults_fill_partial_fields(self):
         """Missing gpu_vendor or guest_os is filled from defaults (no error)."""

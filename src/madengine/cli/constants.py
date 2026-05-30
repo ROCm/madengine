@@ -5,11 +5,13 @@ Constants and configuration for madengine CLI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+from enum import IntEnum
+
 
 # Exit codes
-class ExitCode:
+class ExitCode(IntEnum):
     """Exit codes for CLI commands."""
-    
+
     SUCCESS = 0
     FAILURE = 1
     BUILD_FAILURE = 2

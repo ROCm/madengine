@@ -425,8 +425,10 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                     return f"{val:,.0f}"
                 elif val >= 10:
                     return f"{val:.1f}"
+                elif val >= 0.01:
+                    return f"{val:.4f}"
                 else:
-                    return f"{val:.2f}"
+                    return f"{val:.4g}"
             except (ValueError, TypeError):
                 return str(perf)
         

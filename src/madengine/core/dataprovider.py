@@ -164,8 +164,6 @@ class CustomDataProvider(DataProvider):
 
         # get the base directory of the current file.
         BASE_DIR = os.path.dirname(os.path.realpath(__file__))
-        print("DEBUG - BASE_DIR::", BASE_DIR)
-        print("DEBUG - self.config[path]::", self.config["path"])
 
         # check if the path exists in the base directory.
         # if os.path.exists(BASE_DIR + "/../" + self.config["path"]):

@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Dict, Optional
@@ -21,6 +22,7 @@ from rich.console import Console as RichConsole
 from rich.panel import Panel
 
 from madengine.core.console import Console
+from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.errors import (
@@ -28,9 +30,7 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
     create_error_context,
-    handle_error,
 )
-from madengine.core.constants import get_rocm_path
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
@@ -113,11 +113,9 @@ class RunOrchestrator:
         else:
             context_string = None
             
-        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
-            rocm_path=rocm_path,
         )
 
         # Initialize data provider if data config exists
@@ -345,7 +343,16 @@ class RunOrchestrator:
         # Update args with tags
         self.args.tags = tags
 
-        build_orch = BuildOrchestrator(self.args, self.additional_context)
+        # detect_local_gpu_arch=True: full workflow on a local single node — auto-detect
+        # MAD_SYSTEM_GPU_ARCHITECTURE before the build so Dockerfiles that require it
+        # (ARG MAD_SYSTEM_GPU_ARCHITECTURE with no default) are built correctly without
+        # requiring the user to manually pass --additional-context.
+        # The user's explicitly provided value (if any) is still respected and not overridden.
+        build_orch = BuildOrchestrator(
+            self.args,
+            self.additional_context,
+            detect_local_gpu_arch=True,
+        )
         manifest_file = build_orch.execute(
             registry=registry,
             clean_cache=getattr(self.args, "clean_docker_cache", False),
@@ -385,12 +392,12 @@ class RunOrchestrator:
         
         # Validate that the image exists locally or can be pulled
         try:
-            self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
+            self.console.sh(f"docker image inspect {shlex.quote(image_name)} > /dev/null 2>&1")
             self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
         except (subprocess.CalledProcessError, RuntimeError) as e:
             self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
             try:
-                self.console.sh(f"docker pull {image_name}")
+                self.console.sh(f"docker pull {shlex.quote(image_name)}")
                 self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
             except Exception as e:
                 raise RuntimeError(
@@ -423,11 +430,9 @@ class RunOrchestrator:
         # Initialize build-only context for manifest generation
         # (we need context structure, but skip GPU detection since we're not building)
         context_string = repr(self.additional_context) if self.additional_context else None
-        rocm_path = get_rocm_path(getattr(self.args, "rocm_path", None))
         build_context = Context(
             additional_context=context_string,
             build_only_mode=True,
-            rocm_path=rocm_path,
         )
         
         # Create manifest structure
@@ -554,7 +559,7 @@ class RunOrchestrator:
         from madengine.execution.container_runner import ContainerRunner
 
         # Load credentials
-        credentials = self._load_credentials()
+        credentials = load_credentials()
 
         # Restore context from manifest if present
         if "context" in manifest:
@@ -992,35 +997,6 @@ class RunOrchestrator:
         # Note: K8s and Slurm deployments have their own script handling mechanisms
         # and do not rely on this local filesystem operation
 
-    def _load_credentials(self) -> Optional[Dict]:
-        """Load credentials from credential.json and environment."""
-        credentials = None
-
-        credential_file = "credential.json"
-        if os.path.exists(credential_file):
-            try:
-                with open(credential_file) as f:
-                    credentials = json.load(f)
-            except Exception as e:
-                print(f"Warning: Could not load credentials: {e}")
-
-        # Override with environment variables
-        docker_hub_user = os.environ.get("MAD_DOCKERHUB_USER")
-        docker_hub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD")
-        docker_hub_repo = os.environ.get("MAD_DOCKERHUB_REPO")
-
-        if docker_hub_user and docker_hub_password:
-            if credentials is None:
-                credentials = {}
-            credentials["dockerhub"] = {
-                "username": docker_hub_user,
-                "password": docker_hub_password,
-            }
-            if docker_hub_repo:
-                credentials["dockerhub"]["repository"] = docker_hub_repo
-
-        return credentials
-
     def _filter_images_by_gpu_compatibility(
         self, built_images: Dict, runtime_gpu_vendor: str, runtime_gpu_arch: str
     ) -> Dict:
@@ -1133,70 +1109,4 @@ class RunOrchestrator:
         else:
             return "local"
     
-    def _filter_images_by_dockerfile_context(self, built_images: Dict) -> Dict:
-        """Filter images by dockerfile context matching runtime context.
-        
-        This implements the legacy behavior where dockerfiles are filtered
-        at runtime based on their CONTEXT header matching the current runtime context.
-        
-        Args:
-            built_images: Dictionary of built images from manifest
-            
-        Returns:
-            Dictionary of images that match the runtime context
-        """
-        if not self.context:
-            return built_images
-        
-        compatible_images = {}
-        
-        for image_name, image_info in built_images.items():
-            dockerfile = image_info.get("dockerfile", "")
-            
-            if not dockerfile:
-                # No dockerfile info, include by default (legacy compatibility)
-                compatible_images[image_name] = image_info
-                continue
-            
-            # Check if dockerfile exists
-            if not os.path.exists(dockerfile):
-                self.rich_console.print(
-                    f"[dim]  Warning: Dockerfile {dockerfile} not found. Including by default.[/dim]"
-                )
-                compatible_images[image_name] = image_info
-                continue
-            
-            # Read dockerfile context header
-            try:
-                dockerfile_context_str = self.console.sh(
-                    f"head -n5 {dockerfile} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
-                ).strip()
-                
-                if not dockerfile_context_str:
-                    # No context header, include by default
-                    compatible_images[image_name] = image_info
-                    continue
-                
-                # Create a dict with this dockerfile and its context
-                dockerfile_dict = {dockerfile: dockerfile_context_str}
-                
-                # Use context.filter() to check if this dockerfile matches runtime context
-                filtered = self.context.filter(dockerfile_dict)
-                
-                if filtered:
-                    # Dockerfile matches runtime context
-                    compatible_images[image_name] = image_info
-                else:
-                    self.rich_console.print(
-                        f"[dim]  Skipping {image_name}: dockerfile context doesn't match runtime context[/dim]"
-                    )
-                    
-            except Exception as e:
-                # If we can't read the dockerfile, include it by default
-                self.rich_console.print(
-                    f"[dim]  Warning: Could not read context for {dockerfile}: {e}. Including by default.[/dim]"
-                )
-                compatible_images[image_name] = image_info
-        
-        return compatible_images
 

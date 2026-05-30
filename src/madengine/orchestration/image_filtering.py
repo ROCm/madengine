@@ -94,7 +94,10 @@ def filter_images_by_skip_gpu_arch(
         skip_list = [arch.strip() for arch in skip_gpu_arch_str.split(",")]
         sys_gpu_arch = runtime_gpu_arch
         if sys_gpu_arch and "NVIDIA" in sys_gpu_arch:
-            sys_gpu_arch = sys_gpu_arch.split()[1]
+            # Normalize "NVIDIA A100-SXM4-40GB" -> "A100", "NVIDIA H100 PCIe" -> "H100"
+            # (mirrors get_gpu_arch() in tests/fixtures/utils.py)
+            after_prefix = sys_gpu_arch[sys_gpu_arch.index("NVIDIA") + len("NVIDIA ") :]
+            sys_gpu_arch = after_prefix.split("-")[0].split()[0]
 
         if sys_gpu_arch in skip_list:
             skipped.append((model_name, image_info, runtime_gpu_arch))

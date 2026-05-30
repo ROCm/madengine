@@ -85,6 +85,7 @@ class DiscoverModels:
         
         # Only copy if MODEL_DIR points to a different directory (not current dir)
         if model_dir_abs != cwd_abs:
+            import shlex
             import subprocess
             from pathlib import Path
 
@@ -121,7 +122,7 @@ class DiscoverModels:
                 copied_count = 0
                 for src_path, item_name, item_type in items_to_copy:
                     try:
-                        cmd = f"cp -vLR --preserve=all {src_path} {cwd_abs}/"
+                        cmd = f"cp -vLR --preserve=all {shlex.quote(str(src_path))} {shlex.quote(str(cwd_abs))}/"
                         result = subprocess.run(
                             cmd, shell=True, capture_output=True, text=True, check=True
                         )
@@ -216,9 +217,12 @@ class DiscoverModels:
                         custom_model_list = get_models_json.list_models()
 
                         for custom_model in custom_model_list:
-                            assert isinstance(
-                                custom_model, CustomModel
-                            ), "Please use or subclass madengine.utils.discover_models.CustomModel to define your custom model."
+                            if not isinstance(custom_model, CustomModel):
+                                raise TypeError(
+                                    "Please use or subclass "
+                                    "madengine.utils.discover_models.CustomModel "
+                                    "to define your custom model."
+                                )
                             # Update model name using backslash-separated path
                             custom_model.name = dirname + "/" + custom_model.name
                             # Defer updating script and dockerfile paths until update_model is called
@@ -319,9 +323,8 @@ class DiscoverModels:
                     for model in self.models:
                         if (
                             model["name"] == model_name
-                            or model["name"].split("/")[-1] == model_name
-                            or self._model_entry_has_tag(model.get("tags"), tag)
-                            or tag == "all"
+                            or self._model_entry_has_tag(model.get("tags"), model_name)
+                            or model_name == "all"
                         ):
                             model_dict = model.copy()
                             model_dict["args"] = model_dict["args"] + extra_args
@@ -330,9 +333,8 @@ class DiscoverModels:
                     for custom_model in self.custom_models:
                         if (
                             custom_model.name == model_name
-                            or custom_model.name.split("/")[-1] == model_name
-                            or self._model_entry_has_tag(custom_model.tags, tag)
-                            or tag == "all"
+                            or self._model_entry_has_tag(custom_model.tags, model_name)
+                            or model_name == "all"
                         ):
                             custom_model.update_model()
                             dirname = custom_model.name.split("/")[0]

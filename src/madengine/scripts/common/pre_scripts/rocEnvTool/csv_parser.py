@@ -3,6 +3,8 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 import os
+import shlex
+import shutil
 from console import Console
 
 '''
@@ -19,23 +21,31 @@ rocm_packages_installed
 rocm_env_variables
 pip_list
 numa_balancing
+hardware_information      (full mode only - lshw)
+bios_settings             (full mode only - dmidecode)
+dmsg_gpu_drm_atom_logs    (full mode only - dmesg)
+amdgpu_modinfo            (full mode only - modinfo)
 '''
 class CSVParser:
-    def __init__(self, filename, sys_config_files_path, tags):
+    def __init__(self, filename, sys_config_files_path, tags, path_resolver=None):
         self.filename = filename
         self.path = sys_config_files_path
         self.tags = tags
         self.sys_config_info_list = []
+        self.path_resolver = path_resolver
         self.gpu_device_type = self.determine_gpu_device_type()
 
     def determine_gpu_device_type(self):
         console = Console()
         gpu_device_type = ""
-        rocm_smi_out = console.sh("/opt/rocm/bin/rocm-smi || true")
+        # Use PATH resolution first so TheRock images (where rocm-smi lives
+        # under a Python venv, not /opt/rocm/bin/) are handled correctly.
+        rocm_smi_cmd = shutil.which("rocm-smi") or "/opt/rocm/bin/rocm-smi"
+        rocm_smi_out = console.sh(shlex.quote(rocm_smi_cmd) + " || true")
         nv_smi_out = console.sh("nvidia-smi -L || true")
-        if not "not found" in rocm_smi_out:
+        if "not found" not in rocm_smi_out and "No such file" not in rocm_smi_out:
             gpu_device_type = "AMD"
-        if not "not found" in nv_smi_out:
+        if "not found" not in nv_smi_out and "No such file" not in nv_smi_out:
             gpu_device_type = "NVIDIA"
         return gpu_device_type
 
@@ -114,8 +124,10 @@ class CSVParser:
             for j in range(1, len(lines)):
                 line = lines[j].rstrip()
                 if "GPU" in line:
-                    num_gpu += 1
                     values = line.split(":")
+                    if len(values) < 3:
+                        continue
+                    num_gpu += 1
                     name = values[1].split("(UUID")[0]
                     uuid = values[2]
             info_list.append("Name|" + name)
@@ -154,8 +166,14 @@ class CSVParser:
         lines = self.get_log_file_data(rocm_info_path)
         info_list = []
         info_list.append(lines[0].rstrip())
-        version_path = os.path.join("/opt/rocm", ".info", "version")
-        rocm_version = open(version_path).read().rstrip()
+        if self.path_resolver is not None:
+            rocm_version = self.path_resolver.get_version()
+        else:
+            version_path = os.path.join("/opt/rocm", ".info", "version")
+            try:
+                rocm_version = open(version_path).read().rstrip()
+            except FileNotFoundError:
+                rocm_version = "unknown"
         info_list.append("ROCm version|" + rocm_version)
         return info_list
 
@@ -201,6 +219,79 @@ class CSVParser:
         info_list = []
         info_list.append(lines[0].rstrip())
         info_list.append("Numa Balacing|" + lines[1].rstrip())
+        return info_list
+
+    def dump_hardware_information_in_csv(self, log_path):
+        """Parse lshw output, extracting key hardware fields."""
+        lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
+        info_list = []
+        info_list.append(lines[0].rstrip())
+        keywords = ("product:", "vendor:", "serial:", "width:", "size:",
+                     "description:", "capabilities:", "clock:")
+        for j in range(1, len(lines)):
+            line = lines[j].rstrip()
+            if not line.strip():
+                continue
+            line_lower = line.strip().lower()
+            for kw in keywords:
+                if line_lower.startswith(kw):
+                    key, _, value = line.strip().partition(":")
+                    info_list.append(key.strip() + "|" + value.strip())
+                    break
+        return info_list
+
+    def dump_bios_settings_in_csv(self, log_path):
+        """Parse dmidecode output, extracting key:value pairs."""
+        lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
+        info_list = []
+        info_list.append(lines[0].rstrip())
+        for j in range(1, len(lines)):
+            line = lines[j].rstrip()
+            if not line.strip() or line.startswith("Handle ") or line.startswith("#"):
+                continue
+            if ":" in line and line[0] in (" ", "\t"):
+                key, _, value = line.strip().partition(":")
+                value = value.strip()
+                if value:
+                    info_list.append(key.strip() + "|" + value)
+        return info_list
+
+    def dump_dmsg_gpu_drm_atom_logs_in_csv(self, log_path):
+        """Parse dmesg filtered log lines."""
+        lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
+        info_list = []
+        info_list.append(lines[0].rstrip())
+        count = 0
+        for j in range(1, len(lines)):
+            line = lines[j].rstrip()
+            if not line.strip():
+                continue
+            info_list.append("Log|" + line.strip())
+            count += 1
+            if count >= 50:
+                break
+        return info_list
+
+    def dump_amdgpu_modinfo_in_csv(self, log_path):
+        """Parse modinfo output (key:value per line, like lscpu)."""
+        lines = self.get_log_file_data(log_path)
+        if not lines:
+            return []
+        info_list = []
+        info_list.append(lines[0].rstrip())
+        for j in range(1, len(lines)):
+            line = lines[j].rstrip()
+            if not line.strip():
+                continue
+            if ":" in line:
+                key, _, value = line.partition(":")
+                info_list.append(key.strip() + "|" + value.strip())
         return info_list
 
     def dump_cuda_information_in_csv(self, log_path):
@@ -277,6 +368,14 @@ class CSVParser:
                     sys_config_info.extend(self.dump_pip_list_in_csv(log_path))
                 if tag == "numa_balancing":
                     sys_config_info.extend(self.dump_numa_balancing_in_csv(log_path))
+                if tag == "hardware_information":
+                    sys_config_info.extend(self.dump_hardware_information_in_csv(log_path))
+                if tag == "bios_settings":
+                    sys_config_info.extend(self.dump_bios_settings_in_csv(log_path))
+                if tag == "dmsg_gpu_drm_atom_logs":
+                    sys_config_info.extend(self.dump_dmsg_gpu_drm_atom_logs_in_csv(log_path))
+                if tag == "amdgpu_modinfo":
+                    sys_config_info.extend(self.dump_amdgpu_modinfo_in_csv(log_path))
 
         self.sys_config_info_list = sys_config_info
 

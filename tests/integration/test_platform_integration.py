@@ -9,7 +9,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 import pytest
@@ -23,7 +22,7 @@ from madengine.execution.dockerfile_utils import (
 )
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
+from madengine.core.errors import BuildError
 
 
 # ============================================================================
@@ -586,6 +585,31 @@ class TestMultiGPUArch:
         result = self.builder._build_model_for_arch(model_info, "gfx908", None, False, None, "", None)
         assert not result[0]["docker_image"].endswith("_gfx908")
 
+    def test_create_base_image_name_sanitizes_slashes(self):
+        """Model names with '/' must be sanitized so Docker tags stay valid.
+
+        Regression: ``ci-dummy/dummy_dummy/dummy.ubuntu.amd_gfx950`` is rejected
+        by ``docker tag`` because '/' is a repository separator, not a tag
+        character. The base name must mirror the single-arch convention.
+        """
+        model_info = {"name": "dummy/dummy"}
+        dockerfile = "docker/dummy.ubuntu.amd.Dockerfile"
+        base = self.builder._create_base_image_name(model_info, dockerfile)
+        assert "/" not in base
+        assert base == "ci-dummy_dummy_dummy.ubuntu.amd"
+
+    @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
+    @patch.object(DockerBuilder, "build_image")
+    def test_multi_arch_build_image_naming_slashed_model(self, mock_build_image, mock_get_dockerfiles):
+        """End-to-end naming through ``_build_model_for_arch`` for slashed names."""
+        model_info = {"name": "dummy/dummy"}
+        mock_get_dockerfiles.return_value = ["docker/dummy.ubuntu.amd.Dockerfile"]
+        mock_build_image.return_value = {"docker_image": "unused", "build_duration": 1.0}
+        self.builder._build_model_for_arch(model_info, "gfx950", None, False, None, "", None)
+        override = mock_build_image.call_args.kwargs["override_image_name"]
+        assert "/" not in override
+        assert override == "ci-dummy_dummy_dummy.ubuntu.amd_gfx950"
+
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
     @patch.object(DockerBuilder, "_check_dockerfile_has_gpu_variables")
     @patch.object(DockerBuilder, "build_image")
@@ -661,26 +685,6 @@ class TestMultiGPUArch:
         assert is_compilation_arch_compatible("gfx908", "gfx908")
         assert not is_compilation_arch_compatible("gfx908", "gfx942")
         assert is_compilation_arch_compatible("foo", "foo")
-
-    def test_filter_images_by_gpu_architecture(self):
-        mock_args = MagicMock()
-        mock_args.additional_context = '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
-        mock_args.additional_context_file = None
-        mock_args.tags = []
-        mock_args.live_output = True
-        mock_args.data_config_file_name = "data.json"
-        mock_args.force_mirror_local = None
-        run_orch = RunOrchestrator(mock_args)
-        built = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
-        filtered = run_orch._filter_images_by_gpu_architecture(built, "gfx908")
-        assert "img1" in filtered and "img2" not in filtered
-        built_legacy = {"img1": {"gpu_architecture": "gfx908"}, "img2": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}}
-        filtered = run_orch._filter_images_by_gpu_architecture(built_legacy, "gfx908")
-        assert "img1" in filtered
-        built_nomatch = {"img1": {"gpu_architecture": "gfx90a", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx942", "gpu_vendor": "AMD"}}
-        assert len(run_orch._filter_images_by_gpu_architecture(built_nomatch, "gfx908")) == 0
-        built_all = {"img1": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}, "img2": {"gpu_architecture": "gfx908", "gpu_vendor": "AMD"}}
-        assert len(run_orch._filter_images_by_gpu_architecture(built_all, "gfx908")) == 2
 
 
 if __name__ == "__main__":

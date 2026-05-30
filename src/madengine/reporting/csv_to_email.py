@@ -9,7 +9,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import os
 import argparse
 import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -60,7 +60,7 @@ def csv_to_html_section(file_path: str) -> Tuple[str, str]:
 def convert_directory_csvs_to_html(
     directory_path: str,
     output_file: str = "run_results.html"
-) -> str:
+) -> Optional[str]:
     """Convert all CSV files in a directory to a single HTML file.
 
     Args:

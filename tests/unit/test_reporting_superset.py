@@ -28,9 +28,9 @@ from madengine.reporting.update_perf_super import (
 
 class TestConfigParser:
     """Test cases for ConfigParser functionality."""
-    
+
     @pytest.fixture
-    def test_dir(self):
+    def tmp_dir(self):
         """Create temporary directory for tests."""
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
@@ -136,7 +136,7 @@ class TestConfigParser:
         assert matched['model'] == 'dummy/model-1'
         assert matched['benchmark'] == 'throughput'
     
-    def test_config_parser_json_file(self, test_dir):
+    def test_config_parser_json_file(self, tmp_dir):
         """Test loading JSON config file."""
         # Create a JSON config file
         json_config = {
@@ -145,10 +145,10 @@ class TestConfigParser:
             "epochs": 10
         }
         
-        json_path = os.path.join(test_dir, "config.json")
+        json_path = os.path.join(tmp_dir, "config.json")
         with open(json_path, 'w') as f:
             json.dump(json_config, f)
-        
+
         parser = ConfigParser()
         configs = parser.load_config_file(json_path)
         
@@ -160,9 +160,9 @@ class TestConfigParser:
 
 class TestPerfEntrySuperGeneration:
     """Test cases for perf_super.json generation (cumulative)."""
-    
+
     @pytest.fixture
-    def test_dir(self):
+    def tmp_dir(self):
         """Create temporary directory for tests."""
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
@@ -181,7 +181,7 @@ class TestPerfEntrySuperGeneration:
             'dummy'
         )
     
-    def test_perf_entry_super_json_structure(self, test_dir, fixtures_dir):
+    def test_perf_entry_super_json_structure(self, tmp_dir, fixtures_dir):
         """Test that perf_super.json has the correct structure."""
         # Create mock data
         common_info = {
@@ -211,22 +211,22 @@ class TestPerfEntrySuperGeneration:
             "build_number": "1",
             "additional_docker_run_options": "",
         }
-        
+
         # Create common_info.json
-        common_info_path = os.path.join(test_dir, "common_info.json")
+        common_info_path = os.path.join(tmp_dir, "common_info.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
         
         # Create results CSV
-        results_csv = os.path.join(test_dir, "perf_dummy_super.csv")
+        results_csv = os.path.join(tmp_dir, "perf_dummy_super.csv")
         with open(results_csv, 'w') as f:
             f.write("model,performance,metric,status\n")
             f.write("dummy/model-1,1234.56,tokens/s,SUCCESS\n")
             f.write("dummy/model-2,2345.67,requests/s,SUCCESS\n")
             f.write("dummy/model-3,345.78,ms,SUCCESS\n")
-        
+
         # Generate perf_super.json (cumulative)
-        perf_super_path = os.path.join(test_dir, "perf_super.json")
+        perf_super_path = os.path.join(tmp_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -275,7 +275,7 @@ class TestPerfEntrySuperGeneration:
         assert 'datatype' in configs
         assert 'max_tokens' in configs
     
-    def test_perf_entry_super_config_matching(self, test_dir, fixtures_dir):
+    def test_perf_entry_super_config_matching(self, tmp_dir, fixtures_dir):
         """Test that configs are correctly matched for all results."""
         # Create mock data
         common_info = {
@@ -306,20 +306,20 @@ class TestPerfEntrySuperGeneration:
             "additional_docker_run_options": "",
         }
         
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(tmp_dir, "common_info_super.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
-        
+
         # Create results CSV
-        results_csv = os.path.join(test_dir, "perf_dummy_super.csv")
+        results_csv = os.path.join(tmp_dir, "perf_dummy_super.csv")
         with open(results_csv, 'w') as f:
             f.write("model,performance,metric,benchmark\n")
             f.write("dummy/model-1,1234.56,tokens/s,throughput\n")
             f.write("dummy/model-2,2345.67,requests/s,serving\n")
             f.write("dummy/model-3,345.78,ms,latency\n")
-        
-        perf_super_path = os.path.join(test_dir, "perf_super.json")
-        
+
+        perf_super_path = os.path.join(tmp_dir, "perf_super.json")
+
         update_perf_super_json(
             perf_super_json=perf_super_path,
             multiple_results=results_csv,
@@ -327,7 +327,7 @@ class TestPerfEntrySuperGeneration:
             model_name="dummy_perf_super",
             scripts_base_dir=fixtures_dir
         )
-        
+
         # Load and verify matching
         with open(perf_super_path, 'r') as f:
             data = json.load(f)
@@ -352,7 +352,7 @@ class TestPerfEntrySuperGeneration:
             assert configs['benchmark'] in ['throughput', 'serving', 'latency']
             assert configs['datatype'] in ['float16', 'float32', 'bfloat16']
     
-    def test_perf_entry_super_no_config(self, test_dir, fixtures_dir):
+    def test_perf_entry_super_no_config(self, tmp_dir, fixtures_dir):
         """Test handling when no config file is specified."""
         # Create mock data without config
         common_info = {
@@ -383,17 +383,17 @@ class TestPerfEntrySuperGeneration:
             "additional_docker_run_options": "",
         }
         
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(tmp_dir, "common_info_super.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
-        
+
         # Create results CSV
-        results_csv = os.path.join(test_dir, "perf_dummy_super.csv")
+        results_csv = os.path.join(tmp_dir, "perf_dummy_super.csv")
         with open(results_csv, 'w') as f:
             f.write("model,performance,metric\n")
             f.write("dummy-no-config,1234.56,tokens/s\n")
-        
-        perf_super_path = os.path.join(test_dir, "perf_super.json")
+
+        perf_super_path = os.path.join(tmp_dir, "perf_super.json")
         
         update_perf_super_json(
             perf_super_json=perf_super_path,
@@ -413,7 +413,7 @@ class TestPerfEntrySuperGeneration:
         assert data[0]['configs'] is None, \
             "configs should be None when no config file specified"
     
-    def test_perf_entry_super_multi_results(self, test_dir, fixtures_dir):
+    def test_perf_entry_super_multi_results(self, tmp_dir, fixtures_dir):
         """Test handling of multiple result metrics."""
         common_info = {
             "pipeline": "dummy_test",
@@ -443,19 +443,19 @@ class TestPerfEntrySuperGeneration:
             "additional_docker_run_options": "",
         }
         
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(tmp_dir, "common_info_super.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
-        
+
         # Create results CSV with extra metrics
-        results_csv = os.path.join(test_dir, "perf_multi_metrics.csv")
+        results_csv = os.path.join(tmp_dir, "perf_multi_metrics.csv")
         with open(results_csv, 'w') as f:
             f.write("model,performance,metric,throughput,latency_mean_ms,latency_p50_ms,latency_p90_ms,gpu_memory_used_mb\n")
             f.write("model-1,1234.56,tokens/s,1234.56,8.1,7.9,12.3,12288\n")
             f.write("model-2,2345.67,requests/s,2345.67,4.3,4.1,6.8,16384\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_super.json")
-        
+        perf_super_path = os.path.join(tmp_dir, "perf_super.json")
+
         update_perf_super_json(
             perf_super_json=perf_super_path,
             multiple_results=results_csv,
@@ -490,7 +490,7 @@ class TestPerfEntrySuperGeneration:
         assert multi_results['latency_mean_ms'] == 8.1
         assert multi_results['gpu_memory_used_mb'] == 12288
     
-    def test_perf_entry_super_deployment_fields(self, test_dir, fixtures_dir):
+    def test_perf_entry_super_deployment_fields(self, tmp_dir, fixtures_dir):
         """Test that all deployment-related fields are present."""
         common_info = {
             "pipeline": "dummy_test",
@@ -520,18 +520,18 @@ class TestPerfEntrySuperGeneration:
             "additional_docker_run_options": "",
         }
         
-        common_info_path = os.path.join(test_dir, "common_info_super.json")
+        common_info_path = os.path.join(tmp_dir, "common_info_super.json")
         with open(common_info_path, 'w') as f:
             json.dump(common_info, f)
-        
+
         # Create results CSV
-        results_csv = os.path.join(test_dir, "perf_deployment.csv")
+        results_csv = os.path.join(tmp_dir, "perf_deployment.csv")
         with open(results_csv, 'w') as f:
             f.write("model,performance,metric\n")
             f.write("multi-node-test,5000.0,tokens/s\n")
         
-        perf_super_path = os.path.join(test_dir, "perf_super.json")
-        
+        perf_super_path = os.path.join(tmp_dir, "perf_super.json")
+
         update_perf_super_json(
             perf_super_json=perf_super_path,
             multiple_results=results_csv,
@@ -566,16 +566,16 @@ class TestPerfEntrySuperGeneration:
 
 class TestPerfSuperCSVGeneration:
     """Test cases for CSV generation from perf_super.json."""
-    
+
     @pytest.fixture
-    def test_dir(self):
+    def tmp_dir(self):
         """Create temporary directory for tests."""
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-    
-    def test_csv_generation_from_json(self, test_dir):
+
+    def test_csv_generation_from_json(self, tmp_dir):
         """Test CSV generation from perf_super.json."""
         # Create a sample perf_super.json
         data = [
@@ -599,13 +599,13 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_super.json")
+        json_path = os.path.join(tmp_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
-        
+
         # Change to test directory
         original_dir = os.getcwd()
-        os.chdir(test_dir)
+        os.chdir(tmp_dir)
         
         try:
             # Generate CSVs
@@ -642,7 +642,7 @@ class TestPerfSuperCSVGeneration:
         finally:
             os.chdir(original_dir)
     
-    def test_csv_handles_none_values(self, test_dir):
+    def test_csv_handles_none_values(self, tmp_dir):
         """Test that CSV generation handles None values correctly."""
         data = [
             {
@@ -653,13 +653,13 @@ class TestPerfSuperCSVGeneration:
                 "multi_results": None,
             }
         ]
-        
-        json_path = os.path.join(test_dir, "perf_super.json")
+
+        json_path = os.path.join(tmp_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
-        
+
         original_dir = os.getcwd()
-        os.chdir(test_dir)
+        os.chdir(tmp_dir)
         
         try:
             update_perf_super_csv(
@@ -677,7 +677,7 @@ class TestPerfSuperCSVGeneration:
         finally:
             os.chdir(original_dir)
     
-    def test_csv_multiple_entries_in_entry_file(self, test_dir):
+    def test_csv_multiple_entries_in_entry_file(self, tmp_dir):
         """Test that perf_entry_super.csv can contain multiple entries from current run.
         
         This tests the fix for the issue where perf_entry.csv and perf_entry.json
@@ -735,12 +735,12 @@ class TestPerfSuperCSVGeneration:
             }
         ]
         
-        json_path = os.path.join(test_dir, "perf_super.json")
+        json_path = os.path.join(tmp_dir, "perf_super.json")
         with open(json_path, 'w') as f:
             json.dump(data, f)
-        
+
         original_dir = os.getcwd()
-        os.chdir(test_dir)
+        os.chdir(tmp_dir)
         
         try:
             # Generate CSVs with num_entries=4 (simulating 4 entries added in current run)

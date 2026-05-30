@@ -124,6 +124,15 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
     ):
         _fail_structure("docker_env_vars", "an object")
 
+    dev = context.get("docker_env_vars")
+    if isinstance(dev, dict) and "ROCM_PATH" in dev:
+        v = dev["ROCM_PATH"]
+        if not isinstance(v, (str, type(None))):
+            _fail_structure(
+                "docker_env_vars['ROCM_PATH']",
+                "a string (container ROCm root override)",
+            )
+
     if "docker_mounts" in context and not isinstance(context["docker_mounts"], dict):
         _fail_structure("docker_mounts", "an object")
 
@@ -169,6 +178,11 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
 
     if "guest_os" in context and not isinstance(context["guest_os"], str):
         _fail_structure("guest_os", "a string")
+
+    if "MAD_ROCM_PATH" in context and not isinstance(
+        context["MAD_ROCM_PATH"], (str, type(None))
+    ):
+        _fail_structure("MAD_ROCM_PATH", "a string (host ROCm root override)")
 
     if "log_error_pattern_scan" in context and not isinstance(
         context["log_error_pattern_scan"], (bool, str, int, float, type(None))
@@ -284,6 +298,7 @@ def additional_context_needs_cli_validation(
 def validate_additional_context(
     additional_context: str,
     additional_context_file: Optional[str] = None,
+    use_image: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Validate and parse additional context.
@@ -291,6 +306,10 @@ def validate_additional_context(
     Args:
         additional_context: JSON string containing additional context
         additional_context_file: Optional file containing additional context
+        use_image: Pre-built image override forwarded by build.py for CLI signature
+            compatibility. Currently informational only -- validation behavior is
+            unchanged when this is set; callers wanting to skip required-field
+            checks should adjust ``finalize_additional_context_dict`` directly.
 
     Returns:
         Dict containing parsed additional context
@@ -395,6 +414,8 @@ def process_batch_manifest_entries(
 
         # If the model was not built (build_new=false), create an entry for it
         if not build_new:
+            # Initialize with a safe fallback so the except block can always reference it
+            dockerfile_matched = "unknown"
             # Find the model configuration by discovering models with this tag
             try:
                 # Create a temporary args object to discover the model

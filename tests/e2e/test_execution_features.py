@@ -7,7 +7,6 @@ import pytest
 import json
 import os
 import re
-import csv
 import time
 
 from tests.fixtures.utils import BASE_DIR, MODEL_DIR

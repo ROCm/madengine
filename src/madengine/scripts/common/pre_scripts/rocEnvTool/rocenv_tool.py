@@ -769,7 +769,7 @@ def main():
     if args.dump_csv or args.print_csv:
         csv_file = args.output_name + ".csv"
         out_dir = "." + args.output_name
-        csv_parser = CSVParser(csv_file, out_dir, configs)
+        csv_parser = CSVParser(csv_file, out_dir, configs, path_resolver=path_resolver)
         csv_parser.dump_csv_output()
         if args.print_csv:
             csv_parser.print_csv_output()

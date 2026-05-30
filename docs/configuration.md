@@ -119,6 +119,47 @@ madengine run --tags my_unit_test_suite \
 
 Disabling the scan does **not** change performance metric extraction from the log; it only affects the post-hoc grep used to set `has_errors` for status.
 
+## System environment collection (rocEnvTool)
+
+Before each container run, madengine appends `scripts/common/pre_scripts/run_rocenv_tool.sh` to the model's pre-scripts. It captures a CSV snapshot of the container's environment (OS, CPU, GPU, ROCm/CUDA, packages, env vars, NUMA). The output ends up at `<model_name>_env.csv` in the workspace root.
+
+Two collection modes, selected via `rocenv_mode` in `--additional-context`:
+
+| `rocenv_mode` | Sections collected | In-container tool requirements |
+|---|---|---|
+| `"lite"` (default) | OS, CPU, GPU, memory, ROCm/CUDA info, packages, env vars, NUMA balancing | Already present in standard ROCm/CUDA base images |
+| `"full"` | Lite **plus** `hardware_information` (lshw), `bios_settings` (dmidecode), `dmsg_gpu_drm_atom_logs` (dmesg), `amdgpu_modinfo` (modinfo) | Auto-installed best-effort if missing |
+
+**Full-mode auto-install** uses the `guest_os`-native package manager:
+
+- `UBUNTU` → `apt-get install -y -qq lshw dmidecode kmod util-linux`
+- `CENTOS` → `microdnf` / `dnf` / `yum install -y …` (first one found)
+
+The install is **best-effort**: if the package manager is missing, the network is unreachable, or the container lacks permissions, the pre-script logs a warning and continues — the affected sections are simply omitted from the CSV. Empty tool output (for example, `dmesg` in a container without `CAP_SYSLOG`, or `dmidecode` without `/dev/mem` access) is also handled gracefully — the section is skipped and the rest of the CSV still parses.
+
+**Examples:**
+
+```bash
+# Default (lite): low overhead, works in any ROCm/CUDA base image
+madengine run --tags model
+
+# Full: include hardware/BIOS/dmesg/amdgpu modinfo
+madengine run --tags model \
+  --additional-context '{"rocenv_mode": "full"}'
+
+# CentOS guest with full mode (auto-install uses microdnf/dnf/yum)
+madengine run --tags model \
+  --additional-context '{"guest_os": "CENTOS", "rocenv_mode": "full"}'
+
+# Skip system-env collection entirely (e.g. GPU-binding smoke tests)
+madengine run --tags model \
+  --additional-context '{"generate_sys_env_details": false}'
+```
+
+`guest_os` from `--additional-context` (default `UBUNTU`) controls which package manager is used. The same value is also exported into the container as `MAD_GUEST_OS`, so the pre-script picks the correct package manager without re-detecting from `/etc/os-release`.
+
+Unknown `rocenv_mode` values fall back to `lite` with a warning.
+
 ## Basic Configuration
 
 **gpu_vendor** (case-insensitive):
@@ -131,12 +172,22 @@ Disabling the scan does **not** change performance metric extraction from the lo
 
 ### ROCm path (run only)
 
-When ROCm is not installed under `/opt/rocm` (e.g. [TheRock](https://github.com/ROCm/TheRock) or pip), set the ROCm root so GPU detection and container environment use the correct paths. Use the **run** command option or environment variable (not JSON context):
+**Host** (where `madengine` runs validation): by default, the ROCm root is **auto-detected** (traditional `/opt/rocm`, [TheRock](https://github.com/ROCm/TheRock) `rocm-sdk` / manifest layout, or `ROCM_PATH`-like env hints). Set `MAD_AUTO_ROCM_PATH=0` to skip auto and use only legacy resolution (`ROCM_PATH` then `/opt/rocm`).
 
-- **CLI:** `madengine run --rocm-path /path/to/rocm ...`
-- **Environment:** `export ROCM_PATH=/path/to/rocm`
+**Overrides** (recommended for CI):
 
-Resolution order: `--rocm-path` → `ROCM_PATH` → `/opt/rocm`. This applies only to the run phase; build does not perform GPU detection.
+- **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"` — controls where madengine looks for host GPU tools (`rocminfo`, `amd-smi`, etc.).
+- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
+
+These two keys are independent, allowing host and container to use different ROCm installations without confusion.
+
+Precedence (host): top-level `MAD_ROCM_PATH` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
+
+Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
+
+This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
+
+At the start of each container run, a **Run Phase Environment** table is printed showing host vs container installation type (`apt install` or `therock`), ROCm/CUDA root, and version side-by-side. See [Run phase environment table](usage.md#run-phase-environment-table).
 
 ## Build Configuration
 
@@ -421,6 +472,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `gpus_per_node` - GPUs per node (default: 1)
 - `nodes` - Number of nodes (default: 1)
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
+- `reservation` - SLURM reservation name; forwarded to srun health/cleanup commands and SBATCH directives
+- `exclusive` - Exclusive node access (default: `true`)
 - `time` - Wall time limit HH:MM:SS (required)
 - `mem` - Memory per node (e.g., "64G")
 - `mail_user` - Email for notifications
@@ -470,8 +523,11 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `deepspeed` - ZeRO optimization
 - `megatron` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated SGLang
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 

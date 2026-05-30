@@ -144,3 +144,4 @@ rocm_trace_lite_output/
 slurm_results/
 MagicMock/
 .madengine_session_start
+run_directory/

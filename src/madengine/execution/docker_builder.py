@@ -8,20 +8,21 @@ and then distributed to remote nodes for execution.
 """
 
 import os
+import shlex
+from pathlib import Path
 import time
 import json
 import re
 import typing
 from contextlib import redirect_stdout, redirect_stderr
 from rich.console import Console as RichConsole
+from madengine.core.auth import login_to_registry
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.utils.ops import PythonicTee
 from madengine.execution.dockerfile_utils import (
-    is_compilation_arch_compatible,
     is_target_arch_compatible_with_variable,
     parse_dockerfile_gpu_variables,
-    parse_gpu_variable_value,
 )
 
 
@@ -67,7 +68,7 @@ class DockerBuilder:
             return "."
         return "./docker"
 
-    def get_build_arg(self, run_build_arg: typing.Dict = {}) -> str:
+    def get_build_arg(self, run_build_arg: typing.Optional[typing.Dict] = None) -> str:
         """Get the build arguments.
 
         Args:
@@ -76,6 +77,8 @@ class DockerBuilder:
         Returns:
             str: The build arguments.
         """
+        if run_build_arg is None:
+            run_build_arg = {}
         if not run_build_arg and "docker_build_arg" not in self.context.ctx:
             return ""
 
@@ -83,15 +86,15 @@ class DockerBuilder:
         for build_arg in self.context.ctx["docker_build_arg"].keys():
             build_args += (
                 "--build-arg "
-                + build_arg
-                + "='"
-                + self.context.ctx["docker_build_arg"][build_arg]
-                + "' "
+                + shlex.quote(str(build_arg))
+                + "="
+                + shlex.quote(str(self.context.ctx["docker_build_arg"][build_arg]))
+                + " "
             )
 
         if run_build_arg:
             for key, value in run_build_arg.items():
-                build_args += "--build-arg " + key + "='" + value + "' "
+                build_args += "--build-arg " + shlex.quote(str(key)) + "=" + shlex.quote(str(value)) + " "
 
         return build_args
 
@@ -175,11 +178,16 @@ class DockerBuilder:
         # Build the image with logging
         build_start_time = time.time()
 
+        tools_build_context = ""
+        tools_dir = Path("scripts/common/tools")
+        if tools_dir.exists():
+            tools_build_context = f"--build-context tools={tools_dir} "
+
         build_command = (
             f"docker build {use_cache_str} --network=host "
-            f"--build-context tools=./tools "
-            f"-t {docker_image} --pull -f {dockerfile} "
-            f"{build_args} {docker_context}"
+            f"{tools_build_context}"
+            f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
+            f"{build_args} {shlex.quote(docker_context)}"
         )
 
         # Execute build with log redirection
@@ -206,7 +214,7 @@ class DockerBuilder:
                     base_docker = self.context.ctx["docker_build_arg"]["BASE_DOCKER"]
                 else:
                     base_docker = self.console.sh(
-                        f"grep '^ARG BASE_DOCKER=' {dockerfile} | sed -E 's/ARG BASE_DOCKER=//g'"
+                        f"grep '^ARG BASE_DOCKER=' {shlex.quote(dockerfile)} | sed -E 's/ARG BASE_DOCKER=//g'"
                     )
 
                 print(f"BASE DOCKER is {base_docker}")
@@ -215,7 +223,7 @@ class DockerBuilder:
                 docker_sha = ""
                 try:
                     docker_sha = self.console.sh(
-                        f'docker manifest inspect {base_docker} | grep digest | head -n 1 | cut -d \\" -f 4'
+                        f'docker manifest inspect {shlex.quote(base_docker)} | grep digest | head -n 1 | cut -d \\" -f 4'
                     )
                     print(f"BASE DOCKER SHA is {docker_sha}")
                 except Exception as e:
@@ -249,72 +257,15 @@ class DockerBuilder:
     def login_to_registry(self, registry: str, credentials: typing.Dict = None) -> None:
         """Login to a Docker registry.
 
-        Args:
-            registry: Registry URL (e.g., "localhost:5000", "docker.io", or empty for DockerHub)
-            credentials: Optional credentials dictionary containing username/password
+        Delegates to :func:`madengine.core.auth.login_to_registry`.
         """
-        if not credentials:
-            print("No credentials provided for registry login")
-            return
-
-        # Check if registry credentials are available
-        registry_key = registry if registry else "dockerhub"
-
-        # Handle docker.io as dockerhub
-        if registry and registry.lower() == "docker.io":
-            registry_key = "dockerhub"
-
-        if registry_key not in credentials:
-            error_msg = f"No credentials found for registry: {registry_key}"
-            if registry_key == "dockerhub":
-                error_msg += f"\nPlease add dockerhub credentials to credential.json:\n"
-                error_msg += "{\n"
-                error_msg += '  "dockerhub": {\n'
-                error_msg += '    "repository": "your-repository",\n'
-                error_msg += '    "username": "your-dockerhub-username",\n'
-                error_msg += '    "password": "your-dockerhub-password-or-token"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            else:
-                error_msg += (
-                    f"\nPlease add {registry_key} credentials to credential.json:\n"
-                )
-                error_msg += "{\n"
-                error_msg += f'  "{registry_key}": {{\n'
-                error_msg += f'    "repository": "your-repository",\n'
-                error_msg += f'    "username": "your-{registry_key}-username",\n'
-                error_msg += f'    "password": "your-{registry_key}-password"\n'
-                error_msg += "  }\n"
-                error_msg += "}"
-            self.rich_console.print(f"[red]{error_msg}[/red]")
-            raise RuntimeError(error_msg)
-
-        creds = credentials[registry_key]
-
-        if "username" not in creds or "password" not in creds:
-            error_msg = f"Invalid credentials format for registry: {registry_key}"
-            error_msg += f"\nCredentials must contain 'username' and 'password' fields"
-            self.rich_console.print(f"[red]{error_msg}[/red]")
-            raise RuntimeError(error_msg)
-
-        # Ensure credential values are strings
-        username = str(creds["username"])
-        password = str(creds["password"])
-
-        # Perform docker login
-        login_command = f"echo '{password}' | docker login"
-
-        if registry and registry.lower() not in ["docker.io", "dockerhub"]:
-            login_command += f" {registry}"
-
-        login_command += f" --username {username} --password-stdin"
-
-        try:
-            self.console.sh(login_command, secret=True)
-            self.rich_console.print(f"[green]✅ Successfully logged in to registry: {registry or 'DockerHub'}[/green]")
-        except Exception as e:
-            self.rich_console.print(f"[red]❌ Failed to login to registry {registry}: {e}[/red]")
-            raise
+        login_to_registry(
+            registry,
+            credentials,
+            console=self.console,
+            rich_console=self.rich_console,
+            raise_on_failure=True,
+        )
 
     def push_image(
         self,
@@ -353,7 +304,7 @@ class DockerBuilder:
             # Tag the image if different from local name
             if registry_image != docker_image:
                 print(f"Tagging image: docker tag {docker_image} {registry_image}")
-                tag_command = f"docker tag {docker_image} {registry_image}"
+                tag_command = f"docker tag {shlex.quote(docker_image)} {shlex.quote(registry_image)}"
                 self.console.sh(tag_command)
             else:
                 print(
@@ -361,7 +312,7 @@ class DockerBuilder:
                 )
 
             # Push the image
-            push_command = f"docker push {registry_image}"
+            push_command = f"docker push {shlex.quote(registry_image)}"
             self.rich_console.print(f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]")
             print(f"📤 Registry: {registry}")
             print(f"🏷️  Image: {registry_image}")
@@ -421,6 +372,31 @@ class DockerBuilder:
                 build_info["registry"] = batch_build_metadata[model_name].get(
                     "registry"
                 )
+
+        # Update built_models with registry image name for parallel pull in slurm_multi
+        # Map local image to registry image for env_vars
+        for image_name, build_info in self.built_images.items():
+            registry_image = build_info.get("registry_image")
+            if not registry_image:
+                continue
+            if image_name not in self.built_models:
+                # built_images and built_models are keyed by docker_image in the
+                # normal build path (see _build_single_model). If a future code
+                # path keys them differently, this injection would silently no-op
+                # and slurm_multi parallel pulls would fall back to the local
+                # image tag. Surface the mismatch so it's caught early.
+                self.rich_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"No built_models entry found for local image key '{image_name}' "
+                    f"while setting DOCKER_IMAGE_NAME='{registry_image}'. "
+                    "built_images and built_models may be keyed differently."
+                )
+                continue
+            model_data = self.built_models[image_name]
+            if "env_vars" not in model_data:
+                model_data["env_vars"] = {}
+            # Set DOCKER_IMAGE_NAME to registry image for parallel pull
+            model_data["env_vars"]["DOCKER_IMAGE_NAME"] = registry_image
 
         manifest = {
             "built_images": self.built_images,
@@ -605,15 +581,17 @@ class DockerBuilder:
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
         """Get dockerfiles for a model."""
         try:
+            # Quote the dockerfile path to prevent shell injection
+            dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(
-                f"ls {model_info['dockerfile']}.*"
+                f"ls {dockerfile_quoted}.*"
             ).split("\n")
 
             dockerfiles = {}
             for cur_docker_file in all_dockerfiles:
                 # Get context of dockerfile
                 dockerfiles[cur_docker_file] = self.console.sh(
-                    f"head -n5 {cur_docker_file} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
+                    f"head -n5 {shlex.quote(cur_docker_file)} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
                 )
 
             # Filter dockerfiles based on context
@@ -779,18 +757,14 @@ class DockerBuilder:
         return ""
 
     def _create_base_image_name(self, model_info: typing.Dict, dockerfile: str) -> str:
-        """Create base image name from model info and dockerfile."""
-        # Extract dockerfile context suffix (e.g., "ubuntu.amd" from "dummy.ubuntu.amd.Dockerfile")
-        dockerfile_name = os.path.basename(dockerfile)
-        if '.' in dockerfile_name:
-            # Remove the .Dockerfile extension and get context
-            context_parts = dockerfile_name.replace('.Dockerfile', '').split('.')[1:]  # Skip model name
-            context_suffix = '.'.join(context_parts) if context_parts else 'default'
-        else:
-            context_suffix = 'default'
-        
-        # Create base image name: ci-{model}_{model}.{context}
-        return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
+        """Create base image name from model info and dockerfile.
+
+        Mirrors the single-arch naming in ``build_image`` so multi-arch builds
+        produce valid Docker references when the model name contains ``/``.
+        """
+        safe_name = model_info["name"].replace("/", "_").lower()
+        dockerfile_base = os.path.basename(dockerfile).replace(".Dockerfile", "")
+        return f"ci-{safe_name}_{dockerfile_base}"
 
     def _create_registry_image_name(
         self,
