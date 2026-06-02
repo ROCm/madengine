@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import subprocess
+import socket
 import time
 import json
 import typing
@@ -706,14 +707,22 @@ class ContainerRunner:
 
         return env_args
 
-    def get_mount_arg(self, mount_datapaths: typing.List) -> str:
-        """Get the mount arguments for docker run."""
+    def get_mount_arg(self, mount_datapaths: typing.List, excluded_container_targets: typing.Optional[typing.Set[str]] = None) -> str:
+        """Get the mount arguments for docker run.
+
+        excluded_container_targets lists container-side paths already mounted via
+        additional_docker_run_options so we do not emit a duplicate -v (docker
+        rejects \"Duplicate mount point\").
+        """
         mount_args = ""
+        excluded_container_targets = excluded_container_targets or set()
 
         # Mount data paths
         if mount_datapaths:
             for mount_datapath in mount_datapaths:
                 if mount_datapath:
+                    if mount_datapath["home"] in excluded_container_targets:
+                        continue
                     mount_args += (
                         f"-v {shlex.quote(mount_datapath['path'])}:{shlex.quote(mount_datapath['home'])}"
                     )
@@ -728,12 +737,13 @@ class ContainerRunner:
         # Mount context paths
         if "docker_mounts" in self.context.ctx:
             for mount_arg in self.context.ctx["docker_mounts"].keys():
+                if mount_arg in excluded_container_targets:
+                    continue
                 mount_args += (
                     f"-v {shlex.quote(self.context.ctx['docker_mounts'][mount_arg])}:{shlex.quote(mount_arg)} "
                 )
 
         return mount_args
-
     def apply_tools(
         self,
         pre_encapsulate_post_scripts: typing.Dict,
@@ -1315,9 +1325,11 @@ class ContainerRunner:
             self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
             print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
         
+        additional_opts = model_info.get('additional_docker_run_options', '')
+        excluded_mount_targets = self._extract_additional_mount_targets(additional_opts)
         docker_options += self.get_env_arg(run_env)
-        docker_options += self.get_mount_arg(mount_datapaths)
-        docker_options += f" {model_info.get('additional_docker_run_options', '')}"
+        docker_options += self.get_mount_arg(mount_datapaths, excluded_container_targets=excluded_mount_targets)
+        docker_options += f" {additional_opts}"
 
         # Generate container name
         base_container_name = "container_" + re.sub(
@@ -2174,35 +2186,21 @@ class ContainerRunner:
         self.rich_console.print(f"[green]✅ Built local image on this node:[/green] {run_image}")
 
     def _sync_after_local_image_ready(self, run_image: str, timeout_s: int = 1800) -> None:
-        """Stage B: shared-filesystem readiness wait for multi-node local-image runs.
+        """Barrier for multi-node local-image runs so all nodes continue together.
 
-        Worker nodes that do not yet have the image poll for the shared tar
-        produced by the primary on the MAD_DOCKER_BUILDS filesystem. No-op for
-        single-node runs and for nodes that already have the image. Stage C
-        replaces this with a deterministic TCP barrier that does not depend on
-        shared-FS visibility.
+        Uses a TCP rendezvous between NODE_RANK=0 and worker nodes so no shared
+        filesystem visibility is required (more robust than the Stage B shared-FS
+        poll under NFS/Weka metadata lag). No-op for single-node runs (NNODES<=1).
         """
         nnodes_raw = os.environ.get("NNODES") or os.environ.get("WORLD_SIZE") or "1"
+        node_rank = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
         try:
             nnodes = int(nnodes_raw)
         except (TypeError, ValueError) as e:
             raise RuntimeError(f"Invalid NNODES/WORLD_SIZE env value {nnodes_raw!r}: {e}")
         if nnodes <= 1:
             return
-        if self._get_node_rank() == 0:
-            return
-        if self._local_image_exists(run_image):
-            return
-        tar_path = self._get_local_image_tar_path(run_image)
-        if not tar_path:
-            return
-        deadline = time.time() + timeout_s
-        self.rich_console.print(f"[yellow]⏳ Waiting for primary to produce image tar:[/yellow] {tar_path}")
-        while not os.path.exists(tar_path):
-            if time.time() > deadline:
-                raise RuntimeError(f"Timed out after {timeout_s}s waiting for image tar: {tar_path}")
-            time.sleep(2)
-
+        self._tcp_image_ready_barrier(nnodes=nnodes, node_rank=node_rank, timeout_s=timeout_s)
     def _ensure_local_image_available(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
         """Prepare a local image on this node, optionally via a shared tar cache.
 
@@ -2240,6 +2238,231 @@ class ContainerRunner:
             else:
                 self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
                 image_exists = True
+
+
+    @staticmethod
+    def _recv_line(sock: "socket.socket", max_len: int = 128) -> str:
+        """Read one newline-terminated line from a socket.
+
+        socket.recv may return a partial read (TCP is a byte stream), so using
+        it directly to parse a protocol line can reject valid peers when the
+        line is split across reads, manifesting as flaky barrier timeouts. This
+        loops on recv until a newline or max_len bytes, honoring the socket
+        timeout. Trailing newline and surrounding whitespace are stripped; an
+        empty string is returned on EOF before any data.
+        """
+        buf = bytearray()
+        while len(buf) < max_len:
+            chunk = sock.recv(max_len - len(buf))
+            if not chunk:
+                break
+            buf.extend(chunk)
+            nl = buf.find(b"\n")
+            if nl != -1:
+                buf = buf[:nl]
+                break
+        return buf.decode("utf-8", errors="ignore").strip()
+
+    def _tcp_image_ready_barrier(self, nnodes: int, node_rank: str, timeout_s: int) -> None:
+        """TCP rendezvous barrier that does not require shared filesystem visibility.
+
+        Node 0 listens on one of candidate_ports derived from MASTER_PORT and
+        SLURM_JOB_ID; workers send "READY <token> <rank>" and wait for
+        "GO <token> <rank>". The port range and token defend against multiple
+        concurrent jobs reusing the same master host. MAD_BARRIER_TOKEN can set
+        an opaque secret token; otherwise it defaults to JOB<SLURM_JOB_ID>. The
+        listener binds to MASTER_ADDR resolved IP first (skipping loopback) and
+        only falls back to 0.0.0.0.
+        """
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        job_id_raw = os.environ.get("SLURM_JOB_ID", "0")
+        try:
+            job_id = int(job_id_raw)
+        except Exception:
+            job_id = 0
+        token = (os.environ.get("MAD_BARRIER_TOKEN") or "").strip() or f"JOB{job_id}"
+        master_port_raw = os.environ.get("MASTER_PORT", "29500")
+        try:
+            master_port = int(master_port_raw)
+        except Exception:
+            master_port = 29500
+        base_port = 43000 + ((master_port + job_id) % 1000)
+        candidate_ports = [base_port + i for i in range(0, 16)]
+        deadline = time.time() + timeout_s
+        try:
+            rank_int = int(node_rank)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"TCP barrier: invalid NODE_RANK/RANK value {node_rank!r}: {e}")
+
+        if rank_int == 0:
+            accepted = 0
+            peers: typing.Dict[int, str] = {}
+            waiting: typing.Dict[int, "socket.socket"] = {}
+            server = None
+            port = None
+            try:
+                master_ip = socket.gethostbyname(master_addr)
+            except Exception:
+                master_ip = ""
+            bind_hosts: typing.List[str] = []
+
+            def _is_loopback(ip: str) -> bool:
+                if not ip:
+                    return True
+                if ip in ("0.0.0.0", "::"):
+                    return True
+                if ip.startswith("127.") or ip == "::1":
+                    return True
+                return False
+
+            if master_ip and not _is_loopback(master_ip):
+                bind_hosts.append(master_ip)
+            if "0.0.0.0" not in bind_hosts:
+                bind_hosts.append("0.0.0.0")
+            try:
+                bind_errors = []
+                for bind_host in bind_hosts:
+                    for candidate in candidate_ports:
+                        trial = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        try:
+                            trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            trial.bind((bind_host, candidate))
+                            server = trial
+                            port = candidate
+                            break
+                        except Exception as e:
+                            bind_errors.append({"host": bind_host, "port": candidate, "error": str(e)})
+                            try:
+                                trial.close()
+                            except Exception:
+                                pass
+                    if server is not None:
+                        break
+                if server is None or port is None:
+                    raise RuntimeError(f"TCP barrier bind failed on all candidate ports: {bind_errors}")
+                server.listen(max(1, nnodes - 1))
+                server.settimeout(2.0)
+                while accepted < max(0, nnodes - 1) and time.time() < deadline:
+                    try:
+                        conn, addr = server.accept()
+                        conn.settimeout(2.0)
+                        payload = self._recv_line(conn)
+                        parts = payload.split()
+                        if len(parts) != 3 or parts[0] != "READY" or parts[1] != token:
+                            conn.close()
+                            continue
+                        try:
+                            worker_rank = int(parts[2])
+                        except Exception:
+                            conn.close()
+                            continue
+                        if worker_rank <= 0 or worker_rank >= nnodes:
+                            conn.close()
+                            continue
+                        if worker_rank in waiting:
+                            try:
+                                waiting[worker_rank].close()
+                            except Exception:
+                                pass
+                        waiting[worker_rank] = conn
+                        peers[worker_rank] = f"{addr[0]}:r{worker_rank}"
+                        accepted = len(waiting)
+                    except socket.timeout:
+                        continue
+                if accepted < max(0, nnodes - 1):
+                    for conn in waiting.values():
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                    raise RuntimeError(
+                        f"TCP barrier timeout on master: accepted={accepted}/{max(0, nnodes - 1)} port={port}"
+                    )
+                for worker_rank, conn in waiting.items():
+                    try:
+                        conn.sendall(f"GO {token} {worker_rank}\n".encode("utf-8"))
+                    finally:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                if peers:
+                    pretty = ", ".join(peers[r] for r in sorted(peers))
+                    self.rich_console.print(
+                        f"[dim]TCP barrier master: released {accepted} peer(s): {pretty} (port={port})[/dim]"
+                    )
+                return
+            finally:
+                try:
+                    if server is not None:
+                        server.close()
+                except Exception:
+                    pass
+
+        expected_ack = f"GO {token} {rank_int}"
+        last_error = ""
+        connect_attempts = 0
+        while time.time() < deadline:
+            for candidate in candidate_ports:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                connect_attempts += 1
+                try:
+                    sock.settimeout(1.5)
+                    sock.connect((master_addr, candidate))
+                    sock.sendall(f"READY {token} {rank_int}\n".encode("utf-8"))
+                    remaining_s = max(1.0, deadline - time.time())
+                    sock.settimeout(remaining_s)
+                    ack = self._recv_line(sock)
+                    if ack == expected_ack:
+                        return
+                    last_error = f"unexpected_ack={ack!r} port={candidate}"
+                except Exception as e:
+                    last_error = f"{e} port={candidate}"
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+            time.sleep(1)
+
+        raise RuntimeError(
+            f"TCP barrier timeout on worker rank={rank_int} master={master_addr} "
+            f"ports={candidate_ports} attempts={connect_attempts} last_error={last_error}"
+        )
+
+    def _extract_additional_mount_targets(self, additional_opts: str) -> typing.Set[str]:
+        """Extract container-side mount targets from free-form docker run options.
+
+        Parses -v / --volume tokens from additional_docker_run_options and
+        returns the container paths already being mounted, so get_mount_arg can
+        skip duplicates that docker would reject ("Duplicate mount point").
+        """
+        targets: typing.Set[str] = set()
+        if not additional_opts:
+            return targets
+        try:
+            tokens = shlex.split(additional_opts)
+        except Exception:
+            return targets
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in ("-v", "--volume") and i + 1 < len(tokens):
+                spec = tokens[i + 1]
+                i += 2
+            elif token.startswith("-v") and len(token) > 2:
+                spec = token[2:]
+                i += 1
+            elif token.startswith("--volume="):
+                spec = token.split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
+                continue
+            parts = spec.split(":")
+            if len(parts) >= 2:
+                targets.add(parts[1])
+        return targets
 
 
     def run_models_from_manifest(
