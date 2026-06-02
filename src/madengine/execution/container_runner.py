@@ -2039,6 +2039,209 @@ class ContainerRunner:
         """
         self.credentials = credentials
 
+    def _get_build_args(self) -> str:
+        """Build ``docker build --build-arg`` string from ``docker_build_arg`` context.
+
+        Values are passed to ``Console.sh`` (``shell=True``); the key and the
+        value of each ``--build-arg`` are wrapped with :func:`shlex.quote`
+        individually so quotes / whitespace / shell metacharacters in either
+        component cannot break the build command or be injected when
+        ``docker_build_arg`` comes from manifests or user context.
+        """
+        docker_build_arg = self.context.ctx.get("docker_build_arg", {}) if self.context else {}
+        if not docker_build_arg:
+            return ""
+        build_args = ""
+        for key, value in docker_build_arg.items():
+            build_args += (
+                "--build-arg "
+                + shlex.quote(str(key))
+                + "="
+                + shlex.quote(str(value))
+                + " "
+            )
+        return build_args
+
+    def _get_node_rank(self) -> int:
+        """Return the current node rank for distributed runs.
+
+        Raises RuntimeError when NODE_RANK / RANK is set but cannot be parsed
+        as an integer. Treating a malformed rank as 0 would let a worker take
+        the primary code path (image build, tar save) and diverge.
+        """
+        node_rank_raw = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            return int(node_rank_raw)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid NODE_RANK/RANK env value {node_rank_raw!r}: {e}")
+
+    def _local_image_exists(self, run_image: str) -> bool:
+        """Check whether a Docker image already exists locally."""
+        try:
+            self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+            return True
+        except (subprocess.CalledProcessError, RuntimeError):
+            return False
+
+    def _get_local_image_tar_path(self, run_image: str) -> typing.Optional[str]:
+        """Resolve the shared tar path for a local image, if configured.
+
+        When MAD_DOCKER_BUILDS points at a shared directory (e.g. a network
+        filesystem visible to all nodes), this path is used to stage a
+        ``docker save`` tar of the pre-built local image so that worker nodes
+        can ``docker load`` it instead of rebuilding or pulling.
+        """
+        builds_dir = (os.environ.get("MAD_DOCKER_BUILDS") or "").strip()
+        if not builds_dir:
+            return None
+        safe_image_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_image).strip("._")
+        if not safe_image_name:
+            safe_image_name = "docker_image"
+        return os.path.join(builds_dir, f"{safe_image_name}.tar")
+
+    def _load_local_image_from_tar(self, run_image: str, tar_path: str) -> None:
+        """Load a Docker image from a previously saved tar archive."""
+        if not os.path.exists(tar_path):
+            raise RuntimeError(f"Image tar not found for {run_image}: {tar_path}")
+        self.rich_console.print(f"[yellow]📦 Loading local image tar:[/yellow] {tar_path}")
+        self.console.sh(f"docker load -i {shlex.quote(tar_path)}", timeout=None)
+        self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+        self.rich_console.print(f"[green]✅ Loaded local image from tar:[/green] {run_image}")
+
+    def _save_local_image_to_tar(self, run_image: str, tar_path: str) -> None:
+        """Persist a local Docker image into the shared tar cache.
+
+        Written atomically: ``docker save`` streams into a sibling tmp file
+        which is renamed into place only on success, so peers never load a
+        half-written tar (POSIX rename is atomic within a single filesystem).
+        """
+        tar_dir = os.path.dirname(tar_path)
+        if tar_dir:
+            os.makedirs(tar_dir, exist_ok=True)
+        tmp_path = f"{tar_path}.tmp.{os.getpid()}"
+        self.rich_console.print(f"[yellow]💾 Saving local image tar:[/yellow] {tar_path}")
+        try:
+            self.console.sh(f"docker save -o {shlex.quote(tmp_path)} {shlex.quote(run_image)}", timeout=None)
+            os.replace(tmp_path, tar_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
+        self.rich_console.print(f"[green]✅ Saved local image tar:[/green] {tar_path}")
+
+    def _build_or_pull_local_image(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Ensure the local image exists by building it first and pulling as fallback."""
+        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]")
+        try:
+            self._build_local_image_from_manifest(run_image=run_image, build_info=build_info, model_info=model_info)
+        except Exception as build_error:
+            self.rich_console.print("[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]")
+            try:
+                self.pull_image(run_image)
+            except Exception as pull_error:
+                raise RuntimeError(
+                    f"Failed to build or pull local image {run_image}: "
+                    f"build_error={build_error}; pull_error={pull_error}"
+                )
+
+    def _build_local_image_from_manifest(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Build run_image on the current compute node using its manifest dockerfile.
+
+        Used by ``run --manifest-file`` in distributed mode when the local image
+        is not present on a compute node and pulling is not desired or possible.
+        """
+        dockerfile = build_info.get("dockerfile", "")
+        if not dockerfile or dockerfile == "N/A (local image mode)":
+            raise RuntimeError(f"Cannot build image {run_image}: dockerfile is missing in manifest")
+        if not os.path.exists(dockerfile):
+            raise RuntimeError(f"Cannot build image {run_image}: dockerfile not found at {dockerfile!r}")
+        docker_context = model_info.get("dockercontext", "") or "./docker"
+        if not os.path.exists(docker_context):
+            docker_context = os.path.dirname(dockerfile) or "."
+        build_args = self._get_build_args()
+        build_command = (
+            f"docker build --network=host -t {shlex.quote(run_image)} --pull "
+            f"-f {shlex.quote(dockerfile)} {build_args}{shlex.quote(docker_context)}"
+        )
+        self.rich_console.print(f"[yellow]🔨 Building missing local image on this node:[/yellow] {run_image}")
+        self.rich_console.print(f"[dim]  Dockerfile: {dockerfile}[/dim]")
+        self.rich_console.print(f"[dim]  Context: {docker_context}[/dim]")
+        self.console.sh(build_command, timeout=None)
+        self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+        self.rich_console.print(f"[green]✅ Built local image on this node:[/green] {run_image}")
+
+    def _sync_after_local_image_ready(self, run_image: str, timeout_s: int = 1800) -> None:
+        """Stage B: shared-filesystem readiness wait for multi-node local-image runs.
+
+        Worker nodes that do not yet have the image poll for the shared tar
+        produced by the primary on the MAD_DOCKER_BUILDS filesystem. No-op for
+        single-node runs and for nodes that already have the image. Stage C
+        replaces this with a deterministic TCP barrier that does not depend on
+        shared-FS visibility.
+        """
+        nnodes_raw = os.environ.get("NNODES") or os.environ.get("WORLD_SIZE") or "1"
+        try:
+            nnodes = int(nnodes_raw)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid NNODES/WORLD_SIZE env value {nnodes_raw!r}: {e}")
+        if nnodes <= 1:
+            return
+        if self._get_node_rank() == 0:
+            return
+        if self._local_image_exists(run_image):
+            return
+        tar_path = self._get_local_image_tar_path(run_image)
+        if not tar_path:
+            return
+        deadline = time.time() + timeout_s
+        self.rich_console.print(f"[yellow]⏳ Waiting for primary to produce image tar:[/yellow] {tar_path}")
+        while not os.path.exists(tar_path):
+            if time.time() > deadline:
+                raise RuntimeError(f"Timed out after {timeout_s}s waiting for image tar: {tar_path}")
+            time.sleep(2)
+
+    def _ensure_local_image_available(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Prepare a local image on this node, optionally via a shared tar cache.
+
+        Multi-node invariant: every rank reaches the same sync point
+        (``_sync_after_local_image_ready``) exactly once.
+
+        * Primary node (rank 0): ensures the image (and, if MAD_DOCKER_BUILDS
+          is configured, the tar) is present before crossing the sync point.
+        * Worker nodes (rank > 0): wait at the sync point; once released, load
+          the tar (when configured) or build/pull independently.
+        """
+        tar_path = self._get_local_image_tar_path(run_image)
+        node_rank = self._get_node_rank()
+        is_primary_node = node_rank == 0
+        image_exists = self._local_image_exists(run_image)
+        tar_exists = bool(tar_path) and os.path.exists(tar_path)
+        if is_primary_node:
+            if not image_exists:
+                if tar_path and tar_exists:
+                    self._load_local_image_from_tar(run_image, tar_path)
+                    image_exists = True
+                else:
+                    self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                    image_exists = True
+            if tar_path and not tar_exists:
+                self._save_local_image_to_tar(run_image, tar_path)
+                tar_exists = True
+        self._sync_after_local_image_ready(run_image=run_image)
+        if not is_primary_node and not image_exists:
+            if tar_path:
+                if not os.path.exists(tar_path):
+                    raise RuntimeError(f"Node 0 did not produce image tar for {run_image}: {tar_path}")
+                self._load_local_image_from_tar(run_image, tar_path)
+                image_exists = True
+            else:
+                self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                image_exists = True
+
+
     def run_models_from_manifest(
         self,
         manifest_file: str,
@@ -2114,15 +2317,16 @@ class ContainerRunner:
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
                     
-                    # Verify image exists
-                    try:
-                        self.console.sh(f"docker image inspect {run_image} > /dev/null 2>&1")
-                    except (subprocess.CalledProcessError, RuntimeError) as e:
-                        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]")
-                        try:
-                            self.pull_image(run_image)
-                        except Exception as e:
-                            raise RuntimeError(f"Failed to find or pull local image {run_image}: {e}")
+                    # Ensure the local image is available on this node. In a
+                    # multi-node SLURM run only the primary may have the
+                    # locally-built image; the shared-tar cache
+                    # (MAD_DOCKER_BUILDS) lets workers load it instead of
+                    # pulling (local images are not in any registry).
+                    self._ensure_local_image_available(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
+                    )
                 
                 elif build_info.get("registry_image"):
                     # Registry image: Pull from registry
