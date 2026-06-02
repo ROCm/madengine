@@ -78,8 +78,8 @@ all = [
 [tool.hatch.build.targets.wheel]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/madengine/scripts" = "madengine/scripts"
-"src/madengine/deployment/templates" = "madengine/deployment/templates"
+# Note: scripts directory is auto-included since it's under src/madengine/
+# Do NOT add force-include for it - causes duplicate file errors in newer hatchling
 
 [tool.hatch.version]
 source = "versioningit"
