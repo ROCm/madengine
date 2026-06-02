@@ -76,8 +76,6 @@ all = [
 ]
 
 [tool.hatch.build.targets.wheel]
-
-[tool.hatch.build.targets.wheel.force-include]
 # Note: scripts directory is auto-included since it's under src/madengine/
 # Do NOT add force-include for it - causes duplicate file errors in newer hatchling
 
