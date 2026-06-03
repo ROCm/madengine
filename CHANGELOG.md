@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-06-02
+
+### Fixed
+
+- **`tools/` build context conditionally included**: `docker build` now only passes `--build-context tools=./scripts/common/tools` when the `tools` directory actually exists, preventing build failures in environments where the directory is absent (e.g. clean checkouts before `madengine run` populates `scripts/common/`).
+
+- **SLURM env var escaping**: Switched from `shlex.quote()` to double-quote escaping for env var values in generated SBATCH wrapper scripts. `shlex.quote()` produced single-quoted strings that broke paths with spaces and special characters (e.g. directories with embedded variables); double-quoting is more portable for shell assignment in SLURM batch contexts.
+
+- **Hatch package artifacts include `scripts/`**: `pyproject.toml` now uses `[tool.hatch.build.artifacts]` to force-include the `scripts/` directory in the built wheel, ensuring pre/post scripts and tools bundled under `src/madengine/scripts/` are present in installed environments even though `.gitignore` excludes them from source tracking. Removes the previous `force-include` directive that caused `duplicate file` errors with newer hatchling versions.
+
 ## [2.1.0] - 2026-05-28
 
 ### Added
