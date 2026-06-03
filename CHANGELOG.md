@@ -11,11 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`tools/` build context conditionally included**: `docker build` now only passes `--build-context tools=./scripts/common/tools` when the `tools` directory actually exists, preventing build failures in environments where the directory is absent (e.g. clean checkouts before `madengine run` populates `scripts/common/`).
+- **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./tools` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
 
-- **SLURM env var escaping**: Switched from `shlex.quote()` to double-quote escaping for env var values in generated SBATCH wrapper scripts. `shlex.quote()` produced single-quoted strings that broke paths with spaces and special characters (e.g. directories with embedded variables); double-quoting is more portable for shell assignment in SLURM batch contexts.
-
-- **Hatch package artifacts include `scripts/`**: `pyproject.toml` now uses `[tool.hatch.build.artifacts]` to force-include the `scripts/` directory in the built wheel, ensuring pre/post scripts and tools bundled under `src/madengine/scripts/` are present in installed environments even though `.gitignore` excludes them from source tracking. Removes the previous `force-include` directive that caused `duplicate file` errors with newer hatchling versions.
+- **Hatch package artifacts include `scripts/`**: `pyproject.toml` now uses `[tool.hatch.build.artifacts]` to include the `scripts/` directory in the built wheel. The previous `force-include` directive caused `duplicate file` errors with newer hatchling versions (which are stricter about files already covered by the default source inclusion). Switching to `artifacts` bypasses `.gitignore` exclusion without risk of duplication. The `deployment/templates` force-include was also removed as it is already captured by the default wheel source scan.
 
 ## [2.1.0] - 2026-05-28
 
