@@ -1849,6 +1849,17 @@ class ContainerRunner:
                                 self.rich_console.print(
                                     f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
                                 )
+                            elif self.additional_context.get("skip_perf_collection", False):
+                                # Multi-node/SLURM in-job run: the login node aggregates the richest
+                                # per-node multiple_results CSV and writes the authoritative perf/status
+                                # record (slurm.collect_results + _select_best_multiple_results_csv).
+                                # Primus emits throughput only on the last global rank, which may land on a
+                                # different node than the designated collector (MAD_COLLECT_METRICS=true),
+                                # so an empty local perf here is not authoritative and must not fail the job.
+                                run_results["status"] = "SUCCESS"
+                                self.rich_console.print(
+                                    f"[green]Status: SUCCESS (perf collection deferred to login-node aggregation)[/green]"
+                                )
                             else:
                                 run_results["status"] = "FAILURE"
                                 self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
@@ -1860,7 +1871,9 @@ class ContainerRunner:
                             is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
                             run_results["status"] = (
                                 "SUCCESS"
-                                if run_results.get("performance") or is_worker_node
+                                if run_results.get("performance")
+                                or is_worker_node
+                                or self.additional_context.get("skip_perf_collection", False)
                                 else "FAILURE"
                             )
 
