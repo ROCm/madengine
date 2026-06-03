@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Dict, Optional
@@ -389,14 +390,17 @@ class RunOrchestrator:
         self.rich_console.print(f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]")
         self.rich_console.print(f"[dim]Skipping build phase, creating synthetic manifest...[/dim]\n")
         
-        # Validate that the image exists locally or can be pulled
+        # Validate that the image exists locally or can be pulled.
+        # image_name is interpolated into shell commands run with shell=True,
+        # so shell-escape it to avoid command injection / breakage on special chars.
+        quoted_image_name = shlex.quote(image_name)
         try:
-            self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
+            self.console.sh(f"docker image inspect {quoted_image_name} > /dev/null 2>&1")
             self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
         except (subprocess.CalledProcessError, RuntimeError) as e:
             self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
             try:
-                self.console.sh(f"docker pull {image_name}")
+                self.console.sh(f"docker pull {quoted_image_name}")
                 self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
             except Exception as e:
                 raise RuntimeError(
