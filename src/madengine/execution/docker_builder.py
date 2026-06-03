@@ -179,7 +179,7 @@ class DockerBuilder:
         build_start_time = time.time()
 
         tools_build_context = ""
-        tools_dir = Path("scripts/common/tools")
+        tools_dir = Path("tools")
         if tools_dir.exists():
             tools_build_context = f"--build-context tools={tools_dir} "
 
