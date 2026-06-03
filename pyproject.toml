@@ -76,8 +76,11 @@ all = [
 ]
 
 [tool.hatch.build.targets.wheel]
-# Note: scripts directory is auto-included since it's under src/madengine/
-# Do NOT add force-include for it - causes duplicate file errors in newer hatchling
+# scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
+# artifacts bypasses VCS exclusion without risk of duplicate-file errors from force-include.
+artifacts = [
+  "src/madengine/scripts/**",
+]
 
 [tool.hatch.version]
 source = "versioningit"
