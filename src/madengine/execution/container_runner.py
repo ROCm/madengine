@@ -14,6 +14,7 @@ import subprocess
 import socket
 import time
 import json
+import hashlib
 import typing
 import warnings
 from rich.console import Console as RichConsole
@@ -2161,6 +2162,72 @@ class ContainerRunner:
         except (subprocess.CalledProcessError, RuntimeError):
             return False
 
+    # Label baked into locally-built images so the run phase can tell whether an
+    # image found under a reused tag was built from the *current* manifest inputs
+    # (Dockerfile + build args) rather than a stale build sharing the same tag.
+    BUILD_FINGERPRINT_LABEL = "mad.build_fingerprint"
+
+    def _local_image_id(self, run_image: str) -> typing.Optional[str]:
+        """Return the local Docker image ID (``sha256:...``) for *run_image*, or None.
+
+        Used to compare image identity across nodes: two images sharing a tag may
+        still differ in content (e.g. built from different RCCL commits), so the
+        tag alone is not a safe equality check.
+        """
+        try:
+            out = self.console.sh(
+                f"docker image inspect --format '{{{{.Id}}}}' {shlex.quote(run_image)} 2>/dev/null",
+                canFail=True,
+                secret=True,
+            )
+        except (subprocess.CalledProcessError, RuntimeError):
+            return None
+        for line in reversed((out or "").splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("sha256:"):
+                return stripped
+        return None
+
+    def _image_label(self, run_image: str, label: str) -> typing.Optional[str]:
+        """Return the value of *label* on *run_image*, or None if absent/unset."""
+        fmt = "{{ index .Config.Labels " + json.dumps(label) + " }}"
+        try:
+            out = self.console.sh(
+                f"docker image inspect --format {shlex.quote(fmt)} {shlex.quote(run_image)} 2>/dev/null",
+                canFail=True,
+                secret=True,
+            )
+        except (subprocess.CalledProcessError, RuntimeError):
+            return None
+        lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+        if not lines:
+            return None
+        value = lines[-1]
+        if not value or value == "<no value>":
+            return None
+        return value
+
+    def _build_fingerprint(self, build_info: typing.Dict) -> str:
+        """Deterministic fingerprint of the build inputs (Dockerfile + build args).
+
+        Returns "" when there is no buildable dockerfile (e.g. pull/registry or
+        local-image-mode entries) so callers skip content-staleness checks for
+        images madengine does not build.
+        """
+        dockerfile = (build_info or {}).get("dockerfile", "")
+        if not dockerfile or dockerfile == "N/A (local image mode)":
+            return ""
+        payload: typing.Dict[str, typing.Any] = {
+            "docker_build_arg": self.context.ctx.get("docker_build_arg", {}) if self.context else {},
+        }
+        try:
+            with open(dockerfile, "rb") as handle:
+                payload["dockerfile_sha256"] = hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            payload["dockerfile_sha256"] = ""
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
     def _get_local_image_tar_path(self, run_image: str) -> typing.Optional[str]:
         """Resolve the shared tar path for a local image, if configured.
 
@@ -2240,8 +2307,14 @@ class ContainerRunner:
         if not os.path.exists(docker_context):
             docker_context = os.path.dirname(dockerfile) or "."
         build_args = self._get_build_args()
+        # Bake a content fingerprint so a later run can detect a stale image that
+        # reuses this tag but was built from different inputs (e.g. RCCL commit).
+        fingerprint = self._build_fingerprint(build_info)
+        label_arg = ""
+        if fingerprint:
+            label_arg = f"--label {shlex.quote(self.BUILD_FINGERPRINT_LABEL + '=' + fingerprint)} "
         build_command = (
-            f"docker build --network=host -t {shlex.quote(run_image)} --pull "
+            f"docker build --network=host -t {shlex.quote(run_image)} {label_arg}--pull "
             f"-f {shlex.quote(dockerfile)} {build_args}{shlex.quote(docker_context)}"
         )
         self.rich_console.print(f"[yellow]🔨 Building missing local image on this node:[/yellow] {run_image}")
@@ -2251,12 +2324,21 @@ class ContainerRunner:
         self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
         self.rich_console.print(f"[green]✅ Built local image on this node:[/green] {run_image}")
 
-    def _sync_after_local_image_ready(self, run_image: str, timeout_s: int = 1800) -> None:
+    def _sync_after_local_image_ready(
+        self,
+        run_image: str,
+        master_image_id: typing.Optional[str] = None,
+        timeout_s: int = 1800,
+    ) -> typing.Optional[str]:
         """Barrier for multi-node local-image runs so all nodes continue together.
 
         Uses a TCP rendezvous between NODE_RANK=0 and worker nodes so no shared
         filesystem visibility is required (more robust than the Stage B shared-FS
         poll under NFS/Weka metadata lag). No-op for single-node runs (NNODES<=1).
+
+        Rank 0 broadcasts *master_image_id* (the ID of the image it ensured) over
+        the same rendezvous; the return value is that ID as seen by every node, so
+        workers can verify their local image matches rank 0 before the run starts.
         """
         nnodes_raw = os.environ.get("NNODES") or os.environ.get("WORLD_SIZE") or "1"
         node_rank = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
@@ -2265,45 +2347,114 @@ class ContainerRunner:
         except (TypeError, ValueError) as e:
             raise RuntimeError(f"Invalid NNODES/WORLD_SIZE env value {nnodes_raw!r}: {e}")
         if nnodes <= 1:
-            return
-        self._tcp_image_ready_barrier(nnodes=nnodes, node_rank=node_rank, timeout_s=timeout_s)
+            return master_image_id
+        return self._tcp_image_ready_barrier(
+            nnodes=nnodes,
+            node_rank=node_rank,
+            timeout_s=timeout_s,
+            master_image_id=master_image_id,
+        )
+    def _image_is_stale(self, run_image: str, want_fingerprint: str) -> bool:
+        """True when *run_image* exists but was built from different inputs.
+
+        Only reports stale when a fingerprint label is present AND differs from
+        *want_fingerprint*. Images without the label (pulled, or built before this
+        feature) are treated as not-stale so we never force spurious rebuilds.
+        """
+        if not want_fingerprint:
+            return False
+        have = self._image_label(run_image, self.BUILD_FINGERPRINT_LABEL)
+        return bool(have) and have != want_fingerprint
+
     def _ensure_local_image_available(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
-        """Prepare a local image on this node, optionally via a shared tar cache.
+        """Prepare a correct local image on this node, optionally via a shared tar.
 
-        Multi-node invariant: every rank reaches the same sync point
-        (``_sync_after_local_image_ready``) exactly once.
+        Two correctness guarantees:
 
-        * Primary node (rank 0): ensures the image (and, if MAD_DOCKER_BUILDS
-          is configured, the tar) is present before crossing the sync point.
-        * Worker nodes (rank > 0): wait at the sync point; once released, load
-          the tar (when configured) or build/pull independently.
+        * Content freshness (single- and multi-node): a tag reused for a different
+          build (e.g. a new RCCL commit) is detected via the
+          ``mad.build_fingerprint`` label and rebuilt instead of silently run.
+        * Cross-node identity (multi-node): rank 0 broadcasts the ID of the image
+          it ensured over the rendezvous barrier. When a shared tar cache
+          (MAD_DOCKER_BUILDS) is configured, workers whose local image ID differs
+          from rank 0 (e.g. a stale image already present under the same tag)
+          force-reload rank 0's tar so every node runs the identical image.
+
+        Multi-node invariant: every rank reaches ``_sync_after_local_image_ready``
+        exactly once.
         """
         tar_path = self._get_local_image_tar_path(run_image)
         node_rank = self._get_node_rank()
         is_primary_node = node_rank == 0
-        image_exists = self._local_image_exists(run_image)
-        tar_exists = bool(tar_path) and os.path.exists(tar_path)
+        want_fingerprint = self._build_fingerprint(build_info)
+
+        master_image_id: typing.Optional[str] = None
         if is_primary_node:
-            if not image_exists:
+            image_exists = self._local_image_exists(run_image)
+            tar_exists = bool(tar_path) and os.path.exists(tar_path)
+            tar_dirty = False
+            if image_exists and self._image_is_stale(run_image, want_fingerprint):
+                self.rich_console.print(
+                    f"[yellow]♻️  Local image {run_image} is stale "
+                    f"(build inputs changed under the same tag); rebuilding.[/yellow]"
+                )
+                self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                tar_dirty = True  # any existing tar is now stale
+            elif not image_exists:
                 if tar_path and tar_exists:
                     self._load_local_image_from_tar(run_image, tar_path)
-                    image_exists = True
+                    if self._image_is_stale(run_image, want_fingerprint):
+                        self.rich_console.print(
+                            f"[yellow]♻️  Tar image for {run_image} is stale; rebuilding.[/yellow]"
+                        )
+                        self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                        tar_dirty = True
                 else:
                     self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
-                    image_exists = True
-            if tar_path and not tar_exists:
+                    tar_dirty = True
+            if tar_path and (not tar_exists or tar_dirty):
                 self._save_local_image_to_tar(run_image, tar_path)
-                tar_exists = True
-        self._sync_after_local_image_ready(run_image=run_image)
-        if not is_primary_node and not image_exists:
-            if tar_path:
+            master_image_id = self._local_image_id(run_image)
+
+        master_image_id = self._sync_after_local_image_ready(
+            run_image=run_image, master_image_id=master_image_id
+        )
+
+        if is_primary_node:
+            return
+
+        local_id = self._local_image_id(run_image)
+        if tar_path:
+            need_reload = (master_image_id and local_id != master_image_id) or (
+                not master_image_id and local_id is None
+            )
+            if need_reload:
                 if not os.path.exists(tar_path):
                     raise RuntimeError(f"Node 0 did not produce image tar for {run_image}: {tar_path}")
+                self.rich_console.print(
+                    f"[yellow]🔁 Worker image for {run_image} differs from rank 0 "
+                    f"(local={local_id or 'none'}, master={master_image_id or 'unknown'}); "
+                    f"reloading from master tar.[/yellow]"
+                )
                 self._load_local_image_from_tar(run_image, tar_path)
-                image_exists = True
-            else:
+                local_id = self._local_image_id(run_image)
+                if master_image_id and local_id != master_image_id:
+                    raise RuntimeError(
+                        f"Image mismatch persists after tar reload for {run_image}: "
+                        f"local={local_id} master={master_image_id}"
+                    )
+        else:
+            # No shared tar to reconcile by ID: keep each worker content-correct
+            # via the build fingerprint instead.
+            stale = (local_id is not None) and self._image_is_stale(run_image, want_fingerprint)
+            if local_id is None or stale:
                 self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
-                image_exists = True
+            elif master_image_id and local_id != master_image_id:
+                self.rich_console.print(
+                    f"[yellow]⚠️  Worker image for {run_image} differs from rank 0 and "
+                    f"MAD_DOCKER_BUILDS is unset, so it cannot be reconciled by tar. "
+                    f"Proceeding with the content-verified local image.[/yellow]"
+                )
 
 
     @staticmethod
@@ -2329,16 +2480,41 @@ class ContainerRunner:
                 break
         return buf.decode("utf-8", errors="ignore").strip()
 
-    def _tcp_image_ready_barrier(self, nnodes: int, node_rank: str, timeout_s: int) -> None:
+    @staticmethod
+    def _parse_go_image_id(
+        ack: str, expected_prefix: str
+    ) -> typing.Tuple[bool, typing.Optional[str]]:
+        """Parse a barrier ``GO`` line, returning (matched, master_image_id).
+
+        Accepts both the bare ``GO <token> <rank>`` form and the extended
+        ``GO <token> <rank> <image_id>`` form; ``-`` (or an empty trailer) maps
+        to None so callers treat the master image ID as unknown.
+        """
+        if ack == expected_prefix or ack.startswith(expected_prefix + " "):
+            image_id = ack[len(expected_prefix):].strip()
+            return True, (image_id if (image_id and image_id != "-") else None)
+        return False, None
+
+    def _tcp_image_ready_barrier(
+        self,
+        nnodes: int,
+        node_rank: str,
+        timeout_s: int,
+        master_image_id: typing.Optional[str] = None,
+    ) -> typing.Optional[str]:
         """TCP rendezvous barrier that does not require shared filesystem visibility.
 
         Node 0 listens on one of candidate_ports derived from MASTER_PORT and
         SLURM_JOB_ID; workers send "READY <token> <rank>" and wait for
-        "GO <token> <rank>". The port range and token defend against multiple
-        concurrent jobs reusing the same master host. MAD_BARRIER_TOKEN can set
-        an opaque secret token; otherwise it defaults to JOB<SLURM_JOB_ID>. The
-        listener binds to MASTER_ADDR resolved IP first (skipping loopback) and
-        only falls back to 0.0.0.0.
+        "GO <token> <rank> <image_id>". The port range and token defend against
+        multiple concurrent jobs reusing the same master host. MAD_BARRIER_TOKEN
+        can set an opaque secret token; otherwise it defaults to JOB<SLURM_JOB_ID>.
+        The listener binds to MASTER_ADDR resolved IP first (skipping loopback)
+        and only falls back to 0.0.0.0.
+
+        Rank 0 appends its ensured image ID (or ``-`` when unknown) to the GO
+        line; the method returns that ID on every rank so callers can reconcile
+        worker images against rank 0.
         """
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
         job_id_raw = os.environ.get("SLURM_JOB_ID", "0")
@@ -2444,9 +2620,10 @@ class ContainerRunner:
                     raise RuntimeError(
                         f"TCP barrier timeout on master: accepted={accepted}/{max(0, nnodes - 1)} port={port}"
                     )
+                go_payload = master_image_id if master_image_id else "-"
                 for worker_rank, conn in waiting.items():
                     try:
-                        conn.sendall(f"GO {token} {worker_rank}\n".encode("utf-8"))
+                        conn.sendall(f"GO {token} {worker_rank} {go_payload}\n".encode("utf-8"))
                     finally:
                         try:
                             conn.close()
@@ -2457,7 +2634,7 @@ class ContainerRunner:
                     self.rich_console.print(
                         f"[dim]TCP barrier master: released {accepted} peer(s): {pretty} (port={port})[/dim]"
                     )
-                return
+                return master_image_id
             finally:
                 try:
                     if server is not None:
@@ -2465,7 +2642,7 @@ class ContainerRunner:
                 except Exception:
                     pass
 
-        expected_ack = f"GO {token} {rank_int}"
+        expected_prefix = f"GO {token} {rank_int}"
         last_error = ""
         connect_attempts = 0
         while time.time() < deadline:
@@ -2478,9 +2655,10 @@ class ContainerRunner:
                     sock.sendall(f"READY {token} {rank_int}\n".encode("utf-8"))
                     remaining_s = max(1.0, deadline - time.time())
                     sock.settimeout(remaining_s)
-                    ack = self._recv_line(sock)
-                    if ack == expected_ack:
-                        return
+                    ack = self._recv_line(sock, max_len=256)
+                    matched, image_id = self._parse_go_image_id(ack, expected_prefix)
+                    if matched:
+                        return image_id
                     last_error = f"unexpected_ack={ack!r} port={candidate}"
                 except Exception as e:
                     last_error = f"{e} port={candidate}"
