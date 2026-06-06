@@ -3,246 +3,373 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>madengine — Codebase Wiki (branch: develop)</title>
+<title>madengine — Codebase Wiki v2.1.0</title>
 <style>
-  :root{
-    --bg:#0e1116; --bg2:#161b22; --bg3:#1f2630; --fg:#e6edf3; --mut:#8b949e;
-    --acc:#ff6a00; --acc2:#58a6ff; --ok:#3fb950; --warn:#d29922; --err:#f85149;
-    --layer-cli:#9d7cff; --layer-orch:#58a6ff; --layer-dep:#3fb950;
-    --layer-exec:#d29922; --layer-core:#f778ba; --layer-util:#79c0ff;
-    --layer-rep:#ff7b72; --border:#30363d;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-  a{color:var(--acc2);text-decoration:none}
-  a:hover{text-decoration:underline}
-  code,pre{font-family:var(--mono);font-size:.88em}
-  code{background:var(--bg3);padding:1px 5px;border-radius:4px;color:#ffd596}
-  pre{background:#010409;border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow:auto;color:#e6edf3}
-  pre code{background:none;padding:0;color:inherit}
-  /* layout */
-  .app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
-  nav.side{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;
-    border-right:1px solid var(--border);background:var(--bg2);padding:18px 12px 30px}
-  nav.side .brand{display:flex;align-items:center;gap:10px;margin:0 6px 14px;font-weight:700}
-  nav.side .brand .logo{width:30px;height:30px;border-radius:6px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;color:#111;font-weight:900}
-  nav.side .v{color:var(--mut);font-weight:400;font-size:.85em;margin-left:6px}
-  nav.side input{width:100%;background:#010409;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin:0 0 10px}
-  nav.side .grp{margin:14px 6px 4px;font-size:.7em;letter-spacing:.1em;text-transform:uppercase;color:var(--mut)}
-  nav.side a{display:flex;align-items:center;gap:8px;padding:5px 9px;border-radius:5px;color:#c9d1d9;font-size:.92em}
-  nav.side a:hover{background:#21262d;text-decoration:none}
-  nav.side a.active{background:#1f2937;color:#fff;border-left:2px solid var(--acc);padding-left:7px}
-  nav.side a .dot{width:8px;height:8px;border-radius:50%;flex:none}
-  main{padding:32px 44px 80px;max-width:1180px}
-  h1,h2,h3,h4{line-height:1.25;color:#fff}
-  h1{font-size:2.05em;margin:.2em 0 .1em}
-  h2{font-size:1.55em;margin:2.2em 0 .6em;border-bottom:1px solid var(--border);padding-bottom:6px}
-  h3{font-size:1.18em;margin:1.6em 0 .5em;color:#fafafa}
-  h4{font-size:1em;margin:1.2em 0 .4em;color:#d0d7de}
-  .sub{color:var(--mut)}
-  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72em;font-weight:600;background:#21262d;color:#c9d1d9;vertical-align:middle}
-  .pill.cli{background:rgba(157,124,255,.15);color:var(--layer-cli)}
-  .pill.orch{background:rgba(88,166,255,.15);color:var(--layer-orch)}
-  .pill.dep{background:rgba(63,185,80,.15);color:var(--layer-dep)}
-  .pill.exec{background:rgba(210,153,34,.15);color:var(--layer-exec)}
-  .pill.core{background:rgba(247,120,186,.15);color:var(--layer-core)}
-  .pill.util{background:rgba(121,192,255,.15);color:var(--layer-util)}
-  .pill.rep{background:rgba(255,123,114,.15);color:var(--layer-rep)}
-  .pill.ok{background:rgba(63,185,80,.18);color:var(--ok)}
-  .pill.warn{background:rgba(210,153,34,.18);color:var(--warn)}
-  .pill.err{background:rgba(248,81,73,.18);color:var(--err)}
-  .pill.new{background:linear-gradient(90deg,#ff6a00,#ff3d83);color:#fff}
-  .grid{display:grid;gap:14px}
-  .cols-2{grid-template-columns:1fr 1fr}
-  .cols-3{grid-template-columns:repeat(3,1fr)}
-  @media(max-width:980px){.cols-2,.cols-3{grid-template-columns:1fr}.app{grid-template-columns:1fr}nav.side{position:relative;height:auto}}
-  .card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
-  .card h3{margin-top:0}
-  .hero{background:radial-gradient(1100px 360px at 20% -10%,rgba(255,106,0,.18),transparent 60%),
-                  radial-gradient(900px 320px at 90% 0%,rgba(88,166,255,.15),transparent 60%),
-                  linear-gradient(180deg,#161b22,#0e1116);
-    border:1px solid var(--border);border-radius:14px;padding:30px 32px;margin-bottom:24px}
-  .hero h1{margin:0 0 8px;font-size:2.4em;background:linear-gradient(90deg,#fff,#ffaa55);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .hero p{color:#c9d1d9;max-width:780px}
-  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-  table{border-collapse:collapse;width:100%;margin:8px 0 14px;font-size:.92em}
-  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
-  th{background:#161b22;color:#fff;font-weight:600}
-  tr:nth-child(even) td{background:#10151c}
-  td code{font-size:.88em}
-  details{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:6px 12px;margin:8px 0}
-  details>summary{cursor:pointer;font-weight:600;padding:6px 0}
-  details[open]{padding-bottom:10px}
-  .filepath{font-family:var(--mono);color:#79c0ff;font-size:.88em}
-  .kbd{font-family:var(--mono);background:#21262d;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:.85em}
-  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:10px 0 0}
-  .tabs button{background:transparent;border:0;color:var(--mut);padding:8px 14px;cursor:pointer;font-size:.92em;border-bottom:2px solid transparent}
-  .tabs button.on{color:#fff;border-bottom-color:var(--acc)}
-  .tabpanel{display:none;padding-top:6px}
-  .tabpanel.on{display:block}
-  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85em;color:var(--mut);margin:6px 0 12px}
-  .legend span{display:inline-flex;align-items:center;gap:6px}
-  .legend .dot{width:10px;height:10px;border-radius:50%}
-  .callout{border-left:3px solid var(--acc);background:rgba(255,106,0,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
-  .callout.info{border-color:var(--acc2);background:rgba(88,166,255,.06)}
-  .callout.warn{border-color:var(--warn);background:rgba(210,153,34,.06)}
-  .toc-mini a{display:block;padding:2px 0;color:var(--mut)}
-  .toc-mini a:hover{color:#fff}
-  /* module table */
-  .modtable td:first-child{white-space:nowrap}
-  #modfilter{width:100%;padding:8px 10px;border-radius:6px;background:#010409;color:var(--fg);border:1px solid var(--border);margin-bottom:8px}
-  /* svg diagram */
-  .diag{background:#0a0d12;border:1px solid var(--border);border-radius:10px;padding:18px}
-  .diag svg{display:block;max-width:100%;height:auto}
-  .footer{margin-top:60px;padding-top:18px;border-top:1px solid var(--border);color:var(--mut);font-size:.85em}
-  @media print{nav.side{display:none}.app{grid-template-columns:1fr}main{padding:0}}
+:root{
+  --bg:#0e1116;--bg2:#161b22;--bg3:#1f2630;--fg:#e6edf3;--mut:#8b949e;
+  --acc:#ff6a00;--acc2:#58a6ff;--ok:#3fb950;--warn:#d29922;--err:#f85149;
+  --layer-cli:#9d7cff;--layer-orch:#58a6ff;--layer-dep:#3fb950;
+  --layer-exec:#d29922;--layer-core:#f778ba;--layer-util:#79c0ff;
+  --layer-rep:#ff7b72;--border:#30363d;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre{font-family:var(--mono);font-size:.88em}
+code{background:var(--bg3);padding:1px 5px;border-radius:4px;color:#ffd596}
+pre{background:#010409;border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow:auto;color:#e6edf3;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+/* layout */
+.app{display:grid;grid-template-columns:290px 1fr;min-height:100vh}
+nav.side{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;
+  border-right:1px solid var(--border);background:var(--bg2);padding:18px 10px 40px;scrollbar-width:thin}
+nav.side .brand{display:flex;align-items:center;gap:10px;margin:0 6px 14px;font-weight:700}
+nav.side .brand .logo{width:30px;height:30px;border-radius:6px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:grid;place-items:center;color:#111;font-weight:900;font-size:16px;flex:none}
+nav.side .v{color:var(--mut);font-weight:400;font-size:.82em;margin-left:4px}
+nav.side input{width:100%;background:#010409;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:7px 9px;margin:0 0 10px;font-size:.9em}
+nav.side .grp{margin:16px 6px 4px;font-size:.68em;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:600}
+nav.side a{display:flex;align-items:center;gap:8px;padding:4px 9px;border-radius:5px;color:#c9d1d9;font-size:.9em}
+nav.side a:hover{background:#21262d;text-decoration:none}
+nav.side a.active{background:#1f2937;color:#fff;border-left:2px solid var(--acc);padding-left:7px}
+nav.side a .dot{width:7px;height:7px;border-radius:50%;flex:none}
+main{padding:32px 44px 100px;max-width:1200px}
+h1,h2,h3,h4{line-height:1.25;color:#fff}
+h1{font-size:2.05em;margin:.2em 0 .1em}
+h2{font-size:1.5em;margin:2.4em 0 .7em;border-bottom:1px solid var(--border);padding-bottom:6px}
+h3{font-size:1.15em;margin:1.6em 0 .5em;color:#fafafa}
+h4{font-size:.96em;margin:1.2em 0 .4em;color:#d0d7de;font-weight:600}
+.sub{color:var(--mut)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72em;font-weight:600;background:#21262d;color:#c9d1d9;vertical-align:middle;white-space:nowrap}
+.pill.cli{background:rgba(157,124,255,.15);color:var(--layer-cli)}
+.pill.orch{background:rgba(88,166,255,.15);color:var(--layer-orch)}
+.pill.dep{background:rgba(63,185,80,.15);color:var(--layer-dep)}
+.pill.exec{background:rgba(210,153,34,.15);color:var(--layer-exec)}
+.pill.core{background:rgba(247,120,186,.15);color:var(--layer-core)}
+.pill.util{background:rgba(121,192,255,.15);color:var(--layer-util)}
+.pill.rep{background:rgba(255,123,114,.15);color:var(--layer-rep)}
+.pill.ok{background:rgba(63,185,80,.18);color:var(--ok)}
+.pill.warn{background:rgba(210,153,34,.18);color:var(--warn)}
+.pill.err{background:rgba(248,81,73,.18);color:var(--err)}
+.pill.new{background:linear-gradient(90deg,#ff6a00,#ff3d83);color:#fff}
+.grid{display:grid;gap:14px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:1000px){.cols-2,.cols-3{grid-template-columns:1fr}.app{grid-template-columns:1fr}nav.side{position:relative;height:auto}}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+.card h3,.card h4{margin-top:0}
+.card p:last-child,.card ul:last-child,.card ol:last-child{margin-bottom:0}
+.hero{background:radial-gradient(1100px 360px at 20% -10%,rgba(255,106,0,.18),transparent 60%),
+  radial-gradient(900px 320px at 90% 0%,rgba(88,166,255,.15),transparent 60%),
+  linear-gradient(180deg,#161b22,#0e1116);
+  border:1px solid var(--border);border-radius:14px;padding:30px 32px;margin-bottom:24px}
+.hero h1{margin:0 0 8px;font-size:2.3em;background:linear-gradient(90deg,#fff,#ffaa55);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{color:#c9d1d9;max-width:820px;margin:.6em 0}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:.9em}
+th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:#161b22;color:#fff;font-weight:600}
+tr:nth-child(even) td{background:#10151c}
+td code{font-size:.85em}
+details{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:6px 14px;margin:8px 0}
+details>summary{cursor:pointer;font-weight:600;padding:6px 0;user-select:none}
+details[open]{padding-bottom:12px}
+details[open]>summary{margin-bottom:8px}
+.filepath{font-family:var(--mono);color:#79c0ff;font-size:.86em}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:10px 0 0;flex-wrap:wrap}
+.tabs button{background:transparent;border:0;color:var(--mut);padding:8px 14px;cursor:pointer;font-size:.9em;border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button.on{color:#fff;border-bottom-color:var(--acc)}
+.tabpanel{display:none;padding-top:10px}
+.tabpanel.on{display:block}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85em;color:var(--mut);margin:6px 0 12px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .dot{width:10px;height:10px;border-radius:50%;flex:none}
+.callout{border-left:3px solid var(--acc);background:rgba(255,106,0,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+.callout.info{border-color:var(--acc2);background:rgba(88,166,255,.06)}
+.callout.ok{border-color:var(--ok);background:rgba(63,185,80,.06)}
+.callout.warn{border-color:var(--warn);background:rgba(210,153,34,.06)}
+.callout.err{border-color:var(--err);background:rgba(248,81,73,.06)}
+.diag{background:#0a0d12;border:1px solid var(--border);border-radius:10px;padding:18px;overflow:auto}
+.diag svg{display:block;min-width:720px;height:auto}
+.footer{margin-top:70px;padding-top:18px;border-top:1px solid var(--border);color:var(--mut);font-size:.84em}
+#modfilter,#ctxfilter,#envfilter{width:100%;padding:8px 10px;border-radius:6px;background:#010409;color:var(--fg);border:1px solid var(--border);margin-bottom:10px;font-size:.9em}
+.tag-amd{color:#ff6a00}.tag-nv{color:#76b900}
+@media print{nav.side{display:none}.app{grid-template-columns:1fr}main{padding:0}}
+ul,ol{padding-left:22px}
+li{margin:.2em 0}
 </style>
 </head>
 <body>
 <div class="app">
+
+<!-- ===== SIDEBAR ===== -->
 <nav class="side">
-  <div class="brand"><div class="logo">M</div>madengine<span class="v">v2.0.x</span></div>
-  <input id="navfilter" placeholder="Filter sections…">
+  <div class="brand"><div class="logo">M</div>madengine<span class="v">v2.1.0</span></div>
+  <input id="navfilter" placeholder="Filter sections…" autocomplete="off">
+
   <div class="grp">Start</div>
   <a href="#overview"><span class="dot" style="background:var(--acc)"></span>Overview</a>
   <a href="#quickstart"><span class="dot" style="background:var(--acc2)"></span>Quick start</a>
   <a href="#install"><span class="dot" style="background:var(--mut)"></span>Install &amp; dev</a>
+
   <div class="grp">Architecture</div>
   <a href="#layers"><span class="dot" style="background:var(--layer-orch)"></span>5-layer model</a>
-  <a href="#diagram"><span class="dot" style="background:var(--layer-cli)"></span>Architecture diagram</a>
+  <a href="#diagram"><span class="dot" style="background:var(--layer-cli)"></span>Diagram</a>
   <a href="#flows"><span class="dot" style="background:var(--layer-dep)"></span>Data flows</a>
-  <a href="#context"><span class="dot" style="background:var(--layer-core)"></span>additional_context</a>
-  <div class="grp">CLI</div>
-  <a href="#cli"><span class="dot" style="background:var(--layer-cli)"></span>Commands</a>
+
+  <div class="grp">CLI Reference</div>
+  <a href="#cli-discover"><span class="dot" style="background:var(--layer-cli)"></span>discover</a>
+  <a href="#cli-build"><span class="dot" style="background:var(--layer-cli)"></span>build</a>
+  <a href="#cli-run"><span class="dot" style="background:var(--layer-cli)"></span>run</a>
+  <a href="#cli-report"><span class="dot" style="background:var(--layer-cli)"></span>report / database</a>
   <a href="#exitcodes"><span class="dot" style="background:var(--err)"></span>Exit codes</a>
+
+  <div class="grp">Configuration</div>
+  <a href="#context"><span class="dot" style="background:var(--layer-core)"></span>additional_context</a>
+  <a href="#model-def"><span class="dot" style="background:var(--layer-util)"></span>Model definition</a>
+  <a href="#manifest"><span class="dot" style="background:var(--layer-orch)"></span>Build manifest</a>
+
   <div class="grp">Deployment</div>
   <a href="#targets"><span class="dot" style="background:var(--layer-dep)"></span>Target inference</a>
-  <a href="#slurm-multi"><span class="dot" style="background:var(--acc)"></span>slurm_multi <span class="pill new" style="font-size:.6em">branch</span></a>
-  <a href="#k8s"><span class="dot" style="background:var(--layer-orch)"></span>Kubernetes</a>
-  <a href="#launchers"><span class="dot" style="background:var(--layer-util)"></span>Launchers</a>
-  <div class="grp">Tools</div>
-  <a href="#profiling"><span class="dot" style="background:var(--warn)"></span>Profiling</a>
+  <a href="#slurm"><span class="dot" style="background:var(--layer-dep)"></span>SLURM</a>
+  <a href="#k8s"><span class="dot" style="background:var(--layer-dep)"></span>Kubernetes</a>
+  <a href="#slurm-multi"><span class="dot" style="background:var(--acc)"></span>slurm_multi <span class="pill new" style="font-size:.6em">2.1.0</span></a>
+  <a href="#build-context"><span class="dot" style="background:var(--layer-exec)"></span>Build-context <span class="pill new" style="font-size:.6em">2.1.0</span></a>
+
+  <div class="grp">Launchers</div>
+  <a href="#launchers"><span class="dot" style="background:var(--layer-util)"></span>Launcher matrix</a>
+  <a href="#launcher-detail"><span class="dot" style="background:var(--layer-util)"></span>Per-launcher config</a>
+
+  <div class="grp">Use Cases</div>
+  <a href="#recipes"><span class="dot" style="background:var(--ok)"></span>Config recipes</a>
+
+  <div class="grp">Tools &amp; GPU</div>
+  <a href="#profiling"><span class="dot" style="background:var(--warn)"></span>Profiling tools</a>
   <a href="#rocm"><span class="dot" style="background:var(--layer-core)"></span>ROCm path</a>
+  <a href="#envvars"><span class="dot" style="background:var(--layer-util)"></span>Env variables</a>
+  <a href="#errors"><span class="dot" style="background:var(--err)"></span>Error types</a>
+
   <div class="grp">Reference</div>
   <a href="#modules"><span class="dot" style="background:var(--layer-util)"></span>Module reference</a>
   <a href="#tests"><span class="dot" style="background:var(--ok)"></span>Test layout</a>
   <a href="#contrib"><span class="dot" style="background:var(--mut)"></span>Contributing</a>
-  <a href="#changes"><span class="dot" style="background:var(--acc)"></span>Recent changes</a>
+  <a href="#changes"><span class="dot" style="background:var(--acc)"></span>Changelog</a>
 </nav>
 
+<!-- ===== MAIN ===== -->
 <main>
+
+<!-- HERO -->
 <section class="hero">
   <h1>madengine — Codebase Wiki</h1>
-  <p>AI/ML model automation and benchmarking platform for local Docker, Kubernetes and SLURM. This wiki reflects branch
-    <code>develop</code>. madengine is a streamlined CLI tool for running and benchmarking AI models on ROCm GPUs, offering a production‑ready workflow for local single node or remote multi node execution with integrated performance monitoring.</p>
+  <p>AI/ML model automation &amp; benchmarking platform for local Docker, Kubernetes, and SLURM.
+     A Typer-based CLI that discovers models, builds Docker images, runs them across compute targets,
+     and writes structured performance results.</p>
+  <p>Entry point: <span class="filepath">src/madengine/cli/app.py::cli_main</span>
+     → console script <code>madengine</code> registered in <span class="filepath">pyproject.toml</span>.</p>
   <div class="meta">
-    <span class="pill">branch: develop</span>
+    <span class="pill new">v2.1.0 — 2026-05-28</span>
     <span class="pill">Python ≥ 3.8</span>
     <span class="pill cli">5-layer CLI</span>
-    <span class="pill dep">Local / K8s / SLURM / slurm_multi</span>
+    <span class="pill dep">Local · K8s · SLURM · slurm_multi</span>
     <span class="pill ok">Typer + Rich</span>
     <span class="pill warn">ROCm &amp; CUDA</span>
+    <span class="pill">Jinja2 templates</span>
   </div>
 </section>
 
-<!-- ======== OVERVIEW ======== -->
+<!-- OVERVIEW -->
 <section id="overview">
 <h2>Overview</h2>
 <div class="grid cols-2">
   <div class="card">
-    <h3>What it does</h3>
-    <p>madengine is a Typer-based CLI (<code>madengine</code>) that discovers models from a
-      MAD package, builds Docker images, and runs them either locally or on distributed
-      backends (Kubernetes, SLURM). It writes performance results to <code>perf.csv</code>
-      and can generate HTML reports or upload to MongoDB.</p>
-    <p>Entry point: <span class="filepath">src/madengine/cli/app.py::cli_main</span>
-      (registered as the <code>madengine</code> console script in <span class="filepath">pyproject.toml</span>).</p>
+    <h3>What madengine does</h3>
+    <ol>
+      <li><strong>Discover</strong> — finds model definitions from <code>models.json</code> or dynamic scripts, resolves tags</li>
+      <li><strong>Build</strong> — calls <code>docker build</code> for each model, writes <code>build_manifest.json</code></li>
+      <li><strong>Run</strong> — reads manifest, infers compute target, dispatches containers, writes <code>perf.csv</code></li>
+      <li><strong>Report</strong> — converts <code>perf.csv</code> to HTML or email; uploads to MongoDB</li>
+    </ol>
+    <p>All four stages share a single <code>--additional-context</code> configuration spine that controls
+       GPU vendor, deployment type, launcher, profiling tools, and environment variables.</p>
   </div>
   <div class="card">
-    <h3>Why this branch matters</h3>
-    <p>The <code>add_slurm_multi_launcher</code> branch adds a <strong>self-managed multi-node SLURM launcher</strong>
-      so that workloads with their own per-node Docker orchestration (e.g. SGLang Disaggregated
-      prefill + decode + proxy) can run via a thin wrapper SBATCH that <em>does not</em> nest Docker
-      inside the job step. It adds <code>--use-image</code> / <code>--build-on-compute</code> build modes,
-      a registry gate, parallel image pull, and a <code>bash-in-salloc</code> execution path.</p>
+    <h3>What's new in v2.1.0</h3>
+    <ul>
+      <li><strong><code>slurm_multi</code></strong> — self-managed multi-node SLURM launcher for workloads with per-node Docker (e.g. SGLang Disagg)</li>
+      <li><strong><code>--use-image [auto]</code></strong> / <strong><code>--build-on-compute</code></strong> — new <code>madengine build</code> modes</li>
+      <li><strong>Docker <code>--build-context tools=</code></strong> — shared tool APIs accessible in every Dockerfile</li>
+      <li><strong>Local <code>MAD_MULTI_NODE_RUNNER</code></strong> — Megatron / DeepSpeed / TorchTitan now work on local Docker</li>
+      <li><strong>SLURM env-var escaping</strong> — double-quote escaping preserves spaces &amp; paths</li>
+    </ul>
   </div>
 </div>
 </section>
 
-<!-- ======== QUICK START ======== -->
+<!-- QUICK START -->
 <section id="quickstart">
 <h2>Quick start</h2>
 <div class="tabs" data-tabs="qs">
-  <button class="on" data-tab="qs-local">Local</button>
+  <button class="on" data-tab="qs-local">Local Docker</button>
   <button data-tab="qs-k8s">Kubernetes</button>
   <button data-tab="qs-slurm">SLURM</button>
   <button data-tab="qs-multi">slurm_multi</button>
+  <button data-tab="qs-file">Context file</button>
 </div>
+
 <div class="tabpanel on" data-panel="qs-local">
-<pre><code># Install
+<pre><code># 1. Install
 pip install -e ".[dev]"
 
-# Discover models
+# 2. Discover available models
 madengine discover --tags dummy
 
-# Run locally (build + run)
+# 3. Build + run (single command)
 madengine run --tags dummy \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'</code></pre>
-</div>
-<div class="tabpanel" data-panel="qs-k8s">
-<pre><code># Minimal K8s config — defaults applied automatically
-madengine run --tags model \
-  --additional-context '{"k8s": {"gpu_count": 2}}'
+  --additional-context '{"gpu_vendor":"AMD","guest_os":"UBUNTU"}'
 
-# Multi-node vLLM
-madengine run --tags model --additional-context '{
-  "k8s": {"namespace": "ml-team", "gpu_count": 8},
-  "distributed": {"launcher":"vllm","nnodes":2,"nproc_per_node":4}
-}'</code></pre>
-</div>
-<div class="tabpanel" data-panel="qs-slurm">
-<pre><code># Build phase (login node or CI) then deploy
-madengine build --tags model --registry gcr.io/myproject
-
+# 4. Build only, then run from manifest
+madengine build --tags llama3 --registry registry.example.com/ml
 madengine run --manifest-file build_manifest.json \
-  --additional-context '{
-    "slurm":{"partition":"gpu","nodes":4,"gpus_per_node":8,"time":"24:00:00"},
-    "distributed":{"launcher":"torchtitan","nnodes":4,"nproc_per_node":8}
-  }'</code></pre>
+  --additional-context '{"docker_gpus":"0,1,2,3"}'</code></pre>
+<p class="sub">Local mode: no <code>k8s</code> or <code>slurm</code> key in context → <code>ContainerRunner</code> (local Docker).</p>
 </div>
-<div class="tabpanel" data-panel="qs-multi">
-<pre><code># slurm_multi — for workloads that run their own docker via srun
-madengine run --tags pyt_sglang_disagg_qwen3-32b_short \
+
+<div class="tabpanel" data-panel="qs-k8s">
+<pre><code># Single-node K8s (minimal — defaults applied from presets/k8s/)
+madengine run --tags llama3 \
+  --additional-context '{"k8s":{"gpu_count":4}}'
+
+# Multi-node vLLM on K8s
+madengine run --tags vllm-serve \
   --additional-context '{
-    "slurm":{"partition":"gpu","nodes":3,"gpus_per_node":8,"time":"02:00:00"},
-    "distributed":{"launcher":"slurm_multi"}
+    "k8s": {"namespace":"ml-team","gpu_count":8},
+    "distributed": {"launcher":"vllm","nnodes":2,"nproc_per_node":4}
   }'
 
-# Build on a compute node, push, then have run pull in parallel
-madengine build --tags model --build-on-compute --registry myreg.io/team
-# or skip build entirely and use a pre-baked image
-madengine build --tags model --use-image auto</code></pre>
+# K8s with NFS data PVC and secrets
+madengine run --tags model \
+  --additional-context '{
+    "k8s": {"namespace":"ml","gpu_count":8,"data_storage_class":"nfs-banff"},
+    "secrets": {"HF_TOKEN":"hf_xxx","WANDB_API_KEY":"yyy"}
+  }'</code></pre>
+<p class="sub">Presence of <code>"k8s"</code> or <code>"kubernetes"</code> key → <code>KubernetesDeployment</code>. Requires <code>pip install -e ".[all]"</code>.</p>
+</div>
+
+<div class="tabpanel" data-panel="qs-slurm">
+<pre><code># Single-node SLURM (build on login node, deploy via sbatch)
+madengine build --tags llama3 --registry registry.example.com/ml
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {"partition":"gpu","nodes":1,"gpus_per_node":8,"time":"12:00:00"}
+  }'
+
+# Multi-node torchrun
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {"partition":"gpu","nodes":4,"gpus_per_node":8,"time":"24:00:00"},
+    "distributed": {"launcher":"torchrun","nnodes":4,"nproc_per_node":8}
+  }'
+
+# DeepSpeed with reservation
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {"partition":"gpu","nodes":8,"gpus_per_node":8,
+              "time":"48:00:00","reservation":"ml-training"},
+    "distributed": {"launcher":"deepspeed","nnodes":8,"nproc_per_node":8}
+  }'</code></pre>
+<p class="sub">Presence of <code>"slurm"</code> key → <code>SlurmDeployment</code>. Generates sbatch wrapper from Jinja2 template.</p>
+</div>
+
+<div class="tabpanel" data-panel="qs-multi">
+<pre><code># SGLang Disaggregated (3+ nodes: proxy + prefill + decode)
+madengine run --tags pyt_sglang_disagg_qwen3-32b \
+  --additional-context '{
+    "slurm": {"partition":"gpu","nodes":3,"gpus_per_node":8,"time":"02:00:00"},
+    "distributed": {"launcher":"slurm_multi"}
+  }'
+
+# Build options for slurm_multi models:
+# Option A — use pre-built registry image (skip local build)
+madengine build --tags pyt_sglang_disagg --use-image registry.io/sglang:latest
+
+# Option B — auto-resolve DOCKER_IMAGE_NAME from model card
+madengine build --tags pyt_sglang_disagg --use-image
+
+# Option C — build on compute node, push, then run pulls in parallel
+madengine build --tags pyt_sglang_disagg \
+  --registry registry.io/ml --build-on-compute</code></pre>
+<p class="sub"><code>slurm_multi</code> bypasses the standard sbatch template: the model's own <code>.slurm</code> script runs directly on the head node so <code>srun</code>/<code>scontrol</code> work inside it.</p>
+</div>
+
+<div class="tabpanel" data-panel="qs-file">
+<pre><code># Store configuration in a JSON file and reference it
+cat &gt; my_run.json &lt;&lt;'EOF'
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "24:00:00",
+    "exclusive": true
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 4,
+    "nproc_per_node": 8,
+    "backend": "nccl"
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "HSA_ENABLE_SDMA": "0"
+  },
+  "tools": [{"name": "rocprofv3_compute"}]
+}
+EOF
+
+madengine run --tags llama3 --additional-context-file my_run.json</code></pre>
+<p class="sub"><code>--additional-context-file</code> and <code>--additional-context</code> are mutually exclusive. The file is parsed as JSON (not <code>ast.literal_eval</code>).</p>
 </div>
 </section>
 
-<!-- ======== INSTALL ======== -->
+<!-- INSTALL -->
 <section id="install">
 <h2>Install &amp; dev</h2>
 <div class="grid cols-2">
 <div class="card">
 <h3>Setup</h3>
-<pre><code>pip install -e ".[dev]"      # base + dev
-pip install -e ".[all]"      # + kubernetes
+<pre><code># Base install (includes dev tools)
+pip install -e ".[dev]"
+
+# With Kubernetes support
+pip install -e ".[all]"
+
+# Enable pre-commit hooks
 pre-commit install</code></pre>
+<h4>Optional extras</h4>
+<table>
+<thead><tr><th>Extra</th><th>Adds</th></tr></thead>
+<tbody>
+<tr><td><code>[dev]</code></td><td>pytest, black, flake8, mypy, isort, pre-commit</td></tr>
+<tr><td><code>[kubernetes]</code></td><td><code>kubernetes&gt;=28.0.0</code>, pyyaml</td></tr>
+<tr><td><code>[all]</code></td><td>dev + kubernetes</td></tr>
+</tbody>
+</table>
 </div>
 <div class="card">
 <h3>Test &amp; quality</h3>
-<pre><code>pytest                            # all tests
+<pre><code>pytest                           # all tests
+pytest tests/unit/ -v            # unit only
 pytest tests/unit/test_slurm_multi.py -v
 pytest --cov=src/madengine --cov-report=html
-pytest -m "not slow"
-black src/ tests/ && isort src/ tests/
+pytest -m "not slow"             # skip slow tests
+pytest -m "unit and amd"         # combined markers
+
+black src/ tests/
+isort src/ tests/
 flake8 src/ tests/
 mypy src/madengine
 pre-commit run --all-files</code></pre>
@@ -250,127 +377,142 @@ pre-commit run --all-files</code></pre>
 </div>
 </section>
 
-<!-- ======== LAYERS ======== -->
+<!-- ARCHITECTURE -->
 <section id="layers">
 <h2>5-layer architecture</h2>
-<p class="sub">Each layer talks only to the one below it. Layers are color-coded throughout this wiki.</p>
+<p class="sub">Each layer talks only to the layers below it. Layers are color-coded throughout this wiki.</p>
 <div class="legend">
-  <span><span class="dot" style="background:var(--layer-cli)"></span> CLI</span>
-  <span><span class="dot" style="background:var(--layer-orch)"></span> Orchestration</span>
-  <span><span class="dot" style="background:var(--layer-dep)"></span> Deployment</span>
-  <span><span class="dot" style="background:var(--layer-exec)"></span> Execution</span>
-  <span><span class="dot" style="background:var(--layer-core)"></span> Core</span>
-  <span><span class="dot" style="background:var(--layer-util)"></span> Utils</span>
-  <span><span class="dot" style="background:var(--layer-rep)"></span> Reporting</span>
+  <span><span class="dot" style="background:var(--layer-cli)"></span>CLI</span>
+  <span><span class="dot" style="background:var(--layer-orch)"></span>Orchestration</span>
+  <span><span class="dot" style="background:var(--layer-dep)"></span>Deployment</span>
+  <span><span class="dot" style="background:var(--layer-exec)"></span>Execution</span>
+  <span><span class="dot" style="background:var(--layer-core)"></span>Core</span>
+  <span><span class="dot" style="background:var(--layer-util)"></span>Utils</span>
+  <span><span class="dot" style="background:var(--layer-rep)"></span>Reporting</span>
 </div>
 <table>
 <thead><tr><th>Layer</th><th>Path</th><th>Responsibilities</th><th>Key types</th></tr></thead>
 <tbody>
-<tr><td><span class="pill cli">CLI</span></td><td><span class="filepath">src/madengine/cli/</span></td>
-  <td>Typer app, command parsing, Rich output, exit-code mapping.</td>
-  <td><code>app.py</code>, <code>commands/{build,run,discover,report,database}.py</code>, <code>constants.ExitCode</code></td></tr>
-<tr><td><span class="pill orch">Orchestration</span></td><td><span class="filepath">src/madengine/orchestration/</span></td>
-  <td>Discover → build → run pipeline. Decides whether to dispatch locally or to a deployment.</td>
-  <td><code>BuildOrchestrator</code>, <code>RunOrchestrator</code>, <code>image_filtering.py</code></td></tr>
-<tr><td><span class="pill dep">Deployment</span></td><td><span class="filepath">src/madengine/deployment/</span></td>
-  <td>Factory + K8s/SLURM concrete deployments, preset merging, Jinja2 templates, monitoring.</td>
-  <td><code>DeploymentFactory</code>, <code>BaseDeployment</code>, <code>KubernetesDeployment</code>, <code>SlurmDeployment</code></td></tr>
-<tr><td><span class="pill exec">Execution</span></td><td><span class="filepath">src/madengine/execution/</span></td>
-  <td>Local Docker build/run, log scanning, timeout resolution, perf parsing.</td>
-  <td><code>ContainerRunner</code>, <code>DockerBuilder</code>, <code>container_runner_helpers.py</code></td></tr>
-<tr><td><span class="pill core">Core</span></td><td><span class="filepath">src/madengine/core/</span></td>
-  <td>Cross-cutting primitives: context merging, console, docker wrapper, errors, auth, timeout.</td>
-  <td><code>Context</code>, <code>Console</code>, <code>Docker</code>, <code>MADEngineError</code>, <code>load_credentials</code></td></tr>
-<tr><td><span class="pill util">Utils</span></td><td><span class="filepath">src/madengine/utils/</span></td>
-  <td>Discovery, GPU vendor abstraction, ROCm path resolution, config parsing.</td>
-  <td><code>DiscoverModels</code>, <code>gpu_tool_factory</code>, <code>rocm_path_resolver</code>, <code>ConfigParser</code></td></tr>
-<tr><td><span class="pill rep">Reporting</span></td><td><span class="filepath">src/madengine/reporting/</span></td>
-  <td>perf.csv writers, HTML/email report generation.</td>
-  <td><code>update_perf_csv</code>, <code>csv_to_html</code>, <code>csv_to_email</code></td></tr>
+<tr>
+  <td><span class="pill cli">CLI</span></td>
+  <td><span class="filepath">src/madengine/cli/</span></td>
+  <td>Typer app, 5 commands, argument validation, Rich output, exit-code mapping.</td>
+  <td><code>app.py</code>, <code>commands/{build,run,discover,report,database}.py</code>, <code>constants.ExitCode</code></td>
+</tr>
+<tr>
+  <td><span class="pill orch">Orchestration</span></td>
+  <td><span class="filepath">src/madengine/orchestration/</span></td>
+  <td>Discover → build → run pipeline. Decides whether to dispatch locally or to a deployment backend.</td>
+  <td><code>BuildOrchestrator</code>, <code>RunOrchestrator</code>, <code>image_filtering.py</code></td>
+</tr>
+<tr>
+  <td><span class="pill dep">Deployment</span></td>
+  <td><span class="filepath">src/madengine/deployment/</span></td>
+  <td>Factory + Template Method pattern. K8s/SLURM concrete deployments, preset merging, Jinja2 templates, monitoring.</td>
+  <td><code>DeploymentFactory</code>, <code>BaseDeployment</code>, <code>KubernetesDeployment</code>, <code>SlurmDeployment</code>, <code>ConfigLoader</code></td>
+</tr>
+<tr>
+  <td><span class="pill exec">Execution</span></td>
+  <td><span class="filepath">src/madengine/execution/</span></td>
+  <td>Local Docker build/run, log scanning, timeout resolution, perf parsing, self-managed launcher bypass.</td>
+  <td><code>ContainerRunner</code>, <code>DockerBuilder</code>, <code>container_runner_helpers</code></td>
+</tr>
+<tr>
+  <td><span class="pill core">Core</span></td>
+  <td><span class="filepath">src/madengine/core/</span></td>
+  <td>Cross-cutting primitives: context merging &amp; GPU detection, shell execution, Docker wrapper, error hierarchy, auth, timeout.</td>
+  <td><code>Context</code>, <code>Console</code>, <code>Docker</code>, <code>MADEngineError</code>, <code>load_credentials</code></td>
+</tr>
+<tr>
+  <td><span class="pill util">Utils</span></td>
+  <td><span class="filepath">src/madengine/utils/</span></td>
+  <td>Model discovery, GPU vendor abstraction, ROCm path resolution, config parsing.</td>
+  <td><code>DiscoverModels</code>, <code>gpu_tool_factory</code>, <code>rocm_path_resolver</code>, <code>ConfigParser</code></td>
+</tr>
+<tr>
+  <td><span class="pill rep">Reporting</span></td>
+  <td><span class="filepath">src/madengine/reporting/</span></td>
+  <td>perf.csv writers, HTML/email report generation. Database upload in <span class="filepath">src/madengine/database/</span>.</td>
+  <td><code>update_perf_csv</code>, <code>csv_to_html</code>, <code>csv_to_email</code>, <code>mongodb.py</code></td>
+</tr>
 </tbody>
 </table>
 </section>
 
-<!-- ======== DIAGRAM ======== -->
+<!-- DIAGRAM -->
 <section id="diagram">
 <h2>Architecture diagram</h2>
 <div class="diag">
-<svg viewBox="0 0 1080 560" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="13">
+<svg viewBox="0 0 1080 600" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12">
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
     </marker>
-    <style>
-      .lbl{fill:#fff;font-weight:700}
-      .sub{fill:#8b949e;font-size:11px}
-      .box{stroke-width:1.5;fill-opacity:.18}
-      .line{stroke:#8b949e;stroke-width:1.5;fill:none}
-    </style>
+    <style>.lbl{fill:#fff;font-weight:700}.sub{fill:#8b949e;font-size:10.5px}.box{stroke-width:1.5;fill-opacity:.15}.line{stroke:#8b949e;stroke-width:1.5;fill:none}</style>
   </defs>
-
   <!-- CLI -->
-  <rect x="40" y="30" width="1000" height="60" rx="8" class="box" stroke="#9d7cff" fill="#9d7cff"/>
-  <text x="60" y="55" class="lbl">CLI · Typer + Rich</text>
-  <text x="60" y="74" class="sub">discover · build · run · report · database  →  ExitCode { SUCCESS=0, BUILD_FAILURE=2, RUN_FAILURE=3, INVALID_ARGS=4 }</text>
-
+  <rect x="20" y="20" width="1040" height="58" rx="8" class="box" stroke="#9d7cff" fill="#9d7cff"/>
+  <text x="40" y="44" class="lbl">CLI · Typer + Rich</text>
+  <text x="40" y="62" class="sub">discover · build · run · report · database   ExitCode: SUCCESS=0 · BUILD_FAILURE=2 · RUN_FAILURE=3 · INVALID_ARGS=4</text>
   <!-- Orchestration -->
-  <rect x="40" y="120" width="1000" height="80" rx="8" class="box" stroke="#58a6ff" fill="#58a6ff"/>
-  <text x="60" y="146" class="lbl">Orchestration</text>
-  <rect x="220" y="138" width="220" height="44" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
-  <text x="240" y="158" fill="#fff">BuildOrchestrator</text>
-  <text x="240" y="174" class="sub">DiscoverModels → DockerBuilder → manifest</text>
-  <rect x="460" y="138" width="220" height="44" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
-  <text x="480" y="158" fill="#fff">RunOrchestrator</text>
-  <text x="480" y="174" class="sub">load manifest → infer target → dispatch</text>
-  <rect x="700" y="138" width="180" height="44" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
-  <text x="715" y="158" fill="#fff">image_filtering</text>
-  <text x="715" y="174" class="sub">arch/tag selection</text>
-
-  <!-- Deployment factory -->
-  <rect x="40" y="230" width="1000" height="100" rx="8" class="box" stroke="#3fb950" fill="#3fb950"/>
-  <text x="60" y="255" class="lbl">Deployment · DeploymentFactory (inferred target)</text>
-  <text x="60" y="273" class="sub">no key → local Docker  ·  "k8s"/"kubernetes" → K8s Jobs  ·  "slurm" → SLURM  ·  distributed.launcher = "slurm_multi" → self-managed</text>
-
-  <g>
-    <rect x="60" y="285" width="200" height="36" rx="6" stroke="#d29922" fill="#0a0d12"/>
-    <text x="80" y="308" fill="#fff">Local · ContainerRunner</text>
-
-    <rect x="280" y="285" width="200" height="36" rx="6" stroke="#3fb950" fill="#0a0d12"/>
-    <text x="300" y="308" fill="#fff">KubernetesDeployment</text>
-
-    <rect x="500" y="285" width="200" height="36" rx="6" stroke="#3fb950" fill="#0a0d12"/>
-    <text x="520" y="308" fill="#fff">SlurmDeployment</text>
-
-    <rect x="720" y="285" width="260" height="36" rx="6" stroke="#ff6a00" fill="#0a0d12"/>
-    <text x="740" y="308" fill="#fff">slurm_multi (this branch)</text>
-  </g>
-
-  <!-- Launchers -->
-  <rect x="40" y="360" width="1000" height="60" rx="8" class="box" stroke="#79c0ff" fill="#79c0ff"/>
-  <text x="60" y="386" class="lbl">Launchers (training + inference)</text>
-  <text x="60" y="404" class="sub">torchrun · DeepSpeed · Megatron-LM · TorchTitan · Primus · vLLM · SGLang · SGLang Disagg</text>
-
-  <!-- Output -->
-  <rect x="40" y="450" width="640" height="80" rx="8" class="box" stroke="#ff7b72" fill="#ff7b72"/>
-  <text x="60" y="475" class="lbl">Reporting</text>
-  <text x="60" y="494" class="sub">perf.csv · perf_entry.csv · csv_to_html · csv_to_email</text>
-  <text x="60" y="514" class="sub">report to-html · report to-email</text>
-
-  <rect x="700" y="450" width="340" height="80" rx="8" class="box" stroke="#f778ba" fill="#f778ba"/>
-  <text x="720" y="475" class="lbl">Database</text>
-  <text x="720" y="494" class="sub">MongoDB upload (madengine database …)</text>
-
-  <!-- arrows -->
-  <path class="line" d="M540,90 V120" marker-end="url(#arr)"/>
-  <path class="line" d="M540,200 V230" marker-end="url(#arr)"/>
-  <path class="line" d="M540,330 V360" marker-end="url(#arr)"/>
-  <path class="line" d="M540,420 V450" marker-end="url(#arr)"/>
-  <path class="line" d="M680,490 H700" marker-end="url(#arr)"/>
+  <rect x="20" y="104" width="1040" height="76" rx="8" class="box" stroke="#58a6ff" fill="#58a6ff"/>
+  <text x="40" y="124" class="lbl">Orchestration</text>
+  <rect x="200" y="116" width="230" height="52" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
+  <text x="218" y="138" fill="#fff">BuildOrchestrator</text>
+  <text x="218" y="154" class="sub">DiscoverModels → DockerBuilder</text>
+  <text x="218" y="166" class="sub">→ build_manifest.json</text>
+  <rect x="450" y="116" width="230" height="52" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
+  <text x="468" y="138" fill="#fff">RunOrchestrator</text>
+  <text x="468" y="154" class="sub">load manifest → merge context</text>
+  <text x="468" y="166" class="sub">→ infer target → dispatch</text>
+  <rect x="700" y="116" width="200" height="52" rx="6" stroke="#58a6ff" fill="#0a0d12"/>
+  <text x="718" y="138" fill="#fff">image_filtering</text>
+  <text x="718" y="154" class="sub">GPU arch / vendor</text>
+  <text x="718" y="166" class="sub">tag selection</text>
+  <!-- Deployment -->
+  <rect x="20" y="208" width="1040" height="108" rx="8" class="box" stroke="#3fb950" fill="#3fb950"/>
+  <text x="40" y="228" class="lbl">Deployment · DeploymentFactory (inferred from context keys)</text>
+  <text x="40" y="246" class="sub">no k8s/slurm → local   ·   "k8s"/"kubernetes" → K8s Jobs   ·   "slurm" → SLURM sbatch   ·   distributed.launcher="slurm_multi" → self-managed</text>
+  <rect x="40" y="258" width="210" height="44" rx="6" stroke="#d29922" fill="#0a0d12"/>
+  <text x="58" y="278" fill="#d29922">Local · ContainerRunner</text>
+  <text x="58" y="292" class="sub">docker run + perf.csv</text>
+  <rect x="268" y="258" width="210" height="44" rx="6" stroke="#3fb950" fill="#0a0d12"/>
+  <text x="286" y="278" fill="#3fb950">KubernetesDeployment</text>
+  <text x="286" y="292" class="sub">K8s Jobs, PVCs, Secrets</text>
+  <rect x="496" y="258" width="210" height="44" rx="6" stroke="#3fb950" fill="#0a0d12"/>
+  <text x="514" y="278" fill="#3fb950">SlurmDeployment</text>
+  <text x="514" y="292" class="sub">sbatch · Jinja2 template</text>
+  <rect x="724" y="258" width="260" height="44" rx="6" stroke="#ff6a00" fill="#0a0d12"/>
+  <text x="742" y="278" fill="#ff6a00">slurm_multi (2.1.0)</text>
+  <text x="742" y="292" class="sub">head-node script + srun pull</text>
+  <!-- Core -->
+  <rect x="20" y="344" width="500" height="58" rx="8" class="box" stroke="#f778ba" fill="#f778ba"/>
+  <text x="40" y="364" class="lbl">Core</text>
+  <text x="40" y="382" class="sub">Context · Console · Docker · MADEngineError · auth · timeout</text>
+  <!-- Utils -->
+  <rect x="540" y="344" width="520" height="58" rx="8" class="box" stroke="#79c0ff" fill="#79c0ff"/>
+  <text x="560" y="364" class="lbl">Utils</text>
+  <text x="560" y="382" class="sub">DiscoverModels · gpu_tool_factory · rocm_path_resolver · ConfigParser</text>
+  <!-- Reporting -->
+  <rect x="20" y="430" width="650" height="58" rx="8" class="box" stroke="#ff7b72" fill="#ff7b72"/>
+  <text x="40" y="450" class="lbl">Reporting</text>
+  <text x="40" y="468" class="sub">perf.csv · perf_entry.csv · csv_to_html · csv_to_email</text>
+  <!-- DB -->
+  <rect x="690" y="430" width="370" height="58" rx="8" class="box" stroke="#f778ba" fill="#f778ba"/>
+  <text x="710" y="450" class="lbl">Database</text>
+  <text x="710" y="468" class="sub">MongoDB upload · MongoDBConfig.from_env()</text>
+  <!-- Arrows -->
+  <path class="line" d="M540,78 V104" marker-end="url(#arr)"/>
+  <path class="line" d="M540,180 V208" marker-end="url(#arr)"/>
+  <path class="line" d="M270,316 V344" marker-end="url(#arr)"/>
+  <path class="line" d="M800,316 V344" marker-end="url(#arr)"/>
+  <path class="line" d="M540,402 V430" marker-end="url(#arr)"/>
+  <path class="line" d="M670,460 H690" marker-end="url(#arr)"/>
 </svg>
 </div>
 </section>
 
-<!-- ======== FLOWS ======== -->
+<!-- DATA FLOWS -->
 <section id="flows">
 <h2>Key data flows</h2>
 <div class="grid cols-2">
@@ -378,538 +520,1399 @@ pre-commit run --all-files</code></pre>
 <h3>Build flow</h3>
 <ol>
   <li><code>madengine build</code> → <code>BuildOrchestrator.execute()</code></li>
-  <li><code>DiscoverModels</code> resolves <code>--tags</code> against the MAD package
-    (root <code>models.json</code>, <code>scripts/{dir}/models.json</code>, or
-    <code>scripts/{dir}/get_models_json.py</code>).</li>
-  <li>Each model is materialised through <code>Context</code> (system + user
-    <code>additional_context</code>) and passed to <code>DockerBuilder</code>.</li>
-  <li>Optionally tags &amp; pushes to <code>--registry</code>.</li>
-  <li>Writes <code>build_manifest.json</code> consumed by <code>run</code>.</li>
+  <li><code>Context(build_only_mode=True)</code> — GPU vendor / arch detection skipped unless <code>detect_local_gpu_arch=True</code></li>
+  <li><code>ConfigLoader.load_config()</code> applies preset defaults (SLURM or K8s) over user config</li>
+  <li><code>DiscoverModels</code> resolves <code>--tags</code> from root <code>models.json</code>, <code>scripts/{dir}/models.json</code>, or <code>scripts/{dir}/get_models_json.py</code></li>
+  <li><strong>slurm_multi gate</strong>: if model uses <code>slurm_multi</code> and no <code>--registry</code>/<code>--use-image</code> given → auto-resolves <code>DOCKER_IMAGE_NAME</code> from model card or raises <code>ConfigurationError</code></li>
+  <li><code>DockerBuilder.build_all_models()</code> — passes <code>--build-context tools=scripts/common/tools</code> if that dir exists</li>
+  <li>After registry push: sets <code>DOCKER_IMAGE_NAME</code> in manifest <code>env_vars</code> for parallel SLURM pull</li>
+  <li>Writes <code>build_manifest.json</code></li>
 </ol>
-<p>Special build modes on this branch:</p>
-<ul>
-  <li><code>--use-image [IMAGE|auto]</code> — skip local build, use a prebuilt image (auto resolves
-    <code>env_vars.DOCKER_IMAGE_NAME</code> from the model card). Mutually exclusive with
-    <code>--registry</code> and <code>--build-on-compute</code>.</li>
-  <li><code>--build-on-compute</code> — build on a SLURM compute node and push to <code>--registry</code>;
-    manifest carries <code>built_on_compute: true</code>.</li>
-</ul>
 </div>
-
 <div class="card">
 <h3>Run flow</h3>
 <ol>
-  <li><code>madengine run</code> → <code>RunOrchestrator</code> loads existing manifest or triggers a build.</li>
-  <li>Target inference (Convention over Configuration):
-    <ul>
-      <li><code>"k8s"</code>/<code>"kubernetes"</code> in context → <span class="pill dep">KubernetesDeployment</span></li>
-      <li><code>"slurm"</code> in context → <span class="pill dep">SlurmDeployment</span></li>
-      <li><code>distributed.launcher == "slurm_multi"</code> → <span class="pill new">slurm_multi</span> path</li>
-      <li>neither → <span class="pill exec">ContainerRunner</span> (local Docker)</li>
-    </ul>
-  </li>
-  <li><code>scripts/common/</code> is populated from the package (pre_scripts, post_scripts, tools) and cleaned up afterwards.</li>
-  <li>Per-model results parsed via <code>PERFORMANCE_LOG_PATTERN</code> and appended to
-    <code>perf.csv</code>/<code>perf_entry.csv</code>. Failed runs are still recorded with
-    <code>STATUS=FAILURE</code>.</li>
+  <li><code>madengine run</code> → <code>RunOrchestrator.execute()</code></li>
+  <li>If manifest exists: skip build; else trigger <code>_build_phase()</code></li>
+  <li><code>Context(build_only_mode=False)</code> — full GPU detection, ROCm path resolution</li>
+  <li><code>_load_and_merge_manifest()</code> — runtime context overrides manifest <code>deployment_config</code></li>
+  <li>Target inference: <code>"k8s"/"kubernetes"</code> → K8s · <code>"slurm"</code> → SLURM · neither → local</li>
+  <li><code>_copy_scripts()</code> — populates <code>scripts/common/{pre_scripts,post_scripts,tools}</code> from madengine package</li>
+  <li>Dispatch: <code>ContainerRunner</code> (local) or <code>DeploymentFactory.create()</code> (SLURM/K8s)</li>
+  <li>Results → <code>perf.csv</code> / <code>perf_entry.csv</code></li>
+  <li><code>_cleanup_model_dir_copies()</code> — removes populated <code>scripts/common/</code> files</li>
 </ol>
 </div>
 </div>
-</section>
 
-<!-- ======== CONTEXT ======== -->
-<section id="context">
-<h2><code>additional_context</code> — the configuration spine</h2>
-<p><code>--additional-context</code> accepts a JSON or Python-dict string (parsed with
-<code>ast.literal_eval()</code>, not <code>json.loads</code>) or a path to a JSON file.
-It is merged into <code>Context.ctx</code> alongside system-detected values
-(GPU vendor, architecture, OS, ROCm path). Specific keys drive different subsystems.</p>
-
-<table>
-<thead><tr><th>Key</th><th>Where it goes</th><th>What it does</th></tr></thead>
-<tbody>
-<tr><td><code>gpu_vendor</code></td><td>Core</td><td><code>AMD</code> or <code>NVIDIA</code>. Defaults to <code>AMD</code> if missing.</td></tr>
-<tr><td><code>guest_os</code></td><td>Core</td><td><code>UBUNTU</code> or <code>CENTOS</code>; selects package manager for in-container installs.</td></tr>
-<tr><td><code>MAD_ROCM_PATH</code></td><td>Core</td><td>Override host ROCm root (top-level only).</td></tr>
-<tr><td><code>docker_env_vars</code></td><td>Execution</td><td>Env vars injected into the container. <code>docker_env_vars.MAD_ROCM_PATH</code> overrides in-container ROCm root <em>independently</em> of host.</td></tr>
-<tr><td><code>docker_gpus</code></td><td>Execution</td><td>Comma list of GPU indices or <code>all</code>.</td></tr>
-<tr><td><code>k8s</code> / <code>kubernetes</code></td><td>Deployment</td><td>Selects K8s. Merged with preset defaults; supports <code>namespace</code>, <code>gpu_count</code>, storage class fallback chain (<code>data_storage_class</code> → <code>nfs_storage_class</code> → <code>storage_class</code>).</td></tr>
-<tr><td><code>slurm</code></td><td>Deployment</td><td>Selects SLURM. <code>partition</code>, <code>nodes</code>, <code>gpus_per_node</code>, <code>time</code>, <code>exclusive</code>, <code>reservation</code>, <code>nodelist</code>. Setting <code>nodelist</code> also skips automatic node health preflight.</td></tr>
-<tr><td><code>distributed.launcher</code></td><td>Deployment</td><td><code>torchrun</code>, <code>deepspeed</code>, <code>megatron</code>, <code>torchtitan</code>, <code>primus</code>, <code>vllm</code>, <code>sglang</code>, <code>sglang_disagg</code>, <code>slurm_multi</code> / <code>slurm-multi</code>.</td></tr>
-<tr><td><code>distributed.nnodes</code> / <code>nproc_per_node</code></td><td>Deployment</td><td>Topology hints for launcher templates.</td></tr>
-<tr><td><code>tools</code></td><td>Execution</td><td>List of profilers/tracers to enable, e.g. <code>[{"name":"rocprofv3_compute"}]</code>.</td></tr>
-<tr><td><code>rocenv_mode</code></td><td>Execution</td><td><code>"lite"</code> (default) or <code>"full"</code> — full collects lshw / dmidecode / dmesg / modinfo, best-effort installs missing tools per <code>guest_os</code>.</td></tr>
-<tr><td><code>log_error_pattern_scan</code></td><td>Execution</td><td><code>false</code> disables post-run log substring scan (use when pytest/JUnit is authoritative).</td></tr>
-<tr><td><code>log_error_patterns</code> / <code>log_error_benign_patterns</code></td><td>Execution</td><td>Override or extend the failure-substring lists.</td></tr>
-<tr><td><code>pre_scripts</code> / <code>post_scripts</code></td><td>Execution</td><td>Custom scripts to run before/after the model.</td></tr>
-<tr><td><code>secrets</code></td><td>Deployment (K8s)</td><td>Auto-converted to a K8s <code>Secret</code> and mounted as env vars.</td></tr>
-</tbody>
-</table>
-
-<div class="callout info">
-<strong>Gotcha:</strong> <code>Context</code> parses with <code>ast.literal_eval()</code>. Pass a Python dict
-repr (single quotes are fine in shells if you wrap the whole argument in single quotes and use
-double quotes inside) — strictly JSON also works since JSON ⊂ Python literals.
+<div class="card" style="margin-top:14px">
+<h3>SLURM job flow (inside sbatch)</h3>
+<ol>
+  <li>sbatch script sets <code>MASTER_ADDR</code> (via scontrol), <code>WORLD_SIZE</code>, <code>NNODES</code>, node-local GPU visibility</li>
+  <li><strong>Multi-node</strong>: generates a task script per node; runs via <code>srun bash $TASK_SCRIPT</code> — each node calls <code>madengine run</code> with local manifest</li>
+  <li><strong>Single-node</strong>: creates local manifest with <code>deployment_config.target="docker"</code>, calls <code>madengine run</code></li>
+  <li>Each node's <code>madengine run</code> → <code>ContainerRunner</code> → <code>docker run</code> with SLURM env vars injected</li>
+  <li>Results collected from per-node <code>perf.csv</code> and aggregated</li>
+</ol>
 </div>
 </section>
 
-<!-- ======== CLI ======== -->
-<section id="cli">
-<h2>CLI commands</h2>
+<!-- CLI: DISCOVER -->
+<section id="cli-discover">
+<h2>CLI — <code>discover</code></h2>
+<p>Lists and validates model definitions without building or running.</p>
+<pre><code>madengine discover [OPTIONS]
+
+  --tags TEXT              Comma-separated tags/names to filter  [required]
+  --verbose / --no-verbose Show full model JSON  [default: no-verbose]</code></pre>
+
+<h4>Tag syntax</h4>
 <table>
-<thead><tr><th>Command</th><th>Source</th><th>Purpose</th><th>Notable flags</th></tr></thead>
+<thead><tr><th>Pattern</th><th>Example</th><th>Meaning</th></tr></thead>
 <tbody>
-<tr><td><code>discover</code></td>
-  <td class="filepath">cli/commands/discover.py</td>
-  <td>List/validate models matching tags.</td>
-  <td><code>--tags</code> (scoped: <code>MAD/foo</code>, dynamic: <code>dummy3:dummy_3:batch=512</code>)</td></tr>
-<tr><td><code>build</code></td>
-  <td class="filepath">cli/commands/build.py</td>
-  <td>Build Docker images; write <code>build_manifest.json</code>.</td>
-  <td><code>--registry</code>, <code>--target-archs</code>, <code>--batch-manifest</code>, <code>--clean-docker-cache</code>, <code>--use-image</code> <span class="pill new">new</span>, <code>--build-on-compute</code> <span class="pill new">new</span></td></tr>
-<tr><td><code>run</code></td>
-  <td class="filepath">cli/commands/run.py</td>
-  <td>Run models from manifest or trigger a build first.</td>
-  <td><code>--manifest-file</code>, <code>--additional-context[-file]</code>, <code>--skip-model-run</code>, <code>--live-output</code>, <code>--keep-alive</code>, <code>--verbose</code>, <code>--timeout</code></td></tr>
-<tr><td><code>report</code></td>
-  <td class="filepath">cli/commands/report.py</td>
-  <td>Convert perf CSVs to HTML/email.</td>
-  <td>Sub-apps: <code>to-html --csv-file …</code>, <code>to-email --directory …</code></td></tr>
-<tr><td><code>database</code></td>
-  <td class="filepath">cli/commands/database.py</td>
-  <td>Upload perf CSV to MongoDB.</td>
-  <td><code>--csv-file</code>, <code>--database-name</code>, <code>--collection-name</code> (uses <code>MONGO_HOST</code>/<code>USER</code>/<code>PASSWORD</code> env)</td></tr>
+<tr><td>Simple tag</td><td><code>--tags llama3</code></td><td>Any model with tag <code>llama3</code></td></tr>
+<tr><td>Multiple tags</td><td><code>--tags llama3,vllm</code></td><td>Any model matching any listed tag</td></tr>
+<tr><td>All models</td><td><code>--tags all</code></td><td>Every discovered model</td></tr>
+<tr><td>Scoped (exact dir)</td><td><code>--tags MAD/llama3</code></td><td>Only from <code>scripts/MAD/</code> subdirectory</td></tr>
+<tr><td>Dynamic + args</td><td><code>--tags dummy3:dummy_3:batch=512</code></td><td>Dynamic model with arg override</td></tr>
+</tbody>
+</table>
+
+<h4>Discovery sources (checked in order per directory)</h4>
+<ol>
+  <li>Root <code>models.json</code></li>
+  <li><code>scripts/{dir}/models.json</code> (static list)</li>
+  <li><code>scripts/{dir}/get_models_json.py</code> — dynamic; must export <code>list_models() → List[CustomModel]</code></li>
+</ol>
+</section>
+
+<!-- CLI: BUILD -->
+<section id="cli-build">
+<h2>CLI — <code>build</code></h2>
+<p>Builds Docker images for discovered models and writes <code>build_manifest.json</code>.</p>
+<pre><code>madengine build [OPTIONS]
+
+  --tags TEXT                    Tags to select models (mutually exclusive with --batch-manifest)
+  --batch-manifest FILE          JSON file of multiple tag groups to build in sequence
+  --registry TEXT                Push built images to this registry URL
+  --target-archs TEXT            Comma-separated GPU arch list (e.g. "gfx90a,gfx942")
+  --use-image [IMAGE|auto]       Skip local build; use named image or auto-resolve from model card
+  --build-on-compute             Build on SLURM compute node + push (requires --registry)
+  --additional-context TEXT      Python dict / JSON string of context overrides
+  --additional-context-file FILE Path to a JSON context file (mutually exclusive with --additional-context)
+  --clean-docker-cache           Pass --no-cache to docker build
+  --manifest-output FILE         Output path for build_manifest.json  [default: build_manifest.json]
+  --summary-output FILE          Output path for build summary JSON
+  --live-output / --no-live-output   Stream docker build output line by line  [default: no-live-output]
+  --verbose / --no-verbose</code></pre>
+
+<div class="callout warn">
+<strong>Mutual exclusions:</strong>
+<ul style="margin:.4em 0 0">
+  <li><code>--batch-manifest</code> vs <code>--tags</code></li>
+  <li><code>--use-image</code> vs <code>--registry</code></li>
+  <li><code>--use-image</code> vs <code>--build-on-compute</code></li>
+  <li><code>--build-on-compute</code> requires <code>--registry</code></li>
+  <li><code>--additional-context-file</code> vs <code>--additional-context</code></li>
+</ul>
+</div>
+
+<h4><code>--use-image</code> modes</h4>
+<table>
+<thead><tr><th>Invocation</th><th>Behavior</th></tr></thead>
+<tbody>
+<tr><td><code>--use-image</code> (bare flag)</td><td>Resolves to <code>"auto"</code> — reads <code>DOCKER_IMAGE_NAME</code> from model card <code>env_vars</code></td></tr>
+<tr><td><code>--use-image registry.io/img:tag</code></td><td>Uses the explicit image name; skips all Docker build steps</td></tr>
 </tbody>
 </table>
 </section>
 
-<!-- ======== EXIT CODES ======== -->
+<!-- CLI: RUN -->
+<section id="cli-run">
+<h2>CLI — <code>run</code></h2>
+<p>Runs models from a manifest (build if needed) and writes <code>perf.csv</code>.</p>
+<pre><code>madengine run [OPTIONS]
+
+  --tags TEXT                    Select models (triggers build if no manifest)
+  --manifest-file FILE           Use existing manifest; skip build  [default: build_manifest.json]
+  --registry TEXT                Registry for image pull auth
+  --timeout INT                  Seconds per model; -1=7200s default, 0=disabled
+  --additional-context TEXT      Python dict or JSON string
+  --additional-context-file FILE JSON file (mutually exclusive with --additional-context)
+  --keep-alive                   Leave container running after model completes
+  --keep-model-dir               Do not clean up model directory copy
+  --clean-docker-cache           Remove docker image before pull (SLURM mode)
+  --skip-model-run               Build/pull only; skip execution
+  --manifest-output FILE
+  --summary-output FILE
+  --live-output / --no-live-output  Stream container output  [default: no-live-output]
+  --output FILE                  Redirect container stdout to file
+  --tools-json-file-name FILE    Tools config  [default: ./scripts/common/tools.json]
+  --generate-sys-env-details / --no-generate-sys-env-details
+  --force-mirror-local           Force ContainerRunner even in SLURM/K8s context
+  --disable-skip-gpu-arch        Ignore skip_gpu_arch model field
+  --cleanup-perf                 Remove existing perf.csv before run
+  --verbose / --no-verbose</code></pre>
+
+<h4>Timeout resolution</h4>
+<table>
+<thead><tr><th>Value</th><th>Resolved timeout</th></tr></thead>
+<tbody>
+<tr><td><code>-1</code> (default)</td><td>7200 s (2 hours)</td></tr>
+<tr><td><code>0</code></td><td>Disabled (no timeout)</td></tr>
+<tr><td>model card <code>timeout</code> field</td><td>Used when CLI is default (-1)</td></tr>
+<tr><td>Explicit positive int</td><td>That many seconds, overrides model card</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- CLI: REPORT / DATABASE -->
+<section id="cli-report">
+<h2>CLI — <code>report</code> &amp; <code>database</code></h2>
+<div class="grid cols-2">
+<div class="card">
+<h3>report</h3>
+<pre><code># Convert perf.csv to HTML
+madengine report to-html --csv-file perf.csv
+
+# Generate consolidated email report
+madengine report to-email \
+  --directory ./results \
+  --output run_results.html</code></pre>
+<p>Source: <span class="filepath">cli/commands/report.py</span> → <span class="filepath">reporting/csv_to_html.py</span>, <span class="filepath">reporting/csv_to_email.py</span></p>
+</div>
+<div class="card">
+<h3>database</h3>
+<pre><code>madengine database \
+  --csv-file perf.csv \
+  --database-name benchmarks \
+  --collection-name runs</code></pre>
+<p>Reads from env: <code>MONGO_HOST</code>, <code>MONGO_PORT</code>, <code>MONGO_USER</code>, <code>MONGO_PASSWORD</code>, <code>MONGO_AUTH_SOURCE</code>, <code>MONGO_TIMEOUT_MS</code>.</p>
+<p>Source: <span class="filepath">cli/commands/database.py</span> → <span class="filepath">database/mongodb.py</span></p>
+</div>
+</div>
+</section>
+
+<!-- EXIT CODES -->
 <section id="exitcodes">
-<h2>Exit codes (CI contract)</h2>
-<p>From <span class="filepath">src/madengine/cli/constants.py::ExitCode</span>. Use these in pipelines instead of log scraping.</p>
+<h2>Exit codes <span class="pill">CI contract</span></h2>
+<p>Defined in <span class="filepath">src/madengine/cli/constants.py::ExitCode</span>. Use these in CI pipelines instead of log scraping.</p>
 <table>
 <thead><tr><th>Code</th><th>Name</th><th>Meaning</th></tr></thead>
 <tbody>
-<tr><td><code>0</code></td><td><code>SUCCESS</code></td><td>All operations succeeded.</td></tr>
-<tr><td><code>1</code></td><td><code>FAILURE</code></td><td>General/unhandled failure.</td></tr>
-<tr><td><code>2</code></td><td><code>BUILD_FAILURE</code></td><td>One or more image builds failed.</td></tr>
-<tr><td><code>3</code></td><td><code>RUN_FAILURE</code></td><td>One or more model runs failed (still written to <code>perf.csv</code> with status <code>FAILURE</code>).</td></tr>
-<tr><td><code>4</code></td><td><code>INVALID_ARGS</code></td><td>Argument validation rejected the invocation.</td></tr>
+<tr><td><code>0</code></td><td><span class="pill ok">SUCCESS</span></td><td>All operations succeeded.</td></tr>
+<tr><td><code>1</code></td><td><span class="pill">FAILURE</span></td><td>General / unhandled failure (keyboard interrupt, unexpected exception).</td></tr>
+<tr><td><code>2</code></td><td><span class="pill err">BUILD_FAILURE</span></td><td>One or more Docker image builds failed.</td></tr>
+<tr><td><code>3</code></td><td><span class="pill warn">RUN_FAILURE</span></td><td>One or more model runs failed. Results still written to <code>perf.csv</code> with <code>STATUS=FAILURE</code>.</td></tr>
+<tr><td><code>4</code></td><td><span class="pill err">INVALID_ARGS</span></td><td>Argument validation rejected the invocation.</td></tr>
 </tbody>
 </table>
 <div class="callout warn">
-In Jenkins use <code>... 2&gt;&amp;1 | tee madengine.run.log</code> with <code>bash -o pipefail</code>
-so the step's exit code is still <code>madengine</code>'s, not <code>tee</code>'s.
+In Jenkins, use <code>madengine run … 2&gt;&amp;1 | tee madengine.log</code> with <code>bash -o pipefail</code> so <code>tee</code> doesn't swallow the exit code.
 </div>
 </section>
 
-<!-- ======== TARGETS ======== -->
-<section id="targets">
-<h2>Deployment target inference</h2>
-<p>No explicit <code>deploy</code> field exists. The factory inspects <code>additional_context</code>:</p>
-<table>
-<thead><tr><th>Trigger</th><th>Class</th><th>Source</th></tr></thead>
+<!-- ADDITIONAL_CONTEXT -->
+<section id="context">
+<h2><code>additional_context</code> — configuration spine</h2>
+<p><code>--additional-context</code> accepts a <strong>Python dict string</strong> (parsed with <code>ast.literal_eval</code>, not <code>json.loads</code>) or <code>--additional-context-file</code> accepts a JSON file. The dict is deep-merged into <code>Context.ctx</code> alongside system-detected values.</p>
+
+<div class="callout warn">
+<strong>Gotcha — Python dict, not JSON:</strong> pass <code>'{"key":"val"}'</code> (valid JSON is also valid Python) or <code>"{'key':'val'}"</code>. Do <em>not</em> use <code>True</code>/<code>False</code> as unquoted Python booleans in shell — shell expansion will fail. Use <code>true</code>/<code>false</code> (JSON) or single-quote the whole argument.
+</div>
+
+<input id="ctxfilter" placeholder="Filter keys…" autocomplete="off">
+<table id="ctxtable">
+<thead>
+<tr><th>Key</th><th>Type</th><th>Subsystem</th><th>Description &amp; example</th></tr>
+</thead>
 <tbody>
-<tr><td>no <code>k8s</code>/<code>slurm</code> key</td><td>Local <code>ContainerRunner</code></td><td class="filepath">execution/container_runner.py</td></tr>
-<tr><td><code>"k8s"</code> or <code>"kubernetes"</code> key</td><td><code>KubernetesDeployment</code></td><td class="filepath">deployment/kubernetes.py</td></tr>
-<tr><td><code>"slurm"</code> key</td><td><code>SlurmDeployment</code></td><td class="filepath">deployment/slurm.py</td></tr>
-<tr><td><code>distributed.launcher == "slurm_multi"</code></td><td>slurm_multi path (within Slurm)</td><td class="filepath">deployment/slurm.py + common.py</td></tr>
+<tr><td><code>gpu_vendor</code></td><td>string</td><td><span class="pill core">Core</span></td><td>Override GPU vendor detection. <code>"AMD"</code> or <code>"NVIDIA"</code>. Defaults to <code>"AMD"</code> if not set and auto-detect fails.</td></tr>
+<tr><td><code>guest_os</code></td><td>string</td><td><span class="pill core">Core</span></td><td>Container OS for package manager selection. <code>"UBUNTU"</code> or <code>"CENTOS"</code>. Affects rocEnvTool installer selection.</td></tr>
+<tr><td><code>MAD_ROCM_PATH</code></td><td>string</td><td><span class="pill core">Core</span></td><td>Override host ROCm root path (e.g. <code>"/opt/rocm-6.2"</code>). Takes priority over auto-detection and <code>ROCM_PATH</code> env.</td></tr>
+<tr><td><code>docker_env_vars</code></td><td>dict</td><td><span class="pill exec">Exec</span></td><td>Env vars injected as <code>--env</code> into <code>docker run</code>. Keys are validated with <code>_ENV_KEY_RE</code>. Special: <code>docker_env_vars.MAD_ROCM_PATH</code> overrides in-container ROCm root independently of host.</td></tr>
+<tr><td><code>docker_build_arg</code></td><td>dict</td><td><span class="pill exec">Exec</span></td><td>Extra <code>--build-arg KEY=VAL</code> flags passed to <code>docker build</code>.</td></tr>
+<tr><td><code>docker_gpus</code></td><td>string</td><td><span class="pill exec">Exec</span></td><td>Comma-separated GPU indices to expose, or <code>"all"</code>. E.g. <code>"0,1,2,3"</code>.</td></tr>
+<tr><td><code>docker_cpus</code></td><td>string</td><td><span class="pill exec">Exec</span></td><td>CPU affinity string for <code>--cpuset-cpus</code>. E.g. <code>"0-15"</code>.</td></tr>
+<tr><td><code>docker_mounts</code></td><td>dict</td><td><span class="pill exec">Exec</span></td><td>Extra volume mounts. E.g. <code>{"host_path":"/data","container_path":"/mnt/data"}</code>.</td></tr>
+<tr><td><code>docker_image</code> / <code>MAD_CONTAINER_IMAGE</code></td><td>string</td><td><span class="pill orch">Orch</span></td><td>Skip build entirely; use this image for all models. Creates a synthetic manifest.</td></tr>
+<tr><td><code>k8s</code> / <code>kubernetes</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Selects Kubernetes deployment. See <a href="#k8s">K8s config</a> section for sub-keys.</td></tr>
+<tr><td><code>slurm</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Selects SLURM deployment. See <a href="#slurm">SLURM config</a> section for sub-keys.</td></tr>
+<tr><td><code>distributed</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Distributed launcher configuration. <code>launcher</code>, <code>nnodes</code>, <code>nproc_per_node</code>, <code>backend</code>, <code>port</code>. See <a href="#launcher-detail">Per-launcher config</a>.</td></tr>
+<tr><td><code>distributed.launcher</code></td><td>string</td><td><span class="pill dep">Deploy</span></td><td><code>"torchrun"</code>, <code>"deepspeed"</code>, <code>"megatron"</code>, <code>"torchtitan"</code>, <code>"primus"</code>, <code>"vllm"</code>, <code>"sglang"</code>, <code>"sglang_disagg"</code>, <code>"slurm_multi"</code>/<code>"slurm-multi"</code>.</td></tr>
+<tr><td><code>distributed.sglang_disagg</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Fine-tune prefill/decode node split. <code>{"prefill_nodes":1,"decode_nodes":2}</code>. Default ~40% prefill, rest decode. Min 3 nodes total.</td></tr>
+<tr><td><code>vllm</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>vLLM-specific config (tensor/pipeline parallelism, model, etc.).</td></tr>
+<tr><td><code>primus</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Primus-specific config. <code>config_path</code>, <code>cli_extra</code>, <code>backend</code>.</td></tr>
+<tr><td><code>secrets</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>K8s only. Auto-converted to a K8s <code>Secret</code> and mounted as env vars. E.g. <code>{"HF_TOKEN":"hf_xxx"}</code>.</td></tr>
+<tr><td><code>tools</code></td><td>list</td><td><span class="pill exec">Exec</span></td><td>Profiling/tracing tools. Each item: <code>{"name":"rocprofv3_compute"}</code>. Stackable. See <a href="#profiling">Profiling tools</a>.</td></tr>
+<tr><td><code>rocenv_mode</code></td><td>string</td><td><span class="pill exec">Exec</span></td><td><code>"lite"</code> (default) or <code>"full"</code>. Full mode runs lshw/dmidecode/dmesg/modinfo, installs missing tools per <code>guest_os</code>.</td></tr>
+<tr><td><code>pre_scripts</code></td><td>list</td><td><span class="pill exec">Exec</span></td><td>Scripts to run inside the container before the model script.</td></tr>
+<tr><td><code>post_scripts</code></td><td>list</td><td><span class="pill exec">Exec</span></td><td>Scripts to run inside the container after the model script.</td></tr>
+<tr><td><code>encapsulate_script</code></td><td>string</td><td><span class="pill exec">Exec</span></td><td>Script prepended to the model run command (wraps the whole execution).</td></tr>
+<tr><td><code>log_error_pattern_scan</code></td><td>bool</td><td><span class="pill exec">Exec</span></td><td>Set <code>false</code> to disable post-run log substring error detection. Useful when pytest/JUnit is authoritative.</td></tr>
+<tr><td><code>log_error_patterns</code></td><td>list</td><td><span class="pill exec">Exec</span></td><td>Replace the default error patterns list entirely. Each string is matched as substring in log lines.</td></tr>
+<tr><td><code>log_error_benign_patterns</code></td><td>list</td><td><span class="pill exec">Exec</span></td><td>Literal substrings that mark a matching log line as benign (not an error).</td></tr>
+<tr><td><code>env_vars</code></td><td>dict</td><td><span class="pill dep">Deploy</span></td><td>Top-level env vars merged into deployment config (SLURM script / K8s job manifest).</td></tr>
+<tr><td><code>gen_sys_env_details</code></td><td>bool</td><td><span class="pill exec">Exec</span></td><td>Enable/disable rocEnvTool system environment collection. Default: <code>true</code>.</td></tr>
+<tr><td><code>debug</code></td><td>bool</td><td><span class="pill dep">Deploy</span></td><td>Enable debug-level logging in deployment templates.</td></tr>
 </tbody>
 </table>
-<p>The mixin <span class="filepath">deployment/kubernetes_launcher_mixin.py</span> selects the correct Jinja2 template
-under <span class="filepath">src/madengine/deployment/templates/{kubernetes,slurm}/</span> per launcher.</p>
+
+<h3>SLURM sub-keys (<code>slurm</code> dict)</h3>
+<table>
+<thead><tr><th>Key</th><th>Default (from preset)</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>partition</code></td><td><code>"amd-rccl"</code></td><td>SLURM partition name.</td></tr>
+<tr><td><code>nodes</code></td><td><code>1</code></td><td>Number of nodes to allocate.</td></tr>
+<tr><td><code>gpus_per_node</code></td><td><code>8</code></td><td>GPUs per node.</td></tr>
+<tr><td><code>time</code></td><td><code>"24:00:00"</code></td><td>Wall time limit (HH:MM:SS).</td></tr>
+<tr><td><code>exclusive</code></td><td><code>true</code></td><td>Request exclusive node access.</td></tr>
+<tr><td><code>nodelist</code></td><td>—</td><td>Pin to specific nodes. Also skips node health preflight check.</td></tr>
+<tr><td><code>exclude</code></td><td>—</td><td>Nodes to exclude.</td></tr>
+<tr><td><code>constraint</code></td><td>—</td><td>Node feature constraints.</td></tr>
+<tr><td><code>reservation</code></td><td>—</td><td>SLURM reservation name. Forwarded to srun health/cleanup commands.</td></tr>
+<tr><td><code>qos</code></td><td>—</td><td>Quality of service.</td></tr>
+<tr><td><code>account</code></td><td>—</td><td>SLURM account for billing.</td></tr>
+<tr><td><code>modules</code></td><td><code>[]</code></td><td>List of environment modules to load before job.</td></tr>
+<tr><td><code>output_dir</code></td><td>CWD</td><td>Directory for SLURM log/output files.</td></tr>
+<tr><td><code>network_interface</code></td><td>—</td><td>Network interface for NCCL/RCCL (e.g. <code>"ib0"</code>).</td></tr>
+<tr><td><code>shared_workspace</code></td><td>—</td><td>Shared filesystem path accessible from all nodes.</td></tr>
+</tbody>
+</table>
+
+<h3>Kubernetes sub-keys (<code>k8s</code> dict)</h3>
+<table>
+<thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>namespace</code></td><td><code>"default"</code></td><td>Kubernetes namespace.</td></tr>
+<tr><td><code>gpu_count</code></td><td>—</td><td>Number of GPUs per pod.</td></tr>
+<tr><td><code>gpu_resource_name</code></td><td><code>"amd.com/gpu"</code></td><td>K8s GPU resource type. Auto-set by GPU-vendor preset.</td></tr>
+<tr><td><code>image_pull_policy</code></td><td><code>"Always"</code></td><td>K8s imagePullPolicy.</td></tr>
+<tr><td><code>kubeconfig</code></td><td><code>"~/.kube/config"</code></td><td>Path to kubeconfig.</td></tr>
+<tr><td><code>data_storage_class</code></td><td><code>"nfs-banff"</code></td><td>Storage class for data PVC. Falls back to <code>nfs_storage_class</code> then <code>storage_class</code>.</td></tr>
+<tr><td><code>storage_class</code></td><td><code>"nfs-banff"</code></td><td>Generic storage class fallback.</td></tr>
+<tr><td><code>memory</code></td><td><code>"64Gi"</code></td><td>Container memory request.</td></tr>
+<tr><td><code>memory_limit</code></td><td><code>"128Gi"</code></td><td>Container memory limit.</td></tr>
+<tr><td><code>cpu</code></td><td><code>"16"</code></td><td>CPU request.</td></tr>
+<tr><td><code>cpu_limit</code></td><td><code>"32"</code></td><td>CPU limit.</td></tr>
+<tr><td><code>host_ipc</code></td><td><code>false</code></td><td>Enable hostIPC (needed for multi-node NCCL).</td></tr>
+<tr><td><code>backoff_limit</code></td><td><code>3</code></td><td>K8s Job backoffLimit (retries).</td></tr>
+<tr><td><code>ttl_seconds_after_finished</code></td><td><code>null</code></td><td>Auto-delete job after N seconds.</td></tr>
+<tr><td><code>recreate_shared_data_pvc</code></td><td><code>false</code></td><td>Re-create data PVC even if it already exists.</td></tr>
+<tr><td><code>secrets.strategy</code></td><td><code>"from_local_credentials"</code></td><td>How to load K8s image pull secrets.</td></tr>
+<tr><td><code>secrets.image_pull_secret_names</code></td><td><code>[]</code></td><td>Existing K8s secret names to use as image pull secrets.</td></tr>
+</tbody>
+</table>
 </section>
 
-<!-- ======== SLURM_MULTI ======== -->
+<!-- MODEL DEFINITION -->
+<section id="model-def">
+<h2>Model definition — <code>models.json</code></h2>
+<p>Each model definition lives in a <code>models.json</code> file (or is returned by <code>get_models_json.py::list_models()</code>). Fields map to the <code>CustomModel</code> dataclass in <span class="filepath">utils/discover_models.py</span>.</p>
+<pre><code>{
+  "name": "llama3-8b-train",          // Unique model identifier
+  "dockerfile": "docker/Dockerfile.ubuntu.amd",
+  "dockercontext": ".",               // Build context dir (relative to scripts dir)
+  "scripts": "scripts/llama3/train.sh",
+  "url": "https://github.com/org/repo",
+  "cred": "hf_token",                 // Credential key from credential.json
+  "owner": "ml-team",
+  "data": "llama3-dataset",           // Data identifier for DataProvider
+  "n_gpus": "8",                      // "-1" = all available; "0" = CPU-only
+  "timeout": 14400,                   // Seconds; overridden by --timeout CLI flag
+  "training_precision": "bf16",
+  "tags": ["llama3", "training", "amd"],
+  "args": "--batch-size 4 --seq-len 4096",
+  "multiple_results": "results.csv",  // CSV file with multiple perf rows
+  "skip_gpu_arch": "gfx908,gfx1100", // Comma-list of archs to skip this model on
+  "additional_docker_run_options": "--shm-size 64g",
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 2,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "HF_TOKEN": "auto",              // Injected into container env
+    "DOCKER_IMAGE_NAME": "reg/img"   // Used by slurm_multi parallel pull
+  }
+}</code></pre>
+
+<h4>Key field notes</h4>
+<table>
+<thead><tr><th>Field</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>n_gpus</code></td><td><code>"-1"</code> = use all GPUs on the host (<code>MAD_SYSTEM_NGPUS</code>). Positive int = that many GPUs. Used for perf CSV metadata.</td></tr>
+<tr><td><code>timeout</code></td><td>Used when CLI <code>--timeout=-1</code> (default). Explicit CLI value always wins.</td></tr>
+<tr><td><code>skip_gpu_arch</code></td><td>Comma-separated GPU arch names (e.g. <code>"gfx908,A100"</code>). Model is skipped if detected arch matches. Disable with <code>--disable-skip-gpu-arch</code>.</td></tr>
+<tr><td><code>multiple_results</code></td><td>Path to CSV file (relative to model dir) with per-result rows that are appended to <code>perf.csv</code> individually.</td></tr>
+<tr><td><code>DOCKER_IMAGE_NAME</code> in <code>env_vars</code></td><td>Required for <code>slurm_multi</code>: specifies the registry image for parallel <code>srun docker pull</code> on compute nodes. Also set automatically by <code>DockerBuilder</code> after a successful push.</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- BUILD MANIFEST -->
+<section id="manifest">
+<h2>Build manifest — <code>build_manifest.json</code></h2>
+<p>Written by <code>madengine build</code>, consumed by <code>madengine run</code>. Pass with <code>--manifest-file</code>.</p>
+<pre><code>{
+  "built_images": {
+    "ci-llama3_Dockerfile.ubuntu.amd": {
+      "docker_image": "registry.io/ml/ci-llama3:sha256-abc",
+      "docker_sha":   "sha256:abc123",
+      "build_duration": 183.4
+    }
+  },
+  "built_models": {
+    "ci-llama3_Dockerfile.ubuntu.amd": {
+      "name":          "llama3-8b-train",
+      "dockerfile":    "docker/Dockerfile.ubuntu.amd",
+      "docker_image":  "ci-llama3_Dockerfile.ubuntu.amd",
+      "docker_sha":    "sha256:abc123",
+      "build_duration": 183.4,
+      "scripts":       "scripts/llama3/train.sh",
+      "args":          "--batch-size 4",
+      "tags":          ["llama3","training"],
+      "n_gpus":        "8",
+      "timeout":       14400,
+      "skip_gpu_arch": "",
+      "multiple_results": "",
+      "distributed":   {"launcher":"torchrun","nnodes":2,"nproc_per_node":8},
+      "env_vars":      {"DOCKER_IMAGE_NAME":"registry.io/ml/ci-llama3:sha256-abc"},
+      "built_on_compute": false
+    }
+  },
+  "context": {
+    "gpu_vendor": "AMD",
+    "guest_os":   "UBUNTU",
+    "docker_env_vars": {"MAD_GPU_VENDOR":"AMD","MAD_SYSTEM_NGPUS":"8"},
+    "docker_build_arg": {}
+  },
+  "deployment_config": {
+    "target":  "slurm",
+    "slurm":   {"partition":"gpu","nodes":4,"gpus_per_node":8,"time":"24:00:00"},
+    "distributed": {"launcher":"torchrun","nnodes":4,"nproc_per_node":8},
+    "env_vars": {"NCCL_DEBUG":"WARN"},
+    "debug": false
+  },
+  "summary": {"total":1,"success":1,"failed":0}
+}</code></pre>
+<div class="callout info">
+<strong>Merging at runtime:</strong> values in <code>deployment_config</code> are merged into the runtime context at startup. Keys in <code>--additional-context</code> take precedence over <code>deployment_config</code>.
+</div>
+</section>
+
+<!-- DEPLOYMENT TARGETS -->
+<section id="targets">
+<h2>Deployment target inference</h2>
+<p>No explicit <code>deploy</code> field needed. <code>RunOrchestrator._infer_deployment_target()</code> inspects the merged context:</p>
+<table>
+<thead><tr><th>Context condition</th><th>Target</th><th>Class</th><th>Path</th></tr></thead>
+<tbody>
+<tr><td><code>"k8s"</code> or <code>"kubernetes"</code> key present</td><td>Kubernetes</td><td><code>KubernetesDeployment</code></td><td><span class="filepath">deployment/kubernetes.py</span></td></tr>
+<tr><td><code>"slurm"</code> key present</td><td>SLURM</td><td><code>SlurmDeployment</code></td><td><span class="filepath">deployment/slurm.py</span></td></tr>
+<tr><td>Neither</td><td>Local Docker</td><td><code>ContainerRunner</code></td><td><span class="filepath">execution/container_runner.py</span></td></tr>
+</tbody>
+</table>
+<p>Within SLURM deployment, if <code>distributed.launcher == "slurm_multi"</code> (or <code>"slurm-multi"</code>), <code>SlurmDeployment.prepare()</code> takes the <a href="#slurm-multi">slurm_multi path</a> instead of generating the standard Jinja2 template.</p>
+<div class="callout info">
+<strong>Force local:</strong> use <code>--force-mirror-local</code> on <code>madengine run</code> to always use <code>ContainerRunner</code> even when <code>slurm</code>/<code>k8s</code> keys are in context.
+</div>
+</section>
+
+<!-- SLURM -->
+<section id="slurm">
+<h2>SLURM deployment</h2>
+<p>Implemented in <span class="filepath">src/madengine/deployment/slurm.py</span>. Generates an sbatch script from a Jinja2 template at <span class="filepath">src/madengine/deployment/templates/slurm/job.sh.j2</span>.</p>
+
+<h3>Preset merge order</h3>
+<p><code>ConfigLoader.load_slurm_config()</code> applies three layers (last wins):</p>
+<ol>
+  <li><code>presets/slurm/defaults.json</code> — base defaults for all SLURM runs</li>
+  <li><code>presets/slurm/profiles/single-node.json</code> or <code>multi-node.json</code> — profile selected by <code>nodes</code> count</li>
+  <li>User-supplied <code>slurm</code> / <code>distributed</code> / <code>env_vars</code> keys</li>
+</ol>
+
+<details>
+<summary><strong>presets/slurm/defaults.json</strong> — base preset contents</summary>
+<pre><code>{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "debug": false,
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 1,
+    "gpus_per_node": 8,
+    "time": "24:00:00",
+    "exclusive": true,
+    "modules": []
+  },
+  "distributed": {
+    "backend": "nccl",
+    "port": 29500
+  },
+  "env_vars": {
+    "OMP_NUM_THREADS": "8",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen"
+  }
+}</code></pre>
+</details>
+
+<details>
+<summary><strong>presets/slurm/profiles/multi-node.json</strong> — additional env vars for multi-node</summary>
+<pre><code>{
+  "slurm": {"nodes": 2, "gpus_per_node": 8, "time": "24:00:00"},
+  "distributed": {"backend": "nccl", "port": 29500},
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_DEBUG_SUBSYS": "INIT",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "8",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_TIMEOUT": "1200",
+    "HSA_ENABLE_SDMA": "0",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  }
+}</code></pre>
+</details>
+
+<h3>What the SLURM job script does</h3>
+<ul>
+  <li>Sets <code>MASTER_ADDR</code> via <code>scontrol show hostnames</code>, <code>MASTER_PORT</code>, <code>WORLD_SIZE</code>, <code>NNODES</code></li>
+  <li>Sets per-node <code>HIP_VISIBLE_DEVICES</code> / <code>ROCR_VISIBLE_DEVICES</code> / <code>CUDA_VISIBLE_DEVICES</code> (vLLM/SGLang: only <code>HIP_VISIBLE_DEVICES</code>)</li>
+  <li>Sets <code>MIOPEN_USER_DB_PATH</code> per-process: <code>/tmp/.miopen/node_${SLURM_PROCID}_rank_${LOCAL_RANK:-0}</code></li>
+  <li>Sets <code>TORCH_ELASTIC_RDZV_TIMEOUT=3600</code> for PyTorch elastic</li>
+  <li>Sets <code>MAD_DEPLOYMENT_TYPE=slurm</code>, <code>MAD_SLURM_JOB_ID</code>, <code>MAD_NODE_RANK</code>, <code>MAD_IN_SLURM_JOB=1</code></li>
+  <li><strong>Multi-node</strong>: generates per-node task script; runs via <code>srun bash $TASK_SCRIPT</code></li>
+  <li><strong>Single-node</strong>: creates synthetic manifest with <code>deployment_config.target="docker"</code> and calls <code>madengine run</code></li>
+</ul>
+
+<h3>Node health preflight</h3>
+<p><code>SlurmNodeSelector</code> runs a health-check <code>srun</code> before the main job unless <code>slurm.nodelist</code> is set (then skipped). Supports <code>slurm.reservation</code> forwarded to srun commands.</p>
+
+<h3>Monitoring</h3>
+<p>Polls <code>squeue</code> every 30 seconds. Terminal states: <code>COMPLETED</code>, <code>FAILED</code>, <code>CANCELLED</code> — a <code>scancel</code>'d job will not loop forever.</p>
+
+<div class="callout warn">
+<strong>SLURM inside existing allocation (<code>salloc</code>):</strong> if <code>SLURM_JOB_ID</code> is set and the launcher is <code>slurm_multi</code>, madengine runs the wrapper script directly with <code>bash</code> instead of nesting a new <code>sbatch</code>. Other launchers still submit via <code>sbatch</code> even inside <code>salloc</code>.
+</div>
+</section>
+
+<!-- K8S -->
+<section id="k8s">
+<h2>Kubernetes deployment</h2>
+<p>Implemented in <span class="filepath">src/madengine/deployment/kubernetes.py</span> and 6 focused mixin modules (refactored in v2.0.3). Requires <code>pip install -e ".[kubernetes]"</code>.</p>
+
+<h3>Mixin modules</h3>
+<table>
+<thead><tr><th>Module</th><th>Concern</th></tr></thead>
+<tbody>
+<tr><td><span class="filepath">k8s_pvc.py</span></td><td>PVC lifecycle. Storage-class fallback: <code>data_storage_class</code> → <code>nfs_storage_class</code> → <code>storage_class</code>. Default: <code>"nfs-banff"</code>.</td></tr>
+<tr><td><span class="filepath">k8s_results.py</span></td><td>Log/artifact collection, perf aggregation. Uses shared <code>collector_pod_name()</code> helper — truncated <code>collector-{id[:15]}</code> to stay within K8s name limits.</td></tr>
+<tr><td><span class="filepath">k8s_scripts.py</span></td><td>Script extraction, ConfigMap building. Carries <code>rocenv_mode</code> and <code>guest_os</code> into the ConfigMap.</td></tr>
+<tr><td><span class="filepath">k8s_template_context.py</span></td><td>Assembles Jinja2 template context dict passed to <code>job.yaml.j2</code>.</td></tr>
+<tr><td><span class="filepath">kubernetes_launcher_mixin.py</span></td><td>Selects the right Jinja2 template per launcher type.</td></tr>
+<tr><td><span class="filepath">k8s_secrets.py</span></td><td>Converts <code>additional_context.secrets</code> dict to K8s <code>Secret</code> objects mounted as env vars.</td></tr>
+</tbody>
+</table>
+
+<h3>Preset merge order</h3>
+<p><code>ConfigLoader.load_k8s_config()</code> applies five layers (last wins):</p>
+<ol>
+  <li><code>presets/k8s/defaults.json</code> — base defaults</li>
+  <li><code>presets/k8s/gpu-vendors/amd.json</code> or <code>nvidia.json</code> — GPU resource name</li>
+  <li><code>presets/k8s/gpu-vendors/amd-multi-gpu.json</code> — AMD multi-GPU NCCL env vars (only if AMD + multi-GPU)</li>
+  <li><code>presets/k8s/profiles/single-gpu.json</code>, <code>multi-gpu.json</code>, or <code>multi-node.json</code></li>
+  <li>User config</li>
+</ol>
+
+<details>
+<summary><strong>presets/k8s/defaults.json</strong> — base preset contents</summary>
+<pre><code>{
+  "k8s": {
+    "kubeconfig": "~/.kube/config",
+    "namespace": "default",
+    "image_pull_policy": "Always",
+    "backoff_limit": 3,
+    "ttl_seconds_after_finished": null,
+    "nfs_storage_class": "nfs-banff",
+    "storage_class": "nfs-banff",
+    "data_storage_class": "nfs-banff",
+    "recreate_shared_data_pvc": false,
+    "secrets": {
+      "strategy": "from_local_credentials",
+      "image_pull_secret_names": [],
+      "runtime_secret_name": null
+    }
+  },
+  "env_vars": {"OMP_NUM_THREADS": "8"}
+}</code></pre>
+</details>
+
+<details>
+<summary><strong>presets/k8s/gpu-vendors/amd-multi-gpu.json</strong> — AMD multi-GPU NCCL env vars</summary>
+<pre><code>{
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "TORCH_NCCL_HIGH_PRIORITY": "1",
+    "GPU_MAX_HW_QUEUES": "8",
+    "HSA_ENABLE_SDMA": "0",
+    "MIOPEN_FIND_MODE": "1",
+    "MIOPEN_USER_DB_PATH": "/tmp/.miopen",
+    "HSA_FORCE_FINE_GRAIN_PCIE": "1",
+    "RCCL_ENABLE_HIPGRAPH": "0"
+  }
+}</code></pre>
+</details>
+
+<div class="callout warn">
+<strong>Known issue:</strong> in multi-node K8s jobs, a node may show <code>FAILED</code> in the results table even when the pod succeeded — this occurs when the kubelet returns 502 between job completion and log collection. PVC artifacts are still collected. Check <code>kubectl describe pod &lt;pod&gt;</code>.
+</div>
+
+<h3>Secrets management</h3>
+<pre><code># Pass secrets via additional_context
+madengine run --tags llm-serve \
+  --additional-context '{
+    "k8s": {"namespace":"ml","gpu_count":8},
+    "secrets": {"HF_TOKEN":"hf_xxx","WANDB_API_KEY":"yyy","S3_KEY":"zzz"}
+  }'</code></pre>
+<p>Secrets in <code>additional_context.secrets</code> are auto-converted to a K8s <code>Secret</code> object and mounted as environment variables in the job pod. They are never written to <code>perf.csv</code> or build logs.</p>
+</section>
+
+<!-- SLURM_MULTI -->
 <section id="slurm-multi">
-<h2>slurm_multi launcher <span class="pill new">branch focus</span></h2>
+<h2>slurm_multi launcher <span class="pill new">merged in v2.1.0</span></h2>
 <div class="grid cols-2">
 <div class="card">
 <h3>What it is</h3>
-<p>A minimal-but-additive SLURM launcher for workloads that <strong>orchestrate their own per-node
-Docker containers</strong> via <code>srun</code> — for example SGLang Disaggregated (proxy +
-prefill + decode topologies) or anything that needs to call <code>srun</code> / <code>scontrol</code> from
-inside the job script.</p>
-<p>Generates a wrapper SBATCH that runs the model's <code>.slurm</code> script
-<em>directly on baremetal</em> (not inside a container), so the workload can spawn its own
-per-node containers without the outer job step holding a container open.</p>
+<p>An escape-hatch SLURM launcher for workloads that <strong>orchestrate their own per-node Docker containers</strong> via <code>srun</code> — for example SGLang Disaggregated (proxy + prefill + decode) or any topology that needs to call <code>srun</code>/<code>scontrol</code> from inside the job step.</p>
+<p>Generates a wrapper SBATCH that runs the model's own <code>.slurm</code> (or <code>.sh</code>) script <strong>directly on the head node on baremetal</strong> — no outer container — so the workload can spawn its own per-node containers without nesting.</p>
 </div>
 <div class="card">
-<h3>How to pick it</h3>
+<h3>How to select it</h3>
 <pre><code>{
-  "slurm": {"partition":"gpu","nodes":3,"gpus_per_node":8,"time":"02:00:00"},
-  "distributed": {"launcher": "slurm_multi"}
-  // aliases: "slurm-multi"
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "gpus_per_node": 8,
+    "time": "02:00:00"
+  },
+  "distributed": {
+    "launcher": "slurm_multi"
+  }
 }</code></pre>
-<p>Honors model-card + context <code>slurm</code> fields:
-<code>partition</code>, <code>nodes</code>, <code>gpus_per_node</code>, <code>time</code>,
-<code>exclusive</code>, <code>reservation</code>, <code>nodelist</code>.</p>
+<p>Alias <code>"slurm-multi"</code> (hyphen) is also accepted and normalized automatically.</p>
 </div>
 </div>
 
-<h3>Build modes added with this launcher</h3>
+<h3>Build modes</h3>
 <table>
-<thead><tr><th>Mode</th><th>Flag</th><th>Behaviour</th></tr></thead>
+<thead><tr><th>Mode</th><th>Flag</th><th>Behavior</th></tr></thead>
 <tbody>
-<tr><td>Local build (default)</td><td>—</td><td>Normal <code>madengine build</code>.</td></tr>
-<tr><td>Use prebuilt image</td><td><code>--use-image [IMAGE | auto]</code></td><td>Skip local build. <code>auto</code> resolves to the model card's <code>env_vars.DOCKER_IMAGE_NAME</code>. Mutually exclusive with the two below.</td></tr>
-<tr><td>Build on compute</td><td><code>--build-on-compute</code> (requires <code>--registry</code>)</td><td>Build on a SLURM compute node, push to registry; manifest sets <code>built_on_compute: true</code>. <code>run</code> then does parallel <code>srun docker pull</code> on all allocated nodes.</td></tr>
-<tr><td>Implicit auto-use-image</td><td>none</td><td>If <code>build</code> finds a <code>slurm_multi</code> model and none of <code>--registry</code> / <code>--use-image</code> / <code>--build-on-compute</code> is set, it either auto-resolves the model card's <code>DOCKER_IMAGE_NAME</code> or raises a structured <code>ConfigurationError</code> listing the four supported options.</td></tr>
+<tr><td>Use prebuilt image</td><td><code>--use-image registry.io/img:tag</code></td><td>Skip local build. Uses explicit image.</td></tr>
+<tr><td>Auto-resolve from model card</td><td><code>--use-image</code> (bare)</td><td>Reads <code>env_vars.DOCKER_IMAGE_NAME</code> from model card.</td></tr>
+<tr><td>Build on compute</td><td><code>--build-on-compute --registry reg.io/ml</code></td><td>Builds on SLURM compute node, pushes to registry. Manifest sets <code>built_on_compute: true</code>. Run phase pulls in parallel on all nodes.</td></tr>
+<tr><td>Implicit fallback</td><td>no flags</td><td>If model card has <code>DOCKER_IMAGE_NAME</code>, auto-uses it. Otherwise raises <code>ConfigurationError</code> listing options.</td></tr>
 </tbody>
 </table>
 
 <h3>Execution paths</h3>
 <ul>
-  <li><strong>sbatch</strong> (default): wrapper SBATCH submitted to SLURM.</li>
-  <li><strong>bash-in-salloc</strong>: when <code>SLURM_JOB_ID</code> is already set (inside an
-    existing <code>salloc</code>), the slurm_multi launcher runs the wrapper synchronously with
-    <code>bash</code> instead of nesting <code>sbatch</code>. Other launchers keep using
-    <code>sbatch</code> even inside <code>salloc</code>. Uses
-    <code>DeploymentResult.skip_monitoring=True</code> to skip the monitor poll.</li>
+  <li><strong>sbatch (default)</strong>: wrapper SBATCH submitted to SLURM. Head node calls <code>srun docker pull</code> on all nodes in parallel, then runs the model's script.</li>
+  <li><strong>bash-in-salloc</strong>: if <code>SLURM_JOB_ID</code> env var is set (inside existing <code>salloc</code>), the launcher runs the wrapper synchronously with <code>bash</code>. Sets <code>DeploymentResult.skip_monitoring=True</code> so the monitor poll is skipped.</li>
 </ul>
 
 <h3>Results aggregation</h3>
-<p><code>_collect_slurm_multi_results</code> reads the per-job CSV at
-<code>/shared_inference/$USER/$JOBID/perf.csv</code> and now <em>also</em> writes those rows
-into <code>cwd/perf.csv</code> (copy if absent, append data rows if present), so the default
-reporter (<code>display_performance_table</code>) finds them without extra args. Local + classic-SLURM
-flows are unchanged.</p>
+<p><code>_collect_slurm_multi_results()</code> reads per-job CSV from <code>/shared_inference/$USER/$JOBID/perf.csv</code> and writes those rows into <code>cwd/perf.csv</code> (copy if absent, append data rows if present). This ensures <code>display_performance_table</code> and <code>madengine report to-html</code> find results without extra arguments.</p>
 
-<h3>Tests &amp; examples</h3>
-<ul>
-  <li><span class="filepath">tests/unit/test_slurm_multi.py</span> — registry membership, hyphen alias
-    normalization, env_vars-export contract against MAD-private PR #186's
-    <code>pyt_sglang_disagg_qwen3-32b_short</code> model card.</li>
-  <li><span class="filepath">examples/slurm-configs/minimal/slurm-multi-minimal.json</span> — reference config.</li>
-</ul>
-
-<details>
-<summary>Recent commits on this branch (most recent first)</summary>
-<pre><code>2e8f1a4 Merge remote-tracking branch 'upstream/develop' into add_slurm_multi_launcher
-68d0bf3 fix(slurm_multi): address Copilot review on PR #124
-dc3bc48 docs(slurm_multi): CHANGELOG entry + forward-compat TODO on --use-image
-e84506a fix(slurm_multi): aggregate per-job perf.csv into cwd for dashboard reporter
-e281e7e fix(deployment): add skip_monitoring to DeploymentResult for slurm_multi bash branch
-f7af062 test(slurm_multi): contract tests + minimal example config
-8a5e174 feat(cli): expose --use-image and --build-on-compute on madengine build
-bd371fe feat(orchestration): build_on_compute, registry gate, parallel pull for slurm_multi
-941d56d feat(deployment): add slurm_multi launcher (minimal additive)</code></pre>
-</details>
+<h3>Local self-managed execution</h3>
+<p>When <code>slurm_multi</code> is detected in a non-SLURM context (e.g. local Docker mode), <code>ContainerRunner._run_self_managed()</code> runs the model's script directly on the host. Env vars from model card and <code>additional_context</code> are injected; keys are logged without values to avoid leaking credentials.</p>
 </section>
 
-<!-- ======== K8s ======== -->
-<section id="k8s">
-<h2>Kubernetes deployment</h2>
-<p>Decomposed (v2.0.3) into focused mixins composed by <code>KubernetesDeployment</code>:</p>
-<table>
-<thead><tr><th>Module</th><th>Concern</th></tr></thead>
-<tbody>
-<tr><td class="filepath">k8s_pvc.py</td><td>PVC lifecycle (data PVC, single-node results PVC).</td></tr>
-<tr><td class="filepath">k8s_results.py</td><td>Log/artifact collection, performance aggregation. Uses the shared <code>collector_pod_name()</code> helper so cleanup matches the truncated <code>collector-{deployment_id[:15]}</code> name.</td></tr>
-<tr><td class="filepath">k8s_scripts.py</td><td>Script extraction, ConfigMap building.</td></tr>
-<tr><td class="filepath">k8s_template_context.py</td><td>Jinja2 template context assembly.</td></tr>
-<tr><td class="filepath">kubernetes_launcher_mixin.py</td><td>Per-launcher template selection.</td></tr>
-<tr><td class="filepath">k8s_secrets.py</td><td><code>secrets</code> dict → K8s <code>Secret</code> objects → env vars.</td></tr>
-<tr><td class="filepath">k8s_pvc.py</td><td>Storage-class fallback: <code>data_storage_class</code> → <code>nfs_storage_class</code> → <code>storage_class</code>; <code>single_node_results_storage_class</code> → <code>local_path_storage_class</code> → <code>storage_class</code>. Default bundled preset: <code>storage_class: "nfs-banff"</code>.</td></tr>
-</tbody>
-</table>
-<div class="callout warn">
-<strong>Known issue:</strong> in multi-node K8s jobs a node may report <code>FAILED</code> in the results table
-even though the pod <em>actually</em> succeeded — this happens when the kubelet returns 502 between
-job completion and log collection, so madengine cannot parse perf metrics. PVC artifacts are still collected.
-Check <code>kubectl describe pod &lt;pod&gt;</code>.
+<!-- BUILD CONTEXT -->
+<section id="build-context">
+<h2>Docker <code>--build-context tools=</code> <span class="pill new">v2.1.0</span></h2>
+<div class="grid cols-2">
+<div class="card">
+<h3>What it does</h3>
+<p>Every <code>docker build</code> issued by <code>DockerBuilder</code> now passes <code>--build-context tools=scripts/common/tools</code> when that directory exists. Dockerfiles can pull shared helper scripts from the named context:</p>
+<pre><code># In any model Dockerfile
+COPY --from=tools rocm_smi/*.py /opt/mad/tools/rocm_smi/
+COPY --from=tools gpu_info/*.py /opt/mad/tools/</code></pre>
+<p>Eliminates duplication of shared APIs across model Dockerfiles.</p>
+</div>
+<div class="card">
+<h3>Conditional emission (PR #134)</h3>
+<p>The flag is only added when <code>scripts/common/tools/</code> exists at build time. Builds in MAD projects without a tools directory do not receive the flag and will not fail.</p>
+<p>Implementation: single guarded block in <span class="filepath">execution/docker_builder.py</span>.</p>
+<p>SLURM fix in same PR: switched from <code>shlex.quote()</code> to double-quote escaping in <code>slurm.py</code> env-var generation so spaces and paths in values survive correctly in the sbatch script.</p>
+</div>
 </div>
 </section>
 
-<!-- ======== LAUNCHERS ======== -->
+<!-- LAUNCHERS -->
 <section id="launchers">
 <h2>Launcher matrix</h2>
 <table>
 <thead><tr><th>Launcher</th><th>Local</th><th>K8s</th><th>SLURM</th><th>Type</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td>torchrun</td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>DDP / FSDP, elastic.</td></tr>
-<tr><td>DeepSpeed</td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>ZeRO, pipeline parallelism.</td></tr>
-<tr><td>Megatron-LM</td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>TP + PP, large transformers.</td></tr>
-<tr><td>TorchTitan</td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>FSDP2 + TP + PP + CP, Llama 3.1 8B–405B.</td></tr>
-<tr><td>Primus</td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>Megatron / TorchTitan / MaxText via Primus YAML.</td></tr>
-<tr><td>vLLM</td><td>✅</td><td>✅</td><td>✅</td><td>Infer</td><td>v1 engine, PagedAttention.</td></tr>
-<tr><td>SGLang</td><td>✅</td><td>✅</td><td>✅</td><td>Infer</td><td>RadixAttention, structured gen.</td></tr>
-<tr><td>SGLang Disagg</td><td>❌</td><td>✅</td><td>✅</td><td>Infer</td><td>Disagg prefill/decode, Mooncake, 3+ nodes.</td></tr>
-<tr><td><code>slurm_multi</code> <span class="pill new">branch</span></td><td>❌</td><td>❌</td><td>✅</td><td>Meta</td><td>Self-managed multi-node SLURM wrapper for workloads with their own per-node container orchestration.</td></tr>
+<tr><td><code>torchrun</code></td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>DDP / FSDP, elastic rendezvous.</td></tr>
+<tr><td><code>megatron</code> / <code>megatron-lm</code></td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>TP + PP parallelism; sets TP/PP/CP size env vars.</td></tr>
+<tr><td><code>torchtitan</code></td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>FSDP2 + TP + PP + CP; Llama 3.1 8B–405B.</td></tr>
+<tr><td><code>deepspeed</code></td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>ZeRO, pipeline parallelism; dynamic hostfile from SLURM.</td></tr>
+<tr><td><code>vllm</code></td><td>✅</td><td>✅</td><td>✅</td><td>Infer</td><td>PagedAttention; each node self-managing (no torchrun wrapper).</td></tr>
+<tr><td><code>sglang</code></td><td>✅</td><td>✅</td><td>✅</td><td>Infer</td><td>RadixAttention, structured gen; each node self-managing.</td></tr>
+<tr><td><code>sglang_disagg</code></td><td>❌</td><td>✅</td><td>✅</td><td>Infer</td><td>Disaggregated prefill/decode; min 3 nodes (1 proxy + ≥1P + ≥1D).</td></tr>
+<tr><td><code>primus</code></td><td>✅</td><td>✅</td><td>✅</td><td>Train</td><td>Megatron / TorchTitan / MaxText via Primus YAML config.</td></tr>
+<tr><td><code>slurm_multi</code></td><td>✅ <span class="sub">(self-mgd)</span></td><td>❌</td><td>✅</td><td>Meta</td><td>Bypasses template; model's own SLURM script on head node.</td></tr>
 </tbody>
 </table>
 </section>
 
-<!-- ======== PROFILING ======== -->
-<section id="profiling">
-<h2>Profiling &amp; tracing</h2>
-<p>Enable via <code>--additional-context '{"tools":[{"name":"…"}]}'</code>. Stackable.</p>
-<table>
-<thead><tr><th>Tool</th><th>Purpose</th><th>Output</th></tr></thead>
-<tbody>
-<tr><td><code>rocprof</code></td><td>Legacy GPU kernel profiling</td><td>Kernel timings/occupancy</td></tr>
-<tr><td><code>rocprofv3_compute</code></td><td>Compute-bound (ROCm ≥ 7.0)</td><td>ALU, wave execution</td></tr>
-<tr><td><code>rocprofv3_memory</code></td><td>Memory-bound</td><td>Cache hits, bandwidth</td></tr>
-<tr><td><code>rocprofv3_communication</code></td><td>Multi-GPU</td><td>RCCL traces</td></tr>
-<tr><td><code>rocprofv3_full</code></td><td>Comprehensive</td><td>All metrics, high overhead</td></tr>
-<tr><td><code>rocprofv3_lightweight</code></td><td>Minimal overhead</td><td>HIP + kernel traces</td></tr>
-<tr><td><code>rocprofv3_perfetto</code></td><td>Perfetto UI traces</td><td>Perfetto JSON</td></tr>
-<tr><td><code>rocprofv3_api_overhead</code></td><td>API call timing</td><td>API timings</td></tr>
-<tr><td><code>rocprofv3_pc_sampling</code></td><td>Kernel hotspots</td><td>PC sample histograms</td></tr>
-<tr><td><code>rocm_trace_lite</code></td><td>RTL <code>lite</code> dispatch trace</td><td><code>rocm_trace_lite_output/trace.db</code></td></tr>
-<tr><td><code>rocm_trace_lite_default</code></td><td>RTL <code>default</code> mode</td><td>Same paths, broader coverage</td></tr>
-<tr><td><code>rocblas_trace</code> / <code>miopen_trace</code> / <code>tensile_trace</code> / <code>rccl_trace</code></td>
-  <td>Library call tracing</td><td>Per-library log</td></tr>
-<tr><td><code>gpu_info_power_profiler</code> / <code>gpu_info_vram_profiler</code></td><td>Power / VRAM over time</td><td>CSV time series</td></tr>
-<tr><td><code>therock_check</code></td><td>TheRock ROCm validation</td><td>Detection report</td></tr>
-</tbody>
-</table>
-<div class="callout">
-Do <strong>not</strong> combine <code>rocm_trace_lite</code> with <code>rocprof</code> /
-<code>rocprofv3_*</code> in the same run. RTL installs from a pinned GitHub release wheel by
-default — set <code>ROCM_TRACE_LITE_FOLLOW_LATEST=1</code> or
-<code>ROCM_TRACE_LITE_WHEEL_URL=…</code> for latest / air-gapped installs.
+<!-- PER-LAUNCHER CONFIG -->
+<section id="launcher-detail">
+<h2>Per-launcher configuration</h2>
+<div class="tabs" data-tabs="lnch">
+  <button class="on" data-tab="lnch-torchrun">torchrun</button>
+  <button data-tab="lnch-megatron">Megatron</button>
+  <button data-tab="lnch-torchtitan">TorchTitan</button>
+  <button data-tab="lnch-deepspeed">DeepSpeed</button>
+  <button data-tab="lnch-vllm">vLLM</button>
+  <button data-tab="lnch-sglang">SGLang</button>
+  <button data-tab="lnch-disagg">SGLang Disagg</button>
+  <button data-tab="lnch-primus">Primus</button>
+</div>
+
+<div class="tabpanel on" data-panel="lnch-torchrun">
+<p>Standard PyTorch distributed launcher. Generates: <code>torchrun --nnodes=N --nproc_per_node=N --node_rank=R --master_addr=ADDR --master_port=PORT</code></p>
+<pre><code>{
+  "slurm": {"partition":"gpu","nodes":4,"gpus_per_node":8,"time":"24:00:00"},
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 4,
+    "nproc_per_node": 8,
+    "backend": "nccl",
+    "port": 29500
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "HSA_ENABLE_SDMA": "0",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1"
+  }
+}</code></pre>
+<p><strong>Local:</strong> <code>MAD_MULTI_NODE_RUNNER</code> is set to <code>torchrun --standalone --nproc_per_node=N</code> (single-node only).</p>
+</div>
+
+<div class="tabpanel" data-panel="lnch-megatron">
+<p>Uses torchrun under the hood; sets <code>TENSOR_MODEL_PARALLEL_SIZE</code>, <code>PIPELINE_MODEL_PARALLEL_SIZE</code>, <code>CONTEXT_PARALLEL_SIZE</code> env vars for the Megatron script to read.</p>
+<pre><code>{
+  "slurm": {"partition":"gpu","nodes":8,"gpus_per_node":8,"time":"48:00:00"},
+  "distributed": {
+    "launcher": "megatron",
+    "nnodes": 8,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "TENSOR_MODEL_PARALLEL_SIZE": "4",
+    "PIPELINE_MODEL_PARALLEL_SIZE": "2",
+    "CONTEXT_PARALLEL_SIZE": "1",
+    "NCCL_IB_DISABLE": "0"
+  }
+}</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="lnch-torchtitan">
+<p>FSDP2 + TP + PP + CP. Sets <code>TORCHTITAN_TENSOR_PARALLEL_SIZE</code>, <code>TORCHTITAN_PIPELINE_PARALLEL_SIZE</code>, <code>TORCHTITAN_FSDP_ENABLED</code>, <code>TORCHTITAN_CONTEXT_PARALLEL_SIZE</code>.</p>
+<pre><code>{
+  "slurm": {"partition":"gpu","nodes":4,"gpus_per_node":8,"time":"24:00:00"},
+  "distributed": {
+    "launcher": "torchtitan",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "TORCHTITAN_TENSOR_PARALLEL_SIZE": "2",
+    "TORCHTITAN_FSDP_ENABLED": "true"
+  }
+}</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="lnch-deepspeed">
+<p>DeepSpeed with dynamic SLURM hostfile generation. Generates: <code>deepspeed --hostfile=/tmp/hostfile …</code></p>
+<pre><code>{
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 8,
+    "gpus_per_node": 8,
+    "time": "48:00:00",
+    "reservation": "ml-priority"
+  },
+  "distributed": {
+    "launcher": "deepspeed",
+    "nnodes": 8,
+    "nproc_per_node": 8,
+    "backend": "nccl"
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "WARN",
+    "HSA_ENABLE_SDMA": "0"
+  }
+}</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="lnch-vllm">
+<p>Each node runs independently (no torchrun). Sets <code>VLLM_TENSOR_PARALLEL_SIZE</code>, <code>VLLM_PIPELINE_PARALLEL_SIZE</code>, <code>VLLM_DISTRIBUTED_BACKEND</code>. Only <code>HIP_VISIBLE_DEVICES</code> is set (not <code>ROCR_VISIBLE_DEVICES</code>/<code>CUDA_VISIBLE_DEVICES</code>) to avoid conflict with Ray.</p>
+<pre><code>{
+  "slurm": {"partition":"gpu","nodes":2,"gpus_per_node":8,"time":"12:00:00"},
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 2,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "VLLM_TENSOR_PARALLEL_SIZE": "8",
+    "VLLM_PIPELINE_PARALLEL_SIZE": "2"
+  }
+}</code></pre>
+<div class="callout info">
+<strong>AMD+Ray gotcha:</strong> <code>RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES</code> is automatically overridden to <code>""</code> when <code>HIP_VISIBLE_DEVICES</code> is set, preventing the <code>rocm/vllm</code> image from ignoring GPU visibility.
+</div>
+</div>
+
+<div class="tabpanel" data-panel="lnch-sglang">
+<p>SGLang standard (RadixAttention, structured gen). Each node self-managing. Sets <code>SGLANG_TENSOR_PARALLEL_SIZE</code>, <code>SGLANG_PIPELINE_PARALLEL_SIZE</code>.</p>
+<pre><code>{
+  "slurm": {"partition":"gpu","nodes":2,"gpus_per_node":8,"time":"06:00:00"},
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 2,
+    "nproc_per_node": 8
+  },
+  "env_vars": {
+    "SGLANG_TENSOR_PARALLEL_SIZE": "8"
+  }
+}</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="lnch-disagg">
+<p>Disaggregated prefill + decode topology. Minimum 3 nodes: 1 proxy + ≥1 prefill + ≥1 decode. Node split: default ~40% prefill, rest decode.</p>
+<pre><code>{
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 5,
+    "gpus_per_node": 8,
+    "time": "04:00:00"
+  },
+  "distributed": {
+    "launcher": "sglang_disagg",
+    "nnodes": 5,
+    "nproc_per_node": 8,
+    "sglang_disagg": {
+      "prefill_nodes": 2,
+      "decode_nodes": 2
+    }
+  },
+  "env_vars": {
+    "SGLANG_TP_SIZE": "8"
+  }
+}</code></pre>
+<p>Sets: <code>SGLANG_DISAGG_MODE</code>, <code>SGLANG_DISAGG_PREFILL_NODES</code>, <code>SGLANG_DISAGG_DECODE_NODES</code>, <code>SGLANG_DISAGG_TOTAL_NODES</code>, <code>SGLANG_NODE_IPS</code>, <code>SGLANG_NODE_RANK</code>.</p>
 </div>
 </section>
 
-<!-- ======== ROCM PATH ======== -->
-<section id="rocm">
-<h2>ROCm path resolution</h2>
-<p>Implemented in <span class="filepath">src/madengine/utils/rocm_path_resolver.py</span>.</p>
-<h4>Host (build &amp; tools)</h4>
-<ol>
-  <li>Top-level <code>MAD_ROCM_PATH</code> in <code>--additional-context</code></li>
-  <li>Auto-detect: <code>/opt/rocm</code>, <code>/opt/rocm-*</code>, TheRock <code>rocm-sdk</code> + markers, then <code>rocminfo</code> / <code>amd-smi</code> / <code>rocm-smi</code> on <code>PATH</code></li>
-  <li><code>ROCM_PATH</code> env var</li>
-  <li><code>/opt/rocm</code> fallback</li>
-</ol>
-<p>Set <code>MAD_AUTO_ROCM_PATH=0</code> to disable scanning and use only the env var/default.</p>
-<h4>In-container (AMD Docker runs)</h4>
-<ol>
-  <li><code>docker_env_vars.MAD_ROCM_PATH</code> (consumed; not forwarded as-is)</li>
-  <li><code>ROCM_PATH</code>/<code>ROCM_HOME</code> from image OCI config (<code>docker image inspect</code>)</li>
-  <li>In-image shell probe (<code>docker run --rm</code>)</li>
-  <li><code>/opt/rocm</code> with a warning</li>
-</ol>
-<p>The run-phase environment table prints host vs container installation type
-(<code>apt</code> / <code>therock</code> / <code>unknown</code>), ROCm/CUDA root, and version side-by-side.</p>
+<!-- USE CASES / RECIPES -->
+<section id="recipes">
+<h2>Config recipes</h2>
+<p>Complete working configurations for common scenarios.</p>
+
+<div class="tabs" data-tabs="rec">
+  <button class="on" data-tab="rec-local-single">Local 1×GPU</button>
+  <button data-tab="rec-local-multi">Local multi-GPU</button>
+  <button data-tab="rec-slurm-single">SLURM single</button>
+  <button data-tab="rec-slurm-multi">SLURM multi-node</button>
+  <button data-tab="rec-k8s-single">K8s single</button>
+  <button data-tab="rec-k8s-multi">K8s multi-node</button>
+  <button data-tab="rec-disagg">SGLang Disagg</button>
+  <button data-tab="rec-profiling">With profiling</button>
+</div>
+
+<div class="tabpanel on" data-panel="rec-local-single">
+<h4>Local — single GPU, AMD</h4>
+<pre><code>madengine run --tags llama3 \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "docker_gpus": "0"
+  }'</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-local-multi">
+<h4>Local — all 8 GPUs, with Megatron env vars</h4>
+<pre><code>madengine run --tags megatron-llama3 \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "docker_env_vars": {
+      "TENSOR_MODEL_PARALLEL_SIZE": "4",
+      "PIPELINE_MODEL_PARALLEL_SIZE": "2"
+    }
+  }'</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-slurm-single">
+<h4>SLURM — single node torchrun</h4>
+<pre><code>cat &gt; slurm-single.json &lt;&lt;'EOF'
+{
+  "slurm": {
+    "partition": "amd-gpu",
+    "nodes": 1,
+    "gpus_per_node": 8,
+    "time": "12:00:00",
+    "exclusive": true
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 8
+  }
+}
+EOF
+madengine build --tags llama3 --registry registry.example.com/ml
+madengine run --manifest-file build_manifest.json \
+  --additional-context-file slurm-single.json</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-slurm-multi">
+<h4>SLURM — 4-node DeepSpeed with reservation</h4>
+<pre><code>cat &gt; slurm-multi.json &lt;&lt;'EOF'
+{
+  "slurm": {
+    "partition": "amd-gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "24:00:00",
+    "exclusive": true,
+    "reservation": "ml-training-q1",
+    "network_interface": "ib0"
+  },
+  "distributed": {
+    "launcher": "deepspeed",
+    "nnodes": 4,
+    "nproc_per_node": 8,
+    "backend": "nccl"
+  },
+  "env_vars": {
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_SOCKET_IFNAME": "ib0",
+    "NCCL_DEBUG": "WARN",
+    "HSA_ENABLE_SDMA": "0"
+  }
+}
+EOF
+madengine run --manifest-file build_manifest.json \
+  --additional-context-file slurm-multi.json</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-k8s-single">
+<h4>K8s — single pod, 4 AMD GPUs</h4>
+<pre><code>madengine run --tags llama3-infer \
+  --additional-context '{
+    "k8s": {
+      "namespace": "ml-team",
+      "gpu_count": 4
+    }
+  }'</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-k8s-multi">
+<h4>K8s — multi-node vLLM with HF secret</h4>
+<pre><code>madengine run --tags vllm-llama3-70b \
+  --additional-context '{
+    "k8s": {
+      "namespace": "ml-team",
+      "gpu_count": 8,
+      "host_ipc": true,
+      "data_storage_class": "nfs-banff"
+    },
+    "distributed": {
+      "launcher": "vllm",
+      "nnodes": 2,
+      "nproc_per_node": 8
+    },
+    "secrets": {"HF_TOKEN": "hf_xxxxxxx"},
+    "env_vars": {
+      "VLLM_TENSOR_PARALLEL_SIZE": "8",
+      "VLLM_PIPELINE_PARALLEL_SIZE": "2"
+    }
+  }'</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-disagg">
+<h4>SLURM — SGLang Disagg (3 nodes: 1 proxy + 1P + 1D)</h4>
+<pre><code>madengine build --tags pyt_sglang_disagg --use-image registry.io/sglang:v0.4
+
+madengine run --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {
+      "partition": "amd-gpu",
+      "nodes": 3,
+      "gpus_per_node": 8,
+      "time": "04:00:00"
+    },
+    "distributed": {
+      "launcher": "slurm_multi"
+    }
+  }'</code></pre>
+</div>
+
+<div class="tabpanel" data-panel="rec-profiling">
+<h4>Local run with ROCm compute profiling</h4>
+<pre><code>madengine run --tags llama3 \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "tools": [
+      {"name": "rocprofv3_compute"}
+    ],
+    "rocenv_mode": "full"
+  }'</code></pre>
+<p>Stack multiple profilers:</p>
+<pre><code>  "tools": [
+    {"name": "rocprofv3_compute"},
+    {"name": "rccl_trace"},
+    {"name": "gpu_info_power_profiler"}
+  ]</code></pre>
+</div>
 </section>
+<!-- PROFILING -->
+<section id="profiling">
+<h2>Profiling &amp; tracing tools</h2>
+<p>Enable via <code>--additional-context '{"tools":[{"name":"…"}]}'</code>. Tools are stackable — list multiple objects. Implemented in <span class="filepath">scripts/common/tools/</span> and <span class="filepath">execution/container_runner.py::apply_tools()</span>.</p>
 
-<!-- ======== MODULES ======== -->
-<section id="modules">
-<h2>Module reference</h2>
-<input id="modfilter" placeholder="Filter modules… (e.g. slurm, k8s, rocm)">
-<table class="modtable" id="modtable">
-<thead><tr><th>Layer</th><th>Path</th><th>What it contains</th></tr></thead>
+<div class="callout">
+Do <strong>not</strong> combine <code>rocm_trace_lite</code> with <code>rocprof</code> / <code>rocprofv3_*</code> in the same run — they conflict at the kernel-tracing level.
+</div>
+
+<table>
+<thead><tr><th>Tool name</th><th>Purpose</th><th>Output location</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/app.py</td><td>Typer app, <code>cli_main</code> entry, <code>--version</code> handling, rich traceback install.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/build.py</td><td><code>madengine build</code> command, registry options, batch builds, <code>--use-image</code>/<code>--build-on-compute</code>.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/run.py</td><td><code>madengine run</code> command, manifest loading, <code>--skip-model-run</code>.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/discover.py</td><td>Model discovery command.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/report.py</td><td><code>report to-html</code> / <code>to-email</code> sub-app.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/database.py</td><td>MongoDB upload command.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/constants.py</td><td><code>ExitCode</code> enum.</td></tr>
-<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/validators.py</td><td>Argument validation.</td></tr>
+<tr><td><code>rocprof</code></td><td>Legacy GPU kernel profiling</td><td>Kernel timings / occupancy CSVs</td><td>Use <code>rocprofv3_*</code> on ROCm ≥ 7.0</td></tr>
+<tr><td><code>rocprofv3_compute</code></td><td>Compute-bound kernels</td><td>ALU, wave execution metrics</td><td>ROCm ≥ 7.0</td></tr>
+<tr><td><code>rocprofv3_memory</code></td><td>Memory-bound workloads</td><td>Cache hits, bandwidth</td><td></td></tr>
+<tr><td><code>rocprofv3_communication</code></td><td>Multi-GPU communication</td><td>RCCL traces</td><td></td></tr>
+<tr><td><code>rocprofv3_full</code></td><td>Comprehensive (all metrics)</td><td>All counters</td><td>High overhead — short runs only</td></tr>
+<tr><td><code>rocprofv3_lightweight</code></td><td>Minimal overhead tracing</td><td>HIP API + kernel traces</td><td></td></tr>
+<tr><td><code>rocprofv3_perfetto</code></td><td>Perfetto UI traces</td><td>Perfetto JSON for ui.perfetto.dev</td><td></td></tr>
+<tr><td><code>rocprofv3_api_overhead</code></td><td>API call timing</td><td>Per-API timing report</td><td></td></tr>
+<tr><td><code>rocprofv3_pc_sampling</code></td><td>Kernel hotspot identification</td><td>PC sample histograms</td><td></td></tr>
+<tr><td><code>rocm_trace_lite</code></td><td>RTL <em>lite</em> dispatch trace</td><td><code>rocm_trace_lite_output/trace.db</code></td><td>Pinned GitHub release wheel by default</td></tr>
+<tr><td><code>rocm_trace_lite_default</code></td><td>RTL <em>default</em> mode</td><td>Same paths, broader coverage</td><td>v2.0.3+</td></tr>
+<tr><td><code>rocblas_trace</code></td><td>rocBLAS call tracing</td><td>Per-library log</td><td></td></tr>
+<tr><td><code>miopen_trace</code></td><td>MIOpen call tracing</td><td>Per-library log</td><td></td></tr>
+<tr><td><code>tensile_trace</code></td><td>Tensile call tracing</td><td>Per-library log</td><td></td></tr>
+<tr><td><code>rccl_trace</code></td><td>RCCL communication tracing</td><td>Per-library log</td><td></td></tr>
+<tr><td><code>gpu_info_power_profiler</code></td><td>Power consumption over time</td><td>CSV time series</td><td></td></tr>
+<tr><td><code>gpu_info_vram_profiler</code></td><td>VRAM usage over time</td><td>CSV time series</td><td></td></tr>
+<tr><td><code>therock_check</code></td><td>TheRock ROCm stack validation</td><td>Detection report</td><td>Identifies apt vs TheRock install</td></tr>
+</tbody>
+</table>
 
-<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/build_orchestrator.py</td><td><code>BuildOrchestrator.execute()</code>, discover → build, registry login, batch manifest, slurm_multi registry gate.</td></tr>
-<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/run_orchestrator.py</td><td><code>RunOrchestrator</code>, build phase, target inference, local Docker dispatch, slurm_multi result aggregation.</td></tr>
-<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/image_filtering.py</td><td>Target-arch / tag filtering of manifest entries.</td></tr>
+<h4>rocm_trace_lite wheel control</h4>
+<table>
+<thead><tr><th>Env var</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>ROCM_TRACE_LITE_FOLLOW_LATEST=1</code></td><td>Always pull the latest wheel from GitHub</td></tr>
+<tr><td><code>ROCM_TRACE_LITE_WHEEL_URL=https://…</code></td><td>Use a specific wheel URL (air-gapped installs)</td></tr>
+</tbody>
+</table>
 
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/factory.py</td><td><code>DeploymentFactory.create()</code>, registers <code>SlurmDeployment</code> + <code>KubernetesDeployment</code>; <code>UserWarning</code> if <code>kubernetes</code> pkg missing.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/base.py</td><td><code>BaseDeployment</code>, <code>DeploymentConfig</code>, <code>DeploymentResult</code> (incl. <code>skip_monitoring</code>), <code>DeploymentStatus</code>, <code>PERFORMANCE_LOG_PATTERN</code>, terminal states (<code>COMPLETED</code>/<code>FAILED</code>/<code>CANCELLED</code>).</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/kubernetes.py</td><td>Composes K8s mixins; orchestrates job lifecycle.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_pvc.py</td><td>PVC creation/deletion + storage-class resolution.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_results.py</td><td>Log/artifact collection, perf aggregation; <code>collector_pod_name()</code>.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_scripts.py</td><td>Script extraction, ConfigMap building (carries <code>rocenv_mode</code>, <code>guest_os</code>).</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_template_context.py</td><td>Assembles Jinja2 template context.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_secrets.py</td><td><code>secrets</code> → K8s Secret objects.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_names.py</td><td>Name truncation/sanitization helpers.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/kubernetes_launcher_mixin.py</td><td>Selects K8s template per launcher.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/slurm.py</td><td><code>SlurmDeployment</code>; classic SLURM path; routes to slurm_multi when launcher matches.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/slurm_node_selector.py</td><td><code>SlurmNodeSelector</code> health/cleanup srun, supports <code>reservation</code>.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/primus_backend.py</td><td>Primus YAML / backend selection.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/common.py</td><td>Shared deployment helpers, slurm_multi wrapper assembly.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/config_loader.py</td><td>Loads and deep-merges preset JSON with user config.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/{k8s,slurm}/defaults.json</td><td>Default values auto-merged with minimal user configs.</td></tr>
-<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/templates/{kubernetes,slurm}/</td><td>Jinja2 templates per launcher.</td></tr>
-
-<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/container_runner.py</td><td><code>ContainerRunner</code>: local docker run, env injection (<code>MAD_GUEST_OS</code>, <code>MAD_OUTPUT_CSV</code>), tools wiring, perf parsing.</td></tr>
-<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/container_runner_helpers.py</td><td>Log error pattern scan, timeout resolution.</td></tr>
-<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/docker_builder.py</td><td><code>DockerBuilder</code>: build args (incl. <code>MAD_SYSTEM_GPU_ARCHITECTURE</code>), push/tag, shell-quoted everywhere.</td></tr>
-<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/dockerfile_utils.py</td><td>Dockerfile parsing helpers.</td></tr>
-
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/context.py</td><td><code>Context</code>: ast.literal_eval parse, system detect, GPU vendor/arch, ROCm path; guards against <code>None</code> kfd_renderDs entries on restricted ROCm.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/additional_context_defaults.py</td><td>Default values merged into context.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/console.py</td><td><code>Console</code>: Rich-backed shell wrapper, live output mode.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/docker.py</td><td><code>Docker</code> wrapper; <code>shlex.quote()</code> on every interpolation.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/errors.py</td><td><code>MADEngineError</code> + 10 typed errors; <code>create_error_context</code>; Rich panels.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/auth.py</td><td><code>load_credentials()</code>, <code>login_to_registry()</code> (uses <code>--password-stdin</code> + <code>MAD_REGISTRY_PASSWORD</code> env).</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/timeout.py</td><td><code>Timeout</code> context manager; guards <code>signal.alarm(None)</code> when seconds is 0/None.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/constants.py</td><td>Misc core constants.</td></tr>
-<tr><td><span class="pill core">Core</span></td><td class="filepath">core/dataprovider.py</td><td><code>Data</code>: local / NAS / S3 / MinIO abstraction.</td></tr>
-
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/discover_models.py</td><td><code>DiscoverModels</code>: root, dir, or dynamic discovery; scoped vs unscoped tags.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_tool_factory.py</td><td>Returns AMD or NVIDIA tool manager based on vendor.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_tool_manager.py</td><td>Abstract GPU tool manager interface.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/rocm_tool_manager.py</td><td>AMD/ROCm implementation.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/nvidia_tool_manager.py</td><td>NVIDIA implementation.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_validator.py</td><td>ROCm install detection, GPU vendor detection.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_config.py</td><td>GPU configuration helpers.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/rocm_path_resolver.py</td><td>Host/in-container ROCm root resolver.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/therock_markers.py</td><td>Shared TheRock detection markers.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/config_parser.py</td><td><code>ConfigParser</code>: parses additional context + tools config.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/path_utils.py</td><td>Path helpers.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/session_tracker.py</td><td>Session start/marker tracking.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/ops.py</td><td>Misc operations.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/log_formatting.py</td><td>Log formatting helpers.</td></tr>
-<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/run_details.py</td><td>Run metadata helpers.</td></tr>
-
-<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/update_perf_csv.py</td><td>Writes/appends to <code>perf.csv</code> and <code>perf_entry.csv</code>.</td></tr>
-<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/csv_to_html.py</td><td>HTML report generation.</td></tr>
-<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/csv_to_email.py</td><td>Email-friendly consolidated report.</td></tr>
-<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/update_perf_super.py</td><td>Superset-shaped perf rollups.</td></tr>
-
-<tr><td><span class="pill core">DB</span></td><td class="filepath">database/mongodb.py</td><td>MongoDB connection + insert; uses <code>datetime.now(timezone.utc)</code>.</td></tr>
-
-<tr><td><span class="pill util">Scripts</span></td><td class="filepath">scripts/common/pre_scripts/rocEnvTool/</td><td><code>rocenv_tool.py</code>, <code>csv_parser.py</code>, <code>console.py</code> — TheRock-compatible env capture (lite + full modes).</td></tr>
-<tr><td><span class="pill util">Scripts</span></td><td class="filepath">scripts/common/tools/</td><td>GPU info profilers, amd_smi / rocm_smi utils, rtl_trace wrapper, library tracers.</td></tr>
+<h4>rocEnvTool modes</h4>
+<table>
+<thead><tr><th>Mode (<code>rocenv_mode</code>)</th><th>Collects</th></tr></thead>
+<tbody>
+<tr><td><code>"lite"</code> (default)</td><td>Basic ROCm info, GPU topology, driver version</td></tr>
+<tr><td><code>"full"</code></td><td>All of lite + lshw, dmidecode, dmesg, modinfo; best-effort installs missing tools per <code>guest_os</code></td></tr>
 </tbody>
 </table>
 </section>
 
-<!-- ======== TESTS ======== -->
+<!-- ROCM PATH -->
+<section id="rocm">
+<h2>ROCm path resolution</h2>
+<p>Implemented in <span class="filepath">src/madengine/utils/rocm_path_resolver.py</span> and <span class="filepath">src/madengine/core/context.py</span>. Two independent resolution chains run in parallel.</p>
+<div class="grid cols-2">
+<div class="card">
+<h3>Host path (build &amp; tools)</h3>
+<ol>
+  <li><code>MAD_ROCM_PATH</code> in <code>--additional-context</code></li>
+  <li>Auto-detect: <code>/opt/rocm</code>, versioned <code>/opt/rocm-*</code>, TheRock (<code>rocm-sdk</code> + markers)</li>
+  <li><code>rocminfo</code> / <code>amd-smi</code> / <code>rocm-smi</code> location on <code>PATH</code></li>
+  <li><code>ROCM_PATH</code> environment variable</li>
+  <li><code>/opt/rocm</code> fallback (with warning)</li>
+</ol>
+<p>Set <code>MAD_AUTO_ROCM_PATH=0</code> to disable scanning and use only env var / default.</p>
+</div>
+<div class="card">
+<h3>In-container path (AMD Docker runs)</h3>
+<ol>
+  <li><code>docker_env_vars.MAD_ROCM_PATH</code> in additional_context</li>
+  <li><code>ROCM_PATH</code> / <code>ROCM_HOME</code> from image OCI config (<code>docker image inspect</code>)</li>
+  <li>In-image shell probe (<code>docker run --rm image env</code>)</li>
+  <li><code>/opt/rocm</code> fallback with warning</li>
+</ol>
+<p>The run-phase env table prints host vs container ROCm root, installation type (<code>apt</code> / <code>therock</code> / <code>unknown</code>), and version side-by-side.</p>
+</div>
+</div>
+<div class="callout info">
+<strong>renderD mapping:</strong> ROCm &lt; 6.4.1 uses legacy <code>unique_id</code> method; 6.4.1+ uses <code>amd-smi node_id</code>. The <code>gpu_renderDs</code> context key maps GPU index → <code>/dev/dri/renderD</code> number. Guards against <code>None</code> entries on restricted ROCm installs.
+</div>
+</section>
+
+<!-- ENV VARS -->
+<section id="envvars">
+<h2>Environment variables</h2>
+<input id="envfilter" placeholder="Filter variables…" autocomplete="off">
+
+<h3>Read by madengine at runtime</h3>
+<table id="envtable-read">
+<thead><tr><th>Variable</th><th>Module</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>MAD_ROCM_PATH</code></td><td>context.py</td><td>Override ROCm root on host. Priority 1.</td></tr>
+<tr><td><code>ROCM_PATH</code></td><td>core/constants.py</td><td>Fallback ROCm root. Priority 3.</td></tr>
+<tr><td><code>MAD_AUTO_ROCM_PATH</code></td><td>rocm_path_resolver</td><td>Set <code>0</code> to disable auto-scan.</td></tr>
+<tr><td><code>MODEL_DIR</code></td><td>core/constants.py</td><td>Working directory for model scripts. Default: <code>.</code></td></tr>
+<tr><td><code>MAD_VERBOSE_CONFIG</code></td><td>core/constants.py</td><td>Enable verbose config output.</td></tr>
+<tr><td><code>MAD_SETUP_MODEL_DIR</code></td><td>core/constants.py</td><td>Trigger model directory setup.</td></tr>
+<tr><td><code>MAD_SECRETS*</code></td><td>context.py</td><td>Any env var with this prefix is automatically copied to <code>docker_build_arg</code> AND <code>docker_env_vars</code>.</td></tr>
+<tr><td><code>MAD_DOCKERHUB_USER</code></td><td>build_orchestrator</td><td>Docker Hub username for registry auth.</td></tr>
+<tr><td><code>MAD_DOCKERHUB_PASSWORD</code></td><td>build_orchestrator</td><td>Docker Hub password for registry auth.</td></tr>
+<tr><td><code>SLURM_JOB_ID</code></td><td>slurm.py</td><td>Detect existing SLURM allocation (triggers bash-in-salloc for slurm_multi).</td></tr>
+<tr><td><code>SLURM_NNODES</code>, <code>SLURM_NPROCS</code></td><td>container_runner</td><td>Read in SLURM job to resolve GPU count per node.</td></tr>
+<tr><td><code>NPROC_PER_NODE</code>, <code>GPUS_PER_NODE</code></td><td>container_runner</td><td>Injected by SLURM template; read by ContainerRunner to set up docker run GPU args.</td></tr>
+<tr><td><code>MONGO_HOST</code>, <code>MONGO_PORT</code></td><td>database/mongodb.py</td><td>MongoDB connection.</td></tr>
+<tr><td><code>MONGO_USER</code>, <code>MONGO_PASSWORD</code></td><td>database/mongodb.py</td><td>MongoDB credentials.</td></tr>
+<tr><td><code>MONGO_AUTH_SOURCE</code>, <code>MONGO_TIMEOUT_MS</code></td><td>database/mongodb.py</td><td>MongoDB auth source and timeout.</td></tr>
+<tr><td><code>NAS_NODES</code></td><td>core/constants.py</td><td>NAS node config (JSON string).</td></tr>
+<tr><td><code>MAD_AWS_S3</code></td><td>core/constants.py</td><td>AWS S3 credentials (JSON: <code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, …).</td></tr>
+<tr><td><code>MAD_MINIO</code></td><td>core/constants.py</td><td>MinIO credentials (JSON: <code>MINIO_ENDPOINT</code>, <code>AWS_ENDPOINT_URL_S3</code>, …).</td></tr>
+<tr><td><code>PUBLIC_GITHUB_ROCM_KEY</code></td><td>core/constants.py</td><td>GitHub ROCm key (JSON).</td></tr>
+<tr><td><code>ROCM_TRACE_LITE_FOLLOW_LATEST</code></td><td>tools</td><td>Set <code>1</code> to always pull latest RTL wheel.</td></tr>
+<tr><td><code>ROCM_TRACE_LITE_WHEEL_URL</code></td><td>tools</td><td>Override RTL wheel URL (air-gapped installs).</td></tr>
+</tbody>
+</table>
+
+<h3 style="margin-top:1.6em">Set by madengine in Docker containers</h3>
+<table id="envtable-set">
+<thead><tr><th>Variable</th><th>Set by</th><th>Value / source</th></tr></thead>
+<tbody>
+<tr><td><code>MAD_GPU_VENDOR</code></td><td>context.py</td><td><code>"AMD"</code> or <code>"NVIDIA"</code></td></tr>
+<tr><td><code>MAD_SYSTEM_NGPUS</code></td><td>context.py</td><td>Total GPU count on host</td></tr>
+<tr><td><code>MAD_SYSTEM_GPU_ARCHITECTURE</code></td><td>context.py</td><td>GPU arch string (e.g. <code>"gfx90a"</code>)</td></tr>
+<tr><td><code>MAD_SYSTEM_HIP_VERSION</code></td><td>context.py</td><td>HIP version string</td></tr>
+<tr><td><code>MAD_SYSTEM_GPU_PRODUCT_NAME</code></td><td>context.py</td><td>GPU product name</td></tr>
+<tr><td><code>MAD_GUEST_OS</code></td><td>container_runner</td><td><code>"UBUNTU"</code> or <code>"CENTOS"</code></td></tr>
+<tr><td><code>MAD_RUNTIME_NGPUS</code></td><td>container_runner</td><td>GPU count allocated for this specific run</td></tr>
+<tr><td><code>MAD_MULTI_NODE_RUNNER</code></td><td>container_runner</td><td>Distributed launcher command (e.g. <code>torchrun --standalone --nproc_per_node=8</code>)</td></tr>
+<tr><td><code>MAD_MODEL_NAME</code></td><td>container_runner</td><td>Model name from model definition</td></tr>
+<tr><td><code>MAD_OUTPUT_CSV</code></td><td>container_runner</td><td>Path for <code>multiple_results</code> CSV output</td></tr>
+<tr><td><code>ROCM_PATH</code></td><td>container_runner</td><td>Resolved in-container ROCm root</td></tr>
+<tr><td><code>JENKINS_BUILD_NUMBER</code></td><td>container_runner</td><td>CI build number (from shell env if set)</td></tr>
+<tr><td><code>RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES</code></td><td>container_runner</td><td>Force-set to <code>""</code> when <code>HIP_VISIBLE_DEVICES</code> is active (AMD+Ray fix)</td></tr>
+</tbody>
+</table>
+
+<h3 style="margin-top:1.6em">Set by SLURM job script (<code>job.sh.j2</code>)</h3>
+<table id="envtable-slurm">
+<thead><tr><th>Variable</th><th>Value</th></tr></thead>
+<tbody>
+<tr><td><code>MAD_DEPLOYMENT_TYPE</code></td><td><code>"slurm"</code></td></tr>
+<tr><td><code>MAD_SLURM_JOB_ID</code></td><td>SLURM job ID</td></tr>
+<tr><td><code>MAD_NODE_RANK</code></td><td>This node's rank (0-indexed)</td></tr>
+<tr><td><code>MAD_TOTAL_NODES</code></td><td>Total node count</td></tr>
+<tr><td><code>MAD_IN_SLURM_JOB</code></td><td><code>"1"</code></td></tr>
+<tr><td><code>MAD_LAUNCHER_TYPE</code></td><td>Launcher type string</td></tr>
+<tr><td><code>MASTER_ADDR</code></td><td>Head node hostname (via scontrol)</td></tr>
+<tr><td><code>MASTER_PORT</code></td><td>Communication port (default 29500)</td></tr>
+<tr><td><code>WORLD_SIZE</code></td><td>Total GPU processes (nodes × GPUs/node)</td></tr>
+<tr><td><code>NNODES</code></td><td>Node count</td></tr>
+<tr><td><code>GPUS_PER_NODE</code></td><td>GPU count per node</td></tr>
+<tr><td><code>NODE_RANK</code></td><td>This node's rank</td></tr>
+<tr><td><code>TORCH_ELASTIC_RDZV_TIMEOUT</code></td><td><code>3600</code></td></tr>
+<tr><td><code>MIOPEN_USER_DB_PATH</code></td><td><code>/tmp/.miopen/node_${SLURM_PROCID}_rank_${LOCAL_RANK:-0}</code></td></tr>
+<tr><td><code>HIP_VISIBLE_DEVICES</code></td><td>GPU indices for this node's processes</td></tr>
+<tr><td><code>ROCR_VISIBLE_DEVICES</code></td><td>GPU indices (not set for Ray-based launchers)</td></tr>
+<tr><td><code>CUDA_VISIBLE_DEVICES</code></td><td>GPU indices (not set for Ray-based launchers)</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- ERROR TYPES -->
+<section id="errors">
+<h2>Error types</h2>
+<p>Defined in <span class="filepath">src/madengine/core/errors.py</span>. All inherit from <code>MADEngineError(Exception)</code> which carries: <code>message</code>, <code>category</code>, <code>context</code> (<code>ErrorContext</code> dataclass), <code>cause</code>, <code>recoverable</code>, <code>suggestions</code> (list). Rich panels are used for display.</p>
+<table>
+<thead><tr><th>Class</th><th>Category</th><th>When raised</th></tr></thead>
+<tbody>
+<tr><td><code>ValidationError</code></td><td>VALIDATION</td><td>Invalid CLI args, model field values, context key types.</td></tr>
+<tr><td><code>NetworkError</code></td><td>CONNECTION</td><td>Registry connectivity, pull failures, MongoDB connection.</td></tr>
+<tr><td><code>AuthenticationError</code></td><td>AUTHENTICATION</td><td>Registry login failure, invalid credentials format.</td></tr>
+<tr><td><code>ExecutionError</code></td><td>RUNTIME</td><td>Container run failure, script non-zero exit, timeout. (<code>RuntimeError</code> is an alias.)</td></tr>
+<tr><td><code>BuildError</code></td><td>BUILD</td><td>Docker build failure.</td></tr>
+<tr><td><code>DiscoveryError</code></td><td>DISCOVERY</td><td>models.json parse failure, tag not found, no models matched.</td></tr>
+<tr><td><code>OrchestrationError</code></td><td>ORCHESTRATION</td><td>Manifest load failure, incompatible build/run state.</td></tr>
+<tr><td><code>RunnerError</code></td><td>RUNNER</td><td>ContainerRunner internal failure.</td></tr>
+<tr><td><code>ConfigurationError</code></td><td>CONFIGURATION</td><td>slurm_multi registry gate violation, conflicting flags, missing required config.</td></tr>
+<tr><td><code>DeploymentTimeoutError</code></td><td>TIMEOUT</td><td>SLURM/K8s job exceeded wall time.</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- MODULE REFERENCE -->
+<section id="modules">
+<h2>Module reference</h2>
+<input id="modfilter" placeholder="Filter modules… (e.g. slurm, k8s, rocm)" autocomplete="off">
+<table id="modtable">
+<thead><tr><th>Layer</th><th>Path</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/app.py</td><td>Typer app, <code>cli_main</code> entry, <code>--version</code>, Rich traceback install.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/build.py</td><td><code>madengine build</code>: registry, batch, <code>--use-image</code>, <code>--build-on-compute</code>, mutex validation.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/run.py</td><td><code>madengine run</code>: manifest loading, all run flags, <code>--force-mirror-local</code>, <code>--cleanup-perf</code>.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/discover.py</td><td>Model discovery command, scoped tag parsing.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/report.py</td><td><code>report to-html</code> / <code>to-email</code> sub-app.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/commands/database.py</td><td>MongoDB upload command.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/constants.py</td><td><code>ExitCode</code> enum, <code>DEFAULT_MANIFEST_FILE</code>, <code>DEFAULT_PERF_OUTPUT</code>, <code>DEFAULT_TIMEOUT=-1</code>.</td></tr>
+<tr><td><span class="pill cli">CLI</span></td><td class="filepath">cli/validators.py</td><td>Argument validation: <code>validate_additional_context()</code>, <code>create_args_namespace()</code>.</td></tr>
+<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/build_orchestrator.py</td><td><code>BuildOrchestrator.execute()</code>: discover → context → build → registry gate → manifest. slurm_multi use-image / build-on-compute paths.</td></tr>
+<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/run_orchestrator.py</td><td><code>RunOrchestrator.execute()</code>: manifest loading, target inference, script copy/cleanup, local/distributed dispatch.</td></tr>
+<tr><td><span class="pill orch">Orch</span></td><td class="filepath">orchestration/image_filtering.py</td><td>Filters manifest entries by GPU vendor, GPU arch, <code>skip_gpu_arch</code> field.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/factory.py</td><td><code>DeploymentFactory.create()</code>. Registers <code>SlurmDeployment</code> + <code>KubernetesDeployment</code>. <code>UserWarning</code> if kubernetes package missing.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/base.py</td><td><code>BaseDeployment</code> (Template Method), <code>DeploymentConfig</code>, <code>DeploymentResult</code> (incl. <code>skip_monitoring</code>), <code>DeploymentStatus</code>, <code>PERFORMANCE_LOG_PATTERN</code>.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/kubernetes.py</td><td><code>KubernetesDeployment</code>: composes 6 mixins, orchestrates K8s job lifecycle.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_pvc.py</td><td>PVC creation/deletion, storage-class fallback chain.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_results.py</td><td>Log/artifact collection, perf aggregation, <code>collector_pod_name()</code>.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_scripts.py</td><td>Script extraction, ConfigMap building (<code>rocenv_mode</code>, <code>guest_os</code>).</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_template_context.py</td><td>Assembles Jinja2 template context for K8s jobs.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_secrets.py</td><td><code>secrets</code> dict → K8s Secret objects.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/k8s_names.py</td><td>Name truncation/sanitization helpers for K8s resource names.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/kubernetes_launcher_mixin.py</td><td>Selects Jinja2 template per launcher; sets <code>MAD_MULTI_NODE_RUNNER</code> for K8s pods.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/slurm.py</td><td><code>SlurmDeployment</code>: template prep, sbatch submit, bash-in-salloc, slurm_multi dispatch, monitoring, results collection.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/slurm_node_selector.py</td><td><code>SlurmNodeSelector</code>: health/cleanup srun, <code>reservation</code> parameter, node preflight.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/common.py</td><td>Shared helpers: <code>VALID_LAUNCHERS</code>, slurm_multi wrapper assembly, launcher normalization.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/config_loader.py</td><td><code>ConfigLoader</code>: deep-merge, preset loading, target inference. <code>env_vars</code> merged recursively (not replaced).</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/primus_backend.py</td><td>Primus YAML / backend selection helper.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/slurm/defaults.json</td><td>SLURM base preset.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/slurm/profiles/</td><td><code>single-node.json</code>, <code>multi-node.json</code>.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/k8s/defaults.json</td><td>K8s base preset.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/k8s/gpu-vendors/</td><td><code>amd.json</code>, <code>nvidia.json</code>, <code>amd-multi-gpu.json</code>.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/presets/k8s/profiles/</td><td><code>single-gpu.json</code>, <code>multi-gpu.json</code>, <code>multi-node.json</code>.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/templates/slurm/job.sh.j2</td><td>Main sbatch template (~822 lines). Sets all SLURM env vars, runs srun task scripts.</td></tr>
+<tr><td><span class="pill dep">Dep</span></td><td class="filepath">deployment/templates/kubernetes/</td><td>K8s YAML templates: <code>configmap.yaml.j2</code>, <code>job.yaml.j2</code>, <code>pvc.yaml.j2</code>, <code>pvc-data.yaml.j2</code>, <code>service.yaml.j2</code>.</td></tr>
+<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/container_runner.py</td><td><code>ContainerRunner</code>: local docker run, AMD/NVIDIA run options, env injection, tools, perf parsing, <code>_run_self_managed()</code>, <code>_generate_local_launcher_command()</code>.</td></tr>
+<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/container_runner_helpers.py</td><td>Log error pattern scan, <code>resolve_run_timeout()</code>, <code>make_run_log_file_path()</code>.</td></tr>
+<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/docker_builder.py</td><td><code>DockerBuilder</code>: build args, <code>--build-context tools=</code> (conditional), registry push, DOCKER_IMAGE_NAME injection into manifest.</td></tr>
+<tr><td><span class="pill exec">Exec</span></td><td class="filepath">execution/dockerfile_utils.py</td><td>Dockerfile parsing: GPU vendor from filename + FROM line.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/context.py</td><td><code>Context</code>: <code>ast.literal_eval</code> parse, GPU vendor/arch detection, ROCm path resolution, <code>MAD_SECRETS*</code> propagation, renderD mapping.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/additional_context_defaults.py</td><td>Default values merged before user context: <code>DEFAULT_GPU_VENDOR="AMD"</code>, <code>DEFAULT_GUEST_OS="UBUNTU"</code>.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/console.py</td><td><code>Console</code>: Rich-backed shell executor, live output, timeout, <code>secret=True</code> for credential commands.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/docker.py</td><td><code>Docker</code> wrapper: <code>shlex.quote()</code> on every interpolation, auto stop/remove on <code>__del__</code>.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/errors.py</td><td>10-type error hierarchy, <code>ErrorCategory</code>, <code>ErrorContext</code>, <code>ErrorHandler</code>, Rich panel display.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/auth.py</td><td><code>load_credentials()</code>, <code>login_to_registry()</code> using <code>--password-stdin</code> + <code>MAD_REGISTRY_PASSWORD</code>.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/timeout.py</td><td><code>Timeout</code> context manager; guards <code>signal.alarm(None)</code> when seconds is 0/None.</td></tr>
+<tr><td><span class="pill core">Core</span></td><td class="filepath">core/dataprovider.py</td><td><code>Data</code> abstraction: local / NAS / S3 / MinIO.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/discover_models.py</td><td><code>DiscoverModels</code>: root, dir, dynamic discovery; scoped vs unscoped tags; <code>CustomModel</code> dataclass.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_tool_factory.py</td><td>Singleton <code>get_gpu_tool_manager(vendor, rocm_path)</code>; auto-detects vendor.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/gpu_validator.py</td><td><code>GPUVendor</code> enum, <code>ROCmValidator</code>, <code>NVIDIAValidator</code>, <code>GPUValidationResult</code>.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/rocm_path_resolver.py</td><td>Host + in-container ROCm path resolution chains.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/therock_markers.py</td><td>Shared TheRock detection markers (rocm-sdk, layout probes).</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/config_parser.py</td><td><code>ConfigParser</code>: 5-level config file resolution, CSV/JSON/YAML loading, multi-row result matching.</td></tr>
+<tr><td><span class="pill util">Util</span></td><td class="filepath">utils/session_tracker.py</td><td>Session start/marker tracking.</td></tr>
+<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/update_perf_csv.py</td><td>Writes/appends <code>perf.csv</code> and <code>perf_entry.csv</code>. <code>PERF_CSV_HEADER</code> (28 columns).</td></tr>
+<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/csv_to_html.py</td><td>HTML performance report generation.</td></tr>
+<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/csv_to_email.py</td><td>Email-friendly consolidated report.</td></tr>
+<tr><td><span class="pill rep">Rep</span></td><td class="filepath">reporting/update_perf_super.py</td><td>Superset-shaped perf rollups.</td></tr>
+<tr><td><span class="pill core">DB</span></td><td class="filepath">database/mongodb.py</td><td><code>MongoDBConfig.from_env()</code>, <code>UploadOptions</code>, <code>UploadResult</code>; upsert + batch upload.</td></tr>
+<tr><td><span class="pill util">Scripts</span></td><td class="filepath">scripts/common/pre_scripts/rocEnvTool/</td><td><code>rocenv_tool.py</code>, <code>csv_parser.py</code>, <code>console.py</code> — TheRock-compatible env capture (lite + full modes).</td></tr>
+<tr><td><span class="pill util">Scripts</span></td><td class="filepath">scripts/common/tools/</td><td>GPU info profilers, amd_smi / rocm_smi utils, rtl_trace wrapper, library tracers (rocblas, miopen, rccl, tensile).</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- TESTS -->
 <section id="tests">
 <h2>Test layout</h2>
 <div class="grid cols-3">
 <div class="card"><h3>unit/</h3>
-  <p>Fast, isolated, mocked. ~28 modules including <code>test_slurm_multi.py</code>, <code>test_shell_quoting.py</code>, <code>test_error_handling.py</code>, <code>test_k8s.py</code>, <code>test_rocm_path.py</code>, <code>test_validators.py</code>.</p></div>
+  <p>Fast, isolated, mocked. Key files: <code>test_slurm_multi.py</code>, <code>test_shell_quoting.py</code>, <code>test_error_handling.py</code>, <code>test_k8s.py</code>, <code>test_rocm_path.py</code>, <code>test_validators.py</code>, <code>test_deployment.py</code>, <code>test_container_runner.py</code>.</p></div>
 <div class="card"><h3>integration/</h3>
   <p>Real Docker / GPU / platform calls. Includes <code>test_docker_integration.py</code>, <code>test_container_execution.py</code>, <code>test_gpu_management.py</code>, <code>test_orchestrator_workflows.py</code>, <code>test_profiling_tools_config.py</code>.</p></div>
 <div class="card"><h3>e2e/</h3>
   <p>Full workflows: <code>test_build_workflows.py</code>, <code>test_run_workflows.py</code>, <code>test_profiling_workflows.py</code>, <code>test_data_workflows.py</code>, <code>test_execution_features.py</code>, <code>test_scripting_workflows.py</code>.</p></div>
 </div>
-<p>Pytest config lives solely in <code>[tool.pytest.ini_options]</code> in <span class="filepath">pyproject.toml</span> (<code>minversion=7.0</code>). Markers: <code>unit</code>, <code>integration</code>, <code>e2e</code>, <code>slow</code>, <code>gpu</code>, <code>amd</code>, <code>nvidia</code>, <code>cpu</code>, <code>requires_docker</code>, <code>requires_models</code>.</p>
+<table style="margin-top:14px">
+<thead><tr><th>Marker</th><th>What it selects</th></tr></thead>
+<tbody>
+<tr><td><code>unit</code></td><td>Fast unit tests with no external deps</td></tr>
+<tr><td><code>integration</code></td><td>Tests requiring Docker / real GPU calls</td></tr>
+<tr><td><code>e2e</code></td><td>Full end-to-end workflow tests</td></tr>
+<tr><td><code>slow</code></td><td>Long-running tests</td></tr>
+<tr><td><code>gpu</code></td><td>Requires GPU hardware</td></tr>
+<tr><td><code>amd</code> / <code>nvidia</code></td><td>Vendor-specific tests</td></tr>
+<tr><td><code>cpu</code></td><td>CPU-only tests</td></tr>
+<tr><td><code>requires_docker</code></td><td>Tests requiring Docker daemon</td></tr>
+<tr><td><code>requires_models</code></td><td>Tests requiring model files to be present</td></tr>
+</tbody>
+</table>
+<p>Pytest config lives solely in <code>[tool.pytest.ini_options]</code> in <span class="filepath">pyproject.toml</span> (<code>minversion=7.0</code>).</p>
 </section>
 
-<!-- ======== CONTRIB ======== -->
+<!-- CONTRIBUTING -->
 <section id="contrib">
 <h2>Contributing &amp; code style</h2>
+<div class="grid cols-2">
+<div class="card">
+<h3>Style rules</h3>
 <ul>
-  <li><strong>Formatting:</strong> Black (line-length 88), targets py38–py311.</li>
-  <li><strong>Imports:</strong> isort with <code>profile = "black"</code>; first-party = <code>madengine</code>.</li>
-  <li><strong>Lint:</strong> flake8 + mypy (strict equality, warn unused, etc.) + bandit (skips B101).</li>
-  <li><strong>Docstrings:</strong> Google style; type hints for public functions.</li>
-  <li><strong>Conventional commits:</strong> <code>feat:</code>, <code>fix:</code>, <code>docs:</code>, <code>test:</code>, <code>refactor:</code>, <code>style:</code>, <code>perf:</code>, <code>chore:</code>.</li>
-  <li><strong>Pre-commit:</strong> <code>pip install pre-commit &amp;&amp; pre-commit install</code>.</li>
+  <li><strong>Formatting:</strong> Black (line-length 88), targets py3.8–py3.11</li>
+  <li><strong>Imports:</strong> isort with <code>profile="black"</code>; first-party = <code>madengine</code></li>
+  <li><strong>Lint:</strong> flake8 + mypy (strict equality, warn unused) + bandit (skips B101)</li>
+  <li><strong>Docstrings:</strong> Google style; type hints required for public functions</li>
+  <li><strong>Conventional commits:</strong> <code>feat:</code>, <code>fix:</code>, <code>docs:</code>, <code>test:</code>, <code>refactor:</code>, <code>style:</code>, <code>perf:</code>, <code>chore:</code></li>
 </ul>
+</div>
+<div class="card">
+<h3>Security rules</h3>
+<ul>
+  <li>Use <code>shlex.quote()</code> on every shell interpolation of user-controlled values (image names, paths, container names, build-args)</li>
+  <li>Registry passwords via <code>--password-stdin</code> (not command-line args); env var <code>MAD_REGISTRY_PASSWORD</code></li>
+  <li>Credential JSON must be a dict object — validated at load time (<code>ConfigurationError</code> on wrong type)</li>
+  <li><code>MIOPEN_USER_DB_PATH</code> is filtered from deployment_config to prevent leaking temp paths</li>
+  <li>Never log secret values — log keys only</li>
+</ul>
+</div>
+</div>
 </section>
 
-<!-- ======== CHANGES ======== -->
+<!-- CHANGELOG -->
 <section id="changes">
-<h2>Recent notable changes</h2>
+<h2>Changelog</h2>
 <details open>
-<summary><strong>[Unreleased] — slurm_multi launcher</strong></summary>
+<summary><strong>[2.1.0] — 2026-05-28</strong></summary>
+<h4>Added</h4>
 <ul>
-  <li>New <code>slurm_multi</code> SLURM launcher; <code>slurm-multi</code> alias accepted.</li>
-  <li><code>madengine build --use-image [IMAGE|auto]</code> and <code>--build-on-compute</code>.</li>
-  <li>Build registry gate with structured <code>ConfigurationError</code>.</li>
-  <li>bash-in-salloc execution path when <code>SLURM_JOB_ID</code> is already set.</li>
-  <li><code>DeploymentResult.skip_monitoring</code> for synchronous deploys.</li>
-  <li><code>SlurmNodeSelector</code> accepts a <code>reservation</code> parameter.</li>
-  <li>perf.csv aggregation into cwd so the default reporter sees per-job rows.</li>
-  <li>Contract tests + minimal example config.</li>
+  <li><code>slurm_multi</code> self-managed SLURM launcher (PRs #130, #126): alias <code>slurm-multi</code>, parallel docker pull, bash-in-salloc path, <code>_run_self_managed()</code> for local mode</li>
+  <li><code>madengine build --use-image [IMAGE|auto]</code> — skip local build</li>
+  <li><code>madengine build --build-on-compute</code> — build on compute node + push</li>
+  <li>slurm_multi registry gate with structured <code>ConfigurationError</code></li>
+  <li><code>DeploymentResult.skip_monitoring</code> for synchronous deploy paths</li>
+  <li><code>SlurmNodeSelector.reservation</code> parameter</li>
+  <li><code>DockerBuilder</code>: <code>--build-context tools=</code> (conditional on dir existence, PR #131 + #134)</li>
+  <li>Local <code>MAD_MULTI_NODE_RUNNER</code> via <code>ContainerRunner._generate_local_launcher_command()</code> (PR #126)</li>
+  <li>Model card <code>distributed</code>/<code>slurm</code> auto-merged into manifest <code>deployment_config</code></li>
+  <li><code>DOCKER_IMAGE_NAME</code> injection into manifest <code>env_vars</code> after successful registry push</li>
+</ul>
+<h4>Changed</h4>
+<ul>
+  <li>SLURM env-var escaping: double-quote instead of <code>shlex.quote</code> to preserve spaces/paths (PR #134)</li>
+  <li>Early <code>DiscoverModels</code> result cached and reused for actual build (no duplicate <code>get_models_json.py</code> runs)</li>
+  <li>E2E test cleanup defaults include <code>build_manifest.json</code> + perf artefacts</li>
 </ul>
 </details>
+
 <details>
-<summary><strong>[2.0.3] — rocEnvTool full mode, K8s refactor, security</strong></summary>
+<summary><strong>[2.0.3] — 2026-05-26</strong></summary>
 <ul>
-  <li>K8s monolith decomposed into <code>k8s_pvc</code>/<code>k8s_results</code>/<code>k8s_scripts</code>/<code>k8s_template_context</code> mixins.</li>
-  <li>rocEnvTool <code>"full"</code> mode (lshw, dmidecode, dmesg, modinfo) with guest_os-native installers.</li>
-  <li>Generic <code>storage_class</code> fallback added; default preset now <code>nfs-banff</code>.</li>
-  <li><code>rocm_trace_lite_default</code> tool (RTL <code>default</code> mode).</li>
-  <li><strong>Security:</strong> <code>shlex.quote()</code> on every shell interpolation in <code>core/docker.py</code>, <code>container_runner.py</code>, <code>docker_builder.py</code>, <code>run_orchestrator.py</code>.</li>
-  <li>Collector pod name mismatch fix (truncated <code>collector-{id[:15]}</code> shared helper).</li>
-  <li>RPD pre-script: <code>xxd</code> install + sudo/root branch fixes.</li>
-  <li><code>CANCELLED</code> added to terminal-state set so <code>scancel</code>'d jobs don't loop forever.</li>
-  <li><code>Context</code> guards against <code>None</code> <code>kfd_renderDs</code> on restricted ROCm.</li>
+  <li>rocEnvTool <code>"full"</code> mode (lshw, dmidecode, dmesg, modinfo)</li>
+  <li>K8s monolith decomposed into 6 focused mixin modules</li>
+  <li>Generic <code>storage_class</code> fallback; default preset <code>nfs-banff</code></li>
+  <li><code>rocm_trace_lite_default</code> tool (RTL <em>default</em> mode)</li>
+  <li><strong>Security:</strong> <code>shlex.quote()</code> on every shell interpolation</li>
+  <li>Collector pod name mismatch fix (shared <code>collector_pod_name()</code> helper)</li>
+  <li><code>CANCELLED</code> added to terminal-state set</li>
+  <li>Local <code>MAD_MULTI_NODE_RUNNER</code> for Docker local (<code>_generate_local_launcher_command()</code>)</li>
 </ul>
 </details>
+
 <details>
-<summary><strong>[2.0.2] / [2.0.1] — credential validation, ROCm auto-detect, GPU arch</strong></summary>
+<summary><strong>[2.0.2] / [2.0.1]</strong></summary>
 <ul>
-  <li><code>load_credentials()</code> validates JSON object type, raises <code>ConfigurationError</code>.</li>
-  <li>Host ROCm auto-detection via priority chain; in-container ROCm resolved independently.</li>
-  <li>TheRock layout support (<code>rocm-sdk</code> + markers).</li>
-  <li>GPU arch auto-detection injected into Docker build args for full-run mode.</li>
-  <li>Model discovery: scope-based tag selection replaces <code>strict</code> flag.</li>
-  <li>Shared <code>login_to_registry</code>, centralised credential loading.</li>
-  <li>Registry password via env + <code>--password-stdin</code> (no more <code>/proc</code> exposure).</li>
-  <li>Unified <code>PERFORMANCE_LOG_PATTERN</code> across local + deployment paths.</li>
+  <li>Host ROCm auto-detection via priority chain; in-container ROCm resolved independently</li>
+  <li>TheRock (<code>rocm-sdk</code>) layout support</li>
+  <li>GPU arch auto-detection injected into Docker build args</li>
+  <li>Model discovery: scope-based tag selection replaces <code>strict</code> flag</li>
+  <li>Registry password via <code>--password-stdin</code> + env var</li>
+  <li><code>credential.json</code> type validation</li>
+  <li>Unified <code>PERFORMANCE_LOG_PATTERN</code> across local + deployment paths</li>
+  <li>Run-phase host/container env table printed at startup</li>
 </ul>
 </details>
+
 <details>
-<summary><strong>[2.0.0] — Complete rewrite</strong></summary>
+<summary><strong>[2.0.0] — 2026-04-09 — Complete rewrite</strong></summary>
 <ul>
-  <li>Unified <code>madengine</code> CLI; legacy <code>mad-*</code> removed.</li>
-  <li>5-layer architecture (CLI / Orchestration / Deployment / Execution / Core).</li>
-  <li>Multi-target deployment via factory + presets + Jinja2 templates.</li>
-  <li>Launcher mixin with torchrun / DeepSpeed / Megatron-LM / TorchTitan / Primus / vLLM / SGLang.</li>
-  <li>Log error pattern scanning; <code>--skip-model-run</code>; batch build manifest.</li>
-  <li>SLURM nodelist pinning; K8s Secrets management.</li>
-  <li>Structured errors (10 types) with Rich panels; fixed exit codes.</li>
-  <li><code>RuntimeError</code> renamed to <code>ExecutionError</code> (alias preserved).</li>
+  <li>Unified <code>madengine</code> CLI; legacy <code>mad-*</code> removed</li>
+  <li>5-layer architecture (CLI / Orchestration / Deployment / Execution / Core)</li>
+  <li>Factory + Template Method patterns; <code>DeploymentFactory</code>, <code>BaseDeployment</code>, <code>ConfigLoader</code></li>
+  <li>Multi-target deployment: presets + Jinja2 templates per launcher</li>
+  <li>Launcher matrix: torchrun / DeepSpeed / Megatron / TorchTitan / Primus / vLLM / SGLang</li>
+  <li>Log error pattern scanning; <code>--skip-model-run</code>; batch build manifest</li>
+  <li>Structured errors (10 types) with Rich panels; fixed exit codes</li>
+  <li>SLURM nodelist pinning; K8s Secrets management; data provider abstraction</li>
 </ul>
 </details>
 </section>
 
 <div class="footer">
-  Generated as a single self-contained HTML wiki for madengine on branch
-  <code>develop</code>. Inspired by the
-  <a href="https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html">Claude blog post</a>
-  on using HTML as a richer-than-Markdown output format for codebase artefacts. Print works (sidebar hidden).
-</div>
-</main>
+  madengine wiki · v2.1.0 (2026-05-28) · branch <code>develop</code> · PRs #126 #130 #131 #133 #134<br>
+  Structured as a single self-contained HTML file for easy sharing — no server needed, open directly in a browser.
+  Inspired by the <a href="https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html">Claude Code HTML blog post</a>:
+  richer information density than Markdown, tabbed navigation, live filters, easy to share via one URL.
+  Print works (sidebar hidden via CSS media query).
 </div>
 
+</main>
+</div>
 <script>
-  // Tabs
-  document.querySelectorAll('.tabs').forEach(tabs=>{
-    tabs.addEventListener('click',e=>{
-      const b=e.target.closest('button'); if(!b) return;
-      const key=b.dataset.tab;
-      tabs.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-      const root=tabs.parentElement;
-      root.querySelectorAll('.tabpanel').forEach(p=>p.classList.toggle('on',p.dataset.panel===key));
-    });
+document.querySelectorAll('.tabs').forEach(tabs=>{
+  tabs.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;
+    const key=b.dataset.tab;
+    tabs.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    tabs.parentElement.querySelectorAll('.tabpanel').forEach(p=>p.classList.toggle('on',p.dataset.panel===key));
   });
-  // Sidebar filter
-  const nf=document.getElementById('navfilter');
-  nf&&nf.addEventListener('input',()=>{
-    const q=nf.value.toLowerCase();
-    document.querySelectorAll('nav.side a').forEach(a=>{
-      a.style.display=a.textContent.toLowerCase().includes(q)?'':'none';
-    });
+});
+const nf=document.getElementById('navfilter');
+nf&&nf.addEventListener('input',()=>{
+  const q=nf.value.toLowerCase();
+  document.querySelectorAll('nav.side a').forEach(a=>{a.style.display=a.textContent.toLowerCase().includes(q)?'':'none';});
+});
+['modfilter','ctxfilter'].forEach(id=>{
+  const f=document.getElementById(id);
+  if(!f)return;
+  const tid=id==='modfilter'?'modtable':'ctxtable';
+  f.addEventListener('input',()=>{
+    const q=f.value.toLowerCase();
+    document.getElementById(tid).querySelectorAll('tbody tr').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';});
   });
-  // Module-table filter
-  const mf=document.getElementById('modfilter'), mt=document.getElementById('modtable');
-  mf&&mf.addEventListener('input',()=>{
-    const q=mf.value.toLowerCase();
-    mt.querySelectorAll('tbody tr').forEach(r=>{
-      r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';
-    });
+});
+const ef=document.getElementById('envfilter');
+ef&&ef.addEventListener('input',()=>{
+  const q=ef.value.toLowerCase();
+  ['envtable-read','envtable-set','envtable-slurm'].forEach(id=>{
+    const t=document.getElementById(id);
+    t&&t.querySelectorAll('tbody tr').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';});
   });
-  // Active-section highlighting
-  const links=[...document.querySelectorAll('nav.side a[href^="#"]')];
-  const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
-  const io=new IntersectionObserver(entries=>{
-    entries.forEach(en=>{
-      if(en.isIntersecting){
-        links.forEach(a=>a.classList.remove('active'));
-        const a=map.get(en.target.id); if(a) a.classList.add('active');
-      }
-    });
-  },{rootMargin:'-40% 0px -55% 0px',threshold:0});
-  document.querySelectorAll('main section[id]').forEach(s=>io.observe(s));
+});
+const links=[...document.querySelectorAll('nav.side a[href^="#"]')];
+const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+const io=new IntersectionObserver(entries=>{
+  entries.forEach(en=>{
+    if(en.isIntersecting){links.forEach(a=>a.classList.remove('active'));const a=map.get(en.target.id);if(a)a.classList.add('active');}
+  });
+},{rootMargin:'-40% 0px -55% 0px',threshold:0});
+document.querySelectorAll('main section[id]').forEach(s=>io.observe(s));
 </script>
-</body>
-</html>
+</body></html>

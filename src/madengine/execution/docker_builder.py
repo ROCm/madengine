@@ -9,6 +9,7 @@ and then distributed to remote nodes for execution.
 
 import os
 import shlex
+from pathlib import Path
 import time
 import json
 import re
@@ -177,9 +178,14 @@ class DockerBuilder:
         # Build the image with logging
         build_start_time = time.time()
 
+        tools_build_context = ""
+        tools_dir = Path("tools")
+        if tools_dir.exists():
+            tools_build_context = f"--build-context tools={tools_dir} "
+
         build_command = (
             f"docker build {use_cache_str} --network=host "
-            f"--build-context tools=./tools "
+            f"{tools_build_context}"
             f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
             f"{build_args} {shlex.quote(docker_context)}"
         )

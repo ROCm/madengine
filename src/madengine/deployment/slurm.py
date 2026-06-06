@@ -483,7 +483,8 @@ class SlurmDeployment(BaseDeployment):
         ])
         
         for key, value in env_vars.items():
-            script_lines.append(f"export {key}={shlex.quote(str(value))}")
+            escaped = str(value).replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+            script_lines.append(f'export {key}="{escaped}"')
         
         script_lines.append("")
         script_lines.extend([

@@ -76,10 +76,11 @@ all = [
 ]
 
 [tool.hatch.build.targets.wheel]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/madengine/scripts" = "madengine/scripts"
-"src/madengine/deployment/templates" = "madengine/deployment/templates"
+# scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
+# artifacts bypasses VCS exclusion without risk of duplicate-file errors from force-include.
+artifacts = [
+  "src/madengine/scripts/**",
+]
 
 [tool.hatch.version]
 source = "versioningit"
