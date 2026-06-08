@@ -727,7 +727,7 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
-        elif canonicalize_distributed_launcher(launcher_type) == "sglang-disagg":
+        elif launcher_type == "sglang-disagg":
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
