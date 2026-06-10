@@ -669,6 +669,20 @@ class RunOrchestrator:
         """Execute on distributed infrastructure."""
         self.rich_console.print(f"[cyan]Deploying to {target}...[/cyan]\n")
 
+        # Warn about local-only flags that have no effect on distributed targets
+        _local_only_flags = {
+            "--keep-alive": getattr(self.args, "keep_alive", False),
+            "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
+            "--skip-model-run": getattr(self.args, "skip_model_run", False),
+        }
+        _active_local_flags = [name for name, val in _local_only_flags.items() if val]
+        if _active_local_flags:
+            self.rich_console.print(
+                f"[yellow]⚠️  The following flags have no effect on distributed "
+                f"({target}) targets and will be ignored: "
+                f"{', '.join(_active_local_flags)}[/yellow]\n"
+            )
+
         # Import from deployment layer
         from madengine.deployment.factory import DeploymentFactory
         from madengine.deployment.base import DeploymentConfig

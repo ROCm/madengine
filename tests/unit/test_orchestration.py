@@ -313,3 +313,49 @@ class TestSkipModelRunPolicyA:
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
+
+
+@pytest.mark.unit
+class TestRunOrchestrator:
+    """Test RunOrchestrator methods."""
+
+    def test_distributed_warns_on_local_only_flags(self, tmp_path):
+        """_execute_distributed warns when local-only flags are set."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = True
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = True
+        mock_args.timeout = 60
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+
+        # Replace rich_console with a mock so we can inspect print calls
+        mock_rich_console = MagicMock()
+        orchestrator.rich_console = mock_rich_console
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        # Verify warning was printed mentioning the active flags
+        printed = " ".join(
+            str(call) for call in mock_rich_console.print.call_args_list
+        )
+        assert "--keep-alive" in printed
+        assert "--skip-model-run" in printed
+        assert "--keep-model-dir" not in printed  # was False, must not appear
