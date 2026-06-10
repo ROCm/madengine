@@ -99,7 +99,11 @@ def run(
         bool,
         typer.Option(
             "--skip-model-run",
-            help="After a build in this invocation, skip executing models (ignored when using an existing manifest).",
+            help=(
+                "Skip running the model script inside the container. "
+                "The container is still started and pre_scripts still run. "
+                "Use with --keep-alive to get a live container set up and ready for manual exec."
+            ),
         ),
     ] = False,
     manifest_output: Annotated[
