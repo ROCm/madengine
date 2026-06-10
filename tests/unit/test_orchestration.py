@@ -200,7 +200,7 @@ class TestSkipModelRunPolicyA:
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
     def test_skip_after_build_skips_execute_local(self, mock_cleanup, tmp_path):
-        """Full workflow: skip_model_run + build phase skips _execute_local."""
+        """Full workflow: skip_model_run + build phase still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
