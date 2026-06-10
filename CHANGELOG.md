@@ -256,6 +256,12 @@ madengine v2.0 is a **complete rewrite** with a unified CLI architecture, replac
 - **Full workflow**: Discover → Build → Skip execution, but validate configuration
 - **Exit code preservation**: Returns appropriate exit codes for build failures
 
+#### Fix --skip-model-run to match v1 behaviour
+- **Container now starts**: `--skip-model-run` previously short-circuited before any container started; now the container starts, `pre_scripts` run, and only the model script invocation is skipped
+- **Live container debugging**: `--skip-model-run --keep-alive` leaves a fully-set-up container alive for manual exec (`docker exec -it <container> bash`)
+- **Correct exit status**: Skipped runs are now reported as `SKIPPED` (not `FAILURE`); overall exit code is `0`
+- **Distributed warning**: Passing `--skip-model-run`, `--keep-alive`, or `--keep-model-dir` with a SLURM/K8s target now emits a yellow warning (these flags are local Docker-only)
+
 #### ROCprofv3 Profiling Suite (ROCm 7.0+)
 - **8 pre-configured profiles**: compute, memory, communication, full, lightweight, perfetto, api_overhead, pc_sampling
 - **Hardware counter definitions**: 4 counter files for targeted profiling scenarios
@@ -615,8 +621,8 @@ black src/ tests/ && isort src/ tests/
 # Run pre-commit hooks manually
 pre-commit run --all-files
 
-# Build without running (CI/CD)
-madengine run --tags model --skip-model-run
+# Skip model script (container starts, pre_scripts run); leave live container for debugging
+madengine run --tags model --skip-model-run --keep-alive
 
 # Debug with verbose output
 madengine run --tags model --verbose --live-output
