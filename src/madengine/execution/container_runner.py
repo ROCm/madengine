@@ -1041,6 +1041,7 @@ class ContainerRunner:
         build_info: typing.Dict = None,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         timeout: int = 7200,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
@@ -1054,6 +1055,7 @@ class ContainerRunner:
             build_info: Optional build information from manifest
             keep_alive: Whether to keep container alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             timeout: Execution timeout in seconds
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
@@ -1542,22 +1544,25 @@ class ContainerRunner:
                         # Set permissions
                         model_docker.sh(f"chmod -R a+rw {model_dir}")
 
-                        # Run the model
+                        # Run the model (or skip, leaving container alive for manual exec)
                         test_start_time = time.time()
-                        self.rich_console.print("[bold blue]Running model...[/bold blue]")
-
-                        model_args = self.context.ctx.get(
-                            "model_args", model_info["args"]
-                        )
-                        # Use the container timeout (default 7200s) for script execution
-                        # to prevent indefinite hangs
-                        model_output = model_docker.sh(
-                            f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=timeout,
-                        )
-                        # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
-                        if not self.live_output:
-                            print(model_output)
+                        model_args = self.context.ctx.get("model_args", model_info["args"])
+                        if skip_model_run:
+                            self.rich_console.print(
+                                "[bold cyan]Skipping model run (--skip-model-run).[/bold cyan]"
+                            )
+                            print(f"To run model: cd {model_dir} && {script_name} {model_args}")
+                        else:
+                            self.rich_console.print("[bold blue]Running model...[/bold blue]")
+                            # Use the container timeout (default 7200s) for script execution
+                            # to prevent indefinite hangs
+                            model_output = model_docker.sh(
+                                f"cd {model_dir} && {script_name} {model_args}",
+                                timeout=timeout,
+                            )
+                            # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
+                            if not self.live_output:
+                                print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
@@ -2046,6 +2051,7 @@ class ContainerRunner:
         timeout: int = 7200,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         phase_suffix: str = "",
     ) -> typing.Dict:
         """Run all models from a build manifest file.
@@ -2058,6 +2064,7 @@ class ContainerRunner:
             timeout: Execution timeout per model in seconds
             keep_alive: Whether to keep containers alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             phase_suffix: Suffix for log files (e.g., ".run")
 
         Returns:
@@ -2144,6 +2151,7 @@ class ContainerRunner:
                     build_info=build_info,
                     keep_alive=keep_alive,
                     keep_model_dir=keep_model_dir,
+                    skip_model_run=skip_model_run,
                     timeout=timeout,
                     phase_suffix=phase_suffix,
                 )
