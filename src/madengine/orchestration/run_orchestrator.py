@@ -141,9 +141,9 @@ class RunOrchestrator:
         1. Run-only: If manifest_file provided
         2. Full workflow: If tags provided (build + run)
 
-        When args.skip_model_run is True (Policy A), the model execution step is
-        skipped only if this invocation ran a build (_did_build_phase). Otherwise
-        the flag is ignored with a warning.
+        When args.skip_model_run is True, the model script inside each container
+        is skipped (container still starts, pre_scripts still run). Use with
+        --keep-alive to leave a live container for manual exec.
 
         Args:
             manifest_file: Path to build_manifest.json
@@ -259,14 +259,6 @@ class RunOrchestrator:
                 target = deployment_config.get("target", "local")
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
-
-            # Use `is True` so MagicMock-based test doubles do not count as enabled.
-            skip_requested = getattr(self.args, "skip_model_run", False) is True
-            if skip_requested and not self._did_build_phase:
-                self.rich_console.print(
-                    "[yellow]⚠️  --skip-model-run is ignored "
-                    "(not a build+run workflow in this invocation).[/yellow]\n"
-                )
 
             # Step 4: Execute based on target
             try:

@@ -2172,6 +2172,17 @@ class ContainerRunner:
                         "performance": run_results.get("performance"),
                         "duration": run_results.get("test_duration"),
                     })
+                elif status == "SKIPPED":
+                    successful_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": "SKIPPED",
+                        "performance": None,
+                        "duration": run_results.get("test_duration"),
+                    })
+                    self.rich_console.print(
+                        f"[cyan]⏭️  Skipped model run for {model_info['name']}[/cyan]"
+                    )
                 else:
                     # Status is FAILURE - track as failed
                     failed_runs.append({

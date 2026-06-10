@@ -406,10 +406,6 @@ def run(
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
             if workflow_summary["overall_success"]:
-                if execution_summary.get("skipped_model_run"):
-                    console.print(
-                        "[cyan]Model run was skipped (--skip-model-run); build completed.[/cyan]"
-                    )
                 console.print(
                     "🎉 [bold green]Complete workflow finished successfully![/bold green]"
                 )
