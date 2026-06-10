@@ -268,26 +268,6 @@ class RunOrchestrator:
                     "(not a build+run workflow in this invocation).[/yellow]\n"
                 )
 
-            if skip_requested and self._did_build_phase:
-                self.rich_console.print(
-                    "[bold cyan]Skipping model run (--skip-model-run) after build.[/bold cyan]\n"
-                )
-                results = {
-                    "successful_runs": [],
-                    "failed_runs": [],
-                    "total_runs": 0,
-                    "skipped_model_run": True,
-                }
-                results["session_start_row"] = session_start_row
-                results["session_row_count"] = (
-                    self.session_tracker.get_session_row_count()
-                )
-                self.rich_console.print(
-                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
-                )
-                self._cleanup_model_dir_copies()
-                return results
-
             # Step 4: Execute based on target
             try:
                 if target == "local" or target == "docker":
@@ -685,6 +665,7 @@ class RunOrchestrator:
             keep_alive=getattr(self.args, "keep_alive", False),
             keep_model_dir=getattr(self.args, "keep_model_dir", False),
             phase_suffix=phase_suffix,
+            skip_model_run=getattr(self.args, "skip_model_run", False),
         )
 
         self.rich_console.print(f"\n[green]✓ Local execution complete[/green]")

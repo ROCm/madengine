@@ -226,15 +226,18 @@ class TestSkipModelRunPolicyA:
                 RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
             ):
                 with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
                     with patch.object(
                         RunOrchestrator, "_combine_build_and_run_logs"
-                    ) as mock_combine:
+                    ):
                         orchestrator.execute(
                             manifest_file=None, tags=["dummy"], timeout=60
                         )
 
-        mock_local.assert_not_called()
-        mock_combine.assert_not_called()
+        mock_local.assert_called_once()
         mock_cleanup.assert_called()
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
@@ -268,6 +271,45 @@ class TestSkipModelRunPolicyA:
                 "failed_runs": [],
             }
             orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_called_once()
+        mock_cleanup.assert_called()
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_skip_model_run_calls_execute_local(self, mock_cleanup, tmp_path):
+        """skip_model_run no longer short-circuits before _execute_local."""
+        perf = tmp_path / "perf.csv"
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.skip_model_run = True
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(perf)
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+            with patch.object(
+                RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
+            ):
+                with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
+                    orchestrator.execute(
+                        manifest_file=None, tags=["dummy"], timeout=60
+                    )
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
