@@ -349,7 +349,7 @@ class TestRunContainerSkipModelRun:
                           side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
              patch.object(Docker, "__del__", return_value=None), \
              patch("builtins.open", mock_open(read_data="")):
-            runner.run_container(
+            return runner.run_container(
                 model_info=model_info,
                 docker_image="ci-dummy",
                 **kwargs,
@@ -367,12 +367,13 @@ class TestRunContainerSkipModelRun:
         }
 
         docker_sh_calls = []
-        self._run_container_with_mocks(
+        result = self._run_container_with_mocks(
             runner, model_info, docker_sh_calls,
             skip_model_run=True,
             keep_alive=True,
         )
 
+        assert result["status"] == "SKIPPED"
         # The model run command: "cd run_directory && bash run.sh "
         assert not any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
