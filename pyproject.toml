@@ -26,6 +26,18 @@ dependencies = [
   "click>=8.0.0",
   "jinja2>=3.0.0",
   "pyyaml>=6.0",
+  "kubernetes>=28.0.0",
+  "pytest",
+  "pytest-cov",
+  "pytest-xdist",
+  "pytest-timeout",
+  "pytest-mock",
+  "pytest-asyncio",
+  "black>=21.0.0",
+  "flake8",
+  "mypy>=0.910",
+  "isort",
+  "pre-commit",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -40,40 +52,6 @@ madengine = "madengine.cli.app:cli_main"
 Homepage = "https://github.com/ROCm/madengine"
 Issues = "https://github.com/ROCm/madengine/issues"
 
-[project.optional-dependencies]
-dev = [
-  "pytest",
-  "pytest-cov",
-  "pytest-xdist",
-  "pytest-timeout",
-  "pytest-mock",
-  "pytest-asyncio",
-  "black>=21.0.0",
-  "flake8",
-  "mypy>=0.910",
-  "isort",
-  "pre-commit",
-]
-# Optional dependencies for distributed deployments
-# Note: SLURM requires no additional dependencies (uses CLI commands)
-kubernetes = [
-  "kubernetes>=28.0.0",
-]
-# Complete development environment (dev + kubernetes deployment)
-all = [
-  "kubernetes>=28.0.0",
-  "pytest",
-  "pytest-cov",
-  "pytest-xdist",
-  "pytest-timeout",
-  "pytest-mock",
-  "pytest-asyncio",
-  "black>=21.0.0",
-  "flake8",
-  "mypy>=0.910",
-  "isort",
-  "pre-commit",
-]
 
 [tool.hatch.build.targets.wheel]
 # scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
