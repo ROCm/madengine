@@ -91,8 +91,8 @@ def register_default_deployments():
         import warnings
         warnings.warn(
             "Kubernetes deployment target is unavailable: the 'kubernetes' library is not "
-            "installed. Install it with: pip install madengine[kubernetes] "
-            "(or pip install madengine[all]).",
+            "installed. Reinstall madengine (pip install madengine) or install the "
+            "library directly with: pip install kubernetes.",
             UserWarning,
             stacklevel=2,
         )

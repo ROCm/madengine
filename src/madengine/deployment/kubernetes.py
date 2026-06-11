@@ -132,8 +132,8 @@ class KubernetesDeployment(
         if not KUBERNETES_AVAILABLE:
             raise ImportError(
                 "Kubernetes Python library not installed.\n"
-                "Install with: pip install madengine[kubernetes]\n"
-                "Or: pip install kubernetes"
+                "Reinstall madengine (pip install madengine) or install the "
+                "library directly with: pip install kubernetes"
             )
 
         if not YAML_AVAILABLE:
