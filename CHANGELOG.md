@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.1] - 2026-06-02
 
+### Changed
+
+- **All dependencies are now included by default**: Kubernetes support (`kubernetes>=28.0.0`) and development tools (`pytest>=7.0`, `black`, `mypy`, `isort`, `pre-commit`, etc.) are bundled into the base `dependencies` list. The `[kubernetes]`, `[dev]`, and `[all]` extras have been removed — a plain `pip install madengine` or `pip install -e .` installs everything. All documentation and in-package install guidance has been updated accordingly.
+
+- **`pytest` lower bound pinned to `>=7.0`**: Aligns the dependency pin with `minversion = "7.0"` already declared in `[tool.pytest.ini_options]`, preventing accidental resolution of older pytest versions that cannot run this project's tests.
+
 ### Fixed
 
 - **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./tools` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
