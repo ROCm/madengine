@@ -1551,7 +1551,14 @@ class ContainerRunner:
                             self.rich_console.print(
                                 "[bold cyan]Skipping model run (--skip-model-run).[/bold cyan]"
                             )
-                            print(f"To run model: cd {model_dir} && {script_name} {model_args}")
+                            if keep_alive:
+                                self.rich_console.print(
+                                    f"[dim]To run model manually:[/dim] cd {model_dir} && {script_name} {model_args}"
+                                )
+                            else:
+                                self.rich_console.print(
+                                    "[dim]Tip: re-run with --keep-alive to keep the container and model dir for manual exec.[/dim]"
+                                )
                         else:
                             self.rich_console.print("[bold blue]Running model...[/bold blue]")
                             # Use the container timeout (default 7200s) for script execution

@@ -227,7 +227,7 @@ madengine run [OPTIONS]
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
-| `--keep-model-dir` | | FLAG | `False` | Keep model directory after run |
+| `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
 | `--skip-model-run` | | FLAG | `False` | Skip the model script inside each container. The container still starts and `pre_scripts` still run; only the model script invocation is skipped (status reported as `SKIPPED`, exit code `0`). Combine with `--keep-alive` to leave a live container for manual exec. Ignored with a warning on SLURM/K8s targets. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
 | `--manifest-output` | | TEXT | `build_manifest.json` | Output file for build manifest (full workflow) |
