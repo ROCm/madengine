@@ -202,12 +202,6 @@ def run(
         manifest_exists = manifest_file and os.path.exists(manifest_file)
 
         if manifest_exists:
-            if skip_model_run:
-                console.print(
-                    "[yellow]⚠️  --skip-model-run applies only after a build in this invocation; "
-                    "using an existing manifest. Ignoring --skip-model-run.[/yellow]"
-                )
-
             console.print(
                 Panel(
                     f"🚀 [bold cyan]Running Models (Execution Only)[/bold cyan]\n"

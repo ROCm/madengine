@@ -195,11 +195,11 @@ class TestManifestValidation:
 
 
 @pytest.mark.unit
-class TestSkipModelRunPolicyA:
-    """Policy A: --skip-model-run only skips execution after an internal build."""
+class TestSkipModelRun:
+    """--skip-model-run is forwarded to the container runner; it never short-circuits _execute_local."""
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_after_build_skips_execute_local(self, mock_cleanup, tmp_path):
+    def test_skip_after_build_calls_execute_local(self, mock_cleanup, tmp_path):
         """Full workflow: skip_model_run + build phase still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
@@ -241,10 +241,10 @@ class TestSkipModelRunPolicyA:
         mock_cleanup.assert_called()
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_ignored_when_run_only_still_calls_execute_local(
+    def test_skip_run_only_still_calls_execute_local(
         self, mock_cleanup, tmp_path
     ):
-        """Run-only: skip_model_run is ignored; _execute_local runs."""
+        """Run-only (existing manifest): skip_model_run still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
