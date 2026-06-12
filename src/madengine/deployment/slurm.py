@@ -1621,6 +1621,60 @@ export MASTER_PORT={master_port}
         flatten_tags(result)
         return result
 
+    def _select_best_multiple_results_csv(self, candidates: List[Path]) -> Optional[Path]:
+        """Pick the CSV with the most non-empty performance entries.
+
+        In multi-node SLURM runs every node copies its local multi-results CSV
+        into job_dir/node_<rank>/. Only some nodes observe the final throughput
+        and populate the performance column; others have the file but with empty
+        values (e.g. master perf empty while a worker has the real numbers).
+        Ranking candidates by the count of non-empty performance rows lets
+        downstream aggregation use the richest data instead of depending on
+        node-0 winning the race or being non-empty. Header/row keys are stripped
+        so a leading space in the CSV header (some Primus configs) still matches.
+        Ties break on total row count; candidates[0] is the ultimate fallback.
+        """
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        import csv as _csv
+        best_candidate: Optional[Path] = None
+        best_score = -1
+        best_rows = -1
+        for candidate in candidates:
+            non_empty_perf = 0
+            total_rows = 0
+            has_perf_column = False
+            try:
+                with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = _csv.DictReader(f)
+                    fieldnames = reader.fieldnames or []
+                    stripped_fields = [fn.strip() for fn in fieldnames]
+                    has_perf_column = "performance" in stripped_fields
+                    for row in reader:
+                        total_rows += 1
+                        if has_perf_column:
+                            normalized_row = {(k.strip() if isinstance(k, str) else k): v for k, v in row.items()}
+                            value = (normalized_row.get("performance") or "").strip()
+                            if value:
+                                non_empty_perf += 1
+            except Exception:
+                continue
+            score = non_empty_perf if has_perf_column else 0
+            if score > best_score or (score == best_score and total_rows > best_rows):
+                best_score = score
+                best_rows = total_rows
+                best_candidate = candidate
+        if best_candidate is None:
+            return candidates[0]
+        if best_score > 0:
+            self.console.print(
+                f"[dim]  Selected multiple_results CSV with {best_score} non-empty performance rows: {best_candidate}[/dim]"
+            )
+        return best_candidate
+
+
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
 
@@ -1764,14 +1818,19 @@ export MASTER_PORT={master_port}
         mult_res = model_info_for_entry.get("multiple_results")
         if mult_res:
             resolved_csv: Optional[Path] = None
+            # Multi-node: gather all node CSVs and pick the one with the most
+            # non-empty performance rows (master CSV may be empty while a worker
+            # holds the real numbers) instead of taking the first node that has
+            # the file.
+            candidates: List[Path] = []
             if (job_dir / mult_res).is_file():
-                resolved_csv = job_dir / mult_res
-            else:
-                for i in range(self.nodes):
-                    candidate = job_dir / f"node_{i}" / mult_res
-                    if candidate.is_file():
-                        resolved_csv = candidate
-                        break
+                candidates.append(job_dir / mult_res)
+            for i in range(self.nodes):
+                per_node_candidate = job_dir / f"node_{i}" / mult_res
+                if per_node_candidate.is_file():
+                    candidates.append(per_node_candidate)
+            if candidates:
+                resolved_csv = self._select_best_multiple_results_csv(candidates)
             if not resolved_csv and Path(mult_res).is_file():
                 resolved_csv = Path(mult_res)
             if not resolved_csv and Path("run_directory", mult_res).is_file():
