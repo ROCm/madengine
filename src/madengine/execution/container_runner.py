@@ -1041,6 +1041,7 @@ class ContainerRunner:
         build_info: typing.Dict = None,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         timeout: int = 7200,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
@@ -1054,6 +1055,7 @@ class ContainerRunner:
             build_info: Optional build information from manifest
             keep_alive: Whether to keep container alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             timeout: Execution timeout in seconds
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
@@ -1542,22 +1544,32 @@ class ContainerRunner:
                         # Set permissions
                         model_docker.sh(f"chmod -R a+rw {model_dir}")
 
-                        # Run the model
+                        # Run the model (or skip, leaving container alive for manual exec)
                         test_start_time = time.time()
-                        self.rich_console.print("[bold blue]Running model...[/bold blue]")
-
-                        model_args = self.context.ctx.get(
-                            "model_args", model_info["args"]
-                        )
-                        # Use the container timeout (default 7200s) for script execution
-                        # to prevent indefinite hangs
-                        model_output = model_docker.sh(
-                            f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=timeout,
-                        )
-                        # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
-                        if not self.live_output:
-                            print(model_output)
+                        model_args = self.context.ctx.get("model_args", model_info["args"])
+                        if skip_model_run:
+                            self.rich_console.print(
+                                "[bold cyan]Skipping model run (--skip-model-run).[/bold cyan]"
+                            )
+                            if keep_alive:
+                                self.rich_console.print(
+                                    f"[dim]To run model manually:[/dim] cd {model_dir} && {script_name} {model_args}"
+                                )
+                            else:
+                                self.rich_console.print(
+                                    "[dim]Tip: re-run with --keep-alive to keep the container and model dir for manual exec.[/dim]"
+                                )
+                        else:
+                            self.rich_console.print("[bold blue]Running model...[/bold blue]")
+                            # Use the container timeout (default 7200s) for script execution
+                            # to prevent indefinite hangs
+                            model_output = model_docker.sh(
+                                f"cd {model_dir} && {script_name} {model_args}",
+                                timeout=timeout,
+                            )
+                            # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
+                            if not self.live_output:
+                                print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
@@ -1572,395 +1584,401 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
-                        # When model writes performance to a file in run_directory, copy to cwd
-                        # so the host can read it (e.g. bind-mounted workspace) before extraction.
-                        multiple_results_file = (model_info.get("multiple_results") or "").strip()
-                        if multiple_results_file:
-                            try:
-                                model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(
-                                        model_dir, multiple_results_file
-                                    )
-                                )
-                            except Exception:
-                                pass
-
-                        # Extract performance metrics from logs
-                        # Look for performance data in the log output similar to original run_models.py
-                        try:
-                            # Check if multiple results file is specified in model_info
-                            multiple_results = model_info.get("multiple_results", None)
-                            if multiple_results:
-                                multiple_results = multiple_results.strip()
-
-                            if multiple_results:
-                                resolved_path = _resolve_multiple_results_path(
-                                    multiple_results, model_dir
-                                )
-                                if not resolved_path:
-                                    self.rich_console.print(
-                                        f"[yellow]Warning: Could not find multiple results file "
-                                        f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
-                                    )
-                                    run_results["performance"] = None
-                                else:
-                                    run_results["performance"] = resolved_path
-                                    # Validate multiple results file format using proper CSV parsing
-                                    try:
-                                        import csv
-                                        with open(resolved_path, "r") as f:
-                                            csv_reader = csv.DictReader(f)
-
-                                            # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                            csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
-
-                                            # Check if 'performance' column exists
-                                            if 'performance' not in csv_reader.fieldnames:
-                                                print("Error: 'performance' column not found in multiple results file.")
-                                                run_results["performance"] = None
-                                            else:
-                                                # Check if at least one row has a non-empty performance value
-                                                has_valid_perf = False
-                                                for row in csv_reader:
-                                                    if row.get('performance', '').strip():
-                                                        has_valid_perf = True
-                                                        break
-                                                
-                                                if not has_valid_perf:
-                                                    run_results["performance"] = None
-                                                    print("Error: Performance metric is empty in all rows of multiple results file.")
-                                    except Exception as e:
-                                        self.rich_console.print(
-                                            f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
-                                        )
-                                        run_results["performance"] = None
-                            else:
-                                # Match the actual output format: "performance: 14164 samples_per_second"
-                                # Simple pattern to capture number and metric unit
-
-                                # Extract from log file
-                                try:
-                                    # Note: re and os are already imported at module level (lines 10, 15)
-                                    
-                                    # Verify log file exists and is readable
-                                    if not os.path.exists(log_file_path):
-                                        print(f"Warning: Log file not found: {log_file_path}")
-                                        run_results["performance"] = None
-                                        run_results["metric"] = None
-                                    else:
-                                        # Read the log file once (avoids rocprofv3 crash from shell pipelines)
-                                        # This approach matches the Kubernetes implementation pattern
-                                        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                            log_content = f.read()
-                                        
-                                        # Try multiple patterns to match different log formats
-                                        
-                                        # Pattern 1: "performance: <value>[<unit>][,] <metric>"
-                                        # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
-                                        match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
-                                        
-                                        if match:
-                                            run_results["performance"] = match.group(1).strip()
-                                            run_results["metric"] = match.group(2).strip()
-                                            print(f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}")
-                                        else:
-                                            # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
-                                            # This matches the actual output from HuggingFace Trainer
-                                            hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
-                                            hf_match = re.search(hf_pattern, log_content)
-                                            
-                                            if hf_match:
-                                                run_results["performance"] = hf_match.group(1).strip()
-                                                run_results["metric"] = "samples_per_second"
-                                                print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
-                                            else:
-                                                # No performance metrics found
-                                                print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
-                                                run_results["performance"] = None
-                                                run_results["metric"] = None
-                                            
-                                except Exception as e:
-                                    print(f"Warning: Error extracting performance metrics: {e}")
-                                    run_results["performance"] = None
-                                    run_results["metric"] = None
-                                    # Performance extraction is optional - don't fail the entire run
-                        except Exception as e:
-                            print(
-                                f"Warning: Could not extract performance metrics: {e}"
-                            )
-
-                        # Set status based on performance and error patterns
-                        # First check for obvious failure patterns in the logs
-                        try:
-                            scan_logs, error_patterns, extra_benign = (
-                                resolve_log_error_scan_config(
-                                    model_info, self.additional_context
-                                )
-                            )
-
-                            has_errors = False
-                            if (
-                                scan_logs
-                                and log_file_path
-                                and os.path.exists(log_file_path)
-                            ):
-                                try:
-                                    # Benign: literal substrings (incl. user extra_benign) vs regex (ROCProf lines).
-                                    benign_substrings = [
-                                        "Failed to establish connection to the metrics exporter agent",
-                                        "RpcError: Running out of retries to initialize the metrics agent",
-                                        "Metrics will not be exported",
-                                        "FutureWarning",
-                                        "Opened result file:",
-                                        "SQLite3 generation ::",
-                                        "rocpd_op:",
-                                        "rpd_tracer:",
-                                    ]
-                                    benign_substrings.extend(extra_benign)
-                                    benign_regexes = [
-                                        # ROCProf/glog: E/W prefixes are log levels, not app errors
-                                        r"^E[0-9]{8}.*generateRocpd\.cpp",
-                                        r"^W[0-9]{8}.*simple_timer\.cpp",
-                                        r"^W[0-9]{8}.*generateRocpd\.cpp",
-                                        r"^E[0-9]{8}.*tool\.cpp",
-                                        r"\[rocprofv3\]",
-                                    ]
-
-                                    # Scan in Python (no shell; literals vs regex benign rules are explicit).
-                                    with open(
-                                        log_file_path,
-                                        "r",
-                                        encoding="utf-8",
-                                        errors="ignore",
-                                    ) as _lf:
-                                        log_scan_text = _lf.read()
-
-                                    for pattern in error_patterns:
-                                        if log_text_has_error_pattern(
-                                            log_scan_text,
-                                            pattern,
-                                            benign_substrings,
-                                            benign_regexes,
-                                        ):
-                                            has_errors = True
-                                            print(
-                                                f"Found error pattern '{pattern}' in logs"
-                                            )
-                                            break
-                                except Exception:
-                                    pass  # Error checking is optional
-                            elif not scan_logs:
-                                self.rich_console.print(
-                                    "[dim]ℹ️  Log error pattern scan disabled "
-                                    "(log_error_pattern_scan).[/dim]"
-                                )
-
-                            # Status logic: Must have performance AND no errors to be considered success
-                            # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
-                            # are not expected to report global performance metrics
-                            performance_value = run_results.get("performance")
-                            has_performance = (
-                                performance_value
-                                and performance_value.strip()
-                                and performance_value.strip() != "N/A"
-                            )
-                            
-                            # Check if this is a worker node (not collecting metrics)
-                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
-
-                            if has_errors:
-                                run_results["status"] = "FAILURE"
-                                self.rich_console.print(
-                                    f"[red]Status: FAILURE (error patterns detected in logs)[/red]"
-                                )
-                            elif has_performance:
-                                run_results["status"] = "SUCCESS"
-                                self.rich_console.print(
-                                    f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
-                                )
-                            elif is_worker_node:
-                                # Worker nodes don't report global performance metrics - this is expected
-                                run_results["status"] = "SUCCESS"
-                                self.rich_console.print(
-                                    f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
-                                )
-                            else:
-                                run_results["status"] = "FAILURE"
-                                self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
-
-                        except Exception as e:
-                            self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
-                            # Fallback to simple performance check
-                            # Worker nodes don't need performance metrics
-                            is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
-                            run_results["status"] = (
-                                "SUCCESS"
-                                if run_results.get("performance") or is_worker_node
-                                else "FAILURE"
-                            )
-
-                        print(
-                            f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
-                        )
-
-                        # =============================================================================
-                        # Multi-Node Performance Collection (Master Node Only)
-                        # =============================================================================
-                        # For distributed training, only master node should collect metrics
-                        # Check skip_perf_collection flag from additional_context
-                        skip_perf = self.additional_context.get("skip_perf_collection", False)
-                        
-                        if skip_perf:
+                        if skip_model_run:
+                            run_results["status"] = "SKIPPED"
                             self.rich_console.print(
-                                "[cyan]ℹ️  Worker node: Skipping performance metric collection "
-                                "(master node will collect results)[/cyan]"
+                                "[bold cyan]Status: SKIPPED (--skip-model-run)[/bold cyan]"
                             )
                         else:
-                            # Generate performance results and update perf.csv
-                            self.ensure_perf_csv_exists()
+                            # When model writes performance to a file in run_directory, copy to cwd
+                            # so the host can read it (e.g. bind-mounted workspace) before extraction.
+                            multiple_results_file = (model_info.get("multiple_results") or "").strip()
+                            if multiple_results_file:
+                                try:
+                                    model_docker.sh(
+                                        _cp_model_dir_file_to_cwd_cmd(
+                                            model_dir, multiple_results_file
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+
+                            # Extract performance metrics from logs
+                            # Look for performance data in the log output similar to original run_models.py
                             try:
-                                # Create run details dictionary for CSV generation
-                                run_details_dict = self.create_run_details_dict(
-                                    model_info, build_info, run_results
-                                )
-
-                                # Handle multiple results if specified
+                                # Check if multiple results file is specified in model_info
                                 multiple_results = model_info.get("multiple_results", None)
-                                resolved_multiple_results = (
-                                    _resolve_multiple_results_path(multiple_results, model_dir)
-                                    if multiple_results
-                                    else None
-                                )
-                                if (
-                                    resolved_multiple_results
-                                    and run_results.get("status") == "SUCCESS"
-                                ):
-                                    # Generate common info JSON for multiple results
-                                    common_info = run_details_dict.copy()
-                                    # Remove model-specific fields for common info
-                                    for key in ["model", "performance", "metric", "status"]:
-                                        common_info.pop(key, None)
+                                if multiple_results:
+                                    multiple_results = multiple_results.strip()
 
-                                    with open("common_info.json", "w") as f:
-                                        json.dump(common_info, f)
-
-                                    # Update perf.csv with multiple results
-                                    update_perf_csv(
-                                        multiple_results=resolved_multiple_results,
-                                        perf_csv=self.perf_csv_path,
-                                        model_name=run_details_dict["model"],
-                                        common_info="common_info.json",
+                                if multiple_results:
+                                    resolved_path = _resolve_multiple_results_path(
+                                        multiple_results, model_dir
                                     )
-                                    print(
-                                        f"Updated perf.csv with multiple results for {model_info['name']}"
-                                    )
-
-                                    # Update perf_super.json with multiple results
-                                    try:
-                                        scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
-                                        
-                                        # Reuse common_info.json for super files (no need for duplicate)
-                                        num_entries = update_perf_super_json(
-                                            multiple_results=resolved_multiple_results,
-                                            perf_super_json="perf_super.json",
-                                            model_name=run_details_dict["model"],
-                                            common_info="common_info.json",
-                                            scripts_base_dir=scripts_base_dir,
+                                    if not resolved_path:
+                                        self.rich_console.print(
+                                            f"[yellow]Warning: Could not find multiple results file "
+                                            f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
                                         )
-                                        
-                                        # Generate CSV and JSON files from perf_super.json
-                                        update_perf_super_csv(
-                                            perf_super_json="perf_super.json",
-                                            perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries
-                                        )
-                                    except Exception as e:
-                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
-                                else:
-                                    # Generate single result JSON
-                                    with open("perf_entry.json", "w") as f:
-                                        json.dump(run_details_dict, f)
-
-                                    # Update perf.csv with single result
-                                    if run_results.get("status") == "SUCCESS":
-                                        update_perf_csv(
-                                            single_result="perf_entry.json",
-                                            perf_csv=self.perf_csv_path,
-                                        )
+                                        run_results["performance"] = None
                                     else:
-                                        update_perf_csv(
-                                            exception_result="perf_entry.json",
-                                            perf_csv=self.perf_csv_path,
-                                        )
-                                    print(
-                                        f"Updated perf.csv with result for {model_info['name']}"
+                                        run_results["performance"] = resolved_path
+                                        # Validate multiple results file format using proper CSV parsing
+                                        try:
+                                            import csv
+                                            with open(resolved_path, "r") as f:
+                                                csv_reader = csv.DictReader(f)
+
+                                                # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
+                                                csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
+
+                                                # Check if 'performance' column exists
+                                                if 'performance' not in csv_reader.fieldnames:
+                                                    print("Error: 'performance' column not found in multiple results file.")
+                                                    run_results["performance"] = None
+                                                else:
+                                                    # Check if at least one row has a non-empty performance value
+                                                    has_valid_perf = False
+                                                    for row in csv_reader:
+                                                        if row.get('performance', '').strip():
+                                                            has_valid_perf = True
+                                                            break
+
+                                                    if not has_valid_perf:
+                                                        run_results["performance"] = None
+                                                        print("Error: Performance metric is empty in all rows of multiple results file.")
+                                        except Exception as e:
+                                            self.rich_console.print(
+                                                f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                            )
+                                            run_results["performance"] = None
+                                else:
+                                    # Match the actual output format: "performance: 14164 samples_per_second"
+                                    # Simple pattern to capture number and metric unit
+
+                                    # Extract from log file
+                                    try:
+                                        # Note: re and os are already imported at module level (lines 10, 15)
+
+                                        # Verify log file exists and is readable
+                                        if not os.path.exists(log_file_path):
+                                            print(f"Warning: Log file not found: {log_file_path}")
+                                            run_results["performance"] = None
+                                            run_results["metric"] = None
+                                        else:
+                                            # Read the log file once (avoids rocprofv3 crash from shell pipelines)
+                                            # This approach matches the Kubernetes implementation pattern
+                                            with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                log_content = f.read()
+
+                                            # Try multiple patterns to match different log formats
+
+                                            # Pattern 1: "performance: <value>[<unit>][,] <metric>"
+                                            # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
+                                            match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
+
+                                            if match:
+                                                run_results["performance"] = match.group(1).strip()
+                                                run_results["metric"] = match.group(2).strip()
+                                                print(f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}")
+                                            else:
+                                                # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
+                                                # This matches the actual output from HuggingFace Trainer
+                                                hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
+                                                hf_match = re.search(hf_pattern, log_content)
+
+                                                if hf_match:
+                                                    run_results["performance"] = hf_match.group(1).strip()
+                                                    run_results["metric"] = "samples_per_second"
+                                                    print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
+                                                else:
+                                                    # No performance metrics found
+                                                    print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                    run_results["performance"] = None
+                                                    run_results["metric"] = None
+
+                                    except Exception as e:
+                                        print(f"Warning: Error extracting performance metrics: {e}")
+                                        run_results["performance"] = None
+                                        run_results["metric"] = None
+                                        # Performance extraction is optional - don't fail the entire run
+                            except Exception as e:
+                                print(
+                                    f"Warning: Could not extract performance metrics: {e}"
+                                )
+
+                            # Set status based on performance and error patterns
+                            # First check for obvious failure patterns in the logs
+                            try:
+                                scan_logs, error_patterns, extra_benign = (
+                                    resolve_log_error_scan_config(
+                                        model_info, self.additional_context
+                                    )
+                                )
+
+                                has_errors = False
+                                if (
+                                    scan_logs
+                                    and log_file_path
+                                    and os.path.exists(log_file_path)
+                                ):
+                                    try:
+                                        # Benign: literal substrings (incl. user extra_benign) vs regex (ROCProf lines).
+                                        benign_substrings = [
+                                            "Failed to establish connection to the metrics exporter agent",
+                                            "RpcError: Running out of retries to initialize the metrics agent",
+                                            "Metrics will not be exported",
+                                            "FutureWarning",
+                                            "Opened result file:",
+                                            "SQLite3 generation ::",
+                                            "rocpd_op:",
+                                            "rpd_tracer:",
+                                        ]
+                                        benign_substrings.extend(extra_benign)
+                                        benign_regexes = [
+                                            # ROCProf/glog: E/W prefixes are log levels, not app errors
+                                            r"^E[0-9]{8}.*generateRocpd\.cpp",
+                                            r"^W[0-9]{8}.*simple_timer\.cpp",
+                                            r"^W[0-9]{8}.*generateRocpd\.cpp",
+                                            r"^E[0-9]{8}.*tool\.cpp",
+                                            r"\[rocprofv3\]",
+                                        ]
+
+                                        # Scan in Python (no shell; literals vs regex benign rules are explicit).
+                                        with open(
+                                            log_file_path,
+                                            "r",
+                                            encoding="utf-8",
+                                            errors="ignore",
+                                        ) as _lf:
+                                            log_scan_text = _lf.read()
+
+                                        for pattern in error_patterns:
+                                            if log_text_has_error_pattern(
+                                                log_scan_text,
+                                                pattern,
+                                                benign_substrings,
+                                                benign_regexes,
+                                            ):
+                                                has_errors = True
+                                                print(
+                                                    f"Found error pattern '{pattern}' in logs"
+                                                )
+                                                break
+                                    except Exception:
+                                        pass  # Error checking is optional
+                                elif not scan_logs:
+                                    self.rich_console.print(
+                                        "[dim]ℹ️  Log error pattern scan disabled "
+                                        "(log_error_pattern_scan).[/dim]"
                                     )
 
-                                    # Update perf_super.json with single result
-                                    try:
-                                        scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(scripts_path)
-                                        
-                                        # Use perf_entry.json as input (already created above)
-                                        if run_results.get("status") == "SUCCESS":
-                                            num_entries = update_perf_super_json(
-                                                single_result="perf_entry.json",
-                                                perf_super_json="perf_super.json",
-                                                scripts_base_dir=scripts_base_dir,
-                                            )
-                                        else:
-                                            num_entries = update_perf_super_json(
-                                                exception_result="perf_entry.json",
-                                                perf_super_json="perf_super.json",
-                                                scripts_base_dir=scripts_base_dir,
-                                            )
-                                        
-                                        # Generate CSV and JSON files from perf_super.json
-                                        update_perf_super_csv(
-                                            perf_super_json="perf_super.json",
-                                            perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries
-                                        )
-                                    except Exception as e:
-                                        print(f"⚠️  Warning: Could not update perf_super files: {e}")
+                                # Status logic: Must have performance AND no errors to be considered success
+                                # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
+                                # are not expected to report global performance metrics
+                                performance_value = run_results.get("performance")
+                                has_performance = (
+                                    performance_value
+                                    and performance_value.strip()
+                                    and performance_value.strip() != "N/A"
+                                )
+
+                                # Check if this is a worker node (not collecting metrics)
+                                is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
+
+                                if has_errors:
+                                    run_results["status"] = "FAILURE"
+                                    self.rich_console.print(
+                                        f"[red]Status: FAILURE (error patterns detected in logs)[/red]"
+                                    )
+                                elif has_performance:
+                                    run_results["status"] = "SUCCESS"
+                                    self.rich_console.print(
+                                        f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
+                                    )
+                                elif is_worker_node:
+                                    # Worker nodes don't report global performance metrics - this is expected
+                                    run_results["status"] = "SUCCESS"
+                                    self.rich_console.print(
+                                        f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
+                                    )
+                                else:
+                                    run_results["status"] = "FAILURE"
+                                    self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
 
                             except Exception as e:
-                                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
-
-                        # Copy profiler/trace output files from run_directory to base directory before cleanup
-                        # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
-                        try:
-                            _md = model_dir.replace("\\", "/")
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
-                            )
-                        except Exception as e:
-                            # Ignore errors if no profiler/trace output files exist
-                            pass
-
-                        # Copy multiple_results CSV to workspace root before run_directory is removed
-                        # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
-                        mult_res = (model_info.get("multiple_results") or "").strip()
-                        if mult_res:
-                            try:
-                                model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
+                                # Fallback to simple performance check
+                                # Worker nodes don't need performance metrics
+                                is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
+                                run_results["status"] = (
+                                    "SUCCESS"
+                                    if run_results.get("performance") or is_worker_node
+                                    else "FAILURE"
                                 )
-                            except Exception:
+
+                            print(
+                                f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
+                            )
+
+                            # =============================================================================
+                            # Multi-Node Performance Collection (Master Node Only)
+                            # =============================================================================
+                            # For distributed training, only master node should collect metrics
+                            # Check skip_perf_collection flag from additional_context
+                            skip_perf = self.additional_context.get("skip_perf_collection", False)
+
+                            if skip_perf:
+                                self.rich_console.print(
+                                    "[cyan]ℹ️  Worker node: Skipping performance metric collection "
+                                    "(master node will collect results)[/cyan]"
+                                )
+                            else:
+                                # Generate performance results and update perf.csv
+                                self.ensure_perf_csv_exists()
+                                try:
+                                    # Create run details dictionary for CSV generation
+                                    run_details_dict = self.create_run_details_dict(
+                                        model_info, build_info, run_results
+                                    )
+
+                                    # Handle multiple results if specified
+                                    multiple_results = model_info.get("multiple_results", None)
+                                    resolved_multiple_results = (
+                                        _resolve_multiple_results_path(multiple_results, model_dir)
+                                        if multiple_results
+                                        else None
+                                    )
+                                    if (
+                                        resolved_multiple_results
+                                        and run_results.get("status") == "SUCCESS"
+                                    ):
+                                        # Generate common info JSON for multiple results
+                                        common_info = run_details_dict.copy()
+                                        # Remove model-specific fields for common info
+                                        for key in ["model", "performance", "metric", "status"]:
+                                            common_info.pop(key, None)
+
+                                        with open("common_info.json", "w") as f:
+                                            json.dump(common_info, f)
+
+                                        # Update perf.csv with multiple results
+                                        update_perf_csv(
+                                            multiple_results=resolved_multiple_results,
+                                            perf_csv=self.perf_csv_path,
+                                            model_name=run_details_dict["model"],
+                                            common_info="common_info.json",
+                                        )
+                                        print(
+                                            f"Updated perf.csv with multiple results for {model_info['name']}"
+                                        )
+
+                                        # Update perf_super.json with multiple results
+                                        try:
+                                            scripts_path = model_info.get("scripts", "")
+                                            scripts_base_dir = scripts_base_dir_from(scripts_path)
+
+                                            # Reuse common_info.json for super files (no need for duplicate)
+                                            num_entries = update_perf_super_json(
+                                                multiple_results=resolved_multiple_results,
+                                                perf_super_json="perf_super.json",
+                                                model_name=run_details_dict["model"],
+                                                common_info="common_info.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+
+                                            # Generate CSV and JSON files from perf_super.json
+                                            update_perf_super_csv(
+                                                perf_super_json="perf_super.json",
+                                                perf_super_csv="perf_super.csv",
+                                                num_entries=num_entries
+                                            )
+                                        except Exception as e:
+                                            print(f"⚠️  Warning: Could not update perf_super files: {e}")
+                                    else:
+                                        # Generate single result JSON
+                                        with open("perf_entry.json", "w") as f:
+                                            json.dump(run_details_dict, f)
+
+                                        # Update perf.csv with single result
+                                        if run_results.get("status") == "SUCCESS":
+                                            update_perf_csv(
+                                                single_result="perf_entry.json",
+                                                perf_csv=self.perf_csv_path,
+                                            )
+                                        else:
+                                            update_perf_csv(
+                                                exception_result="perf_entry.json",
+                                                perf_csv=self.perf_csv_path,
+                                            )
+                                        print(
+                                            f"Updated perf.csv with result for {model_info['name']}"
+                                        )
+
+                                        # Update perf_super.json with single result
+                                        try:
+                                            scripts_path = model_info.get("scripts", "")
+                                            scripts_base_dir = scripts_base_dir_from(scripts_path)
+
+                                            # Use perf_entry.json as input (already created above)
+                                            if run_results.get("status") == "SUCCESS":
+                                                num_entries = update_perf_super_json(
+                                                    single_result="perf_entry.json",
+                                                    perf_super_json="perf_super.json",
+                                                    scripts_base_dir=scripts_base_dir,
+                                                )
+                                            else:
+                                                num_entries = update_perf_super_json(
+                                                    exception_result="perf_entry.json",
+                                                    perf_super_json="perf_super.json",
+                                                    scripts_base_dir=scripts_base_dir,
+                                                )
+
+                                            # Generate CSV and JSON files from perf_super.json
+                                            update_perf_super_csv(
+                                                perf_super_json="perf_super.json",
+                                                perf_super_csv="perf_super.csv",
+                                                num_entries=num_entries
+                                            )
+                                        except Exception as e:
+                                            print(f"⚠️  Warning: Could not update perf_super files: {e}")
+
+                                except Exception as e:
+                                    self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+
+                            # Copy profiler/trace output files from run_directory to base directory before cleanup
+                            # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
+                            try:
+                                _md = model_dir.replace("\\", "/")
+                                model_docker.sh(
+                                    f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
+                                )
+                                model_docker.sh(
+                                    f"cp -- {_bash_quote_path(_md)}/*_output.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
+                                )
+                                model_docker.sh(
+                                    f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
+                                )
+                                model_docker.sh(
+                                    _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
+                                )
+                            except Exception as e:
+                                # Ignore errors if no profiler/trace output files exist
                                 pass
+
+                            # Copy multiple_results CSV to workspace root before run_directory is removed
+                            # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
+                            mult_res = (model_info.get("multiple_results") or "").strip()
+                            if mult_res:
+                                try:
+                                    model_docker.sh(
+                                        _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                    )
+                                except Exception:
+                                    pass
 
                         # Cleanup if not keeping alive and not keeping model directory
                         if not keep_alive and not keep_model_dir:
@@ -2046,6 +2064,7 @@ class ContainerRunner:
         timeout: int = 7200,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         phase_suffix: str = "",
     ) -> typing.Dict:
         """Run all models from a build manifest file.
@@ -2058,6 +2077,7 @@ class ContainerRunner:
             timeout: Execution timeout per model in seconds
             keep_alive: Whether to keep containers alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             phase_suffix: Suffix for log files (e.g., ".run")
 
         Returns:
@@ -2144,6 +2164,7 @@ class ContainerRunner:
                     build_info=build_info,
                     keep_alive=keep_alive,
                     keep_model_dir=keep_model_dir,
+                    skip_model_run=skip_model_run,
                     timeout=timeout,
                     phase_suffix=phase_suffix,
                 )
@@ -2158,6 +2179,17 @@ class ContainerRunner:
                         "performance": run_results.get("performance"),
                         "duration": run_results.get("test_duration"),
                     })
+                elif status == "SKIPPED":
+                    successful_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": "SKIPPED",
+                        "performance": None,
+                        "duration": run_results.get("test_duration"),
+                    })
+                    self.rich_console.print(
+                        f"[cyan]⏭️  Skipped model run for {model_info['name']}[/cyan]"
+                    )
                 else:
                     # Status is FAILURE - track as failed
                     failed_runs.append({

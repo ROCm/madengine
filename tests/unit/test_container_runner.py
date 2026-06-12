@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -291,3 +291,111 @@ class TestGatherSystemEnvDetailsRocenvMode:
         runner.gather_system_env_details(pep, "my_model")
         args = pep["pre_scripts"][0]["args"]
         assert args == "my_model_env lite UBUNTU"
+
+
+class TestRunContainerSkipModelRun:
+    """Tests for skip_model_run flag in run_container."""
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {
+            "gpu_vendor": "AMD",
+            "docker_env_vars": {},
+            "guest_os": "UBUNTU",
+        }
+        runner.console = MagicMock()
+        runner.console.sh = MagicMock(return_value="root")
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        runner.credentials = {}
+        runner.data = None
+        runner.perf_csv_path = "/tmp/test_perf.csv"
+        return runner
+
+    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+        """Call run_container with all the infrastructure mocked away.
+
+        Patches:
+        - _resolve_docker_image  — skip Docker image existence check
+        - get_gpu_arg / get_cpu_arg / get_env_arg / get_mount_arg — skip option building
+        - gather_system_env_details — skip env-probe scripts injection
+        - finalize_container_rocm_path — skip in-container ROCm probe (AMD path)
+        - Timeout — replace with a no-op context manager
+        - Docker.__init__ / Docker.sh / Docker.__del__ — intercept all container calls
+        - builtins.open — avoid writing real log files
+        """
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            return runner.run_container(
+                model_info=model_info,
+                docker_image="ci-dummy",
+                **kwargs,
+            )
+
+    def test_skip_model_run_does_not_exec_script(self):
+        """With skip_model_run=True the model script is never executed."""
+        runner = self._make_runner()
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        docker_sh_calls = []
+        result = self._run_container_with_mocks(
+            runner, model_info, docker_sh_calls,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert result["status"] == "SKIPPED"
+        # The model run command: "cd run_directory && bash run.sh "
+        assert not any(
+            "run.sh" in c and "cd " in c for c in docker_sh_calls
+        ), f"Model script was executed despite skip_model_run=True: {docker_sh_calls}"
+
+    def test_skip_model_run_false_does_exec_script(self):
+        """With skip_model_run=False (default) the model script IS executed."""
+        runner = self._make_runner()
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        docker_sh_calls = []
+        self._run_container_with_mocks(
+            runner, model_info, docker_sh_calls,
+            skip_model_run=False,
+        )
+
+        assert any(
+            "run.sh" in c and "cd " in c for c in docker_sh_calls
+        ), f"Model script was not executed: {docker_sh_calls}"
