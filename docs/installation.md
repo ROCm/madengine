@@ -14,14 +14,8 @@ Complete installation instructions for madengine.
 ### From GitHub
 
 ```bash
-# Basic installation
+# Install madengine (all dependencies, including Kubernetes support, are included)
 pip install git+https://github.com/ROCm/madengine.git
-
-# With Kubernetes support
-pip install "madengine[kubernetes] @ git+https://github.com/ROCm/madengine.git"
-
-# With all optional dependencies
-pip install "madengine[all] @ git+https://github.com/ROCm/madengine.git"
 ```
 
 ### Development Installation
@@ -35,20 +29,16 @@ cd madengine
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Install in editable mode (dev dependencies are included)
+pip install -e .
 
 # Setup pre-commit hooks (optional, for contributors)
 pre-commit install
 ```
 
-## Optional Dependencies
+## Dependencies
 
-| Extra | Install Command | Use Case |
-|-------|----------------|----------|
-| `kubernetes` | `pip install madengine[kubernetes]` | Kubernetes deployment support |
-| `dev` | `pip install madengine[dev]` | Development tools (pytest, black, mypy, etc.) |
-| `all` | `pip install madengine[all]` | All optional dependencies |
+All dependencies — including Kubernetes deployment support and development tools (pytest, black, mypy, etc.) — are installed by default. There are no optional extras to select.
 
 **Note**: SLURM deployment requires no additional Python dependencies (uses CLI commands).
 
