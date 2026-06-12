@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.1] - 2026-06-02
 
+### Changed
+
+- **All dependencies are now included by default**: Kubernetes support (`kubernetes>=28.0.0`) and development tools (`pytest>=7.0`, `black`, `mypy`, `isort`, `pre-commit`, etc.) are bundled into the base `dependencies` list. The `[kubernetes]`, `[dev]`, and `[all]` extras have been removed — a plain `pip install madengine` or `pip install -e .` installs everything. All documentation and in-package install guidance has been updated accordingly.
+
+- **`pytest` lower bound pinned to `>=7.0`**: Aligns the dependency pin with `minversion = "7.0"` already declared in `[tool.pytest.ini_options]`, preventing accidental resolution of older pytest versions that cannot run this project's tests.
+
+### Changed
+
+- **`--skip-model-run` now matches v1 semantics**: The flag previously short-circuited the entire run before any container started, and only took effect when a build ran in the same invocation (otherwise it was ignored with a warning). It now starts the container and runs `pre_scripts` and `post_scripts` as normal, skipping **only** the model script invocation — regardless of whether a build ran. The skip decision was moved out of `RunOrchestrator` and into `ContainerRunner`, so it applies uniformly to build+run and manifest-only (`--manifest-file`) invocations.
+
+- **`--skip-model-run` runs report `SKIPPED`, not `FAILURE`**: A skipped model is now aggregated as a successful run with status `SKIPPED`, and the overall workflow exits `0`. Previously a skipped run could surface as a failure.
+
+### Added
+
+- **`--skip-model-run --keep-alive` for live container debugging**: Combining the two flags leaves a fully-set-up container alive after the skipped run, ready for manual exec (`docker exec -it <container> bash`). When `--keep-alive` is set, the run prints the exact `cd <model_dir> && <script> <args>` command to invoke the model by hand; otherwise it hints to re-run with `--keep-alive`.
+
+- **Warning for local-only flags on distributed targets**: Passing `--skip-model-run`, `--keep-alive`, or `--keep-model-dir` with a SLURM or Kubernetes target now prints a yellow warning that these local Docker-only flags are ignored.
+
 ### Fixed
 
 - **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./tools` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
@@ -615,8 +633,8 @@ black src/ tests/ && isort src/ tests/
 # Run pre-commit hooks manually
 pre-commit run --all-files
 
-# Build without running (CI/CD)
-madengine run --tags model --skip-model-run
+# Skip model script (container starts, pre_scripts run); leave live container for debugging
+madengine run --tags model --skip-model-run --keep-alive
 
 # Debug with verbose output
 madengine run --tags model --verbose --live-output

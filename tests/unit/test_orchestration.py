@@ -195,12 +195,12 @@ class TestManifestValidation:
 
 
 @pytest.mark.unit
-class TestSkipModelRunPolicyA:
-    """Policy A: --skip-model-run only skips execution after an internal build."""
+class TestSkipModelRun:
+    """--skip-model-run is forwarded to the container runner; it never short-circuits _execute_local."""
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_after_build_skips_execute_local(self, mock_cleanup, tmp_path):
-        """Full workflow: skip_model_run + build phase skips _execute_local."""
+    def test_skip_after_build_calls_execute_local(self, mock_cleanup, tmp_path):
+        """Full workflow: skip_model_run + build phase still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
@@ -226,22 +226,25 @@ class TestSkipModelRunPolicyA:
                 RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
             ):
                 with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
                     with patch.object(
                         RunOrchestrator, "_combine_build_and_run_logs"
-                    ) as mock_combine:
+                    ):
                         orchestrator.execute(
                             manifest_file=None, tags=["dummy"], timeout=60
                         )
 
-        mock_local.assert_not_called()
-        mock_combine.assert_not_called()
+        mock_local.assert_called_once()
         mock_cleanup.assert_called()
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_ignored_when_run_only_still_calls_execute_local(
+    def test_skip_run_only_still_calls_execute_local(
         self, mock_cleanup, tmp_path
     ):
-        """Run-only: skip_model_run is ignored; _execute_local runs."""
+        """Run-only (existing manifest): skip_model_run still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
@@ -271,3 +274,88 @@ class TestSkipModelRunPolicyA:
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_skip_model_run_calls_execute_local(self, mock_cleanup, tmp_path):
+        """skip_model_run no longer short-circuits before _execute_local."""
+        perf = tmp_path / "perf.csv"
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.skip_model_run = True
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(perf)
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+            with patch.object(
+                RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
+            ):
+                with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
+                    orchestrator.execute(
+                        manifest_file=None, tags=["dummy"], timeout=60
+                    )
+
+        mock_local.assert_called_once()
+        mock_cleanup.assert_called()
+
+
+@pytest.mark.unit
+class TestRunOrchestrator:
+    """Test RunOrchestrator methods."""
+
+    def test_distributed_warns_on_local_only_flags(self, tmp_path):
+        """_execute_distributed warns when local-only flags are set."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = True
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = True
+        mock_args.timeout = 60
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+
+        # Replace rich_console with a mock so we can inspect print calls
+        mock_rich_console = MagicMock()
+        orchestrator.rich_console = mock_rich_console
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        # Verify warning was printed mentioning the active flags
+        printed = " ".join(
+            str(call) for call in mock_rich_console.print.call_args_list
+        )
+        assert "--keep-alive" in printed
+        assert "--skip-model-run" in printed
+        assert "--keep-model-dir" not in printed  # was False, must not appear

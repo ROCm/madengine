@@ -19,8 +19,8 @@ cd madengine
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install in development mode with all dependencies
-pip install -e ".[dev]"
+# Install in development mode (all dependencies are included)
+pip install -e .
 
 # Setup pre-commit hooks (optional but recommended)
 pre-commit install
