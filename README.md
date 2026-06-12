@@ -552,15 +552,12 @@ See [CLI Reference](docs/cli-reference.md) for complete options.
 ## 📦 Installation
 
 ```bash
-# Basic installation
+# Install madengine (all dependencies, including Kubernetes support, are included)
 pip install git+https://github.com/ROCm/madengine.git
-
-# With Kubernetes support
-pip install "madengine[kubernetes] @ git+https://github.com/ROCm/madengine.git"
 
 # Development installation
 git clone https://github.com/ROCm/madengine.git
-cd madengine && pip install -e ".[dev]"
+cd madengine && pip install -e .
 ```
 
 See [Installation Guide](docs/installation.md) for detailed instructions.
@@ -638,7 +635,7 @@ We welcome contributions! See [Contributing Guide](docs/contributing.md) for det
 git clone https://github.com/ROCm/madengine.git
 cd madengine
 python3 -m venv venv && source venv/bin/activate
-pip install -e ".[dev]"
+pip install -e .
 
 # Run all tests
 pytest

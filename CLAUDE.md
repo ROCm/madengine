@@ -5,11 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Setup
 
 ```bash
-# Install in development mode with all dependencies
-pip install -e ".[dev]"
-
-# Optional: install Kubernetes support
-pip install -e ".[all]"
+# Install in development mode (all dependencies, including Kubernetes
+# support and dev tools, are included by default)
+pip install -e .
 
 # Setup pre-commit hooks
 pre-commit install
