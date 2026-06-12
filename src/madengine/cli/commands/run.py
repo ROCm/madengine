@@ -99,7 +99,11 @@ def run(
         bool,
         typer.Option(
             "--skip-model-run",
-            help="After a build in this invocation, skip executing models (ignored when using an existing manifest).",
+            help=(
+                "Skip running the model script inside the container. "
+                "The container is still started and pre_scripts still run. "
+                "Use with --keep-alive to get a live container set up and ready for manual exec."
+            ),
         ),
     ] = False,
     manifest_output: Annotated[
@@ -198,12 +202,6 @@ def run(
         manifest_exists = manifest_file and os.path.exists(manifest_file)
 
         if manifest_exists:
-            if skip_model_run:
-                console.print(
-                    "[yellow]⚠️  --skip-model-run applies only after a build in this invocation; "
-                    "using an existing manifest. Ignoring --skip-model-run.[/yellow]"
-                )
-
             console.print(
                 Panel(
                     f"🚀 [bold cyan]Running Models (Execution Only)[/bold cyan]\n"
@@ -402,10 +400,6 @@ def run(
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
             if workflow_summary["overall_success"]:
-                if execution_summary.get("skipped_model_run"):
-                    console.print(
-                        "[cyan]Model run was skipped (--skip-model-run); build completed.[/cyan]"
-                    )
                 console.print(
                     "🎉 [bold green]Complete workflow finished successfully![/bold green]"
                 )

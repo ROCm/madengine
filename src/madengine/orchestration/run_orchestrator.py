@@ -141,9 +141,9 @@ class RunOrchestrator:
         1. Run-only: If manifest_file provided
         2. Full workflow: If tags provided (build + run)
 
-        When args.skip_model_run is True (Policy A), the model execution step is
-        skipped only if this invocation ran a build (_did_build_phase). Otherwise
-        the flag is ignored with a warning.
+        When args.skip_model_run is True, the model script inside each container
+        is skipped (container still starts, pre_scripts still run). Use with
+        --keep-alive to leave a live container for manual exec.
 
         Args:
             manifest_file: Path to build_manifest.json
@@ -259,34 +259,6 @@ class RunOrchestrator:
                 target = deployment_config.get("target", "local")
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
-
-            # Use `is True` so MagicMock-based test doubles do not count as enabled.
-            skip_requested = getattr(self.args, "skip_model_run", False) is True
-            if skip_requested and not self._did_build_phase:
-                self.rich_console.print(
-                    "[yellow]⚠️  --skip-model-run is ignored "
-                    "(not a build+run workflow in this invocation).[/yellow]\n"
-                )
-
-            if skip_requested and self._did_build_phase:
-                self.rich_console.print(
-                    "[bold cyan]Skipping model run (--skip-model-run) after build.[/bold cyan]\n"
-                )
-                results = {
-                    "successful_runs": [],
-                    "failed_runs": [],
-                    "total_runs": 0,
-                    "skipped_model_run": True,
-                }
-                results["session_start_row"] = session_start_row
-                results["session_row_count"] = (
-                    self.session_tracker.get_session_row_count()
-                )
-                self.rich_console.print(
-                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
-                )
-                self._cleanup_model_dir_copies()
-                return results
 
             # Step 4: Execute based on target
             try:
@@ -685,6 +657,7 @@ class RunOrchestrator:
             keep_alive=getattr(self.args, "keep_alive", False),
             keep_model_dir=getattr(self.args, "keep_model_dir", False),
             phase_suffix=phase_suffix,
+            skip_model_run=getattr(self.args, "skip_model_run", False),
         )
 
         self.rich_console.print(f"\n[green]✓ Local execution complete[/green]")
@@ -695,6 +668,20 @@ class RunOrchestrator:
     def _execute_distributed(self, target: str, manifest_file: str) -> Dict:
         """Execute on distributed infrastructure."""
         self.rich_console.print(f"[cyan]Deploying to {target}...[/cyan]\n")
+
+        # Warn about local-only flags that have no effect on distributed targets
+        _local_only_flags = {
+            "--keep-alive": getattr(self.args, "keep_alive", False),
+            "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
+            "--skip-model-run": getattr(self.args, "skip_model_run", False),
+        }
+        _active_local_flags = [name for name, val in _local_only_flags.items() if val]
+        if _active_local_flags:
+            self.rich_console.print(
+                f"[yellow]⚠️  The following flags have no effect on distributed "
+                f"({target}) targets and will be ignored: "
+                f"{', '.join(_active_local_flags)}[/yellow]\n"
+            )
 
         # Import from deployment layer
         from madengine.deployment.factory import DeploymentFactory
