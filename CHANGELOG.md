@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./tools` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
+- **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./docker/common` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
 
 - **Hatch package artifacts include `scripts/`**: `pyproject.toml` now uses `[tool.hatch.build.artifacts]` to include the `scripts/` directory in the built wheel. The previous `force-include` directive caused `duplicate file` errors with newer hatchling versions (which are stricter about files already covered by the default source inclusion). Switching to `artifacts` bypasses `.gitignore` exclusion without risk of duplication. The `deployment/templates` force-include was also removed as it is already captured by the default wheel source scan.
 
