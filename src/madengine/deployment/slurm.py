@@ -615,7 +615,11 @@ class SlurmDeployment(BaseDeployment):
         launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
         # Normalize launcher based on deployment type and validity
         launcher_type = normalize_launcher(launcher_type, "slurm")
-        
+        # Persist the resolved launcher so downstream readers (reporting paths,
+        # later normalize_launcher calls) see the same value the template used,
+        # rather than re-deriving from the raw alias and mapping it to "docker".
+        self.distributed_config["launcher"] = launcher_type
+
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
         master_port = self.distributed_config.get("port", 29500)

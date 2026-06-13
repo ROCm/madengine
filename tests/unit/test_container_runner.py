@@ -381,7 +381,7 @@ class TestResolveLocalMultiNodeRunnerEnv:
             == "deepspeed --num_gpus=2"
         )
 
-    def test_unknown_launcher_defaults_to_torchrun(self):
+    def test_unknown_launcher_defaults_to_torchrun(self, capsys):
         runner = self._runner(
             additional_context={"distributed": {"launcher": "docker"}},
         )
@@ -390,6 +390,20 @@ class TestResolveLocalMultiNodeRunnerEnv:
             runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
             == "torchrun --standalone --nproc_per_node=1"
         )
+        # "docker" is a deployment-mode sentinel, not an unknown launcher, so it
+        # must not emit the "Unrecognized launcher" warning.
+        assert "Unrecognized launcher" not in capsys.readouterr().out
+
+    def test_truly_unknown_launcher_warns(self, capsys):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "boguslauncher"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=1)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=1"
+        )
+        assert "Unrecognized launcher 'boguslauncher'" in capsys.readouterr().out
 
     def test_uses_mad_runtime_ngpus_when_set(self):
         runner = self._runner(

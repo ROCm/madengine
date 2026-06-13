@@ -684,6 +684,11 @@ class ContainerRunner:
         else:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
 
+    # Deployment-mode sentinels that normalize_launcher emits for "no real
+    # launcher". Users may pass these explicitly; defaulting them to torchrun is
+    # expected, not an error, so they should not trigger an unrecognized warning.
+    _NON_LAUNCHER_SENTINELS = ("docker", "native")
+
     def _resolve_local_multi_node_runner_env(
         self, model_info: typing.Dict, resolved_gpu_count: int
     ) -> None:
@@ -712,7 +717,7 @@ class ContainerRunner:
         if canonical_launcher in valid_local_launchers:
             dist_launcher = canonical_launcher
         else:
-            if launcher:
+            if launcher and launcher not in self._NON_LAUNCHER_SENTINELS:
                 print(f"⚠️  Unrecognized launcher '{launcher}'; "
                       f"defaulting to torchrun for local deployment")
             dist_launcher = "torchrun"
