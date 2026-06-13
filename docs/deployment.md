@@ -303,7 +303,7 @@ For workloads that use externally maintained Docker images (e.g. SGLang, vLLM re
 madengine build --tags model --use-image lmsysorg/sglang:latest
 
 # Auto-detect image from model card's DOCKER_IMAGE_NAME
-madengine build --tags model --use-image
+madengine build --tags model --use-image auto
 
 # Build on a SLURM compute node and push to registry
 madengine build --tags model --build-on-compute --registry docker.io/myorg

@@ -293,6 +293,130 @@ class TestGatherSystemEnvDetailsRocenvMode:
         assert args == "my_model_env lite UBUNTU"
 
 
+class TestGenerateLocalLauncherCommand:
+    """_generate_local_launcher_command: launcher_type → MAD_MULTI_NODE_RUNNER command."""
+
+    def _runner(self):
+        return ContainerRunner.__new__(ContainerRunner)
+
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"])
+    def test_torchrun_family_emits_torchrun_standalone(self, launcher):
+        cmd = self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+        assert cmd == "torchrun --standalone --nproc_per_node=8"
+
+    def test_deepspeed_emits_deepspeed_command(self):
+        cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
+        assert cmd == "deepspeed --num_gpus=4"
+
+    @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
+    def test_self_managed_launchers_emit_empty(self, launcher):
+        assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
+
+    def test_unknown_launcher_falls_back_to_torchrun(self):
+        cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
+        assert cmd == "torchrun --standalone --nproc_per_node=2"
+
+
+class TestResolveLocalMultiNodeRunnerEnv:
+    """_resolve_local_multi_node_runner_env: wires launcher → docker_env_vars."""
+
+    def _runner(self, docker_env_vars=None, additional_context=None):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {"docker_env_vars": dict(docker_env_vars or {})}
+        runner.additional_context = additional_context
+        return runner
+
+    @pytest.mark.parametrize(
+        "launcher,expected",
+        [
+            ("torchrun", "torchrun --standalone --nproc_per_node=8"),
+            ("megatron", "torchrun --standalone --nproc_per_node=8"),
+            ("megatron-lm", "torchrun --standalone --nproc_per_node=8"),
+            ("torchtitan", "torchrun --standalone --nproc_per_node=8"),
+            ("deepspeed", "deepspeed --num_gpus=8"),
+        ],
+    )
+    def test_sets_expected_command_from_additional_context(self, launcher, expected):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": launcher}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+
+    def test_does_not_override_user_provided_value(self):
+        runner = self._runner(
+            docker_env_vars={"MAD_MULTI_NODE_RUNNER": "custom-runner --foo"},
+            additional_context={"distributed": {"launcher": "torchrun"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "custom-runner --foo"
+        )
+
+    @pytest.mark.parametrize(
+        "launcher",
+        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+    )
+    def test_self_managed_launchers_set_empty_string(self, launcher):
+        """Self-managing launchers set the var to "" (defined but empty),
+        so downstream scripts under set -u don't fail referencing it.
+        Covers the ``sglang_disagg`` underscore alias to lock in the
+        canonicalize_distributed_launcher() routing."""
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": launcher}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=4)
+        assert "MAD_MULTI_NODE_RUNNER" in runner.context.ctx["docker_env_vars"]
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == ""
+
+    def test_falls_back_to_model_info_launcher(self):
+        runner = self._runner(additional_context=None)
+        runner._resolve_local_multi_node_runner_env(
+            {"distributed": {"launcher": "deepspeed"}}, resolved_gpu_count=2
+        )
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "deepspeed --num_gpus=2"
+        )
+
+    def test_unknown_launcher_defaults_to_torchrun(self, capsys):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "docker"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=1)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=1"
+        )
+        # "docker" is a deployment-mode sentinel, not an unknown launcher, so it
+        # must not emit the "Unrecognized launcher" warning.
+        assert "Unrecognized launcher" not in capsys.readouterr().out
+
+    def test_truly_unknown_launcher_warns(self, capsys):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "boguslauncher"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=1)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=1"
+        )
+        assert "Unrecognized launcher 'boguslauncher'" in capsys.readouterr().out
+
+    def test_uses_mad_runtime_ngpus_when_set(self):
+        runner = self._runner(
+            docker_env_vars={"MAD_RUNTIME_NGPUS": "4"},
+            additional_context={"distributed": {"launcher": "torchrun"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=4"
+        )
+
+
 class TestRunContainerSkipModelRun:
     """Tests for skip_model_run flag in run_container."""
 
