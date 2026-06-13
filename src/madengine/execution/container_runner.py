@@ -31,6 +31,7 @@ from madengine.reporting.update_perf_csv import (
 )
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.deployment.common import canonicalize_distributed_launcher
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -662,7 +663,7 @@ class ContainerRunner:
         """Generate distributed process launcher command for Docker local deployment.
 
         Docker local is always single-node. This parallels
-        SlurmDeployer._generate_launcher_command() and
+        SlurmDeployment._generate_launcher_command() and
         KubernetesLauncherMixin._generate_torchrun_command() for the
         Docker local path.
 
@@ -682,6 +683,51 @@ class ContainerRunner:
             return ""
         else:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
+
+    # Deployment-mode sentinels that normalize_launcher emits for "no real
+    # launcher". Users may pass these explicitly; defaulting them to torchrun is
+    # expected, not an error, so they should not trigger an unrecognized warning.
+    _NON_LAUNCHER_SENTINELS = ("docker", "native")
+
+    def _resolve_local_multi_node_runner_env(
+        self, model_info: typing.Dict, resolved_gpu_count: int
+    ) -> None:
+        """Set ``docker_env_vars["MAD_MULTI_NODE_RUNNER"]`` for local Docker runs.
+
+        No-op if the env var is already set. Resolves launcher from
+        ``additional_context.distributed.launcher``, then ``model_info.distributed.launcher``,
+        then ``MAD_LAUNCHER``; falls back to ``torchrun`` for unknown values.
+        Self-managing launchers (vllm/sglang/sglang-disagg/primus) set the var
+        to an empty string so downstream scripts under ``set -u`` don't fail.
+        """
+        if "MAD_MULTI_NODE_RUNNER" in self.context.ctx["docker_env_vars"]:
+            return
+        launcher = ""
+        if self.additional_context:
+            launcher = self.additional_context.get("distributed", {}).get("launcher", "")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER", "")
+        canonical_launcher = canonicalize_distributed_launcher(launcher)
+        valid_local_launchers = (
+            "torchrun", "megatron", "megatron-lm", "torchtitan",
+            "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
+        )
+        if canonical_launcher in valid_local_launchers:
+            dist_launcher = canonical_launcher
+        else:
+            if launcher and launcher not in self._NON_LAUNCHER_SENTINELS:
+                print(f"⚠️  Unrecognized launcher '{launcher}'; "
+                      f"defaulting to torchrun for local deployment")
+            dist_launcher = "torchrun"
+        runtime_ngpus = int(self.context.ctx["docker_env_vars"].get(
+            "MAD_RUNTIME_NGPUS", str(resolved_gpu_count)))
+        launcher_cmd = self._generate_local_launcher_command(dist_launcher, runtime_ngpus)
+        self.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] = launcher_cmd
+        if launcher_cmd:
+            print(f"ℹ️  Set MAD_MULTI_NODE_RUNNER for local deployment "
+                  f"(launcher={dist_launcher}): {launcher_cmd}")
 
     _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -1281,29 +1327,7 @@ class ContainerRunner:
         # SLURM and K8s generate this in their deployment layers (slurm.py,
         # kubernetes_launcher_mixin.py). Docker local has no such layer, so
         # we generate it here after GPU resolution provides MAD_RUNTIME_NGPUS.
-        # Defaults to torchrun when launcher is a deployment-level value
-        # ("docker", "native") rather than a distributed launcher.
-        # For models that hardcode their own launcher (e.g. HuggingFace scripts
-        # calling torchrun directly), this env var is simply unused.
-        if "MAD_MULTI_NODE_RUNNER" not in self.context.ctx["docker_env_vars"]:
-            launcher = ""
-            if self.additional_context:
-                launcher = self.additional_context.get("distributed", {}).get("launcher", "")
-            if not launcher and model_info.get("distributed"):
-                launcher = model_info["distributed"].get("launcher", "")
-            if not launcher:
-                launcher = os.environ.get("MAD_LAUNCHER", "")
-            dist_launcher = launcher if launcher in (
-                "torchrun", "megatron", "megatron-lm", "torchtitan",
-                "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
-            ) else "torchrun"
-            runtime_ngpus = int(self.context.ctx["docker_env_vars"].get(
-                "MAD_RUNTIME_NGPUS", str(resolved_gpu_count)))
-            launcher_cmd = self._generate_local_launcher_command(dist_launcher, runtime_ngpus)
-            if launcher_cmd:
-                self.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] = launcher_cmd
-                print(f"ℹ️  Set MAD_MULTI_NODE_RUNNER for local deployment "
-                      f"(launcher={dist_launcher}): {launcher_cmd}")
+        self._resolve_local_multi_node_runner_env(model_info, resolved_gpu_count)
 
         # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
         # It should be passed via docker_env_vars in context instead

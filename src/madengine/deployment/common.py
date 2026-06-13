@@ -25,6 +25,24 @@ VALID_LAUNCHERS = [
     "slurm_multi",
 ]
 
+# Alternate spellings for distributed launcher values → canonical form.
+# Add new aliases here only; do not branch on alternate spellings at dispatch sites.
+_LAUNCHER_ALIASES: Dict[str, str] = {
+    "sglang_disagg": "sglang-disagg",
+}
+
+
+def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
+    """Normalize alternate launcher spellings to their canonical form.
+
+    Resolves aliases (e.g. ``sglang_disagg`` → ``sglang-disagg``). Unknown or
+    empty values are returned unchanged; callers do their own validation.
+    """
+    if not launcher:
+        return launcher
+    return _LAUNCHER_ALIASES.get(launcher, launcher)
+
+
 # Tool names that use rocprof / rocprofv3 wrapping and need MPI-aware rocprofv3 on multi-node.
 _ROCPROF_FAMILY_TOOL_NAMES = frozenset(
     {
