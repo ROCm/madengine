@@ -2629,7 +2629,11 @@ class ContainerRunner:
                     try:
                         conn, addr = server.accept()
                         conn.settimeout(2.0)
-                        payload = self._recv_line(conn)
+                        try:
+                            payload = self._recv_line(conn)
+                        except Exception:
+                            conn.close()
+                            continue
                         parts = payload.split()
                         if len(parts) != 3 or parts[0] != "READY" or parts[1] != token:
                             conn.close()
