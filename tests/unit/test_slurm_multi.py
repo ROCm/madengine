@@ -19,6 +19,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -199,7 +200,7 @@ class TestSlurmMultiPrepareScript:
             # xP/yD are overridden by distributed.sglang_disagg.{prefill,decode}_nodes
             # in _prepare_slurm_multi_script; values match in this fixture so the
             # assertion still holds, but the source of truth is the model card.
-            expected = f'export {key}="{value}"'
+            expected = f"export {key}={shlex.quote(str(value))}"
             assert expected in script_text, f"missing export for {key!r}: expected {expected!r}"
 
     def test_wrapper_is_slurm_multi_flag_set(self, slurm_deployment):
@@ -435,10 +436,10 @@ class TestXpYdSkipIfSet:
         slurm_deployment.prepare()
         script_text = Path(slurm_deployment.script_path).read_text()
 
-        assert 'export xP="2"' in script_text, "model card xP=2 must not be overwritten"
-        assert 'export yD="3"' in script_text, "model card yD=3 must not be overwritten"
-        assert 'export xP="1"' not in script_text, "distributed.sglang_disagg xP=1 must not win"
-        assert 'export yD="1"' not in script_text, "distributed.sglang_disagg yD=1 must not win"
+        assert f"export xP={shlex.quote('2')}" in script_text, "model card xP=2 must not be overwritten"
+        assert f"export yD={shlex.quote('3')}" in script_text, "model card yD=3 must not be overwritten"
+        assert f"export xP={shlex.quote('1')}" not in script_text, "distributed.sglang_disagg xP=1 must not win"
+        assert f"export yD={shlex.quote('1')}" not in script_text, "distributed.sglang_disagg yD=1 must not win"
 
 
 # ---------------------------------------------------------------------------

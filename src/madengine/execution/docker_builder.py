@@ -179,9 +179,9 @@ class DockerBuilder:
         build_start_time = time.time()
 
         tools_build_context = ""
-        tools_dir = Path("tools")
-        if tools_dir.exists():
-            tools_build_context = f"--build-context tools={tools_dir} "
+        docker_api_dir = Path("docker/common")
+        if docker_api_dir.exists():
+            tools_build_context = f"--build-context tools={docker_api_dir} "
 
         build_command = (
             f"docker build {use_cache_str} --network=host "

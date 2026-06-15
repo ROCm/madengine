@@ -142,13 +142,13 @@ class Docker:
     def __del__(self):
         """Destructor of the Docker class."""
         # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
-        if not self.keep_alive and self.docker_sha:
+        if not getattr(self, "keep_alive", False) and getattr(self, "docker_sha", None):
             self.console.sh("docker stop -t 1 " + self.docker_sha)
             self.console.sh("docker rm -f " + self.docker_sha)
             return
 
         # print docker sha
-        if self.docker_sha:
+        if getattr(self, "docker_sha", None):
             print("==========================================")
             print("Keeping docker alive, sha :", self.docker_sha)
             print(

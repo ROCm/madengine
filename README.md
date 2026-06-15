@@ -587,7 +587,7 @@ After a local Docker run, madengine can scan the captured **run log** for common
 ### Build & Deployment
 
 - **Separate build and run phases** for distributed deployments
-- **Build without executing:** `madengine run --tags … --skip-model-run` skips container execution **after a build in that same invocation** (ignored when using an existing `--manifest-file`). See [Usage — Skip model run after build](docs/usage.md#skip-model-run-after-build).
+- **Skip model script:** `madengine run --tags … --skip-model-run` starts the container and runs `pre_scripts`, but skips the model script. Combine with `--keep-alive` for a live container ready for manual exec. Ignored with a warning on SLURM/K8s. See [Usage — Skip model run after build](docs/usage.md#skip-model-run-after-build).
 - **Use registries** for multi-node execution (K8s/SLURM)
 - **Use batch build mode** for CI/CD to optimize build times
 - **Specify `--target-archs`** when building for multiple GPU architectures

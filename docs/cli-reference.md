@@ -97,7 +97,7 @@ madengine build [OPTIONS]
 | `--tags` | `-t` | TEXT | `[]` | Model tags to build (can specify multiple) |
 | `--target-archs` | `-a` | TEXT | `[]` | Target GPU architectures (e.g., gfx908,gfx90a,gfx942) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
-| `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Omit value or pass `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
+| `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Pass an image name, or `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
 | `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
@@ -149,7 +149,7 @@ madengine build --tags model --live-output --verbose
 madengine build --tags model --use-image lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x
 
 # Auto-detect image from model card's DOCKER_IMAGE_NAME
-madengine build --tags model --use-image
+madengine build --tags model --use-image auto
 
 # Build on SLURM compute node and push to registry
 madengine build --tags model --build-on-compute --registry docker.io/myorg
@@ -226,10 +226,10 @@ madengine run [OPTIONS]
 | `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
-| `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run |
-| `--keep-model-dir` | | FLAG | `False` | Keep model directory after run |
+| `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
+| `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
-| `--skip-model-run` | | FLAG | `False` | After a **build in this invocation**, skip executing models (manifest/images still produced). **Ignored** when using `--manifest-file` with an existing manifest (run-only), or when no build ran in this invocation. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
+| `--skip-model-run` | | FLAG | `False` | Skip the model script inside each container. The container still starts and `pre_scripts` still run; only the model script invocation is skipped (status reported as `SKIPPED`, exit code `0`). Combine with `--keep-alive` to leave a live container for manual exec. Ignored with a warning on SLURM/K8s targets. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
 | `--manifest-output` | | TEXT | `build_manifest.json` | Output file for build manifest (full workflow) |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for summary JSON |
 | `--live-output` | `-l` | FLAG | `False` | Print output in real-time |

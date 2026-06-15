@@ -295,7 +295,7 @@ madengine run --tags pyt_sglang_disagg_qwen3-32b \
 madengine build --tags pyt_sglang_disagg --use-image registry.io/sglang:latest
 
 # Option B — auto-resolve DOCKER_IMAGE_NAME from model card
-madengine build --tags pyt_sglang_disagg --use-image
+madengine build --tags pyt_sglang_disagg --use-image auto
 
 # Option C — build on compute node, push, then run pulls in parallel
 madengine build --tags pyt_sglang_disagg \
@@ -621,7 +621,7 @@ pre-commit run --all-files</code></pre>
 <table>
 <thead><tr><th>Invocation</th><th>Behavior</th></tr></thead>
 <tbody>
-<tr><td><code>--use-image</code> (bare flag)</td><td>Resolves to <code>"auto"</code> — reads <code>DOCKER_IMAGE_NAME</code> from model card <code>env_vars</code></td></tr>
+<tr><td><code>--use-image auto</code></td><td>Reads <code>DOCKER_IMAGE_NAME</code> from model card <code>env_vars</code></td></tr>
 <tr><td><code>--use-image registry.io/img:tag</code></td><td>Uses the explicit image name; skips all Docker build steps</td></tr>
 </tbody>
 </table>
@@ -1115,7 +1115,7 @@ madengine run --tags llm-serve \
 <thead><tr><th>Mode</th><th>Flag</th><th>Behavior</th></tr></thead>
 <tbody>
 <tr><td>Use prebuilt image</td><td><code>--use-image registry.io/img:tag</code></td><td>Skip local build. Uses explicit image.</td></tr>
-<tr><td>Auto-resolve from model card</td><td><code>--use-image</code> (bare)</td><td>Reads <code>env_vars.DOCKER_IMAGE_NAME</code> from model card.</td></tr>
+<tr><td>Auto-resolve from model card</td><td><code>--use-image auto</code></td><td>Reads <code>env_vars.DOCKER_IMAGE_NAME</code> from model card.</td></tr>
 <tr><td>Build on compute</td><td><code>--build-on-compute --registry reg.io/ml</code></td><td>Builds on SLURM compute node, pushes to registry. Manifest sets <code>built_on_compute: true</code>. Run phase pulls in parallel on all nodes.</td></tr>
 <tr><td>Implicit fallback</td><td>no flags</td><td>If model card has <code>DOCKER_IMAGE_NAME</code>, auto-uses it. Otherwise raises <code>ConfigurationError</code> listing options.</td></tr>
 </tbody>

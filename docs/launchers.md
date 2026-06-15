@@ -629,7 +629,7 @@ slurm_multi models typically use pre-built images. The build phase has a **regis
 madengine build --tags my_model --use-image lmsysorg/sglang:latest
 
 # Auto-detect image from model card's DOCKER_IMAGE_NAME
-madengine build --tags my_model --use-image
+madengine build --tags my_model --use-image auto
 
 # Build on compute node and push to registry
 madengine build --tags my_model --build-on-compute --registry docker.io/myorg

@@ -9,6 +9,7 @@ import pytest
 from madengine.deployment.base import BaseDeployment, DeploymentConfig, create_jinja_env
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
+    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_rocprofv3_available,
     normalize_launcher,
@@ -68,6 +69,24 @@ class TestNormalizeLauncher:
     @pytest.mark.parametrize("deployment", ["slurm", "local", "unknown"])
     def test_invalid_or_missing_launcher_non_k8s_returns_docker(self, deployment):
         assert normalize_launcher(None, deployment) == "docker"
+
+
+class TestCanonicalizeDistributedLauncher:
+    """canonicalize_distributed_launcher resolves alternate spellings."""
+
+    def test_underscore_form_maps_to_canonical_hyphen_form(self):
+        assert canonicalize_distributed_launcher("sglang_disagg") == "sglang-disagg"
+
+    def test_canonical_form_passthrough(self):
+        assert canonicalize_distributed_launcher("sglang-disagg") == "sglang-disagg"
+        assert canonicalize_distributed_launcher("torchrun") == "torchrun"
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_empty_returned_unchanged(self, value):
+        assert canonicalize_distributed_launcher(value) == value
+
+    def test_unknown_value_returned_unchanged(self):
+        assert canonicalize_distributed_launcher("bogus_launcher") == "bogus_launcher"
 
 
 class TestToolsIncludeRocprofFamily:

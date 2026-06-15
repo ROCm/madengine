@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
-from .common import configure_multi_node_profiling, is_self_managed_launcher, normalize_launcher
+from .common import (
+    canonicalize_distributed_launcher,
+    configure_multi_node_profiling,
+    is_self_managed_launcher,
+    normalize_launcher,
+)
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
@@ -478,8 +483,7 @@ class SlurmDeployment(BaseDeployment):
         ])
         
         for key, value in env_vars.items():
-            escaped = str(value).replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-            script_lines.append(f'export {key}="{escaped}"')
+            script_lines.append(f"export {key}={shlex.quote(str(value))}")
         
         script_lines.append("")
         script_lines.extend([
@@ -606,9 +610,16 @@ class SlurmDeployment(BaseDeployment):
         # Extract launcher configuration
         launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
         
+        # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
+        # passes through normalize_launcher instead of being mapped to "docker".
+        launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
         # Normalize launcher based on deployment type and validity
         launcher_type = normalize_launcher(launcher_type, "slurm")
-        
+        # Persist the resolved launcher so downstream readers (reporting paths,
+        # later normalize_launcher calls) see the same value the template used,
+        # rather than re-deriving from the raw alias and mapping it to "docker".
+        self.distributed_config["launcher"] = launcher_type
+
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
         master_port = self.distributed_config.get("port", 29500)
@@ -719,7 +730,7 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+        elif launcher_type == "sglang-disagg":
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)

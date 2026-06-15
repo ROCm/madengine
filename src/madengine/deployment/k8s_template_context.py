@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import configure_multi_node_profiling
+from .common import canonicalize_distributed_launcher, configure_multi_node_profiling
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_label_value
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
@@ -339,7 +339,7 @@ class KubernetesTemplateContextMixin:
                 model_args=model_info.get("args", ""),
             )
 
-        elif launcher_type == "sglang-disagg" or launcher_type == "sglang_disagg":
+        elif canonicalize_distributed_launcher(launcher_type) == "sglang-disagg":
             if nnodes < 3:
                 raise ValueError(
                     f"SGLang Disaggregated requires minimum 3 nodes "

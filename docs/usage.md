@@ -283,15 +283,25 @@ madengine build --batch-manifest batch.json \
 
 ### Skip model run after build
 
-When `madengine run` **builds** in the same invocation (no pre-existing `--manifest-file`), you can pass **`--skip-model-run`** to produce images and `build_manifest.json` **without** running model containers.
+Pass **`--skip-model-run`** to start containers and run `pre_scripts`, but skip executing the model script itself.
 
-- **Ignored** when `--manifest-file` points at an existing manifest (execution-only mode): use plain `madengine run --manifest-file ...` to run later.
-- **Ignored** with a warning if this invocation did not perform a build (for example a manifest was already present and no rebuild occurred).
+- The Docker container **is started** and `pre_scripts` run normally.
+- Only the model script invocation is skipped; `post_scripts` and container cleanup still run.
+- Exit status is `SKIPPED` (not `FAILURE`) — the overall run exits `0`.
+- Combine with **`--keep-alive`** to leave a fully-set-up, live container for manual inspection or debugging.
+- Has **no effect** on distributed (SLURM/K8s) targets — a warning is printed if used with them.
 
 ```bash
+# Skip the model script; container starts and pre_scripts run
 madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
   --skip-model-run
+
+# Leave a live container ready for manual exec
+madengine run --tags model \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
+  --skip-model-run --keep-alive
+# Then: docker exec -it <container> bash
 ```
 
 See [CLI Reference — `run`](cli-reference.md#run---execute-models) and `madengine run --help`.
@@ -425,8 +435,12 @@ madengine run --tags model --timeout 0
 ### Debugging
 
 ```bash
-# Keep containers alive
+# Keep container alive after run (local Docker only)
 madengine run --tags model --keep-alive
+
+# Skip model script and leave a live container ready for manual exec
+madengine run --tags model --skip-model-run --keep-alive
+# Then inspect: docker exec -it <container> bash
 
 # Verbose output
 madengine run --tags model --verbose --live-output
@@ -714,8 +728,11 @@ madengine run --tags model1 --tags model2,model3
 # Full verbose output with real-time logs
 madengine run --tags model --verbose --live-output
 
-# Keep container alive for inspection
+# Keep container alive for inspection (local Docker only)
 madengine run --tags model --keep-alive
+
+# Skip model script and leave live container for manual exec
+madengine run --tags model --skip-model-run --keep-alive
 
 # Check what will be discovered
 madengine discover --tags model --verbose
