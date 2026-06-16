@@ -816,7 +816,10 @@ class Context:
                     json_output = output
                 
                 try:
-                    data = json.loads(json_output)
+                    # Use raw_decode so we tolerate any trailing non-JSON
+                    # text (deprecation banners, double-emitted blocks under
+                    # concurrent slurm tasks, stray newlines, etc.).
+                    data, _end = json.JSONDecoder().raw_decode(json_output.lstrip())
                 except json.JSONDecodeError as e:
                     raise ValueError(f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}")
                 
