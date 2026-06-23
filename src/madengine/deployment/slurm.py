@@ -876,11 +876,16 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
                     f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
                     f"got prefill={prefill_nodes}, decode={decode_nodes}"
                 )
-            if prefill_nodes + decode_nodes + 1 != nnodes:
+            # Accept either a dedicated proxy node (1 + xP + yD == nnodes) or a
+            # co-located proxy/router on the first prefill node (xP + yD == nnodes),
+            # mirroring the vllm-disagg layout. The proxy is launched by the model
+            # script (not by this launcher), so both topologies are valid here.
+            if (prefill_nodes + decode_nodes != nnodes
+                    and prefill_nodes + decode_nodes + 1 != nnodes):
                 raise ValueError(
-                    f"Custom split validation failed: "
-                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
-                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
+                    f"Custom split validation failed: prefill_nodes ({prefill_nodes}) + "
+                    f"decode_nodes ({decode_nodes}) must equal nnodes ({nnodes}) for a "
+                    f"co-located proxy, or nnodes-1 ({nnodes - 1}) for a dedicated proxy node"
                 )
             xP = prefill_nodes
             yD = decode_nodes
