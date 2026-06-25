@@ -676,6 +676,7 @@ class SlurmDeployment(BaseDeployment):
             "network_interface": self.slurm_config.get("network_interface"),
             "exclusive": self.slurm_config.get("exclusive", True),
             "exclude": self.slurm_config.get("exclude"),
+            "reservation": self.slurm_config.get("reservation"),
             "constraint": self.slurm_config.get("constraint"),
             "nodelist": self._normalize_nodelist(self.slurm_config.get("nodelist")),
             "qos": self.slurm_config.get("qos"),
