@@ -842,14 +842,16 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
         Generate SGLang Disaggregated launcher environment for SLURM.
         
         SGLang Disaggregated Architecture:
-        - Node 0: Proxy (load balancer)
-        - Nodes 1 to xP: Prefill nodes
-        - Nodes xP+1 to xP+yD: Decode nodes
+        - Prefill nodes: xP
+        - Decode nodes: yD
+        - Proxy/router: a dedicated node (1 + xP + yD == nnodes) or co-located
+          on the first prefill node (xP + yD == nnodes). The rank-to-role
+          assignment is handled by the model run.sh, not by this launcher.
         
-        Minimum cluster: 3 nodes (1 proxy + 1 prefill + 1 decode)
+        Minimum cluster: 2 nodes (co-located proxy + 1 prefill + 1 decode)
         
         Args:
-            nnodes: Total number of nodes (must be >= 3)
+            nnodes: Total number of nodes (must be >= 2)
             nproc_per_node: GPUs per node (tensor parallel size)
             master_port: Master port for coordination
             
@@ -857,12 +859,12 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
             Environment setup with node role assignment
             
         Raises:
-            ValueError: If nnodes < 3 (minimum for disagg)
+            ValueError: If nnodes < 2 (minimum for disagg)
         """
-        if nnodes < 3:
+        if nnodes < 2:
             raise ValueError(
-                f"SGLang Disaggregated requires minimum 3 nodes "
-                f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
+                f"SGLang Disaggregated requires minimum 2 nodes "
+                f"(co-located proxy + 1 prefill + 1 decode), got {nnodes}"
             )
         
         # Check if custom split is specified in additional_context
@@ -877,11 +879,17 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
                     f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
                     f"got prefill={prefill_nodes}, decode={decode_nodes}"
                 )
-            if prefill_nodes + decode_nodes + 1 != nnodes:
+            # Accept either a dedicated proxy node (1 + xP + yD == nnodes) or a
+            # co-located proxy/router on the first prefill node (xP + yD == nnodes),
+            # mirroring the vllm-disagg layout. The proxy is launched by the model
+            # script (not by this launcher), so both topologies are valid here.
+            if (prefill_nodes + decode_nodes != nnodes
+                    and prefill_nodes + decode_nodes + 1 != nnodes):
                 raise ValueError(
-                    f"Custom split validation failed: "
-                    f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
-                    f"must equal nnodes ({nnodes}), but got {prefill_nodes + decode_nodes + 1}"
+                    f"Custom split validation failed: prefill_nodes ({prefill_nodes}) + "
+                    f"decode_nodes ({decode_nodes}) = {prefill_nodes + decode_nodes} must equal "
+                    f"nnodes ({nnodes}) for a co-located proxy, or nnodes-1 ({nnodes - 1}) for a "
+                    f"dedicated proxy node"
                 )
             xP = prefill_nodes
             yD = decode_nodes
@@ -895,9 +903,10 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
 # ============================================
 # Cluster Configuration:
 #   Total Nodes: {nnodes}
-#   Proxy: 1 node (NODE_RANK=0)
-#   Prefill: {xP} nodes (NODE_RANK=1 to {xP})
-#   Decode: {yD} nodes (NODE_RANK={xP+1} to {nnodes-1})
+#   Prefill: {xP} nodes
+#   Decode: {yD} nodes
+#   Proxy/router: dedicated node or co-located on the first prefill node
+#                 (rank-to-role assignment handled by the model run.sh)
 # ============================================
 
 # Export cluster topology
