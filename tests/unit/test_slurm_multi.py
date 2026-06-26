@@ -525,3 +525,73 @@ class TestBuildOnComputeManifestShape:
         for mn in ("model_a", "model_b"):
             assert manifest["built_models"][mn]["built_on_compute"] is True
             assert "DOCKER_IMAGE_NAME" in manifest["built_models"][mn]["env_vars"]
+
+
+# ---------------------------------------------------------------------------
+# 6. SGLang-disagg default split topology
+# ---------------------------------------------------------------------------
+class TestSglangDisaggDefaultSplit:
+    """`_generate_sglang_disagg_command` must produce a valid prefill/decode
+    split for the default (no custom prefill/decode) path, including the
+    co-located-proxy minimum of nnodes=2."""
+
+    @pytest.fixture
+    def deployment_factory(self, tmp_path: Path):
+        """Build a SlurmDeployment with no custom sglang_disagg split, so
+        `_generate_sglang_disagg_command` takes the default-split branch."""
+        manifest = {
+            "built_images": {},
+            "built_models": {},
+            "context": {},
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "deploy": "slurm",
+                "slurm": {"output_dir": str(tmp_path / "slurm_results")},
+            },
+        )
+        return SlurmDeployment(cfg)
+
+    @staticmethod
+    def _parse_split(script: str):
+        """Extract (xP, yD, total) from the exported topology env vars."""
+        xP = yD = total = None
+        for line in script.splitlines():
+            line = line.strip()
+            if line.startswith("export SGLANG_DISAGG_PREFILL_NODES="):
+                xP = int(line.split("=", 1)[1])
+            elif line.startswith("export SGLANG_DISAGG_DECODE_NODES="):
+                yD = int(line.split("=", 1)[1])
+            elif line.startswith("export SGLANG_DISAGG_TOTAL_NODES="):
+                total = int(line.split("=", 1)[1])
+        return xP, yD, total
+
+    def test_default_split_two_nodes_is_co_located(self, deployment_factory):
+        """nnodes=2 default split must be co-located (xP=1, yD=1), not yD=0."""
+        script = deployment_factory._generate_sglang_disagg_command(
+            nnodes=2, nproc_per_node=8, master_port=12345
+        )
+        xP, yD, total = self._parse_split(script)
+        assert (xP, yD, total) == (1, 1, 2), f"expected xP=1,yD=1,total=2, got {(xP, yD, total)}"
+
+    @pytest.mark.parametrize("nnodes", [2, 3, 4, 5, 6, 8])
+    def test_default_split_always_has_prefill_and_decode(self, deployment_factory, nnodes):
+        """Every supported nnodes must yield at least one prefill and one decode node."""
+        script = deployment_factory._generate_sglang_disagg_command(
+            nnodes=nnodes, nproc_per_node=8, master_port=12345
+        )
+        xP, yD, _ = self._parse_split(script)
+        assert xP >= 1, f"prefill nodes must be >= 1 for nnodes={nnodes}, got {xP}"
+        assert yD >= 1, f"decode nodes must be >= 1 for nnodes={nnodes}, got {yD}"
+
+    def test_below_minimum_nodes_raises(self, deployment_factory):
+        """nnodes < 2 must raise ValueError (minimum cluster size)."""
+        with pytest.raises(ValueError):
+            deployment_factory._generate_sglang_disagg_command(
+                nnodes=1, nproc_per_node=8, master_port=12345
+            )

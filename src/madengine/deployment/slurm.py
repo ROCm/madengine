@@ -893,8 +893,14 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
                 )
             xP = prefill_nodes
             yD = decode_nodes
+        elif nnodes == 2:
+            # Co-located proxy on the first prefill node: 1 prefill + 1 decode.
+            # The general default below assumes a dedicated proxy (nnodes-1 worker
+            # nodes), which would yield yD=0 for nnodes==2 and an invalid topology.
+            xP = 1
+            yD = 1
         else:
-            # Default split: use golden ratio for prefill/decode
+            # Default split: dedicated proxy + golden-ratio prefill/decode split.
             # For N total nodes: 1 proxy + ~40% prefill + ~60% decode
             xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% of worker nodes
             yD = nnodes - 1 - xP  # remaining nodes
