@@ -11,6 +11,39 @@ import typing
 import re
 
 
+# Mask secret values (e.g. MAD_SECRETS_HFTOKEN) before printing/raising commands,
+# so they don't leak into SLURM/run logs. The executed command is unchanged.
+_REDACTED = "***REDACTED***"
+
+# MAD_SECRETS*=value in any form (-e / --env / --build-arg / bare); key kept, value masked.
+_SECRET_ASSIGN_RE = re.compile(r"(MAD_SECRETS[A-Za-z0-9_]*\s*=)(\S+)")
+
+# Fallback: known credential token shapes.
+_TOKEN_PATTERNS = (
+    re.compile(r"hf_[A-Za-z0-9]{6,}"),
+    re.compile(r"sk-[A-Za-z0-9._-]{6,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{6,}"),
+    re.compile(r"xox[abprs]-[A-Za-z0-9-]{6,}"),
+)
+
+
+def redact_secrets(text: typing.Optional[str]) -> typing.Optional[str]:
+    """Mask secret values in a command/message string for safe logging.
+
+    Args:
+        text (str): The text to scrub.
+
+    Returns:
+        str: The text with secret values replaced by a redaction marker.
+    """
+    if not text:
+        return text
+    text = _SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + _REDACTED, text)
+    for pattern in _TOKEN_PATTERNS:
+        text = pattern.sub(_REDACTED, text)
+    return text
+
+
 class Console:
     """Class to run console commands.
 
@@ -124,7 +157,7 @@ class Console:
         # Print the command if shellVerbose is True
         if self.shellVerbose and not secret:
             highlighted_command = self._highlight_docker_operations(command)
-            print("> " + highlighted_command, flush=True)
+            print("> " + redact_secrets(highlighted_command), flush=True)
 
         # Run the shell command
         proc = subprocess.Popen(
@@ -199,7 +232,7 @@ class Console:
                 if not secret:
                     raise RuntimeError(
                         "Subprocess '"
-                        + command
+                        + redact_secrets(command)
                         + "' failed with exit code "
                         + str(proc.returncode)
                     )

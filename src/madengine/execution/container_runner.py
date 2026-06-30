@@ -20,7 +20,7 @@ import warnings
 from rich.console import Console as RichConsole
 from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.auth import login_to_registry
-from madengine.core.console import Console
+from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
 from madengine.core.timeout import Timeout
@@ -1370,7 +1370,7 @@ class ContainerRunner:
         else:
             container_name = base_container_name
 
-        print(f"Docker options: {docker_options}")
+        print(f"Docker options: {redact_secrets(docker_options)}")
 
         # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
         # slurm_multi launchers run scripts directly on the host,
