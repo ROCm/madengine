@@ -16,7 +16,11 @@ import re
 _REDACTED = "***REDACTED***"
 
 # MAD_SECRETS*=value in any form (-e / --env / --build-arg / bare); key kept, value masked.
-_SECRET_ASSIGN_RE = re.compile(r"(MAD_SECRETS[A-Za-z0-9_]*\s*=)(\S+)")
+# The value may be unquoted, single-/double-quoted (possibly containing spaces),
+# or empty; the whole value (including surrounding quotes) is masked.
+_SECRET_ASSIGN_RE = re.compile(
+    r"""(MAD_SECRETS[A-Za-z0-9_]*\s*=)("[^"]*"|'[^']*'|\S*)"""
+)
 
 # Fallback: known credential token shapes.
 _TOKEN_PATTERNS = (
@@ -31,10 +35,11 @@ def redact_secrets(text: typing.Optional[str]) -> typing.Optional[str]:
     """Mask secret values in a command/message string for safe logging.
 
     Args:
-        text (str): The text to scrub.
+        text (Optional[str]): The text to scrub (may be None or empty).
 
     Returns:
-        str: The text with secret values replaced by a redaction marker.
+        Optional[str]: The text with secret values replaced by a redaction
+            marker, or the original value unchanged if it is None/empty.
     """
     if not text:
         return text
