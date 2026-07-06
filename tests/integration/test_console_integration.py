@@ -89,6 +89,20 @@ class TestRedactSecrets:
         assert "MAD_SECRETS_FOO=***REDACTED***" in out
         assert "tail" in out
 
+    def test_redacts_value_with_whitespace_after_equals(self):
+        cmd = f"MAD_SECRETS_FOO= {_FAKE_HF} tail"
+        out = console.redact_secrets(cmd)
+        assert _FAKE_HF not in out
+        assert "***REDACTED***" in out
+        assert "tail" in out
+
+    def test_redacts_quoted_value_with_whitespace_after_equals(self):
+        cmd = 'MAD_SECRETS_FOO=   "a b" tail'
+        out = console.redact_secrets(cmd)
+        assert "a b" not in out
+        assert "***REDACTED***" in out
+        assert "tail" in out
+
     def test_redacts_known_token_shapes(self):
         for tok in (
             "hf_abcdef123456",

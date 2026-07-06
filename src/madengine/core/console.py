@@ -17,9 +17,10 @@ _REDACTED = "***REDACTED***"
 
 # MAD_SECRETS*=value in any form (-e / --env / --build-arg / bare); key kept, value masked.
 # The value may be unquoted, single-/double-quoted (possibly containing spaces),
-# or empty; the whole value (including surrounding quotes) is masked.
+# or empty; optional whitespace around '=' is also tolerated (e.g. "FOO= value",
+# "FOO =  value"); the whole value (including surrounding quotes) is masked.
 _SECRET_ASSIGN_RE = re.compile(
-    r"""(MAD_SECRETS[A-Za-z0-9_]*\s*=)("[^"]*"|'[^']*'|\S*)"""
+    r"""(MAD_SECRETS[A-Za-z0-9_]*\s*=\s*)("[^"]*"|'[^']*'|\S*)"""
 )
 
 # Fallback: known credential token shapes.
