@@ -73,7 +73,20 @@ class BareMetalRunner:
         self.perf_csv_path = "perf.csv"
         self.additional_context = additional_context or {}
         self.bm_config = self.additional_context.get("bare_metal", {}) or {}
-        self.conda = CondaEnvManager(console=self.console, bm_config=self.bm_config)
+        gpu_vendor = self.context.ctx.get("gpu_vendor") if self.context else None
+        gpu_arch = (
+            (self.context.ctx.get("docker_env_vars") or {}).get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            )
+            if self.context
+            else None
+        )
+        self.conda = CondaEnvManager(
+            console=self.console,
+            bm_config=self.bm_config,
+            gpu_vendor=gpu_vendor,
+            gpu_arch=gpu_arch,
+        )
 
     def set_perf_csv_path(self, path: str) -> None:
         """Set the perf.csv output path."""
@@ -506,6 +519,20 @@ class BareMetalRunner:
             self.rich_console.print(
                 f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]"
             )
+
+        # Opt-in teardown: remove the conda env after perf is recorded so a
+        # removal failure never loses performance data. Best-effort (remove()
+        # uses canFail=True) — leave the node clean on shared bare-metal hosts.
+        if self.bm_config.get("cleanup_env", False):
+            env_name = resolve_conda_env_name(model_info, self.bm_config)
+            try:
+                self.conda.remove(env_name)
+                print(f"🧹 Removed conda env '{env_name}' (cleanup_env)")
+            except Exception as e:
+                self.rich_console.print(
+                    f"[yellow]Warning: Could not remove conda env "
+                    f"'{env_name}': {e}[/yellow]"
+                )
 
     def run_models_from_manifest(
         self,

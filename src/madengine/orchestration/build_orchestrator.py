@@ -251,7 +251,10 @@ class BuildOrchestrator:
             )
 
         # Handle bare-metal (conda) build: create conda envs, no Docker build.
-        if self.additional_context.get("bare_metal"):
+        # Use membership, not truthiness: an empty dict ({'bare_metal': {}}) means
+        # "bare-metal with defaults" and must still route here. This mirrors the
+        # run-phase check in RunOrchestrator._infer_deployment_target.
+        if "bare_metal" in self.additional_context:
             return self._execute_bare_metal_build(manifest_output=manifest_output)
 
         # Handle pre-built image mode
@@ -1406,6 +1409,10 @@ exit 0
             CondaEnvManager,
             resolve_conda_env_name,
         )
+        from madengine.utils.gpu_validator import (
+            GPUInstallationError,
+            validate_gpu_installation,
+        )
 
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
         self.rich_console.print(
@@ -1414,6 +1421,38 @@ exit 0
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
         bm_config = self.additional_context.get("bare_metal", {}) or {}
+
+        # Preflight: bare-metal runs the workload directly on the host, so the
+        # GPU driver/runtime must be healthy before we spend time solving conda
+        # envs. (Docker builds defer this to the container; there is no container
+        # here.) Fail fast with the validator's actionable message.
+        self.context.init_gpu_context()
+        gpu_vendor = self.context.ctx.get("gpu_vendor")
+        gpu_arch = (self.context.ctx.get("docker_env_vars") or {}).get(
+            "MAD_SYSTEM_GPU_ARCHITECTURE"
+        )
+        rocm_path = getattr(self.context, "_rocm_path", None)
+        self.rich_console.print(
+            "[bold cyan]🔍 Validating GPU installation...[/bold cyan]"
+        )
+        try:
+            validate_gpu_installation(
+                rocm_path=rocm_path,
+                raise_on_error=True,
+            )
+        except GPUInstallationError as gpu_err:
+            raise BuildError(
+                str(gpu_err),
+                context=create_error_context(
+                    operation="bare_metal_build",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Check that GPU drivers and the ROCm/CUDA runtime are installed",
+                    "Verify ROCM_PATH points at a valid ROCm installation (AMD)",
+                ],
+            ) from gpu_err
+        self.rich_console.print("[green]✓ GPU installation validated[/green]\n")
 
         self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
         discover_models = DiscoverModels(args=self.args)
@@ -1432,7 +1471,12 @@ exit 0
             )
         self.rich_console.print(f"[green]✓ Found {len(models)} model(s)[/green]\n")
 
-        conda = CondaEnvManager(console=self.console, bm_config=bm_config)
+        conda = CondaEnvManager(
+            console=self.console,
+            bm_config=bm_config,
+            gpu_vendor=gpu_vendor,
+            gpu_arch=gpu_arch,
+        )
 
         manifest = {
             "built_images": {},
@@ -1493,8 +1537,10 @@ exit 0
                 "env_vars": model.get("env_vars", {}),
                 "conda_env": env_name,
                 "environment_file": model.get("environment_file", ""),
+                "requirements_file": model.get("requirements_file", ""),
                 "python_version": model.get("python_version", ""),
                 "setup_script": model.get("setup_script", ""),
+                "rocm": model.get("rocm", {}),
                 "bare_metal": True,
             }
             manifest["summary"]["successful_builds"].append(model_name)
@@ -1559,8 +1605,9 @@ exit 0
             # Auto-detect target from config presence if not explicitly set
             target = self.additional_context.get("deploy")
             if not target:
-                # Auto-detect based on config presence
-                if self.additional_context.get("bare_metal"):
+                # Auto-detect based on config presence. Membership, not truthiness:
+                # an empty {'bare_metal': {}} still means bare-metal (see execute()).
+                if "bare_metal" in self.additional_context:
                     target = "bare_metal"
                 elif self.additional_context.get("slurm"):
                     target = "slurm"
