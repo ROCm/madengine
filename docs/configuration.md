@@ -86,9 +86,11 @@ Defaults only apply to the **build** command where Dockerfile selection requires
 
 ## Run phase: log error pattern scan
 
-After a successful container run, madengine may scan the **run log file** for fixed substrings (for example `RuntimeError:`, `OutOfMemoryError`, `Traceback (most recent call last)`). If a match is found, the run can be marked `FAILURE` even when performance metrics exist—intended as a safety net when logs show obvious Python or OOM errors.
+After a successful container run, madengine may scan the **run log file** for fixed substrings (for example `RuntimeError:`, `OutOfMemoryError`, `Traceback (most recent call last)`)—intended as a safety net when logs show obvious Python or OOM errors. If a match is found **and no valid performance metrics were extracted**, the run is marked `FAILURE`.
 
-Some suites (for example layer unit tests) intentionally print benign `RuntimeError:` text while pytest still passes. In those cases you can **disable** the scan or **narrow** what counts as an error.
+If valid performance metrics *were* extracted, a pattern match no longer fails the run: the log scan cannot distinguish madengine/framework diagnostics from a model's own generated stdout, so a generative model whose output happens to contain a banned substring (e.g. an LLM writing `"ValueError:"` in a code sample) no longer produces a false `FAILURE` (see ROCM-27774). The match is still printed (in yellow) for triage visibility.
+
+Some suites (for example layer unit tests) intentionally print benign `RuntimeError:` text while pytest still passes, with no performance metrics to fall back on. In those cases you can **disable** the scan or **narrow** what counts as an error.
 
 Keys can be set in `--additional-context` / `--additional-context-file`, or on the **model** entry in `models.json` (same keys). **Runtime context overrides the model** when both are set.
 

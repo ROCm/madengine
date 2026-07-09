@@ -6,6 +6,7 @@ from madengine.execution.container_runner_helpers import (
     DEFAULT_LOG_ERROR_PATTERNS,
     log_text_has_error_pattern,
     resolve_log_error_scan_config,
+    resolve_run_status,
 )
 
 
@@ -130,3 +131,50 @@ class TestLogTextHasErrorPattern:
             ["(benign marker)"],
             (),
         )
+
+
+class TestResolveRunStatus:
+    """ROCM-27774: valid performance metrics must win over a log error-pattern match,
+    since the scan cannot tell framework diagnostics apart from a model's own
+    generated stdout (e.g. an LLM benchmark response containing "ValueError:")."""
+
+    def test_performance_and_no_errors_is_success(self):
+        status, reason = resolve_run_status(has_performance=True, has_errors=False)
+        assert status == "SUCCESS"
+        assert "no errors" in reason
+
+    def test_performance_with_errors_is_still_success(self):
+        status, reason = resolve_run_status(has_performance=True, has_errors=True)
+        assert status == "SUCCESS"
+        assert "error pattern also matched" in reason
+
+    def test_errors_without_performance_is_failure(self):
+        status, reason = resolve_run_status(has_performance=False, has_errors=True)
+        assert status == "FAILURE"
+        assert "error patterns detected" in reason
+
+    def test_worker_node_without_performance_is_success(self):
+        status, reason = resolve_run_status(
+            has_performance=False, has_errors=False, is_worker_node=True
+        )
+        assert status == "SUCCESS"
+        assert "worker node" in reason
+
+    def test_worker_node_with_errors_is_still_failure(self):
+        # Worker-node exemption only covers missing performance data, not error matches.
+        status, reason = resolve_run_status(
+            has_performance=False, has_errors=True, is_worker_node=True
+        )
+        assert status == "FAILURE"
+
+    def test_skip_perf_collection_without_performance_is_success(self):
+        status, reason = resolve_run_status(
+            has_performance=False, has_errors=False, skip_perf_collection=True
+        )
+        assert status == "SUCCESS"
+        assert "deferred" in reason
+
+    def test_no_performance_no_errors_no_exemption_is_failure(self):
+        status, reason = resolve_run_status(has_performance=False, has_errors=False)
+        assert status == "FAILURE"
+        assert "no performance metrics" in reason
