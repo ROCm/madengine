@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-07-13
+
+### Changed
+
+- **Log error-pattern match no longer overrides valid performance metrics** (#154, ROCM-27774): The post-run log scanner greps the entire run log, including a model's own generated stdout, so a generative benchmark (e.g. an LLM emitting `"ValueError:"` in a code sample) could flip an otherwise-successful run to `FAILURE`. Since the scan cannot distinguish framework/harness diagnostics from model output, valid extracted performance metrics now take priority: a pattern match no longer fails a run that produced valid perf data — the match is still surfaced (in yellow) for triage instead of silently failing. Status logic was extracted into a new `resolve_run_status()` helper (`execution/container_runner_helpers.py`) with unit tests. When no valid metrics exist, a pattern match still fails the run as before.
+
+- **`sglang-disagg` SLURM launcher supports a co-located proxy** (#149): The launcher previously hard-required a dedicated proxy node and a minimum of 3 nodes (1 proxy + 1 prefill + 1 decode), unlike `vllm-disagg` which leaves topology to the model script. It now also accepts a co-located proxy/router on the first prefill node, lowering the minimum cluster size to 2 nodes. Custom-split validation accepts both topologies — dedicated proxy (`1 + xP + yD == nnodes`) or co-located (`xP + yD == nnodes`); the proxy is started by the model `run.sh`, so both layouts are valid. Docstrings, error messages, and the generated cluster-config header were updated accordingly.
+
+### Fixed
+
+- **`sglang-disagg` default split invalid for 2-node co-located topology** (#149): The default (no custom prefill/decode) split assumed a dedicated proxy and computed `yD = nnodes - 1 - xP`, yielding `yD=0` for `nnodes=2` — an invalid topology that contradicted the new 2-node co-located minimum. `nnodes == 2` is now special-cased to a co-located 1 prefill + 1 decode split. Unit tests added in `tests/unit/test_slurm_multi.py` cover the default-split path across supported node counts.
+
+### Security
+
+- **`MAD_SECRETS_*` values redacted in printed/raised commands** (#150): `docker run`/`docker build` commands and the "Docker options:" line were printed with `MAD_SECRETS_HFTOKEN` (and similar) in plaintext, leaking the HF token into SLURM and run logs. A central `redact_secrets()` helper (`core/console.py`) now masks secret values at every command print/exception site — `Console.sh` stdout, the raised `RuntimeError` message, and `container_runner` Docker options. Only the logged representation is scrubbed; the executed command is unchanged. The `MAD_SECRETS*=value` matcher handles unquoted, single-/double-quoted (including spaces), and empty values, with optional whitespace around `=`; a fallback also masks known token shapes (`hf_`, `sk-`, `ghp_`/`gho_`/…, `xoxb-`/…). Covered by a new `TestRedactSecrets` integration suite.
+
 ## [2.1.1] - 2026-06-02
 
 ### Changed
