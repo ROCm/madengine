@@ -45,6 +45,7 @@ from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
+    resolve_run_status,
     resolve_run_timeout,
 )
 
@@ -1862,11 +1863,13 @@ class ContainerRunner:
                                         "(log_error_pattern_scan).[/dim]"
                                     )
 
-                                # Status logic: Must have performance AND no errors to be considered success
+                                # Status logic: valid performance metrics take priority over a log
+                                # error-pattern match, since the scan cannot tell framework/harness
+                                # diagnostics apart from a model's own generated stdout (ROCM-27774).
                                 # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
                                 # are not expected to report global performance metrics
                                 performance_value = run_results.get("performance")
-                                has_performance = (
+                                has_performance = bool(
                                     performance_value
                                     and performance_value.strip()
                                     and performance_value.strip() != "N/A"
@@ -1875,36 +1878,39 @@ class ContainerRunner:
                                 # Check if this is a worker node (not collecting metrics)
                                 is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
 
-                                if has_errors:
-                                    run_results["status"] = "FAILURE"
+                                # Multi-node/SLURM in-job run: the login node aggregates the richest
+                                # per-node multiple_results CSV and writes the authoritative perf/status
+                                # record (slurm.collect_results + _select_best_multiple_results_csv).
+                                # Primus emits throughput only on the last global rank, which may land on a
+                                # different node than the designated collector (MAD_COLLECT_METRICS=true),
+                                # so an empty local perf here is not authoritative and must not fail the job.
+                                skip_perf_collection = bool(
+                                    self.additional_context.get("skip_perf_collection", False)
+                                )
+
+                                status, status_reason = resolve_run_status(
+                                    has_performance=has_performance,
+                                    has_errors=has_errors,
+                                    is_worker_node=is_worker_node,
+                                    skip_perf_collection=skip_perf_collection,
+                                )
+                                run_results["status"] = status
+
+                                if status == "FAILURE":
                                     self.rich_console.print(
-                                        f"[red]Status: FAILURE (error patterns detected in logs)[/red]"
+                                        f"[red]Status: FAILURE ({status_reason})[/red]"
                                     )
-                                elif has_performance:
-                                    run_results["status"] = "SUCCESS"
+                                elif has_errors:
+                                    # SUCCESS despite a log error-pattern match: performance metrics
+                                    # were valid, so the match is likely benign model-generated text.
+                                    # Surfaced in yellow (rather than plain green) for triage visibility.
                                     self.rich_console.print(
-                                        f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
-                                    )
-                                elif is_worker_node:
-                                    # Worker nodes don't report global performance metrics - this is expected
-                                    run_results["status"] = "SUCCESS"
-                                    self.rich_console.print(
-                                        f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
-                                    )
-                                elif self.additional_context.get("skip_perf_collection", False):
-                                    # Multi-node/SLURM in-job run: the login node aggregates the richest
-                                    # per-node multiple_results CSV and writes the authoritative perf/status
-                                    # record (slurm.collect_results + _select_best_multiple_results_csv).
-                                    # Primus emits throughput only on the last global rank, which may land on a
-                                    # different node than the designated collector (MAD_COLLECT_METRICS=true),
-                                    # so an empty local perf here is not authoritative and must not fail the job.
-                                    run_results["status"] = "SUCCESS"
-                                    self.rich_console.print(
-                                        f"[green]Status: SUCCESS (perf collection deferred to login-node aggregation)[/green]"
+                                        f"[yellow]Status: SUCCESS ({status_reason})[/yellow]"
                                     )
                                 else:
-                                    run_results["status"] = "FAILURE"
-                                    self.rich_console.print(f"[red]Status: FAILURE (no performance metrics)[/red]")
+                                    self.rich_console.print(
+                                        f"[green]Status: SUCCESS ({status_reason})[/green]"
+                                    )
 
                             except Exception as e:
                                 self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
