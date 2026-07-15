@@ -250,13 +250,21 @@ class RunOrchestrator:
             ))
             self.rich_console.print()
 
-            # Infer deployment target from config structure (Convention over Configuration)
-            # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
-            target = self._infer_deployment_target(self.additional_context)
-            
-            # Legacy support: check manifest for explicit target
-            if not target or target == "local":
-                target = deployment_config.get("target", "local")
+            # An explicit non-local "target" in deployment_config wins. This is
+            # required for schedulers that reuse another backend's config block:
+            # e.g. the spur backend reuses the "slurm" block, so structural
+            # inference alone would mis-detect it as plain "slurm".
+            explicit_target = deployment_config.get("target")
+            if explicit_target and explicit_target != "local":
+                target = explicit_target
+            else:
+                # Infer deployment target from config structure (Convention over Configuration)
+                # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
+                target = self._infer_deployment_target(self.additional_context)
+
+                # Legacy support: check manifest for explicit target
+                if not target or target == "local":
+                    target = deployment_config.get("target", "local")
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 

@@ -85,6 +85,15 @@ export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"
 export SLURM_NNODES={{ nodes }}
 export SLURM_NTASKS={{ nodes }}
 export SLURM_LOCALID="${SLURM_LOCALID:-0}"
+# The model launcher (run.sh) derives its cross-node rendezvous PORT and its
+# shared /run_logs/<id> readiness dir from SLURM_JOB_ID, which therefore MUST be
+# identical on every node. Under a job array each task has its own SLURM_JOB_ID
+# but shares SLURM_ARRAY_JOB_ID, so pin SLURM_JOB_ID to the array id for the
+# container/launcher. (The array task id is preserved via SLURM_PROCID above and
+# in the per-node TASK_SCRIPT filename below.)
+export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"
+# spur may not set SLURM_SUBMIT_DIR; the manifest mounts it for /run_logs.
+export SLURM_SUBMIT_DIR="${SLURM_SUBMIT_DIR:-{{ manifest_file | dirname }}}"
 _MAD_REND_DIR="{{ rendezvous_dir }}/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}"
 mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true
 _MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"
@@ -445,7 +454,14 @@ export TORCH_ELASTIC_RDZV_TIMEOUT=3600
 
 # Use submission directory (shared filesystem) for task script
 # /tmp is local to each node and won't be accessible by srun on other nodes
+{% if scheduler == 'spur' %}
+# Under a job array SLURM_JOB_ID is pinned to the shared array id, so include the
+# node rank (array task id) to keep each node's task script path unique on the
+# shared filesystem.
+TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}_${SLURM_PROCID}.sh"
+{% else %}
 TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}.sh"
+{% endif %}
 
 cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
 #!/bin/bash
