@@ -81,6 +81,11 @@ def register_default_deployments():
 
     DeploymentFactory.register("slurm", SlurmDeployment)
 
+    # Spur (Crusoe) scheduler: SLURM-compatible CLI with job-array fan-out.
+    from .spur import SpurDeployment
+
+    DeploymentFactory.register("spur", SpurDeployment)
+
     # Register Kubernetes if library is available
     try:
         from .kubernetes import KubernetesDeployment

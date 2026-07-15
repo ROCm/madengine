@@ -726,6 +726,9 @@ class SlurmDeployment(BaseDeployment):
             "nproc_per_node": nproc_per_node,
             # Profiling tools (processed for multi-node compatibility)
             "tools": tools,
+            # Scheduler flavor: "slurm" (default) or "spur" (job-array fan-out).
+            # SpurDeployment overrides this and adds "rendezvous_dir".
+            "scheduler": "slurm",
         }
 
     def _generate_launcher_command(
