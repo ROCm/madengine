@@ -170,6 +170,11 @@ export MAD_DEPLOYMENT_TYPE=slurm
 export MAD_SLURM_JOB_ID=$SLURM_JOB_ID
 export MAD_NODE_RANK=$SLURM_NODEID
 export MAD_TOTAL_NODES={{ nodes }}
+# Job id used for cross-node artifact/log collection. On stock SLURM this is the
+# job id. On spur every array task has its own SLURM_JOB_ID but shares
+# SLURM_ARRAY_JOB_ID, which is what collect_results() keys on (== deploy() id).
+# Exported so srun/bash task children inherit the same value.
+export MAD_COLLECT_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"
 
 # =============================================================================
 # Workspace Setup
@@ -500,7 +505,7 @@ echo ""
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
     WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
 else
-    WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
+    WORKSPACE=/tmp/madengine_job_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}
 fi
 mkdir -p $WORKSPACE
 WORKSPACE_TYPE="local-multinode"
@@ -535,8 +540,8 @@ echo ""
 # Debug: set node log paths early and trap EXIT so we always see which node failed
 # =============================================================================
 RESULTS_DIR="$SUBMISSION_DIR"
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.err"
 echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script started" >> "${NODE_LOG_ERR}"
 trap 'ec=$?; echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script exiting with code $ec" >> "${NODE_LOG_ERR}"' EXIT
 
@@ -691,8 +696,8 @@ echo ""
 
 # Create node-specific log files in results directory
 RESULTS_DIR={{ manifest_file | dirname }}
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.err"
 
 echo "Node ${SLURM_PROCID} logs:"
 echo "  stdout: ${NODE_LOG_OUT}"
@@ -733,7 +738,7 @@ echo "Task completed with exit code: $TASK_EXIT"
 # =============================================================================
 
 SUBMISSION_DIR={{ manifest_file | dirname }}
-JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${MAD_COLLECT_JOB_ID}"
 NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_${SLURM_PROCID}"
 mkdir -p "$NODE_COLLECTION_DIR"
 
@@ -822,13 +827,23 @@ EXIT_CODE=$?
 {% if multiple_results %}
 if [ $EXIT_CODE -eq 0 ]; then
     SUBMISSION_DIR={{ manifest_file | dirname }}
-    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${MAD_COLLECT_JOB_ID}"
     NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_0"
     mkdir -p "$NODE_COLLECTION_DIR"
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
 fi
 {% endif %}
+{% endif %}
+
+{% if scheduler == 'spur' %}
+# Spur: publish this array task's exit code so the submitter's monitor() can
+# detect per-rank completion on the shared filesystem. spur `sacct -j` does not
+# filter by job id (returns the whole cluster history), so state cannot be read
+# reliably per job; these markers are the source of truth for completion.
+_MAD_DONE_DIR="{{ rendezvous_dir }}/${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"
+mkdir -p "$_MAD_DONE_DIR" 2>/dev/null || true
+echo "$EXIT_CODE" > "$_MAD_DONE_DIR/done_rank${SLURM_PROCID}"
 {% endif %}
 
 # =============================================================================
@@ -854,8 +869,8 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "  📋 Individual Node Logs ({{ nodes }} nodes):"
     echo "  ─────────────────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.err"
         if [ -f "$NODE_OUT" ]; then
             OUT_SIZE=$(du -h "$NODE_OUT" 2>/dev/null | cut -f1)
             ERR_SIZE=$(du -h "$NODE_ERR" 2>/dev/null | cut -f1)
@@ -877,14 +892,14 @@ else
     echo "  📋 Check Individual Node Logs:"
     echo "  ─────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.err"
         if [ -f "$NODE_OUT" ] || [ -f "$NODE_ERR" ]; then
             echo "  Node $i: ${NODE_OUT}"
         fi
     done
     {% else %}
-    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_*.out"
+    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_*.out"
     {% endif %}
     echo "========================================================================"
 fi

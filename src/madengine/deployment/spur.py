@@ -27,9 +27,12 @@ purely by the template context produced here.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import os
+import subprocess
+from pathlib import Path
 from typing import Any, Dict
 
-from .base import DeploymentConfig
+from .base import DeploymentConfig, DeploymentResult, DeploymentStatus
 from .slurm import SlurmDeployment
 
 
@@ -53,3 +56,113 @@ class SpurDeployment(SlurmDeployment):
         context["scheduler"] = "spur"
         context["rendezvous_dir"] = self.rendezvous_dir
         return context
+
+    def _model_job_name(self) -> str:
+        """The #SBATCH --job-name used by the template (madengine-<model name>)."""
+        try:
+            models = self.manifest.get("built_models") or {}
+            first = next(iter(models.values()), {})
+            name = first.get("name") or next(iter(models), "")
+            return f"madengine-{name}"
+        except Exception:
+            return "madengine-"
+
+    def _live_task_count(self, job_name: str) -> int:
+        """Count my not-yet-finished array tasks in the queue (best-effort).
+
+        Used only as a liveness guard so monitor() does not wait forever if a
+        task dies before writing its completion marker. squeue is eventually
+        consistent on spur, so a transient 0 is tolerated by the caller.
+        """
+        try:
+            result = subprocess.run(
+                ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j|%T"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return -1  # unknown
+            live = 0
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                name, _, state = line.partition("|")
+                if name == job_name and state.upper() in (
+                    "PENDING",
+                    "RUNNING",
+                    "CONFIGURING",
+                    "COMPLETING",
+                    "RESIZING",
+                    "SUSPENDED",
+                ):
+                    live += 1
+            return live
+        except Exception:
+            return -1  # unknown
+
+    # Number of consecutive polls with no completion markers AND no live tasks
+    # before we conclude the array died without reporting. ~poll interval (30s)
+    # times this many => grace window.
+    _SPUR_DEAD_POLLS = 4
+
+    def monitor(self, deployment_id: str) -> DeploymentResult:
+        """Marker-based completion detection for the spur job array.
+
+        Each array task writes ``done_rank<rank>`` (its exit code) into
+        ``<rendezvous_dir>/<array_job_id>/`` on the shared filesystem. We treat
+        those markers as the source of truth because spur's ``sacct -j`` does not
+        filter by job id and ``squeue`` is eventually consistent.
+        """
+        marker_dir = Path(self.rendezvous_dir) / str(deployment_id)
+        n = int(self.nodes)
+
+        codes: Dict[int, int] = {}
+        if marker_dir.is_dir():
+            for rank in range(n):
+                f = marker_dir / f"done_rank{rank}"
+                if f.exists():
+                    try:
+                        codes[rank] = int((f.read_text().strip() or "1"))
+                    except ValueError:
+                        codes[rank] = 1
+
+        if len(codes) >= n:
+            failed = {r: c for r, c in codes.items() if c != 0}
+            if not failed:
+                self._show_log_summary(deployment_id, success=True)
+                return DeploymentResult(
+                    status=DeploymentStatus.SUCCESS,
+                    deployment_id=deployment_id,
+                    message=f"All {n} array tasks completed successfully",
+                )
+            self._show_log_summary(deployment_id, success=False)
+            return DeploymentResult(
+                status=DeploymentStatus.FAILED,
+                deployment_id=deployment_id,
+                message=f"Array task(s) failed (rank:exit) {failed}",
+            )
+
+        # Not all ranks done yet. Guard against a task that died without a marker.
+        live = self._live_task_count(self._model_job_name())
+        if live == 0 and len(codes) < n:
+            self._spur_empty_polls = getattr(self, "_spur_empty_polls", 0) + 1
+            if self._spur_empty_polls >= self._SPUR_DEAD_POLLS:
+                self._show_log_summary(deployment_id, success=False)
+                return DeploymentResult(
+                    status=DeploymentStatus.FAILED,
+                    deployment_id=deployment_id,
+                    message=(
+                        f"Only {len(codes)}/{n} ranks reported completion and no "
+                        f"array tasks remain in the queue"
+                    ),
+                )
+        else:
+            self._spur_empty_polls = 0
+
+        return DeploymentResult(
+            status=DeploymentStatus.RUNNING,
+            deployment_id=deployment_id,
+            message=f"{len(codes)}/{n} ranks done (live tasks: {live})",
+        )
