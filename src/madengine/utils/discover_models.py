@@ -5,11 +5,12 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 # built-in modules
 import argparse
-import os
-import json
 import importlib.util
+import json
+import os
 import typing
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
+
 from rich.console import Console as RichConsole
 
 
@@ -32,6 +33,11 @@ class CustomModel:
     args: str = ""
     multiple_results: str = ""
     skip_gpu_arch: str = ""
+    # Bare-metal (conda) execution fields (all optional).
+    conda_env: str = ""
+    environment_file: str = ""
+    python_version: str = ""
+    setup_script: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -73,51 +79,57 @@ class DiscoverModels:
         This copies docker/, scripts/, and config files (models.json, credential.json, data.json)
         from MODEL_DIR to the current working directory to support the model discovery process.
         This operation is safe for build-only (CPU) nodes as it only involves file operations.
-        
+
         MODEL_DIR defaults to "." (current directory) if not set.
         Only copies if MODEL_DIR points to a different directory than current working directory.
         """
         model_dir_env = os.environ.get("MODEL_DIR", ".")
-        
+
         # Get absolute paths to compare
         model_dir_abs = os.path.abspath(model_dir_env)
         cwd_abs = os.path.abspath(".")
-        
+
         # Only copy if MODEL_DIR points to a different directory (not current dir)
         if model_dir_abs != cwd_abs:
             import shlex
             import subprocess
             from pathlib import Path
 
-            self.rich_console.print(f"[bold cyan]📁 MODEL_DIR environment variable detected:[/bold cyan] [yellow]{model_dir_env}[/yellow]")
+            self.rich_console.print(
+                f"[bold cyan]📁 MODEL_DIR environment variable detected:[/bold cyan] [yellow]{model_dir_env}[/yellow]"
+            )
             print(f"Copying required files to current working directory: {cwd_abs}")
 
             try:
                 # Check if source directory exists
                 if not os.path.exists(model_dir_env):
-                    self.rich_console.print(f"[yellow]⚠️  Warning: MODEL_DIR path does not exist: {model_dir_env}[/yellow]")
+                    self.rich_console.print(
+                        f"[yellow]⚠️  Warning: MODEL_DIR path does not exist: {model_dir_env}[/yellow]"
+                    )
                     return
 
                 # Copy specific directories and files only (not everything with /*)
                 # This prevents copying unwanted subdirectories from MODEL_DIR
                 items_to_copy = []
-                
+
                 # Directories to copy
                 for subdir in ["docker", "scripts"]:
                     src_path = Path(model_dir_env) / subdir
                     if src_path.exists():
                         items_to_copy.append((src_path, subdir, "directory"))
-                
+
                 # Files to copy
                 for file in ["models.json", "credential.json", "data.json"]:
                     src_file = Path(model_dir_env) / file
                     if src_file.exists():
                         items_to_copy.append((src_file, file, "file"))
-                
+
                 if not items_to_copy:
-                    self.rich_console.print(f"[yellow]⚠️  No required files/directories found in MODEL_DIR[/yellow]")
+                    self.rich_console.print(
+                        f"[yellow]⚠️  No required files/directories found in MODEL_DIR[/yellow]"
+                    )
                     return
-                
+
                 # Copy each item
                 copied_count = 0
                 for src_path, item_name, item_type in items_to_copy:
@@ -127,7 +139,7 @@ class DiscoverModels:
                             cmd, shell=True, capture_output=True, text=True, check=True
                         )
                         copied_count += 1
-                        
+
                         if result.stdout:
                             # Show summary for directories, full output for files
                             if item_type == "directory":
@@ -135,21 +147,29 @@ class DiscoverModels:
                                 if len(lines) < 10:
                                     print(result.stdout)
                                 else:
-                                    print(f"  ✓ Copied {item_name}/ ({len(lines)} files)")
+                                    print(
+                                        f"  ✓ Copied {item_name}/ ({len(lines)} files)"
+                                    )
                             else:
                                 print(f"  ✓ Copied {item_name}")
                     except subprocess.CalledProcessError as e:
-                        self.rich_console.print(f"[yellow]⚠️  Warning: Failed to copy {item_name}: {e}[/yellow]")
+                        self.rich_console.print(
+                            f"[yellow]⚠️  Warning: Failed to copy {item_name}: {e}[/yellow]"
+                        )
                         if e.stderr:
                             print(f"    Error details: {e.stderr}")
                         # Continue with other items even if one fails
-                
+
                 if copied_count > 0:
-                    self.rich_console.print(f"[green]✅ Successfully copied {copied_count} item(s) from MODEL_DIR[/green]")
-                
+                    self.rich_console.print(
+                        f"[green]✅ Successfully copied {copied_count} item(s) from MODEL_DIR[/green]"
+                    )
+
                 print(f"Model dir: {model_dir_env} → current dir: {cwd_abs}")
             except Exception as e:
-                self.rich_console.print(f"[yellow]⚠️  Warning: Unexpected error copying MODEL_DIR: {e}[/yellow]")
+                self.rich_console.print(
+                    f"[yellow]⚠️  Warning: Unexpected error copying MODEL_DIR: {e}[/yellow]"
+                )
                 # Continue execution even if copy fails
 
     def discover_models(self) -> None:
@@ -179,7 +199,9 @@ class DiscoverModels:
                 files = os.listdir(root)
 
                 if "models.json" in files and "get_models_json.py" in files:
-                    self.rich_console.print(f"[red]❌ Both models.json and get_models_json.py found in {root}.[/red]")
+                    self.rich_console.print(
+                        f"[red]❌ Both models.json and get_models_json.py found in {root}.[/red]"
+                    )
                     raise ValueError(
                         f"Both models.json and get_models_json.py found in {root}."
                     )
@@ -311,11 +333,27 @@ class DiscoverModels:
                             custom_model.update_model()
                             dirname = custom_model.name.split("/")[0]
                             custom_model.dockerfile = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                                os.path.join(
+                                    "scripts", dirname, custom_model.dockerfile
+                                )
                             )
                             custom_model.scripts = os.path.normpath(
                                 os.path.join("scripts", dirname, custom_model.scripts)
                             )
+                            if custom_model.environment_file:
+                                custom_model.environment_file = os.path.normpath(
+                                    os.path.join(
+                                        "scripts",
+                                        dirname,
+                                        custom_model.environment_file,
+                                    )
+                                )
+                            if custom_model.setup_script:
+                                custom_model.setup_script = os.path.normpath(
+                                    os.path.join(
+                                        "scripts", dirname, custom_model.setup_script
+                                    )
+                                )
                             model_dict = custom_model.to_dict()
                             model_dict["args"] = model_dict["args"] + extra_args
                             tag_models.append(model_dict)
@@ -339,17 +377,35 @@ class DiscoverModels:
                             custom_model.update_model()
                             dirname = custom_model.name.split("/")[0]
                             custom_model.dockerfile = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                                os.path.join(
+                                    "scripts", dirname, custom_model.dockerfile
+                                )
                             )
                             custom_model.scripts = os.path.normpath(
                                 os.path.join("scripts", dirname, custom_model.scripts)
                             )
+                            if custom_model.environment_file:
+                                custom_model.environment_file = os.path.normpath(
+                                    os.path.join(
+                                        "scripts",
+                                        dirname,
+                                        custom_model.environment_file,
+                                    )
+                                )
+                            if custom_model.setup_script:
+                                custom_model.setup_script = os.path.normpath(
+                                    os.path.join(
+                                        "scripts", dirname, custom_model.setup_script
+                                    )
+                                )
                             model_dict = custom_model.to_dict()
                             model_dict["args"] = model_dict["args"] + extra_args
                             tag_models.append(model_dict)
 
                 if not tag_models:
-                    self.rich_console.print(f"[red]❌ No models found corresponding to the given tag: {tag}[/red]")
+                    self.rich_console.print(
+                        f"[red]❌ No models found corresponding to the given tag: {tag}[/red]"
+                    )
                     raise ValueError(
                         f"No models found corresponding to the given tag: {tag}"
                     )
@@ -359,11 +415,15 @@ class DiscoverModels:
     def print_models(self) -> None:
         if self.selected_models:
             # print selected models using parsed tags and adding backslash-separated extra args
-            self.rich_console.print(f"[bold green]📋 Selected Models ({len(self.selected_models)} models):[/bold green]")
+            self.rich_console.print(
+                f"[bold green]📋 Selected Models ({len(self.selected_models)} models):[/bold green]"
+            )
             print(json.dumps(self.selected_models, indent=4))
         else:
             # print list of all model names
-            self.rich_console.print(f"[bold cyan]📊 Available Models ({len(self.model_list)} total):[/bold cyan]")
+            self.rich_console.print(
+                f"[bold cyan]📊 Available Models ({len(self.model_list)} total):[/bold cyan]"
+            )
             for model_name in self.model_list:
                 print(f"  {model_name}")
 
