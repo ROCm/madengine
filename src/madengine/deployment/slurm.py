@@ -12,6 +12,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -99,6 +100,38 @@ class SlurmDeployment(BaseDeployment):
                 f"  Allocation has {self.allocation_nodes} nodes available"
             )
 
+    @staticmethod
+    def _expand_nodelist(nodelist: str) -> list:
+        """Expand a SLURM nodelist string into a list of hostnames.
+
+        Stock SLURM emits a compressed form (e.g. "node[01-03,05]") that needs
+        `scontrol show hostnames` to expand. Spur (Crusoe) instead already
+        exposes an expanded comma-separated form (e.g. "nodeA,nodeB") in
+        SLURM_NODELIST and does NOT implement `scontrol show hostname[s]`.
+
+        Strategy: if the string has no range/brace syntax, just split on commas
+        (works on spur). Otherwise try `scontrol show hostnames` and fall back to
+        a naive comma split if that is unavailable.
+        """
+        if not nodelist:
+            return []
+        nodelist = nodelist.strip()
+        if "[" not in nodelist:
+            return [h for h in re.split(r"[,\s]+", nodelist) if h]
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "hostnames", nodelist],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return [h for h in result.stdout.split("\n") if h.strip()]
+        except Exception:
+            pass
+        # Best-effort fallback (cannot expand ranges without scontrol).
+        return [h for h in re.split(r"[,\s]+", nodelist) if h]
+
     def _get_allocation_node_count(self) -> int:
         """
         Get number of nodes in current SLURM allocation.
@@ -149,21 +182,13 @@ class SlurmDeployment(BaseDeployment):
             except ValueError:
                 pass
         
-        # Last resort: count nodes in SLURM_NODELIST
+        # Last resort: count nodes in SLURM_NODELIST (spur-safe expansion)
         nodelist = os.environ.get("SLURM_NODELIST")
         if nodelist:
-            try:
-                result = subprocess.run(
-                    ["scontrol", "show", "hostname", nodelist],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    return len(result.stdout.strip().split("\n"))
-            except Exception:
-                pass
-        
+            expanded = self._expand_nodelist(nodelist)
+            if expanded:
+                return len(expanded)
+
         return 0
 
     def _validate_allocation_nodes(self) -> tuple:
@@ -925,13 +950,27 @@ export SGLANG_TP_SIZE={nproc_per_node}
 # Master coordination
 export MASTER_PORT={master_port}
 
-# Build node IP list from SLURM
-SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
+# Build node IP list from SLURM (scheduler-portable).
+# Stock SLURM: SLURM_JOB_NODELIST is compressed -> expand with `scontrol show
+#   hostnames`. Spur: it is already a comma-separated expanded list and
+#   `scontrol show hostname[s]` is unsupported. Prefer the mad_expand_nodelist
+#   helper defined in the job script header when available.
+if command -v mad_expand_nodelist >/dev/null 2>&1; then
+    _MAD_NODES=$(mad_expand_nodelist "${{SLURM_JOB_NODELIST}}")
+elif [[ "${{SLURM_JOB_NODELIST}}" != *"["* ]]; then
+    _MAD_NODES=$(echo "${{SLURM_JOB_NODELIST}}" | tr ',' '\\n')
+else
+    _MAD_NODES=$(scontrol show hostnames "${{SLURM_JOB_NODELIST}}" 2>/dev/null || echo "${{SLURM_JOB_NODELIST}}" | tr ',' '\\n')
+fi
+SLURM_NODE_IPS=$(echo "$_MAD_NODES" | while read node; do
+    [ -z "$node" ] && continue
     getent hosts "$node" | awk '{{print $1}}'
 done | tr '\\n' ',' | sed 's/,$//')
 
 export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
-export SGLANG_NODE_RANK=${{SLURM_PROCID}}
+# Node rank: stock SLURM sets SLURM_PROCID per srun task. Spur leaves it empty
+# and instead provides NODE_RANK / PMI_RANK / SLURM_NODEID. Fall back in order.
+export SGLANG_NODE_RANK=${{SLURM_PROCID:-${{NODE_RANK:-${{PMI_RANK:-${{SLURM_NODEID:-0}}}}}}}}
 
 echo "=========================================="
 echo "SGLang Disaggregated Cluster Info"
@@ -967,9 +1006,16 @@ echo "=========================================="
 export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
         else:
             return f'''# DeepSpeed multi-node setup
-# Generate hostfile dynamically from SLURM
+# Generate hostfile dynamically from SLURM (scheduler-portable nodelist expansion).
+if command -v mad_expand_nodelist >/dev/null 2>&1; then
+    _MAD_DS_NODES=$(mad_expand_nodelist "$SLURM_JOB_NODELIST")
+elif [[ "$SLURM_JOB_NODELIST" != *"["* ]]; then
+    _MAD_DS_NODES=$(echo "$SLURM_JOB_NODELIST" | tr ',' '\\n')
+else
+    _MAD_DS_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null || echo "$SLURM_JOB_NODELIST" | tr ',' '\\n')
+fi
 cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
-$(scontrol show hostnames $SLURM_JOB_NODELIST | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+$(echo "$_MAD_DS_NODES" | awk -v slots={nproc_per_node} 'NF{{print $1" slots="slots}}')
 EOF
 export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
@@ -1190,13 +1236,39 @@ export MASTER_PORT={master_port}
         # ==================== END PREFLIGHT ====================
 
         try:
-            # Submit job to SLURM (runs locally on login node)
-            result = subprocess.run(
-                ["sbatch", str(self.script_path)],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            # Submit job to SLURM (runs locally on login node).
+            # Spur compatibility: spur's control plane is Raft-based and can
+            # transiently reject submissions with "not the Raft leader" / "no
+            # leader elected yet" during leader election. Retry a few times.
+            _SUBMIT_RETRIES = 6
+            _SUBMIT_RETRY_DELAY = 5  # seconds
+            _TRANSIENT_MARKERS = (
+                "not the raft leader",
+                "no leader elected",
+                "service is currently unavailable",
+                "leader elected yet",
             )
+            result = None
+            for _attempt in range(1, _SUBMIT_RETRIES + 1):
+                result = subprocess.run(
+                    ["sbatch", str(self.script_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    break
+                _err = (result.stderr or "").lower()
+                _is_transient = any(m in _err for m in _TRANSIENT_MARKERS)
+                if _is_transient and _attempt < _SUBMIT_RETRIES:
+                    self.console.print(
+                        f"[dim yellow]sbatch transient scheduler error "
+                        f"(attempt {_attempt}/{_SUBMIT_RETRIES}), retrying in "
+                        f"{_SUBMIT_RETRY_DELAY}s...[/dim yellow]"
+                    )
+                    time.sleep(_SUBMIT_RETRY_DELAY)
+                    continue
+                break
 
             if result.returncode == 0:
                 # Parse job ID: "Submitted batch job 12345"
@@ -1470,11 +1542,17 @@ export MASTER_PORT={master_port}
         _SACCT_RETRIES = 3
         _SACCT_RETRY_DELAY = 5  # seconds
 
+        # Spur compatibility: spur's sacct shim does NOT support the "-X"
+        # (allocations-only) flag and errors out on it. Omit it. Without "-X",
+        # sacct returns the main job row plus sub-steps (.batch/.extern); we take
+        # the first (main job) row as the authoritative State below.
+        sacct_cmd = ["sacct", "-j", job_id, "-n", "-o", "State"]
+
         try:
             result = None
             for attempt in range(1, _SACCT_RETRIES + 1):
                 result = subprocess.run(
-                    ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
+                    sacct_cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -1490,12 +1568,35 @@ export MASTER_PORT={master_port}
                     time.sleep(_SACCT_RETRY_DELAY)
 
             if result.returncode == 0:
-                status = result.stdout.strip().upper()
+                # First non-empty line is the main job row (State without step
+                # suffix). Sub-step rows (.batch/.extern) follow when "-X" is absent.
+                _lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+                status = (_lines[0].upper() if _lines else "")
                 self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
-                
+
                 # Check if live output is enabled
                 live_output = self.config.additional_context.get("live_output", False)
-                
+
+                # The queue check (squeue) can transiently report a job as gone on
+                # eventually-consistent schedulers (e.g. spur's Raft control plane)
+                # while it is still active. If sacct still reports an active state,
+                # treat it as RUNNING instead of FAILED.
+                _ACTIVE_STATES = (
+                    "RUNNING",
+                    "PENDING",
+                    "CONFIGURING",
+                    "COMPLETING",
+                    "REQUEUED",
+                    "RESIZING",
+                    "SUSPENDED",
+                )
+                if any(s in status for s in _ACTIVE_STATES):
+                    return DeploymentResult(
+                        status=DeploymentStatus.RUNNING,
+                        deployment_id=job_id,
+                        message=f"Job {job_id} is {status.lower()}",
+                    )
+
                 if "COMPLETED" in status:
                     # Show final output or summary based on live_output flag
                     if live_output:
