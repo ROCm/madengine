@@ -56,6 +56,10 @@ class SlurmDeployment(BaseDeployment):
 
     DEPLOYMENT_TYPE = "slurm"
     REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
+    # Set by the spur subclass. When True, multi-node fan-out is achieved with a
+    # job array (one single-node task per node) instead of `srun`, because spur's
+    # srun cannot dispatch tasks to other nodes. See SpurDeployment.
+    IS_SPUR = False
 
     def __init__(self, config: DeploymentConfig):
         """
@@ -479,11 +483,23 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j_%t.out",
             f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j_%t.err",
             f"#SBATCH --partition={self.partition}",
-            f"#SBATCH --nodes={self.nodes}",
-            f"#SBATCH --ntasks={self.nodes}",
+        ]
+        if self.IS_SPUR:
+            # spur: one single-node task per node via a job array (srun cannot fan out).
+            script_lines.extend([
+                "#SBATCH --nodes=1",
+                "#SBATCH --ntasks=1",
+                f"#SBATCH --array=0-{self.nodes - 1}",
+            ])
+        else:
+            script_lines.extend([
+                f"#SBATCH --nodes={self.nodes}",
+                f"#SBATCH --ntasks={self.nodes}",
+            ])
+        script_lines.extend([
             f"#SBATCH --gpus-per-node={self.gpus_per_node}",
             f"#SBATCH --time={self.time_limit}",
-        ]
+        ])
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
         if self.slurm_config.get("exclusive", True):
             script_lines.append("#SBATCH --exclusive")
@@ -511,6 +527,37 @@ class SlurmDeployment(BaseDeployment):
             script_lines.append(f"export {key}={shlex.quote(str(value))}")
         
         script_lines.append("")
+        if self.IS_SPUR:
+            # spur job-array rank + shared-filesystem rendezvous. Each array task
+            # is one node: SLURM_ARRAY_TASK_ID is the node rank. Pin SLURM_JOB_ID to
+            # the shared SLURM_ARRAY_JOB_ID so the launcher's rendezvous port and
+            # /run_logs/<id> dir match across nodes. rank 0 publishes its transport
+            # IP; peers read it as MASTER_ADDR (see also job.sh.j2 spur branch).
+            rendezvous_dir = getattr(self, "rendezvous_dir", str(self.output_dir.resolve() / "spur_rendezvous"))
+            script_lines.extend([
+                "# --- spur job-array rank + rendezvous ---",
+                'export NODE_RANK="${SLURM_ARRAY_TASK_ID:-0}"',
+                'export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"',
+                f"export NNODES={self.nodes}",
+                f"export SLURM_NNODES={self.nodes}",
+                f"export WORLD_SIZE={self.nodes}",
+                'export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"',
+                f'export SLURM_SUBMIT_DIR="${{SLURM_SUBMIT_DIR:-{manifest_dir}}}"',
+                f'_MAD_REND_DIR="{rendezvous_dir}/${{SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}}"',
+                'mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true',
+                '_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"',
+                '_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk \'{print $4}\' | cut -d/ -f1 | head -n1)"',
+                '[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk \'{print $1}\')"',
+                'if [ "${NODE_RANK}" = "0" ]; then',
+                '    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"',
+                '    export MASTER_ADDR="$_MAD_MY_IP"',
+                'else',
+                '    for _i in $(seq 1 180); do [ -s "$_MAD_REND_DIR/master_addr" ] && break; sleep 1; done',
+                '    export MASTER_ADDR="$(cat "$_MAD_REND_DIR/master_addr" 2>/dev/null)"',
+                'fi',
+                'echo "[spur-rendezvous] rank=${NODE_RANK} node=$(hostname) my_ip=$_MAD_MY_IP MASTER_ADDR=${MASTER_ADDR}"',
+                "",
+            ])
         script_lines.extend([
             "echo '=========================================='",
             "echo 'slurm_multi Launcher'",
@@ -528,7 +575,23 @@ class SlurmDeployment(BaseDeployment):
         docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
         is_registry_image = docker_image and not docker_image.startswith("ci-") and ("/" in docker_image or "." in docker_image)
         
-        if is_registry_image:
+        if is_registry_image and self.IS_SPUR:
+            # spur: each array task is its own node, so pull locally (no srun fan-out).
+            script_lines.extend([
+                "",
+                "# Pull Docker image on this node (one array task per node)",
+                "echo '=========================================='",
+                f"echo \"[$(hostname)] Pulling {docker_image}...\"",
+                "echo '=========================================='",
+                f"docker pull {docker_image}",
+                "PULL_EXIT=$?",
+                "if [ $PULL_EXIT -ne 0 ]; then",
+                f"    echo \"[$(hostname)] Docker pull failed for {docker_image}\"",
+                "    exit $PULL_EXIT",
+                "fi",
+                "echo ''",
+            ])
+        elif is_registry_image:
             # Add parallel docker pull on all nodes
             # This ensures all nodes have the image before running
             script_lines.extend([
@@ -598,6 +661,14 @@ class SlurmDeployment(BaseDeployment):
             f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker_template}",
             f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker_template}",
             f"echo \"Completion marker written: {completion_marker_template}\"",
+        ])
+        if self.IS_SPUR:
+            # Per-rank marker consumed by SpurDeployment.monitor() (spur `sacct -j`
+            # is unreliable, so completion is detected from these files).
+            script_lines.extend([
+                'echo "$SCRIPT_EXIT_CODE" > "$_MAD_REND_DIR/done_rank${NODE_RANK}"',
+            ])
+        script_lines.extend([
             "",
             "exit $SCRIPT_EXIT_CODE",
         ])
