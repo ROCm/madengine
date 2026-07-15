@@ -46,7 +46,25 @@ module load {{ module }}
 # =============================================================================
 
 # Distributed execution environment (auto-configured from SLURM)
-export MASTER_ADDR=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
+# Scheduler-portable nodelist expansion.
+# Stock SLURM: SLURM_NODELIST is compressed ("node[01-03]") -> needs
+#   `scontrol show hostnames`. Spur (Crusoe): SLURM_NODELIST is already an
+#   expanded comma list ("nodeA,nodeB") and `scontrol show hostname[s]` is
+#   unsupported. Try scontrol only for compressed forms, else split on commas.
+mad_expand_nodelist() {
+    local nl="$1"
+    if [ -z "$nl" ]; then return 0; fi
+    if [[ "$nl" != *"["* ]]; then
+        echo "$nl" | tr ',' '\n'
+        return 0
+    fi
+    if command -v scontrol >/dev/null 2>&1 && scontrol show hostnames "$nl" >/dev/null 2>&1; then
+        scontrol show hostnames "$nl"
+    else
+        echo "$nl" | tr ',' '\n'
+    fi
+}
+export MASTER_ADDR=$(mad_expand_nodelist "$SLURM_NODELIST" | head -n 1)
 export MASTER_PORT={{ master_port | default(29500) }}
 export WORLD_SIZE=$SLURM_NTASKS
 # NOTE: RANK is set per-task inside srun context (not here in main script)
