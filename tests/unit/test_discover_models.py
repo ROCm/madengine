@@ -101,15 +101,20 @@ class TestUnscopedTagSelection:
         dm.select_models()
         assert [m["name"] for m in dm.selected_models] == ["pyt_foo"]
 
-    def test_unscoped_tag_does_not_cross_scope_boundary(self):
-        """--tags pyt_foo must NOT match MAD/pyt_foo — scopes are not crossed."""
+    def test_unscoped_tag_matches_scoped_model_by_short_name(self):
+        """--tags pyt_foo matches MAD/pyt_foo via short-name backward-compat matching.
+
+        Name-based matching now also falls back to the short name (the part after the
+        last '/'), so a scoped model can still be reached by its unscoped short name.
+        See TestShortNameBackwardCompat for dedicated coverage of this behavior.
+        """
         dm = DiscoverModels(args=argparse.Namespace(tags=["pyt_foo"]))
         dm.models = [
             {"name": "MAD/pyt_foo", "tags": ["inference"], "args": ""},
         ]
         dm.custom_models = []
-        with pytest.raises(ValueError):
-            dm.select_models()
+        dm.select_models()
+        assert [m["name"] for m in dm.selected_models] == ["MAD/pyt_foo"]
 
     def test_unscoped_tag_matches_scoped_models_by_tag_field(self):
         """--tags inference matches any model carrying that tag, regardless of scope prefix.
@@ -157,3 +162,80 @@ class TestUnscopedTagSelection:
         assert len(dm.selected_models) == 1
         assert dm.selected_models[0]["name"] == "pyt_foo"
         assert "--batch-size 32" in dm.selected_models[0]["args"]
+
+
+class TestShortNameBackwardCompat:
+    """Short-name (unscoped) matching resolves dir-prefixed model names for backward compat.
+
+    After migrating from root models.json to per-directory models.json, model names gain
+    a directory prefix (e.g., ``pyt_foo`` becomes ``dir/pyt_foo``). Users should still
+    be able to reference models by their original flat name via ``--tags pyt_foo``.
+    """
+
+    def test_short_name_matches_dir_prefixed_model(self):
+        """--tags pyt_foo resolves dir/pyt_foo even without 'pyt_foo' in the tags list."""
+        dm = DiscoverModels(args=argparse.Namespace(tags=["pyt_foo"]))
+        dm.models = [
+            {"name": "dir/pyt_foo", "tags": ["inference"], "args": ""},
+            {"name": "dir/pyt_bar", "tags": ["training"], "args": ""},
+        ]
+        dm.custom_models = []
+        dm.select_models()
+        assert [m["name"] for m in dm.selected_models] == ["dir/pyt_foo"]
+
+    def test_flat_name_unaffected(self):
+        """--tags foo still resolves a root (non-prefixed) model named 'foo'."""
+        dm = DiscoverModels(args=argparse.Namespace(tags=["foo"]))
+        dm.models = [
+            {"name": "foo", "tags": [], "args": ""},
+            {"name": "bar", "tags": [], "args": ""},
+        ]
+        dm.custom_models = []
+        dm.select_models()
+        assert [m["name"] for m in dm.selected_models] == ["foo"]
+
+    def test_ambiguous_short_name_matches_both_flat_and_prefixed_model(self):
+        """When both foo and dir/foo exist, --tags foo currently matches both.
+
+        Short-name matching is purely additive alongside exact-name matching, so there
+        is no precedence between an exact match and a short-name match; this pins the
+        current (both-selected) behavior for the ambiguous case.
+        """
+        dm = DiscoverModels(args=argparse.Namespace(tags=["foo"]))
+        dm.models = [
+            {"name": "foo", "tags": [], "args": ""},
+            {"name": "dir/foo", "tags": [], "args": ""},
+            {"name": "bar", "tags": [], "args": ""},
+        ]
+        dm.custom_models = []
+        dm.select_models()
+        assert sorted(m["name"] for m in dm.selected_models) == ["dir/foo", "foo"]
+
+    def test_short_name_matches_custom_model(self):
+        """Short-name matching also works for custom models from get_models_json.py."""
+        from madengine.utils.discover_models import CustomModel
+
+        dm = DiscoverModels(args=argparse.Namespace(tags=["my_model"]))
+        dm.models = []
+        cm = CustomModel(
+            name="mydir/my_model",
+            dockerfile="../../docker/mydir",
+            scripts="run.sh",
+            tags=["perf"],
+        )
+        dm.custom_models = [cm]
+        dm.select_models()
+        assert len(dm.selected_models) == 1
+        assert dm.selected_models[0]["name"] == "mydir/my_model"
+
+    def test_scoped_tag_unaffected_by_short_name_matching(self):
+        """A scoped tag dir/model_name selects only that model, not other dirs' models
+        with the same short name."""
+        dm = DiscoverModels(args=argparse.Namespace(tags=["dirA/pyt_foo"]))
+        dm.models = [
+            {"name": "dirA/pyt_foo", "tags": [], "args": ""},
+            {"name": "dirB/pyt_foo", "tags": [], "args": ""},
+        ]
+        dm.custom_models = []
+        dm.select_models()
+        assert [m["name"] for m in dm.selected_models] == ["dirA/pyt_foo"]
