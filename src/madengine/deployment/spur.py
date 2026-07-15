@@ -102,9 +102,12 @@ class SpurDeployment(SlurmDeployment):
         except Exception:
             return -1  # unknown
 
-    # Number of consecutive polls with no completion markers AND no live tasks
-    # before we conclude the array died without reporting. ~poll interval (30s)
-    # times this many => grace window.
+    # Number of consecutive polls, AFTER the tasks were first seen alive, with no
+    # completion markers AND no live tasks before we conclude the array died
+    # without reporting. ~poll interval (30s) times this many => grace window.
+    # The "seen alive first" gate is essential on spur: for the first ~1-2 min
+    # after sbatch, squeue does not yet list the array tasks (registration lag /
+    # eventual consistency), so a fresh, healthy run reports 0 live tasks.
     _SPUR_DEAD_POLLS = 4
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
@@ -144,9 +147,18 @@ class SpurDeployment(SlurmDeployment):
                 message=f"Array task(s) failed (rank:exit) {failed}",
             )
 
-        # Not all ranks done yet. Guard against a task that died without a marker.
+        # Not all ranks done yet. Guard against a task that died without writing a
+        # marker, but only AFTER we have seen the tasks alive at least once: right
+        # after sbatch, spur's squeue does not yet list the array tasks, so a fresh
+        # healthy run legitimately reports 0 live tasks for the first ~1-2 min.
         live = self._live_task_count(self._model_job_name())
-        if live == 0 and len(codes) < n:
+        if live > 0:
+            self._spur_seen_live = True
+            self._spur_empty_polls = 0
+        elif live == 0 and getattr(self, "_spur_seen_live", False) and len(codes) < n:
+            # Tasks were running earlier and now none are queued and not all
+            # ranks reported: a transient empty squeue is possible, so require
+            # several consecutive empty polls before declaring failure.
             self._spur_empty_polls = getattr(self, "_spur_empty_polls", 0) + 1
             if self._spur_empty_polls >= self._SPUR_DEAD_POLLS:
                 self._show_log_summary(deployment_id, success=False)
@@ -159,6 +171,7 @@ class SpurDeployment(SlurmDeployment):
                     ),
                 )
         else:
+            # live == -1 (squeue unavailable/unknown) or still in startup grace.
             self._spur_empty_polls = 0
 
         return DeploymentResult(
