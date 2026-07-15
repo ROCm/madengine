@@ -75,28 +75,32 @@ class SpurDeployment(SlurmDeployment):
         consistent on spur, so a transient 0 is tolerated by the caller.
         """
         try:
+            # NOTE: spur's squeue ignores custom -o delimiters (e.g. "%j|%T"
+            # renders as "<name> <state>", space-separated), so parse by
+            # whitespace. Job names produced by the template contain no spaces.
             result = subprocess.run(
-                ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j|%T"],
+                ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j %T"],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode != 0:
                 return -1  # unknown
+            live_states = {
+                "PENDING",
+                "RUNNING",
+                "CONFIGURING",
+                "COMPLETING",
+                "RESIZING",
+                "SUSPENDED",
+            }
             live = 0
             for line in result.stdout.splitlines():
-                line = line.strip()
-                if not line:
+                parts = line.split()
+                if len(parts) < 2:
                     continue
-                name, _, state = line.partition("|")
-                if name == job_name and state.upper() in (
-                    "PENDING",
-                    "RUNNING",
-                    "CONFIGURING",
-                    "COMPLETING",
-                    "RESIZING",
-                    "SUSPENDED",
-                ):
+                name, state = parts[0], parts[-1]
+                if name == job_name and state.upper() in live_states:
                     live += 1
             return live
         except Exception:
