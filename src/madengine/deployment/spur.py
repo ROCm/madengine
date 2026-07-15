@@ -43,6 +43,10 @@ class SpurDeployment(SlurmDeployment):
     # spur ships slurm-compatible shims. scontrol exists but is only partially
     # implemented; the spur flow does not depend on it, so we don't require it.
     REQUIRED_TOOLS = ["sbatch", "squeue", "sacct"]
+    # Drives the spur-specific branches in the inherited SLURM code paths
+    # (template rendering and the slurm_multi launcher): job-array fan-out
+    # instead of srun.
+    IS_SPUR = True
 
     def __init__(self, config: DeploymentConfig):
         super().__init__(config)
