@@ -87,18 +87,18 @@ madengine discover --tags dummy pyt_huggingface_bert
 
 ### 2. Directory-Specific Models
 
-Models organized in subdirectories (`scripts/{dir}/models.json`):
+Models organized in subdirectories (`scripts/{dir}/models.json`), selected with scoped tags (`{dir}/{model_or_tag}`):
 
 ```bash
-madengine discover --tags dummy2:dummy_2
+madengine discover --tags dummy2/model1
 ```
 
 ### 3. Dynamic Models with Parameters
 
-Python-generated models (`scripts/{dir}/get_models_json.py`):
+Python-generated models (`scripts/{dir}/get_models_json.py`), with extra args passed after `:`:
 
 ```bash
-madengine discover --tags dummy3:dummy_3:batch_size=512:in=32
+madengine discover --tags dummy3/model3:batch_size=512:in=32
 ```
 
 ## Build Workflow
