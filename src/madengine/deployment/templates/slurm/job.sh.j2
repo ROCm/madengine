@@ -3,9 +3,19 @@
 #SBATCH --output={{ output_dir }}/madengine-{{ model_name }}_%j_%t.out
 #SBATCH --error={{ output_dir }}/madengine-{{ model_name }}_%j_%t.err
 #SBATCH --partition={{ partition }}
+{% if scheduler == 'spur' %}
+# Spur scheduler: srun cannot fan out tasks across nodes, so instead of one
+# multi-node job with `srun bash task` we use a job ARRAY of single-node tasks.
+# Each array task runs on one node; SLURM_ARRAY_TASK_ID is the node rank, and
+# the tasks self-form the cluster via the model launcher's TCP rendezvous.
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --array=0-{{ nodes - 1 }}
+{% else %}
 #SBATCH --nodes={{ nodes }}
 #SBATCH --ntasks={{ nodes }}
 #SBATCH --ntasks-per-node=1
+{% endif %}
 #SBATCH --gpus-per-node={{ gpus_per_node }}
 #SBATCH --time={{ time_limit }}
 {% if reservation %}
@@ -64,6 +74,36 @@ mad_expand_nodelist() {
         echo "$nl" | tr ',' '\n'
     fi
 }
+{% if scheduler == 'spur' %}
+# --- Spur job-array rank + rendezvous ----------------------------------------
+# Each array task is one node. SLURM_ARRAY_TASK_ID is the node rank. We emulate
+# the SLURM_* vars the rest of this script expects, then resolve MASTER_ADDR via
+# a shared-filesystem rendezvous: rank 0 publishes its transport IP; peers wait
+# for and read it. The port is derived from the shared SLURM_ARRAY_JOB_ID so it
+# is identical across all tasks (mirrors the model launcher's rendezvous).
+export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"
+export SLURM_NNODES={{ nodes }}
+export SLURM_NTASKS={{ nodes }}
+export SLURM_LOCALID="${SLURM_LOCALID:-0}"
+_MAD_REND_DIR="{{ rendezvous_dir }}/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}"
+mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true
+_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"
+_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk '{print $1}')"
+if [ "${SLURM_PROCID}" = "0" ]; then
+    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"
+    export MASTER_ADDR="$_MAD_MY_IP"
+else
+    for _i in $(seq 1 180); do [ -s "$_MAD_REND_DIR/master_addr" ] && break; sleep 1; done
+    export MASTER_ADDR="$(cat "$_MAD_REND_DIR/master_addr" 2>/dev/null)"
+fi
+echo "[spur-rendezvous] rank=${SLURM_PROCID} node=$(hostname) my_ip=$_MAD_MY_IP MASTER_ADDR=${MASTER_ADDR}"
+export MASTER_PORT={{ master_port | default(29500) }}
+export WORLD_SIZE={{ nodes }}
+export LOCAL_RANK=0
+export NNODES={{ nodes }}
+export GPUS_PER_NODE={{ gpus_per_node }}
+{% else %}
 export MASTER_ADDR=$(mad_expand_nodelist "$SLURM_NODELIST" | head -n 1)
 export MASTER_PORT={{ master_port | default(29500) }}
 export WORLD_SIZE=$SLURM_NTASKS
@@ -72,6 +112,7 @@ export WORLD_SIZE=$SLURM_NTASKS
 export LOCAL_RANK=$SLURM_LOCALID
 export NNODES={{ nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+{% endif %}
 
 # GPU visibility (ROCm/CUDA)
 # IMPORTANT: Ray (vLLM, SGLang) requires HIP_VISIBLE_DEVICES for AMD GPUs
@@ -731,9 +772,18 @@ TASK_SCRIPT_EOF
 
 chmod +x "$TASK_SCRIPT"
 
+{% if scheduler == 'spur' %}
+# Spur: this script IS a single array task pinned to one node. Run the per-node
+# task body directly (spur srun cannot dispatch to other nodes anyway). Node
+# fan-out is achieved by the job array; peers coordinate via the rendezvous above.
+echo "Launching task for node rank ${SLURM_PROCID} (array) on $(hostname)..."
+bash "$TASK_SCRIPT"
+EXIT_CODE=$?
+{% else %}
 echo "Launching tasks on {{ nodes }} nodes..."
 srun bash "$TASK_SCRIPT"
 EXIT_CODE=$?
+{% endif %}
 
 # Cleanup task script
 rm -f "$TASK_SCRIPT"
