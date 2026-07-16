@@ -13,24 +13,28 @@ Deployment is configured via `--additional-context` and happens automatically du
 
 ## Deployment Workflow
 
+Build once, then deploy the resulting manifest to any target:
+
+```mermaid
+flowchart LR
+    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
+    M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
+    D --> T{detect target}
+    T -->|k8s / kubernetes| K[K8s Job]
+    T -->|slurm| S[SLURM script]
+    T -->|neither| L[Local Docker]
 ```
-┌─────────────────────────────────────────────┐
-│  1. Build Phase (Local or CI/CD)           │
-│     madengine build --tags model       │
-│     → Creates Docker image                  │
-│     → Pushes to registry                    │
-│     → Generates build_manifest.json         │
-└─────────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────┐
-│  2. Deploy Phase (Run with Context)         │
-│     madengine run                       │
-│       --manifest-file build_manifest.json   │
-│       --additional-context '{"deploy":...}' │
-│     → Detects deployment target             │
-│     → Creates K8s Job or SLURM script       │
-│     → Submits and monitors execution        │
-└─────────────────────────────────────────────┘
+
+### Deployment Target Inference
+
+No explicit `deploy` field is required — the target is inferred from the config structure (Convention over Configuration):
+
+```mermaid
+flowchart TD
+    A[additional_context] --> Q{which key?}
+    Q -->|k8s / kubernetes| K[Kubernetes deployment]
+    Q -->|slurm| S[SLURM deployment]
+    Q -->|neither| L[Local Docker execution]
 ```
 
 ## Kubernetes Deployment

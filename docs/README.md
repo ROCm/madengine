@@ -35,7 +35,55 @@ Complete documentation for madengine - AI model automation and distributed bench
 
 ## 🏗️ Architecture
 
-The architecture diagram (Orchestration, Infrastructure, and Launcher layers) is in the [main README](../README.md#-architecture). Summary:
+The CLI drives orchestrators that discover and build models, then hand off to a local or distributed execution target, which runs the model under the appropriate launcher and emits performance data for reporting. (Same diagram as the [main README](../README.md#-architecture).)
+
+```mermaid
+flowchart TB
+    subgraph CLI["CLI Layer — Typer + Rich"]
+        C1[discover]
+        C2[build]
+        C3[run]
+        C4[report]
+        C5[database]
+    end
+
+    subgraph ORC["Orchestration Layer"]
+        O1[DiscoverModels]
+        O2[BuildOrchestrator]
+        O3[RunOrchestrator]
+        MAN[(build_manifest.json)]
+    end
+
+    subgraph EXEC["Execution / Deployment Layer"]
+        E1[ContainerRunner<br/>local Docker]
+        E2[DeploymentFactory]
+        K8S[Kubernetes Jobs]
+        SLURM[SLURM Jobs]
+    end
+
+    subgraph LAUNCH["Launcher Layer"]
+        T[Train: torchrun · DeepSpeed<br/>Megatron-LM · TorchTitan · Primus]
+        I[Infer: vLLM · SGLang · SGLang Disagg]
+    end
+
+    OUT[(perf.csv / JSON)]
+
+    C1 --> O1
+    C2 --> O2
+    C3 --> O3
+    O2 --> MAN --> O3
+    O1 --> O2
+    O3 --> E1
+    O3 --> E2
+    E2 --> K8S
+    E2 --> SLURM
+    E1 --> LAUNCH
+    K8S --> LAUNCH
+    SLURM --> LAUNCH
+    LAUNCH --> OUT
+    OUT --> C4
+    OUT --> C5
+```
 
 1. **CLI Layer** - User interface with 5 commands (discover, build, run, report, database)
 2. **Model Discovery** - Find and validate models from MAD package

@@ -694,6 +694,34 @@ madengine run --manifest-file build_manifest.json
 
 ---
 
+## Parallelism Capabilities
+
+How each launcher handles the various parallelism strategies. `✅Auto` = supported and configured by madengine; `❗Manual` = supported by the launcher but requires user configuration; `❗Limited` / `❗Disabled` = launcher or platform limitation.
+
+| Launcher | Tensor Parallel (TP) | Pipeline Parallel (PP) | Data Parallel (DP) | Context Parallel (CP) | FSDP/ZeRO | Expert Parallel (EP) | Primary Use Case |
+|----------|----------------------|------------------------|--------------------|------------------------|-----------|----------------------|------------------|
+| **torchrun** | ❗Manual | ❌No | ❗Manual (DDP) | ❌No | ❗Manual (FSDP) | ❌No | General distributed training |
+| **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
+| **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
+| **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **Primus** | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❌No | Unified pretrain (experiment YAML; backend-specific) |
+| **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
+| **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
+| **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |
+
+## Infrastructure Capabilities
+
+| Feature | Local | Kubernetes | SLURM |
+|---------|-------|-----------|-------|
+| **Execution** | Docker containers | K8s Jobs | SLURM jobs |
+| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays |
+| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler |
+| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol |
+| **Auto-scaling** | ❌ | ✅ | ❌ |
+| **Network** | Host | CNI plugin | InfiniBand/Ethernet |
+
+---
+
 ## Configuration Best Practices
 
 ### 1. Launcher Selection
