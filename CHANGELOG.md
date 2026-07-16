@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-07-15
+
+### Added
+
+- **Unscoped tags match dir-prefixed model short names** (#159): Per-directory `models.json` prefixes model names with their directory (e.g. `pyt_foo` becomes `dir/pyt_foo`), which silently broke `--tags pyt_foo` for users referencing models by their original flat name. `DiscoverModels` now falls back to matching the short name (the part after the last `/`) for unscoped tags, so existing `--tags` invocations keep working after the migration.
+
+### Fixed
+
+- **`amd-smi` path resolution in `get_gpu_renderD_nodes`** (#156, ROCM-27727): `amd-smi` was invoked as a bare command, relying on `PATH`, while every other call site in `core/context.py` resolves it via `self._rocm_path`. On hosts where `/opt/rocm*/bin` is not on `PATH`, this caused GPU detection to fail with exit code 127. The call now resolves through `self._rocm_path` like the rest of the file.
+
+### Docs
+
+- **Stale directory-scoped model tag examples corrected** (#158): Colon-separated tags (e.g. `dummy2:dummy_2`) are parsed as model name plus extra script args, not directory scope. Directory-scoped selection uses `scope/tag` syntax (e.g. `dummy2/model1`) since #109. README and `docs/{cli-reference,usage}.md` examples updated accordingly.
+
 ## [2.1.2] - 2026-07-13
 
 ### Changed
