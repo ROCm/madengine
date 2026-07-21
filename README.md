@@ -406,11 +406,11 @@ madengine discovers models from the MAD package using three methods:
 # Root models (models.json)
 madengine discover --tags pyt_huggingface_bert
 
-# Directory-specific (scripts/{dir}/models.json)
-madengine discover --tags dummy2:dummy_2
+# Directory-specific (scripts/{dir}/models.json), scoped tag: {dir}/{model_or_tag}
+madengine discover --tags dummy2/model1
 
 # Dynamic with parameters (scripts/{dir}/get_models_json.py)
-madengine discover --tags dummy3:dummy_3:batch_size=512
+madengine discover --tags dummy3/model3:batch_size=512
 ```
 
 ## 📊 Performance Profiling
