@@ -796,8 +796,10 @@ class Context:
             else:
                 # Modern method using amd-smi (ROCm >= 6.4.0)
                 # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
+                # Use resolved path since /opt/rocm*/bin is not guaranteed to be on PATH
                 # Longer timeout (180s) for slow GPU initialization on SLURM compute nodes
-                output = self.console.sh("amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1", timeout=180)
+                amd_smi_path = os.path.join(self._rocm_path, "bin", "amd-smi")
+                output = self.console.sh(f"{amd_smi_path} list -e --json 2>/dev/null || {amd_smi_path} list -e --json 2>&1", timeout=180)
                 if not output or output.strip() == "":
                     raise ValueError("Failed to retrieve AMD GPU data from amd-smi")
                 

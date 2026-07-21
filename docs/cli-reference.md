@@ -65,11 +65,11 @@ madengine discover --tags dummy,multi,vllm
 # With verbose output
 madengine discover --tags model --verbose
 
-# Directory-specific models
-madengine discover --tags dummy2:dummy_2
+# Directory-specific models (scoped tag: {dir}/{model_or_tag})
+madengine discover --tags dummy2/model1
 
 # Dynamic models with parameters
-madengine discover --tags dummy3:dummy_3:batch_size=512
+madengine discover --tags dummy3/model3:batch_size=512
 ```
 
 **Discovery Methods:**
