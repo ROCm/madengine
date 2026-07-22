@@ -517,13 +517,13 @@ class RunOrchestrator:
         # Load manifest first to check if we have Docker images
         with open(manifest_file, "r") as f:
             manifest = json.load(f)
-        
+
         has_docker_images = bool(manifest.get("built_images", {}))
-        
+
         if has_docker_images:
             # Using Docker containers - containers have GPU support built-in
             self.rich_console.print("[dim cyan]Using Docker containers with built-in GPU support[/dim cyan]\n")
-        
+
         # Initialize runtime context (runs full GPU detection on compute nodes)
         self._init_runtime_context()
         
@@ -765,13 +765,13 @@ class RunOrchestrator:
 
         host_os = self.context.ctx.get("host_os", "")
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("yum info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("zypper info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
