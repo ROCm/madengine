@@ -548,6 +548,13 @@ class TestMainBuildPathDeploymentConfigMerge:
         from madengine.orchestration.build_orchestrator import BuildOrchestrator
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
         orch.args = MagicMock()
+        # execute() reads these via getattr(self.args, ...) to drive control
+        # flow (multi-arch build loop, live Docker output). A bare MagicMock
+        # attribute is truthy and non-list, which would make `if target_archs:`
+        # true and then iterate a Mock -- set explicit, realistic values so
+        # the test exercises the single-arch build path deterministically.
+        orch.args.target_archs = []
+        orch.args.live_output = False
         orch.console = MagicMock()
         orch.rich_console = MagicMock()
         orch.context = MagicMock()

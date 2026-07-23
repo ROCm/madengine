@@ -1240,7 +1240,7 @@ exit 0
         with open(manifest_output, "r") as f:
             saved_manifest = json.load(f)
 
-        if "deployment_config" not in saved_manifest:
+        if not isinstance(saved_manifest.get("deployment_config"), dict):
             saved_manifest["deployment_config"] = {}
 
         # Merge model's distributed config from the first model.
@@ -1259,7 +1259,7 @@ exit 0
                 )
         model_distributed = models[0].get("distributed", {})
         if model_distributed:
-            if "distributed" not in saved_manifest["deployment_config"]:
+            if not isinstance(saved_manifest["deployment_config"].get("distributed"), dict):
                 saved_manifest["deployment_config"]["distributed"] = {}
 
             # Copy launcher and other critical fields from model config
@@ -1283,7 +1283,7 @@ exit 0
                 )
         model_slurm = models[0].get("slurm", {})
         if model_slurm:
-            if "slurm" not in saved_manifest["deployment_config"]:
+            if not isinstance(saved_manifest["deployment_config"].get("slurm"), dict):
                 saved_manifest["deployment_config"]["slurm"] = {}
 
             # Copy slurm settings from model config (model card fills in
