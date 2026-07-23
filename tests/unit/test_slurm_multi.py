@@ -525,3 +525,85 @@ class TestBuildOnComputeManifestShape:
         for mn in ("model_a", "model_b"):
             assert manifest["built_models"][mn]["built_on_compute"] is True
             assert "DOCKER_IMAGE_NAME" in manifest["built_models"][mn]["env_vars"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Main build path (execute()) must merge model-card slurm/distributed too
+
+class TestMainBuildPathDeploymentConfigMerge:
+    """BuildOrchestrator.execute() (the normal build-from-Dockerfile path used
+    whenever a model isn't built via --use-image or --build-on-compute) must
+    merge the discovered model's `slurm`/`distributed` config into
+    manifest deployment_config, exactly like `_execute_with_prebuilt_image`
+    and `_execute_build_on_compute` already do.
+
+    Regression test for a bug where a model card's non-empty "slurm" config
+    was silently dropped on this path: deployment_config.slurm stayed unset,
+    run_orchestrator._infer_deployment_target() fell back to "local", and on
+    GPU-less SLURM login nodes this caused "GPU detection failed" instead of
+    dispatching via sbatch.
+    """
+
+    def _build_orchestrator_stub(self):
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock()
+        orch.console = MagicMock()
+        orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = {"docker_env_vars": {}, "docker_mounts": {}, "docker_build_arg": {}}
+        orch.additional_context = {}
+        orch._original_user_slurm_keys = set()
+        orch.credentials = {}
+        return orch
+
+    def test_execute_merges_model_slurm_and_distributed_with_empty_additional_context(self, tmp_path):
+        """When --additional-context has no "slurm" key at all (the CI case),
+        deployment_config.slurm/distributed must still come from the model card."""
+        fake_model = {
+            "name": "sglang_disagg_deepseek-r1",
+            "dockerfile": "docker/sglang_disagg_inference",
+            "scripts": "scripts/fake/run.sh",
+            "n_gpus": "8",
+            "tags": ["pyt", "sglang"],
+            "args": "",
+            "slurm": {"partition": "amd-rccl", "nodes": 3},
+            "distributed": {
+                "launcher": "sglang-disagg",
+                "sglang_disagg": {"prefill_nodes": 1, "decode_nodes": 1},
+            },
+        }
+
+        # Dummy Dockerfile so builder._get_dockerfiles_for_model()/context
+        # resolution finds a real file instead of raising.
+        df = tmp_path / f"{fake_model['dockerfile']}.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text("FROM scratch\n")
+
+        manifest_path = tmp_path / "build_manifest.json"
+        orch = self._build_orchestrator_stub()
+
+        import os
+        from madengine.execution.docker_builder import DockerBuilder
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+                mock_dm.return_value.run.return_value = [fake_model]
+                # Skip the real `docker build` subprocess entirely -- the
+                # deployment_config merge only depends on the discovered
+                # models list, not on build success/failure.
+                with patch.object(
+                    DockerBuilder, "build_all_models",
+                    return_value={"successful_builds": [], "failed_builds": []},
+                ):
+                    orch.execute(manifest_output=str(manifest_path))
+        finally:
+            os.chdir(orig_cwd)
+
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["deployment_config"].get("slurm") == {"partition": "amd-rccl", "nodes": 3}
+        assert manifest["deployment_config"].get("distributed") == {
+            "launcher": "sglang-disagg",
+            "sglang_disagg": {"prefill_nodes": 1, "decode_nodes": 1},
+        }
