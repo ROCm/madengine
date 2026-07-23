@@ -420,6 +420,10 @@ class BuildOrchestrator:
             # Step 6: Save deployment_config to manifest
             self._save_deployment_config(manifest_output)
 
+            # Step 6b: Merge model's distributed and slurm config into deployment_config
+            # This ensures launcher and slurm settings are in deployment_config even if not in additional-context
+            self._merge_model_config_into_deployment(manifest_output, models)
+
             self.rich_console.print(f"[green]✓ Build complete: {manifest_output}[/green]")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
@@ -582,70 +586,10 @@ class BuildOrchestrator:
 
             # Save deployment config
             self._save_deployment_config(manifest_output)
-            
+
             # Merge model's distributed and slurm config into deployment_config
             # This ensures launcher and slurm settings are in deployment_config even if not in additional-context
-            if models:
-                with open(manifest_output, "r") as f:
-                    saved_manifest = json.load(f)
-                
-                if "deployment_config" not in saved_manifest:
-                    saved_manifest["deployment_config"] = {}
-                
-                # Merge model's distributed config from the first model.
-                # If multiple models have differing distributed configs, warn — only the first wins here.
-                # Use json.dumps for the hash key so nested dicts (e.g. sglang_disagg / vllm_disagg)
-                # don't trigger TypeError: unhashable type: 'dict' from `tuple(sorted(items()))`.
-                if len(models) > 1:
-                    distinct_distributed = {
-                        json.dumps(m.get("distributed") or {}, sort_keys=True, default=str)
-                        for m in models
-                    }
-                    if len(distinct_distributed) > 1:
-                        self.rich_console.print(
-                            "[yellow]Warning: discovered models have differing distributed configs; "
-                            f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
-                        )
-                model_distributed = models[0].get("distributed", {})
-                if model_distributed:
-                    if "distributed" not in saved_manifest["deployment_config"]:
-                        saved_manifest["deployment_config"]["distributed"] = {}
-                    
-                    # Copy launcher and other critical fields from model config
-                    for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg", "vllm_disagg"]:
-                        if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
-                            saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
-                
-                # Merge model's slurm config into deployment_config.slurm from the first model.
-                # This enables run phase to auto-detect SLURM deployment without --additional-context.
-                # Warn when multiple models have differing slurm configs (only the first wins here).
-                # json.dumps key for the same unhashable-nested-dict reason as above.
-                if len(models) > 1:
-                    distinct_slurm = {
-                        json.dumps(m.get("slurm") or {}, sort_keys=True, default=str)
-                        for m in models
-                    }
-                    if len(distinct_slurm) > 1:
-                        self.rich_console.print(
-                            "[yellow]Warning: discovered models have differing slurm configs; "
-                            f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
-                        )
-                model_slurm = models[0].get("slurm", {})
-                if model_slurm:
-                    if "slurm" not in saved_manifest["deployment_config"]:
-                        saved_manifest["deployment_config"]["slurm"] = {}
-                    
-                    # Copy slurm settings from model config (model card fills in
-                    # values not explicitly set by --additional-context).
-                    # Use _original_user_slurm_keys (captured before ConfigLoader
-                    # applies defaults) so model card values override defaults
-                    # but user's explicit CLI values still win.
-                    for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir", "nodelist"]:
-                        if key in model_slurm and key not in self._original_user_slurm_keys:
-                            saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
-                
-                with open(manifest_output, "w") as f:
-                    json.dump(saved_manifest, f, indent=2)
+            self._merge_model_config_into_deployment(manifest_output, models)
 
             self.rich_console.print(f"[green]✓ Generated manifest: {manifest_output}[/green]")
             self.rich_console.print(f"  Pre-built image: {use_image}")
@@ -1283,6 +1227,76 @@ exit 0
 
         except Exception as e:
             self.rich_console.print(f"[yellow]Warning: Could not save build summary: {e}[/yellow]")
+
+    def _merge_model_config_into_deployment(self, manifest_output: str, models: list):
+        """Merge the first discovered model's distributed/slurm config into
+        manifest deployment_config, so the run phase can auto-detect the
+        deployment target (e.g. slurm) from the model card alone, without
+        requiring --additional-context to repeat what's already in models.json.
+        """
+        if not models:
+            return
+
+        with open(manifest_output, "r") as f:
+            saved_manifest = json.load(f)
+
+        if not isinstance(saved_manifest.get("deployment_config"), dict):
+            saved_manifest["deployment_config"] = {}
+
+        # Merge model's distributed config from the first model.
+        # If multiple models have differing distributed configs, warn — only the first wins here.
+        # Use json.dumps for the hash key so nested dicts (e.g. sglang_disagg / vllm_disagg)
+        # don't trigger TypeError: unhashable type: 'dict' from `tuple(sorted(items()))`.
+        if len(models) > 1:
+            distinct_distributed = {
+                json.dumps(m.get("distributed") or {}, sort_keys=True, default=str)
+                for m in models
+            }
+            if len(distinct_distributed) > 1:
+                self.rich_console.print(
+                    "[yellow]Warning: discovered models have differing distributed configs; "
+                    f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
+                )
+        model_distributed = models[0].get("distributed", {})
+        if model_distributed:
+            if not isinstance(saved_manifest["deployment_config"].get("distributed"), dict):
+                saved_manifest["deployment_config"]["distributed"] = {}
+
+            # Copy launcher and other critical fields from model config
+            for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg", "vllm_disagg"]:
+                if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
+                    saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
+
+        # Merge model's slurm config into deployment_config.slurm from the first model.
+        # This enables run phase to auto-detect SLURM deployment without --additional-context.
+        # Warn when multiple models have differing slurm configs (only the first wins here).
+        # json.dumps key for the same unhashable-nested-dict reason as above.
+        if len(models) > 1:
+            distinct_slurm = {
+                json.dumps(m.get("slurm") or {}, sort_keys=True, default=str)
+                for m in models
+            }
+            if len(distinct_slurm) > 1:
+                self.rich_console.print(
+                    "[yellow]Warning: discovered models have differing slurm configs; "
+                    f"using {models[0].get('name', '<unknown>')}'s config.[/yellow]"
+                )
+        model_slurm = models[0].get("slurm", {})
+        if model_slurm:
+            if not isinstance(saved_manifest["deployment_config"].get("slurm"), dict):
+                saved_manifest["deployment_config"]["slurm"] = {}
+
+            # Copy slurm settings from model config (model card fills in
+            # values not explicitly set by --additional-context).
+            # Use _original_user_slurm_keys (captured before ConfigLoader
+            # applies defaults) so model card values override defaults
+            # but user's explicit CLI values still win.
+            for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir", "nodelist"]:
+                if key in model_slurm and key not in self._original_user_slurm_keys:
+                    saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
+
+        with open(manifest_output, "w") as f:
+            json.dump(saved_manifest, f, indent=2)
 
     def _save_deployment_config(self, manifest_file: str):
         """Save deployment_config from --additional-context to manifest."""
