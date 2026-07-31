@@ -243,7 +243,9 @@ class SlurmDeployment(BaseDeployment):
                 ["madengine", "--version"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # A cold import off shared/NFS storage can take far longer than a
+                # local one, so this only guards against a hung interpreter.
+                timeout=600,
                 check=False
             )
             if result.returncode == 0:
