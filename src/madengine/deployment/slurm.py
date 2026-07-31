@@ -77,6 +77,8 @@ class SlurmDeployment(BaseDeployment):
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
         self.reservation = self.slurm_config.get("reservation", None)
+        # Some clusters expose no GPU GRES, so sbatch rejects --gpus-per-node.
+        self.skip_gpus_directive = self.slurm_config.get("skip_gpus_directive", False)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -456,7 +458,10 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.nodes}",
-            f"#SBATCH --gpus-per-node={self.gpus_per_node}",
+        ]
+        if not self.skip_gpus_directive:
+            script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
+        script_lines += [
             f"#SBATCH --time={self.time_limit}",
         ]
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
@@ -669,6 +674,7 @@ class SlurmDeployment(BaseDeployment):
             "partition": self.partition,
             "nodes": self.nodes,
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
+            "skip_gpus_directive": self.skip_gpus_directive,
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": master_port,
