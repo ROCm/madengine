@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Version](https://img.shields.io/badge/version-2.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.3-brightgreen.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **AI model automation and benchmarking platform for local and distributed execution**
@@ -141,8 +141,8 @@ flowchart TD
 madengine discover --tags dummy          # Find models
 madengine build --tags dummy             # Build image (AMD/UBUNTU defaults)
 madengine run --tags dummy               # Run model
-madengine report to-html --csv-file perf_entry.csv          # Report
-madengine database --csv-file perf_entry.csv --db mydb --collection results  # Upload
+madengine report to-html --csv-file-path perf_entry.csv          # Report
+madengine database --file perf_entry.csv --db mydb --collection results  # Upload
 ```
 
 For all options and examples, see the **[CLI Reference](docs/cli-reference.md)**.
