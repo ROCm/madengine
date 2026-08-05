@@ -29,10 +29,10 @@
   "distributed": {
     "enabled": true,
     "backend": "nccl",
-    "launcher": "megatron",
+    "launcher": "megatron-lm",
     "nnodes": 1,
     "nproc_per_node": 2,
-    "master_port": 29500
+    "port": 29500
   },
   
   "env_vars": {
