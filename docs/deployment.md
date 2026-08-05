@@ -94,11 +94,12 @@ The deployment target is automatically detected from the `k8s` key in the config
 }
 ```
 
-**Configuration Priority:**
-1. User config (`--additional-context-file`)
-2. Profile presets (single-gpu/multi-gpu)
-3. GPU vendor presets (AMD/NVIDIA)
-4. Base defaults
+**Configuration Priority (lowest to highest precedence):**
+1. Base defaults
+2. GPU vendor preset (AMD/NVIDIA)
+3. GPU vendor multi-GPU preset (AMD only, for multi-GPU/multi-node)
+4. Profile preset (single-gpu/multi-gpu/multi-node)
+5. User config (`--additional-context-file`) — highest precedence, applied last
 
 See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
@@ -233,9 +234,7 @@ The deployment target is automatically detected from the `slurm` key in the conf
     "qos": "normal",
     "gpus_per_node": 8,
     "nodes": 1,
-    "time": "24:00:00",
-    "mail_user": "user@example.com",
-    "mail_type": "ALL"
+    "time": "24:00:00"
   }
 }
 ```
@@ -249,10 +248,7 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `nodelist`: Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job runs only on these nodes and node health preflight is skipped
 - `reservation`: SLURM reservation name; forwarded to srun health/cleanup commands
 - `time`: Wall time limit (HH:MM:SS)
-- `mem`: Memory per node (e.g., "64G")
 - `exclusive`: Exclusive node access (default: `true`)
-- `mail_user`: Email for job notifications
-- `mail_type`: Notification types (BEGIN, END, FAIL, ALL)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
 
