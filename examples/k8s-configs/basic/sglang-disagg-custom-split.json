@@ -29,7 +29,7 @@
     "launcher": "sglang-disagg",
     "nnodes": 7,
     "nproc_per_node": 8,
-    "master_port": 29500,
+    "port": 29500,
     "sglang_disagg": {
       "prefill_nodes": 4,
       "decode_nodes": 2
