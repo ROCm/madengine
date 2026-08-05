@@ -21,8 +21,7 @@ madengine run --tags model --additional-context-file config.json
 ```json
 {
   "gpu_vendor": "AMD",
-  "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0
+  "guest_os": "UBUNTU"
 }
 ```
 
@@ -179,13 +178,13 @@ Unknown `rocenv_mode` values fall back to `lite` with a warning.
 **Overrides** (recommended for CI):
 
 - **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"` — controls where madengine looks for host GPU tools (`rocminfo`, `amd-smi`, etc.).
-- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
+- **Additional context (container):** `"docker_env_vars": { "ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
 
 These two keys are independent, allowing host and container to use different ROCm installations without confusion.
 
 Precedence (host): top-level `MAD_ROCM_PATH` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
 
-Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
+Precedence (container, **local Docker `run`**, **AMD**): explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
 
 This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
 
@@ -328,13 +327,15 @@ Format: Comma-separated list with hyphen ranges.
 
 ### Timeout Settings
 
+Set a per-model timeout (seconds) in `models.json`:
+
 ```json
 {
-  "timeout_multiplier": 2.0
+  "timeout": 7200
 }
 ```
 
-Or use command-line option:
+Or use the command-line option, which overrides the model's timeout:
 
 ```bash
 madengine run --tags model --timeout 7200
@@ -388,7 +389,6 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
     "memory_limit": "64Gi",
     "cpu": "16",
     "cpu_limit": "32",
-    "service_account": "madengine-sa",
     "image_pull_policy": "Always",
     "ttl_seconds_after_finished": null,
     "allow_privileged_profiling": null,
@@ -409,7 +409,6 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `memory_limit` - Memory limit (default: 2× memory request)
 - `cpu` - CPU cores request (default: auto-scaled by GPU count)
 - `cpu_limit` - CPU cores limit (default: 2× CPU request)
-- `service_account` - Service account name
 - `image_pull_policy` - `Always`, `IfNotPresent`, or `Never`
 - `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
 - `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
@@ -471,7 +470,7 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `partition` - SLURM partition name (required)
 - `account` - Billing account
 - `qos` - Quality of Service
-- `gpus_per_node` - GPUs per node (default: 1)
+- `gpus_per_node` - GPUs per node (default: 8)
 - `nodes` - Number of nodes (default: 1)
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
 - `reservation` - SLURM reservation name; forwarded to srun health/cleanup commands and SBATCH directives
@@ -558,13 +557,11 @@ See [Launchers Guide](launchers.md) for details.
     "launcher": "vllm",
     "nnodes": 2,
     "nproc_per_node": 4
-  },
-  "vllm": {
-    "tensor_parallel_size": 4,
-    "pipeline_parallel_size": 1
   }
 }
 ```
+
+`nproc_per_node` is exported into the container as `VLLM_TENSOR_PARALLEL_SIZE`; there is no separate `vllm.*` config block for tensor/pipeline parallel sizing.
 
 ## Profiling Configuration
 
@@ -656,14 +653,11 @@ Configure in `data.json` (MAD package root):
 
 ```json
 {
-  "data_sources": {
-    "model_data": {
-      "nas": {"path": "/home/datum"},
-      "minio": {"path": "s3://datasets/datum"},
-      "aws": {"path": "s3://datasets/datum"}
-    }
-  },
-  "mirrorlocal": "/tmp/local_mirror"
+  "model_data": {
+    "nas": {"path": "/home/datum", "mirrorlocal": "/tmp/local_mirror"},
+    "minio": {"path": "s3://datasets/datum"},
+    "aws": {"path": "s3://datasets/datum"}
+  }
 }
 ```
 
@@ -678,13 +672,13 @@ Configure in `credential.json` (MAD package root):
     "password": "your_token",
     "repository": "myorg"
   },
-  "AMD_GITHUB": {
+  "PUBLIC_GITHUB_ROCM_KEY": {
     "username": "github_username",
-    "password": "github_token"
+    "token": "github_token"
   },
   "MAD_AWS_S3": {
-    "username": "aws_access_key",
-    "password": "aws_secret_key"
+    "USERNAME": "aws_access_key",
+    "PASSWORD": "aws_secret_key"
   }
 }
 ```
