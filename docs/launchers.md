@@ -69,10 +69,12 @@ madengine run --manifest-file build_manifest.json
     "launcher": "torchrun",
     "nnodes": 2,
     "nproc_per_node": 8,
-    "master_port": 29500
+    "port": 29500
   }
 }
 ```
+
+Note: `distributed.port` sets the master port on **SLURM** (`distributed.get("port", 29500)`). On **Kubernetes**, the master port is instead read from a separate top-level `"launcher"` object (`{"launcher": {"master_port": 29500}}`), not from `distributed`.
 
 **Features**:
 - Automatic rank assignment
@@ -136,7 +138,7 @@ madengine run --manifest-file build_manifest.json
 ```json
 {
   "distributed": {
-    "launcher": "megatron",
+    "launcher": "megatron-lm",
     "nnodes": 4,
     "nproc_per_node": 8
   }
@@ -276,8 +278,6 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
 
 **Examples**:
-- SLURM: `examples/slurm-configs/minimal/primus-minimal.json`
-- K8s: `examples/k8s-configs/minimal/primus-minimal.json`
 - K8s (Primus vs upstream workload API, MaxText caveats, TorchTitan/Megatron/MaxText sample JSON): `examples/k8s-configs/README.md` section **Primus on Kubernetes**
 
 ---
@@ -314,13 +314,13 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Architecture**:
 - Single-node: TP across GPUs, no Ray
 - Multi-node (K8s): Data Parallelism with independent replicas per pod
-- Multi-node (SLURM): TP + PP with Ray cluster
+- Multi-node (SLURM): Data Parallelism (one vLLM serve per node, TP only on that node, no shared Ray cluster)
 
 **Environment Variables**:
 ```bash
 VLLM_TENSOR_PARALLEL_SIZE=4
 VLLM_PIPELINE_PARALLEL_SIZE=1
-VLLM_DISTRIBUTED_BACKEND="auto"  # or "ray" for multi-node
+VLLM_DISTRIBUTED_BACKEND="auto"  # or "none" for multi-node SLURM (data parallel)
 ```
 
 **Examples**:
@@ -435,7 +435,7 @@ SGLang Disaggregated separates inference into specialized node pools:
 | Total Nodes | Proxy | Prefill | Decode |
 |-------------|-------|---------|--------|
 | 3 | 1 | 1 (33%) | 1 (33%) |
-| 5 | 1 | 2 (40%) | 2 (40%) |
+| 5 | 1 | 1 (25%) | 3 (75%) |
 | 7 | 1 | 2 (29%) | 4 (57%) |
 | 11 | 1 | 4 (40%) | 6 (60%) |
 
@@ -529,14 +529,14 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 **Performance Tuning**:
 ```bash
 # Start with automatic split
-madengine run --tags model --config minimal-config.json
+madengine run --tags model --additional-context-file minimal-config.json
 
 # Monitor bottleneck (prefill latency vs decode throughput)
 # If prefill is bottleneck → increase prefill nodes
 # If decode is bottleneck → increase decode nodes
 
 # Apply custom split
-madengine run --tags model --config custom-split-config.json
+madengine run --tags model --additional-context-file custom-split-config.json
 ```
 
 **Troubleshooting**:
