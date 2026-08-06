@@ -43,6 +43,19 @@ module load {{ module }}
 {% endfor %}
 
 # =============================================================================
+# PATH
+# =============================================================================
+# A batch job does not reliably inherit the submitter's PATH: a site can default
+# sbatch to --export=NONE, and the module loads above can rewrite it. Without
+# this the madengine console script is missing on the compute node even though
+# the pre-submission check found it. Re-add the per-user bin directory and the
+# directory madengine itself was resolved from at submission time.
+export PATH="$HOME/.local/bin:$PATH"
+{% if submission_bin_dir %}
+export PATH="{{ submission_bin_dir }}:$PATH"
+{% endif %}
+
+# =============================================================================
 # Environment Setup (Standard ML Environment Variables)
 # =============================================================================
 

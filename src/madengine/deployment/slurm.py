@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -227,6 +228,22 @@ class SlurmDeployment(BaseDeployment):
 
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
+
+    @staticmethod
+    def _submission_bin_dir() -> Optional[str]:
+        """
+        Directory the madengine console script was resolved from at submission time.
+
+        A batch job is not guaranteed to inherit the submitter's PATH: a site can
+        default sbatch to --export=NONE, and `module load` can rewrite PATH before
+        the job body runs. Passing the directory into the job script lets it put
+        the same madengine back on PATH instead of relying on inheritance.
+
+        Returns:
+            Optional[str]: absolute directory, or None if madengine is not on PATH
+        """
+        cli_path = shutil.which("madengine")
+        return str(Path(cli_path).resolve().parent) if cli_path else None
 
     def _validate_cli_availability(self) -> bool:
         """
@@ -690,6 +707,7 @@ class SlurmDeployment(BaseDeployment):
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
+            "submission_bin_dir": self._submission_bin_dir(),
             "env_vars": self.config.additional_context.get("env_vars", {}),
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
