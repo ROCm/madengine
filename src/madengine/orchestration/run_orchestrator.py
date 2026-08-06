@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -767,15 +767,103 @@ class RunOrchestrator:
 
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
-        # Return metrics in the format expected by display_results_table
-        # Extract successful_runs and failed_runs from metrics if available
-        if result.metrics:
-            return {
-                "successful_runs": result.metrics.get("successful_runs", []),
-                "failed_runs": result.metrics.get("failed_runs", []),
-            }
-        else:
-            return {"successful_runs": [], "failed_runs": []}
+        return self._summarise_deployment(result, target, manifest_file)
+
+    def _summarise_deployment(
+        self, result, target: str, manifest_file: str
+    ) -> Dict[str, Any]:
+        """Turn a deployment result into the summary the CLI reports on.
+
+        Args:
+            result: what the deployment layer returned
+            target: deployment target name, for the records
+            manifest_file: manifest the run was launched from
+
+        Returns:
+            Dict[str, Any]: runs by outcome, plus any warnings and the deployment status
+        """
+        metrics = result.metrics or {}
+        summary = {
+            "successful_runs": metrics.get("successful_runs", []),
+            "failed_runs": list(metrics.get("failed_runs", [])),
+            "no_metric_runs": metrics.get("no_metric_runs", []),
+            "deployment_status": result.status.value,
+        }
+
+        # A run that measured something despite a node ending badly is still a run that
+        # measured something; what the node did is a warning the caller has to see, not a
+        # verdict that throws the numbers away.
+        warnings = metrics.get("warnings")
+        if warnings:
+            summary["warnings"] = list(warnings)
+
+        # No metric anywhere, on the other hand, leaves the node evidence as the only
+        # account of what happened, and it decides.
+        incomplete = metrics.get("incomplete")
+        if incomplete:
+            summary["incomplete"] = incomplete
+            summary["failed_runs"].append(
+                {
+                    "model": incomplete.get("model", ""),
+                    "status": "FAILURE",
+                    "performance": "",
+                    "metric": "",
+                    "duration": "",
+                    "gpu_arch": "",
+                    "deployment": target,
+                    "machine": result.deployment_id,
+                    "error": incomplete.get("reason", ""),
+                }
+            )
+
+        # A job the scheduler calls failed is a failed run even when nothing could be
+        # parsed to say so. Without this the caller sees an empty failure list and reports
+        # success for a job that died. Measurements change that: the scheduler's verdict
+        # follows from a rank exiting non-zero, which is routine in a multi-node run whose
+        # framework reports from one rank only, so with results in hand it is a warning.
+        if not result.is_success and summary["successful_runs"] and not summary["failed_runs"]:
+            # The deployment layer may already have said which node ended how; only speak
+            # up when nothing else accounted for the scheduler's verdict.
+            if not summary.get("warnings"):
+                summary["warnings"] = [
+                    f"{target} reported the run as {result.status.value} "
+                    f"({result.message}), while "
+                    f"{len(summary['successful_runs'])} measurement(s) came back"
+                ]
+        elif not result.is_success and not summary["failed_runs"]:
+            summary["failed_runs"].append(
+                {
+                    "model": self._model_name_from_manifest(manifest_file),
+                    "status": "FAILURE",
+                    "performance": "",
+                    "metric": "",
+                    "duration": "",
+                    "gpu_arch": "",
+                    "deployment": target,
+                    "machine": result.deployment_id,
+                    "error": result.message,
+                }
+            )
+
+        return summary
+
+    @staticmethod
+    def _model_name_from_manifest(manifest_file: str) -> str:
+        """Name the run in a failure record, for a job that produced no results of its own.
+
+        Args:
+            manifest_file: manifest the run was launched from
+
+        Returns:
+            str: the first model's name, or "unknown"
+        """
+        try:
+            with open(manifest_file) as f:
+                models = json.load(f).get("built_models") or {}
+        except (OSError, ValueError):
+            return "unknown"
+        first = next(iter(models.values()), {})
+        return first.get("name") or "unknown"
 
     def _show_node_info(self):
         """Show node ROCm information."""

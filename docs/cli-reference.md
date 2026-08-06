@@ -522,8 +522,23 @@ madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect s
 | `2` | `BUILD_FAILURE` | One or more image builds failed (e.g. Docker build error) |
 | `3` | `RUN_FAILURE` | One or more model executions failed |
 | `4` | `INVALID_ARGS` | Invalid command-line arguments or configuration |
+| `5` | `NO_METRIC` | The workload ran to completion but reported no performance metric |
 
 **Failure recording:** Pre-run failures (e.g. image pull, setup) and run failures are recorded in the performance table (`perf.csv`) with status `FAILURE`, so all attempted models appear in the CSV. The file is created automatically if missing.
+
+**`NO_METRIC` versus `RUN_FAILURE`:** a crashed workload and a workload that finished
+without producing a number are different problems — the first is a broken run, the second a
+broken contract between the model script and madengine — so they get different exit codes
+and the row in `perf.csv` reads `NO_METRIC` rather than `FAILURE`.
+
+**Multi-node verdicts:** every node records its exit code, and the submit node reads them
+all back. A metric outweighs an exit code, the same way it does for a single node: where a
+framework reports throughput from one rank only, the nodes that collected nothing exit
+non-zero on a perfectly healthy run, so a run that produced a metric is reported as a
+success with the node outcomes listed as warnings. With no metric anywhere, the node
+evidence is all there is and it decides: a node that exited non-zero or never reported at
+all gives `RUN_FAILURE` naming the node, while a clean set of exit codes and no metric
+gives `NO_METRIC`.
 
 **Example usage in scripts / CI:**
 

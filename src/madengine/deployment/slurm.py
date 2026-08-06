@@ -80,6 +80,11 @@ class SlurmDeployment(BaseDeployment):
         self.reservation = self.slurm_config.get("reservation", None)
         # Some clusters expose no GPU GRES, so sbatch rejects --gpus-per-node.
         self.skip_gpus_directive = self.slurm_config.get("skip_gpus_directive", False)
+        # Off by default: in a run whose framework reports throughput from one rank only,
+        # the node that collected nothing exits non-zero on a healthy run, and tearing the
+        # step down there would kill the node that holds the numbers. Turn it on for a
+        # workload where any non-zero rank really does mean the run is over.
+        self.kill_on_bad_exit = self.slurm_config.get("kill_on_bad_exit", False)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -694,6 +699,7 @@ class SlurmDeployment(BaseDeployment):
             "nodes": self.nodes,
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
             "skip_gpus_directive": self.skip_gpus_directive,
+            "kill_on_bad_exit": self.kill_on_bad_exit,
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": master_port,
@@ -1728,6 +1734,157 @@ export MASTER_PORT={master_port}
         return best_candidate
 
 
+    def _job_exit_state(self, job_id: str) -> Optional[str]:
+        """SLURM's own verdict on the job.
+
+        Args:
+            job_id: the job to ask about
+
+        Returns:
+            Optional[str]: the state, e.g. COMPLETED or FAILED, or None when sacct cannot
+                answer — in which case nothing is claimed on its behalf
+        """
+        try:
+            result = subprocess.run(
+                ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        first_line = (result.stdout or "").strip().splitlines()
+        return first_line[0].strip().upper() if first_line else None
+
+    def _read_node_statuses(self, job_dir: Path) -> List[Dict[str, Any]]:
+        """Read the per-node status markers the job script leaves behind.
+
+        Args:
+            job_dir: collection directory for this job
+
+        Returns:
+            List[Dict[str, Any]]: one entry per node found, sorted by node rank, each with
+                `node`, `host` and `exit_code`
+        """
+        statuses: List[Dict[str, Any]] = []
+        for status_path in sorted(job_dir.glob("node_*/node.status")):
+            fields: Dict[str, Any] = {}
+            try:
+                for line in status_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    key, _, value = line.partition("=")
+                    if key:
+                        fields[key.strip()] = value.strip()
+            except OSError:
+                continue
+            try:
+                fields["node"] = int(fields.get("node", status_path.parent.name.replace("node_", "")))
+                fields["exit_code"] = int(fields.get("exit_code", 1))
+            except ValueError:
+                continue
+            statuses.append(fields)
+        return sorted(statuses, key=lambda s: s["node"])
+
+    def _report_node_statuses(self, statuses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Print the per-node outcome and return the nodes that failed.
+
+        Args:
+            statuses: entries from `_read_node_statuses`
+
+        Returns:
+            List[Dict[str, Any]]: the entries whose exit code is non-zero
+        """
+        failures = [s for s in statuses if s["exit_code"] != 0]
+        missing = [n for n in range(self.nodes) if n not in {s["node"] for s in statuses}]
+
+        if failures:
+            self.console.print("[red]Nodes that failed:[/red]")
+            for status in failures:
+                self.console.print(
+                    f"[red]  node {status['node']} ({status.get('host', 'unknown host')}): "
+                    f"exit code {status['exit_code']}[/red]"
+                )
+        if missing and statuses:
+            # A node that never wrote a marker did not reach the end of the task script:
+            # it was killed, or the node itself went away. Only meaningful once at least
+            # one node has reported, since a job may predate these markers entirely.
+            self.console.print(
+                f"[red]Nodes that reported no status (killed or lost): "
+                f"{', '.join(str(n) for n in missing)}[/red]"
+            )
+            failures = failures + [
+                {"node": n, "host": "", "exit_code": None, "missing": True} for n in missing
+            ]
+        return failures
+
+    @staticmethod
+    def _incomplete_reason(
+        node_failures: List[Dict[str, Any]], job_state: Optional[str]
+    ) -> str:
+        """Say why the run is incomplete, in the words of whoever noticed.
+
+        Args:
+            node_failures: entries from `_report_node_statuses`
+            job_state: the state sacct reports, if it could be read
+
+        Returns:
+            str: a phrase naming the failing nodes, or SLURM's own verdict
+        """
+        if node_failures:
+            parts = []
+            for failure in node_failures:
+                if failure.get("missing"):
+                    parts.append(f"node {failure['node']} reported no status (killed or lost)")
+                else:
+                    parts.append(f"node {failure['node']} exited {failure['exit_code']}")
+            return ", ".join(parts)
+        if job_state:
+            return f"SLURM reports the job as {job_state}"
+        return "the job did not complete"
+
+    def _record_verdict(
+        self,
+        results: Dict[str, Any],
+        model: str,
+        node_failures: List[Dict[str, Any]],
+        job_state: Optional[str],
+        rows_collected: int,
+    ) -> None:
+        """Record what a run that did not end cleanly amounts to.
+
+        A metric outweighs an exit code, the way it already does for a single node
+        (`resolve_run_status`): a node exiting non-zero is routine in a multi-node run
+        whose framework reports throughput from one rank only, so the node that collected
+        nothing fails locally while the run as a whole did the work. What such a node
+        earns is a warning, not a verdict. With no metric anywhere, the node evidence is
+        all there is, and it decides.
+
+        Args:
+            results: collection results, updated in place
+            model: model the run belongs to
+            node_failures: entries from `_report_node_statuses`
+            job_state: the state sacct reports, if it could be read
+            rows_collected: how many metric rows the run produced
+        """
+        reason = self._incomplete_reason(node_failures, job_state)
+        if rows_collected:
+            warning = (
+                f"{reason}, while the run produced {rows_collected} metric row(s); "
+                f"reported as measurements, check the node logs before trusting them"
+            )
+            results.setdefault("warnings", []).append(warning)
+            self.console.print(f"[yellow]⚠ {warning}[/yellow]")
+            return
+        results["incomplete"] = {
+            "model": model,
+            "reason": reason,
+            "rows_collected": 0,
+        }
+        self.console.print(
+            f"[red]✗ Job did not complete and produced no metric: {reason}[/red]"
+        )
+
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
 
@@ -1751,6 +1908,7 @@ export MASTER_PORT={master_port}
             "logs": [],
             "successful_runs": [],
             "failed_runs": [],
+            "no_metric_runs": [],
             "session_start_row": session_start_row,
         }
 
@@ -1785,6 +1943,22 @@ export MASTER_PORT={master_port}
 
         job_dir = self.output_dir / model_name_for_path / deployment_id
         job_dir.mkdir(parents=True, exist_ok=True)
+
+        # Per-node outcomes come first: a metric parsed out of a log says nothing about
+        # whether the other nodes finished, and a run where one rank died is not a result.
+        node_statuses = self._read_node_statuses(job_dir)
+        node_failures = self._report_node_statuses(node_statuses)
+        job_state = self._job_exit_state(deployment_id)
+        # SLURM's verdict counts even when no node marker says so — a step killed by the
+        # scheduler leaves no marker at all.
+        job_failed = bool(node_failures) or (
+            job_state is not None and "COMPLETED" not in job_state
+        )
+        if job_failed and not node_failures and job_state:
+            self.console.print(f"[red]SLURM reports job {deployment_id} as {job_state}[/red]")
+        results["node_statuses"] = node_statuses
+        results["node_failures"] = node_failures
+        results["job_state"] = job_state
 
         # Gather log content per node: from job_dir/node_N/ (new) or flat output_dir .out files
         per_node_log_contents: List[tuple] = []
@@ -1921,12 +2095,18 @@ export MASTER_PORT={master_port}
                 )
                 results["perf_files"] = [str(Path("perf.csv").resolve())]
                 import csv as _csv
+                # A row with a number in it is a measurement, and it stays one even when the
+                # run around it did not finish: a model that reports four precisions and
+                # crashes on two still measured the other two. The verdict on the run as a
+                # whole travels separately, in results["incomplete"].
+                rows_collected = 0
                 try:
                     with open(resolved_csv, "r", encoding="utf-8", errors="ignore") as f:
                         reader = _csv.DictReader(f)
                         for row in reader:
                             row = {k.strip(): v for k, v in row.items() if k}
                             if row.get("performance") and row.get("metric"):
+                                rows_collected += 1
                                 results["successful_runs"].append({
                                     "model": model_info_for_entry.get("name", "") + "_" + row.get("model", ""),
                                     "status": "SUCCESS",
@@ -1939,9 +2119,18 @@ export MASTER_PORT={master_port}
                                 })
                 except Exception:
                     pass
-                self.console.print(
-                    f"[green]✓ Updated perf.csv, perf_super.* from multiple_results (Docker-compatible)[/green]"
-                )
+                if job_failed:
+                    self._record_verdict(
+                        results,
+                        model_info_for_entry.get("name", model_name),
+                        node_failures,
+                        job_state,
+                        rows_collected,
+                    )
+                else:
+                    self.console.print(
+                        f"[green]✓ Updated perf.csv, perf_super.* from multiple_results (Docker-compatible)[/green]"
+                    )
                 return results
             # multiple_results set but CSV not found: fall through to single-result path (may write FAILURE)
 
@@ -2021,6 +2210,28 @@ export MASTER_PORT={master_port}
                     )
 
         if run_details_dict is not None:
+            # Three outcomes, not two. A workload that failed and a workload that ran to
+            # completion without producing a metric need different answers: the first is a
+            # broken run, the second is a broken contract between the model script and
+            # madengine, and reporting both as FAILURE hides which one happened.
+            has_metric = bool(str(run_details_dict.get("performance") or "").strip())
+            if job_failed:
+                self._record_verdict(
+                    results,
+                    run_details_dict.get("model", model_name),
+                    node_failures,
+                    job_state,
+                    1 if has_metric else 0,
+                )
+                if not has_metric:
+                    run_details_dict["status"] = "FAILURE"
+            elif not has_metric:
+                run_details_dict["status"] = "NO_METRIC"
+                self.console.print(
+                    "[yellow]⚠ The workload finished on every node but no performance "
+                    "metric was collected; recording the run as NO_METRIC[/yellow]"
+                )
+
             perf_entry_path = Path("perf_entry.json")
             with open(perf_entry_path, "w") as f:
                 json.dump(run_details_dict, f, indent=2)
@@ -2065,6 +2276,8 @@ export MASTER_PORT={master_port}
             }
             if run_details_dict.get("status") == "SUCCESS":
                 results["successful_runs"].append(run_data)
+            elif run_details_dict.get("status") == "NO_METRIC":
+                results.setdefault("no_metric_runs", []).append(run_data)
             else:
                 results["failed_runs"].append(run_data)
             summary = {

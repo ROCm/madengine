@@ -1706,9 +1706,24 @@ class ContainerRunner:
                                         multiple_results, model_dir
                                     )
                                     if not resolved_path:
+                                        # This is a contract, and the model script held up
+                                        # its end or it did not: say which paths were
+                                        # searched and what the container was told, so the
+                                        # next person does not have to read this code.
                                         self.rich_console.print(
-                                            f"[yellow]Warning: Could not find multiple results file "
-                                            f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
+                                            f"[yellow]Warning: model '{model_info.get('name', '')}' "
+                                            f"declares multiple_results='{multiple_results}' but no "
+                                            f"such file was produced.[/yellow]"
+                                        )
+                                        self.rich_console.print(
+                                            f"[yellow]  Searched: {os.path.abspath(multiple_results)}"
+                                            f" and {os.path.join(os.path.abspath(model_dir), multiple_results)}[/yellow]"
+                                        )
+                                        self.rich_console.print(
+                                            f"[yellow]  The container was given "
+                                            f"MAD_OUTPUT_CSV='{multiple_results}'; the run script must "
+                                            f"write a CSV there with 'performance' and 'metric' "
+                                            f"columns, relative to its working directory.[/yellow]"
                                         )
                                         run_results["performance"] = None
                                     else:
@@ -1724,7 +1739,10 @@ class ContainerRunner:
 
                                                 # Check if 'performance' column exists
                                                 if 'performance' not in csv_reader.fieldnames:
-                                                    print("Error: 'performance' column not found in multiple results file.")
+                                                    print(
+                                                        f"Error: {resolved_path} has no 'performance' column; "
+                                                        f"found: {', '.join(csv_reader.fieldnames or []) or '(no header)'}"
+                                                    )
                                                     run_results["performance"] = None
                                                 else:
                                                     # Check if at least one row has a non-empty performance value
@@ -1736,7 +1754,10 @@ class ContainerRunner:
 
                                                     if not has_valid_perf:
                                                         run_results["performance"] = None
-                                                        print("Error: Performance metric is empty in all rows of multiple results file.")
+                                                        print(
+                                                            f"Error: every row of {resolved_path} has an empty "
+                                                            f"'performance' value, so the run produced no metric."
+                                                        )
                                         except Exception as e:
                                             self.rich_console.print(
                                                 f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
