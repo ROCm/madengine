@@ -8,13 +8,20 @@ rather than filing them):
 
 1. The job script puts madengine back on PATH itself instead of assuming the
    batch environment inherited the submitter's PATH.
+2. The shared-filesystem probe recognizes `nfs4`, which is what `df -T`
+   reports on most modern NFS mounts.
+3. `slurm.skip_gpus_directive` removes `#SBATCH --gpus-per-node`, which a
+   cluster advertising no GPU GRES rejects outright.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
@@ -34,7 +41,11 @@ MODEL_ENTRY = {
 }
 
 
-def _build_deployment(tmp_path: Path, slurm_overrides: dict = None) -> SlurmDeployment:
+def _build_deployment(
+    tmp_path: Path,
+    slurm_overrides: dict = None,
+    distributed_overrides: dict = None,
+) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
         "built_images": {"dummy-image": {"docker_image": "dummy:latest"}},
@@ -61,6 +72,15 @@ def _build_deployment(tmp_path: Path, slurm_overrides: dict = None) -> SlurmDepl
     }
     slurm_config.update(slurm_overrides or {})
 
+    distributed_config = {
+        "launcher": "torchrun",
+        "nnodes": 2,
+        "nproc_per_node": 8,
+        "backend": "nccl",
+        "port": 29500,
+    }
+    distributed_config.update(distributed_overrides or {})
+
     cfg = DeploymentConfig(
         target="slurm",
         manifest_file=str(manifest_path),
@@ -69,13 +89,7 @@ def _build_deployment(tmp_path: Path, slurm_overrides: dict = None) -> SlurmDepl
             "gpu_vendor": "AMD",
             "guest_os": "UBUNTU",
             "slurm": slurm_config,
-            "distributed": {
-                "launcher": "torchrun",
-                "nnodes": 2,
-                "nproc_per_node": 8,
-                "backend": "nccl",
-                "port": 29500,
-            },
+            "distributed": distributed_config,
         },
     )
     return SlurmDeployment(cfg)
@@ -114,3 +128,49 @@ class TestJobScriptPath:
         with patch("madengine.deployment.slurm.shutil.which", return_value="/opt/venv/bin/madengine"):
             script = _render(_build_deployment(tmp_path))
         assert script.index('export PATH="/opt/venv/bin:$PATH"') < script.index("command -v madengine")
+
+
+# ---------------------------------------------------------------------------
+# 2. Shared-filesystem probe
+
+class TestSharedFilesystemProbe:
+    """`df -T` reports nfs4 on modern mounts; the probe must not miss it."""
+
+    @staticmethod
+    def _probe_pattern(script: str) -> str:
+        match = re.search(r"df -T \"\$SUBMIT_DIR\".*grep -qE '([^']+)'", script)
+        assert match, "shared-filesystem probe not found in rendered script"
+        return match.group(1)
+
+    @pytest.mark.parametrize("fstype,expected", [
+        ("nfs", True),
+        ("nfs3", True),
+        ("nfs4", True),
+        ("lustre", True),
+        ("gpfs", True),
+        ("ceph", True),
+        ("ext4", False),
+        ("xfs", False),
+        ("overlay", False),
+    ])
+    def test_probe_matches_shared_filesystems(self, tmp_path, fstype, expected):
+        # The probe only exists on the single-node branch of the template.
+        deployment = _build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1})
+        pattern = self._probe_pattern(_render(deployment))
+        df_line = f"storage.example:/home/user {fstype} 104857600 50106368 54751232 48% /home/user"
+        assert bool(re.search(pattern, df_line)) is expected
+
+
+# ---------------------------------------------------------------------------
+# 3. GPU GRES directive opt-out
+
+class TestGpusPerNodeDirective:
+    """A cluster with GresTypes=(null) rejects any job carrying --gpus-per-node."""
+
+    def test_directive_present_by_default(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "#SBATCH --gpus-per-node=8" in script
+
+    def test_directive_omitted_when_opted_out(self, tmp_path):
+        script = _render(_build_deployment(tmp_path, {"skip_gpus_directive": True}))
+        assert "--gpus-per-node" not in script

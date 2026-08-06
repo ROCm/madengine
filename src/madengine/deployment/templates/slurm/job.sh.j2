@@ -155,7 +155,7 @@ echo "Submission directory: {{ manifest_file | dirname }}"
 # Single-node: Prefer shared storage (submission dir), with local fallback if needed
 # Check if submission directory is on shared filesystem
 SUBMIT_DIR={{ manifest_file | dirname }}
-if df -T "$SUBMIT_DIR" 2>/dev/null | grep -qE '\bnfs\b|\blustre\b|\bgpfs\b|\bceph\b'; then
+if df -T "$SUBMIT_DIR" 2>/dev/null | grep -qE '\bnfs[0-9]*\b|\blustre\b|\bgpfs\b|\bceph\b'; then
     # Submission directory is on shared storage - use it directly (best practice)
     WORKSPACE=$SUBMIT_DIR
     WORKSPACE_TYPE="shared-nfs"
