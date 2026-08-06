@@ -361,6 +361,31 @@ Leaving it unset is supported but leaves image distribution to the operator: wor
 do not already have the image cannot reconcile it, and the run fails on those nodes with a
 message saying so.
 
+### How a multi-node run is judged
+
+Every node writes its exit code to `<results_dir>/<model>/<job_id>/node_<rank>/node.status`
+before it copies anything else, so the outcome survives even when the artifacts do not. The
+submit node reads them all back, and weighs them the way a single-node run does — a metric
+outweighs an exit code:
+
+| What came back | Verdict |
+| --- | --- |
+| A metric, all nodes zero | success |
+| A metric, some node non-zero or silent | success, with the node outcomes as warnings |
+| No metric, some node non-zero or silent | `RUN_FAILURE`, naming the node |
+| No metric, all nodes zero | `NO_METRIC` |
+
+The warning row is not a technicality. Where a framework reports throughput from one rank
+only — Primus/Megatron reports from the last global rank — every other node finds no metric
+locally and exits non-zero on a completely healthy run. A verdict that trusted exit codes
+over results would fail every such run, so the exit codes are reported and the numbers are
+kept.
+
+For a workload where every rank really is expected to exit zero, set
+`slurm.kill_on_bad_exit` to tear the step down on the first bad exit instead of letting the
+survivors block on a peer that will never answer. It is off by default for the reason above:
+the node exiting non-zero may be the one whose peer holds the numbers.
+
 ### Multi-Node Training
 
 For distributed training across SLURM nodes:

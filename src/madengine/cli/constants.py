@@ -17,6 +17,9 @@ class ExitCode(IntEnum):
     BUILD_FAILURE = 2
     RUN_FAILURE = 3
     INVALID_ARGS = 4
+    #: The workload finished but produced no performance metric. Distinct from
+    #: RUN_FAILURE so a caller can tell a crashed run from a broken result contract.
+    NO_METRIC = 5
 
 
 # Valid values for validation

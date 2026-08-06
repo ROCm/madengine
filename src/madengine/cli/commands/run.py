@@ -280,16 +280,35 @@ def run(
             save_summary_with_feedback(execution_summary, summary_output, "Execution")
 
             failed_runs = len(execution_summary.get("failed_runs", []))
-            if failed_runs == 0:
+            no_metric_runs = len(execution_summary.get("no_metric_runs", []))
+            incomplete = execution_summary.get("incomplete")
+            for warning in execution_summary.get("warnings", []):
+                console.print(f"⚠️  [yellow]{warning}[/yellow]")
+            if incomplete:
                 console.print(
-                    "🎉 [bold green]All model executions completed successfully![/bold green]"
-                )
-                raise typer.Exit(ExitCode.SUCCESS)
-            else:
-                console.print(
-                    f"💥 [bold red]Execution failed for {failed_runs} models[/bold red]"
+                    f"💥 [bold red]Run did not complete and produced no metric: "
+                    f"{incomplete.get('reason', 'unknown reason')}[/bold red]"
                 )
                 raise typer.Exit(ExitCode.RUN_FAILURE)
+            if failed_runs:
+                console.print(
+                    f"💥 [bold red]Execution failed for {failed_runs} "
+                    f"{'run' if failed_runs == 1 else 'runs'}[/bold red]"
+                )
+                raise typer.Exit(ExitCode.RUN_FAILURE)
+            if no_metric_runs:
+                # The workload ran to completion and produced nothing to measure. That is
+                # not a successful benchmark, and it is not the same failure as a crash:
+                # what broke is the contract between the model script and madengine.
+                console.print(
+                    f"📉 [bold yellow]{no_metric_runs} models ran but reported no "
+                    f"performance metric[/bold yellow]"
+                )
+                raise typer.Exit(ExitCode.NO_METRIC)
+            console.print(
+                "🎉 [bold green]All model executions completed successfully![/bold green]"
+            )
+            raise typer.Exit(ExitCode.SUCCESS)
 
         else:
             # MAD_CONTAINER_IMAGE handling is done in RunOrchestrator

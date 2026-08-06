@@ -123,6 +123,10 @@
           "description": "Omit #SBATCH --gpus-per-node, for clusters that advertise no GPU GRES.",
           "type": "boolean"
         },
+        "kill_on_bad_exit": {
+          "description": "Tear the srun step down as soon as one rank exits non-zero (default false). Only for workloads where every rank is expected to exit zero: where throughput is reported from one rank only, the other ranks exit non-zero on a healthy run.",
+          "type": "boolean"
+        },
         "time": { "type": "string" },
         "output_dir": { "type": "string" },
         "results_dir": { "type": "string" },
