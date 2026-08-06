@@ -20,7 +20,7 @@ from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
 from madengine.core.env_file import apply_env_file
-from madengine.schemas import validate_build_manifest
+from madengine.schemas import perf_csv_header, validate_build_manifest
 
 
 # Regex for parsing "performance: <value> <metric>" log lines.
@@ -607,14 +607,7 @@ class BaseDeployment(ABC):
         perf_csv_path = Path("perf.csv")
         if perf_csv_path.exists():
             return
-        standard_header = (
-            "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,"
-            "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
-            "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
-            "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-            "data_download_duration,build_number,additional_docker_run_options"
-        )
-        perf_csv_path.write_text(standard_header + "\n", encoding="utf-8")
+        perf_csv_path.write_text(perf_csv_header() + "\n", encoding="utf-8")
 
     def _write_to_perf_csv(self, perf_data: Dict[str, Any]) -> None:
         """
