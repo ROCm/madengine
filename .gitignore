@@ -135,6 +135,7 @@ scripts/
 # for the model JSONs that land in a dev checkout; these are package data, and hatchling
 # picks files by VCS status, so an ignored schema would also be missing from the wheel.
 !src/madengine/schemas/*.json
+!src/madengine/deployment/presets/**/*.json
 .*_env/
 .vscode/
 

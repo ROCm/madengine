@@ -1,0 +1,16 @@
+{
+  "_description": "Collectives over RoCEv2 on Broadcom Thor2 NICs (bnxt_re devices).",
+  "_comment": "The control plane still runs over TCP; pin NCCL_SOCKET_IFNAME to the management interface in a site profile, since its name varies by cluster.",
+
+  "facts": {
+    "fabric": "roce"
+  },
+
+  "env_vars": {
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "bnxt_re",
+    "NCCL_IB_GID_INDEX": "3",
+    "NCCL_SOCKET_IFNAME": null,
+    "GLOO_SOCKET_IFNAME": null
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "_description": "Scheduler advertises no GPU GRES, so GPU directives are rejected by sbatch.",
+  "_comment": "A cluster where scontrol reports GresTypes=(null): nodes hand out all their GPUs with the allocation. Combine with a fabric profile, e.g. \"cluster_profile\": [\"roce-broadcom-thor2\", \"no-gpu-gres\"].",
+
+  "slurm": {
+    "skip_gpus_directive": true
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ROCm/madengine/schemas/cluster_profile.schema.json",
+  "title": "madengine cluster profile",
+  "description": "Facts about a cluster, as opposed to the shape of a job. Merged after the SLURM shape presets and before the user's own configuration. A null value removes an inherited key.",
+  "type": "object",
+  "properties": {
+    "_description": { "type": "string" },
+    "_comment": { "type": "string" },
+    "facts": {
+      "description": "Node facts a submit node cannot always discover for itself, e.g. when the login node has no GPUs.",
+      "type": "object",
+      "properties": {
+        "gpu_vendor": { "type": "string", "enum": ["AMD", "NVIDIA"] },
+        "gpus_per_node": { "type": "integer", "minimum": 1 },
+        "gpu_architecture": {
+          "description": "e.g. gfx942; used in place of probing when the submit node has no GPU.",
+          "type": "string"
+        },
+        "gpu_renderer": { "type": "string" },
+        "shared_filesystem": {
+          "description": "Filesystem types df reports for shared storage on this cluster.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "fabric": {
+          "description": "Interconnect the collectives run over, e.g. roce, infiniband, ethernet.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "slurm": {
+      "description": "Scheduler facts, e.g. whether GPU GRES is advertised. Site policy such as partition or account belongs in the user's configuration, not in a shared profile.",
+      "type": "object",
+      "properties": {
+        "skip_gpus_directive": { "type": ["boolean", "null"] },
+        "gpus_per_node": { "type": ["integer", "null"], "minimum": 1 },
+        "network_interface": { "type": ["string", "null"] },
+        "modules": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "distributed": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "env_vars": {
+      "description": "Transport and runtime variables. Values are rendered into a shell command, so they must be scalars; null removes a variable a shape preset set.",
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    }
+  },
+  "additionalProperties": false
+}

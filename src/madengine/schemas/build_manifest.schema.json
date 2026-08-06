@@ -130,8 +130,9 @@
         "exclusive": { "type": "boolean" },
         "network_interface": { "type": "string" },
         "cluster_profile": {
-          "description": "Name of a per-cluster preset profile under deployment/presets/slurm/clusters/.",
-          "type": "string"
+          "description": "Cluster fact profile(s) to apply: a bundled name from deployment/presets/slurm/clusters/, a path to a site profile, or a list of either, merged in order.",
+          "type": ["string", "array"],
+          "items": { "type": "string" }
         },
         "modules": { "type": "array", "items": { "type": "string" } }
       }

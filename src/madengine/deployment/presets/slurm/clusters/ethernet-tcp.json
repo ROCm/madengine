@@ -1,0 +1,14 @@
+{
+  "_description": "No RDMA fabric: collectives fall back to TCP.",
+  "_comment": "Name the interface in a site profile; the default that used to ship, eth0, does not exist on many clusters.",
+
+  "facts": {
+    "fabric": "ethernet"
+  },
+
+  "env_vars": {
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_IB_HCA": null,
+    "NCCL_IB_GID_INDEX": null
+  }
+}

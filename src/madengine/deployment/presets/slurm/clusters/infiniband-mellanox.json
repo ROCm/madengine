@@ -1,0 +1,16 @@
+{
+  "_description": "Collectives over InfiniBand on Mellanox HCAs (mlx5 devices).",
+  "_comment": "InfiniBand needs no GID index: that is a RoCE concern.",
+
+  "facts": {
+    "fabric": "infiniband"
+  },
+
+  "env_vars": {
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "mlx5",
+    "NCCL_IB_GID_INDEX": null,
+    "NCCL_SOCKET_IFNAME": null,
+    "GLOO_SOCKET_IFNAME": null
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "_description": "Collectives over RoCEv2 on Mellanox ConnectX-7 NICs (mlx5 devices).",
+  "_comment": "GID index 3 is the usual RoCEv2 entry with an IPv4-mapped address; confirm with show_gids on the cluster.",
+
+  "facts": {
+    "fabric": "roce"
+  },
+
+  "env_vars": {
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_HCA": "mlx5",
+    "NCCL_IB_GID_INDEX": "3",
+    "NCCL_SOCKET_IFNAME": null,
+    "GLOO_SOCKET_IFNAME": null
+  }
+}

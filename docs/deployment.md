@@ -279,6 +279,51 @@ tokens.
 A missing `env_file` is a fatal error at startup rather than a variable that silently
 resolves to the empty string mid-run.
 
+### Cluster profiles (`cluster_profile`)
+
+The SLURM presets describe the shape of a job — how many nodes, for how long. What they
+cannot describe is the cluster it lands on, so cluster facts used to be baked into the
+shape: the built-in multi-node preset sets `NCCL_IB_DISABLE=1` and
+`NCCL_SOCKET_IFNAME=eth0`, which puts a run on TCP over an interface that may not exist,
+on a fabric that may well be RoCE.
+
+A cluster profile carries those facts separately:
+
+```json
+{
+  "slurm": {
+    "nodes": 2,
+    "cluster_profile": ["roce-broadcom-thor2", "no-gpu-gres"]
+  }
+}
+```
+
+Profiles merge after the shape presets and before your own configuration, so a profile
+fixes a bad default and you can still override the profile. Several may be named because
+the facts are orthogonal: the fabric and whether the scheduler advertises GPU GRES are
+separate statements. A value of `null` in a profile removes a variable an earlier layer
+set — an interface name that does not exist on this cluster is worse than none at all.
+
+Bundled archetypes (`madengine/deployment/presets/slurm/clusters/`):
+
+| Profile | What it asserts |
+| --- | --- |
+| `roce-broadcom-thor2` | RoCEv2 over `bnxt_re` devices |
+| `roce-mellanox-cx7` | RoCEv2 over `mlx5` devices |
+| `infiniband-mellanox` | InfiniBand over `mlx5` devices |
+| `ethernet-tcp` | No RDMA fabric; collectives over TCP |
+| `no-gpu-gres` | `sbatch` rejects GPU directives (`GresTypes=(null)`) |
+
+Archetypes name hardware, never a particular cluster: anything site-specific — the
+partition, the account, the management interface — belongs in a site profile. Write one as
+a JSON file with the same shape, then name it by path, or by name after pointing
+`MADENGINE_CLUSTER_PROFILES` at the directory holding it. A site profile shadows a bundled
+one of the same name. `MADENGINE_CLUSTER_PROFILE` selects a profile for runs whose manifest
+names none.
+
+A profile that does not exist stops the run: a silent fallback to the wrong fabric costs
+more than a startup error.
+
 ### Shared image store (`MAD_DOCKER_BUILDS`)
 
 For a multi-node run every worker needs the same image. Set `MAD_DOCKER_BUILDS` to a

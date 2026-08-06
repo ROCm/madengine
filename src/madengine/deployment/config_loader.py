@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from copy import deepcopy
 
+from madengine.deployment.presets.cluster_profiles import (
+    apply_cluster_profiles,
+    selected_profiles,
+)
+
 
 def apply_deployment_config(config: Any, load_fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
     """Apply deployment defaults via a loader and set config.additional_context.
@@ -192,14 +197,18 @@ class ConfigLoader:
         
         Layers:
         1. Base SLURM defaults
-        2. Profile preset (single-node/multi-node)
-        3. User configuration (already merged from file + CLI)
+        2. Profile preset (single-node/multi-node) — the shape of the job
+        3. Cluster profile(s) — facts about the cluster it lands on
+        4. User configuration (already merged from file + CLI)
         
         Args:
             user_config: User-provided configuration
             
         Returns:
             Complete configuration with defaults applied
+
+        Raises:
+            ValidationError: A named cluster profile is missing or invalid
         """
         # Layer 1: Base defaults
         config = cls.load_preset("slurm/defaults.json")
@@ -218,8 +227,13 @@ class ConfigLoader:
         else:
             profile_preset = cls.load_preset("slurm/profiles/single-node.json")
             config = cls.deep_merge(config, profile_preset)
-        
-        # Layer 3: User configuration (highest priority)
+
+        # Layer 3: cluster facts. These come after the shape presets, which carry transport
+        # defaults that only fit one kind of cluster, and before the user, who is always
+        # entitled to override a fact we got wrong.
+        config = apply_cluster_profiles(config, selected_profiles(temp_config))
+
+        # Layer 4: User configuration (highest priority)
         config = cls.deep_merge(config, user_config)
         
         return config
