@@ -252,6 +252,11 @@ This allows you to rebuild only changed models while maintaining references to e
 
 ### Environment Variables
 
+Host-side variables (`MODEL_DIR`, cache roots, `MAD_DOCKER_BUILDS`) can be collected in a
+shell env file that the manifest names via `deployment_config.env_file`; see
+[Environment file](deployment.md#environment-file-env_file). The variables below are the
+container's, and are set from the run configuration.
+
 Pass environment variables to containers:
 
 ```json

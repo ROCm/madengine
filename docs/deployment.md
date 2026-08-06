@@ -252,6 +252,49 @@ The deployment target is automatically detected from the `slurm` key in the conf
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
 
+### Environment file (`env_file`)
+
+A cluster run usually depends on a handful of host variables that say where things live —
+the model directory, the cache roots, the shared image store. Instead of requiring every
+operator to `source mad.env` in the shell that launches madengine, name the file in the
+build manifest and madengine loads it itself, on the submit node and on every worker:
+
+```json
+{
+  "deployment_config": {
+    "target": "slurm",
+    "env_file": "mad.env"
+  }
+}
+```
+
+A relative path is resolved against the manifest's directory, so a run directory holding
+the manifest and its `mad.env` side by side stays movable. The file is sourced with
+`bash`, exactly as `source mad.env` would, so `${VAR:-default}`, command substitution and
+conditionals all work — and, like the manifest that names it, the file is trusted input.
+Values in the file override what madengine inherited from the launching shell. madengine
+logs the names of the variables it applied, never their values, so an env file may carry
+tokens.
+
+The field is optional. Without it madengine behaves exactly as it did before, and nothing
+here requires `MAD_DOCKER_BUILDS` or any other variable to be set. What is fatal is naming
+a file that is not there: that stops the run at startup rather than leaving a variable to
+resolve to the empty string mid-run.
+
+### Shared image store (`MAD_DOCKER_BUILDS`)
+
+For a multi-node run every worker needs the same image. Set `MAD_DOCKER_BUILDS` to a
+directory on shared storage (usually from the `env_file` above) and madengine saves the
+built image there once, then loads it from the tar on workers whose local image ID differs:
+
+```bash
+export MAD_DOCKER_BUILDS=/shared/mad/docker_builds
+```
+
+Leaving it unset is supported but leaves image distribution to the operator: workers that
+do not already have the image cannot reconcile it, and the run fails on those nodes with a
+message saying so.
+
 ### Multi-Node Training
 
 For distributed training across SLURM nodes:

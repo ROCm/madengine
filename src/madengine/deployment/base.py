@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.core.env_file import apply_env_file
 from madengine.schemas import validate_build_manifest
 
 
@@ -156,6 +157,17 @@ class BaseDeployment(ABC):
 
         for warning in validate_build_manifest(manifest, source=str(manifest_path)):
             self.console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+        env_file = manifest.get("deployment_config", {}).get("env_file")
+        if env_file:
+            # The submit side needs these too: MAD_DOCKER_BUILDS and the cache roots are
+            # read while rendering the job script, before any node starts.
+            applied = apply_env_file(env_file, base_dir=str(manifest_path.resolve().parent))
+            # Names only: an env file legitimately carries secrets.
+            self.console.print(
+                f"[cyan]Loaded env_file {env_file}: "
+                f"{', '.join(sorted(applied)) or '(no new variables)'}[/cyan]"
+            )
 
         return manifest
 

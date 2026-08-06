@@ -25,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.env_file import apply_env_file
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -229,7 +230,18 @@ class RunOrchestrator:
                 self.rich_console.print(f"[yellow]⚠ {warning}[/yellow]")
 
             deployment_config = manifest.get("deployment_config", {})
-            
+
+            if deployment_config.get("env_file"):
+                applied = apply_env_file(
+                    deployment_config["env_file"],
+                    base_dir=str(Path(manifest_file).resolve().parent),
+                )
+                # Names only: an env file legitimately carries secrets (MAD_SECRETS_*).
+                self.rich_console.print(
+                    f"[cyan]Loaded env_file {deployment_config['env_file']}: "
+                    f"{', '.join(sorted(applied)) or '(no new variables)'}[/cyan]"
+                )
+
             # Update additional_context with deployment_config for deployment layer
             if not self.additional_context:
                 self.additional_context = {}
