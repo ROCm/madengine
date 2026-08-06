@@ -14,14 +14,11 @@ import typing
 # third-party imports
 import pandas as pd
 
-# Standard header for perf CSV; must match ContainerRunner.ensure_perf_csv_exists()
-PERF_CSV_HEADER = (
-    "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,"
-    "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
-    "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
-    "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-    "data_download_duration,build_number,additional_docker_run_options"
-)
+from madengine.schemas import perf_csv_header
+
+# The columns are declared in schemas/perf_csv.schema.json, which every writer reads, so
+# the four copies of this string can no longer drift apart.
+PERF_CSV_HEADER = perf_csv_header()
 
 
 def df_strip_columns(df: pd.DataFrame) -> pd.DataFrame:

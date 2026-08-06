@@ -13,12 +13,19 @@ The schema is also where the deployment target is defined to live: under
 is migrated into `deployment_config` with a warning, so the two used to disagree silently
 and now cannot.
 
+The result side is declared the same way. `perf_csv.schema.json` gives the columns of
+`perf.csv` in order, replacing the header string that each of the three writers spelled
+out for itself under a comment asking the reader to keep them in sync. Columns that
+restate a manifest field point at it, so the row and the manifest are two views of one
+shape rather than two lists that happen to agree today.
+
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import functools
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from madengine.core.errors import ErrorContext, ValidationError
 
@@ -32,6 +39,47 @@ def load_schema(name: str = "build_manifest.schema.json") -> Dict[str, Any]:
     """Load a bundled JSON Schema by file name."""
     with open(SCHEMA_DIR / name) as f:
         return json.load(f)
+
+
+@functools.lru_cache(maxsize=1)
+def perf_csv_columns() -> Tuple[str, ...]:
+    """
+    Column names of `perf.csv`, in order.
+
+    Order is the declaration order in `perf_csv.schema.json`: a row is written positionally
+    into an existing file, so the schema owns the order as well as the names.
+
+    Returns:
+        Tuple[str, ...]: the column names
+    """
+    return tuple(load_schema("perf_csv.schema.json")["properties"])
+
+
+@functools.lru_cache(maxsize=1)
+def perf_csv_header() -> str:
+    """
+    The `perf.csv` header line, without a trailing newline.
+
+    Returns:
+        str: comma-separated column names
+    """
+    return ",".join(perf_csv_columns())
+
+
+def unknown_perf_columns(row: Dict[str, Any]) -> List[str]:
+    """
+    Report keys of a result row that no column accepts.
+
+    A row is written with `extrasaction="ignore"`, so a key the schema does not declare is
+    dropped on the floor rather than reported. Callers that care can ask.
+
+    Args:
+        row: a result row keyed by column name
+
+    Returns:
+        List[str]: keys that are not declared columns, sorted
+    """
+    return sorted(set(row) - set(perf_csv_columns()))
 
 
 def _pointer(path) -> str:

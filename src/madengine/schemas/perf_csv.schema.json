@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ROCm/madengine/schemas/perf_csv.schema.json",
+  "title": "madengine performance result row",
+  "description": "Shape of one row of perf.csv. Property order is column order. Columns that restate a manifest field carry x-manifest-source, a JSON pointer into build_manifest.schema.json, so the two shapes cannot be renamed apart without a test failing.",
+  "type": "object",
+  "properties": {
+    "model": {
+      "description": "Model name as it appears in the manifest.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/name"
+    },
+    "n_gpus": {
+      "description": "GPUs the model asked for; -1 means all visible GPUs.",
+      "type": ["integer", "string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/n_gpus"
+    },
+    "nnodes": {
+      "description": "Nodes the run spanned.",
+      "type": ["integer", "string", "null"],
+      "x-manifest-source": "/$defs/distributed/properties/nnodes"
+    },
+    "gpus_per_node": {
+      "description": "GPUs used per node.",
+      "type": ["integer", "string", "null"],
+      "x-manifest-source": "/$defs/slurm/properties/gpus_per_node"
+    },
+    "training_precision": {
+      "description": "Precision the model was run at, e.g. bf16, fp8.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/training_precision"
+    },
+    "pipeline": {
+      "description": "Pipeline the model belongs to, from its model card.",
+      "type": ["string", "null"]
+    },
+    "args": {
+      "description": "Arguments passed to the run script.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/args"
+    },
+    "tags": {
+      "description": "Model card tags, flattened to a comma-separated string.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/tags"
+    },
+    "docker_file": {
+      "description": "Dockerfile the image was built from.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtImage/properties/dockerfile"
+    },
+    "base_docker": {
+      "description": "Base image the Dockerfile started from.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtImage/properties/base_docker"
+    },
+    "docker_sha": {
+      "description": "Image digest, as reported by the container runtime at run time.",
+      "type": ["string", "null"]
+    },
+    "docker_image": {
+      "description": "Image tag the run used.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtImage/properties/docker_image"
+    },
+    "git_commit": {
+      "description": "Commit of the model repository the run script came from.",
+      "type": ["string", "null"]
+    },
+    "machine_name": {
+      "description": "Host the run reported from; the head node for a multi-node run.",
+      "type": ["string", "null"]
+    },
+    "deployment_type": {
+      "description": "Where the run was deployed.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/deploymentConfig/properties/target"
+    },
+    "launcher": {
+      "description": "Distributed launcher, e.g. torchrun, mpirun.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/distributed/properties/launcher"
+    },
+    "gpu_architecture": {
+      "description": "GPU architecture detected at run time, e.g. gfx950.",
+      "type": ["string", "null"]
+    },
+    "performance": {
+      "description": "The metric value. Empty when the workload produced no metric.",
+      "type": ["number", "string", "null"]
+    },
+    "metric": {
+      "description": "Unit of the performance value, e.g. tokens/s/GPU.",
+      "type": ["string", "null"]
+    },
+    "relative_change": {
+      "description": "Change against the recorded baseline, when one exists.",
+      "type": ["number", "string", "null"]
+    },
+    "status": {
+      "description": "Outcome of the run. SUCCESS only when the workload succeeded and a metric was collected.",
+      "type": ["string", "null"]
+    },
+    "build_duration": {
+      "description": "Seconds spent building the image.",
+      "type": ["number", "string", "null"],
+      "x-manifest-source": "/$defs/builtImage/properties/build_duration"
+    },
+    "test_duration": {
+      "description": "Seconds spent running the workload.",
+      "type": ["number", "string", "null"]
+    },
+    "dataname": {
+      "description": "Dataset the run used.",
+      "type": ["string", "null"]
+    },
+    "data_provider_type": {
+      "description": "How the dataset was made available, e.g. nas, minio, custom.",
+      "type": ["string", "null"]
+    },
+    "data_size": {
+      "description": "Dataset size as reported by the provider.",
+      "type": ["number", "string", "null"]
+    },
+    "data_download_duration": {
+      "description": "Seconds spent fetching the dataset.",
+      "type": ["number", "string", "null"]
+    },
+    "build_number": {
+      "description": "CI build number, when the run came from CI.",
+      "type": ["integer", "string", "null"]
+    },
+    "additional_docker_run_options": {
+      "description": "Extra options passed to docker run.",
+      "type": ["string", "null"],
+      "x-manifest-source": "/$defs/builtModel/properties/additional_docker_run_options"
+    }
+  },
+  "additionalProperties": true
+}
