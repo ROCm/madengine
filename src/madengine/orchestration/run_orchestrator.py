@@ -31,6 +31,7 @@ from madengine.core.errors import (
     ExecutionError,
     create_error_context,
 )
+from madengine.schemas import validate_build_manifest
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
@@ -221,7 +222,12 @@ class RunOrchestrator:
             # (with optional runtime override)
             with open(manifest_file) as f:
                 manifest = json.load(f)
-            
+
+            # Fails fast on a malformed manifest, and folds any top-level deployment
+            # block into deployment_config so the target is read from one place.
+            for warning in validate_build_manifest(manifest, source=str(manifest_file)):
+                self.rich_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
             deployment_config = manifest.get("deployment_config", {})
             
             # Update additional_context with deployment_config for deployment layer

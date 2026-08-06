@@ -209,6 +209,7 @@ class TestSkipModelRun:
                     "deployment_config": {"target": "local"},
                     "context": {},
                     "built_images": {},
+                    "built_models": {},
                 }
             )
         )
@@ -253,6 +254,7 @@ class TestSkipModelRun:
                     "deployment_config": {"target": "local"},
                     "context": {},
                     "built_images": {},
+                    "built_models": {},
                 }
             )
         )
@@ -286,6 +288,7 @@ class TestSkipModelRun:
                     "deployment_config": {"target": "local"},
                     "context": {},
                     "built_images": {},
+                    "built_models": {},
                 }
             )
         )
