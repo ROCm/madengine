@@ -324,6 +324,29 @@ names none.
 A profile that does not exist stops the run: a silent fallback to the wrong fabric costs
 more than a startup error.
 
+#### Submit nodes without GPUs
+
+A profile's `facts` block describes the compute nodes, which is what lets a login node with
+no GPUs, no ROCm and no `/dev/dri` prepare a job for nodes that have all three:
+
+```json
+{
+  "_description": "Our cluster.",
+  "facts": {
+    "gpu_vendor": "AMD",
+    "gpus_per_node": 8,
+    "gpu_architecture": "gfx942",
+    "gpu_product_name": "AMD Instinct MI300X",
+    "hip_version": "6.4"
+  }
+}
+```
+
+Without this, runtime context initialisation on a login node fails with `Unable to
+determine gpu vendor`. Facts are a fallback rather than an override: a node that can answer
+for itself still does, so on a heterogeneous partition the architecture recorded in results
+is the one that ran the work, not the one the profile expected.
+
 ### Shared image store (`MAD_DOCKER_BUILDS`)
 
 For a multi-node run every worker needs the same image. Set `MAD_DOCKER_BUILDS` to a

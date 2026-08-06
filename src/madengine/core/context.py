@@ -101,6 +101,9 @@ class Context:
         self.console = Console()
         self._gpu_context_initialized = False
         self._build_only_mode = build_only_mode
+        # Set in init_gpu_context when a cluster profile describes the compute nodes and
+        # this one is not expected to look like them.
+        self._headless = False
         self._detect_local_gpu_arch = detect_local_gpu_arch
         self._system_context_initialized = False
         self._gpu_tool_manager = None  # Lazy initialization
@@ -254,25 +257,101 @@ class Context:
                     f"System context detection failed on runtime node: {e}"
                 )
 
+    def _cluster_facts(self) -> typing.Dict[str, typing.Any]:
+        """Node facts from the selected cluster profile, if any.
+
+        A submit node is often a login node with no GPUs, no ROCm and no /dev/dri, yet the
+        job it prepares runs on nodes that have all three. The cluster profile states what
+        those nodes are, which is the only honest answer available here: probing the local
+        node would describe the wrong machine even when it happens to succeed.
+
+        Returns:
+            Dict[str, Any]: the profile's `facts` block, empty when no profile is selected
+        """
+        from madengine.deployment.presets.cluster_profiles import (
+            apply_cluster_profiles,
+            selected_profiles,
+        )
+
+        selection = self.ctx.get("cluster_profile") or (self.ctx.get("slurm") or {}).get(
+            "cluster_profile"
+        )
+        references = selected_profiles({"slurm": {"cluster_profile": selection}})
+        if not references:
+            return {}
+        return apply_cluster_profiles({}, references).get("facts") or {}
+
+    def _probe(self, description: str, probe: typing.Callable, fallback=None):
+        """Run a local probe, tolerating its absence when a cluster profile stands in.
+
+        Args:
+            description: what is being detected, for the warning
+            probe: the detection callable
+            fallback: value to use when detection fails in headless mode
+
+        Returns:
+            The probed value, or `fallback` in headless mode when probing fails.
+
+        Raises:
+            Exception: whatever the probe raised, when not running headless
+        """
+        try:
+            detected = probe()
+        except Exception as exc:
+            if not self._headless:
+                raise
+            print(
+                f"Warning: cannot detect {description} on this node ({exc}); "
+                f"continuing with {fallback!r} from the cluster profile"
+            )
+            return fallback
+
+        # A probe that reports nothing rather than failing — "0 GPUs" from a node with none
+        # — is not an answer about the compute nodes either.
+        if self._headless and not detected and fallback:
+            print(
+                f"Warning: this node reports no {description}; "
+                f"continuing with {fallback!r} from the cluster profile"
+            )
+            return fallback
+        return detected
+
     def init_gpu_context(self) -> None:
         """Initialize GPU-specific context for runtime.
 
         This method detects GPU configuration and sets up environment variables
-        needed for container execution. Should only be called on GPU nodes.
+        needed for container execution. On a node with GPUs the values are probed;
+        on a submit node they come from the selected cluster profile's facts, which
+        describe the compute nodes the job will actually land on.
         User-provided GPU contexts will not be overridden.
 
         Raises:
-            RuntimeError: If GPU detection fails.
+            RuntimeError: If GPU detection fails and no cluster profile supplies the facts.
         """
         if self._gpu_context_initialized:
             return
 
         print("Detecting GPU configuration...")
 
+        # A node answers for itself whenever it can: on a compute node the local values
+        # describe the machine that will run the container, and a cluster-wide profile
+        # cannot know which architecture a heterogeneous partition handed out. The facts
+        # are a fallback for the node that has nothing to say.
+        facts = self._cluster_facts()
+        self._headless = bool(facts.get("gpu_vendor"))
+
         try:
             # GPU vendor detection - only if not provided by user
             if "gpu_vendor" not in self.ctx:
-                self.ctx["gpu_vendor"] = self.get_gpu_vendor()
+                vendor = self._probe("the GPU vendor", self.get_gpu_vendor)
+                if vendor not in ("AMD", "NVIDIA") and facts.get("gpu_vendor"):
+                    print(
+                        f"No GPU on this node; taking the compute nodes' facts from the "
+                        f"cluster profile: "
+                        f"{', '.join(f'{k}={v}' for k, v in sorted(facts.items()))}"
+                    )
+                    vendor = facts["gpu_vendor"]
+                self.ctx["gpu_vendor"] = vendor
                 print(f"Detected GPU vendor: {self.ctx['gpu_vendor']}")
             else:
                 print(f"Using provided GPU vendor: {self.ctx['gpu_vendor']}")
@@ -288,24 +367,34 @@ class Context:
             # normalizes it at run time. Auto-detection runs in finalize when absent.
 
             if "MAD_SYSTEM_NGPUS" not in self.ctx["docker_env_vars"]:
-                self.ctx["docker_env_vars"][
-                    "MAD_SYSTEM_NGPUS"
-                ] = self.get_system_ngpus()
+                self.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"] = self._probe(
+                    "the GPU count", self.get_system_ngpus, facts.get("gpus_per_node", 0)
+                )
 
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
                     "MAD_SYSTEM_GPU_ARCHITECTURE"
-                ] = self.get_system_gpu_architecture()
+                ] = self._probe(
+                    "the GPU architecture",
+                    self.get_system_gpu_architecture,
+                    facts.get("gpu_architecture", ""),
+                )
 
             if "MAD_SYSTEM_HIP_VERSION" not in self.ctx["docker_env_vars"]:
-                self.ctx["docker_env_vars"][
-                    "MAD_SYSTEM_HIP_VERSION"
-                ] = self.get_system_hip_version()
+                self.ctx["docker_env_vars"]["MAD_SYSTEM_HIP_VERSION"] = self._probe(
+                    "the HIP version",
+                    self.get_system_hip_version,
+                    facts.get("hip_version", ""),
+                )
 
             if "MAD_SYSTEM_GPU_PRODUCT_NAME" not in self.ctx["docker_env_vars"]:
                 self.ctx["docker_env_vars"][
                     "MAD_SYSTEM_GPU_PRODUCT_NAME"
-                ] = self.get_system_gpu_product_name()
+                ] = self._probe(
+                    "the GPU product name",
+                    self.get_system_gpu_product_name,
+                    facts.get("gpu_product_name", ""),
+                )
 
             # Also add to build args (for runtime builds) - only if not already set
             if "MAD_SYSTEM_GPU_ARCHITECTURE" not in self.ctx["docker_build_arg"]:
@@ -315,10 +404,16 @@ class Context:
 
             # Docker GPU configuration - only if not already set
             if "docker_gpus" not in self.ctx:
-                self.ctx["docker_gpus"] = self.get_docker_gpus()
+                self.ctx["docker_gpus"] = self._probe(
+                    "the Docker GPU selection", self.get_docker_gpus
+                )
 
             if "gpu_renderDs" not in self.ctx:
-                self.ctx["gpu_renderDs"] = self.get_gpu_renderD_nodes()
+                # Render nodes are per-machine device numbers; a submit node's would be
+                # meaningless even if it had any.
+                self.ctx["gpu_renderDs"] = self._probe(
+                    "the GPU render nodes", self.get_gpu_renderD_nodes
+                )
 
             self._gpu_context_initialized = True
 

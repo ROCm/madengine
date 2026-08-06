@@ -17,7 +17,14 @@
           "description": "e.g. gfx942; used in place of probing when the submit node has no GPU.",
           "type": "string"
         },
-        "gpu_renderer": { "type": "string" },
+        "gpu_product_name": {
+          "description": "e.g. AMD Instinct MI300X; reported in results when probing is not possible.",
+          "type": "string"
+        },
+        "hip_version": {
+          "description": "HIP/CUDA version of the compute nodes, e.g. 6.4.",
+          "type": ["string", "number"]
+        },
         "shared_filesystem": {
           "description": "Filesystem types df reports for shared storage on this cluster.",
           "type": "array",
