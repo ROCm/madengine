@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.schemas import validate_build_manifest
+
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
@@ -122,8 +124,8 @@ class BaseDeployment(ABC):
             config: Deployment configuration
         """
         self.config = config
-        self.manifest = self._load_manifest(config.manifest_file)
         self.console = Console()
+        self.manifest = self._load_manifest(config.manifest_file)
 
     def _load_manifest(self, manifest_file: str) -> Dict:
         """
@@ -151,6 +153,9 @@ class BaseDeployment(ABC):
         missing = [f for f in required if f not in manifest]
         if missing:
             raise ValueError(f"Invalid manifest, missing: {missing}")
+
+        for warning in validate_build_manifest(manifest, source=str(manifest_path)):
+            self.console.print(f"[yellow]⚠ {warning}[/yellow]")
 
         return manifest
 
