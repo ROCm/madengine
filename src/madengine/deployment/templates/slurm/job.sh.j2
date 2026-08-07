@@ -155,7 +155,15 @@ echo "Submission directory: {{ manifest_file | dirname }}"
 # Single-node: Prefer shared storage (submission dir), with local fallback if needed
 # Check if submission directory is on shared filesystem
 SUBMIT_DIR={{ manifest_file | dirname }}
-if df -T "$SUBMIT_DIR" 2>/dev/null | grep -qE '\bnfs[0-9]*\b|\blustre\b|\bgpfs\b|\bceph\b'; then
+# Ask df for the filesystem type alone. Matching the whole df -T line reads the mount
+# point too, so a local disk under a path such as /mnt/nfs-scratch answered yes and the
+# job then trusted node-local storage to be shared. --output=fstype is GNU coreutils
+# 8.21 and up; the awk form is the fallback for anything older.
+SUBMIT_FSTYPE=$(df --output=fstype "$SUBMIT_DIR" 2>/dev/null | tail -n 1)
+if [ -z "$SUBMIT_FSTYPE" ]; then
+    SUBMIT_FSTYPE=$(df -T "$SUBMIT_DIR" 2>/dev/null | awk 'NR > 1 { print $2; exit }')
+fi
+if printf '%s' "$SUBMIT_FSTYPE" | grep -qE '^(nfs[0-9]*|lustre|gpfs|ceph|beegfs|panfs)$'; then
     # Submission directory is on shared storage - use it directly (best practice)
     WORKSPACE=$SUBMIT_DIR
     WORKSPACE_TYPE="shared-nfs"

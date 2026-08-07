@@ -134,11 +134,16 @@ class TestJobScriptPath:
 # 2. Shared-filesystem probe
 
 class TestSharedFilesystemProbe:
-    """`df -T` reports nfs4 on modern mounts; the probe must not miss it."""
+    """`df -T` reports nfs4 on modern mounts; the probe must not miss it.
+
+    And it must read the filesystem type, nothing else: the mount point travels on the
+    same `df -T` line, so a local disk under a path such as /mnt/nfs-scratch used to answer
+    yes and the job then trusted node-local storage to be visible from every node.
+    """
 
     @staticmethod
     def _probe_pattern(script: str) -> str:
-        match = re.search(r"df -T \"\$SUBMIT_DIR\".*grep -qE '([^']+)'", script)
+        match = re.search(r"SUBMIT_FSTYPE\"?\s*\|\s*grep -qE '([^']+)'", script)
         assert match, "shared-filesystem probe not found in rendered script"
         return match.group(1)
 
@@ -149,16 +154,36 @@ class TestSharedFilesystemProbe:
         ("lustre", True),
         ("gpfs", True),
         ("ceph", True),
+        ("beegfs", True),
+        ("panfs", True),
         ("ext4", False),
         ("xfs", False),
         ("overlay", False),
+        ("tmpfs", False),
     ])
     def test_probe_matches_shared_filesystems(self, tmp_path, fstype, expected):
         # The probe only exists on the single-node branch of the template.
         deployment = _build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1})
         pattern = self._probe_pattern(_render(deployment))
-        df_line = f"storage.example:/home/user {fstype} 104857600 50106368 54751232 48% /home/user"
-        assert bool(re.search(pattern, df_line)) is expected
+        assert bool(re.search(pattern, fstype)) is expected
+
+    def test_the_probe_reads_the_fstype_column_only(self, tmp_path):
+        script = _render(_build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1}))
+        assert 'df --output=fstype "$SUBMIT_DIR"' in script
+        assert 'df -T "$SUBMIT_DIR" 2>/dev/null | grep' not in script
+
+    def test_a_mount_point_that_says_nfs_does_not_make_a_disk_shared(self, tmp_path):
+        """/mnt/nfs-scratch on ext4 is local, whatever its name suggests."""
+        script = _render(_build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1}))
+        pattern = self._probe_pattern(script)
+        df_line = "/dev/nvme0n1p2 ext4 104857600 50106368 54751232 48% /mnt/nfs-scratch"
+        assert re.search(pattern, df_line) is None
+        assert re.search(pattern, "ext4") is None
+
+    def test_there_is_a_fallback_for_df_without_output(self, tmp_path):
+        """--output is coreutils 8.21; older df still has to be read correctly."""
+        script = _render(_build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1}))
+        assert "awk 'NR > 1 { print $2; exit }'" in script
 
 
 # ---------------------------------------------------------------------------
