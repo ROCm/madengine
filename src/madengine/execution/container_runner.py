@@ -32,6 +32,7 @@ from madengine.reporting.update_perf_csv import (
     flatten_tags,
 )
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+from madengine.reporting import result_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.deployment.common import canonicalize_distributed_launcher
 from madengine.utils.config_parser import ConfigParser
@@ -1725,42 +1726,23 @@ class ContainerRunner:
                                             f"write a CSV there with 'performance' and 'metric' "
                                             f"columns, relative to its working directory.[/yellow]"
                                         )
+                                        # A typo in the card and a script that wrote nothing
+                                        # look identical from here, so name the files that do
+                                        # look like results CSVs.
+                                        for line in result_csv.suggestion_lines(
+                                            [model_dir, os.getcwd()]
+                                        ):
+                                            self.rich_console.print(f"[yellow]  {line}[/yellow]")
                                         run_results["performance"] = None
                                     else:
                                         run_results["performance"] = resolved_path
-                                        # Validate multiple results file format using proper CSV parsing
-                                        try:
-                                            import csv
-                                            with open(resolved_path, "r") as f:
-                                                csv_reader = csv.DictReader(f)
-
-                                                # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                                csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
-
-                                                # Check if 'performance' column exists
-                                                if 'performance' not in csv_reader.fieldnames:
-                                                    print(
-                                                        f"Error: {resolved_path} has no 'performance' column; "
-                                                        f"found: {', '.join(csv_reader.fieldnames or []) or '(no header)'}"
-                                                    )
-                                                    run_results["performance"] = None
-                                                else:
-                                                    # Check if at least one row has a non-empty performance value
-                                                    has_valid_perf = False
-                                                    for row in csv_reader:
-                                                        if row.get('performance', '').strip():
-                                                            has_valid_perf = True
-                                                            break
-
-                                                    if not has_valid_perf:
-                                                        run_results["performance"] = None
-                                                        print(
-                                                            f"Error: every row of {resolved_path} has an empty "
-                                                            f"'performance' value, so the run produced no metric."
-                                                        )
-                                        except Exception as e:
-                                            self.rich_console.print(
-                                                f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                        problem = result_csv.metric_rejection_reason(
+                                            resolved_path
+                                        )
+                                        if problem:
+                                            print(
+                                                f"Error: {resolved_path} produced no metric: "
+                                                f"{problem}."
                                             )
                                             run_results["performance"] = None
                                 else:
@@ -1803,8 +1785,23 @@ class ContainerRunner:
                                                     run_results["metric"] = "samples_per_second"
                                                     print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
                                                 else:
-                                                    # No performance metrics found
-                                                    print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                    # Nothing measured. A model reports a
+                                                    # number either in a results CSV or in its
+                                                    # log, and this card declared no CSV, so
+                                                    # say both halves instead of only the one
+                                                    # that was tried.
+                                                    print(
+                                                        "Warning: no metric found. The model card "
+                                                        "declares no multiple_results, so "
+                                                        "MAD_OUTPUT_CSV was not exported, and the "
+                                                        "log has no 'performance: NUMBER METRIC' "
+                                                        "or 'train_samples_per_second' line: "
+                                                        f"{log_file_path}"
+                                                    )
+                                                    for line in result_csv.suggestion_lines(
+                                                        [model_dir, os.getcwd()]
+                                                    ):
+                                                        print(f"  {line}")
                                                     run_results["performance"] = None
                                                     run_results["metric"] = None
 
