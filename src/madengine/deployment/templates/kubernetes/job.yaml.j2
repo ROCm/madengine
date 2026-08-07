@@ -1,3 +1,17 @@
+{%- macro copy_result_csvs(destination, sources) %}
+            # A model card need not declare its results CSV, and the name it declares need
+            # not be the one the script wrote, so take anything shaped like one: a header
+            # carrying model, performance and metric, in any order. madengine's own outputs
+            # are skipped -- they match by construction, and copying one back would feed the
+            # run its own verdict.
+            for _result_csv in {{ sources }}; do
+                [ -f "$_result_csv" ] || continue
+                case "$(basename "$_result_csv")" in perf.csv|perf_super*|perf_entry*) continue ;; esac
+                if head -n 1 "$_result_csv" 2>/dev/null | tr -d ' "\r' | tr 'A-Z' 'a-z' | awk -F, '{m=0;p=0;t=0;for(i=1;i<=NF;i++){if($i=="model")m=1;if($i=="performance")p=1;if($i=="metric")t=1}exit !(m&&p&&t)}'; then
+                    cp "$_result_csv" {{ destination }}/ 2>/dev/null || true
+                fi
+            done
+{%- endmacro -%}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -363,6 +377,7 @@ spec:
                 fi
             fi
             {% endif %}
+{{ copy_result_csvs('/results/${HOSTNAME}', '/workspace/*.csv /workspace/run_directory/*.csv ./*.csv ../*.csv') }}
             
             # Copy environment details
             if ls *_env.csv 1> /dev/null 2>&1; then
@@ -552,6 +567,7 @@ spec:
                 fi
             fi
             {% endif %}
+{{ copy_result_csvs('/results/${HOSTNAME}', '/workspace/*.csv /workspace/run_directory/*.csv ./*.csv ../*.csv') }}
             
             # Copy environment details
             if ls *_env.csv 1> /dev/null 2>&1; then

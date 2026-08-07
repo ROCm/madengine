@@ -32,6 +32,7 @@ from madengine.reporting.update_perf_csv import (
     flatten_tags,
 )
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+from madengine.reporting import result_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.deployment.common import canonicalize_distributed_launcher
 from madengine.utils.config_parser import ConfigParser
@@ -180,6 +181,69 @@ def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typ
     if os.path.isfile(path_in_model_dir):
         return path_in_model_dir
     return None
+
+
+def _settle_results_csv(
+    model_info: dict,
+    model_dir: str,
+    say: typing.Callable[[str], None],
+    min_mtime: typing.Optional[float] = None,
+) -> typing.Tuple[typing.Optional[str], typing.Optional["result_csv.Discovery"]]:
+    """The results CSV this run reports from, and the search that had to find it.
+
+    A declared file that exists always wins: the card said where to look and it was right.
+    Otherwise the file is looked for by its header, because the name in the card is not the
+    contract anyone actually keeps -- the field is optional, and the script that writes the
+    file computes its own path in another repository. The three cases a reader has to be
+    able to tell apart afterwards are a typo, an omission, and nothing found at all, so
+    each says so on its way past.
+
+    Args:
+        model_info: the model entry, read for ``multiple_results`` and ``name``
+        model_dir: the run directory, searched before the workspace root
+        say: where messages go, e.g. ``rich_console.print``
+        min_mtime: ignore files older than this, so the model that ran before this one in
+            the same directory does not get its results reported twice
+
+    Returns:
+        (path to the CSV or None, the discovery that ran or None when the card was right)
+    """
+    declared = (model_info.get("multiple_results") or "").strip()
+    resolved = _resolve_multiple_results_path(declared, model_dir) if declared else None
+    if resolved:
+        return resolved, None
+
+    discovery = result_csv.discover([model_dir, os.getcwd()], min_mtime=min_mtime)
+    if declared:
+        # This is a contract, and the model script held up its end or it did not: say
+        # which paths were searched and what the container was told, so the next person
+        # does not have to read this code.
+        say(
+            f"[yellow]Warning: model '{model_info.get('name', '')}' declares "
+            f"multiple_results='{declared}' but no such file was produced.[/yellow]"
+        )
+        say(
+            f"[yellow]  Searched: {os.path.abspath(declared)} and "
+            f"{os.path.join(os.path.abspath(model_dir), declared)}[/yellow]"
+        )
+        say(
+            f"[yellow]  The container was given MAD_OUTPUT_CSV='{declared}'; the run "
+            f"script must write a CSV there with 'performance' and 'metric' columns, "
+            f"relative to its working directory.[/yellow]"
+        )
+    if discovery.winner is None:
+        return None, discovery
+
+    origin = (
+        "the declared file was not there"
+        if declared
+        else "the model card declares no multiple_results"
+    )
+    say(
+        f"[yellow]  Reporting from '{discovery.winner}', found by its header: it carries "
+        f"model, performance and metric ({origin}).[/yellow]"
+    )
+    return str(discovery.winner), discovery
 
 
 def _docker_image_exists_locally(image: str) -> bool:
@@ -1674,6 +1738,11 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
+                        # The results CSV this run will report from: declared by the card and
+                        # present, or found by its header. Settled once, below, and reused by
+                        # the reporting step so discovery is not lost on the way there.
+                        resolved_results_csv: typing.Optional[str] = None
+
                         if skip_model_run:
                             run_results["status"] = "SKIPPED"
                             self.rich_console.print(
@@ -1701,68 +1770,27 @@ class ContainerRunner:
                                 if multiple_results:
                                     multiple_results = multiple_results.strip()
 
-                                if multiple_results:
-                                    resolved_path = _resolve_multiple_results_path(
-                                        multiple_results, model_dir
-                                    )
-                                    if not resolved_path:
-                                        # This is a contract, and the model script held up
-                                        # its end or it did not: say which paths were
-                                        # searched and what the container was told, so the
-                                        # next person does not have to read this code.
-                                        self.rich_console.print(
-                                            f"[yellow]Warning: model '{model_info.get('name', '')}' "
-                                            f"declares multiple_results='{multiple_results}' but no "
-                                            f"such file was produced.[/yellow]"
-                                        )
-                                        self.rich_console.print(
-                                            f"[yellow]  Searched: {os.path.abspath(multiple_results)}"
-                                            f" and {os.path.join(os.path.abspath(model_dir), multiple_results)}[/yellow]"
-                                        )
-                                        self.rich_console.print(
-                                            f"[yellow]  The container was given "
-                                            f"MAD_OUTPUT_CSV='{multiple_results}'; the run script must "
-                                            f"write a CSV there with 'performance' and 'metric' "
-                                            f"columns, relative to its working directory.[/yellow]"
+                                # The workspace root is shared by every model in the run, so
+                                # only a file written during this model's run can be this
+                                # model's result.
+                                resolved_path, discovery = _settle_results_csv(
+                                    model_info,
+                                    model_dir,
+                                    self.rich_console.print,
+                                    min_mtime=test_start_time,
+                                )
+
+                                if resolved_path:
+                                    resolved_results_csv = resolved_path
+                                    run_results["performance"] = resolved_path
+                                    # Same reading of the file as discovery does, so a declared
+                                    # file and a found one are judged by one rule.
+                                    problem = result_csv.metric_rejection_reason(resolved_path)
+                                    if problem:
+                                        print(
+                                            f"Error: {resolved_path} produced no metric: {problem}."
                                         )
                                         run_results["performance"] = None
-                                    else:
-                                        run_results["performance"] = resolved_path
-                                        # Validate multiple results file format using proper CSV parsing
-                                        try:
-                                            import csv
-                                            with open(resolved_path, "r") as f:
-                                                csv_reader = csv.DictReader(f)
-
-                                                # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                                csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
-
-                                                # Check if 'performance' column exists
-                                                if 'performance' not in csv_reader.fieldnames:
-                                                    print(
-                                                        f"Error: {resolved_path} has no 'performance' column; "
-                                                        f"found: {', '.join(csv_reader.fieldnames or []) or '(no header)'}"
-                                                    )
-                                                    run_results["performance"] = None
-                                                else:
-                                                    # Check if at least one row has a non-empty performance value
-                                                    has_valid_perf = False
-                                                    for row in csv_reader:
-                                                        if row.get('performance', '').strip():
-                                                            has_valid_perf = True
-                                                            break
-
-                                                    if not has_valid_perf:
-                                                        run_results["performance"] = None
-                                                        print(
-                                                            f"Error: every row of {resolved_path} has an empty "
-                                                            f"'performance' value, so the run produced no metric."
-                                                        )
-                                        except Exception as e:
-                                            self.rich_console.print(
-                                                f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
-                                            )
-                                            run_results["performance"] = None
                                 else:
                                     # Match the actual output format: "performance: 14164 samples_per_second"
                                     # Simple pattern to capture number and metric unit
@@ -1803,8 +1831,25 @@ class ContainerRunner:
                                                     run_results["metric"] = "samples_per_second"
                                                     print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
                                                 else:
-                                                    # No performance metrics found
-                                                    print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                    # Nothing measured. There are two ways a
+                                                    # model can report a number and both came
+                                                    # back empty, so say which was tried.
+                                                    print(
+                                                        "Warning: no metric found. A model reports one either in a "
+                                                        "results CSV or in its log; neither had one here."
+                                                    )
+                                                    for line in result_csv.describe(discovery, limit=3):
+                                                        print(f"  {line}")
+                                                    print(
+                                                        f"  No 'performance: NUMBER METRIC' line and no "
+                                                        f"'train_samples_per_second' in {log_file_path}"
+                                                    )
+                                                    print(
+                                                        f"  MAD_OUTPUT_CSV was exported as '{multiple_results}'"
+                                                        if multiple_results
+                                                        else "  MAD_OUTPUT_CSV was not exported: the model card "
+                                                        "declares no multiple_results"
+                                                    )
                                                     run_results["performance"] = None
                                                     run_results["metric"] = None
 
@@ -1971,13 +2016,10 @@ class ContainerRunner:
                                         model_info, build_info, run_results
                                     )
 
-                                    # Handle multiple results if specified
-                                    multiple_results = model_info.get("multiple_results", None)
-                                    resolved_multiple_results = (
-                                        _resolve_multiple_results_path(multiple_results, model_dir)
-                                        if multiple_results
-                                        else None
-                                    )
+                                    # The results CSV was settled during extraction, declared or
+                                    # discovered; resolving it again here would drop the
+                                    # discovered one and report an empty row instead.
+                                    resolved_multiple_results = resolved_results_csv
                                     if (
                                         resolved_multiple_results
                                         and run_results.get("status") == "SUCCESS"
@@ -2098,13 +2140,22 @@ class ContainerRunner:
                                 # Ignore errors if no profiler/trace output files exist
                                 pass
 
-                            # Copy multiple_results CSV to workspace root before run_directory is removed
-                            # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
-                            mult_res = (model_info.get("multiple_results") or "").strip()
-                            if mult_res:
+                            # Copy the results CSV to workspace root before run_directory is
+                            # removed, so the SLURM single-node copy can find it at
+                            # $WORKSPACE/<name>. A discovered file needs this as much as a
+                            # declared one, and it may be the only copy there is.
+                            results_csv_names = []
+                            declared_name = (model_info.get("multiple_results") or "").strip()
+                            if declared_name:
+                                results_csv_names.append(declared_name)
+                            if resolved_results_csv:
+                                found_name = os.path.basename(resolved_results_csv)
+                                if found_name not in results_csv_names:
+                                    results_csv_names.append(found_name)
+                            for name in results_csv_names:
                                 try:
                                     model_docker.sh(
-                                        _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                        _cp_model_dir_file_to_cwd_cmd(model_dir, name)
                                     )
                                 except Exception:
                                     pass

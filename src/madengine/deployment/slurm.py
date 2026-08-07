@@ -32,6 +32,7 @@ from .slurm_node_selector import SlurmNodeSelector
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.reporting import result_csv
 import json
 
 
@@ -1689,47 +1690,17 @@ export MASTER_PORT={master_port}
         values (e.g. master perf empty while a worker has the real numbers).
         Ranking candidates by the count of non-empty performance rows lets
         downstream aggregation use the richest data instead of depending on
-        node-0 winning the race or being non-empty. Header/row keys are stripped
-        so a leading space in the CSV header (some Primus configs) still matches.
-        Ties break on total row count; candidates[0] is the ultimate fallback.
+        node-0 winning the race or being non-empty. The ranking itself lives in
+        madengine.reporting.result_csv so the Docker path judges the same file
+        the same way.
         """
-        if not candidates:
-            return None
-        if len(candidates) == 1:
-            return candidates[0]
-        import csv as _csv
-        best_candidate: Optional[Path] = None
-        best_score = -1
-        best_rows = -1
-        for candidate in candidates:
-            non_empty_perf = 0
-            total_rows = 0
-            has_perf_column = False
-            try:
-                with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
-                    reader = _csv.DictReader(f)
-                    fieldnames = reader.fieldnames or []
-                    stripped_fields = [fn.strip() for fn in fieldnames]
-                    has_perf_column = "performance" in stripped_fields
-                    for row in reader:
-                        total_rows += 1
-                        if has_perf_column:
-                            normalized_row = {(k.strip() if isinstance(k, str) else k): v for k, v in row.items()}
-                            value = (normalized_row.get("performance") or "").strip()
-                            if value:
-                                non_empty_perf += 1
-            except Exception:
-                continue
-            score = non_empty_perf if has_perf_column else 0
-            if score > best_score or (score == best_score and total_rows > best_rows):
-                best_score = score
-                best_rows = total_rows
-                best_candidate = candidate
+        best_candidate = result_csv.select_best(candidates)
         if best_candidate is None:
-            return candidates[0]
-        if best_score > 0:
+            return None
+        with_metric, _ = result_csv.count_rows(best_candidate)
+        if with_metric > 0 and len(candidates) > 1:
             self.console.print(
-                f"[dim]  Selected multiple_results CSV with {best_score} non-empty performance rows: {best_candidate}[/dim]"
+                f"[dim]  Selected multiple_results CSV with {with_metric} non-empty performance rows: {best_candidate}[/dim]"
             )
         return best_candidate
 
@@ -2041,10 +2012,12 @@ export MASTER_PORT={master_port}
             model_key, {}
         ) if model_key else {}
 
-        # Multiple results path: resolve CSV from job_dir/node_*, then cwd/run_directory
-        mult_res = model_info_for_entry.get("multiple_results")
+        # Results CSV: the declared name where the nodes left it, and, when the card named
+        # nothing or named something the script did not write, a file whose header says what
+        # it is. The declared file always wins when it is there.
+        mult_res = (model_info_for_entry.get("multiple_results") or "").strip()
+        resolved_csv: Optional[Path] = None
         if mult_res:
-            resolved_csv: Optional[Path] = None
             # Multi-node: gather all node CSVs and pick the one with the most
             # non-empty performance rows (master CSV may be empty while a worker
             # holds the real numbers) instead of taking the first node that has
@@ -2062,77 +2035,99 @@ export MASTER_PORT={master_port}
                 resolved_csv = Path(mult_res)
             if not resolved_csv and Path("run_directory", mult_res).is_file():
                 resolved_csv = Path("run_directory", mult_res)
-            if resolved_csv:
-                self._ensure_perf_csv_exists()
-                gpu_arch = ""
-                if per_node_metrics:
-                    gpu_arch = per_node_metrics[0].get("gpu_architecture", "") or ""
-                common_info = self._build_common_info_dict(
-                    model_info_for_entry, build_info, deployment_id, gpu_arch
+        if resolved_csv is None:
+            # Only this job's own directories: the submission directory is shared with every
+            # other model, and a CSV there says nothing about which run wrote it.
+            search_dirs: List[Path] = [job_dir]
+            search_dirs += [job_dir / f"node_{i}" for i in range(self.nodes)]
+            search_dirs += [Path("run_directory")]
+            discovery = result_csv.discover(search_dirs)
+            if discovery.winner is not None:
+                resolved_csv = discovery.winner
+                origin = (
+                    f"'{mult_res}' was declared but no node produced it"
+                    if mult_res
+                    else "the model card declares no multiple_results"
                 )
-                common_info_path = Path("common_info.json")
-                with open(common_info_path, "w", encoding="utf-8") as f:
-                    json.dump(common_info, f, indent=2)
-                update_perf_csv(
-                    perf_csv="perf.csv",
-                    multiple_results=str(resolved_csv),
-                    common_info=str(common_info_path),
-                    model_name=model_info_for_entry.get("name", model_name),
+                self.console.print(
+                    f"[yellow]  Reporting from '{resolved_csv}', found by its header "
+                    f"({origin})[/yellow]"
                 )
-                scripts_path = model_info_for_entry.get("scripts", "")
-                scripts_base_dir = scripts_base_dir_from(scripts_path)
-                num_entries = update_perf_super_json(
-                    perf_super_json="perf_super.json",
-                    multiple_results=str(resolved_csv),
-                    common_info=str(common_info_path),
-                    model_name=model_info_for_entry.get("name", model_name),
-                    scripts_base_dir=scripts_base_dir,
+            elif mult_res:
+                for line in result_csv.describe(discovery, limit=3):
+                    self.console.print(f"[dim]  {line}[/dim]")
+        if resolved_csv:
+            self._ensure_perf_csv_exists()
+            gpu_arch = ""
+            if per_node_metrics:
+                gpu_arch = per_node_metrics[0].get("gpu_architecture", "") or ""
+            common_info = self._build_common_info_dict(
+                model_info_for_entry, build_info, deployment_id, gpu_arch
+            )
+            common_info_path = Path("common_info.json")
+            with open(common_info_path, "w", encoding="utf-8") as f:
+                json.dump(common_info, f, indent=2)
+            update_perf_csv(
+                perf_csv="perf.csv",
+                multiple_results=str(resolved_csv),
+                common_info=str(common_info_path),
+                model_name=model_info_for_entry.get("name", model_name),
+            )
+            scripts_path = model_info_for_entry.get("scripts", "")
+            scripts_base_dir = scripts_base_dir_from(scripts_path)
+            num_entries = update_perf_super_json(
+                perf_super_json="perf_super.json",
+                multiple_results=str(resolved_csv),
+                common_info=str(common_info_path),
+                model_name=model_info_for_entry.get("name", model_name),
+                scripts_base_dir=scripts_base_dir,
+            )
+            update_perf_super_csv(
+                perf_super_json="perf_super.json",
+                perf_super_csv="perf_super.csv",
+                num_entries=num_entries,
+            )
+            results["perf_files"] = [str(Path("perf.csv").resolve())]
+            import csv as _csv
+            # A row with a number in it is a measurement, and it stays one even when the
+            # run around it did not finish: a model that reports four precisions and
+            # crashes on two still measured the other two. The verdict on the run as a
+            # whole travels separately, in results["incomplete"].
+            rows_collected = 0
+            try:
+                with open(resolved_csv, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        row = {k.strip(): v for k, v in row.items() if k}
+                        if row.get("performance") and row.get("metric"):
+                            rows_collected += 1
+                            results["successful_runs"].append({
+                                "model": model_info_for_entry.get("name", "") + "_" + row.get("model", ""),
+                                "status": "SUCCESS",
+                                "performance": str(row.get("performance", "")),
+                                "metric": row.get("metric", ""),
+                                "duration": row.get("test_duration", ""),
+                                "gpu_arch": gpu_arch,
+                                "deployment": "slurm",
+                                "machine": deployment_id,
+                            })
+            except Exception:
+                pass
+            if job_failed:
+                self._record_verdict(
+                    results,
+                    model_info_for_entry.get("name", model_name),
+                    node_failures,
+                    job_state,
+                    rows_collected,
                 )
-                update_perf_super_csv(
-                    perf_super_json="perf_super.json",
-                    perf_super_csv="perf_super.csv",
-                    num_entries=num_entries,
+            else:
+                self.console.print(
+                    f"[green]✓ Updated perf.csv, perf_super.* from multiple_results (Docker-compatible)[/green]"
                 )
-                results["perf_files"] = [str(Path("perf.csv").resolve())]
-                import csv as _csv
-                # A row with a number in it is a measurement, and it stays one even when the
-                # run around it did not finish: a model that reports four precisions and
-                # crashes on two still measured the other two. The verdict on the run as a
-                # whole travels separately, in results["incomplete"].
-                rows_collected = 0
-                try:
-                    with open(resolved_csv, "r", encoding="utf-8", errors="ignore") as f:
-                        reader = _csv.DictReader(f)
-                        for row in reader:
-                            row = {k.strip(): v for k, v in row.items() if k}
-                            if row.get("performance") and row.get("metric"):
-                                rows_collected += 1
-                                results["successful_runs"].append({
-                                    "model": model_info_for_entry.get("name", "") + "_" + row.get("model", ""),
-                                    "status": "SUCCESS",
-                                    "performance": str(row.get("performance", "")),
-                                    "metric": row.get("metric", ""),
-                                    "duration": row.get("test_duration", ""),
-                                    "gpu_arch": gpu_arch,
-                                    "deployment": "slurm",
-                                    "machine": deployment_id,
-                                })
-                except Exception:
-                    pass
-                if job_failed:
-                    self._record_verdict(
-                        results,
-                        model_info_for_entry.get("name", model_name),
-                        node_failures,
-                        job_state,
-                        rows_collected,
-                    )
-                else:
-                    self.console.print(
-                        f"[green]✓ Updated perf.csv, perf_super.* from multiple_results (Docker-compatible)[/green]"
-                    )
-                return results
-            # multiple_results set but CSV not found: fall through to single-result path (may write FAILURE)
+            return results
+        # No results CSV, declared or discovered: fall through to the single-result path,
+        # which reports from the per-node logs and may write FAILURE.
 
         if self.nodes > 1 and per_node_metrics:
             launcher_type = self.distributed_config.get("launcher", "torchrun")
