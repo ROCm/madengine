@@ -37,6 +37,20 @@ _BOUNDARY = "__madengine_env_file_boundary__"
 #: the file's contents.
 _SHELL_BOOKKEEPING = frozenset({"_", "SHLVL", "PWD", "OLDPWD"})
 
+#: What each file already applied in this process, keyed by resolved path. A run reaches
+#: :func:`apply_env_file` twice for the same manifest -- once in the orchestrator, once
+#: when the deployment layer loads the manifest -- and sourcing a file again is not a
+#: no-op: `PATH="$PATH:/opt/x"` appends a second time and `$(...)` runs a second time.
+_APPLIED: Dict[str, Dict[str, str]] = {}
+
+
+def resolve_env_file(env_file: str, base_dir: Optional[str] = None) -> Path:
+    """The path an *env_file* names, relative paths resolved against *base_dir*."""
+    path = Path(env_file)
+    if not path.is_absolute() and base_dir:
+        path = Path(base_dir) / path
+    return path
+
 
 def load_env_file(env_file: str, base_dir: Optional[str] = None) -> Dict[str, str]:
     """
@@ -54,9 +68,7 @@ def load_env_file(env_file: str, base_dir: Optional[str] = None) -> Dict[str, st
     Raises:
         ValidationError: the file is missing, or bash failed to source it
     """
-    path = Path(env_file)
-    if not path.is_absolute() and base_dir:
-        path = Path(base_dir) / path
+    path = resolve_env_file(env_file, base_dir)
 
     context = ErrorContext(
         operation="env_file loading", component="core.env_file", file_path=str(path)
@@ -133,10 +145,12 @@ def _parse_env_dump(dump: str) -> Dict[str, str]:
 
 def apply_env_file(env_file: str, base_dir: Optional[str] = None) -> Dict[str, str]:
     """
-    Load an env file and apply it to `os.environ`, as sourcing it would.
+    Load an env file and apply it to `os.environ`, as sourcing it would, once per process.
 
     The file wins over the inherited environment, so behaviour matches what the operator
-    gets by sourcing it before the run.
+    gets by sourcing it before the run. A second call for the same file returns what the
+    first one applied without running it again: the submit side of a cluster run reaches
+    this twice for one manifest, and a file is shell, not a list of assignments.
 
     Args:
         env_file: path to the file; relative paths resolve against `base_dir`
@@ -145,6 +159,11 @@ def apply_env_file(env_file: str, base_dir: Optional[str] = None) -> Dict[str, s
     Returns:
         Dict[str, str]: the variables that were applied
     """
+    key = str(resolve_env_file(env_file, base_dir).resolve())
+    if key in _APPLIED:
+        return dict(_APPLIED[key])
+
     loaded = load_env_file(env_file, base_dir)
     os.environ.update(loaded)
+    _APPLIED[key] = dict(loaded)
     return loaded

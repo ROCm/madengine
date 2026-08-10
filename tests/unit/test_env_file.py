@@ -14,6 +14,7 @@ import os
 
 import pytest
 
+from madengine.core import env_file as env_file_module
 from madengine.core.env_file import apply_env_file, load_env_file
 from madengine.core.errors import ValidationError
 
@@ -31,6 +32,12 @@ def restore_environ():
     yield
     os.environ.clear()
     os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def forget_applied_files(monkeypatch):
+    """Each test starts with nothing applied, as a fresh process would."""
+    monkeypatch.setattr(env_file_module, "_APPLIED", {})
 
 
 class TestLoadEnvFile:
@@ -193,3 +200,50 @@ class TestApplyEnvFile:
         apply_env_file(str(env_file))
 
         assert os.environ["MAD_KEEP_ME"] == "yes"
+
+
+class TestAppliedOncePerProcess:
+    """A submit-side run reaches the same file twice; the file must run once."""
+
+    def test_an_append_does_not_happen_twice(self, env_dir, monkeypatch):
+        """`PATH="$PATH:/opt/x"` is the reason this is not simply idempotent."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        env_file = env_dir / "mad.env"
+        env_file.write_text('PATH="$PATH:/opt/x"\n')
+
+        apply_env_file(str(env_file))
+        apply_env_file(str(env_file))
+
+        assert os.environ["PATH"] == "/usr/bin:/opt/x"
+
+    def test_the_second_call_reports_what_the_first_applied(self, env_dir):
+        """The caller logs the names either way, so both calls return the same map."""
+        env_file = env_dir / "mad.env"
+        env_file.write_text("MODEL_DIR=/shared/models\n")
+
+        assert apply_env_file(str(env_file)) == apply_env_file(str(env_file))
+
+    def test_the_same_file_under_two_spellings_runs_once(self, env_dir):
+        """The manifest names it relatively, the deployment layer absolutely."""
+        (env_dir / "mad.env").write_text('MAD_COUNTER="${MAD_COUNTER:-}x"\n')
+
+        apply_env_file("mad.env", base_dir=str(env_dir))
+        apply_env_file(str(env_dir / "mad.env"))
+
+        assert os.environ["MAD_COUNTER"] == "x"
+
+    def test_a_different_file_is_still_applied(self, env_dir):
+        (env_dir / "first.env").write_text("MAD_FIRST=1\n")
+        (env_dir / "second.env").write_text("MAD_SECOND=2\n")
+
+        apply_env_file(str(env_dir / "first.env"))
+        apply_env_file(str(env_dir / "second.env"))
+
+        assert os.environ["MAD_FIRST"] == "1"
+        assert os.environ["MAD_SECOND"] == "2"
+
+    def test_a_missing_file_still_raises_every_time(self, env_dir):
+        """Nothing is remembered about a file that was never sourced."""
+        for _ in range(2):
+            with pytest.raises(ValidationError):
+                apply_env_file(str(env_dir / "absent.env"))
