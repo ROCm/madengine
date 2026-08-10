@@ -193,7 +193,13 @@ def validate_build_manifest(
 
     where = f" in {source}" if source else ""
     validator = jsonschema.Draft202012Validator(load_schema())
-    first = next(iter(sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))), None)
+    # Ordered by pointer string rather than by the raw path: a jsonschema path mixes
+    # property names with array indices, and comparing two of them elementwise can
+    # raise TypeError instead of reporting the manifest error the caller asked about.
+    first = next(
+        iter(sorted(validator.iter_errors(manifest), key=lambda e: _pointer(e.absolute_path))),
+        None,
+    )
     if first is not None:
         raise ValidationError(
             f"Invalid manifest{where}: {_pointer(first.absolute_path)}: {first.message}",
