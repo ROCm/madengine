@@ -14,7 +14,10 @@ from madengine.core.additional_context_defaults import (
     DEFAULT_GUEST_OS,
 )
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
-from madengine.orchestration.run_orchestrator import RunOrchestrator
+from madengine.orchestration.run_orchestrator import (
+    RunOrchestrator,
+    merge_deployment_config,
+)
 from madengine.core.errors import ConfigurationError
 
 
@@ -362,3 +365,44 @@ class TestRunOrchestrator:
         assert "--keep-alive" in printed
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
+
+
+class TestMergeDeploymentConfig:
+    """What the manifest's deployment blocks do when the command line names them too."""
+
+    def test_a_block_the_command_line_does_not_name_is_carried_over(self):
+        context = {}
+        warnings = merge_deployment_config({"slurm": {"partition": "gpu"}}, context)
+        assert context["slurm"] == {"partition": "gpu"}
+        assert warnings == []
+
+    def test_the_command_line_wins_and_says_so(self):
+        context = {"slurm": {"partition": "debug"}}
+        warnings = merge_deployment_config({"slurm": {"partition": "gpu"}}, context)
+        assert context["slurm"] == {"partition": "debug"}
+        assert len(warnings) == 1
+        assert "deployment_config.slurm" in warnings[0]
+
+    def test_fields_only_the_manifest_declares_are_named(self):
+        """The whole block is replaced, so `qos` never reaches the deployment layer."""
+        context = {"slurm": {"partition": "debug"}}
+        warnings = merge_deployment_config(
+            {"slurm": {"partition": "gpu", "qos": "high", "nodes": 2}}, context
+        )
+        assert "not applied: nodes, qos" in warnings[0]
+
+    def test_an_identical_block_still_warns_but_names_nothing(self):
+        context = {"slurm": {"partition": "gpu"}}
+        warnings = merge_deployment_config({"slurm": {"partition": "gpu"}}, context)
+        assert "not applied" not in warnings[0]
+
+    def test_a_non_dict_block_is_reported_without_a_field_list(self):
+        context = {"debug": False}
+        warnings = merge_deployment_config({"debug": True}, context)
+        assert context["debug"] is False
+        assert "not applied" not in warnings[0]
+
+    def test_blocks_madengine_does_not_carry_are_left_alone(self):
+        context = {}
+        merge_deployment_config({"target": "slurm", "env_file": "mad.env"}, context)
+        assert context == {}

@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -38,6 +38,60 @@ from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
+
+#: Blocks the deployment layer reads out of additional_context rather than out of the
+#: manifest, so the manifest's copy has to be carried over to reach it.
+DEPLOYMENT_CONFIG_KEYS = (
+    "slurm",
+    "k8s",
+    "kubernetes",
+    "distributed",
+    "vllm",
+    "env_vars",
+    "debug",
+)
+
+
+def merge_deployment_config(
+    deployment_config: Dict[str, Any], additional_context: Dict[str, Any]
+) -> List[str]:
+    """
+    Carry the manifest's deployment blocks into *additional_context*, in place.
+
+    `--additional-context` wins, and it wins whole blocks: a block given there replaces
+    the manifest's, so a field the manifest declares and the command line does not is
+    dropped rather than merged. That is worth saying out loud, because the manifest was
+    just reported as the place the block "belongs" and a reader will expect its values
+    to apply.
+
+    Args:
+        deployment_config: the manifest's `deployment_config`
+        additional_context: what the run was given on the command line, modified in place
+
+    Returns:
+        List[str]: one warning per block the command line replaced
+    """
+    warnings: List[str] = []
+    for key in DEPLOYMENT_CONFIG_KEYS:
+        if key not in deployment_config:
+            continue
+        if key not in additional_context:
+            additional_context[key] = deployment_config[key]
+            continue
+
+        from_manifest = deployment_config[key]
+        from_cli = additional_context[key]
+        dropped = (
+            sorted(set(from_manifest) - set(from_cli))
+            if isinstance(from_manifest, dict) and isinstance(from_cli, dict)
+            else []
+        )
+        detail = f"; not applied: {', '.join(dropped)}" if dropped else ""
+        warnings.append(
+            f"--additional-context '{key}' replaces deployment_config.{key} from the "
+            f"manifest{detail}"
+        )
+    return warnings
 
 
 class RunOrchestrator:
@@ -247,10 +301,12 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
-                if key in deployment_config and key not in self.additional_context:
-                    self.additional_context[key] = deployment_config[key]
-            
+            for warning in merge_deployment_config(
+                deployment_config, self.additional_context
+            ):
+                self.rich_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
             manifest_context = manifest.get("context", {})
