@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .common import normalize_launcher
+from madengine.schemas import perf_csv_header
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -47,15 +48,6 @@ def collector_pod_name(deployment_id: str) -> str:
 
 class KubernetesResultsMixin:
     """Results collection and performance reporting for Kubernetes deployments."""
-
-    # Standard perf.csv header (must match container_runner.ensure_perf_csv_exists)
-    _PERF_CSV_HEADER = (
-        "model,n_gpus,nnodes,gpus_per_node,training_precision,pipeline,args,tags,"
-        "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
-        "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
-        "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-        "data_download_duration,build_number,additional_docker_run_options"
-    )
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
@@ -977,7 +969,7 @@ class KubernetesResultsMixin:
         """Ensure perf.csv exists with standard header (same as Docker container_runner)."""
         perf_csv_path = Path("perf.csv")
         if not perf_csv_path.exists():
-            perf_csv_path.write_text(self._PERF_CSV_HEADER + "\n", encoding="utf-8")
+            perf_csv_path.write_text(perf_csv_header() + "\n", encoding="utf-8")
             self.console.print("[dim]Created perf.csv with standard header[/dim]")
 
     def _build_perf_entry_from_aggregated(

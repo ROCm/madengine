@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ROCm/madengine/schemas/build_manifest.schema.json",
+  "title": "madengine build manifest",
+  "description": "Shape of the manifest produced by `madengine build` and consumed by `madengine run`. Unknown keys are accepted everywhere so a manifest can carry consumer-specific metadata; the constraints below cover the fields madengine itself reads.",
+  "type": "object",
+  "required": ["built_images", "built_models", "context"],
+  "properties": {
+    "built_images": {
+      "description": "One entry per built image, keyed by image key. The same keys must appear in built_models.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/builtImage" }
+    },
+    "built_models": {
+      "description": "One entry per model to run, keyed by the matching built_images key.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/builtModel" }
+    },
+    "context": { "$ref": "#/$defs/context" },
+    "deployment_config": { "$ref": "#/$defs/deploymentConfig" },
+    "credentials_required": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "object" }
+  },
+  "$defs": {
+    "envMap": {
+      "description": "Environment variables. Values are rendered into a shell command, so they must be scalars. The block itself may be null: that is what a model declaring no variables writes.",
+      "type": ["object", "null"],
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "builtImage": {
+      "description": "An optional field carrying null means the model declared it as null in models.json; that is what madengine writes, so the schema accepts it.",
+      "type": "object",
+      "properties": {
+        "model": { "type": ["string", "null"] },
+        "docker_image": { "type": ["string", "null"] },
+        "dockerfile": { "type": ["string", "null"] },
+        "base_docker": { "type": ["string", "null"] },
+        "local_image": { "type": ["boolean", "null"] },
+        "registry_image": { "type": ["string", "null"] },
+        "registry": { "type": ["string", "null"] },
+        "gpu_vendor": { "type": ["string", "null"] },
+        "build_duration": { "type": ["number", "string", "null"] }
+      }
+    },
+    "builtModel": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "url": { "type": ["string", "null"] },
+        "dockerfile": { "type": ["string", "null"] },
+        "scripts": {
+          "description": "Run script, resolved under MODEL_DIR.",
+          "type": ["string", "null"]
+        },
+        "n_gpus": { "type": ["integer", "string", "null"] },
+        "owner": { "type": ["string", "null"] },
+        "training_precision": { "type": ["string", "null"] },
+        "multiple_results": {
+          "description": "Name of the per-model CSV madengine collects instead of a single metric.",
+          "type": ["string", "null"]
+        },
+        "tags": { "type": ["array", "null"], "items": { "type": "string" } },
+        "timeout": { "type": ["integer", "string", "null"] },
+        "args": { "type": ["string", "null"] },
+        "additional_docker_run_options": { "type": ["string", "null"] },
+        "env_vars": { "$ref": "#/$defs/envMap" },
+        "slurm": { "$ref": "#/$defs/slurm" },
+        "distributed": { "$ref": "#/$defs/distributed" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "docker_env_vars": { "$ref": "#/$defs/envMap" },
+        "docker_mounts": {
+          "description": "Bind mounts keyed {container_path: host_path}; madengine renders each as -v <host_path>:<container_path>.",
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        },
+        "docker_build_arg": { "$ref": "#/$defs/envMap" },
+        "docker_gpus": { "type": ["string", "integer", "null"] },
+        "gpu_vendor": { "type": ["string", "null"] },
+        "guest_os": { "type": ["string", "null"] },
+        "skip_perf_collection": { "type": ["boolean", "null"] }
+      }
+    },
+    "deploymentConfig": {
+      "description": "The single source of truth for where and how the run is deployed. Deployment blocks belong here, not at the top level of the manifest.",
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": ["local", "docker", "slurm", "k8s", "kubernetes"]
+        },
+        "slurm": { "$ref": "#/$defs/slurm" },
+        "k8s": { "type": ["object", "null"] },
+        "kubernetes": { "type": ["object", "null"] },
+        "distributed": { "$ref": "#/$defs/distributed" },
+        "env_vars": { "$ref": "#/$defs/envMap" },
+        "env_file": {
+          "description": "Path to a shell env file (e.g. mad.env) that madengine sources before the run.",
+          "type": "string"
+        },
+        "debug": { "type": "boolean" },
+        "docker_gpus": { "type": ["string", "integer"] },
+        "gpus_per_node": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "slurm": {
+      "type": ["object", "null"],
+      "properties": {
+        "partition": { "type": "string" },
+        "account": { "type": "string" },
+        "qos": { "type": "string" },
+        "reservation": { "type": "string" },
+        "nodelist": { "type": "string" },
+        "exclude": { "type": "string" },
+        "constraint": { "type": "string" },
+        "nodes": { "type": "integer", "minimum": 1 },
+        "gpus_per_node": { "type": "integer", "minimum": 1 },
+        "skip_gpus_directive": {
+          "description": "Omit #SBATCH --gpus-per-node, for clusters that advertise no GPU GRES.",
+          "type": "boolean"
+        },
+        "kill_on_bad_exit": {
+          "description": "Tear the srun step down as soon as one rank exits non-zero (default false). Only for workloads where every rank is expected to exit zero: where throughput is reported from one rank only, the other ranks exit non-zero on a healthy run.",
+          "type": "boolean"
+        },
+        "time": { "type": "string" },
+        "output_dir": { "type": "string" },
+        "results_dir": { "type": "string" },
+        "shared_workspace": { "type": "string" },
+        "exclusive": { "type": "boolean" },
+        "network_interface": { "type": "string" },
+        "modules": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "distributed": {
+      "type": ["object", "null"],
+      "properties": {
+        "launcher": { "type": "string" },
+        "backend": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "nnodes": { "type": "integer", "minimum": 1 },
+        "nproc_per_node": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

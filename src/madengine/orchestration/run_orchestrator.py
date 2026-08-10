@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -25,17 +25,73 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.env_file import apply_env_file
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
     ExecutionError,
     create_error_context,
 )
+from madengine.schemas import validate_build_manifest
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
+
+#: Blocks the deployment layer reads out of additional_context rather than out of the
+#: manifest, so the manifest's copy has to be carried over to reach it.
+DEPLOYMENT_CONFIG_KEYS = (
+    "slurm",
+    "k8s",
+    "kubernetes",
+    "distributed",
+    "vllm",
+    "env_vars",
+    "debug",
+)
+
+
+def merge_deployment_config(
+    deployment_config: Dict[str, Any], additional_context: Dict[str, Any]
+) -> List[str]:
+    """
+    Carry the manifest's deployment blocks into *additional_context*, in place.
+
+    `--additional-context` wins, and it wins whole blocks: a block given there replaces
+    the manifest's, so a field the manifest declares and the command line does not is
+    dropped rather than merged. That is worth saying out loud, because the manifest was
+    just reported as the place the block "belongs" and a reader will expect its values
+    to apply.
+
+    Args:
+        deployment_config: the manifest's `deployment_config`
+        additional_context: what the run was given on the command line, modified in place
+
+    Returns:
+        List[str]: one warning per block the command line replaced
+    """
+    warnings: List[str] = []
+    for key in DEPLOYMENT_CONFIG_KEYS:
+        if key not in deployment_config:
+            continue
+        if key not in additional_context:
+            additional_context[key] = deployment_config[key]
+            continue
+
+        from_manifest = deployment_config[key]
+        from_cli = additional_context[key]
+        dropped = (
+            sorted(set(from_manifest) - set(from_cli))
+            if isinstance(from_manifest, dict) and isinstance(from_cli, dict)
+            else []
+        )
+        detail = f"; not applied: {', '.join(dropped)}" if dropped else ""
+        warnings.append(
+            f"--additional-context '{key}' replaces deployment_config.{key} from the "
+            f"manifest{detail}"
+        )
+    return warnings
 
 
 class RunOrchestrator:
@@ -221,18 +277,36 @@ class RunOrchestrator:
             # (with optional runtime override)
             with open(manifest_file) as f:
                 manifest = json.load(f)
-            
+
+            # Fails fast on a malformed manifest, and folds any top-level deployment
+            # block into deployment_config so the target is read from one place.
+            for warning in validate_build_manifest(manifest, source=str(manifest_file)):
+                self.rich_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
             deployment_config = manifest.get("deployment_config", {})
-            
+
+            if deployment_config.get("env_file"):
+                applied = apply_env_file(
+                    deployment_config["env_file"],
+                    base_dir=str(Path(manifest_file).resolve().parent),
+                )
+                # Names only: an env file legitimately carries secrets (MAD_SECRETS_*).
+                self.rich_console.print(
+                    f"[cyan]Loaded env_file {deployment_config['env_file']}: "
+                    f"{', '.join(sorted(applied)) or '(no new variables)'}[/cyan]"
+                )
+
             # Update additional_context with deployment_config for deployment layer
             if not self.additional_context:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
-                if key in deployment_config and key not in self.additional_context:
-                    self.additional_context[key] = deployment_config[key]
-            
+            for warning in merge_deployment_config(
+                deployment_config, self.additional_context
+            ):
+                self.rich_console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
             manifest_context = manifest.get("context", {})
@@ -749,15 +823,103 @@ class RunOrchestrator:
 
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
-        # Return metrics in the format expected by display_results_table
-        # Extract successful_runs and failed_runs from metrics if available
-        if result.metrics:
-            return {
-                "successful_runs": result.metrics.get("successful_runs", []),
-                "failed_runs": result.metrics.get("failed_runs", []),
-            }
-        else:
-            return {"successful_runs": [], "failed_runs": []}
+        return self._summarise_deployment(result, target, manifest_file)
+
+    def _summarise_deployment(
+        self, result, target: str, manifest_file: str
+    ) -> Dict[str, Any]:
+        """Turn a deployment result into the summary the CLI reports on.
+
+        Args:
+            result: what the deployment layer returned
+            target: deployment target name, for the records
+            manifest_file: manifest the run was launched from
+
+        Returns:
+            Dict[str, Any]: runs by outcome, plus any warnings and the deployment status
+        """
+        metrics = result.metrics or {}
+        summary = {
+            "successful_runs": metrics.get("successful_runs", []),
+            "failed_runs": list(metrics.get("failed_runs", [])),
+            "no_metric_runs": metrics.get("no_metric_runs", []),
+            "deployment_status": result.status.value,
+        }
+
+        # A run that measured something despite a node ending badly is still a run that
+        # measured something; what the node did is a warning the caller has to see, not a
+        # verdict that throws the numbers away.
+        warnings = metrics.get("warnings")
+        if warnings:
+            summary["warnings"] = list(warnings)
+
+        # No metric anywhere, on the other hand, leaves the node evidence as the only
+        # account of what happened, and it decides.
+        incomplete = metrics.get("incomplete")
+        if incomplete:
+            summary["incomplete"] = incomplete
+            summary["failed_runs"].append(
+                {
+                    "model": incomplete.get("model", ""),
+                    "status": "FAILURE",
+                    "performance": "",
+                    "metric": "",
+                    "duration": "",
+                    "gpu_arch": "",
+                    "deployment": target,
+                    "machine": result.deployment_id,
+                    "error": incomplete.get("reason", ""),
+                }
+            )
+
+        # A job the scheduler calls failed is a failed run even when nothing could be
+        # parsed to say so. Without this the caller sees an empty failure list and reports
+        # success for a job that died. Measurements change that: the scheduler's verdict
+        # follows from a rank exiting non-zero, which is routine in a multi-node run whose
+        # framework reports from one rank only, so with results in hand it is a warning.
+        if not result.is_success and summary["successful_runs"] and not summary["failed_runs"]:
+            # The deployment layer may already have said which node ended how; only speak
+            # up when nothing else accounted for the scheduler's verdict.
+            if not summary.get("warnings"):
+                summary["warnings"] = [
+                    f"{target} reported the run as {result.status.value} "
+                    f"({result.message}), while "
+                    f"{len(summary['successful_runs'])} measurement(s) came back"
+                ]
+        elif not result.is_success and not summary["failed_runs"]:
+            summary["failed_runs"].append(
+                {
+                    "model": self._model_name_from_manifest(manifest_file),
+                    "status": "FAILURE",
+                    "performance": "",
+                    "metric": "",
+                    "duration": "",
+                    "gpu_arch": "",
+                    "deployment": target,
+                    "machine": result.deployment_id,
+                    "error": result.message,
+                }
+            )
+
+        return summary
+
+    @staticmethod
+    def _model_name_from_manifest(manifest_file: str) -> str:
+        """Name the run in a failure record, for a job that produced no results of its own.
+
+        Args:
+            manifest_file: manifest the run was launched from
+
+        Returns:
+            str: the first model's name, or "unknown"
+        """
+        try:
+            with open(manifest_file) as f:
+                models = json.load(f).get("built_models") or {}
+        except (OSError, ValueError):
+            return "unknown"
+        first = next(iter(models.values()), {})
+        return first.get("name") or "unknown"
 
     def _show_node_info(self):
         """Show node ROCm information."""
