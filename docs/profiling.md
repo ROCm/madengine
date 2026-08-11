@@ -347,6 +347,167 @@ madengine run --tags your_model \
   }'
 ```
 
+### torch_profiler_dynolog - On-Demand PyTorch Traces
+
+Capture `torch.profiler` (Kineto) traces from a running PyTorch workload without editing the model script. Instead of wrapping the command, this tool starts the [dynolog](https://github.com/facebookincubator/dynolog) daemon inside the container; PyTorch registers with it because the tool sets `KINETO_USE_DAEMON=1`, and a background script then requests a trace with `dyno gputrace`.
+
+```json
+{
+  "tools": [
+    {"name": "torch_profiler_dynolog"}
+  ]
+}
+```
+
+**Output:** `torch_profiler_output/libkineto_trace_<pid>.json` (one file per rank)
+
+**Requirements:**
+
+- The workload must be PyTorch >= 1.13. Nothing is captured from non-PyTorch models.
+- Iteration-based capture counts `optimizer.step()` calls. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
+- The pre-script downloads the dynolog `.deb` from GitHub, so the container needs outbound HTTPS on the first run (x86_64 Debian/Ubuntu base image). Set `DYNOLOG_DEB_URL` to use a mirror, or bake `dynolog` and `dyno` into the image to skip the download entirely.
+
+**Environment Variables:**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TORCH_PROFILE_WARMUP_S` | `60` | Delay before the first trace request, so the workload reaches steady state |
+| `TORCH_PROFILE_ITERATIONS` | `5` | Iterations to capture. `0` switches to `TORCH_PROFILE_DURATION_MS` |
+| `TORCH_PROFILE_DURATION_MS` | `500` | Capture window when iteration counting is not used |
+| `TORCH_PROFILE_RETRY_INTERVAL_S` | `15` | Wait between attempts while no PyTorch process has registered |
+| `TORCH_PROFILE_MAX_ATTEMPTS` | `40` | Attempts before giving up |
+| `TORCH_PROFILE_PROCESS_LIMIT` | `64` | Ranks to trace. Upstream defaults to 3, which silently drops most ranks |
+| `TORCH_PROFILE_RECORD_SHAPES` | `1` | Record input shapes (needed for TraceLens per-operator analysis) |
+| `TORCH_PROFILE_WITH_STACKS` | `1` | Record CPU call stacks |
+| `TORCH_PROFILE_WITH_MODULES` | `1` | Record the `nn.Module` hierarchy |
+| `TORCH_PROFILE_WITH_FLOPS` | `0` | Estimate FLOPs per operator |
+| `TORCH_PROFILE_PROFILE_MEMORY` | `0` | Record allocator events |
+
+For a short-lived workload, shorten the warmup so the request lands while the model is still running:
+
+```json
+{
+  "tools": [
+    {
+      "name": "torch_profiler_dynolog",
+      "env_vars": {
+        "TORCH_PROFILE_WARMUP_S": "20",
+        "TORCH_PROFILE_MAX_ATTEMPTS": "10"
+      }
+    }
+  ]
+}
+```
+
+**No trace produced?** The teardown script reports how many traces it found. `no PyTorch process registered` means `dyno gputrace` never matched the workload: confirm the model is PyTorch, and raise `TORCH_PROFILE_WARMUP_S` and `TORCH_PROFILE_MAX_ATTEMPTS` for slow-starting jobs.
+
+### tracelens - TraceLens Trace Analysis
+
+[TraceLens](https://github.com/AMD-AGI/TraceLens) turns raw traces into operator, kernel, roofline, and collective reports. It analyzes traces the other profiling tools produce, so always pair it with a profiler; on its own it has nothing to read.
+
+Each trace format is routed to the matching TraceLens report:
+
+| Trace produced by | Format | TraceLens report |
+|-------------------|--------|------------------|
+| `torch_profiler_dynolog` | Kineto JSON | Per-operator, kernel summary, roofline, `nn.Module` breakdown |
+| `rocprofv3_lightweight` | rocprofv3 JSON | Kernel summary and details |
+| `rocprofv3_perfetto` | `.pftrace` | HIP activity, HIP API, and memory-copy reports |
+| Multiple per-rank Kineto traces | Kineto JSON | Multi-rank collective report |
+
+**Unreadable formats:** TraceLens cannot read rocprofv3's default SQLite (`*_results.db`) or RPD (`.rpd`) databases. Those are listed in the summary as `SKIPPED` with a pointer at a preset that works — use `rocprofv3_lightweight` for JSON or `rocprofv3_perfetto` for `.pftrace`. For `rpd`, point TraceLens at the `trace.json` its post-script writes alongside the database.
+
+#### Analyzing on the Host (Recommended)
+
+Running analysis on the host keeps TraceLens' pinned `protobuf` and `xprof` out of your workload image:
+
+```bash
+pip install 'madengine[tracelens]'
+
+# Analyze every trace a run left behind
+madengine report tracelens
+
+# See what would be analyzed, without running TraceLens
+madengine report tracelens --discover-only
+
+# Enable roofline bound classification
+madengine report tracelens --gpu-arch MI300X
+
+# Analyze a distributed run's collected artifacts
+madengine report tracelens --root slurm_results --mode collective --world-size 8
+```
+
+**Output:** `tracelens_output/` with per-trace reports plus `tracelens_summary.csv` and `tracelens_summary.json`
+
+Quantify the effect of a change by diffing two runs' reports. The first report is the baseline; every metric gains `_diff` and `_pct` columns relative to it:
+
+```bash
+madengine report tracelens-compare baseline.xlsx candidate.xlsx \
+  --names before --names after -o diff.xlsx
+```
+
+#### Analyzing in the Container
+
+Stack the `tracelens` tool **after** a profiler to get reports as part of the run itself:
+
+```json
+{
+  "tools": [
+    {"name": "rocprofv3_lightweight"},
+    {"name": "tracelens"}
+  ]
+}
+```
+
+**Output:** `tracelens_output/` copied to the working directory alongside the profiler's own output
+
+The pre-script installs TraceLens into an isolated virtualenv at `/opt/madengine-tracelens-venv` (no system site-packages), so its dependency pins cannot disturb the workload's Python environment. This needs outbound HTTPS to `github.com` on the first run. Analysis failures are reported as warnings and never fail a passing model run.
+
+Use a mode-specific variant to restrict analysis to one trace kind:
+
+| Tool | Analyzes |
+|------|----------|
+| `tracelens` | Every supported trace found (default) |
+| `tracelens_pytorch` | Kineto traces only |
+| `tracelens_rocprof` | rocprofv3 JSON only |
+| `tracelens_pftrace` | Perfetto traces only |
+| `tracelens_collective` | Multi-rank collective report only |
+
+**Full PyTorch pipeline** — capture and analyze in one run:
+
+```bash
+madengine run --tags your_model \
+  --additional-context '{
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU",
+    "tools": [
+      {"name": "torch_profiler_dynolog"},
+      {"name": "tracelens"}
+    ]
+  }'
+```
+
+**Environment Variables:**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TRACELENS_VENV` | `/opt/madengine-tracelens-venv` | Virtualenv holding TraceLens |
+| `TRACELENS_OUTPUT_DIR` | `tracelens_output` | Directory for generated reports |
+| `TRACELENS_MODE` | `auto` | `auto`, `pytorch`, `rocprof`, `pftrace`, or `collective` |
+| `TRACELENS_GPU_ARCH` | unset | GPU arch (e.g. `MI300X`) enabling roofline bound classification |
+| `TRACELENS_WORLD_SIZE` | trace count | Rank count for the collective report |
+| `TRACELENS_MAX_TRACES` | unset | Cap traces analyzed per kind |
+| `TRACELENS_GIT_REF` | pinned commit | TraceLens revision to install |
+| `TRACELENS_PIP_SPEC` | git URL at `TRACELENS_GIT_REF` | Full pip spec, for private mirrors |
+
+#### Distributed Runs
+
+SLURM and Kubernetes runs collect `torch_profiler_output/` and `tracelens_output/` alongside the other profiling directories, per node and per rank. Analyze the collected tree on the host by pointing `--root` at it:
+
+```bash
+madengine report tracelens --root slurm_results
+madengine report tracelens --root k8s_results --mode collective --world-size 16
+```
+
 ### rocblas_trace - rocBLAS Library Tracing
 
 Trace rocBLAS API calls and configurations:
@@ -685,6 +846,8 @@ madengine run --tags model \
 |------|---------------|---------|
 | `rocprof` | `rocprof_output/*` | GPU kernel traces, HIP API calls |
 | `rpd` | Various RPD files | ROCm profiler data |
+| `torch_profiler_dynolog` | `torch_profiler_output/*.json` | Kineto traces, one per rank |
+| `tracelens` | `tracelens_output/*` | TraceLens reports plus `tracelens_summary.csv` |
 | `rocblas_trace` | `library_trace.csv`, logs | rocBLAS API calls |
 | `miopen_trace` | `library_trace.csv`, logs | MIOpen API calls |
 | `tensile_trace` | `library_trace.csv`, logs | Tensile operations |

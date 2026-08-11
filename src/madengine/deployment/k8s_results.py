@@ -522,6 +522,7 @@ class KubernetesResultsMixin:
             {"pattern": "results*", "type": "profiling"},
             {"pattern": "*.db", "type": "profiling"},
             {"pattern": "trace.*", "type": "tracing"},
+            {"pattern": "*.pftrace", "type": "tracing"},
             {"pattern": "prof.csv", "type": "profiling"},  # Raw profiler output before post-script renames it
             {"pattern": "gpu_info_*.csv", "type": "profiling"},
             {"pattern": "library_trace.csv", "type": "tracing"},
@@ -611,7 +612,14 @@ class KubernetesResultsMixin:
                 pass  # File not found or not accessible - this is expected
 
         # Try to collect known output directories using kubectl cp directly (during sleep period)
-        output_directories = ["rocprof_output", "rpd_output", "trace_output"]
+        output_directories = [
+            "rocprof_output",
+            "rpd_output",
+            "trace_output",
+            "rocm_trace_lite_output",
+            "torch_profiler_output",
+            "tracelens_output",
+        ]
         for dir_name in output_directories:
             try:
                 local_dir = dest_dir / dir_name
