@@ -694,7 +694,9 @@ if [ $TASK_EXIT -eq 0 ]; then
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
     {% endif %}
-    if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    for d in rocprof_output rpd_output rocm_trace_lite_output torch_profiler_output tracelens_output; do
+        if [ -d "$WORKSPACE/$d" ]; then cp -r "$WORKSPACE/$d" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    done
     echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
     echo "========================================================================"
 else
