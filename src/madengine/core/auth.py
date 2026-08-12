@@ -175,6 +175,31 @@ def _usable_credentials(creds: object) -> bool:
     )
 
 
+def _registry_from_image(image: Optional[str]) -> Optional[str]:
+    """Extract the registry host from an image reference.
+
+    Args:
+        image: Image reference (e.g. ``"ghcr.io/org/app:tag"``), or ``None``.
+
+    Returns:
+        The registry host, or ``None`` when the reference targets Docker Hub,
+        is malformed, or was not supplied.
+    """
+    if not image or not image.strip():
+        return None
+    ref = image.strip()
+    if "/" not in ref:
+        return None
+    # Docker treats the first component as a registry only when it looks like a
+    # host; otherwise it is a Docker Hub namespace (e.g. "rocm/private").
+    host = ref.split("/")[0]
+    if not ("." in host or ":" in host or host == "localhost"):
+        return None
+    if host.lower() in _DOCKERHUB_ALIASES:
+        return None
+    return host
+
+
 def explain_registry_denial(
     log_text: str, image: Optional[str] = None
 ) -> Optional[str]:
@@ -214,14 +239,27 @@ def explain_registry_denial(
     if not denied:
         return None
 
+    registry = _registry_from_image(image)
+    if registry is None:
+        fixes = (
+            "     - `docker login` on this machine (madengine reuses an existing "
+            "login)\n"
+            '     - add {"dockerhub": {"username": "...", "password": "..."}} to '
+            "credential.json\n"
+            "     - export MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD"
+        )
+    else:
+        fixes = (
+            f"     - `docker login {registry}` on this machine (madengine reuses "
+            "an existing login)\n"
+            f'     - add {{"{registry}": {{"username": "...", "password": "..."}}}} '
+            "to credential.json"
+        )
+
     return (
         f"Base image pull was denied: {subject}\n"
         "   No usable credentials were presented to the registry.\n"
-        "   Fix with any one of:\n"
-        "     - `docker login` on this machine (madengine reuses an existing login)\n"
-        '     - add {"dockerhub": {"username": "...", "password": "..."}} to '
-        "credential.json\n"
-        "     - export MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD"
+        "   Fix with any one of:\n" + fixes
     )
 
 

@@ -356,6 +356,24 @@ class TestExplainRegistryDenial:
         assert "docker login" in hint
         assert "authorization problem" not in hint
 
+    def test_non_dockerhub_denial_names_that_registry(self):
+        """A denial for another registry does not suggest Docker Hub credentials."""
+        log = "Error response from daemon: pull access denied for ghcr.io/org/app"
+        hint = explain_registry_denial(log, "ghcr.io/org/app:latest")
+        assert hint is not None
+        assert "docker login ghcr.io" in hint
+        assert '"ghcr.io": {"username"' in hint
+        assert "dockerhub" not in hint
+        assert "MAD_DOCKERHUB" not in hint
+
+    def test_dockerhub_namespace_still_suggests_dockerhub(self):
+        """A bare namespace/repo reference is Docker Hub, not a registry host."""
+        log = "Error response from daemon: pull access denied for rocm/private"
+        hint = explain_registry_denial(log, "rocm/private:latest")
+        assert hint is not None
+        assert '"dockerhub"' in hint
+        assert "MAD_DOCKERHUB_USER" in hint
+
     def test_unrelated_failure_returns_none(self):
         """Non-registry build failures produce no hint."""
         assert explain_registry_denial("RUN apt-get install failed: exit code 100") is None
