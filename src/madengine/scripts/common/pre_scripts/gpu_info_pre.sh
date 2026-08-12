@@ -13,7 +13,11 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 elif command -v rocm-smi >/dev/null 2>&1 || command -v amd-smi >/dev/null 2>&1; then
     echo "AMD GPU detected."
     gpu_vendor="AMD"
-    gpu_architecture=$(rocminfo | grep -o -m 1 'gfx.*' | xargs )
+    if command -v rocminfo >/dev/null 2>&1; then
+        gpu_architecture=$(rocminfo | grep -o -m 1 'gfx.*' | xargs )
+    else
+        echo "rocminfo not found; skipping AMD GPU architecture detection."
+    fi
     MI200="gfx90a"
     MI100="gfx908"
     MI50="gfx906"

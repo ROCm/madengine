@@ -14,6 +14,7 @@ import subprocess
 import sys
 import csv
 import os
+import shutil
 import logging
 import typing
 import signal
@@ -100,15 +101,20 @@ def detect_gpu_vendor() -> tuple[bool, bool]:
         ValueError: If no GPU management tools are found.
     """
     rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-    if os.path.exists("/usr/bin/nvidia-smi"):
+    if shutil.which("nvidia-smi"):
         return True, False
-    elif os.path.exists(f"{rocm_path}/bin/rocm-smi") or check_amd_smi_available():
+    elif (
+        shutil.which("rocm-smi")
+        or os.path.exists(f"{rocm_path}/bin/rocm-smi")
+        or check_amd_smi_available()
+    ):
         return False, True
     else:
         error_msg = (
             "Unable to detect GPU vendor. No GPU management tools found.\n"
-            "For NVIDIA: /usr/bin/nvidia-smi not found\n"
-            f"For AMD: {rocm_path}/bin/rocm-smi and amd-smi not found\n\n"
+            "For NVIDIA: nvidia-smi not found on PATH\n"
+            f"For AMD: rocm-smi not found on PATH or in {rocm_path}/bin, "
+            "and amd-smi not available\n\n"
             "Please ensure:\n"
             "  1. GPU drivers are installed\n"
             "  2. For AMD GPUs: ROCm is properly installed (https://rocm.docs.amd.com)\n"
