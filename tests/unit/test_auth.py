@@ -1,10 +1,16 @@
 """Unit tests for madengine.core.auth module."""
 
+import json
 import os
 import pytest
 from unittest.mock import MagicMock, mock_open, patch
 
-from madengine.core.auth import load_credentials, login_to_registry
+from madengine.core.auth import (
+    explain_registry_denial,
+    has_ambient_docker_auth,
+    load_credentials,
+    login_to_registry,
+)
 
 
 class TestLoadCredentials:
@@ -115,21 +121,23 @@ class TestLoadCredentials:
         assert result["custom_registry"]["token"] == "abc123"
 
 
+@patch.dict(os.environ, {"MAD_SKIP_DOCKER_LOGIN": ""}, clear=False)
+@patch("madengine.core.auth.has_ambient_docker_auth", return_value=False)
 class TestLoginToRegistry:
-    """Tests for login_to_registry()."""
+    """Tests for login_to_registry() when the machine has no existing docker login."""
 
     def _mocks(self):
         console = MagicMock()
         rich_console = MagicMock()
         return console, rich_console
 
-    def test_no_credentials_returns_early(self):
+    def test_no_credentials_returns_early(self, mock_ambient):
         """Passing None credentials logs a warning and returns without error."""
         console, rich_console = self._mocks()
         login_to_registry("docker.io", None, console, rich_console)
         console.sh.assert_not_called()
 
-    def test_missing_registry_key_raises_when_raise_on_failure(self):
+    def test_missing_registry_key_raises_when_raise_on_failure(self, mock_ambient):
         """RuntimeError raised when registry key absent and raise_on_failure=True."""
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
@@ -137,14 +145,14 @@ class TestLoginToRegistry:
             login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
         console.sh.assert_not_called()
 
-    def test_missing_registry_key_returns_when_not_raise_on_failure(self):
+    def test_missing_registry_key_returns_when_not_raise_on_failure(self, mock_ambient):
         """Returns silently when registry key absent and raise_on_failure=False."""
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
         login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=False)
         console.sh.assert_not_called()
 
-    def test_invalid_credentials_format_raises(self):
+    def test_invalid_credentials_format_raises(self, mock_ambient):
         """RuntimeError raised when username/password fields missing."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
@@ -152,14 +160,22 @@ class TestLoginToRegistry:
             login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
         console.sh.assert_not_called()
 
-    def test_invalid_credentials_format_returns_when_not_raise_on_failure(self):
+    def test_invalid_credentials_format_returns_when_not_raise_on_failure(self, mock_ambient):
         """Returns silently when credentials format invalid and raise_on_failure=False."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
         login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=False)
         console.sh.assert_not_called()
 
-    def test_docker_io_normalised_to_dockerhub(self):
+    def test_blank_credentials_raise_without_ambient_auth(self, mock_ambient):
+        """Placeholder credentials are treated as absent, not as credentials."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"repository": "r", "username": "", "password": ""}}
+        with pytest.raises(RuntimeError, match="username|password"):
+            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_not_called()
+
+    def test_docker_io_normalised_to_dockerhub(self, mock_ambient):
         """docker.io registry is looked up under the 'dockerhub' key."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
@@ -169,7 +185,7 @@ class TestLoginToRegistry:
         # docker.io should not appear in the login command (uses default DockerHub endpoint)
         assert "docker.io" not in cmd
 
-    def test_custom_registry_included_in_command(self):
+    def test_custom_registry_included_in_command(self, mock_ambient):
         """Non-DockerHub registry URL is included in the login command."""
         console, rich_console = self._mocks()
         credentials = {"myregistry.io": {"username": "user", "password": "pass"}}
@@ -178,7 +194,7 @@ class TestLoginToRegistry:
         cmd = console.sh.call_args[0][0]
         assert "myregistry.io" in cmd
 
-    def test_login_failure_raises_when_raise_on_failure(self):
+    def test_login_failure_raises_when_raise_on_failure(self, mock_ambient):
         """docker login error is re-raised when raise_on_failure=True."""
         console, rich_console = self._mocks()
         console.sh.side_effect = RuntimeError("auth failed")
@@ -186,10 +202,164 @@ class TestLoginToRegistry:
         with pytest.raises(RuntimeError, match="auth failed"):
             login_to_registry(None, credentials, console, rich_console, raise_on_failure=True)
 
-    def test_login_failure_suppressed_when_not_raise_on_failure(self):
+    def test_login_failure_suppressed_when_not_raise_on_failure(self, mock_ambient):
         """docker login error is suppressed when raise_on_failure=False."""
         console, rich_console = self._mocks()
         console.sh.side_effect = RuntimeError("auth failed")
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
         login_to_registry(None, credentials, console, rich_console, raise_on_failure=False)
         # Should not propagate the exception
+
+
+@patch.dict(os.environ, {"MAD_SKIP_DOCKER_LOGIN": ""}, clear=False)
+class TestLoginToRegistryWithAmbientAuth:
+    """Tests for login_to_registry() when the machine already has a docker login."""
+
+    def _mocks(self):
+        return MagicMock(), MagicMock()
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
+    def test_blank_credentials_defer_to_ambient_auth(self, mock_ambient):
+        """Blank credentials never override or break an existing docker login."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"repository": "r", "username": "", "password": ""}}
+        # No raise even with raise_on_failure=True: the machine is authenticated.
+        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_not_called()
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
+    def test_missing_registry_key_defers_to_ambient_auth(self, mock_ambient):
+        """A registry with no credential.json entry falls back to the existing login."""
+        console, rich_console = self._mocks()
+        credentials = {"other_registry": {"username": "u", "password": "p"}}
+        login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_not_called()
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
+    def test_explicit_credentials_win_over_ambient_auth(self, mock_ambient):
+        """Usable explicit credentials still trigger a login (explicit wins)."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        login_to_registry("docker.io", credentials, console, rich_console)
+        console.sh.assert_called_once()
+        assert "--username user" in console.sh.call_args[0][0]
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=False)
+    def test_whitespace_only_credentials_are_not_credentials(self, mock_ambient):
+        """Whitespace-only values are treated as blank."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"username": "  ", "password": "\t"}}
+        with pytest.raises(RuntimeError, match="username|password"):
+            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_not_called()
+
+
+class TestSkipDockerLogin:
+    """Tests for the MAD_SKIP_DOCKER_LOGIN escape hatch."""
+
+    @patch.dict(os.environ, {"MAD_SKIP_DOCKER_LOGIN": "1"}, clear=False)
+    def test_skip_env_var_bypasses_login(self):
+        """MAD_SKIP_DOCKER_LOGIN=1 defers to ambient credentials unconditionally."""
+        console, rich_console = MagicMock(), MagicMock()
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_not_called()
+
+
+class TestHasAmbientDockerAuth:
+    """Tests for has_ambient_docker_auth()."""
+
+    def _write_config(self, tmp_path, config):
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        return {"DOCKER_CONFIG": str(tmp_path)}
+
+    def test_dockerhub_auth_entry_detected(self, tmp_path):
+        """A Docker Hub entry with an auth blob counts as authenticated."""
+        env = self._write_config(
+            tmp_path, {"auths": {"https://index.docker.io/v1/": {"auth": "abc123"}}}
+        )
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth(None) is True
+            assert has_ambient_docker_auth("docker.io") is True
+            assert has_ambient_docker_auth("docker.io/rocm/mad-private") is True
+            assert has_ambient_docker_auth("myregistry.io") is False
+
+    def test_identity_token_entry_detected(self, tmp_path):
+        """An identitytoken-only entry counts as authenticated."""
+        env = self._write_config(
+            tmp_path, {"auths": {"index.docker.io": {"identitytoken": "tok"}}}
+        )
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth("docker.io") is True
+
+    def test_cred_helper_detected(self, tmp_path):
+        """A credHelpers entry counts as authenticated."""
+        env = self._write_config(tmp_path, {"credHelpers": {"myregistry.io": "ecr-login"}})
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth("myregistry.io/team/img") is True
+            assert has_ambient_docker_auth("docker.io") is False
+
+    def test_creds_store_with_empty_auth_entry(self, tmp_path):
+        """credsStore-managed entries are stored empty but are still credentials."""
+        env = self._write_config(
+            tmp_path,
+            {"credsStore": "desktop", "auths": {"https://index.docker.io/v1/": {}}},
+        )
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth("docker.io") is True
+            assert has_ambient_docker_auth("other.io") is False
+
+    def test_empty_auth_entry_without_creds_store(self, tmp_path):
+        """An empty entry with no credential store is not usable."""
+        env = self._write_config(tmp_path, {"auths": {"https://index.docker.io/v1/": {}}})
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth("docker.io") is False
+
+    def test_registry_with_port_matches_host(self, tmp_path):
+        """host:port registries are matched on the host segment."""
+        env = self._write_config(tmp_path, {"auths": {"localhost:5000": {"auth": "x"}}})
+        with patch.dict(os.environ, env, clear=False):
+            assert has_ambient_docker_auth("localhost:5000/team/img") is True
+
+    def test_missing_config_returns_false(self, tmp_path):
+        """A missing config.json yields False rather than raising."""
+        with patch.dict(os.environ, {"DOCKER_CONFIG": str(tmp_path)}, clear=False):
+            assert has_ambient_docker_auth("docker.io") is False
+
+    def test_corrupt_config_returns_false(self, tmp_path):
+        """A corrupt config.json yields False rather than raising."""
+        (tmp_path / "config.json").write_text("not json{{{", encoding="utf-8")
+        with patch.dict(os.environ, {"DOCKER_CONFIG": str(tmp_path)}, clear=False):
+            assert has_ambient_docker_auth("docker.io") is False
+
+
+class TestExplainRegistryDenial:
+    """Tests for explain_registry_denial()."""
+
+    def test_insufficient_scope_is_an_authorization_problem(self):
+        """insufficient_scope is reported as authorization, not authentication."""
+        log = (
+            "#6 ERROR: pull access denied, repository does not exist or may require "
+            "authorization: server message: insufficient_scope: authorization failed"
+        )
+        hint = explain_registry_denial(log, "rocm/triton-inference-server-dev:x")
+        assert hint is not None
+        assert "authorization problem" in hint
+        assert "rocm/triton-inference-server-dev:x" in hint
+        assert "will not fix it" in hint
+
+    def test_plain_denial_points_at_login(self):
+        """A denial without insufficient_scope points at supplying credentials."""
+        log = "Error response from daemon: pull access denied for rocm/private"
+        hint = explain_registry_denial(log, "rocm/private:latest")
+        assert hint is not None
+        assert "docker login" in hint
+        assert "authorization problem" not in hint
+
+    def test_unrelated_failure_returns_none(self):
+        """Non-registry build failures produce no hint."""
+        assert explain_registry_denial("RUN apt-get install failed: exit code 100") is None
+
+    def test_empty_log_returns_none(self):
+        """Empty output produces no hint."""
+        assert explain_registry_denial("") is None
