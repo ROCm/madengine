@@ -1546,6 +1546,20 @@ class ContainerRunner:
                         print("MODEL REPO COMMIT: ", commit)
                         print("======================================================")
 
+                        # Refuse to copy over files already present in the
+                        # model directory: the cloned repo tracks some of these
+                        # paths, and overwriting them leaves the clone dirty.
+                        conflicts = model_docker.sh(
+                            f"cd {dir_path} && find . -type f -printf '%P\\n' | "
+                            'while IFS= read -r entry; do '
+                            f'if [ -e "{model_dir}/$entry" ]; then echo "$entry"; fi; '
+                            'done'
+                        )
+                        if conflicts:
+                            raise RuntimeError(
+                                f"Scripts in {dir_path} would overwrite existing files in {model_dir}: {conflicts}"
+                            )
+
                         # Copy scripts to model directory
                         model_docker.sh(
                             f"cp -vLR --preserve=all {dir_path}/. {model_dir}/"
