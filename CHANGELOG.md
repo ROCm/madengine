@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-12
+
+### Added
+
+- **Reuse existing `docker login` (OAT) instead of requiring `credential.json`** (#168): madengine previously required credentials to be duplicated into `credential.json`/env vars even when the machine already had a working `docker login` (e.g. an organization access token). `has_ambient_docker_auth()` (`core/auth.py`) now reads `${DOCKER_CONFIG:-~/.docker}/config.json` the same way the Docker CLI does — covering `auths`, `credHelpers`, and `credsStore` — so an existing login is reused and blank placeholder credentials (`{"username": "", "password": ""}`) never override or break it. `docker build --pull` now only logs in to the base image's registry when there's no existing login to reuse. Base-image pull failures also distinguish `insufficient_scope` (authorization — token needs wider repo scope) from `unauthorized`/`authentication required` (login problem), and `explain_registry_denial()` now names the actual failing registry (e.g. `ghcr.io`) in its `docker login`/`credential.json` suggestions instead of always assuming Docker Hub. Documented in `docs/configuration.md` under a new "Registry Authentication" section.
+
+### Fixed
+
+- **`multiple_results` preserved in local-image manifest** (#166): `MAD_CONTAINER_IMAGE` (local-image) mode built a synthetic manifest that omitted the model's `multiple_results` field from `models.json`. Without it, `ContainerRunner` never set `MAD_OUTPUT_CSV` or copied the perf CSV out of the container, instead falling back to scraping the run log for a `"performance: NUMBER METRIC"` line — reporting `FAILURE` even when the model produced valid perf-CSV results. `RunOrchestrator` now carries `multiple_results` through to the manifest it synthesizes for local-image runs.
+
+- **GPU tool detection honors non-default ROCm install paths and PATH** (#168): `amd_smi_utils.py`, `rocm_smi_utils.py`, and `gpu_info_profiler.py` hardcoded `/opt/rocm`; they now honor `$ROCM_PATH` (falling back to `/opt/rocm`). `gpu_info_pre.sh` detects `nvidia-smi`/`rocm-smi`/`amd-smi` via `command -v` instead of a fixed binary path, and calls `rocminfo` only when it's available instead of failing the pre-script when it's absent. The rpd tracer's `LD_LIBRARY_PATH` is now ROCm-path-aware, and `rpd2tracing.py` failures fall back to saving the raw `trace.rpd` instead of losing the trace.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added
