@@ -350,6 +350,47 @@ class TestAnalyzerWithDummyTraceLens:
         # The skip has to say which preset the user should have run instead.
         assert "rocprofv3_lightweight" in skipped[0]["detail"]
 
+    def test_trace_with_undecodable_bytes_is_still_analyzed(
+        self, tmp_path, dummy_tracelens
+    ):
+        """rocprofv3 traces are not always valid UTF-8, and TraceLens demands it.
+
+        rocprofv3 copies HIP API ``const char *`` arguments into its JSON as they
+        are, so an argument that does not point at a string leaves raw bytes in an
+        otherwise perfectly good 300MB trace. TraceLens loads traces with orjson,
+        which rejects the whole document over those few bytes.
+        """
+        work = tmp_path / "raw-bytes"
+        trace = write_rocprof_json(work / "rocprof_output" / "510_results.json")
+        original = trace.read_bytes().replace(
+            b'"gemm_kernel(float*, float*)"', b'"\x90{-\xad\xcb\x7f"'
+        )
+        trace.write_bytes(original)
+
+        result = run_analyzer(work, dummy_tracelens)
+
+        assert result.returncode == 0, result.stdout
+        rows = summary_rows(work)
+        assert [r["status"] for r in rows] == ["SUCCESS"], rows
+        # Analyzed through a copy, so the trace the run collected is untouched.
+        assert trace.read_bytes() == original
+        analyzed = only(dummy_tracelens.invocations(), ROCPROF_REPORT)["args"][
+            "profile_json_path"
+        ]
+        assert analyzed != str(trace)
+        assert "sanitized copy" in result.stdout
+
+    def test_a_valid_trace_is_analyzed_where_it_lies(self, profiled_run, dummy_tracelens):
+        """Traces TraceLens can already read are not copied; they can be huge."""
+        result = run_analyzer(profiled_run, dummy_tracelens)
+
+        assert result.returncode == 0, result.stdout
+        analyzed = only(dummy_tracelens.invocations(), ROCPROF_REPORT)["args"][
+            "profile_json_path"
+        ]
+        assert analyzed == str(profiled_run / "rocprof_output" / "1234_results.json")
+        assert "sanitized copy" not in result.stdout
+
     def test_gzipped_kineto_trace_is_analyzed(self, tmp_path, dummy_tracelens):
         """tensorboard_trace_handler's gzipped traces are picked up too."""
         work = tmp_path / "gz"
