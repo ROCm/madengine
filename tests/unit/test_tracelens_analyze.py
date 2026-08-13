@@ -8,6 +8,7 @@ the host, so it is loaded here by path rather than imported as a module.
 import csv
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -163,9 +164,18 @@ class TestCommandConstruction:
             assert args[:2] == ["--trace_path", "t.pftrace"]
 
     def test_collective_args_carry_rank_regex_and_world_size(self, analyzer):
-        args = analyzer._collective_args("/root", "/out/coll", 8, [])
+        traces = [
+            "/root/torch_profiler_output/libkineto_trace_rank0_1.json",
+            "/root/torch_profiler_output/libkineto_trace_rank1_2.json",
+        ]
+        args = analyzer._collective_args(traces, "/out/coll", 8, [])
         assert args[args.index("--world_size") + 1] == "8"
         assert "rank" in args[args.index("--rank_regex") + 1]
+        # Scoped to the traces' own directory: a wider glob sweeps up unrelated
+        # JSON, and rocprofv3 results are hundreds of megabytes each.
+        trace_glob = args[args.index("--trace_glob") + 1]
+        assert "torch_profiler_output" in trace_glob
+        assert trace_glob.endswith(os.path.join("**", "*.json*"))
 
     def test_extra_args_are_forwarded(self, analyzer):
         args = analyzer._pytorch_args("t.json", "/out/t", None, ["--detect_recompute"])
@@ -279,6 +289,35 @@ class TestAnalyze:
         )
         assert len(calls) == 1
         assert not any("multi_rank" in part for call in calls for part in call)
+
+    def test_collective_report_is_skipped_when_ranks_cannot_be_identified(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """dynolog names traces after the pid, and TraceLens needs the rank.
+
+        Attempting the report anyway fails on every multi-process run profiled
+        through dynolog, which reads as a broken tool rather than a limitation.
+        """
+        for pid in (724, 892):
+            _write(
+                tmp_path, f"torch_profiler_output/libkineto_trace_{pid}.json", CHROME_TRACE
+            )
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+
+        assert not any("multi_rank" in part for call in calls for part in call)
+        skipped = [r for r in summary["results"] if r["status"] == "SKIPPED"]
+        assert len(skipped) == 1
+        assert "rank" in skipped[0]["detail"]
+        assert "dynolog" in skipped[0]["detail"]
 
     def test_max_traces_caps_work_per_kind(self, analyzer, trace_tree, monkeypatch):
         calls = []

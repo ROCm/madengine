@@ -8,7 +8,11 @@
 # Runs in the background for the lifetime of the model run. `dyno gputrace` can
 # only configure PyTorch processes that have already registered with the daemon,
 # and there is no way to know when the workload reaches steady state, so this
-# polls with --fail-on-no-process until a request is accepted.
+# polls until a request is accepted.
+#
+# `dyno gputrace` exits 0 whether or not it matched anything, so the outcome has
+# to be read from its output: the response carries the matched pids, and an empty
+# `processesMatched` list means the workload has not registered yet.
 
 set -u
 
@@ -54,16 +58,30 @@ attempt=0
 while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
     attempt=$((attempt + 1))
     echo "[dynolog-trigger] attempt ${attempt}/${MAX_ATTEMPTS}: requesting trace -> ${LOG_FILE}"
-    if dyno --port "$PORT" gputrace \
+    response=$(dyno --port "$PORT" gputrace \
         --job-id "$JOB_ID" \
         --log-file "$LOG_FILE" \
         --process-limit "$PROCESS_LIMIT" \
-        --fail-on-no-process \
-        "${OPTS[@]}"; then
+        "${OPTS[@]}" 2>&1)
+    echo "$response"
+
+    if echo "$response" | grep -q '"processesMatched":\[[0-9]'; then
         echo "[dynolog-trigger] trace request accepted on attempt ${attempt}"
         echo "accepted" > "$RESULT_FILE"
         exit 0
     fi
+
+    # A response that reports no matches is the expected case while the workload
+    # is still starting up. Anything else means dyno rejected the request itself
+    # (an unsupported flag, an unreachable daemon), which retrying cannot fix.
+    if ! echo "$response" | grep -q 'processesMatched'; then
+        echo "[dynolog-trigger] dyno rejected the request; not retrying."
+        echo "[dynolog-trigger] Check the dyno output above against the installed"
+        echo "[dynolog-trigger] dynolog version ('dyno gputrace --help')."
+        echo "request_rejected" > "$RESULT_FILE"
+        exit 1
+    fi
+
     echo "[dynolog-trigger] no PyTorch process matched yet; retrying in ${RETRY_INTERVAL_S}s"
     sleep "$RETRY_INTERVAL_S"
 done

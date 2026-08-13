@@ -61,6 +61,11 @@ Homepage = "https://github.com/ROCm/madengine"
 Issues = "https://github.com/ROCm/madengine/issues"
 
 
+[tool.hatch.metadata]
+# The tracelens extra installs TraceLens from git; hatchling rejects such direct
+# references during metadata generation unless they are allowed here.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 # scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
 # artifacts bypasses VCS exclusion without risk of duplicate-file errors from force-include.
