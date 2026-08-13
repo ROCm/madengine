@@ -94,6 +94,17 @@ def _check_input_file(path: str) -> Optional[int]:
         return _fail(f"input trace {path} does not exist")
     if os.path.getsize(path) == 0:
         return _fail(f"input trace {path} is empty")
+    if path.endswith(".json"):
+        # TraceLens loads traces with orjson, which rejects the whole document
+        # when any byte in it is not valid UTF-8.
+        try:
+            with open(path, "rb") as handle:
+                handle.read().decode("utf-8")
+        except UnicodeDecodeError:
+            return _fail(
+                "orjson.JSONDecodeError: str is not valid UTF-8: surrogates not "
+                "allowed: line 1 column 1 (char 0)"
+            )
     return None
 
 

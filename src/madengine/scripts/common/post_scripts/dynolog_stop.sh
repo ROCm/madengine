@@ -84,10 +84,15 @@ if [ "$trace_count" -gt 0 ]; then
     ls -la "$OUTPUT_DIR" || true
 else
     echo "⚠️  No torch.profiler traces were captured in ${OUTPUT_DIR}"
-    if [ -f "$RESULT_FILE" ] && [ "$(cat "$RESULT_FILE")" = "no_process" ]; then
+    result=""
+    [ -f "$RESULT_FILE" ] && result=$(cat "$RESULT_FILE")
+    if [ "$result" = "no_process" ]; then
         echo "⚠️  The trigger never matched a PyTorch process. Most likely causes:"
         echo "⚠️    - the workload is not PyTorch, or predates PyTorch 1.13"
         echo "⚠️    - the model run finished before TORCH_PROFILE_WARMUP_S elapsed"
+    elif [ "$result" = "request_rejected" ]; then
+        echo "⚠️  dyno rejected the trace request itself, so no trace was ever"
+        echo "⚠️  requested. See the trigger log below for the dyno output."
     fi
 fi
 

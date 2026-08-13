@@ -60,27 +60,68 @@ echo "dummy dynolog listening: $*"
 while : ; do sleep 0.2; done
 """
 
-# Records each trace request, rejects the first $DUMMY_DYNO_REJECTS of them the
-# way `--fail-on-no-process` does before the workload has registered, then
-# accepts and writes the trace Kineto would have written.
+# Stands in for `dyno gputrace` from the pinned dynolog release, and holds to the
+# same contract, because both halves of that contract are easy to get wrong:
+#
+# * it validates its options the way clap does, rejecting anything it does not
+#   know with exit 2 and a usage message
+# * it exits 0 whether or not it matched a process, reporting the matched pids in
+#   its response instead
+#
+# $DUMMY_DYNO_REJECTS requests report no match, as they do before the workload has
+# registered. $DUMMY_DYNO_UNSUPPORTED drops one option from the supported set, the
+# way an older or newer dynolog than madengine expects would.
 DYNO_STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "$DUMMY_DYNO_LOG"
-requests=$(wc -l < "$DUMMY_DYNO_LOG")
-if [ "$requests" -le "${DUMMY_DYNO_REJECTS:-0}" ]; then
-    echo "No processes were matched, exiting" >&2
-    exit 1
+
+supported=" --duration-ms --iterations --job-id --log-file --pids --process-limit\
+ --profile-memory --profile-start-iteration-roundup --profile-start-time\
+ --record-shapes --with-flops --with-modules --with-stacks "
+if [ -n "${DUMMY_DYNO_UNSUPPORTED:-}" ]; then
+    supported=$(printf '%s' "$supported" | sed "s| ${DUMMY_DYNO_UNSUPPORTED} | |")
 fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --port|gputrace) continue;;
+        --*)
+            case "$supported" in
+                *" $arg "*) ;;
+                *)
+                    echo "error: Found argument '$arg' which wasn't expected, or isn't valid in this context"
+                    echo ""
+                    echo "USAGE:"
+                    echo "    dyno gputrace --log-file <LOG_FILE> --job-id <JOB_ID> --process-limit <PROCESS_LIMIT>"
+                    echo ""
+                    echo "For more information try --help"
+                    exit 2;;
+            esac;;
+    esac
+done
+
 log_file=""
 previous=""
 for arg in "$@"; do
     if [ "$previous" = "--log-file" ]; then log_file=$arg; fi
     previous=$arg
 done
+
+echo "Kineto config = "
+echo "ACTIVITIES_LOG_FILE=$log_file"
+requests=$(wc -l < "$DUMMY_DYNO_LOG")
+if [ "$requests" -le "${DUMMY_DYNO_REJECTS:-0}" ]; then
+    echo 'response = {"activityProfilersBusy":0,"activityProfilersTriggered":[],"eventProfilersBusy":0,"eventProfilersTriggered":[],"processesMatched":[]}'
+    echo "No processes were matched, please check --job-id or --pids flags"
+    exit 0
+fi
+echo 'response = {"activityProfilersBusy":0,"activityProfilersTriggered":[4242],"eventProfilersBusy":0,"eventProfilersTriggered":[],"processesMatched":[4242]}'
+echo "Matched 1 processes"
+echo "Trace output files will be written to:"
+echo "    ${log_file%.json}_4242.json"
 if [ "${DUMMY_DYNO_WRITE_TRACE:-0}" = "1" ] && [ -n "$log_file" ]; then
     # Kineto appends the process id to the requested filename.
     printf '{"traceEvents": [], "schemaVersion": 1}' > "${log_file%.json}_4242.json"
 fi
-echo "response length: 1"
 exit 0
 """
 
@@ -243,7 +284,11 @@ class TestTraceRequest:
         return run_script(TRIGGER_SCRIPT, work, dummy.environ(**settings))
 
     def test_trigger_retries_until_the_workload_registers(self, workdir, dummy_dynolog):
-        """A trace cannot be requested until PyTorch has registered, so we poll."""
+        """A trace cannot be requested until PyTorch has registered, so we poll.
+
+        dyno reports that in its response and still exits 0, so a request that
+        matched nothing has to be told apart from one that succeeded by output.
+        """
         result = self.run_trigger(workdir, dummy_dynolog, DUMMY_DYNO_REJECTS="2")
 
         assert result.returncode == 0, result.stdout
@@ -251,10 +296,37 @@ class TestTraceRequest:
         assert "accepted on attempt 3" in result.stdout
         assert RESULT_FILE.read_text().strip() == "accepted"
 
-    def test_request_carries_the_data_tracelens_needs(self, workdir, dummy_dynolog):
-        """Shapes, stacks, and modules are what make the TraceLens reports useful."""
-        self.run_trigger(workdir, dummy_dynolog)
+    def test_an_option_dyno_rejects_fails_fast_and_says_so(
+        self, workdir, dummy_dynolog
+    ):
+        """A request dyno refuses to parse can never succeed, so stop retrying it.
 
+        Retrying it instead spends every attempt on a permanent error and then
+        blames the workload for never registering.
+        """
+        result = self.run_trigger(
+            workdir,
+            dummy_dynolog,
+            DUMMY_DYNO_UNSUPPORTED="--with-modules",
+            TORCH_PROFILE_MAX_ATTEMPTS="5",
+        )
+
+        assert result.returncode != 0
+        assert len(dummy_dynolog.requests()) == 1, dummy_dynolog.requests()
+        assert "not retrying" in result.stdout
+        assert "wasn't expected" in result.stdout, result.stdout
+        assert "no PyTorch process matched" not in result.stdout
+        assert RESULT_FILE.read_text().strip() == "request_rejected"
+
+    def test_request_carries_the_data_tracelens_needs(self, workdir, dummy_dynolog):
+        """Shapes, stacks, and modules are what make the TraceLens reports useful.
+
+        Every option here also has to exist in the dynolog release the pre-script
+        installs; the dyno stand-in rejects anything else.
+        """
+        result = self.run_trigger(workdir, dummy_dynolog)
+
+        assert result.returncode == 0, result.stdout
         request = dummy_dynolog.requests()[0]
         for flag in (
             "--record-shapes",
@@ -262,7 +334,6 @@ class TestTraceRequest:
             "--with-modules",
             "--iterations 5",
             "--process-limit 64",
-            "--fail-on-no-process",
         ):
             assert flag in request, request
         # An absolute path, because the workload's working directory is its own.
@@ -356,3 +427,21 @@ class TestCaptureReporting:
         assert result.returncode == 0, result.stdout
         assert "No torch.profiler traces were captured" in result.stdout
         assert "never matched a PyTorch process" in result.stdout
+
+    def test_a_rejected_request_is_reported_as_such(self, workdir, dummy_dynolog):
+        """A request dyno never accepted is a different problem from a quiet workload."""
+        run_script(
+            START_SCRIPT, workdir, dummy_dynolog.environ(TORCH_PROFILE_WARMUP_S="30")
+        )
+        TestTraceRequest.run_trigger(
+            workdir,
+            dummy_dynolog,
+            DUMMY_DYNO_UNSUPPORTED="--record-shapes",
+            TORCH_PROFILE_MAX_ATTEMPTS="1",
+        )
+
+        result = run_script(STOP_SCRIPT, workdir, dummy_dynolog.environ())
+
+        assert result.returncode == 0, result.stdout
+        assert "dyno rejected the trace request" in result.stdout
+        assert "never matched a PyTorch process" not in result.stdout
