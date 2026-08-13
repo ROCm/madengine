@@ -18,6 +18,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import argparse
 import glob
+import gzip
 import json
 import os
 import sys
@@ -29,9 +30,10 @@ from typing import Callable, Dict, List, Optional, Sequence
 _SPECS: Dict[str, Dict[str, object]] = {
     "TraceLens_generate_perf_report_pytorch": {
         "required": ("--profile_json_path", "--output_xlsx_path", "--output_csvs_dir"),
-        "switches": ("--enable_kernel_summary", "--short_kernel_study"),
+        "switches": ("--enable_kernel_summary",),
         "optional": ("--gpu_arch_platform",),
         "input_file": "profile_json_path",
+        "needs_gpu_events": True,
     },
     "TraceLens_generate_perf_report_rocprof": {
         "required": ("--profile_json_path", "--output_xlsx_path", "--output_csvs_dir"),
@@ -64,6 +66,14 @@ _SPECS: Dict[str, Dict[str, object]] = {
 }
 
 _FORCED_FAILURE_EXIT_CODE = 3
+
+# Kineto categories that carry GPU work. A trace without any of them gives
+# TraceLens nothing to report on, and it says so rather than writing an empty
+# report. dynolog traces every process that registered with it, so a torchrun
+# job hands madengine one such trace per run: the launcher's.
+_GPU_ACTIVITY_CATEGORIES = frozenset(
+    {"kernel", "gpu_memcpy", "gpu_memset", "gpu_user_annotation"}
+)
 
 
 def _parser(entry_point: str) -> argparse.ArgumentParser:
@@ -106,6 +116,21 @@ def _check_input_file(path: str) -> Optional[int]:
                 "allowed: line 1 column 1 (char 0)"
             )
     return None
+
+
+def _check_gpu_events(path: str) -> Optional[int]:
+    opener = gzip.open if path.endswith(".gz") else open
+    try:
+        with opener(path, "rt", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        # Unreadable input is what the other checks are for.
+        return None
+    events = payload.get("traceEvents", []) if isinstance(payload, dict) else []
+    for event in events:
+        if isinstance(event, dict) and event.get("cat") in _GPU_ACTIVITY_CATEGORIES:
+            return None
+    return _fail("ValueError: No GPU events found in the trace")
 
 
 def _check_input_glob(pattern: str, world_size: str) -> Optional[int]:
@@ -172,9 +197,14 @@ def _report(entry_point: str, argv: Optional[Sequence[str]]) -> int:
 
     spec = _SPECS[entry_point]
     if "input_file" in spec:
-        failure = _check_input_file(getattr(parsed, str(spec["input_file"])))
+        trace = getattr(parsed, str(spec["input_file"]))
+        failure = _check_input_file(trace)
         if failure is not None:
             return failure
+        if spec.get("needs_gpu_events"):
+            failure = _check_gpu_events(trace)
+            if failure is not None:
+                return failure
     if "input_glob" in spec:
         failure = _check_input_glob(
             getattr(parsed, str(spec["input_glob"])), parsed.world_size

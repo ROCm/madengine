@@ -97,6 +97,14 @@ _ENTRY_POINTS = {
 # Read size used when checking a trace for undecodable bytes and rewriting it.
 _SANITIZE_CHUNK_BYTES = 1 << 20
 
+# What TraceLens says when a trace holds no GPU activity for it to report on.
+_NO_GPU_EVENTS_ERROR = "No GPU events found in the trace"
+_NO_GPU_EVENTS_REASON = (
+    "the trace holds no GPU activity, so there is nothing to report. dynolog "
+    "configures every process that registered with it, which for a torchrun job "
+    "includes the launcher: it only supervises its children and runs no kernels."
+)
+
 SUMMARY_CSV_FIELDS = (
     "trace_file",
     "kind",
@@ -329,6 +337,11 @@ def _failure_detail(returncode: int, output: str) -> str:
     return lines[-1] if lines else f"exit code {returncode}"
 
 
+def _has_no_gpu_events(output: str) -> bool:
+    """Return True when TraceLens refused a trace for carrying no GPU activity."""
+    return _NO_GPU_EVENTS_ERROR in output
+
+
 def _report_stem(path: str, root: str) -> str:
     """Return a filesystem-safe, collision-resistant name for a trace's reports."""
     relative = os.path.relpath(path, root)
@@ -342,6 +355,13 @@ def _report_stem(path: str, root: str) -> str:
 def _pytorch_args(
     trace: str, out_base: str, gpu_arch: Optional[str], extra: Sequence[str]
 ) -> List[str]:
+    # --short_kernel_study is deliberately not requested. On some real traces its
+    # sheets have MultiIndex columns, and TraceLens writes every sheet with
+    # `index=False`, which pandas refuses: "Writing to Excel with MultiIndex
+    # columns and no index ('index'=False) is not yet implemented". That loses the
+    # whole workbook after the CSVs are already written. Pass it back through the
+    # analyzer's trailing extra args if you want those sheets.
+    # https://github.com/AMD-AGI/TraceLens/issues/938
     args = [
         "--profile_json_path",
         trace,
@@ -350,7 +370,6 @@ def _pytorch_args(
         "--output_csvs_dir",
         f"{out_base}_csv",
         "--enable_kernel_summary",
-        "--short_kernel_study",
     ]
     if gpu_arch:
         args += ["--gpu_arch_platform", gpu_arch]
@@ -567,6 +586,16 @@ def analyze(
     for trace, kind, tool, args in jobs:
         print(f"[tracelens] {tool}: {trace}", flush=True)
         code, output = _run(_build_command(interpreter, tool, args))
+        if code == 0:
+            status, detail, produced = "SUCCESS", "", os.path.relpath(output_dir, root)
+        elif _has_no_gpu_events(output):
+            # Nothing was wrong with the analysis, and nothing was produced.
+            print(f"[tracelens] skipping {trace}: {_NO_GPU_EVENTS_REASON}", flush=True)
+            status, detail, produced = "SKIPPED", _NO_GPU_EVENTS_REASON, ""
+        else:
+            status = "FAILURE"
+            detail = _failure_detail(code, output)
+            produced = os.path.relpath(output_dir, root)
         results.append(
             {
                 "trace_file": (
@@ -574,9 +603,9 @@ def analyze(
                 ),
                 "kind": kind,
                 "tracelens_tool": tool,
-                "status": "SUCCESS" if code == 0 else "FAILURE",
-                "output": os.path.relpath(output_dir, root),
-                "detail": "" if code == 0 else _failure_detail(code, output),
+                "status": status,
+                "output": produced,
+                "detail": detail,
             }
         )
 
