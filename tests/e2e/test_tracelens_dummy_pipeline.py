@@ -188,6 +188,32 @@ def write_chrome_trace(path: Path) -> Path:
     return path
 
 
+def write_chrome_trace_without_gpu_events(path: Path) -> Path:
+    """Write the kind of trace dynolog collects from a torchrun launcher.
+
+    The launcher registers with dynolog like any other PyTorch process, so it is
+    configured and traced alongside the ranks, but it only supervises children:
+    its trace carries Python frames and no GPU work at all.
+    """
+    payload = {
+        "schemaVersion": 1,
+        "traceEvents": [
+            {
+                "ph": "X",
+                "cat": "python_function",
+                "name": "torch/distributed/run.py(892): main",
+                "pid": 724,
+                "tid": 724,
+                "ts": 100,
+                "dur": 9000,
+            }
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def write_rocprof_json(path: Path) -> Path:
     """Write a rocprofv3 JSON result document, as ``rocprofv3_lightweight`` does.
 
@@ -390,6 +416,32 @@ class TestAnalyzerWithDummyTraceLens:
         ]
         assert analyzed == str(profiled_run / "rocprof_output" / "1234_results.json")
         assert "sanitized copy" not in result.stdout
+
+    def test_a_launcher_trace_is_skipped_rather_than_failed(
+        self, tmp_path, dummy_tracelens
+    ):
+        """A torchrun job hands madengine one trace with no GPU work every run.
+
+        dynolog configures every process that registered with it, so the ranks'
+        traces arrive next to the launcher's. Failing on the launcher would mean
+        every distributed run ends with a failure row beside its real report.
+        """
+        work = tmp_path / "torchrun"
+        write_chrome_trace(work / "torch_profiler_output" / "libkineto_trace_892.json")
+        write_chrome_trace_without_gpu_events(
+            work / "torch_profiler_output" / "libkineto_trace_724.json"
+        )
+
+        result = run_analyzer(work, dummy_tracelens)
+
+        assert result.returncode == 0, result.stdout
+        rows = {Path(row["trace_file"]).name: row for row in summary_rows(work)}
+        assert rows["libkineto_trace_892.json"]["status"] == "SUCCESS"
+        launcher = rows["libkineto_trace_724.json"]
+        assert launcher["status"] == "SKIPPED", launcher
+        assert "no GPU activity" in launcher["detail"]
+        # No report was written for it, so naming an output would mislead.
+        assert launcher["output"] == ""
 
     def test_gzipped_kineto_trace_is_analyzed(self, tmp_path, dummy_tracelens):
         """tensorboard_trace_handler's gzipped traces are picked up too."""

@@ -153,6 +153,18 @@ class TestCommandConstruction:
         args = analyzer._pytorch_args("t.json", "/out/t", None, [])
         assert "--gpu_arch_platform" not in args
 
+    def test_pytorch_args_do_not_request_the_short_kernel_study(self, analyzer):
+        # TraceLens writes that sheet with index=False, and pandas refuses when
+        # its columns are a MultiIndex, which loses the whole workbook.
+        args = analyzer._pytorch_args("t.json", "/out/t", "MI300X", [])
+        assert "--short_kernel_study" not in args
+
+    def test_the_short_kernel_study_can_be_asked_for_explicitly(self, analyzer):
+        args = analyzer._pytorch_args(
+            "t.json", "/out/t", "MI300X", ["--short_kernel_study"]
+        )
+        assert "--short_kernel_study" in args
+
     def test_pftrace_produces_three_complementary_reports(self, analyzer):
         jobs = analyzer._pftrace_jobs("t.pftrace", "/out/t", [])
         assert [tool for tool, _ in jobs] == [
@@ -226,6 +238,36 @@ class TestAnalyze:
             rows = list(csv.DictReader(handle))
         assert len(rows) == 11
         assert set(rows[0]) == set(analyzer.SUMMARY_CSV_FIELDS)
+
+    def test_a_trace_without_gpu_activity_is_skipped_not_failed(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """dynolog traces the torchrun launcher too, and it runs no kernels.
+
+        Reporting that as a failure means every multi-process run profiled
+        through dynolog ends with a failure row next to its real report.
+        """
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_724.json", CHROME_TRACE)
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (
+                1,
+                "Traceback (most recent call last):\n"
+                "ValueError: No GPU events found in the trace",
+            ),
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+        assert summary["failed"] == 0
+        assert summary["skipped"] == 1
+        row = summary["results"][0]
+        assert row["status"] == "SKIPPED"
+        assert "no GPU activity" in row["detail"]
+        # Nothing was written, so pointing at a report directory would mislead.
+        assert row["output"] == ""
 
     def test_records_failure_detail(self, analyzer, tmp_path, monkeypatch):
         _write(tmp_path, "rocprof_output/1_results.json", b"{}")

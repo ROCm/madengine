@@ -394,7 +394,11 @@ For a short-lived workload, shorten the warmup so the request lands while the mo
 }
 ```
 
-**No trace produced?** The teardown script reports how many traces it found. `no PyTorch process registered` means `dyno gputrace` never matched the workload: confirm the model is PyTorch, and raise `TORCH_PROFILE_WARMUP_S` and `TORCH_PROFILE_MAX_ATTEMPTS` for slow-starting jobs.
+**No trace produced?** The teardown script reports how many traces it found. `no PyTorch process registered` means `dyno gputrace` never matched the workload: confirm the model is PyTorch, and raise `TORCH_PROFILE_WARMUP_S` and `TORCH_PROFILE_MAX_ATTEMPTS` for slow-starting jobs. `dyno rejected the trace request` means the request itself was refused, which points at a dynolog version mismatch rather than at the workload.
+
+**Trace produced but empty?** Iteration-based capture waits for the workload's next `optimizer.step()`, so the request has to land after training has actually started. A request that arrives while the model is still being built (or while MIOpen is autotuning the first convolution) yields a trace with no GPU activity. The warmup must cover startup, not just process launch.
+
+Every process that registers with dynolog is traced, including the `torchrun` launcher, which supervises its children and runs no kernels itself. An `N`-rank job therefore produces `N + 1` traces, and the launcher's holds nothing to report.
 
 ### tracelens - TraceLens Trace Analysis
 
@@ -410,6 +414,8 @@ Each trace format is routed to the matching TraceLens report:
 | Multiple per-rank Kineto traces | Kineto JSON | Multi-rank collective report |
 
 **Unreadable formats:** TraceLens cannot read rocprofv3's default SQLite (`*_results.db`) or RPD (`.rpd`) databases. Those are listed in the summary as `SKIPPED` with a pointer at a preset that works — use `rocprofv3_lightweight` for JSON or `rocprofv3_perfetto` for `.pftrace`. For `rpd`, point TraceLens at the `trace.json` its post-script writes alongside the database.
+
+**Traces with nothing to analyze:** a trace that holds no GPU activity is also reported as `SKIPPED` rather than as a failure. The usual source is the `torchrun` launcher process, which dynolog traces along with the ranks that do the work.
 
 #### Analyzing on the Host (Recommended)
 
@@ -466,6 +472,8 @@ Use a mode-specific variant to restrict analysis to one trace kind:
 | `tracelens_rocprof` | rocprofv3 JSON only |
 | `tracelens_pftrace` | Perfetto traces only |
 | `tracelens_collective` | Multi-rank collective report only |
+
+Kineto traces yield both an `.xlsx` workbook and a CSV directory per trace. rocprofv3 traces yield the CSV directory only: TraceLens' rocprof report writes either format but not both, and madengine asks for the CSVs.
 
 **Full PyTorch pipeline** — capture and analyze in one run:
 
