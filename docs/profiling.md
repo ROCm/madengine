@@ -473,6 +473,8 @@ Use a mode-specific variant to restrict analysis to one trace kind:
 | `tracelens_pftrace` | Perfetto traces only |
 | `tracelens_collective` | Multi-rank collective report only |
 
+Kineto traces yield both an `.xlsx` workbook and a CSV directory per trace. rocprofv3 traces yield the CSV directory only: TraceLens' rocprof report writes either format but not both, and madengine asks for the CSVs.
+
 **Full PyTorch pipeline** — capture and analyze in one run:
 
 ```bash

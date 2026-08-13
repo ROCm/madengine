@@ -377,6 +377,10 @@ def _pytorch_args(
 
 
 def _rocprof_args(trace: str, out_base: str, extra: Sequence[str]) -> List[str]:
+    # --short_kernel_study is safe to keep here, unlike for the PyTorch report:
+    # this generator writes either the CSVs or the workbook, never both, so with
+    # a CSV directory requested it never reaches the Excel writer that the flag's
+    # MultiIndex sheets break. That also means --output_xlsx_path is ignored.
     return [
         "--profile_json_path",
         trace,
