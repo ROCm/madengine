@@ -484,3 +484,29 @@ class TestPlaceholderImageRejection:
     def test_reject_passes_through_real_image(self):
         orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
         orchestrator._reject_placeholder_image("rocm/vllm:latest", ["m1"])
+
+
+class TestSelfManagedLauncherImpliesSlurm:
+    """A slurm_multi model card without a `slurm` block still deploys to SLURM.
+
+    Target inference keys on the presence of a `slurm`/`k8s` block. Model cards
+    routinely declare only `distributed.launcher: slurm_multi`, which inferred
+    "local" and handed the job to the container runner — so the slurm_multi path
+    was never reached and the model's .slurm script was run as a local workload.
+    """
+
+    @pytest.mark.parametrize("config,expected", [
+        ({}, "local"),
+        ({"slurm": {}}, "slurm"),
+        ({"k8s": {}}, "k8s"),
+        ({"distributed": {"launcher": "slurm_multi"}}, "slurm"),
+        ({"distributed": {"launcher": "slurm-multi"}}, "slurm"),
+        ({"distributed": {"launcher": "torchrun"}}, "local"),
+        ({"distributed": {"launcher": "vllm"}}, "local"),
+        ({"distributed": {}}, "local"),
+        # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
+        # but the explicit target is the user's stated intent.
+        ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
+    ])
+    def test_inference(self, config, expected):
+        assert RunOrchestrator._infer_deployment_target(None, config) == expected

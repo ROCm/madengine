@@ -31,6 +31,7 @@ from madengine.core.errors import (
     ExecutionError,
     create_error_context,
 )
+from madengine.deployment.common import is_self_managed_launcher
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
@@ -1110,19 +1111,25 @@ class RunOrchestrator:
         Convention over Configuration:
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
-        - Neither present → local execution
-        
+        - A self-managed SLURM launcher (slurm_multi) → slurm deployment
+        - None of the above → local execution
+
         Args:
             config: Configuration dictionary
-            
+
         Returns:
             Deployment target: "k8s", "slurm", or "local"
         """
         if "k8s" in config or "kubernetes" in config:
             return "k8s"
-        elif "slurm" in config:
+        if "slurm" in config:
             return "slurm"
-        else:
-            return "local"
+        # slurm_multi runs the model's own .slurm script through sbatch/srun, so it is
+        # a SLURM deployment by construction. Without this a model card that declared
+        # the launcher but no `slurm` block inferred "local" and was handed to the
+        # container runner, which never reaches the slurm_multi path at all.
+        if is_self_managed_launcher((config.get("distributed") or {}).get("launcher")):
+            return "slurm"
+        return "local"
     
 
