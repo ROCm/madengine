@@ -125,6 +125,75 @@ def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
     return normalize_launcher(launcher_type, "slurm") in _SELF_MANAGED_LAUNCHERS
 
 
+def resolve_launcher_from_sources(
+    deployment_launcher: Optional[str],
+    model_launcher: Optional[str],
+    default: str = "torchrun",
+) -> str:
+    """Resolve the effective launcher from the deployment config and the model card.
+
+    Precedence is deployment config first, model card second. That matches how
+    BuildOrchestrator builds the manifest: it copies the model card's launcher into
+    ``deployment_config.distributed`` only when the key is absent, so a value present
+    there is already the user's explicit choice.
+
+    Every dispatch site must use this helper. Resolving the launcher differently in
+    two places is what allowed ``prepare()`` to pick the self-managed path from the
+    model card while ``_prepare_template_context()`` simultaneously emitted a
+    ``torchrun`` env block from the deployment config.
+    """
+    return deployment_launcher or model_launcher or default
+
+
+def resolve_node_count(
+    configured_nodes: int,
+    nnodes: Optional[Any],
+    nodes_explicitly_set: bool,
+) -> tuple:
+    """Reconcile ``slurm.nodes`` with ``distributed.nnodes`` into one node count.
+
+    ``slurm.nodes`` sizes the allocation (``#SBATCH --nodes``) while
+    ``distributed.nnodes`` sizes the topology the launcher builds on top of it.
+    Nothing used to reconcile them, so a model card declaring only ``nnodes`` was
+    submitted against the ``slurm.nodes`` default of 1 — a multi-node topology
+    squeezed onto a single node.
+
+    Args:
+        configured_nodes: ``slurm.nodes`` after ConfigLoader applied its defaults.
+        nnodes: ``distributed.nnodes``, if declared.
+        nodes_explicitly_set: True when ``slurm.nodes`` came from the user or the
+            model card rather than from a preset default.
+
+    Returns:
+        ``(nodes, note)`` where ``note`` is a human-readable string to log, or None.
+    """
+    try:
+        requested = int(nnodes) if nnodes is not None else None
+    except (TypeError, ValueError):
+        return configured_nodes, (
+            f"Ignoring non-numeric distributed.nnodes={nnodes!r}; "
+            f"using slurm.nodes={configured_nodes}."
+        )
+
+    if requested is None or requested == configured_nodes:
+        return configured_nodes, None
+
+    if nodes_explicitly_set:
+        # Both were set and they disagree. The explicit allocation size wins —
+        # overriding it could request nodes the user did not ask to be billed for —
+        # but the mismatch is almost always a config error, so say so.
+        return configured_nodes, (
+            f"slurm.nodes={configured_nodes} conflicts with "
+            f"distributed.nnodes={requested}; using slurm.nodes={configured_nodes}. "
+            "Set them to the same value to silence this."
+        )
+
+    return requested, (
+        f"Sizing allocation from distributed.nnodes={requested} "
+        f"(slurm.nodes was not set explicitly)."
+    )
+
+
 @functools.lru_cache(maxsize=None)
 def is_rocprofv3_available() -> bool:
     """
