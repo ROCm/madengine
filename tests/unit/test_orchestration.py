@@ -446,3 +446,41 @@ class TestCreateManifestFromLocalImage:
 
         built_model = next(iter(manifest["built_models"].values()))
         assert built_model["multiple_results"] == ""
+
+
+class TestPlaceholderImageRejection:
+    """Model cards ship DOCKER_IMAGE_NAME as a "<supply-your-image>" marker.
+
+    The implicit --use-image path used to accept any single distinct card value, so
+    the placeholder became the image name and every compute node failed on
+    `docker pull <supply-your-image>` instead of the user getting told at submit time.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "<supply-your-image>",
+        "<your-image-here>",
+        "  <supply-your-image>  ",
+        "",
+        None,
+    ])
+    def test_placeholders_detected(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "rocm/vllm:latest",
+        "docker.io/myorg/img:tag",
+        "ci-pyt_vllm_kimi_k3_mi300x",
+        "localhost:5000/img",
+    ])
+    def test_real_images_accepted(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is False
+
+    def test_reject_raises_configuration_error(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        with pytest.raises(ConfigurationError) as exc:
+            orchestrator._reject_placeholder_image("<supply-your-image>", ["m1"])
+        assert "placeholder" in str(exc.value).lower()
+
+    def test_reject_passes_through_real_image(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        orchestrator._reject_placeholder_image("rocm/vllm:latest", ["m1"])

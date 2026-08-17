@@ -647,6 +647,44 @@ madengine run --manifest-file build_manifest.json
 
 **Alias**: `"slurm-multi"` (hyphen) is normalized to `"slurm_multi"` (underscore).
 
+**Model-card contract (shared with the templated path)**:
+
+slurm_multi hands the *topology* to the workload, not the *contract*. These model-card
+fields are honoured identically on both paths:
+
+| Field | Effect |
+|-------|--------|
+| `distributed.launcher` | Selects the path. Resolved deployment-config-first, model-card-second — the same resolution used to emit the launcher env block, so the two can never disagree. |
+| `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. |
+| `slurm.*` | `partition`, `time`, `gpus_per_node`, `exclusive`, `reservation`, `nodelist`, … |
+| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. |
+
+> **`args` is not sbatch flags.** On the templated path `args` goes to the
+> containerised `run.sh`; on this path it is appended to `bash <model>.slurm`. It is
+> **not** forwarded to `sbatch`, so `"args": "-N 4 -n 4"` does *not* request 4 nodes —
+> it passes two ignored positional arguments to a script that never reads `$@`, and
+> the job runs on the `slurm.nodes` default of 1. Size the allocation with
+> `distributed.nnodes` (or `slurm.nodes`) instead.
+
+> **`multiple_results` is read directly here.** On the templated path the CSV is
+> narrow and gets merged with `common_info` by `update_perf_csv`. A self-managed
+> script has no `common_info` to merge against, so it writes the full perf schema
+> itself and madengine reads it as-is — routing it through `handle_multiple_results()`
+> would recompute `status` from `performance` and flip a legitimate zero-score
+> FAILURE row to SUCCESS.
+
+> **Preset selection still keys on `slurm.nodes`.** `ConfigLoader` picks the
+> single-node vs multi-node preset before `nnodes` reconciliation, so a card sized
+> only by `nnodes` keeps the single-node preset. That is usually what RDMA inference
+> workloads want — the multi-node preset sets `NCCL_IB_DISABLE=1` and
+> `NCCL_SOCKET_IFNAME=eth0` — but set `slurm.time` explicitly if the 12 h single-node
+> default is too short.
+
+**Placeholder images are rejected**: model cards commonly ship
+`"DOCKER_IMAGE_NAME": "<supply-your-image>"` as a fill-me-in marker. Any
+angle-bracketed value is rejected at submit time with an actionable error rather than
+becoming the image every compute node fails to pull.
+
 **Features**:
 - Wrapper SBATCH script with shell-quoted env_vars (injection-safe)
 - Parallel `srun docker pull` on all nodes for registry images
