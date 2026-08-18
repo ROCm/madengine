@@ -20,7 +20,7 @@ from rich.panel import Panel
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.additional_context_defaults import apply_build_context_defaults
-from madengine.core.auth import load_credentials
+from madengine.core.auth import has_ambient_docker_auth, load_credentials
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -975,16 +975,33 @@ class BuildOrchestrator:
         )
         if any(pub_reg in registry_lower for pub_reg in public_registries):
             if not dockerhub_user or not dockerhub_password:
-                raise ConfigurationError(
-                    f"Registry credentials required for pushing to {registry}",
-                    context=create_error_context(
-                        operation="build_on_compute",
-                        component="BuildOrchestrator",
-                        additional_info={"registry": registry},
-                    ),
-                    suggestions=_matched_hints,
-                )
-            self.rich_console.print(f"  Auth: Will login to registry before push")
+                # An existing `docker login` (e.g. an organisation access token)
+                # is a valid substitute for explicit credentials, so do not hard
+                # fail on it. The generated sbatch script already falls back to
+                # "assume pre-authenticated" when no credentials are supplied.
+                if has_ambient_docker_auth(registry.split("/")[0]):
+                    self.rich_console.print(
+                        "  [yellow]Auth: No explicit credentials; relying on the "
+                        "existing docker login[/yellow]"
+                    )
+                    self.rich_console.print(
+                        "  [dim]Note: this login was detected on the submit node. "
+                        "The compute node only shares it if $HOME (or $DOCKER_CONFIG) "
+                        "is on shared storage.[/dim]"
+                    )
+                else:
+                    raise ConfigurationError(
+                        f"Registry credentials required for pushing to {registry}",
+                        context=create_error_context(
+                            operation="build_on_compute",
+                            component="BuildOrchestrator",
+                            additional_info={"registry": registry},
+                        ),
+                        suggestions=_matched_hints
+                        + ["Or run `docker login` on the build node"],
+                    )
+            else:
+                self.rich_console.print(f"  Auth: Will login to registry before push")
         else:
             # Private/internal registry - may not need auth
             self.rich_console.print(f"  Auth: Private registry (auth may not be required)")

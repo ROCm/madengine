@@ -459,6 +459,7 @@ class RunOrchestrator:
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+                "multiple_results": model.get("multiple_results", ""),
             }
         
         # Write manifest to file

@@ -359,3 +359,90 @@ class TestRunOrchestrator:
         assert "--keep-alive" in printed
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
+
+
+@pytest.mark.unit
+class TestCreateManifestFromLocalImage:
+    """MAD_CONTAINER_IMAGE (local image) mode must carry every models.json field
+    that ContainerRunner relies on -- including multiple_results, whose absence
+    silently drops perf-CSV-based result reporting (falls back to scraping the
+    log for a 'performance: NUMBER METRIC' line and reports FAILURE)."""
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_multiple_results_field_is_preserved(self, mock_context, tmp_path):
+        mock_context.return_value.ctx = {}
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.console = MagicMock()
+        orchestrator.rich_console = MagicMock()
+
+        fake_model = {
+            "name": "uber_storefront/v1t1",
+            "tags": ["inference"],
+            "scripts": "run.sh",
+            "n_gpus": "1",
+            "data": "uber_storefront_models",
+            "args": "--model-dir v1t1",
+            "multiple_results": "perf_uber_storefront_v1t1.csv",
+        }
+
+        manifest_output = str(tmp_path / "build_manifest.json")
+
+        with patch(
+            "madengine.utils.discover_models.DiscoverModels.run",
+            return_value=[fake_model],
+        ):
+            orchestrator._create_manifest_from_local_image(
+                image_name="registry.io/org/model:ci-tag",
+                tags=["inference"],
+                manifest_output=manifest_output,
+            )
+
+        with open(manifest_output) as f:
+            manifest = json.load(f)
+
+        built_model = next(iter(manifest["built_models"].values()))
+        assert built_model["multiple_results"] == "perf_uber_storefront_v1t1.csv"
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_multiple_results_defaults_to_empty_string(self, mock_context, tmp_path):
+        """Models without multiple_results in models.json still get the key (empty),
+        so ContainerRunner's model_info.get("multiple_results") lookups never KeyError."""
+        mock_context.return_value.ctx = {}
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.console = MagicMock()
+        orchestrator.rich_console = MagicMock()
+
+        fake_model = {
+            "name": "dummy/model",
+            "tags": ["inference"],
+            "scripts": "run.sh",
+            "n_gpus": "1",
+            "data": "",
+            "args": "",
+        }
+
+        manifest_output = str(tmp_path / "build_manifest.json")
+
+        with patch(
+            "madengine.utils.discover_models.DiscoverModels.run",
+            return_value=[fake_model],
+        ):
+            orchestrator._create_manifest_from_local_image(
+                image_name="registry.io/org/model:ci-tag",
+                tags=["inference"],
+                manifest_output=manifest_output,
+            )
+
+        with open(manifest_output) as f:
+            manifest = json.load(f)
+
+        built_model = next(iter(manifest["built_models"].values()))
+        assert built_model["multiple_results"] == ""

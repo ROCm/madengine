@@ -5,15 +5,19 @@
 # 
 
 gpu_vendor=""
-if [ -f "/usr/bin/nvidia-smi" ]; then
+if command -v nvidia-smi >/dev/null 2>&1; then
     echo "NVIDIA GPU detected."
     gpu_vendor="NVIDIA"
     gpu_architecture=$(nvidia-smi --query-gpu=name --format=csv,noheader | grep -m 1 -E -o ".{0,1}100"| xargs )
     python3 -m pip install nvidia-ml-py
-elif [ -f "/opt/rocm/bin/rocm-smi" ]; then
+elif command -v rocm-smi >/dev/null 2>&1 || command -v amd-smi >/dev/null 2>&1; then
     echo "AMD GPU detected."
     gpu_vendor="AMD"
-    gpu_architecture=$(rocminfo | grep -o -m 1 'gfx.*' | xargs )
+    if command -v rocminfo >/dev/null 2>&1; then
+        gpu_architecture=$(rocminfo | grep -o -m 1 'gfx.*' | xargs )
+    else
+        echo "rocminfo not found; skipping AMD GPU architecture detection."
+    fi
     MI200="gfx90a"
     MI100="gfx908"
     MI50="gfx906"

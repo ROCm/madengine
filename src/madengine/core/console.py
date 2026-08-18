@@ -229,6 +229,12 @@ class Console:
         # Check for failure
         success = proc.returncode == 0
 
+        # When output is captured rather than streamed it is discarded on
+        # failure, and the RuntimeError below carries only the command and the
+        # exit code. Echo it so the log records why the command actually failed.
+        if not success and not canFail and not secret and not self.live_output and outs:
+            print(redact_secrets(outs), flush=True)
+
         # Show docker operation completion status
         if not secret:
             self._show_docker_completion(command, success)
