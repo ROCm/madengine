@@ -26,6 +26,10 @@ def discover(
         List[str],
         typer.Option("--tags", "-t", help="Model tags to discover (can specify multiple)"),
     ] = [],
+    all: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="Output full JSON with all discovered models and their tags"),
+    ] = False,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
     ] = False,
@@ -40,6 +44,9 @@ def discover(
     limits selection to models under ``scripts/<scope>/`` (e.g.
     ``MAD-private/inference`` → models named ``MAD-private/...`` with tag
     ``inference``). Use ``scope/all`` for every model in that scope.
+
+    **Full JSON output** (``--all``): outputs complete model cards with all tags
+    and metadata in JSON format, similar to ``--tags`` output but for all models.
     """
     setup_logging(verbose)
 
@@ -49,7 +56,8 @@ def discover(
     console.print(
         Panel(
             f"🔍 [bold cyan]Discovering Models[/bold cyan]\n"
-            f"Tags: [yellow]{processed_tags if processed_tags else 'All models'}[/yellow]",
+            f"Tags: [yellow]{processed_tags if processed_tags else 'All models'}[/yellow]\n"
+            f"Full JSON: [yellow]{all}[/yellow]",
             title="Model Discovery",
             border_style="blue",
         )
@@ -57,13 +65,13 @@ def discover(
 
     try:
         # Create args namespace similar to mad.py
-        args = create_args_namespace(tags=processed_tags)
-        
+        args = create_args_namespace(tags=processed_tags, all=all)
+
         # Use DiscoverModels class
         # Note: DiscoverModels prints output directly and returns None
         discover_models_instance = DiscoverModels(args=args)
         result = discover_models_instance.run()
-        
+
         console.print("✅ [bold green]Model discovery completed successfully[/bold green]")
 
     except Exception as e:

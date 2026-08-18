@@ -359,10 +359,32 @@ class DiscoverModels:
                 self.selected_models.extend(tag_models)
 
     def print_models(self) -> None:
+        # Check if --all flag is set to output full JSON with all models
+        output_all_json = getattr(self.args, 'all', False)
+
         if self.selected_models:
             # print selected models using parsed tags and adding backslash-separated extra args
             self.rich_console.print(f"[bold green]📋 Selected Models ({len(self.selected_models)} models):[/bold green]")
             print(json.dumps(self.selected_models, indent=4))
+        elif output_all_json:
+            # Output full JSON with all discovered models and their complete model cards
+            # Include both regular models and expanded custom models
+            all_models = self.models.copy()
+
+            # Expand and add custom models
+            for custom_model in self.custom_models:
+                custom_model.update_model()
+                dirname = custom_model.name.split("/")[0]
+                custom_model.dockerfile = os.path.normpath(
+                    os.path.join("scripts", dirname, custom_model.dockerfile)
+                )
+                custom_model.scripts = os.path.normpath(
+                    os.path.join("scripts", dirname, custom_model.scripts)
+                )
+                all_models.append(custom_model.to_dict())
+
+            self.rich_console.print(f"[bold cyan]📊 All Models with Full Details ({len(all_models)} models):[/bold cyan]")
+            print(json.dumps(all_models, indent=4))
         else:
             # print list of all model names
             self.rich_console.print(f"[bold cyan]📊 Available Models ({len(self.model_list)} total):[/bold cyan]")
