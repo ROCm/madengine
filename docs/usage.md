@@ -671,6 +671,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
+| `MAD_AWS_S3` | AWS S3 credentials for data loading (JSON object) | `'{"USERNAME":"username","PASSWORD":"password"}'` |
+| `NAS_NODES` | NAS node credentials for data loading (JSON array) | `'[{"HOST":"hostname","PORT":"22","USERNAME":"username","PASSWORD":"password"}]'` |
 
 ## Best Practices
 
