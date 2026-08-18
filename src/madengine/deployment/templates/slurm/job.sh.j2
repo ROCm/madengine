@@ -6,7 +6,8 @@
 #SBATCH --nodes={{ nodes }}
 #SBATCH --ntasks={{ nodes }}
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node={{ gpus_per_node }}
+{% if not skip_gpus_directive %}#SBATCH --gpus-per-node={{ gpus_per_node }}
+{% endif %}
 #SBATCH --time={{ time_limit }}
 {% if reservation %}
 #SBATCH --reservation={{ reservation }}
@@ -40,6 +41,19 @@
 {% for module in modules %}
 module load {{ module }}
 {% endfor %}
+
+# =============================================================================
+# PATH
+# =============================================================================
+# A batch job does not reliably inherit the submitter's PATH: a site can default
+# sbatch to --export=NONE, and the module loads above can rewrite it. Without
+# this the madengine console script is missing on the compute node even though
+# the pre-submission check found it. Re-add the per-user bin directory and the
+# directory madengine itself was resolved from at submission time.
+export PATH="$HOME/.local/bin:$PATH"
+{% if submission_bin_dir %}
+export PATH="{{ submission_bin_dir }}:$PATH"
+{% endif %}
 
 # =============================================================================
 # Environment Setup (Standard ML Environment Variables)
@@ -141,7 +155,15 @@ echo "Submission directory: {{ manifest_file | dirname }}"
 # Single-node: Prefer shared storage (submission dir), with local fallback if needed
 # Check if submission directory is on shared filesystem
 SUBMIT_DIR={{ manifest_file | dirname }}
-if df -T "$SUBMIT_DIR" 2>/dev/null | grep -qE '\bnfs\b|\blustre\b|\bgpfs\b|\bceph\b'; then
+# Ask df for the filesystem type alone. Matching the whole df -T line reads the mount
+# point too, so a local disk under a path such as /mnt/nfs-scratch answered yes and the
+# job then trusted node-local storage to be shared. --output=fstype is GNU coreutils
+# 8.21 and up; the awk form is the fallback for anything older.
+SUBMIT_FSTYPE=$(df --output=fstype "$SUBMIT_DIR" 2>/dev/null | tail -n 1)
+if [ -z "$SUBMIT_FSTYPE" ]; then
+    SUBMIT_FSTYPE=$(df -T "$SUBMIT_DIR" 2>/dev/null | awk 'NR > 1 { print $2; exit }')
+fi
+if printf '%s' "$SUBMIT_FSTYPE" | grep -qE '^(nfs[0-9]*|lustre|gpfs|ceph|beegfs|panfs)$'; then
     # Submission directory is on shared storage - use it directly (best practice)
     WORKSPACE=$SUBMIT_DIR
     WORKSPACE_TYPE="shared-nfs"
