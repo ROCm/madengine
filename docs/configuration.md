@@ -691,6 +691,42 @@ export MAD_DOCKERHUB_PASSWORD=mytoken
 export MAD_DOCKERHUB_REPO=myorg
 ```
 
+### Registry Authentication
+
+madengine reuses an existing `docker login` — including an organization access
+token (OAT) — rather than requiring credentials to be duplicated into
+`credential.json`. Ambient credentials are read from
+`${DOCKER_CONFIG:-~/.docker}/config.json` exactly as the Docker CLI reads them,
+covering `auths` entries, `credHelpers`, and `credsStore`.
+
+Blank values are treated as **not configured**, not as credentials. A placeholder
+entry such as `{"username": "", "password": ""}` will never override or break a
+working `docker login`.
+
+| Existing `docker login` | Credentials in `credential.json` / env | Behavior |
+|---|---|---|
+| no  | yes (non-blank) | `docker login` with the configured credentials |
+| yes | yes (non-blank) | `docker login` with the configured credentials (explicit wins) |
+| yes | absent or blank | Reuse the existing login; no `docker login` is run |
+| no  | absent or blank | Push fails with an actionable error; pull warns and continues |
+
+Before `docker build`, madengine logs in to the base image's registry only when
+that registry has no existing login and usable credentials are configured, so a
+node authenticated with an OAT is never re-authenticated.
+
+Relevant environment variables:
+
+- `DOCKER_CONFIG` — directory holding `config.json` (default `~/.docker`)
+- `MAD_SKIP_DOCKER_LOGIN=1` — never run `docker login`; always defer to the
+  credentials the machine already has
+
+If a base image pull is denied, madengine distinguishes the two causes:
+credentials were rejected (authentication — supply credentials or run
+`docker login`), versus credentials were accepted but the registry granted no
+pull scope for that repository (`insufficient_scope` — an authorization problem,
+where the access token needs to be scoped to the repository and re-running
+`docker login` will not help).
+
 ## Configuration Priority
 
 For Kubernetes/SLURM deployments:

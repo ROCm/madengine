@@ -9,6 +9,7 @@ and then distributed to remote nodes for execution.
 
 import os
 import shlex
+import sys
 from pathlib import Path
 import time
 import json
@@ -16,7 +17,11 @@ import re
 import typing
 from contextlib import redirect_stdout, redirect_stderr
 from rich.console import Console as RichConsole
-from madengine.core.auth import login_to_registry
+from madengine.core.auth import (
+    explain_registry_denial,
+    has_ambient_docker_auth,
+    login_to_registry,
+)
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.utils.ops import PythonicTee
@@ -97,6 +102,72 @@ class DockerBuilder:
                 build_args += "--build-arg " + shlex.quote(str(key)) + "=" + shlex.quote(str(value)) + " "
 
         return build_args
+
+    def _resolve_base_docker(self, dockerfile: str) -> str:
+        """Resolve the base image the Dockerfile builds ``FROM``.
+
+        Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context,
+        otherwise reads ``ARG BASE_DOCKER=`` from the Dockerfile.
+
+        Args:
+            dockerfile: Path to the Dockerfile.
+
+        Returns:
+            str: The base image reference, or ``""`` if it cannot be determined.
+        """
+        if (
+            "docker_build_arg" in self.context.ctx
+            and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
+        ):
+            return str(self.context.ctx["docker_build_arg"]["BASE_DOCKER"])
+        try:
+            return str(
+                self.console.sh(
+                    f"grep '^ARG BASE_DOCKER=' {shlex.quote(dockerfile)} | sed -E 's/ARG BASE_DOCKER=//g'"
+                )
+            )
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _registry_of(image: str) -> str:
+        """Return the registry an image reference points at.
+
+        Args:
+            image: An image reference such as ``rocm/pytorch:latest`` or
+                ``myhost:5000/team/img:tag``.
+
+        Returns:
+            str: The registry host, or ``"docker.io"`` for Docker Hub references.
+        """
+        first_segment = (image or "").strip().split("/")[0]
+        if "." in first_segment or ":" in first_segment or first_segment == "localhost":
+            return first_segment
+        return "docker.io"
+
+    def _report_registry_denial(self, log_file_path: str, base_docker: str) -> None:
+        """Print an actionable hint if a build log shows a registry denial.
+
+        Called from inside the build's stdout redirection, so the hint is written
+        to the real stdout as well to make sure it reaches the terminal and not
+        only the build log.
+
+        Args:
+            log_file_path: Path to the build log written by this build.
+            base_docker: The base image the build was pulling.
+        """
+        try:
+            with open(log_file_path, encoding="utf-8", errors="replace") as log:
+                log_text = log.read()
+        except OSError:
+            return
+        hint = explain_registry_denial(log_text, base_docker)
+        if not hint:
+            return
+        message = f"[bold red]❌ {hint}[/bold red]"
+        self.rich_console.print(f"\n{message}")
+        if not self.live_output and sys.__stdout__ is not None:
+            RichConsole(file=sys.__stdout__).print(f"\n{message}")
 
     def build_image(
         self,
@@ -195,8 +266,28 @@ class DockerBuilder:
             with redirect_stdout(
                 PythonicTee(outlog, self.live_output)
             ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                # `docker build --pull` resolves the base image itself, so it only
+                # works if this machine can authenticate to the base image's
+                # registry. Log in when — and only when — there is no existing
+                # login to reuse, so an ambient `docker login` (e.g. an
+                # organisation access token) is left alone.
+                base_docker = self._resolve_base_docker(dockerfile)
+                base_registry = self._registry_of(base_docker)
+                if credentials and not has_ambient_docker_auth(base_registry):
+                    login_to_registry(
+                        base_registry,
+                        credentials,
+                        console=self.console,
+                        rich_console=self.rich_console,
+                        raise_on_failure=False,
+                    )
+
                 print(f"🔨 Executing build command...")
-                self.console.sh(build_command, timeout=None)
+                try:
+                    self.console.sh(build_command, timeout=None)
+                except Exception:
+                    self._report_registry_denial(log_file_path, base_docker)
+                    raise
 
                 build_duration = time.time() - build_start_time
 
@@ -206,17 +297,6 @@ class DockerBuilder:
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
 
                 # Get base docker info
-                base_docker = ""
-                if (
-                    "docker_build_arg" in self.context.ctx
-                    and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
-                ):
-                    base_docker = self.context.ctx["docker_build_arg"]["BASE_DOCKER"]
-                else:
-                    base_docker = self.console.sh(
-                        f"grep '^ARG BASE_DOCKER=' {shlex.quote(dockerfile)} | sed -E 's/ARG BASE_DOCKER=//g'"
-                    )
-
                 print(f"BASE DOCKER is {base_docker}")
 
                 # Get docker SHA
