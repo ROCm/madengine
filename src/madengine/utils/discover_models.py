@@ -32,9 +32,13 @@ class CustomModel:
     args: str = ""
     multiple_results: str = ""
     skip_gpu_arch: str = ""
+    _fs_rel_path: str = field(default="", repr=False)  # Internal: filesystem relative path
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Remove internal fields from dict representation
+        d.pop("_fs_rel_path", None)
+        return d
 
     def update_model(self) -> None:
         """Override this method to update your custom model data after initialization.
@@ -196,10 +200,36 @@ class DiscoverModels:
                 with open(os.path.join(root, "models.json")) as f:
                     model_dict_list: typing.List[dict] = json.load(f)
                     for model_dict in model_dict_list:
-                        # Update model name using slash-separated path from scripts directory
-                        # e.g., MAD/dummy_multi/model_name or dummy2/model_name
-                        model_dict["name"] = rel_path + "/" + model_dict["name"]
-                        # Update relative path for dockerfile and scripts
+                        # Strip "scripts" from path and keep from the directory before last "scripts"
+                        # e.g., Model-Repo1/scripts/Model-Repo2/scripts/dummy -> Model-Repo2/dummy
+                        # This identifies submodule boundaries: the dir before "scripts" is the submodule name
+                        path_parts = rel_path.split(os.sep)
+
+                        # Find the last occurrence of "scripts" directory
+                        last_scripts_idx = -1
+                        for i, part in enumerate(path_parts):
+                            if part.lower() == "scripts":
+                                last_scripts_idx = i
+
+                        # If "scripts" found and there's a directory before it, include that directory
+                        # plus everything after "scripts"
+                        if last_scripts_idx >= 1:
+                            # Include the directory before "scripts" + everything after "scripts"
+                            clean_parts = [path_parts[last_scripts_idx - 1]] + path_parts[last_scripts_idx + 1:]
+                        elif last_scripts_idx == 0:
+                            # "scripts" is first element, just take what's after
+                            clean_parts = path_parts[last_scripts_idx + 1:]
+                        else:
+                            # No "scripts" in path, keep all parts
+                            clean_parts = path_parts
+
+                        clean_path = "/".join(clean_parts) if clean_parts else rel_path
+
+                        # Update model name using cleaned path
+                        model_dict["name"] = clean_path + "/" + model_dict["name"]
+                        # Store the original filesystem path for later use (internal field)
+                        model_dict["_fs_rel_path"] = rel_path
+                        # Update relative path for dockerfile and scripts (keep full path with "scripts")
                         model_dict["dockerfile"] = os.path.normpath(
                             os.path.join(
                                 "scripts", rel_path, model_dict["dockerfile"]
@@ -232,8 +262,29 @@ class DiscoverModels:
                                 "madengine.utils.discover_models.CustomModel "
                                 "to define your custom model."
                             )
-                        # Update model name using slash-separated path from scripts directory
-                        custom_model.name = rel_path + "/" + custom_model.name
+                        # Strip "scripts" from path - keep from directory before last "scripts"
+                        path_parts = rel_path.split(os.sep)
+
+                        # Find the last occurrence of "scripts" directory
+                        last_scripts_idx = -1
+                        for i, part in enumerate(path_parts):
+                            if part.lower() == "scripts":
+                                last_scripts_idx = i
+
+                        # If "scripts" found and there's a directory before it, include that directory
+                        if last_scripts_idx >= 1:
+                            clean_parts = [path_parts[last_scripts_idx - 1]] + path_parts[last_scripts_idx + 1:]
+                        elif last_scripts_idx == 0:
+                            clean_parts = path_parts[last_scripts_idx + 1:]
+                        else:
+                            clean_parts = path_parts
+
+                        clean_path = "/".join(clean_parts) if clean_parts else rel_path
+
+                        # Update model name using cleaned path
+                        custom_model.name = clean_path + "/" + custom_model.name
+                        # Store the original filesystem path for later use
+                        custom_model._fs_rel_path = rel_path
                         # Defer updating script and dockerfile paths until update_model is called
                         self.custom_models.append(custom_model)
                         self.model_list.append(custom_model.name)
@@ -318,10 +369,8 @@ class DiscoverModels:
                             or custom_model.name == full_name_match
                         ):
                             custom_model.update_model()
-                            # Extract the full relative path (excluding the final model name)
-                            # e.g., "MAD/dummy_multi/model1" -> "MAD/dummy_multi"
-                            name_parts = custom_model.name.rsplit("/", 1)
-                            rel_path = name_parts[0] if len(name_parts) > 1 else custom_model.name.split("/")[0]
+                            # Use the stored filesystem path (includes "scripts" directories)
+                            rel_path = custom_model._fs_rel_path
                             custom_model.dockerfile = os.path.normpath(
                                 os.path.join("scripts", rel_path, custom_model.dockerfile)
                             )
@@ -351,10 +400,8 @@ class DiscoverModels:
                             or model_name == "all"
                         ):
                             custom_model.update_model()
-                            # Extract the full relative path (excluding the final model name)
-                            # e.g., "MAD/dummy_multi/model1" -> "MAD/dummy_multi"
-                            name_parts = custom_model.name.rsplit("/", 1)
-                            rel_path = name_parts[0] if len(name_parts) > 1 else custom_model.name.split("/")[0]
+                            # Use the stored filesystem path (includes "scripts" directories)
+                            rel_path = custom_model._fs_rel_path
                             custom_model.dockerfile = os.path.normpath(
                                 os.path.join("scripts", rel_path, custom_model.dockerfile)
                             )

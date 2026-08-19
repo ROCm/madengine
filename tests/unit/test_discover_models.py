@@ -357,3 +357,28 @@ class TestNestedSubmoduleDiscovery:
         assert len(dm.models) == 2
         names = sorted(m["name"] for m in dm.models)
         assert names == ["Model-Repo1/category1/m1", "Model-Repo2/inference/m2"]
+
+    def test_nested_scripts_directories_stripped_from_name(self, tmp_path, monkeypatch):
+        """Model names strip out 'scripts' directories from nested submodules."""
+        import json
+
+        # Create Model-Repo1/scripts/Model-Repo2/scripts/dummy/models.json
+        # Expected name: Model-Repo2/dummy/model1 (not Model-Repo1/scripts/Model-Repo2/scripts/dummy/model1)
+        nested_dir = tmp_path / "scripts" / "Model-Repo1" / "scripts" / "Model-Repo2" / "scripts" / "dummy"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "models.json").write_text(json.dumps([
+            {"name": "model1", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["test"], "args": ""}
+        ]))
+
+        (tmp_path / "models.json").write_text("[]")
+        monkeypatch.chdir(tmp_path)
+
+        dm = DiscoverModels(args=argparse.Namespace(tags=None))
+        dm.discover_models()
+
+        # Should have stripped all "scripts" directories from the name
+        assert len(dm.models) == 1
+        model = dm.models[0]
+        assert model["name"] == "Model-Repo2/dummy/model1"
+        # But filesystem paths should still include "scripts"
+        assert "scripts/Model-Repo1/scripts/Model-Repo2/scripts/dummy" in model["scripts"]
