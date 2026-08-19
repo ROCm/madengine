@@ -765,14 +765,17 @@ class RunOrchestrator:
         self.console.sh("echo 'MAD Run Models'")
 
         host_os = self.context.ctx.get("host_os", "")
+        # This is purely informational, but a package manager can block forever on
+        # an interactive prompt (e.g. yum asking to import a repo GPG key) with no
+        # tty to answer it, so every query is capped.
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("yum info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("zypper info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
