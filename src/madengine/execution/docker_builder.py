@@ -247,7 +247,13 @@ class DockerBuilder:
         # pin build-time sources (e.g. VLLM_REPO/VLLM_REF) in-repo instead of requiring
         # every caller to pass --additional-context. Context and multi-arch/cred args
         # win on conflict, matching _pick_context_over_model() for run-time keys.
-        for card_arg, card_value in (model_info.get("docker_build_arg") or {}).items():
+        card_build_arg = model_info.get("docker_build_arg") or {}
+        if not isinstance(card_build_arg, dict):
+            raise RuntimeError(
+                f"docker_build_arg for model {model_info['name']} must be a JSON object "
+                f"mapping build-arg names to values, got {type(card_build_arg).__name__}"
+            )
+        for card_arg, card_value in card_build_arg.items():
             if card_arg in self.context.ctx.get("docker_build_arg", {}):
                 continue
             if card_arg in run_build_arg:
