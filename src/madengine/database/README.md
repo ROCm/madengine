@@ -1,80 +1,151 @@
-# Database Layer (Future MongoDB Ingestion)
+# Database Layer
 
-**Status**: Planned for future development  
-**Purpose**: Modern data ingestion API for local and distributed deployments
-
----
-
-## 🎯 Objective
-
-This directory is reserved for a future unified database ingestion layer that will support:
-- MongoDB data persistence
-- Local result storage
-- Distributed data collection from build and run phases
-- Unified API for performance metrics ingestion
+**Status**: Active
+**Purpose**: Upload CSV/JSON performance results to MongoDB
 
 ---
 
-## 📋 Current State
+## 🎯 Responsibility
 
-⚠️ **Not yet implemented**. This directory is a placeholder for future development.
+This module implements MongoDB ingestion for madengine results (e.g. `perf.csv`,
+`perf_entry.csv`, or arbitrary JSON documents). It is a single, self-contained
+file — `mongodb.py` — with no sub-packages. It handles:
 
-For current database operations, use the existing `db/` package which handles MySQL operations via SSH.
+- Auto-detecting file format (CSV vs JSON)
+- Loading files with native type preservation (numbers, bools, nested
+  JSON-in-CSV-cell strings)
+- Transforming/normalizing documents (metadata stamping, numpy/pandas type
+  cleanup)
+- Auto-detecting unique fields for deduplication when not specified
+- Bulk upload to MongoDB with batching, upsert, and automatic indexing
 
----
-
-## 🗂️ Legacy MySQL Tools (Removed)
-
-**MySQL support has been removed from madengine**. The following tools are no longer available:
-
-| File | Purpose | Status |
-|------|---------|--------|
-| ~~`tools/create_table_db.py`~~ | MySQL table creation | **REMOVED** |
-| ~~`tools/update_table_db.py`~~ | MySQL table updates | **REMOVED** |
-| ~~`db/` package~~ | MySQL operations via SSH | **REMOVED** |
-
-For database operations, use MongoDB via the `database` command in the new CLI or legacy `mad.py`.
+It is wired directly into the CLI via `madengine database` (see
+`src/madengine/cli/commands/database.py`).
 
 ---
 
-## 🚀 Future Implementation Plan
+## 📦 Components (`mongodb.py`)
 
-When implemented, this layer will provide:
+### Configuration
 
-### **1. MongoDB Client** (`mongodb_client.py`)
-```python
-from madengine.database.mongodb_client import MongoDBClient
+- **`MongoDBConfig`** — dataclass holding `host`, `port`, `username`,
+  `password`, `auth_source`, `timeout_ms`. `MongoDBConfig.from_env()` builds
+  one from `MONGO_HOST`, `MONGO_PORT`, `MONGO_USER`, `MONGO_PASSWORD`,
+  `MONGO_AUTH_SOURCE`, `MONGO_TIMEOUT_MS`. The `.uri` property builds the
+  `mongodb://` connection string.
+- **`UploadOptions`** — dataclass controlling upload behavior:
+  `unique_fields`, `upsert`, `batch_size`, `ordered`, `create_indexes`,
+  `index_fields`, `add_metadata`, `metadata_prefix`, `validate_schema`
+  (reserved field, currently unused by the implementation), `dry_run`.
+- **`UploadResult`** — dataclass returned by every upload: `status`
+  (`"success"` / `"partial"` / `"failed"`), `documents_read`,
+  `documents_processed`, `documents_inserted`, `documents_updated`,
+  `documents_failed`, `errors`, `duration_seconds`. Has a
+  `print_summary()` method that renders a formatted Rich summary.
 
-# Connect to local or remote MongoDB
-client = MongoDBClient(connection_string="mongodb://localhost:27017")
+### File loading (Strategy pattern)
 
-# Ingest build results
-client.ingest_build_results(build_manifest)
+- **`DocumentLoader`** (ABC) — defines `load(file_path)` and
+  `infer_schema(documents)`.
+- **`JSONLoader`** — loads a JSON object or array of objects, preserving
+  native types.
+- **`CSVLoader`** — loads via `pandas.read_csv`, preserving native types and
+  attempting to parse cell values that look like JSON (`{...}` / `[...]`)
+  back into dicts/lists.
+- **`detect_file_format(file_path)`** — picks `FileFormat.CSV` or
+  `FileFormat.JSON` from the extension, falling back to content sniffing.
+- **`get_loader(file_format)`** — returns the right loader instance.
 
-# Ingest run results
-client.ingest_run_results(run_summary)
+### Transformation
+
+- **`DocumentTransformer`** — takes `UploadOptions` and:
+  - `transform(documents)` adds metadata (`_meta_uploaded_at`,
+    `created_date`) and normalizes types (numpy scalars → Python, pandas
+    `Timestamp` → `datetime`, `NaN` → `None`).
+  - `infer_unique_fields(documents)` guesses a dedup key by checking
+    candidate fields (`model`, `name`, `id`, `timestamp`, `date`,
+    `pipeline`) for uniqueness across a sample of documents.
+
+### Upload
+
+- **`MongoDBUploader`** — connection + bulk-write class, usable as a context
+  manager (`with MongoDBUploader(config) as uploader:`).
+  - `connect()` / `disconnect()`
+  - `upload(documents, database_name, collection_name, options)` →
+    `UploadResult`. Creates indexes (if `options.create_indexes`) then does
+    either a plain `insert_many` (when no `unique_fields`/`upsert`) or a
+    batched `bulk_write` of `UpdateOne(..., upsert=True)` operations keyed
+    on `unique_fields`.
+
+### Entry points
+
+- **`upload_file_to_mongodb(file_path, database_name, collection_name, config=None, options=None) -> UploadResult`**
+  — the main entry point. Detects format, loads, auto-infers unique fields
+  if not given, transforms, honors `dry_run` (returns without connecting to
+  MongoDB), then uploads.
+- **`upload_csv_to_mongodb(csv_file_path, database_name, collection_name, mongo_config=None) -> Dict[str, Any]`**
+  — deprecated wrapper around `upload_file_to_mongodb` that returns a legacy
+  dict shape instead of `UploadResult`.
+- **`MongoDBHandler`** — deprecated class-based wrapper (`MongoDBHandler(args).run() -> bool`)
+  kept for backward compatibility with old argparse-style call sites.
+
+---
+
+## 🔗 CLI mapping (`madengine database`)
+
+`src/madengine/cli/commands/database.py` is a thin Typer wrapper around
+`upload_file_to_mongodb`:
+
+| CLI flag | Maps to |
+|---|---|
+| `--file` / `-f` | `file_path` |
+| `--database` / `--db` | `database_name` |
+| `--collection` / `-c` | `collection_name` |
+| `--unique-key` / `-k` (comma-separated) | `UploadOptions.unique_fields` |
+| `--batch-size` | `UploadOptions.batch_size` |
+| `--no-upsert` | `UploadOptions.upsert = False` |
+| `--no-index` | `UploadOptions.create_indexes = False` |
+| `--dry-run` | `UploadOptions.dry_run` |
+
+Connection config always comes from `MongoDBConfig.from_env()` (the CLI does
+not expose host/port/credential flags — set `MONGO_HOST`, `MONGO_PORT`,
+`MONGO_USER`, `MONGO_PASSWORD` instead). See `madengine database --help` or
+`docs/cli-reference.md` for the full flag reference.
+
+---
+
+## 🚀 Usage
+
+**Via the CLI:**
+
+```bash
+export MONGO_HOST=localhost
+export MONGO_USER=admin
+export MONGO_PASSWORD=secret
+
+madengine database -f perf.csv --db madengine --collection results -k model,timestamp
+madengine database -f perf_entry.json --db madengine --collection results --dry-run
 ```
 
-### **2. Local Storage** (`local_storage.py`)
+**Via the Python API:**
+
 ```python
-from madengine.database.local_storage import LocalStorage
+from madengine.database import upload_file_to_mongodb, MongoDBConfig, UploadOptions
 
-# Store results locally (JSON, Parquet, etc.)
-storage = LocalStorage(base_path="./madengine_results")
-storage.save_results(results_dict)
-```
-
-### **3. Unified API** (`api.py`)
-```python
-from madengine.database import ingest_results
-
-# Works with both local and distributed deployments
-ingest_results(
-    results=run_summary,
-    target="mongodb",  # or "local", "mysql"
-    config={"connection": "mongodb://..."}
+result = upload_file_to_mongodb(
+    file_path="perf.csv",
+    database_name="madengine",
+    collection_name="results",
+    config=MongoDBConfig.from_env(),
+    options=UploadOptions(unique_fields=["model", "timestamp"], batch_size=500),
 )
+
+result.print_summary()
+print(result.status, result.documents_inserted, result.documents_updated)
 ```
+
+`config` and `options` are both optional — omit them to use
+`MongoDBConfig.from_env()` and default `UploadOptions()`.
 
 ---
 
@@ -87,28 +158,23 @@ ingest_results(
 | **Transport** | SSH tunnel | Direct connection |
 | **Status** | **REMOVED** | Active |
 
----
-
-## 🔄 Migration Status
-
 MySQL support has been fully removed from madengine:
 
-1. ✅ **Phase 1**: Removed `db/` package (MySQL operations)
-2. ✅ **Phase 2**: Removed `tools/create_table_db.py` and `tools/update_table_db.py`
-3. ✅ **Phase 3**: Removed `utils/ssh_to_db.py` (SSH to MySQL host)
-4. ✅ **Phase 4**: Removed MySQL dependencies (`mysql-connector-python`, `pymysql`)
+1. ✅ Removed `db/` package (MySQL operations)
+2. ✅ Removed `tools/create_table_db.py` and `tools/update_table_db.py`
+3. ✅ Removed `utils/ssh_to_db.py` (SSH to MySQL host)
+4. ✅ Removed MySQL dependencies (`mysql-connector-python`, `pymysql`)
 
-**Current state**: Only MongoDB support remains via the `database/` package.
+**Current state**: Only MongoDB support remains, via this `database/` package.
 
 ---
 
 ## 📚 References
 
-- **MongoDB package**: `src/madengine/database/mongodb.py`
-- **CLI database command**: `madengine database --help`
+- **Implementation**: `src/madengine/database/mongodb.py`
+- **CLI command**: `src/madengine/cli/commands/database.py`, `madengine database --help`
 
 ---
 
-**Last Updated**: November 30, 2025  
+**Last Updated**: 2026-08-05
 **Maintainer**: madengine Team
-
