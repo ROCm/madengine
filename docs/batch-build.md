@@ -224,10 +224,14 @@ Creates `build_manifest.json` with:
     }
   },
   "built_models": {...},
+  "context": {...},
+  "credentials_required": {...},
   "deployment_config": {...},
   "summary": {...}
 }
 ```
+
+> `deployment_config` is only written when `--additional-context` resolves to a non-local deployment (e.g. `slurm`, `k8s`/`kubernetes`, `distributed`, `vllm`, or non-empty `env_vars`). Plain local builds omit this key entirely.
 
 ## Best Practices
 
