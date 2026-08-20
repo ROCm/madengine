@@ -409,3 +409,48 @@ class TestNestedSubmoduleDiscovery:
         assert len(dm.selected_models) == 2
         names = sorted(m["name"] for m in dm.selected_models)
         assert names == ["MAD/dummy_multi/model1", "MAD/dummy_multi/model2"]
+
+    def test_scoped_tag_with_path_component_matching(self, tmp_path, monkeypatch):
+        """Scoped tag matches models with filter as a path component anywhere in the name."""
+        import json
+
+        # Create MAD/dummy/dummy_multi/models.json - nested structure
+        # Tag MAD/dummy_multi should match because "dummy_multi" is a path component
+        nested_dir = tmp_path / "scripts" / "MAD" / "dummy" / "dummy_multi"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "models.json").write_text(json.dumps([
+            {"name": "model1", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""},
+            {"name": "model2", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
+        ]))
+
+        # Also create MAD/other/dummy_multi/models.json - different parent dir
+        other_dir = tmp_path / "scripts" / "MAD" / "other" / "dummy_multi"
+        other_dir.mkdir(parents=True)
+        (other_dir / "models.json").write_text(json.dumps([
+            {"name": "model3", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["test"], "args": ""}
+        ]))
+
+        # Create model that shouldn't match
+        no_match_dir = tmp_path / "scripts" / "MAD" / "unrelated"
+        no_match_dir.mkdir(parents=True)
+        (no_match_dir / "models.json").write_text(json.dumps([
+            {"name": "model4", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
+        ]))
+
+        (tmp_path / "models.json").write_text("[]")
+        monkeypatch.chdir(tmp_path)
+
+        # Use scoped tag MAD/dummy_multi
+        dm = DiscoverModels(args=argparse.Namespace(tags=["MAD/dummy_multi"]))
+        dm.discover_models()
+        dm.select_models()
+
+        # Should match models from both MAD/dummy/dummy_multi and MAD/other/dummy_multi
+        # because "dummy_multi" appears as a path component in both
+        assert len(dm.selected_models) == 3
+        names = sorted(m["name"] for m in dm.selected_models)
+        assert names == [
+            "MAD/dummy/dummy_multi/model1",
+            "MAD/dummy/dummy_multi/model2",
+            "MAD/other/dummy_multi/model3"
+        ]

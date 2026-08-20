@@ -359,11 +359,21 @@ class DiscoverModels:
                     for model in self.models:
                         if not model["name"].startswith(prefix):
                             continue
+
+                        # Extract path after scope for component matching
+                        # e.g., "MAD/dummy/dummy_multi/model1" -> "dummy/dummy_multi/model1"
+                        path_after_scope = model["name"][len(prefix):]
+                        # Split into components: ["dummy", "dummy_multi", "model1"]
+                        path_components = path_after_scope.split("/")
+                        # Check if filter matches any path component
+                        has_component_match = tag_filter in path_components
+
                         if (
                             tag_filter == "all"
                             or self._model_entry_has_tag(model.get("tags"), tag_filter)
                             or model["name"] == full_name_match
                             or model["name"].startswith(dir_prefix_match)
+                            or has_component_match
                         ):
                             model_dict = model.copy()
                             model_dict["args"] = model_dict["args"] + extra_args
@@ -372,11 +382,18 @@ class DiscoverModels:
                     for custom_model in self.custom_models:
                         if not custom_model.name.startswith(prefix):
                             continue
+
+                        # Extract path after scope for component matching
+                        path_after_scope = custom_model.name[len(prefix):]
+                        path_components = path_after_scope.split("/")
+                        has_component_match = tag_filter in path_components
+
                         if (
                             tag_filter == "all"
                             or self._model_entry_has_tag(custom_model.tags, tag_filter)
                             or custom_model.name == full_name_match
                             or custom_model.name.startswith(dir_prefix_match)
+                            or has_component_match
                         ):
                             custom_model.update_model()
                             # Use the stored filesystem path (includes "scripts" directories)

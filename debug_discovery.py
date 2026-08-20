@@ -138,13 +138,21 @@ try:
                 is_exact = name == full_name_match
                 is_dir_match = name.startswith(dir_prefix_match)
 
+                # Check path component matching
+                path_after_scope = name[len(prefix):] if starts_with_prefix else ""
+                path_components = path_after_scope.split("/") if path_after_scope else []
+                has_component_match = tag_filter in path_components
+
                 print(f"\n  Model: {name}")
                 print(f"    Starts with '{prefix}': {starts_with_prefix}")
                 if starts_with_prefix:
+                    print(f"    Path after scope: {path_after_scope}")
+                    print(f"    Path components: {path_components}")
                     print(f"    Tag field has '{tag_filter}': {has_tag}")
                     print(f"    Is exact match '{full_name_match}': {is_exact}")
                     print(f"    Starts with dir '{dir_prefix_match}': {is_dir_match}")
-                    print(f"    Would match: {is_all or has_tag or is_exact or is_dir_match}")
+                    print(f"    Has component match '{tag_filter}': {has_component_match}")
+                    print(f"    Would match: {is_all or has_tag or is_exact or is_dir_match or has_component_match}")
         else:
             # Unscoped tag
             print(f"  Tag '{test_tag}' is unscoped.")
