@@ -637,11 +637,16 @@ madengine recognizes these environment variables:
 | `MAD_DOCKERHUB_USER` | Docker Hub username | None |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password/token | None |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | None |
-| `MAD_CONTAINER_IMAGE` | Pre-built container image to use | None |
+| `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login madengine reuses | `~/.docker` |
+| `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login`; always defer to the machine's existing credentials | Unset |
 | `MONGO_HOST` | MongoDB host for database command | `localhost` |
 | `MONGO_PORT` | MongoDB port for database command | `27017` |
 | `MONGO_USER` | MongoDB username | None |
 | `MONGO_PASSWORD` | MongoDB password | None |
+
+> `MAD_CONTAINER_IMAGE` is **not** an environment variable. It is an
+> `--additional-context` key that selects a pre-built image and skips the build
+> phase — see [Configuration](configuration.md#pre-built-container-images).
 
 ---
 
@@ -669,6 +674,6 @@ madengine recognizes these environment variables:
 
 ---
 
-**Version:** 2.1.0  
-**Last Updated:** May 2026
+Run `madengine --version` for the installed version (derived from git tags via
+versioningit). Release history is in [CHANGELOG.md](../CHANGELOG.md).
 

@@ -600,7 +600,7 @@ Configure distributed training:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (K8s + SLURM)
+- `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
 - `vllm` - LLM inference
 - `sglang` - Structured generation
@@ -685,6 +685,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
+| `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login is reused | `/etc/docker-oat` |
+| `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login` and always defer to the machine's existing credentials | `"1"` |
 
 ## Best Practices
 

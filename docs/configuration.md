@@ -263,17 +263,25 @@ Pass environment variables to containers:
 }
 ```
 
-### Custom Base Image
+### Pre-Built Container Images
 
-Override Docker base image:
+`MAD_CONTAINER_IMAGE` runs the model in an image you already have, **skipping the
+build phase entirely**. madengine validates the image exists locally (pulling it
+if not) and writes a synthetic `build_manifest.json` for it:
 
-```json
-{
-  "MAD_CONTAINER_IMAGE": "rocm/pytorch:custom-tag"
-}
+```bash
+madengine run --tags my_model \
+  --additional-context "{'MAD_CONTAINER_IMAGE': 'rocm/pytorch:custom-tag'}"
 ```
 
-Or override BASE_DOCKER in FROM line:
+`--tags` is required in this mode — without it madengine has no models to map
+onto the image and fails with a configuration error. Note this is an
+`--additional-context` key, not an environment variable.
+
+### Custom Base Image
+
+To keep the normal build but change the image the Dockerfile's `FROM` line
+resolves to, override `BASE_DOCKER` as a build argument:
 
 ```json
 {
@@ -416,6 +424,26 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
+**Cluster and scheduling keys:**
+- `kubeconfig` - Path to kubeconfig (default: `~/.kube/config`)
+- `gpu_resource_name` - GPU resource name (default: `amd.com/gpu`; use `nvidia.com/gpu` for NVIDIA)
+- `node_selector` - Label selectors for pod placement (default: `{}`)
+- `tolerations` - Tolerations for tainted nodes (default: `[]`)
+- `backoff_limit` - Job retry attempts before marking failed (default: `3`)
+- `output_dir` - Directory for generated manifests (default: `./k8s_manifests`)
+
+**Storage keys:**
+- `data_pvc` - Name of an existing PVC to use for data, skipping auto-creation
+- `storage_class` - Broad fallback StorageClass for both the shared-data PVC and the single-node results PVC
+- `nfs_storage_class` / `data_storage_class` - RWX class for shared data and multi-node results
+- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the legacy single-node fallback)
+- `results_storage_size` / `data_storage_size` - PVC sizes (defaults: `10Gi` / `100Gi`)
+- `recreate_shared_data_pvc` - Delete and recreate `madengine-shared-data` before use. **Destroys existing data** — back up first; intended for migrating an RWO PVC to RWX
+
+Multi-node jobs require an RWX results StorageClass; madengine warns when one is
+not set. The full key reference, PVC access-mode matrix, and preset defaults are
+in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
+
 ### Multi-Node Kubernetes
 
 ```json
@@ -457,9 +485,12 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
     "nodes": 2,
     "nodelist": "node01,node02",
     "time": "24:00:00",
-    "mem": "64G",
-    "mail_user": "user@example.com",
-    "mail_type": "ALL"
+    "exclusive": true,
+    "constraint": "mi300x",
+    "exclude": "node07,node09",
+    "modules": ["rocm/6.2"],
+    "network_interface": "ib0",
+    "output_dir": "./slurm_results"
   }
 }
 ```
@@ -475,10 +506,18 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
 - `reservation` - SLURM reservation name; forwarded to srun health/cleanup commands and SBATCH directives
 - `exclusive` - Exclusive node access (default: `true`)
-- `time` - Wall time limit HH:MM:SS (required)
-- `mem` - Memory per node (e.g., "64G")
-- `mail_user` - Email for notifications
-- `mail_type` - Notification types (BEGIN, END, FAIL, ALL)
+- `time` - Wall time limit HH:MM:SS (default: `24:00:00`)
+- `constraint` - SBATCH `--constraint` feature expression
+- `exclude` - Comma-separated nodes to exclude; node health preflight appends to this list
+- `modules` - Array of environment modules to `module load` in the job (default: `[]`)
+- `network_interface` - Interface exported as `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` (e.g. `ib0`)
+- `output_dir` - Directory for SLURM `.out`/`.err` files (default: `./slurm_results`)
+- `skip_gpus_directive` - Omit the `#SBATCH --gpus-per-node` directive (default: `false`). Set `true` on clusters that expose no GPU GRES and reject any job script carrying it; allocation then relies on `exclusive` / `nproc_per_node`.
+
+Node health preflight, shared-storage, and results-collection keys (`enable_node_check`,
+`auto_cleanup_nodes`, `allow_submit_without_clean_nodes`, `verbose_node_check`,
+`shared_workspace`, `results_dir`) are documented in
+[examples/slurm-configs/README.md](../examples/slurm-configs/README.md).
 
 ### Multi-Node SLURM
 
@@ -522,7 +561,7 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (K8s + SLURM)
+- `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
 - `primus` - Primus unified pretrain
 - `vllm` - LLM inference

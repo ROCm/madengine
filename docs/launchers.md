@@ -19,7 +19,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **Primus** | Training | Megatron/TorchTitan/Jax via Primus config | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
-| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
+| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
 
 ---
@@ -419,9 +419,13 @@ SGLang Disaggregated separates inference into specialized node pools:
 ```
 
 **Minimum Requirements**:
-- **Nodes**: Minimum 3 nodes (1 proxy + 1 prefill + 1 decode)
+- **Nodes**: **SLURM** — minimum 2 nodes (co-located proxy on the first prefill node + 1 prefill + 1 decode). **Kubernetes** — minimum 3 nodes (dedicated proxy + 1 prefill + 1 decode); a 2-node co-located topology is rejected.
 - **GPUs**: Minimum 1 GPU per node (for tensor parallelism)
 - **Network**: High-speed interconnect (InfiniBand recommended for production)
+
+The proxy/router is started by the model's `run.sh`, not by the launcher, so on
+SLURM both layouts are valid: a dedicated proxy node (`1 + xP + yD == nnodes`) or
+a proxy co-located on the first prefill node (`xP + yD == nnodes`).
 
 **Node Roles**:
 1. **Proxy Node (Rank 0)**: Load balancer, request router (mini_lb)
@@ -429,15 +433,17 @@ SGLang Disaggregated separates inference into specialized node pools:
 3. **Decode Nodes**: Receive KV cache, generate output tokens
 
 **Automatic Split (Default)**:
-- Uses 40/60 golden ratio for prefill/decode
-- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`
+- Uses 40/60 golden ratio for prefill/decode across the worker nodes
+- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`, `decode = nnodes - 1 - prefill`
+- `nnodes == 2` is special-cased on SLURM to 1 prefill + 1 decode with a co-located proxy (the general formula would yield 0 decode nodes)
 
 | Total Nodes | Proxy | Prefill | Decode |
 |-------------|-------|---------|--------|
-| 3 | 1 | 1 (33%) | 1 (33%) |
-| 5 | 1 | 1 (25%) | 3 (75%) |
-| 7 | 1 | 2 (29%) | 4 (57%) |
-| 11 | 1 | 4 (40%) | 6 (60%) |
+| 2 (SLURM only) | co-located | 1 | 1 |
+| 3 | 1 | 1 | 1 |
+| 5 | 1 | 1 | 3 |
+| 7 | 1 | 2 | 4 |
+| 11 | 1 | 4 | 6 |
 
 **Custom Split (NEW Feature!)**:
 
@@ -469,7 +475,8 @@ Override automatic split based on workload characteristics:
 **Validation Rules**:
 - `prefill_nodes >= 1`
 - `decode_nodes >= 1`
-- `prefill_nodes + decode_nodes + 1 == nnodes`
+- `prefill_nodes + decode_nodes + 1 == nnodes` (dedicated proxy node), **or**
+  `prefill_nodes + decode_nodes == nnodes` (proxy co-located on the first prefill node, SLURM)
 
 **Features**:
 - Disaggregated prefill/decode architecture
@@ -863,7 +870,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
 
 **2. Multi-Node Communication Fails**
 ```bash
@@ -906,7 +913,7 @@ madengine provides `$MAD_MULTI_NODE_RUNNER` for frameworks that use torchrun:
 #!/bin/bash
 # Your model script
 
-# For torchrun/deepspeed/megatron/torchtitan
+# For torchrun/deepspeed/megatron-lm/torchtitan
 $MAD_MULTI_NODE_RUNNER your_training_script.py --args
 
 # For primus (no MAD_MULTI_NODE_RUNNER; use run.sh → run_pretrain.sh; PRIMUS_* / BACKEND set by madengine)

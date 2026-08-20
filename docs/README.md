@@ -154,7 +154,7 @@ madengine operates within the MAD (Model Automation and Dashboarding) ecosystem.
 
 - **torchrun** - PyTorch DDP/FSDP
 - **deepspeed** - ZeRO optimization
-- **megatron** - Large transformers (K8s + SLURM)
+- **megatron-lm** - Large transformers (K8s + SLURM)
 - **torchtitan** - LLM pre-training
 - **vllm** - LLM inference
 - **sglang** - Structured generation
@@ -167,7 +167,7 @@ This documentation follows these principles:
 2. **Progressive disclosure** - Start simple, add complexity as needed
 3. **Examples first** - Show working examples before explaining details
 4. **Consistent naming** - Files follow simple naming pattern (no prefixes)
-5. **Up-to-date** - Reflects current implementation (v2.0)
+5. **Up-to-date** - Tracks the current implementation; see [CHANGELOG.md](../CHANGELOG.md) for release history
 
 ## 🤝 Contributing to Documentation
 
