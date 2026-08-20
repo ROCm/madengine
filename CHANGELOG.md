@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- **README rewritten as a concise landing page** (#161): Trimmed the root README from 707 to 258 lines by moving deep reference material (profiling tables, extended config/usage recipes, tips) into `docs/` and linking out. Replaced the stale ASCII architecture block and unreferenced `docs/img` PNGs with accurate inline Mermaid diagrams for the layered architecture, build→run→report pipeline, and deployment-target inference; added matching diagrams to `docs/deployment.md` and `docs/README.md`. Also corrects numerous stale references across docs: `--csv-file` → `--csv-file-path`/`--file`, missing `database` command flags (`--unique-key`/`-k`, `--batch-size`, `--no-upsert`, `--no-index`, `--dry-run`, `MONGO_AUTH_SOURCE`/`MONGO_TIMEOUT_MS`), wrong `run --output`/`--tools-config` defaults, `megatron` → `megatron-lm` launcher name, fabricated `timeout_multiplier`/`service_account` config keys, missing Kubernetes/SLURM `additional_context` keys, `DOCKER_CONFIG`/`MAD_SKIP_DOCKER_LOGIN` documentation, and corrected SGLang Disaggregated minimum node counts/split formula for SLURM vs. Kubernetes.
+
 ## [2.2.0] - 2026-08-12
 
 ### Added
