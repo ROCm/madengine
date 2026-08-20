@@ -305,6 +305,26 @@ Pass build-time variables:
 }
 ```
 
+A model can also declare its own `docker_build_arg` in its `models.json` entry, so
+build-time pins live with the model instead of on every command line:
+
+```json
+{
+  "name": "my_model",
+  "dockerfile": "docker/my_model",
+  "tags": ["my_model"],
+  "docker_build_arg": {
+    "VLLM_REPO": "https://github.com/myorg/vllm.git",
+    "VLLM_REF": "d723eb305eb78d1bda0ed357b2b54cc29487221f"
+  }
+}
+```
+
+Each model's args apply only to its own build, so models built in the same
+invocation can pin different values. `--additional-context` overrides the model
+entry for the same key, so an operator can still redirect a build without editing
+`models.json`.
+
 ### Mount Host Directories
 
 Mount host directories inside containers:
