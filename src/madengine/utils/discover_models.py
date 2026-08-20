@@ -310,8 +310,14 @@ class DiscoverModels:
         """Get the selected models by parsing the --tags argument and expanding custom models.
 
         Scoped tags: ``scope/tag`` (exactly one ``/``, no ``:``) limits to models under
-        ``scripts/<scope>/`` (names ``scope/...``) and matches by tag, ``all``, or full
-        model short name (e.g. ``MAD-private/inference`` → tag ``inference``).
+        ``scripts/<scope>/`` (names ``scope/...``) and matches by:
+        - tag field value
+        - ``all`` to select all models in scope
+        - exact model name (e.g. ``MAD/inference``)
+        - directory path prefix (e.g. ``MAD/dummy_multi`` matches ``MAD/dummy_multi/model1``)
+
+        The directory path matching provides backward compatibility when models are organized
+        in nested directories within submodules.
 
         Raises:
             ValueError: No models found corresponding to the given tags.
@@ -347,6 +353,8 @@ class DiscoverModels:
                     scope, tag_filter = scoped
                     prefix = scope + "/"
                     full_name_match = prefix + tag_filter
+                    # Also match directory paths: MAD/dummy_multi matches MAD/dummy_multi/model1
+                    dir_prefix_match = full_name_match + "/"
 
                     for model in self.models:
                         if not model["name"].startswith(prefix):
@@ -355,6 +363,7 @@ class DiscoverModels:
                             tag_filter == "all"
                             or self._model_entry_has_tag(model.get("tags"), tag_filter)
                             or model["name"] == full_name_match
+                            or model["name"].startswith(dir_prefix_match)
                         ):
                             model_dict = model.copy()
                             model_dict["args"] = model_dict["args"] + extra_args
@@ -367,6 +376,7 @@ class DiscoverModels:
                             tag_filter == "all"
                             or self._model_entry_has_tag(custom_model.tags, tag_filter)
                             or custom_model.name == full_name_match
+                            or custom_model.name.startswith(dir_prefix_match)
                         ):
                             custom_model.update_model()
                             # Use the stored filesystem path (includes "scripts" directories)

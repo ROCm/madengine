@@ -382,3 +382,30 @@ class TestNestedSubmoduleDiscovery:
         assert model["name"] == "Model-Repo2/dummy/model1"
         # But filesystem paths should still include "scripts"
         assert "scripts/Model-Repo1/scripts/Model-Repo2/scripts/dummy" in model["scripts"]
+
+    def test_scoped_tag_with_directory_path_matching(self, tmp_path, monkeypatch):
+        """Scoped tag with directory path matches models in nested directories (backward compat)."""
+        import json
+
+        # Create MAD/dummy_multi/models.json with models inside
+        # Tag MAD/dummy_multi should match these models for backward compatibility
+        category_dir = tmp_path / "scripts" / "MAD" / "dummy_multi"
+        category_dir.mkdir(parents=True)
+        (category_dir / "models.json").write_text(json.dumps([
+            {"name": "model1", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""},
+            {"name": "model2", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
+        ]))
+
+        (tmp_path / "models.json").write_text("[]")
+        monkeypatch.chdir(tmp_path)
+
+        # Use scoped tag MAD/dummy_multi (directory path, not a tag field value)
+        dm = DiscoverModels(args=argparse.Namespace(tags=["MAD/dummy_multi"]))
+        dm.discover_models()
+        dm.select_models()
+
+        # Should match both models even though they don't have "dummy_multi" in tags
+        # because their names start with "MAD/dummy_multi/"
+        assert len(dm.selected_models) == 2
+        names = sorted(m["name"] for m in dm.selected_models)
+        assert names == ["MAD/dummy_multi/model1", "MAD/dummy_multi/model2"]
