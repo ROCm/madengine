@@ -55,12 +55,13 @@ The debug script will show you exactly why:
    - Check that models.json files are present in the right locations
 
 2. **Models discovered but don't match**:
-   - Check the discovered model names (e.g., `MAD/dummy_multi/model1`)
+   - Check the discovered model names (e.g., `MAD/dummy/dummy_multi/model1`)
    - Check if your tag matches the pattern
    - For scoped tags (SCOPE/filter), models must either:
      - Have `filter` in their tags field, OR
      - Have name exactly matching `SCOPE/filter`, OR
-     - Have name starting with `SCOPE/filter/` (directory path matching)
+     - Have name starting with `SCOPE/filter/` (direct child directory), OR
+     - Have `filter` appearing as any path component after `SCOPE/`
 
 3. **Wrong model names**:
    - Model names are derived from directory structure
@@ -79,7 +80,8 @@ A model matches if ALL of these are true:
    - `filter == "all"` (matches everything in that scope)
    - `filter` is in the model's `tags` field
    - Model name exactly equals `SCOPE/filter`
-   - Model name starts with `SCOPE/filter/` (directory path)
+   - Model name starts with `SCOPE/filter/` (direct child directory)
+   - `filter` appears as any path component after `SCOPE/` (flexible path matching)
 
 ### Unscoped Tags (format: `tag_name`)
 
@@ -98,6 +100,18 @@ scripts/
         ├── models.json          # Models: MAD/dummy_multi/model1, MAD/dummy_multi/model2
         └── run.sh
 ```
+Tag `MAD/dummy_multi` matches via direct child directory matching.
+
+### Nested Directory Structure
+```
+scripts/
+└── MAD/
+    └── dummy/
+        └── dummy_multi/
+            ├── models.json      # Models: MAD/dummy/dummy_multi/model1
+            └── run.sh
+```
+Tag `MAD/dummy_multi` matches via path component matching (new in this version).
 
 ### Nested Submodule Structure
 ```
@@ -108,6 +122,7 @@ scripts/
             ├── models.json      # Models: MAD/dummy_multi/model1, MAD/dummy_multi/model2
             └── run.sh
 ```
+Tag `MAD/dummy_multi` matches via direct child directory matching (interim scripts/ stripped).
 
 ### Multiple Nested Submodules
 ```
@@ -122,6 +137,19 @@ scripts/
 ```
 
 Note: The directory immediately before the last "scripts" becomes part of the model name prefix.
+
+### Multiple Locations with Same Component
+```
+scripts/
+└── MAD/
+    ├── dummy/
+    │   └── dummy_multi/
+    │       └── models.json      # Models: MAD/dummy/dummy_multi/model1
+    └── other/
+        └── dummy_multi/
+            └── models.json      # Models: MAD/other/dummy_multi/model2
+```
+Tag `MAD/dummy_multi` matches BOTH locations via path component matching.
 
 ## Getting Help
 
