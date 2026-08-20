@@ -22,10 +22,9 @@ from typing import Any, Dict, List, Optional
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .common import (
-    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_self_managed_launcher,
-    normalize_launcher,
+    launcher_for_reporting,
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
@@ -631,18 +630,9 @@ class SlurmDeployment(BaseDeployment):
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
         
-        # Extract launcher configuration
-        launcher_type = self.distributed_config.get("launcher", "torchrun")  # Default to torchrun
-        
-        # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
-        # passes through normalize_launcher instead of being mapped to "docker".
-        launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
-        # Normalize launcher based on deployment type and validity
-        launcher_type = normalize_launcher(launcher_type, "slurm")
-        # Persist the resolved launcher so downstream readers (reporting paths,
-        # later normalize_launcher calls) see the same value the template used,
-        # rather than re-deriving from the raw alias and mapping it to "docker".
-        self.distributed_config["launcher"] = launcher_type
+        # Extract launcher configuration. Already validated in BaseDeployment.__init__,
+        # so this is a canonical name or absent.
+        launcher_type = self.distributed_config.get("launcher") or "torchrun"
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
@@ -761,7 +751,7 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "torchtitan":
             return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
@@ -1583,7 +1573,7 @@ export MASTER_PORT={master_port}
         from madengine.utils.config_parser import ConfigParser
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
 
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1642,7 +1632,7 @@ export MASTER_PORT={master_port}
         from madengine.reporting.update_perf_csv import flatten_tags
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
         total_gpus = self.nodes * self.gpus_per_node
         result = {
             "n_gpus": str(total_gpus),

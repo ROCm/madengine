@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import normalize_launcher
+from .common import launcher_for_reporting
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -129,7 +129,7 @@ class KubernetesResultsMixin:
             )
 
             # Normalize launcher based on deployment type and validity
-            launcher_type = normalize_launcher(launcher_type, "kubernetes")
+            launcher_type = launcher_for_reporting(launcher_type, "kubernetes")
 
             is_ray_launcher = launcher_type in ["vllm", "sglang"]
 
@@ -920,7 +920,7 @@ class KubernetesResultsMixin:
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
 
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
@@ -996,7 +996,7 @@ class KubernetesResultsMixin:
         nproc_per_node = distributed_config.get("nproc_per_node")
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1063,7 +1063,7 @@ class KubernetesResultsMixin:
         gpus_per_node = str(nproc_per_node)
         nnodes_str = str(nnodes)
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         result = {
             "n_gpus": str(total_gpus),
             "nnodes": nnodes_str,
@@ -1113,7 +1113,7 @@ class KubernetesResultsMixin:
             nproc_per_node = int(model_info.get("n_gpus", 1))
 
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         result = {
             "model": item.get("model", model_info.get("name", "")),
             "n_gpus": str(nnodes * nproc_per_node),

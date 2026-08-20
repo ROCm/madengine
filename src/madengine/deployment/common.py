@@ -8,11 +8,15 @@ profiling configuration so logic is not duplicated across deployment modules.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import difflib
 import functools
 import subprocess
 from typing import Any, Dict, List, Optional
 
-# Valid distributed launchers (used by normalize_launcher)
+from madengine.core.errors import ConfigurationError, create_error_context
+
+# Valid distributed launchers. Each has exactly one accepted spelling: a value
+# that is not in this list is an error, not something to guess at.
 VALID_LAUNCHERS = [
     "torchrun",
     "torchtitan",
@@ -25,22 +29,88 @@ VALID_LAUNCHERS = [
     "slurm_multi",
 ]
 
-# Alternate spellings for distributed launcher values → canonical form.
-# Add new aliases here only; do not branch on alternate spellings at dispatch sites.
-_LAUNCHER_ALIASES: Dict[str, str] = {
-    "sglang_disagg": "sglang-disagg",
+# The one accepted alternate spelling, kept because docs/launchers.md advertises
+# it. Deliberately a named entry rather than a blanket "-" → "_" rewrite, which
+# would silently accept hyphen variants of every other launcher too.
+_DOCUMENTED_ALIASES: Dict[str, str] = {
+    "slurm-multi": "slurm_multi",
 }
 
+# Deployment-mode sentinels meaning "no distributed launcher". They are produced
+# by launcher_for_reporting(), never typed by a user, and must pass validation
+# unchanged so a round-trip through a report does not raise.
+_LAUNCHER_SENTINELS = frozenset({"docker", "native"})
 
-def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
-    """Normalize alternate launcher spellings to their canonical form.
 
-    Resolves aliases (e.g. ``sglang_disagg`` → ``sglang-disagg``). Unknown or
-    empty values are returned unchanged; callers do their own validation.
+def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
+    """Validate a user-supplied launcher and return its canonical spelling.
+
+    Empty values mean "no launcher configured" and return None. Unknown values
+    raise rather than falling back, because a silently-defaulted launcher runs
+    the model as a plain single-process job and still reports SUCCESS.
+
+    Args:
+        launcher: Raw launcher value from config, model card, or environment.
+        source: Where the value came from, e.g. ``additional_context.distributed``.
+            Included in the error so the user knows which file to edit.
+
+    Returns:
+        The canonical launcher name, or None when nothing was configured.
+
+    Raises:
+        ConfigurationError: If the value is not a recognized launcher.
     """
     if not launcher:
-        return launcher
-    return _LAUNCHER_ALIASES.get(launcher, launcher)
+        return None
+    if not isinstance(launcher, str):
+        raise ConfigurationError(
+            f"Invalid launcher in {source}: expected a string, got "
+            f"{type(launcher).__name__} ({launcher!r})",
+            context=create_error_context(
+                operation="validate_launcher",
+                component="deployment.common",
+                additional_info={"launcher": launcher, "source": source},
+            ),
+            suggestions=[f"Supported launchers: {', '.join(VALID_LAUNCHERS)}"],
+        )
+
+    normalized = launcher.strip().lower()
+    if normalized in _LAUNCHER_SENTINELS:
+        return normalized
+    normalized = _DOCUMENTED_ALIASES.get(normalized, normalized)
+    if normalized in VALID_LAUNCHERS:
+        return normalized
+
+    suggestions = []
+    close = difflib.get_close_matches(normalized, VALID_LAUNCHERS, n=1, cutoff=0.6)
+    if close:
+        suggestions.append(f"Did you mean '{close[0]}'?")
+    suggestions.append(f"Supported launchers: {', '.join(VALID_LAUNCHERS)}")
+    raise ConfigurationError(
+        f"Unknown launcher '{launcher}' in {source}",
+        context=create_error_context(
+            operation="validate_launcher",
+            component="deployment.common",
+            additional_info={"launcher": launcher, "source": source},
+        ),
+        suggestions=suggestions,
+    )
+
+
+def launcher_for_reporting(
+    launcher_type: Optional[str], deployment_type: str
+) -> str:
+    """Return the launcher to record in perf results. Never raises.
+
+    Values reaching here have already passed validate_launcher at the config
+    boundary, so this only supplies the sentinel for the "no launcher
+    configured" case: ``native`` on Kubernetes (the pod is the container),
+    ``docker`` elsewhere. Reporting must not raise — BaseDeployment.execute()
+    drops metrics on exception, which would lose results from a successful run.
+    """
+    if launcher_type:
+        return launcher_type
+    return "native" if deployment_type == "kubernetes" else "docker"
 
 
 # Tool names that use rocprof / rocprofv3 wrapping and need MPI-aware rocprofv3 on multi-node.
@@ -75,40 +145,6 @@ def tools_include_rocprof_family(tools_config: List[Dict]) -> bool:
     return False
 
 
-def normalize_launcher(launcher_type: Optional[str], deployment_type: str) -> str:
-    """
-    Normalize launcher field based on deployment type and launcher value.
-
-    Logic:
-    - If launcher is in VALID_LAUNCHERS: keep as-is
-    - If launcher's hyphen/underscore variant is in VALID_LAUNCHERS: normalize
-      (e.g. "slurm-multi" -> "slurm_multi")
-    - If launcher is None/empty/invalid:
-        * local → "docker" (runs in Docker container)
-        * slurm → "docker" (typically uses containers on compute nodes)
-        * kubernetes → "native" (pod itself is the container)
-
-    Args:
-        launcher_type: Raw launcher type from config (may be None)
-        deployment_type: "local", "slurm", or "kubernetes"
-
-    Returns:
-        Normalized launcher string
-    """
-    if launcher_type and launcher_type in VALID_LAUNCHERS:
-        return launcher_type
-    # Normalize hyphen variant: slurm-multi -> slurm_multi
-    if launcher_type and launcher_type.replace("-", "_") in VALID_LAUNCHERS:
-        return launcher_type.replace("-", "_")
-    if deployment_type == "local":
-        return "docker"
-    if deployment_type == "slurm":
-        return "docker"
-    if deployment_type == "kubernetes":
-        return "native"
-    return "docker"
-
-
 _SELF_MANAGED_LAUNCHERS: frozenset = frozenset({"slurm_multi"})
 
 
@@ -119,10 +155,16 @@ def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
     directly on the head node and orchestrate Docker containers via srun internally.
     They bypass the standard sbatch template entirely and are an escape hatch — not
     peers of the templated launchers (torchrun, vllm, sglang, etc.).
+
+    Callers pass raw model-card values here during early "should we take the
+    self-managed path?" peeks, before validation has run, so this normalizes
+    inline and never raises.
     """
-    if not launcher_type:
+    if not launcher_type or not isinstance(launcher_type, str):
         return False
-    return normalize_launcher(launcher_type, "slurm") in _SELF_MANAGED_LAUNCHERS
+    normalized = launcher_type.strip().lower()
+    normalized = _DOCUMENTED_ALIASES.get(normalized, normalized)
+    return normalized in _SELF_MANAGED_LAUNCHERS
 
 
 @functools.lru_cache(maxsize=None)

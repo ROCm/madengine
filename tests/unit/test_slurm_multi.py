@@ -25,7 +25,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from madengine.deployment.common import VALID_LAUNCHERS, is_self_managed_launcher, normalize_launcher
+from madengine.core.errors import ConfigurationError
+from madengine.deployment.common import (
+    VALID_LAUNCHERS,
+    is_self_managed_launcher,
+    validate_launcher,
+)
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
 
@@ -41,7 +46,7 @@ class TestSlurmMultiRegistration:
 
     @pytest.mark.parametrize("launcher,expected", [
         ("slurm_multi", True),
-        ("slurm-multi", True),   # hyphen alias normalized via normalize_launcher
+        ("slurm-multi", True),   # documented hyphen alias (docs/launchers.md)
         ("torchrun", False),
         ("vllm", False),
         ("sglang-disagg", False),
@@ -60,14 +65,16 @@ class TestNormalizeSlurmMultiAliases:
     """slurm-multi (hyphen) normalizes to slurm_multi."""
 
     def test_canonical(self):
-        assert normalize_launcher("slurm_multi", "slurm") == "slurm_multi"
+        assert validate_launcher("slurm_multi", source="test") == "slurm_multi"
 
     def test_hyphen_alias(self):
-        assert normalize_launcher("slurm-multi", "slurm") == "slurm_multi"
+        assert validate_launcher("slurm-multi", source="test") == "slurm_multi"
 
-    def test_unknown_falls_through_to_default(self):
-        # Sanity: unrelated value still returns docker for slurm
-        assert normalize_launcher("totally-bogus", "slurm") == "docker"
+    def test_unknown_is_rejected_not_defaulted(self):
+        # A silently-defaulted launcher runs the model as a plain single-process
+        # job and still reports SUCCESS, so this must fail loudly instead.
+        with pytest.raises(ConfigurationError):
+            validate_launcher("totally-bogus", source="test")
 
 
 # ---------------------------------------------------------------------------

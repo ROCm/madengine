@@ -186,7 +186,7 @@ To validate rendered YAML after a debug run, install [kubeconform](https://githu
 
 ### Multi-node DNS (PyTorch vs Ray)
 
-For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
 
 For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
 
@@ -580,7 +580,7 @@ Configuration for distributed workloads (training and inference):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`, `vllm`, `sglang` |
+| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`, `vllm`, `sglang` |
 | `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
 | `nnodes` | integer | `1` | Number of nodes |
@@ -679,7 +679,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 **Training Launchers:**
 - **torchrun**: Standard PyTorch DDP/FSDP training
 - **deepspeed**: ZeRO optimization for memory efficiency
-- **megatron**: Megatron-LM tensor and pipeline parallelism
+- **megatron-lm**: Megatron-LM tensor and pipeline parallelism
 - **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
 - **primus**: Unified Primus pretrain (Megatron / TorchTitan / MaxText experiment YAML; see [Primus on Kubernetes](#primus-on-kubernetes))
 

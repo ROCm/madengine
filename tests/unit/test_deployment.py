@@ -6,14 +6,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from madengine.core.errors import ConfigurationError
 from madengine.deployment.base import BaseDeployment, DeploymentConfig, create_jinja_env
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
-    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_rocprofv3_available,
-    normalize_launcher,
+    launcher_for_reporting,
     tools_include_rocprof_family,
+    validate_launcher,
 )
 
 
@@ -53,40 +54,75 @@ class TestValidLaunchers:
         assert "sglang-disagg" in VALID_LAUNCHERS
 
 
-class TestNormalizeLauncher:
-    """normalize_launcher behavior."""
+class TestLauncherForReporting:
+    """launcher_for_reporting supplies a sentinel only when nothing is configured."""
 
     def test_valid_launcher_passthrough(self):
         for lt in VALID_LAUNCHERS:
-            assert normalize_launcher(lt, "kubernetes") == lt
-            assert normalize_launcher(lt, "slurm") == lt
-            assert normalize_launcher(lt, "local") == lt
+            assert launcher_for_reporting(lt, "kubernetes") == lt
+            assert launcher_for_reporting(lt, "slurm") == lt
+            assert launcher_for_reporting(lt, "local") == lt
 
-    @pytest.mark.parametrize("launcher", [None, "", "invalid"])
-    def test_invalid_or_missing_launcher_kubernetes_returns_native(self, launcher):
-        assert normalize_launcher(launcher, "kubernetes") == "native"
+    @pytest.mark.parametrize("launcher", [None, ""])
+    def test_missing_launcher_kubernetes_returns_native(self, launcher):
+        assert launcher_for_reporting(launcher, "kubernetes") == "native"
 
     @pytest.mark.parametrize("deployment", ["slurm", "local", "unknown"])
-    def test_invalid_or_missing_launcher_non_k8s_returns_docker(self, deployment):
-        assert normalize_launcher(None, deployment) == "docker"
+    def test_missing_launcher_non_k8s_returns_docker(self, deployment):
+        assert launcher_for_reporting(None, deployment) == "docker"
+
+    def test_never_raises_on_a_bogus_value(self):
+        """Reporting runs after a successful job; raising here would drop its metrics."""
+        assert launcher_for_reporting("bogus", "slurm") == "bogus"
 
 
-class TestCanonicalizeDistributedLauncher:
-    """canonicalize_distributed_launcher resolves alternate spellings."""
+class TestValidateLauncher:
+    """validate_launcher accepts one spelling per launcher and rejects the rest."""
 
-    def test_underscore_form_maps_to_canonical_hyphen_form(self):
-        assert canonicalize_distributed_launcher("sglang_disagg") == "sglang-disagg"
-
-    def test_canonical_form_passthrough(self):
-        assert canonicalize_distributed_launcher("sglang-disagg") == "sglang-disagg"
-        assert canonicalize_distributed_launcher("torchrun") == "torchrun"
+    @pytest.mark.parametrize("launcher", VALID_LAUNCHERS)
+    def test_every_valid_launcher_is_accepted(self, launcher):
+        assert validate_launcher(launcher, source="test") == launcher
 
     @pytest.mark.parametrize("value", [None, ""])
-    def test_empty_returned_unchanged(self, value):
-        assert canonicalize_distributed_launcher(value) == value
+    def test_empty_means_no_launcher_configured(self, value):
+        assert validate_launcher(value, source="test") is None
 
-    def test_unknown_value_returned_unchanged(self):
-        assert canonicalize_distributed_launcher("bogus_launcher") == "bogus_launcher"
+    def test_documented_hyphen_alias_for_slurm_multi(self):
+        """docs/launchers.md advertises slurm-multi; that promise is kept."""
+        assert validate_launcher("slurm-multi", source="test") == "slurm_multi"
+
+    @pytest.mark.parametrize("value,canonical", [
+        ("Torchrun", "torchrun"),
+        ("  torchrun  ", "torchrun"),
+        ("MEGATRON-LM", "megatron-lm"),
+    ])
+    def test_case_and_whitespace_are_normalized(self, value, canonical):
+        assert validate_launcher(value, source="test") == canonical
+
+    @pytest.mark.parametrize("launcher", ["docker", "native"])
+    def test_reporting_sentinels_survive_a_round_trip(self, launcher):
+        assert validate_launcher(launcher, source="test") == launcher
+
+    @pytest.mark.parametrize("bad,canonical", [
+        ("megatron", "megatron-lm"),
+        ("megatron_lm", "megatron-lm"),
+        ("sglang_disagg", "sglang-disagg"),
+    ])
+    def test_rejected_spellings_name_the_canonical_one(self, bad, canonical):
+        """The did-you-mean is the contract: it fixes the user's config."""
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_launcher(bad, source="additional_context")
+        rendered = str(exc_info.value) + " ".join(exc_info.value.suggestions)
+        assert canonical in rendered
+
+    def test_error_names_the_source(self):
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_launcher("nonsense", source="models.json")
+        assert "models.json" in str(exc_info.value)
+
+    def test_non_string_is_rejected(self):
+        with pytest.raises(ConfigurationError):
+            validate_launcher(["torchrun"], source="test")
 
 
 class TestToolsIncludeRocprofFamily:
@@ -226,6 +262,7 @@ class _ConcreteDeployment(BaseDeployment):
 def _make_deployment():
     cfg = MagicMock(spec=DeploymentConfig)
     cfg.manifest_file = None
+    cfg.additional_context = {}
     with patch.object(BaseDeployment, "_load_manifest", return_value={}):
         return _ConcreteDeployment(cfg)
 
