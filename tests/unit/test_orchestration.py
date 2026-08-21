@@ -360,6 +360,60 @@ class TestRunOrchestrator:
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
 
+    @pytest.mark.parametrize(
+        "cli_timeout,expected_config_timeout",
+        [
+            (-1, 7200),  # unspecified -> shared default, not left as -1
+            (0, 0),  # explicit "no timeout" passed through
+            (120, 120),  # explicit timeout passed through
+        ],
+    )
+    def test_distributed_resolves_timeout_sentinel(
+        self, tmp_path, cli_timeout, expected_config_timeout
+    ):
+        """_execute_distributed must resolve the CLI sentinel before building
+        DeploymentConfig.
+
+        Regression: unlike the local path (which calls resolve_run_timeout() in
+        container_runner.py), the distributed path forwarded args.timeout to
+        DeploymentConfig verbatim. A default run (--timeout unspecified, i.e.
+        -1) therefore left DeploymentConfig.timeout == -1, which
+        subprocess_timeout() maps to None -- silently dropping the wall-clock
+        cap on the SLURM in-allocation path instead of applying the intended
+        7200s default.
+        """
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.timeout = cli_timeout
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        deployment_config = mock_create.call_args.args[0]
+        assert deployment_config.timeout == expected_config_timeout
+        assert isinstance(deployment_config.timeout, int)
+
 
 @pytest.mark.unit
 class TestCreateManifestFromLocalImage:

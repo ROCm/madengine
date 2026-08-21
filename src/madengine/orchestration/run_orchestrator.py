@@ -25,7 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
-from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT, resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -731,7 +731,13 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", DEFAULT_RUN_TIMEOUT),
+            # Distributed targets never call resolve_run_timeout() the way the
+            # local path does (container_runner.py), so the CLI sentinel (-1
+            # unspecified, 0 no timeout) must be resolved here or it leaks into
+            # DeploymentConfig.timeout unresolved.
+            timeout=resolve_run_timeout(
+                {}, getattr(self.args, "timeout", -1)
+            ),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )
