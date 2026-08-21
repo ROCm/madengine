@@ -19,7 +19,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **Primus** | Training | Megatron/TorchTitan/Jax via Primus config | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
-| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
+| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
 
 ---
@@ -69,10 +69,12 @@ madengine run --manifest-file build_manifest.json
     "launcher": "torchrun",
     "nnodes": 2,
     "nproc_per_node": 8,
-    "master_port": 29500
+    "port": 29500
   }
 }
 ```
+
+Note: `distributed.port` sets the master port on **SLURM** (`distributed.get("port", 29500)`). On **Kubernetes**, the master port is instead read from a separate top-level `"launcher"` object (`{"launcher": {"master_port": 29500}}`), not from `distributed`.
 
 **Features**:
 - Automatic rank assignment
@@ -136,7 +138,7 @@ madengine run --manifest-file build_manifest.json
 ```json
 {
   "distributed": {
-    "launcher": "megatron",
+    "launcher": "megatron-lm",
     "nnodes": 4,
     "nproc_per_node": 8
   }
@@ -276,8 +278,6 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
 
 **Examples**:
-- SLURM: `examples/slurm-configs/minimal/primus-minimal.json`
-- K8s: `examples/k8s-configs/minimal/primus-minimal.json`
 - K8s (Primus vs upstream workload API, MaxText caveats, TorchTitan/Megatron/MaxText sample JSON): `examples/k8s-configs/README.md` section **Primus on Kubernetes**
 
 ---
@@ -314,13 +314,13 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Architecture**:
 - Single-node: TP across GPUs, no Ray
 - Multi-node (K8s): Data Parallelism with independent replicas per pod
-- Multi-node (SLURM): TP + PP with Ray cluster
+- Multi-node (SLURM): Data Parallelism (one vLLM serve per node, TP only on that node, no shared Ray cluster)
 
 **Environment Variables**:
 ```bash
 VLLM_TENSOR_PARALLEL_SIZE=4
 VLLM_PIPELINE_PARALLEL_SIZE=1
-VLLM_DISTRIBUTED_BACKEND="auto"  # or "ray" for multi-node
+VLLM_DISTRIBUTED_BACKEND="auto"  # or "none" for multi-node SLURM (data parallel)
 ```
 
 **Examples**:
@@ -419,9 +419,13 @@ SGLang Disaggregated separates inference into specialized node pools:
 ```
 
 **Minimum Requirements**:
-- **Nodes**: Minimum 3 nodes (1 proxy + 1 prefill + 1 decode)
+- **Nodes**: **SLURM** — minimum 2 nodes (co-located proxy on the first prefill node + 1 prefill + 1 decode). **Kubernetes** — minimum 3 nodes (dedicated proxy + 1 prefill + 1 decode); a 2-node co-located topology is rejected.
 - **GPUs**: Minimum 1 GPU per node (for tensor parallelism)
 - **Network**: High-speed interconnect (InfiniBand recommended for production)
+
+The proxy/router is started by the model's `run.sh`, not by the launcher, so on
+SLURM both layouts are valid: a dedicated proxy node (`1 + xP + yD == nnodes`) or
+a proxy co-located on the first prefill node (`xP + yD == nnodes`).
 
 **Node Roles**:
 1. **Proxy Node (Rank 0)**: Load balancer, request router (mini_lb)
@@ -429,15 +433,17 @@ SGLang Disaggregated separates inference into specialized node pools:
 3. **Decode Nodes**: Receive KV cache, generate output tokens
 
 **Automatic Split (Default)**:
-- Uses 40/60 golden ratio for prefill/decode
-- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`
+- Uses 40/60 golden ratio for prefill/decode across the worker nodes
+- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`, `decode = nnodes - 1 - prefill`
+- `nnodes == 2` is special-cased on SLURM to 1 prefill + 1 decode with a co-located proxy (the general formula would yield 0 decode nodes)
 
 | Total Nodes | Proxy | Prefill | Decode |
 |-------------|-------|---------|--------|
-| 3 | 1 | 1 (33%) | 1 (33%) |
-| 5 | 1 | 2 (40%) | 2 (40%) |
-| 7 | 1 | 2 (29%) | 4 (57%) |
-| 11 | 1 | 4 (40%) | 6 (60%) |
+| 2 (SLURM only) | co-located | 1 | 1 |
+| 3 | 1 | 1 | 1 |
+| 5 | 1 | 1 | 3 |
+| 7 | 1 | 2 | 4 |
+| 11 | 1 | 4 | 6 |
 
 **Custom Split (NEW Feature!)**:
 
@@ -469,7 +475,8 @@ Override automatic split based on workload characteristics:
 **Validation Rules**:
 - `prefill_nodes >= 1`
 - `decode_nodes >= 1`
-- `prefill_nodes + decode_nodes + 1 == nnodes`
+- `prefill_nodes + decode_nodes + 1 == nnodes` (dedicated proxy node), **or**
+  `prefill_nodes + decode_nodes == nnodes` (proxy co-located on the first prefill node, SLURM)
 
 **Features**:
 - Disaggregated prefill/decode architecture
@@ -529,14 +536,14 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 **Performance Tuning**:
 ```bash
 # Start with automatic split
-madengine run --tags model --config minimal-config.json
+madengine run --tags model --additional-context-file minimal-config.json
 
 # Monitor bottleneck (prefill latency vs decode throughput)
 # If prefill is bottleneck → increase prefill nodes
 # If decode is bottleneck → increase decode nodes
 
 # Apply custom split
-madengine run --tags model --config custom-split-config.json
+madengine run --tags model --additional-context-file custom-split-config.json
 ```
 
 **Troubleshooting**:
@@ -732,6 +739,34 @@ becoming the image every compute node fails to pull.
 
 ---
 
+## Parallelism Capabilities
+
+How each launcher handles the various parallelism strategies. `✅Auto` = supported and configured by madengine; `❗Manual` = supported by the launcher but requires user configuration; `❗Limited` / `❗Disabled` = launcher or platform limitation.
+
+| Launcher | Tensor Parallel (TP) | Pipeline Parallel (PP) | Data Parallel (DP) | Context Parallel (CP) | FSDP/ZeRO | Expert Parallel (EP) | Primary Use Case |
+|----------|----------------------|------------------------|--------------------|------------------------|-----------|----------------------|------------------|
+| **torchrun** | ❗Manual | ❌No | ❗Manual (DDP) | ❌No | ❗Manual (FSDP) | ❌No | General distributed training |
+| **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
+| **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
+| **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **Primus** | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❌No | Unified pretrain (experiment YAML; backend-specific) |
+| **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
+| **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
+| **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |
+
+## Infrastructure Capabilities
+
+| Feature | Local | Kubernetes | SLURM |
+|---------|-------|-----------|-------|
+| **Execution** | Docker containers | K8s Jobs | SLURM jobs |
+| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays |
+| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler |
+| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol |
+| **Auto-scaling** | ❌ | ✅ | ❌ |
+| **Network** | Host | CNI plugin | InfiniBand/Ethernet |
+
+---
+
 ## Configuration Best Practices
 
 ### 1. Launcher Selection
@@ -873,7 +908,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```bash
 Error: Unknown launcher type 'xyz'
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
 
 **2. Multi-Node Communication Fails**
 ```bash
@@ -916,7 +951,7 @@ madengine provides `$MAD_MULTI_NODE_RUNNER` for frameworks that use torchrun:
 #!/bin/bash
 # Your model script
 
-# For torchrun/deepspeed/megatron/torchtitan
+# For torchrun/deepspeed/megatron-lm/torchtitan
 $MAD_MULTI_NODE_RUNNER your_training_script.py --args
 
 # For primus (no MAD_MULTI_NODE_RUNNER; use run.sh → run_pretrain.sh; PRIMUS_* / BACKEND set by madengine)

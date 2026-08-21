@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -92,6 +93,8 @@ class SlurmDeployment(BaseDeployment):
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
         self.reservation = self.slurm_config.get("reservation", None)
+        # Some clusters expose no GPU GRES, so sbatch rejects --gpus-per-node.
+        self.skip_gpus_directive = self.slurm_config.get("skip_gpus_directive", False)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -241,6 +244,22 @@ class SlurmDeployment(BaseDeployment):
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
 
+    @staticmethod
+    def _submission_bin_dir() -> Optional[str]:
+        """
+        Directory the madengine console script was resolved from at submission time.
+
+        A batch job is not guaranteed to inherit the submitter's PATH: a site can
+        default sbatch to --export=NONE, and `module load` can rewrite PATH before
+        the job body runs. Passing the directory into the job script lets it put
+        the same madengine back on PATH instead of relying on inheritance.
+
+        Returns:
+            Optional[str]: absolute directory, or None if madengine is not on PATH
+        """
+        cli_path = shutil.which("madengine")
+        return str(Path(cli_path).resolve().parent) if cli_path else None
+
     def _validate_cli_availability(self) -> bool:
         """
         Validate madengine is available before job submission.
@@ -256,7 +275,9 @@ class SlurmDeployment(BaseDeployment):
                 ["madengine", "--version"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # A cold import off shared/NFS storage can take far longer than a
+                # local one, so this only guards against a hung interpreter.
+                timeout=600,
                 check=False
             )
             if result.returncode == 0:
@@ -510,7 +531,10 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.nodes}",
-            f"#SBATCH --gpus-per-node={self.gpus_per_node}",
+        ]
+        if not self.skip_gpus_directive:
+            script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
+        script_lines += [
             f"#SBATCH --time={self.time_limit}",
         ]
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
@@ -725,6 +749,7 @@ class SlurmDeployment(BaseDeployment):
             "partition": self.partition,
             "nodes": self.nodes,
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
+            "skip_gpus_directive": self.skip_gpus_directive,
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": master_port,
@@ -738,6 +763,7 @@ class SlurmDeployment(BaseDeployment):
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
+            "submission_bin_dir": self._submission_bin_dir(),
             "env_vars": self.config.additional_context.get("env_vars", {}),
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
