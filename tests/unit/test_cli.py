@@ -460,6 +460,40 @@ class TestRunCommandExitCodes:
         )
         assert result.exit_code == ExitCode.INVALID_ARGS
 
+    @pytest.mark.parametrize("cli_timeout", ["0", "-1", "120"])
+    def test_run_forwards_timeout_sentinel_unchanged(
+        self, runner: CliRunner, cli_timeout: str
+    ) -> None:
+        """The CLI must hand the sentinel to the orchestrator as an int, verbatim.
+
+        Regression: --timeout 0 used to be rewritten to None here, and every
+        downstream consumer then had to defend against it. Two did not, and
+        raised TypeError on `timeout > 0` (container_runner self-managed path
+        and slurm.py). Precedence against the model card belongs to
+        resolve_run_timeout, not to this layer.
+        """
+        run_module = importlib.import_module("madengine.cli.commands.run")
+        mock_orch = MagicMock()
+        mock_orch.execute.return_value = {"successful_runs": [], "failed_runs": []}
+        with patch.object(run_module, "RunOrchestrator", return_value=mock_orch):
+            runner.invoke(
+                app,
+                [
+                    "run",
+                    "--tags",
+                    "some_model",
+                    "--timeout",
+                    cli_timeout,
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert mock_orch.execute.called, "orchestrator was never invoked"
+        forwarded = mock_orch.execute.call_args.kwargs["timeout"]
+        assert forwarded == int(cli_timeout)
+        assert isinstance(forwarded, int), f"None/str leaked downstream: {forwarded!r}"
+
     def test_run_help_exits_zero(self, runner: CliRunner) -> None:
         """CLI help is reachable in CI without GPU."""
         result = runner.invoke(app, ["run", "--help"])

@@ -18,11 +18,13 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
 
@@ -45,6 +47,7 @@ def _build_deployment(
     tmp_path: Path,
     slurm_overrides: dict = None,
     distributed_overrides: dict = None,
+    timeout: int = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
@@ -81,6 +84,7 @@ def _build_deployment(
     }
     distributed_config.update(distributed_overrides or {})
 
+    cfg_kwargs = {} if timeout is None else {"timeout": timeout}
     cfg = DeploymentConfig(
         target="slurm",
         manifest_file=str(manifest_path),
@@ -91,6 +95,7 @@ def _build_deployment(
             "slurm": slurm_config,
             "distributed": distributed_config,
         },
+        **cfg_kwargs,
     )
     return SlurmDeployment(cfg)
 
@@ -199,3 +204,80 @@ class TestGpusPerNodeDirective:
     def test_directive_omitted_when_opted_out(self, tmp_path):
         script = _render(_build_deployment(tmp_path, {"skip_gpus_directive": True}))
         assert "--gpus-per-node" not in script
+
+
+# ---------------------------------------------------------------------------
+# 4. The --timeout the job script passes back to madengine
+
+class TestTimeoutForwarding:
+    """The rendered `madengine run --timeout N` must always carry a valid int.
+
+    The template used `{{ timeout | default(3600) }}`, but Jinja's default filter
+    only substitutes for *undefined* — a None slipped straight through and
+    rendered the literal `--timeout None`, which Typer then rejected.
+    """
+
+    @staticmethod
+    def _timeout_args(script: str) -> list:
+        return re.findall(r"--timeout (\S+)", script)
+
+    def test_no_timeout_renders_zero_not_none(self, tmp_path):
+        # --timeout 0 (no timeout) is the case that used to render "None".
+        script = _render(_build_deployment(tmp_path, timeout=0))
+        args = self._timeout_args(script)
+        assert args, "job script does not forward --timeout at all"
+        assert all(a == "0" for a in args), args
+        assert "--timeout None" not in script
+
+    def test_explicit_timeout_forwarded(self, tmp_path):
+        script = _render(_build_deployment(tmp_path, timeout=120))
+        assert all(a == "120" for a in self._timeout_args(script))
+
+    def test_unspecified_sentinel_forwarded_verbatim(self, tmp_path):
+        # -1 must survive to the inner CLI so it can apply model-card precedence
+        # there, rather than being flattened to a concrete default here.
+        script = _render(_build_deployment(tmp_path, timeout=-1))
+        assert all(a == "-1" for a in self._timeout_args(script))
+
+    def test_default_config_forwards_shared_default(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert all(a == str(DEFAULT_RUN_TIMEOUT) for a in self._timeout_args(script))
+
+
+# ---------------------------------------------------------------------------
+# 5. The timeout handed to subprocess on the in-allocation path
+
+class TestInAllocationTimeout:
+    """`_run_inside_existing_allocation` must not pass a sentinel to subprocess.
+
+    Regression: the call site read `self.config.timeout if ... > 0 else None`,
+    which raised TypeError once the CLI started sending None for "no timeout".
+    subprocess spells "no timeout" as None and reads 0 as "expire now", so
+    both sentinels have to be mapped, not compared inline.
+    """
+
+    def _invoke(self, tmp_path, timeout):
+        deployment = _build_deployment(tmp_path)
+        # Set on the config directly: None is one of the values under test, so
+        # it cannot be routed through _build_deployment's "omit the kwarg" flag.
+        deployment.config.timeout = timeout
+        deployment.inside_allocation = False  # skip the allocation-size check
+        deployment.script_path = tmp_path / "job.sh"
+        deployment.script_path.write_text("#!/bin/bash\nexit 0\n")
+        with patch(
+            "madengine.deployment.slurm.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as mock_run:
+            deployment._run_inside_existing_allocation()
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1, None])
+    def test_no_timeout_values_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120
+
+    def test_default_config_carries_the_shared_default(self, tmp_path):
+        assert _build_deployment(tmp_path).config.timeout == DEFAULT_RUN_TIMEOUT

@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
@@ -67,7 +69,7 @@ class DeploymentConfig:
     target: str  # "slurm", "k8s" (NOT "local" - that uses container_runner)
     manifest_file: str
     additional_context: Dict[str, Any] = field(default_factory=dict)
-    timeout: int = 3600
+    timeout: int = DEFAULT_RUN_TIMEOUT
     monitor: bool = True
     cleanup_on_failure: bool = True
 

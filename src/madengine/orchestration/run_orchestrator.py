@@ -25,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -132,7 +133,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = 3600,
+        timeout: int = DEFAULT_RUN_TIMEOUT,
     ) -> Dict:
         """
         Execute run workflow.
@@ -453,7 +454,7 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", None),  # Optional timeout override
+                "timeout": model.get("timeout", -1),  # -1 = unspecified
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
@@ -730,7 +731,7 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", 3600),
+            timeout=getattr(self.args, "timeout", DEFAULT_RUN_TIMEOUT),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )

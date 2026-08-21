@@ -2,11 +2,15 @@
 
 import pytest
 
-from madengine.core.timeout import Timeout
+from madengine.core.timeout import (
+    DEFAULT_RUN_TIMEOUT,
+    Timeout,
+    resolve_run_timeout,
+    subprocess_timeout,
+)
 from madengine.execution.container_runner_helpers import (
     _docker_image_ref_for_log_naming,
     make_run_log_file_path,
-    resolve_run_timeout,
 )
 from madengine.execution.dockerfile_utils import (
     GPU_ARCH_VARIABLES,
@@ -40,33 +44,65 @@ class TestTimeout:
 # ---- container_runner_helpers ----
 
 class TestResolveRunTimeout:
-    """resolve_run_timeout behavior."""
+    """resolve_run_timeout: default < model card < explicit CLI (v1 precedence).
 
-    def test_model_timeout_used_when_cli_default(self):
-        assert resolve_run_timeout({"timeout": 3600}, 7200) == 3600
-        assert resolve_run_timeout({"timeout": 100}, 7200) == 100
+    Sentinel contract: -1 unspecified, 0 no timeout, >0 explicit seconds.
+    """
 
-    def test_cli_timeout_used_when_explicit(self):
+    def test_default_when_nothing_specified(self):
+        assert resolve_run_timeout({}, -1) == DEFAULT_RUN_TIMEOUT
+        assert resolve_run_timeout({"timeout": -1}, -1) == DEFAULT_RUN_TIMEOUT
+        assert resolve_run_timeout({"name": "x"}, -1) == DEFAULT_RUN_TIMEOUT
+
+    def test_model_timeout_overrides_default(self):
+        assert resolve_run_timeout({"timeout": 360}, -1) == 360
+        assert resolve_run_timeout({"timeout": 100}, -1) == 100
+
+    def test_cli_timeout_overrides_model(self):
+        assert resolve_run_timeout({"timeout": 360}, 120) == 120
         assert resolve_run_timeout({"timeout": 3600}, 6000) == 6000
-        assert resolve_run_timeout({"timeout": 3600}, 100) == 100
 
-    def test_cli_default_returned_when_no_model_timeout(self):
-        assert resolve_run_timeout({}, 7200) == 7200
-        assert resolve_run_timeout({"name": "x"}, 3600) == 3600
+    def test_explicit_cli_equal_to_default_still_wins(self):
+        # Regression: the old resolver detected "CLI is default" by comparing
+        # against 7200, so an explicit --timeout 7200 silently lost to the model
+        # card. With the -1 sentinel the two are distinguishable.
+        assert resolve_run_timeout({"timeout": 360}, DEFAULT_RUN_TIMEOUT) == DEFAULT_RUN_TIMEOUT
 
-    @pytest.mark.parametrize("model_timeout", [None, 0])
-    def test_falsy_model_timeout_ignored_uses_cli(self, model_timeout):
-        assert resolve_run_timeout({"timeout": model_timeout}, 7200) == 7200
+    def test_zero_means_no_timeout_and_wins(self):
+        # 0 is a real choice, not "unset" — it must beat the level below it.
+        assert resolve_run_timeout({"timeout": 360}, 0) == 0
+        assert resolve_run_timeout({}, 0) == 0
+        assert resolve_run_timeout({"timeout": 0}, -1) == 0
 
-    def test_custom_default_cli(self):
-        assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
-        assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
+    def test_legacy_none_in_manifest_treated_as_unset(self):
+        # Manifests written by older builds store null for an absent timeout.
+        assert resolve_run_timeout({"timeout": None}, -1) == DEFAULT_RUN_TIMEOUT
+        assert resolve_run_timeout({"timeout": None}, 120) == 120
 
-    def test_no_timeout_sentinel_none_passthrough(self):
-        # --timeout 0 is converted to None by the CLI; resolve_run_timeout must
-        # pass None through unchanged (model timeout must NOT override "no timeout").
-        assert resolve_run_timeout({"timeout": 3600}, None) is None
-        assert resolve_run_timeout({}, None) is None
+    def test_custom_default(self):
+        assert resolve_run_timeout({}, -1, default_timeout=5000) == 5000
+        assert resolve_run_timeout({"timeout": 100}, -1, default_timeout=5000) == 100
+
+    def test_always_returns_int(self):
+        # No None ever escapes the resolver — downstream consumers rely on this.
+        for model, cli in (({}, -1), ({"timeout": None}, -1), ({"timeout": 0}, -1), ({}, 0)):
+            assert isinstance(resolve_run_timeout(model, cli), int)
+
+
+class TestSubprocessTimeout:
+    """subprocess_timeout: sentinel -> subprocess/communicate semantics.
+
+    subprocess treats timeout=0 as "expire immediately", not "no timeout", so
+    both 0 and -1 must become None.
+    """
+
+    @pytest.mark.parametrize("value", [0, -1, None])
+    def test_no_timeout_values_become_none(self, value):
+        assert subprocess_timeout(value) is None
+
+    @pytest.mark.parametrize("value", [1, 120, 7200])
+    def test_positive_passes_through(self, value):
+        assert subprocess_timeout(value) == value
 
 
 class TestDockerImageRefForLogNaming:

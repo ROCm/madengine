@@ -523,3 +523,57 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestSelfManagedLauncherTimeout:
+    """`--timeout 0` (no timeout) must reach subprocess.run as None, not 0.
+
+    Regression: the call site read `timeout if timeout > 0 else None`, which
+    raised TypeError once the CLI started handing down None for "no timeout",
+    and would have expired the run instantly under the int sentinel:
+    subprocess spells "no timeout" as None, and treats 0 as "expire now".
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        return runner
+
+    def _invoke(self, tmp_path, timeout):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+        run_results = {}
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            return_value=subprocess.CompletedProcess("", 0),
+        ) as mock_run:
+            self._make_runner()._run_self_managed(
+                model_info={"name": "dummy", "scripts": str(script), "args": ""},
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1])
+    def test_no_timeout_sentinels_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_legacy_none_does_not_raise_type_error(self, tmp_path):
+        # The bare `timeout > 0` this replaced raised TypeError on None, which
+        # is what the CLI used to send for --timeout 0. The sentinel contract
+        # keeps None out of here now, but manifests and older callers still
+        # carry it, so the guard must absorb it rather than crash.
+        assert self._invoke(tmp_path, None) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120

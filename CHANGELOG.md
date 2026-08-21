@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`--timeout` precedence restored to the v1 rule; default unified at 7200s** (**behavior change**): The v2 rewrite spread timeout handling across five layers, and the sentinel was materialized into a concrete value at the CLI before the resolver ever saw it. Because the resolver then detected "the user did not pass `--timeout`" by comparing the value against the default, an explicit `--timeout 7200` was indistinguishable from no flag at all and silently lost to a model card `timeout` — in v1 it won. The CLI now forwards the user's value verbatim and precedence is applied in one place: default < model card < explicit `--timeout`, where `-1` means "not specified" and falls through, `0` means "no timeout" and beats the levels below it. Separately, the distributed path defaulted to 3600s while local execution used 7200s and `docs/cli-reference.md` documented 7200 as *the* default; SLURM and Kubernetes runs now get the same 2h default as local runs. Resolution moved from `execution/container_runner_helpers.py` to `core/timeout.py` (re-exported from its old home) so the deployment layer shares one rule instead of reimplementing it, and `build_orchestrator`/`run_orchestrator` now agree on `-1` as the manifest's "unset" value.
+
+### Fixed
+
+- **`--timeout 0` crashed instead of disabling the timeout**: The CLI mapped `0` to `None`, and three consumers were unprepared for it. `execution/container_runner.py` and `deployment/slurm.py` guarded with a bare `timeout > 0`, raising `TypeError: '>' not supported between instances of 'NoneType' and 'int'` on the self-managed-launcher and in-allocation paths. The SLURM job template used `{{ timeout | default(3600) }}`, but Jinja's `default` filter only substitutes for *undefined* values, so `None` rendered the literal string `--timeout None` into the generated script, which Typer then rejected. Only an `int` crosses layer boundaries now, and the sentinel is mapped to `subprocess`/`communicate` semantics by a single named guard, `core.timeout.subprocess_timeout()` — needed because `subprocess` reads `timeout=0` as "expire immediately", not "no timeout". A fourth site with the same latent bug (the model script invocation in `container_runner.py`, which reaches `communicate()`) was fixed at the same time. Regression tests added for each.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added

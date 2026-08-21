@@ -23,7 +23,7 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.timeout import Timeout
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT, Timeout, subprocess_timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import (
@@ -985,7 +985,7 @@ class ContainerRunner:
                         shell=True,
                         cwd=script_dir,
                         env=env,
-                        timeout=timeout if timeout > 0 else None,
+                        timeout=subprocess_timeout(timeout),
                     )
                     
                     run_results["test_duration"] = time.time() - test_start_time
@@ -1100,7 +1100,7 @@ class ContainerRunner:
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,
-        timeout: int = 7200,
+        timeout: int = DEFAULT_RUN_TIMEOUT,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
         generate_sys_env_details: bool = True,
@@ -1600,11 +1600,12 @@ class ContainerRunner:
                         else:
                             self.rich_console.print("[bold blue]Running model...[/bold blue]")
                             # Use the container timeout (default 7200s) for script execution
-                            # to prevent indefinite hangs
+                            # to prevent indefinite hangs. A resolved timeout of 0 means
+                            # "no timeout", which communicate() spells as None.
                             try:
                                 model_output = model_docker.sh(
                                     f"cd {model_dir} && {script_name} {model_args}",
-                                    timeout=timeout,
+                                    timeout=subprocess_timeout(timeout),
                                 )
                             except RuntimeError as run_err:
                                 # On script failure, collect lightweight diagnostics from the
@@ -2764,7 +2765,7 @@ class ContainerRunner:
         self,
         manifest_file: str,
         registry: str = None,
-        timeout: int = 7200,
+        timeout: int = DEFAULT_RUN_TIMEOUT,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,

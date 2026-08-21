@@ -29,6 +29,7 @@ from .common import (
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
+from madengine.core.timeout import subprocess_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
@@ -1288,7 +1289,7 @@ export MASTER_PORT={master_port}
             # Don't capture output - let it stream directly to console
             result = subprocess.run(
                 ["bash", str(self.script_path)],
-                timeout=self.config.timeout if self.config.timeout > 0 else None,
+                timeout=subprocess_timeout(self.config.timeout),
             )
             
             if result.returncode == 0:
