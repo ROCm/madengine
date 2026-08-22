@@ -447,11 +447,12 @@ madengine run --tags model --timeout 0
 ```
 
 Precedence, lowest to highest: the 7200s default, then a model card's `timeout`
-field, then an explicit `--timeout`. `-1` (the default) means "not specified"
-and falls through to the level below; `0` means "no timeout" and is a real
-choice that wins over the levels below it. An explicit `--timeout 7200`
-therefore overrides a model card timeout, even though it equals the default.
-The same default and precedence apply to SLURM and Kubernetes runs.
+field, then `--timeout`. `--timeout -1` (the default) means "not passed" and
+falls through to the level below, so an explicit `--timeout 7200` still
+overrides a model card timeout even though it equals the default. A resolved
+timeout of `0` or less means no timeout — including a model card that sets
+`"timeout": 0` or `-1`. The same default and precedence apply to SLURM and
+Kubernetes runs.
 
 ### Debugging
 

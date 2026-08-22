@@ -335,7 +335,8 @@ Format: Comma-separated list with hyphen ranges.
 
 ### Timeout Settings
 
-Set a per-model timeout (seconds) in `models.json`:
+Set a per-model timeout (seconds) in `models.json`. Use `0` (or any
+non-positive value) to run the model without a timeout:
 
 ```json
 {

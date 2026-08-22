@@ -567,7 +567,9 @@ class BuildOrchestrator:
                     "training_precision": model.get("training_precision", ""),
                     "multiple_results": model.get("multiple_results", ""),
                     "tags": model.get("tags", []),
-                    "timeout": model.get("timeout", -1),
+                    # None (JSON null) = the card specified none; a card's -1 is
+                    # a real value meaning "no timeout", not filler.
+                    "timeout": model.get("timeout"),
                     "args": model.get("args", ""),
                     "slurm": model.get("slurm", {}),
                     "distributed": model_distributed,

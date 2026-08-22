@@ -2,14 +2,13 @@
 """Module to define the Timeout class and run-timeout resolution.
 
 This module provides the Timeout class to handle timeouts, plus the single
-definition of how a run timeout is resolved and how the sentinel maps onto
-subprocess semantics.
+definition of how a run timeout is resolved and how it maps onto subprocess
+semantics.
 
-The sentinel contract, applied at every layer:
-
-    -1   not specified — fall through to the next precedence level
-     0   no timeout — run unbounded
-    > 0  explicit timeout in seconds
+Resolution follows madengine v1: the default is overridden by the model card,
+which is overridden by an explicit ``--timeout``. Only the CLI has a sentinel,
+``-1``, meaning "not passed". Any non-positive resolved timeout runs unbounded,
+which both consumers below already implement.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -30,25 +29,26 @@ def resolve_run_timeout(
 ) -> int:
     """Resolve the effective run timeout.
 
-    Precedence, lowest to highest: default < model card < explicit CLI. A value
-    of -1 at either level means "not specified" and falls through; 0 means "no
-    timeout" and is a real choice that wins over the levels below it.
+    Precedence, lowest to highest: default < model card < CLI. A model card's
+    ``timeout`` is taken as-is, including a non-positive one, which means the
+    author asked for no timeout. A CLI timeout of -1 means ``--timeout`` was
+    not passed and falls through to the level below.
 
-    ``None`` is accepted as a synonym for -1 so that manifests written by older
+    ``None`` in the model card is ignored so that manifests written by older
     builds (which store ``null`` for an absent timeout) still load.
 
     Args:
         model_info: Model info dict; may have a "timeout" key.
-        cli_timeout: Timeout from the CLI, using the sentinel contract.
+        cli_timeout: Timeout from the CLI; -1 if not passed.
         default_timeout: Value used when neither level specifies one.
 
     Returns:
-        int: Effective timeout in seconds; 0 means no timeout.
+        int: Effective timeout in seconds; non-positive means no timeout.
     """
     timeout = default_timeout
 
-    model_timeout = model_info.get("timeout", -1)
-    if model_timeout is not None and model_timeout >= 0:
+    model_timeout = model_info.get("timeout")
+    if model_timeout is not None:
         timeout = model_timeout
 
     if cli_timeout is not None and cli_timeout >= 0:
@@ -58,14 +58,14 @@ def resolve_run_timeout(
 
 
 def subprocess_timeout(timeout: typing.Optional[int]) -> Optional[int]:
-    """Map a sentinel timeout onto ``subprocess``/``communicate`` semantics.
+    """Map a resolved timeout onto ``subprocess``/``communicate`` semantics.
 
     ``subprocess`` treats ``timeout=0`` as "expire immediately", not as "no
-    timeout", so the sentinel cannot be passed through directly. Both 0 (no
-    timeout) and -1 (unspecified) become ``None``.
+    timeout", so a non-positive timeout cannot be passed through directly and
+    becomes ``None`` instead.
 
     Args:
-        timeout: Timeout using the sentinel contract.
+        timeout: Resolved timeout in seconds; non-positive means no timeout.
 
     Returns:
         Optional[int]: Seconds to pass to subprocess, or None for no timeout.

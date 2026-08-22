@@ -1,5 +1,7 @@
 """Unit tests for execution: container_runner_helpers and dockerfile_utils."""
 
+import json
+
 import pytest
 
 from madengine.core.timeout import (
@@ -44,14 +46,14 @@ class TestTimeout:
 # ---- container_runner_helpers ----
 
 class TestResolveRunTimeout:
-    """resolve_run_timeout: default < model card < explicit CLI (v1 precedence).
+    """resolve_run_timeout: default < model card < CLI (v1 precedence).
 
-    Sentinel contract: -1 unspecified, 0 no timeout, >0 explicit seconds.
+    Only the CLI has a sentinel: -1 means --timeout was not passed. A model
+    card timeout is taken as-is, and any non-positive result means no timeout.
     """
 
     def test_default_when_nothing_specified(self):
         assert resolve_run_timeout({}, -1) == DEFAULT_RUN_TIMEOUT
-        assert resolve_run_timeout({"timeout": -1}, -1) == DEFAULT_RUN_TIMEOUT
         assert resolve_run_timeout({"name": "x"}, -1) == DEFAULT_RUN_TIMEOUT
 
     def test_model_timeout_overrides_default(self):
@@ -68,16 +70,42 @@ class TestResolveRunTimeout:
         # card. With the -1 sentinel the two are distinguishable.
         assert resolve_run_timeout({"timeout": 360}, DEFAULT_RUN_TIMEOUT) == DEFAULT_RUN_TIMEOUT
 
-    def test_zero_means_no_timeout_and_wins(self):
-        # 0 is a real choice, not "unset" — it must beat the level below it.
+    def test_non_positive_means_no_timeout(self):
+        # v1 read the model card unconditionally and handed the value to
+        # Timeout/subprocess, where anything non-positive runs unbounded. Real
+        # MAD cards set -1 for exactly that, so it must not fall through to the
+        # 7200s default.
+        assert resolve_run_timeout({"timeout": -1}, -1) == -1
+        assert resolve_run_timeout({"timeout": 0}, -1) == 0
         assert resolve_run_timeout({"timeout": 360}, 0) == 0
         assert resolve_run_timeout({}, 0) == 0
-        assert resolve_run_timeout({"timeout": 0}, -1) == 0
 
-    def test_legacy_none_in_manifest_treated_as_unset(self):
-        # Manifests written by older builds store null for an absent timeout.
+    def test_none_in_manifest_treated_as_unset(self):
+        # Manifests store null when the card specified no timeout.
         assert resolve_run_timeout({"timeout": None}, -1) == DEFAULT_RUN_TIMEOUT
         assert resolve_run_timeout({"timeout": None}, 120) == 120
+
+    @pytest.mark.parametrize(
+        "card_timeout, expected",
+        [
+            (None, DEFAULT_RUN_TIMEOUT),  # no "timeout" key in the model card
+            (-1, -1),  # explicit "no timeout"
+            (0, 0),
+            (360, 360),
+        ],
+    )
+    def test_manifest_round_trip_preserves_intent(self, card_timeout, expected):
+        """A card's timeout must survive being written to a manifest and read back.
+
+        Regression: the manifest writers filled an absent timeout with -1, which
+        collided with a card explicitly setting -1 to mean "no timeout". A card
+        with no timeout field then resolved to unbounded instead of the 7200s
+        default. The filler is None (JSON null), which cannot be a real value.
+        """
+        model_card = {} if card_timeout is None else {"timeout": card_timeout}
+        # Mirrors the manifest writers in build_orchestrator/run_orchestrator.
+        manifest_entry = json.loads(json.dumps({"timeout": model_card.get("timeout")}))
+        assert resolve_run_timeout(manifest_entry, -1) == expected
 
     def test_custom_default(self):
         assert resolve_run_timeout({}, -1, default_timeout=5000) == 5000
@@ -90,10 +118,10 @@ class TestResolveRunTimeout:
 
 
 class TestSubprocessTimeout:
-    """subprocess_timeout: sentinel -> subprocess/communicate semantics.
+    """subprocess_timeout: resolved timeout -> subprocess/communicate semantics.
 
     subprocess treats timeout=0 as "expire immediately", not "no timeout", so
-    both 0 and -1 must become None.
+    any non-positive value must become None.
     """
 
     @pytest.mark.parametrize("value", [0, -1, None])

@@ -454,7 +454,9 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", -1),  # -1 = unspecified
+                # None (JSON null) = the card specified none; a card's -1 is a
+                # real value meaning "no timeout", so it cannot double as filler.
+                "timeout": model.get("timeout"),
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
