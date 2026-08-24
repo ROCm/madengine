@@ -70,6 +70,14 @@ class DeploymentConfig:
     manifest_file: str
     additional_context: Dict[str, Any] = field(default_factory=dict)
     timeout: int = DEFAULT_RUN_TIMEOUT
+    # The CLI's --timeout verbatim (-1 unspecified, 0 no timeout), for the
+    # generated job script to forward to the madengine it re-invokes. Distinct
+    # from `timeout` above, which is this process's own wall-clock cap and must
+    # already be resolved. Resolving both alike would flatten the sentinel into
+    # a concrete value, which the inner CLI cannot distinguish from an explicit
+    # --timeout and would therefore rank above the model card. Defaults to the
+    # sentinel so a config built without it forwards "unspecified".
+    cli_timeout: int = -1
     monitor: bool = True
     cleanup_on_failure: bool = True
 

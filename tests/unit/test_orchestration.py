@@ -413,6 +413,30 @@ class TestRunOrchestrator:
         deployment_config = mock_create.call_args.args[0]
         assert deployment_config.timeout == expected_config_timeout
         assert isinstance(deployment_config.timeout, int)
+        # The sentinel itself must also survive, unresolved, for the job script
+        # to forward to the madengine it re-invokes.
+        assert deployment_config.cli_timeout == cli_timeout
+
+    def test_model_card_timeout_survives_the_distributed_round_trip(self, tmp_path):
+        """A model card's timeout must still win on SLURM when no --timeout is given.
+
+        Regression: _execute_distributed resolved the sentinel and the template
+        rendered that resolved value, so the job re-invoked madengine with an
+        explicit --timeout 7200. Precedence (correctly) ranks an explicit CLI
+        timeout above the model card, so the card's own value was discarded --
+        only on distributed targets, and only because madengine had synthesized
+        the value it was now treating as user intent.
+        """
+        from madengine.core.timeout import resolve_run_timeout
+
+        model_card = {"name": "foo", "timeout": 3600}
+
+        # Hop 1: the orchestrator, which has no model card in hand.
+        rendered = -1  # DeploymentConfig.cli_timeout for an unspecified --timeout
+        # Hop 2: the in-job madengine, resolving against the card.
+        assert resolve_run_timeout(model_card, rendered) == 3600
+        # ... matching what the single-hop local path produces.
+        assert resolve_run_timeout(model_card, -1) == 3600
 
 
 @pytest.mark.unit

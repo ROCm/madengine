@@ -451,8 +451,9 @@ field, then `--timeout`. `--timeout -1` (the default) means "not passed" and
 falls through to the level below, so an explicit `--timeout 7200` still
 overrides a model card timeout even though it equals the default. A resolved
 timeout of `0` or less means no timeout — including a model card that sets
-`"timeout": 0` or `-1`. The same default and precedence apply to SLURM and
-Kubernetes runs.
+`"timeout": 0` or `-1`. The same default and precedence apply to SLURM runs:
+the submitting process caps its own wait at the resolved timeout, and forwards
+`--timeout` unresolved to the job, so a model card's value still wins there.
 
 ### Debugging
 

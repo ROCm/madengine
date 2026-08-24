@@ -713,7 +713,9 @@ class SlurmDeployment(BaseDeployment):
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
             "results_dir": self.slurm_config.get("results_dir"),
-            "timeout": self.config.timeout,
+            # The sentinel, not config.timeout: the job script re-invokes
+            # madengine, and that run applies model-card precedence itself.
+            "timeout": self.config.cli_timeout,
             "live_output": self.config.additional_context.get("live_output", False),
             "tags": " ".join(model_info.get("tags", [])),
             "multiple_results": model_info.get("multiple_results"),

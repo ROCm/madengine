@@ -733,13 +733,19 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            # Distributed targets never call resolve_run_timeout() the way the
-            # local path does (container_runner.py), so the CLI sentinel (-1
-            # unspecified, 0 no timeout) must be resolved here or it leaks into
-            # DeploymentConfig.timeout unresolved.
+            # Two different values, deliberately. `timeout` caps this process's
+            # own wait on the deployment, so the sentinel has to be resolved
+            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
+            # in-allocation path runs unbounded. `cli_timeout` is what the
+            # generated job script forwards to the madengine it re-invokes, and
+            # must stay verbatim: that inner run resolves against the model card
+            # itself, and a concrete value here would read as an explicit
+            # --timeout and outrank the card. No model card is consulted at this
+            # level, hence the empty dict.
             timeout=resolve_run_timeout(
                 {}, getattr(self.args, "timeout", -1)
             ),
+            cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )

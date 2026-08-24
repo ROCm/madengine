@@ -48,6 +48,7 @@ def _build_deployment(
     slurm_overrides: dict = None,
     distributed_overrides: dict = None,
     timeout: int = None,
+    cli_timeout: int = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
@@ -85,6 +86,8 @@ def _build_deployment(
     distributed_config.update(distributed_overrides or {})
 
     cfg_kwargs = {} if timeout is None else {"timeout": timeout}
+    if cli_timeout is not None:
+        cfg_kwargs["cli_timeout"] = cli_timeout
     cfg = DeploymentConfig(
         target="slurm",
         manifest_file=str(manifest_path),
@@ -223,25 +226,40 @@ class TestTimeoutForwarding:
 
     def test_no_timeout_renders_zero_not_none(self, tmp_path):
         # --timeout 0 (no timeout) is the case that used to render "None".
-        script = _render(_build_deployment(tmp_path, timeout=0))
+        script = _render(_build_deployment(tmp_path, cli_timeout=0))
         args = self._timeout_args(script)
         assert args, "job script does not forward --timeout at all"
         assert all(a == "0" for a in args), args
         assert "--timeout None" not in script
 
     def test_explicit_timeout_forwarded(self, tmp_path):
-        script = _render(_build_deployment(tmp_path, timeout=120))
+        script = _render(_build_deployment(tmp_path, cli_timeout=120))
         assert all(a == "120" for a in self._timeout_args(script))
 
     def test_unspecified_sentinel_forwarded_verbatim(self, tmp_path):
         # -1 must survive to the inner CLI so it can apply model-card precedence
         # there, rather than being flattened to a concrete default here.
-        script = _render(_build_deployment(tmp_path, timeout=-1))
+        script = _render(_build_deployment(tmp_path, cli_timeout=-1))
         assert all(a == "-1" for a in self._timeout_args(script))
 
-    def test_default_config_forwards_shared_default(self, tmp_path):
+    def test_resolved_process_cap_does_not_leak_into_the_job(self, tmp_path):
+        """config.timeout caps *this* process; only cli_timeout reaches the job.
+
+        Regression: the template read config.timeout, so a default run rendered
+        --timeout 7200 into the job script. The inner madengine cannot tell that
+        from a user-supplied --timeout 7200, so it outranked the model card and
+        a model declaring "timeout": 3600 silently ran with a 2h cap instead.
+        """
+        deployment = _build_deployment(
+            tmp_path, timeout=DEFAULT_RUN_TIMEOUT, cli_timeout=-1
+        )
+        assert all(a == "-1" for a in self._timeout_args(_render(deployment)))
+
+    def test_default_config_forwards_the_sentinel(self, tmp_path):
+        # A config built without an explicit CLI timeout forwards "unspecified",
+        # leaving the model card free to win inside the job.
         script = _render(_build_deployment(tmp_path))
-        assert all(a == str(DEFAULT_RUN_TIMEOUT) for a in self._timeout_args(script))
+        assert all(a == "-1" for a in self._timeout_args(script))
 
 
 # ---------------------------------------------------------------------------
