@@ -300,14 +300,34 @@ spec:
             {%   endfor %}
             {% endif %}
             
-            # Execute launcher with tool chain
-            MODEL_START_TIME=$(date +%s.%N)
+            # Execute launcher with tool chain.
+            # The command goes into a file so `timeout` can wrap it: a tool chain
+            # may begin with an environment assignment, which `timeout` would
+            # otherwise try to exec as the program name.
+            cat > /tmp/run_model.sh << 'MODEL_EOF'
             {% if launcher_tool_chain and launcher_tool_chain != "bash /tmp/run_launcher.sh" %}
             {{ launcher_tool_chain }}
             {% else %}
             bash /tmp/run_launcher.sh
             {% endif %}
+            MODEL_EOF
+            MODEL_START_TIME=$(date +%s.%N)
+            {% if timeout > 0 %}
+            echo "⏰ Setting timeout to {{ timeout }} seconds."
+            if timeout {{ timeout }} bash /tmp/run_model.sh; then
+                MODEL_EXIT_CODE=0
+            else
+                MODEL_EXIT_CODE=$?
+                if [ "$MODEL_EXIT_CODE" -eq 124 ]; then
+                    echo "ERROR: model script timed out after {{ timeout }}s"
+                fi
+                exit $MODEL_EXIT_CODE
+            fi
+            {% else %}
+            echo "⏰ No timeout set; the model script runs unbounded."
+            bash /tmp/run_model.sh
             MODEL_EXIT_CODE=$?
+            {% endif %}
             MODEL_END_TIME=$(date +%s.%N)
             MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")
             echo "test_duration: ${MODEL_DURATION}s"
@@ -480,14 +500,36 @@ spec:
                 {%   endfor %}
                 {% endif %}
                 
-                # Execute script with tool chain
-                MODEL_START_TIME=$(date +%s.%N)
+                # Execute script with tool chain.
+                # The command goes into a file so `timeout` can wrap it: a tool
+                # chain may begin with an environment assignment, which `timeout`
+                # would otherwise try to exec as the program name. The heredoc
+                # terminator sits at the block scalar's own indent so that it
+                # lands in column 0 of the rendered shell script.
+                cat > /tmp/run_model.sh << 'MODEL_EOF'
                 {% if direct_script_tool_chain and direct_script_tool_chain != "bash " ~ model_script %}
                 {{ direct_script_tool_chain }}
                 {% else %}
                 bash {{ model_script }}
                 {% endif %}
+            MODEL_EOF
+                MODEL_START_TIME=$(date +%s.%N)
+                {% if timeout > 0 %}
+                echo "⏰ Setting timeout to {{ timeout }} seconds."
+                if timeout {{ timeout }} bash /tmp/run_model.sh; then
+                    MODEL_EXIT_CODE=0
+                else
+                    MODEL_EXIT_CODE=$?
+                    if [ "$MODEL_EXIT_CODE" -eq 124 ]; then
+                        echo "ERROR: model script timed out after {{ timeout }}s"
+                    fi
+                    exit $MODEL_EXIT_CODE
+                fi
+                {% else %}
+                echo "⏰ No timeout set; the model script runs unbounded."
+                bash /tmp/run_model.sh
                 MODEL_EXIT_CODE=$?
+                {% endif %}
                 MODEL_END_TIME=$(date +%s.%N)
                 MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")
                 echo "test_duration: ${MODEL_DURATION}s"
