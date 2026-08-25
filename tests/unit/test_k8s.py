@@ -418,3 +418,80 @@ class TestK8sJobScriptTimeout:
                 ["bash", "-n", str(script_path)], capture_output=True, text=True
             )
             assert result.returncode == 0, result.stderr
+
+
+def _run_model_invocation_block(script, model_exit_code, tmp_path, name):
+    """Execute just the model-invocation block of a rendered job script.
+
+    Takes the lines from MODEL_START_TIME to MODEL_END_TIME verbatim, runs them
+    under `set -e` against a stub model script exiting with `model_exit_code`,
+    and reports whether execution reached the end of the block (i.e. whether the
+    container would go on to run post-scripts and copy artifacts).
+    """
+    lines = script.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME="))
+    end = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME="))
+    block = "\n".join(l.strip() for l in lines[start:end])
+
+    stub = tmp_path / f"run_model_{name}.sh"
+    stub.write_text(f"#!/bin/bash\nexit {model_exit_code}\n")
+    harness = tmp_path / f"harness_{name}.sh"
+    harness.write_text(
+        "set -e\n"
+        f"cp {stub} /tmp/run_model.sh\n"
+        f"{block}\n"
+        'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+    )
+    return subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, timeout=60
+    )
+
+
+class TestK8sJobScriptPublishesResultsOnFailure:
+    """A failed or timed-out model must not abort the container early.
+
+    The script runs under `set -e` and copies artifacts to the results PVC only
+    after the model returns, so a bare invocation (or an early `exit`) would
+    throw away perf.csv and the logs for exactly the runs worth diagnosing.
+    Both branches capture the exit code and defer to the single exit at the end.
+    """
+
+    @pytest.mark.parametrize("model_timeout", [360, 0])
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(
+        self, model_timeout, model_exit_code, tmp_path
+    ):
+        ctx = _k8s_template_context(model_timeout=model_timeout, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"{model_timeout}_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+
+    def test_timeout_exit_code_is_reported(self, tmp_path):
+        """A real `timeout` kill (124) must be labelled, not just propagated."""
+        ctx = _k8s_template_context(model_timeout=1, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        lines = script.splitlines()
+        start = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME=")
+        )
+        end = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME=")
+        )
+        block = "\n".join(l.strip() for l in lines[start:end])
+
+        harness = tmp_path / "harness_real_timeout.sh"
+        harness.write_text(
+            "set -e\n"
+            'printf "#!/bin/bash\\nsleep 30\\n" > /tmp/run_model.sh\n'
+            f"{block}\n"
+            'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+        )
+        result = subprocess.run(
+            ["bash", str(harness)], capture_output=True, text=True, timeout=60
+        )
+        assert "model script timed out after 1s" in result.stdout
+        assert "REACHED_ARTIFACT_COPY exit=124" in result.stdout

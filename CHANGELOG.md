@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A model card's `timeout` was never enforced on Kubernetes**: `job.yaml.j2` never referenced the timeout at all, so K8s jobs ran the model script unbounded regardless of what the model card or `--timeout` said. Unlike SLURM, K8s has no inner `madengine run` inside the pod to re-resolve against the card, so `k8s_template_context.py` now calls `resolve_run_timeout()` at render time and the template wraps the model script in `timeout {{ timeout }}`, treating a non-positive resolved value as "run unbounded" per v1 precedence. A script killed by the timeout surfaces as exit code 124 with an explicit `model script timed out after Ns` line in the pod log. Both the launcher and direct-script paths are covered.
 
+- **A failing or timed-out K8s model discarded its own results**: The pod script runs under `set -e` and copies artifacts to the results PVC only after the model returns, so a non-zero model exit aborted the container before its post-scripts, `perf.csv`, and logs were published — the runs most worth diagnosing were the ones that left nothing behind. Both invocation branches in `job.yaml.j2` now capture the exit code and defer to the single `exit ${MODEL_EXIT_CODE:-0}` at the end of the script. Pre-existing on the unbounded path; the timeout wrapper added above would otherwise have extended it to timeouts.
+
+- **Programmatically omitting `timeout` overrode model cards**: `RunOrchestrator.execute()`, `ContainerRunner.run_container()`, and `ContainerRunner.run_models_from_manifest()` each defaulted the parameter to `DEFAULT_RUN_TIMEOUT`, but `resolve_run_timeout()` reads any non-negative value as an explicit `--timeout`. A caller that omitted the argument therefore forced 7200s over every model card, contradicting the documented precedence. All three now default to the `-1` sentinel, which still resolves to 7200s when no card specifies one. The CLI was unaffected — it always passes a value.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added

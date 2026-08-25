@@ -459,7 +459,9 @@ submitting process caps its own wait at the resolved timeout, and forwards
 On Kubernetes the timeout is resolved when the Job manifest is rendered — the
 pod has no inner `madengine` to resolve it — and the model script is wrapped in
 `timeout`, so a model that overruns is killed with exit code 124 and logs
-`model script timed out after Ns`.
+`model script timed out after Ns`. A pod whose model fails or times out still
+runs its post-scripts and copies its artifacts to the results PVC before
+exiting on the model's code, so failed runs remain diagnosable.
 
 ### Debugging
 

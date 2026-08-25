@@ -312,6 +312,10 @@ spec:
             {% endif %}
             MODEL_EOF
             MODEL_START_TIME=$(date +%s.%N)
+            # The model's exit code is captured, not acted on: `set -e` is in
+            # effect, so a bare invocation would abort the container before the
+            # post-scripts and artifact copy below. The script exits on it once,
+            # at the end, after the results have been published.
             {% if timeout > 0 %}
             echo "⏰ Setting timeout to {{ timeout }} seconds."
             if timeout {{ timeout }} bash /tmp/run_model.sh; then
@@ -321,12 +325,14 @@ spec:
                 if [ "$MODEL_EXIT_CODE" -eq 124 ]; then
                     echo "ERROR: model script timed out after {{ timeout }}s"
                 fi
-                exit $MODEL_EXIT_CODE
             fi
             {% else %}
             echo "⏰ No timeout set; the model script runs unbounded."
-            bash /tmp/run_model.sh
-            MODEL_EXIT_CODE=$?
+            if bash /tmp/run_model.sh; then
+                MODEL_EXIT_CODE=0
+            else
+                MODEL_EXIT_CODE=$?
+            fi
             {% endif %}
             MODEL_END_TIME=$(date +%s.%N)
             MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")
@@ -514,6 +520,10 @@ spec:
                 {% endif %}
             MODEL_EOF
                 MODEL_START_TIME=$(date +%s.%N)
+                # The model's exit code is captured, not acted on: `set -e` is
+                # in effect, so a bare invocation would abort the container
+                # before the post-scripts and artifact copy below. The script
+                # exits on it once, at the end, after publishing the results.
                 {% if timeout > 0 %}
                 echo "⏰ Setting timeout to {{ timeout }} seconds."
                 if timeout {{ timeout }} bash /tmp/run_model.sh; then
@@ -523,12 +533,14 @@ spec:
                     if [ "$MODEL_EXIT_CODE" -eq 124 ]; then
                         echo "ERROR: model script timed out after {{ timeout }}s"
                     fi
-                    exit $MODEL_EXIT_CODE
                 fi
                 {% else %}
                 echo "⏰ No timeout set; the model script runs unbounded."
-                bash /tmp/run_model.sh
-                MODEL_EXIT_CODE=$?
+                if bash /tmp/run_model.sh; then
+                    MODEL_EXIT_CODE=0
+                else
+                    MODEL_EXIT_CODE=$?
+                fi
                 {% endif %}
                 MODEL_END_TIME=$(date +%s.%N)
                 MODEL_DURATION=$(awk "BEGIN {printf \"%.6f\", $MODEL_END_TIME - $MODEL_START_TIME}")

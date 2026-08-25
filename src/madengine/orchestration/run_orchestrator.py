@@ -25,7 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
-from madengine.core.timeout import DEFAULT_RUN_TIMEOUT, resolve_run_timeout
+from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -133,7 +133,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = DEFAULT_RUN_TIMEOUT,
+        timeout: int = -1,
     ) -> Dict:
         """
         Execute run workflow.
@@ -150,7 +150,8 @@ class RunOrchestrator:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
             registry: Optional registry override
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
 
         Returns:
             Execution results dict

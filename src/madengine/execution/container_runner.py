@@ -23,7 +23,7 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.timeout import DEFAULT_RUN_TIMEOUT, Timeout, subprocess_timeout
+from madengine.core.timeout import Timeout, subprocess_timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import (
@@ -1100,7 +1100,7 @@ class ContainerRunner:
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,
-        timeout: int = DEFAULT_RUN_TIMEOUT,
+        timeout: int = -1,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
         generate_sys_env_details: bool = True,
@@ -1114,7 +1114,8 @@ class ContainerRunner:
             keep_alive: Whether to keep container alive after execution
             keep_model_dir: Whether to keep model directory after execution
             skip_model_run: Whether to skip the model script invocation
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
             generate_sys_env_details: Whether to collect system environment details
@@ -2765,7 +2766,7 @@ class ContainerRunner:
         self,
         manifest_file: str,
         registry: str = None,
-        timeout: int = DEFAULT_RUN_TIMEOUT,
+        timeout: int = -1,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,
@@ -2778,7 +2779,8 @@ class ContainerRunner:
         Args:
             manifest_file: Path to build_manifest.json
             registry: Optional registry override
-            timeout: Execution timeout per model in seconds
+            timeout: Execution timeout per model in seconds; -1 (unspecified)
+                defers to each model card, then to DEFAULT_RUN_TIMEOUT
             keep_alive: Whether to keep containers alive after execution
             keep_model_dir: Whether to keep model directory after execution
             skip_model_run: Whether to skip the model script invocation

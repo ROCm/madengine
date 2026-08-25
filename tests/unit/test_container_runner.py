@@ -525,6 +525,133 @@ class TestRunContainerSkipModelRun:
         ), f"Model script was not executed: {docker_sh_calls}"
 
 
+class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
+    """The manifest entry point must forward the sentinel, not a concrete 7200.
+
+    Same regression as run_container(): a DEFAULT_RUN_TIMEOUT default here would
+    reach run_container() as an explicit CLI timeout and outrank every card.
+    """
+
+    def _forwarded_timeout(self, tmp_path, **kwargs):
+        manifest_path = str(tmp_path / "build_manifest.json")
+        manifest = {
+            "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+            "built_models": {
+                "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+            },
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        ctx.ensure_runtime_context = MagicMock()
+        mock_console = MagicMock()
+        mock_console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=mock_console)
+        runner.perf_csv_path = str(tmp_path / "perf.csv")
+        runner.set_credentials({})
+
+        with patch.object(
+            runner, "run_container", return_value={"status": "SUCCESS"}
+        ) as mock_run:
+            runner.run_models_from_manifest(manifest_file=manifest_path, **kwargs)
+
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    def test_omitted_timeout_forwards_the_sentinel(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path) == -1
+
+    def test_explicit_timeout_forwarded_verbatim(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path, timeout=120) == 120
+
+    @pytest.mark.parametrize("sentinel", [0, -1])
+    def test_no_timeout_sentinels_forwarded_verbatim(self, tmp_path, sentinel):
+        assert self._forwarded_timeout(tmp_path, timeout=sentinel) == sentinel
+
+
+class TestRunContainerDefaultTimeoutIsSentinel:
+    """Omitting `timeout` must not outrank a model card.
+
+    Regression: the parameter defaulted to DEFAULT_RUN_TIMEOUT, but
+    resolve_run_timeout() reads any non-negative value as an explicit
+    --timeout, so a programmatic caller that omitted the argument silently
+    forced 7200s over the card. The default is the -1 sentinel instead, which
+    still resolves to 7200s when no card timeout exists.
+    """
+
+    def _resolved_timeout(self, model_info, **kwargs):
+        """Run run_container with mocks and return what reached subprocess."""
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        docker_sh_timeouts = []
+
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
+                              (cmd, kw.get("timeout"))
+                          ) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            runner.run_container(
+                model_info=model_info, docker_image="ci-dummy", **kwargs
+            )
+
+        model_runs = [
+            t for cmd, t in docker_sh_timeouts if "run.sh" in cmd and cmd.startswith("cd ")
+        ]
+        assert len(model_runs) == 1, docker_sh_timeouts
+        return model_runs[0]
+
+    def _model_info(self, card_timeout=None):
+        info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        if card_timeout is not None:
+            info["timeout"] = card_timeout
+        return info
+
+    def test_model_card_wins_when_timeout_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=360)) == 360
+
+    def test_card_asking_for_no_timeout_is_honored_when_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=-1)) is None
+
+    def test_default_still_applies_without_a_card_timeout(self):
+        from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
+        assert self._resolved_timeout(self._model_info()) == DEFAULT_RUN_TIMEOUT
+
+    def test_explicit_timeout_still_outranks_the_card(self):
+        assert (
+            self._resolved_timeout(self._model_info(card_timeout=360), timeout=120)
+            == 120
+        )
+
+
 class TestSelfManagedLauncherTimeout:
     """`--timeout 0` (no timeout) must reach subprocess.run as None, not 0.
 

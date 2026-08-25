@@ -438,6 +438,50 @@ class TestRunOrchestrator:
         # ... matching what the single-hop local path produces.
         assert resolve_run_timeout(model_card, -1) == 3600
 
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            ({}, -1),  # omitted -> sentinel, so the model card can still win
+            ({"timeout": 120}, 120),
+            ({"timeout": 0}, 0),
+            ({"timeout": -1}, -1),
+        ],
+    )
+    def test_execute_forwards_timeout_sentinel_to_local(
+        self, tmp_path, kwargs, expected
+    ):
+        """execute()'s own default must be the sentinel, not DEFAULT_RUN_TIMEOUT.
+
+        Regression: the parameter defaulted to 7200, which _execute_local hands
+        to resolve_run_timeout() as an explicit CLI timeout. A programmatic
+        caller that omitted `timeout` therefore silently outranked every model
+        card, contradicting the documented precedence.
+        """
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_cleanup_model_dir_copies"), \
+             patch.object(RunOrchestrator, "_execute_local") as mock_local:
+            mock_local.return_value = {"successful_runs": [], "failed_runs": []}
+            orchestrator.execute(manifest_file=str(manifest_path), **kwargs)
+
+        assert mock_local.call_args.args[1] == expected
+
 
 @pytest.mark.unit
 class TestCreateManifestFromLocalImage:
