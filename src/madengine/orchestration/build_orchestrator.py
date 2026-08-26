@@ -282,6 +282,13 @@ class BuildOrchestrator:
                 }
                 if len(card_images) == 1:
                     implicit_image = next(iter(card_images))
+                    # Reject "<supply-your-image>"-style markers here rather than
+                    # letting them become the image name every compute node tries
+                    # to pull.
+                    self._reject_placeholder_image(
+                        implicit_image,
+                        [m.get("name", "unknown") for m in slurm_multi_models],
+                    )
                     self.rich_console.print(
                         f"[dim]slurm_multi: no --registry/--use-image given; "
                         f"using DOCKER_IMAGE_NAME from model card -> {implicit_image}[/dim]"
@@ -665,6 +672,37 @@ class BuildOrchestrator:
                 ),
             ) from e
 
+    # Model cards ship DOCKER_IMAGE_NAME as an angle-bracketed placeholder
+    # (e.g. "<supply-your-image>") to mark "you must supply this". A placeholder is
+    # not a usable image reference, and silently accepting one produces a confusing
+    # `docker pull <supply-your-image>` failure on every compute node instead of an
+    # actionable message at submit time.
+    @staticmethod
+    def _is_placeholder_image(image: Optional[str]) -> bool:
+        """Return True if the value is a fill-me-in marker rather than an image ref."""
+        if not image:
+            return True
+        candidate = image.strip()
+        return candidate.startswith("<") or candidate.endswith(">")
+
+    def _reject_placeholder_image(self, image: str, model_names: List[str]) -> None:
+        """Raise a ConfigurationError if the resolved image is a placeholder."""
+        if not self._is_placeholder_image(image):
+            return
+        raise ConfigurationError(
+            f"Model card DOCKER_IMAGE_NAME is a placeholder, not an image: {image!r}",
+            context=create_error_context(
+                operation="resolve_image",
+                component="BuildOrchestrator",
+                additional_info={"image": image, "model_names": model_names},
+            ),
+            suggestions=[
+                "Pass the real image explicitly: --use-image <registry>/<repo>:<tag>",
+                "Or build and push from the model's dockerfile: --registry <registry>",
+                "Or replace DOCKER_IMAGE_NAME in the model card env_vars with a real image",
+            ],
+        )
+
     def _resolve_image_from_model_card(self) -> str:
         """
         Resolve Docker image name from model card's DOCKER_IMAGE_NAME env var.
@@ -742,7 +780,9 @@ class BuildOrchestrator:
             )
         else:
             self.rich_console.print(f"[green]✓ Auto-detected image: {resolved_image}[/green]\n")
-        
+
+        self._reject_placeholder_image(resolved_image, list(images_found))
+
         return resolved_image
 
     def _execute_build_on_compute(

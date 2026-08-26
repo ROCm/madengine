@@ -595,3 +595,183 @@ class TestSglangDisaggDefaultSplit:
             deployment_factory._generate_sglang_disagg_command(
                 nnodes=1, nproc_per_node=8, master_port=12345
             )
+
+
+# ---------------------------------------------------------------------------
+# 6. Path-parity contract: the model card drives the allocation and the launcher
+#
+# slurm_multi is an escape hatch, not a second product. These lock in the pieces
+# of the model-card contract that the templated path already honoured and the
+# self-managed path silently dropped.
+
+from madengine.deployment.common import (  # noqa: E402
+    resolve_launcher_from_sources,
+    resolve_node_count,
+)
+
+
+class TestResolveNodeCount:
+    """slurm.nodes and distributed.nnodes reconcile into one allocation size."""
+
+    def test_nnodes_absent_keeps_configured(self):
+        assert resolve_node_count(1, None, False) == (1, None)
+
+    def test_nnodes_sizes_allocation_when_nodes_defaulted(self):
+        """The bug this fixes: a card declaring only nnodes ran on the nodes=1 default."""
+        nodes, note = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        assert nodes == 4
+        assert note and "distributed.nnodes=4" in note
+
+    def test_agreement_is_silent(self):
+        assert resolve_node_count(4, 4, nodes_explicitly_set=True) == (4, None)
+
+    def test_explicit_nodes_wins_conflict_but_warns(self):
+        """Never silently allocate more nodes than the user asked to be billed for."""
+        nodes, note = resolve_node_count(6, 4, nodes_explicitly_set=True)
+        assert nodes == 6
+        assert note and "conflicts" in note
+
+    @pytest.mark.parametrize("bad", ["bad", "", [], {}])
+    def test_non_numeric_nnodes_falls_back(self, bad):
+        nodes, note = resolve_node_count(2, bad, nodes_explicitly_set=False)
+        assert nodes == 2
+        if bad != "":
+            assert note is not None
+
+    def test_idempotent_across_repeated_resolution(self):
+        """deploy() re-runs prepare() after preflight; resolution must not ratchet."""
+        nodes, _ = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        again, _ = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        assert nodes == again == 4
+
+
+class TestResolveLauncherFromSources:
+    """One resolver for both dispatch sites, deployment config first."""
+
+    def test_deployment_config_wins(self):
+        assert resolve_launcher_from_sources("vllm", "slurm_multi") == "vllm"
+
+    def test_falls_back_to_model_card(self):
+        assert resolve_launcher_from_sources(None, "slurm_multi") == "slurm_multi"
+
+    def test_default_when_neither_declared(self):
+        assert resolve_launcher_from_sources(None, None) == "torchrun"
+
+    def test_dispatch_and_env_block_cannot_disagree(self):
+        """
+        prepare() used to read the card while _prepare_template_context() read the
+        deployment config, so a card-declared launcher could pick one path and emit
+        another path's env block. Both now call this, so they agree by construction.
+        """
+        for deployment, card in [(None, "vllm"), ("sglang", "vllm"), (None, None)]:
+            assert resolve_launcher_from_sources(deployment, card) == \
+                   resolve_launcher_from_sources(deployment, card)
+
+
+class TestSlurmMultiDeclaredResultsCsv:
+    """A slurm_multi card's `multiple_results` names its own results CSV."""
+
+    @pytest.fixture
+    def deployment(self, tmp_path: Path) -> SlurmDeployment:
+        script_rel = "scripts/wl/run.slurm"
+        script_abs = tmp_path / script_rel
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text("#!/bin/bash\n")
+
+        model = {
+            "name": "wl",
+            "scripts": script_rel,
+            "multiple_results": "perf_WL.csv",
+            "distributed": {"launcher": "slurm_multi"},
+        }
+        manifest = {
+            "built_images": {},
+            "built_models": {"img:tag": model},
+            "context": {},
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "slurm": {"output_dir": str(tmp_path / "slurm_results")},
+                "distributed": {"launcher": "slurm_multi"},
+            },
+        )
+        d = SlurmDeployment(cfg)
+        d._model_for_test = model
+        d._script_dir_for_test = script_abs.parent
+        return d
+
+    def test_finds_csv_next_to_model_script(self, deployment):
+        """The wrapper cd's to the script dir, so $(pwd) writes land there."""
+        target = deployment._script_dir_for_test / "perf_WL.csv"
+        target.write_text("model,performance,metric\nwl,1.0,tok/s\n")
+        found = deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        )
+        assert found == target
+
+    def test_ignores_empty_file(self, deployment):
+        (deployment._script_dir_for_test / "perf_WL.csv").write_text("")
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) is None
+
+    def test_returns_none_without_declaration(self, deployment):
+        assert deployment._slurm_multi_declared_result_csv({"name": "wl"}, "12345") is None
+
+    def test_returns_none_when_model_info_missing(self, deployment):
+        assert deployment._slurm_multi_declared_result_csv(None, "12345") is None
+
+
+class TestSlurmMultiPerfAggregation:
+    """Aggregating the per-job CSV into cwd/perf.csv must not append it to itself."""
+
+    @pytest.fixture
+    def deployment(self, tmp_path: Path) -> SlurmDeployment:
+        manifest = {"built_images": {}, "built_models": {}, "context": {}}
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={"slurm": {"output_dir": str(tmp_path / "slurm_results")}},
+        )
+        d = SlurmDeployment(cfg)
+        d.output_dir.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_cwd_perf_source_is_not_duplicated(self, deployment, tmp_path, monkeypatch):
+        """
+        The <cwd>/perf.csv fallback (and a card declaring multiple_results:
+        "perf.csv") makes source and destination the same file. Appending it to
+        itself would double every row on each collection.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = "model,performance,metric,status\nwl,1.0,tok/s,SUCCESS\n"
+        Path("perf.csv").write_text(rows)
+
+        deployment._collect_slurm_multi_results(
+            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+        )
+
+        assert Path("perf.csv").read_text() == rows
+
+    def test_distinct_source_is_appended(self, deployment, tmp_path, monkeypatch):
+        """A genuinely separate per-job CSV still aggregates, minus its header."""
+        monkeypatch.chdir(tmp_path)
+        Path("perf.csv").write_text("model,performance,metric,status\nold,1.0,tok/s,SUCCESS\n")
+        job_csv = tmp_path / "job" / "perf.csv"
+        job_csv.parent.mkdir()
+        job_csv.write_text("model,performance,metric,status\nnew,2.0,tok/s,SUCCESS\n")
+        deployment.slurm_config["results_dir"] = str(job_csv.parent)
+
+        deployment._collect_slurm_multi_results(
+            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+        )
+
+        text = Path("perf.csv").read_text()
+        assert "old,1.0" in text and "new,2.0" in text
+        assert text.count("model,performance") == 1
