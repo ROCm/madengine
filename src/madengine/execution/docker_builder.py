@@ -810,6 +810,10 @@ class DockerBuilder:
                     )
                     self.push_image(build_info["docker_image"], registry, credentials, registry_image)
                     build_info["registry_image"] = registry_image
+                    # Recorded at push time; consumed only by --require-pinned-image runs.
+                    pushed_digest = self.pushed_digests.get(registry_image)
+                    if pushed_digest:
+                        build_info["image_digest"] = pushed_digest
                 except Exception as e:
                     build_info["push_error"] = str(e)
             
@@ -1018,6 +1022,10 @@ class DockerBuilder:
                 try:
                     self.push_image(arch_image_name, registry, credentials, registry_image)
                     build_info["registry_image"] = registry_image
+                    # Recorded at push time; consumed only by --require-pinned-image runs.
+                    pushed_digest = self.pushed_digests.get(registry_image)
+                    if pushed_digest:
+                        build_info["image_digest"] = pushed_digest
                 except Exception as e:
                     build_info["push_error"] = str(e)
             

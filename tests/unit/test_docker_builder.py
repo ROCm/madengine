@@ -138,3 +138,73 @@ class TestPushImageRecordsDigest:
 
         assert result == "ci-dummy"
         assert builder.pushed_digests == {}
+
+
+class TestBuildInfoCarriesImageDigest:
+    """Both push call sites copy the recorded digest into build_info."""
+
+    def _builder(self):
+        ctx = MagicMock()
+        ctx.ctx = {}
+        builder = DockerBuilder(ctx, MagicMock())
+        builder.rich_console = MagicMock()
+        return builder
+
+    def _run_single_arch(self, builder):
+        """Drive _build_model_single_arch with everything below push_image stubbed."""
+        return builder._build_model_single_arch(
+            model_info={"name": "dummy", "dockerfile": "docker/dummy"},
+            credentials={},
+            clean_cache=False,
+            registry="localhost:5000",
+            phase_suffix="",
+            batch_build_metadata=None,
+        )
+
+    def test_single_arch_push_sets_image_digest(self):
+        builder = self._builder()
+
+        def fake_push(docker_image, registry, credentials, explicit_registry_image):
+            builder.pushed_digests[explicit_registry_image] = DIGEST
+            return explicit_registry_image
+
+        with patch.object(
+            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
+        ), patch.object(
+            builder,
+            "build_image",
+            return_value={"docker_image": "ci-dummy", "model": "dummy"},
+        ), patch.object(
+            builder, "_get_effective_gpu_architecture", return_value=""
+        ), patch.object(
+            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
+        ), patch.object(
+            builder, "push_image", side_effect=fake_push
+        ):
+            results = self._run_single_arch(builder)
+
+        assert results[0]["registry_image"] == "localhost:5000/ci-dummy"
+        assert results[0]["image_digest"] == DIGEST
+        # A push failure must still be recorded the way it is today.
+        assert "push_error" not in results[0]
+
+    def test_single_arch_push_without_digest_omits_key(self):
+        builder = self._builder()
+
+        with patch.object(
+            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
+        ), patch.object(
+            builder,
+            "build_image",
+            return_value={"docker_image": "ci-dummy", "model": "dummy"},
+        ), patch.object(
+            builder, "_get_effective_gpu_architecture", return_value=""
+        ), patch.object(
+            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
+        ), patch.object(
+            builder, "push_image", return_value="localhost:5000/ci-dummy"
+        ):
+            results = self._run_single_arch(builder)
+
+        assert results[0]["registry_image"] == "localhost:5000/ci-dummy"
+        assert "image_digest" not in results[0]
