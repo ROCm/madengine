@@ -88,6 +88,19 @@ class TestDockerImageRefForLogNaming:
     def test_short_ci_tag_unchanged(self):
         assert _docker_image_ref_for_log_naming("ci-model_ubuntu") == "ci-model_ubuntu"
 
+    def test_pinned_reference_names_same_as_untagged_reference(self):
+        digest = "sha256:" + "df36ef7e" * 8
+        assert _docker_image_ref_for_log_naming(
+            f"registry/ns/myimg@{digest}"
+        ) == _docker_image_ref_for_log_naming("registry/ns/myimg")
+
+    def test_pinned_ci_reference_still_yields_tag(self):
+        digest = "sha256:" + "df36ef7e" * 8
+        assert (
+            _docker_image_ref_for_log_naming(f"rocm/ns/img:ci-m_model_df@{digest}")
+            == "ci-m_model_df"
+        )
+
 
 class TestMakeRunLogFilePath:
     """make_run_log_file_path behavior."""
