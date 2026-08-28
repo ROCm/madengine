@@ -24,6 +24,7 @@ from madengine.core.auth import (
 )
 from madengine.core.console import Console
 from madengine.core.context import Context
+from madengine.core.image_digest import parse_push_digest, parse_repo_digest
 from madengine.utils.ops import PythonicTee
 from madengine.execution.dockerfile_utils import (
     is_target_arch_compatible_with_variable,
@@ -49,6 +50,7 @@ class DockerBuilder:
         self.live_output = live_output
         self.rich_console = RichConsole()
         self.built_images = {}  # Track built images
+        self.pushed_digests = {}  # registry_image -> digest recorded at push time
         self.built_models = {}  # Track built models
 
     def get_context_path(self, info: typing.Dict) -> str:
@@ -396,7 +398,9 @@ class DockerBuilder:
             self.rich_console.print(f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]")
             print(f"📤 Registry: {registry}")
             print(f"🏷️  Image: {registry_image}")
-            self.console.sh(push_command)
+            push_output = self.console.sh(push_command)
+
+            self._record_pushed_digest(registry_image, push_output)
 
             self.rich_console.print(f"[bold green]✅ Successfully pushed image to registry:[/bold green] [cyan]{registry_image}[/cyan]")
             self.rich_console.print(f"[dim]{'='*80}[/dim]")
@@ -405,6 +409,44 @@ class DockerBuilder:
         except Exception as e:
             self.rich_console.print(f"[red]❌ Failed to push image {docker_image} to registry {registry}: {e}[/red]")
             raise
+
+    def _record_pushed_digest(self, registry_image: str, push_output: str) -> None:
+        """Record the digest of the image just pushed, for digest-pinned runs.
+
+        Best-effort by design: the push has already succeeded by the time this
+        runs, so a missing digest is a manifest-completeness gap (noted at dim
+        level), never a build failure. Runs only consult the recorded digest
+        when --require-pinned-image is set.
+
+        Args:
+            registry_image: The reference that was pushed.
+            push_output: stdout/stderr captured from the push command.
+        """
+        digest = parse_push_digest(push_output)
+
+        if not digest:
+            # Some registries/mirrors do not print the digest line; ask the
+            # daemon for the RepoDigests entry it recorded for this push.
+            try:
+                inspect_output = self.console.sh(
+                    "docker image inspect --format '{{index .RepoDigests 0}}' "
+                    + shlex.quote(registry_image)
+                )
+                digest = parse_repo_digest(inspect_output)
+            except Exception:
+                digest = None
+
+        if not digest:
+            self.rich_console.print(
+                f"[dim]No pushed digest recorded for {registry_image}; "
+                f"--require-pinned-image runs will reject this manifest entry[/dim]"
+            )
+            return
+
+        self.pushed_digests[registry_image] = digest
+        self.rich_console.print(
+            f"[dim]Pushed digest: {registry_image} -> {digest}[/dim]"
+        )
 
     def export_build_manifest(
         self,
