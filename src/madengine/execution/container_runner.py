@@ -2837,7 +2837,21 @@ class ContainerRunner:
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
+
+                    # This branch also covers build-on-compute-node manifests,
+                    # whose docker_image is a registry reference. Enforce here
+                    # too, otherwise those manifests would silently bypass the
+                    # flag by never reaching the registry branch below.
+                    run_image = resolve_pinned_image(
+                        run_image,
+                        build_info.get("image_digest"),
+                        bool(
+                            (self.additional_context or {}).get("require_pinned_image")
+                        ),
+                        model_name=model_info.get("name", ""),
+                    )
+
+
                     # Ensure the local image is available on this node. In a
                     # multi-node SLURM run only the primary may have the
                     # locally-built image; the shared-tar cache

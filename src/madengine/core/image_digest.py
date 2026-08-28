@@ -104,6 +104,12 @@ def resolve_pinned_image(
         return registry_image
 
     if not image_digest:
+        # An already-pinned reference (e.g. MAD_CONTAINER_IMAGE given as
+        # repo@sha256:...) satisfies the guarantee on its own; re-pinning it is
+        # a no-op and rejecting it would be wrong.
+        if parse_repo_digest(registry_image):
+            return registry_image
+
         raise ConfigurationError(
             f"--require-pinned-image is set but the build manifest records no "
             f"image digest for model '{model_name}' (image: {registry_image}). "

@@ -133,6 +133,12 @@ class TestResolvePinnedImage:
         with pytest.raises(ConfigurationError):
             resolve_pinned_image("myorg/ci:mymodel", "", True, model_name="my_model")
 
+    def test_enabled_accepts_already_pinned_reference_without_manifest_digest(self):
+        # A reference the user pinned themselves already provides the guarantee,
+        # so there is nothing to look up and nothing to reject.
+        pinned = f"myorg/ci@{DIGEST}"
+        assert resolve_pinned_image(pinned, None, True) == pinned
+
     def test_error_message_names_model_and_image(self):
         with pytest.raises(ConfigurationError) as excinfo:
             resolve_pinned_image("myorg/ci:mymodel", None, True, model_name="my_model")

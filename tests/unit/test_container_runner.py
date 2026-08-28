@@ -613,6 +613,59 @@ class TestRequirePinnedImageLocalRun:
             assert "require-pinned-image" in result["failed_runs"][0]["error"]
 
     @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_entry_with_registry_ref_is_not_a_bypass(self, _mock_csv):
+        """build_info["local_image"] must not smuggle an unpinned registry tag through.
+
+        The build-on-compute-node path writes entries carrying BOTH a truthy
+        local_image and a registry reference in docker_image. That branch runs
+        before the registry branch, so without enforcement here the flag is
+        silently a no-op for those manifests.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {
+                    "local_image": "ci-m_ubuntu",
+                    "docker_image": "myorg/ci:m",
+                    "built_on_compute": True,
+                },
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "_ensure_local_image_available"
+            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_ensure.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_already_pinned_is_accepted(self, _mock_csv):
+        """An explicitly digest-pinned MAD_CONTAINER_IMAGE already meets the guarantee."""
+        pinned = f"myorg/ci@{DIGEST}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir, {"local_image": True, "docker_image": pinned}
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "_ensure_local_image_available"), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == pinned
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
     def test_manifest_context_key_enables_enforcement(self, _mock_csv):
         """A nested run on a SLURM compute node inherits the setting via manifest context."""
         with tempfile.TemporaryDirectory() as tmpdir:
