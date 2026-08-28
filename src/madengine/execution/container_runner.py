@@ -23,6 +23,7 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
+from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -2849,11 +2850,20 @@ class ContainerRunner:
                     )
                 
                 elif build_info.get("registry_image"):
-                    # Registry image: Pull from registry
+                    # Registry image: Pull from registry. Under
+                    # require_pinned_image this resolves to repo@sha256:... and
+                    # raises (outside the pull try/except, so there is no tag
+                    # fallback) when the manifest recorded no digest.
+                    pull_target = resolve_pinned_image(
+                        build_info["registry_image"],
+                        build_info.get("image_digest"),
+                        bool((self.additional_context or {}).get("require_pinned_image")),
+                        model_name=model_info.get("name", ""),
+                    )
                     try:
-                        self.pull_image(build_info["registry_image"])
+                        self.pull_image(pull_target)
                         # Update docker_image to use registry image
-                        run_image = build_info["registry_image"]
+                        run_image = pull_target
                     except Exception as pull_error:
                         self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name

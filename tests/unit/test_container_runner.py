@@ -523,3 +523,122 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+DIGEST = "sha256:" + "df36ef7e" * 8
+
+
+class TestRequirePinnedImageLocalRun:
+    """run_models_from_manifest honours require_pinned_image for registry pulls."""
+
+    def _manifest(self, tmpdir, build_info):
+        manifest_path = os.path.join(tmpdir, "build_manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump(
+                {
+                    "built_images": {"img1": build_info},
+                    "built_models": {
+                        "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                    },
+                },
+                f,
+            )
+        return manifest_path
+
+    def _runner(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        ctx.ensure_runtime_context = MagicMock()
+        console = MagicMock()
+        console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=console)
+        runner.set_credentials({})
+        return runner
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_default_pulls_by_tag_even_when_digest_present(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with("myorg/ci:m")
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pulls_pinned_reference(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+            # The container must run the same pinned reference that was pulled.
+            assert mock_run.call_args[1]["docker_image"] == f"myorg/ci@{DIGEST}"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_without_digest_fails_before_pulling(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container"
+            ) as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_pull.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_manifest_context_key_enables_enforcement(self, _mock_csv):
+        """A nested run on a SLURM compute node inherits the setting via manifest context."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, "build_manifest.json")
+            with open(manifest_path, "w") as f:
+                json.dump(
+                    {
+                        "built_images": {
+                            "img1": {
+                                "registry_image": "myorg/ci:m",
+                                "image_digest": DIGEST,
+                            }
+                        },
+                        "built_models": {
+                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                        },
+                        "context": {"require_pinned_image": True},
+                    },
+                    f,
+                )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
