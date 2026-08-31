@@ -805,6 +805,12 @@ class Context:
                             )
                             continue
 
+                if kfd_renderDs is None:
+                    raise RuntimeError(
+                        "KFD topology not accessible and required for ROCm < 6.4.1 GPU mapping. "
+                        "Check permissions on /sys/devices/virtual/kfd/kfd/topology/nodes"
+                    )
+
                 if len(kfd_unique_ids) != len(kfd_renderDs):
                     raise RuntimeError(
                         f"Mismatch between unique_ids count ({len(kfd_unique_ids)}) "
@@ -845,9 +851,12 @@ class Context:
             else:
                 # Modern method using amd-smi (ROCm >= 6.4.0)
                 # Get list of GPUs from amd-smi (redirect stderr to filter warnings)
+                # Use resolved path since /opt/rocm*/bin is not guaranteed to be on PATH
                 # Longer timeout (180s) for slow GPU initialization on SLURM compute nodes
+                amd_smi_path = os.path.join(self._rocm_path, "bin", "amd-smi")
                 output = self.console.sh(
-                    "amd-smi list -e --json 2>/dev/null || amd-smi list -e --json 2>&1",
+                    f"{amd_smi_path} list -e --json 2>/dev/null || "
+                    f"{amd_smi_path} list -e --json 2>&1",
                     timeout=180,
                 )
                 if not output or output.strip() == "":
@@ -868,7 +877,10 @@ class Context:
                     json_output = output
 
                 try:
-                    data = json.loads(json_output)
+                    # Use raw_decode so we tolerate any trailing non-JSON
+                    # text (deprecation banners, double-emitted blocks under
+                    # concurrent slurm tasks, stray newlines, etc.).
+                    data, _end = json.JSONDecoder().raw_decode(json_output.lstrip())
                 except json.JSONDecodeError as e:
                     raise ValueError(
                         f"Failed to parse amd-smi JSON output: {e}. Output was: {output[:200]}"

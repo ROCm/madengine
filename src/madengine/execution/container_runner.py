@@ -7,46 +7,47 @@ enabling distributed workflows where containers are run on remote nodes
 using pre-built images.
 """
 
-import json
 import os
 import re
 import shlex
 import subprocess
+import socket
 import time
+import json
+import hashlib
 import typing
 import warnings
-from contextlib import redirect_stderr, redirect_stdout
-
 from rich.console import Console as RichConsole
-
+from contextlib import redirect_stdout, redirect_stderr
 from madengine.core.auth import login_to_registry
-from madengine.core.console import Console
+from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
-from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
 from madengine.core.timeout import Timeout
+from madengine.core.dataprovider import Data
+from madengine.utils.ops import PythonicTee, file_print
+from madengine.reporting.update_perf_csv import (
+    PERF_CSV_HEADER,
+    update_perf_csv,
+    flatten_tags,
+)
+from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+from madengine.utils.gpu_config import resolve_runtime_gpus
+from madengine.deployment.common import canonicalize_distributed_launcher
+from madengine.utils.config_parser import ConfigParser
+from madengine.utils.path_utils import scripts_base_dir_from
+from madengine.utils.run_details import get_build_number, get_pipeline
+from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
+from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
+    resolve_run_status,
     resolve_run_timeout,
 )
-from madengine.reporting.update_perf_csv import (
-    PERF_CSV_HEADER,
-    flatten_tags,
-    update_perf_csv,
-)
-from madengine.reporting.update_perf_super import (
-    update_perf_super_csv,
-    update_perf_super_json,
-)
-from madengine.utils.config_parser import ConfigParser
-from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.utils.ops import PythonicTee, file_print
-from madengine.utils.path_utils import scripts_base_dir_from
-from madengine.utils.run_details import get_build_number, get_pipeline
-from madengine.utils.therock_markers import is_therock_tree
 
 
 def _print_run_env_table(
@@ -91,7 +92,8 @@ def _print_run_env_table(
         host_install_type = (
             "therock"
             if _host_rocm_path.is_dir() and is_therock_tree(_host_rocm_path)
-            else "apt install" if _host_rocm_path.is_dir() else "unknown"
+            else "apt install" if _host_rocm_path.is_dir()
+            else "unknown"
         )
         try:
             host_rocm_ver = context._get_tool_manager().get_version() or "unknown"
@@ -112,13 +114,14 @@ def _print_run_env_table(
 
         # ROCm root: prefer rocm-sdk, then ROCM_PATH env, then /opt/rocm
         ctr_rocm_root = _sh(
-            "rocm-sdk path --root 2>/dev/null " '|| echo "${ROCM_PATH:-/opt/rocm}"'
+            "rocm-sdk path --root 2>/dev/null "
+            "|| echo \"${ROCM_PATH:-/opt/rocm}\""
         )
 
         # ROCm version: prefer rocm-sdk, then .info/version, then rocminfo
         ctr_rocm_ver = _sh(
             "rocm-sdk version 2>/dev/null "
-            '|| cat "${ROCM_PATH:-/opt/rocm}/.info/version" 2>/dev/null '
+            "|| cat \"${ROCM_PATH:-/opt/rocm}/.info/version\" 2>/dev/null "
             "|| rocminfo 2>/dev/null | grep -i 'ROCm Version' | head -n1 | sed 's/.*[Vv]ersion:[[:space:]]*//;s/[[:space:]].*//;s/[^0-9.]//g' 2>/dev/null "
             "|| echo unknown"
         )
@@ -132,16 +135,14 @@ def _print_run_env_table(
         # ── Host side ──────────────────────────────────────────────
         def _host_sh(cmd: str) -> str:
             try:
-                return subprocess.check_output(
-                    cmd, shell=True, stderr=subprocess.DEVNULL, text=True
-                ).strip()
+                return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, text=True).strip()
             except Exception:
                 return "unknown"
 
         host_cuda_root = _host_sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 | "
             "xargs -I{} dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            '|| echo "${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}"'
+            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
         )
         host_cuda_ver = _host_sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
@@ -152,7 +153,7 @@ def _print_run_env_table(
         # ── Container side ─────────────────────────────────────────
         ctr_cuda_root = _sh(
             "dirname $(which nvcc 2>/dev/null) 2>/dev/null | xargs dirname 2>/dev/null "
-            '|| echo "${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}"'
+            "|| echo \"${CUDA_PATH:-${CUDA_HOME:-/usr/local/cuda}}\""
         )
         ctr_cuda_ver = _sh(
             "nvcc --version 2>/dev/null | sed -n 's/.*release \\([0-9][0-9.]*\\).*/\\1/p' | head -1 "
@@ -169,9 +170,7 @@ def _print_run_env_table(
     rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
-def _resolve_multiple_results_path(
-    multiple_results: str, model_dir: str
-) -> typing.Optional[str]:
+def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
     """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
     if not multiple_results:
         return None
@@ -206,7 +205,9 @@ def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
     """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
     rel = (relative_path or "").strip()
     src = os.path.normpath(os.path.join(model_dir, rel)).replace("\\", "/")
-    return f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
+    return (
+        f"cp -- {_bash_quote_path(src)} {_bash_quote_path('.')} 2>/dev/null || true"
+    )
 
 
 class ContainerRunner:
@@ -277,42 +278,36 @@ class ContainerRunner:
 
         # Resolve GPU count using hierarchical resolution
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
-
+        
         # Convert -1 (all GPUs) to actual system GPU count for accurate reporting
         if resolved_gpu_count == -1 and self.context:
             try:
-                system_ngpus = int(
-                    self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]
-                )
+                system_ngpus = int(self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"])
                 resolved_gpu_count = system_ngpus
-                print(
-                    f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}"
-                )
+                print(f"ℹ️  Converted n_gpus=-1 to actual system GPU count: {system_ngpus}")
             except (KeyError, ValueError, TypeError):
                 # If system GPU count not available, keep -1
                 pass
-
+        
         # Determine number of nodes and GPUs per node
         # Priority: 1. SLURM env vars, 2. additional_context, 3. model_info, 4. default (1)
         nnodes = "1"  # Default for local execution
         gpus_per_node = str(resolved_gpu_count)
-
+        
         # Check for SLURM multi-node environment
         if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
             # Get from SLURM environment variables (most accurate for SLURM jobs)
             slurm_nnodes = os.environ.get("NNODES") or os.environ.get("SLURM_NNODES")
-            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get(
-                "SLURM_GPUS_PER_NODE"
-            )
-
+            slurm_gpus_per_node = os.environ.get("GPUS_PER_NODE") or os.environ.get("SLURM_GPUS_PER_NODE")
+            
             if slurm_nnodes:
                 nnodes = str(slurm_nnodes)
                 print(f"ℹ️  Detected SLURM multi-node: {nnodes} nodes")
-
+            
             if slurm_gpus_per_node:
                 gpus_per_node = str(slurm_gpus_per_node)
                 print(f"ℹ️  GPUs per node: {gpus_per_node}")
-
+        
         # Fallback to additional_context (for non-SLURM or if env vars not set)
         if nnodes == "1" and self.additional_context:
             slurm_config = self.additional_context.get("slurm", {})
@@ -323,43 +318,43 @@ class ContainerRunner:
                     nnodes = str(ctx_nodes)
                 if ctx_gpus:
                     gpus_per_node = str(ctx_gpus)
-
+        
         # Final fallback to model_info
         if nnodes == "1":
             nnodes = model_info.get("nnodes", "1")
-
+        
         # Calculate total GPUs
         try:
             total_gpus = int(nnodes) * int(gpus_per_node)
         except (ValueError, TypeError):
             total_gpus = resolved_gpu_count
-
+        
         # Extract launcher from multiple sources in priority order:
         # 1. additional_context (passed via --additional-context CLI arg)
         # 2. model_info distributed config (in models.json)
         # 3. MAD_LAUNCHER environment variable
         # 4. Default to 'docker' for local deployments
         launcher = ""
-
+        
         # Check additional_context first (highest priority)
         if self.additional_context:
             distributed_config = self.additional_context.get("distributed", {})
             launcher = distributed_config.get("launcher", "")
             if launcher:
                 print(f"🚀 Launcher from additional_context: {launcher}")
-
+        
         # Check model_info distributed config
         if not launcher and model_info.get("distributed"):
             launcher = model_info["distributed"].get("launcher", "")
             if launcher:
                 print(f"🚀 Launcher from model_info: {launcher}")
-
+        
         # Fallback to environment variable
         if not launcher:
             launcher = os.environ.get("MAD_LAUNCHER", "")
             if launcher:
                 print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
-
+        
         # Apply deployment-specific defaults if no launcher specified
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         if not launcher:
@@ -374,15 +369,13 @@ class ContainerRunner:
             elif deployment_type == "local":
                 launcher = "docker"
                 print(f"🚀 Launcher defaulted to 'docker' for local deployment")
-
+        
         # Print final launcher selection
         if launcher:
-            print(
-                f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})"
-            )
+            print(f"✅ Final launcher selected: '{launcher}' (deployment_type: {deployment_type})")
         else:
             print(f"⚠️  No launcher specified (deployment_type: {deployment_type})")
-
+        
         # Create run details dict with all required fields
         run_details = {
             "model": model_info["name"],
@@ -396,14 +389,10 @@ class ContainerRunner:
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
-            "docker_image": run_results.get(
-                "docker_image", build_info.get("docker_image", "")
-            ),
+            "docker_image": run_results.get("docker_image", build_info.get("docker_image", "")),
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
-            "deployment_type": os.environ.get(
-                "MAD_DEPLOYMENT_TYPE", "local"
-            ),  # local, slurm, etc.
+            "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),  # local, slurm, etc.
             "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
                 (self.context.ctx.get("docker_env_vars") or {}).get(
@@ -437,7 +426,8 @@ class ContainerRunner:
             scripts_base_dir = scripts_base_dir_from(scripts_path)
             config_parser = ConfigParser(scripts_base_dir=scripts_base_dir)
             run_details["configs"] = config_parser.parse_and_load(
-                model_info.get("args", ""), scripts_path
+                model_info.get("args", ""),
+                scripts_path
             )
         except Exception as e:
             print(f"⚠️  Warning: Could not parse config file: {e}")
@@ -560,50 +550,40 @@ class ContainerRunner:
         if registry and credentials:
             self.login_to_registry(registry, credentials)
 
-        self.rich_console.print(
-            f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]"
-        )
+        self.rich_console.print(f"\n[bold blue]📥 Starting docker pull from registry...[/bold blue]")
         print(f"📍 Registry: {registry or 'Default'}")
         print(f"🏷️  Image: {registry_image}")
-
+        
         # Force fresh pull on SLURM compute nodes to avoid corrupted cached layers
         # This prevents "permission denied" errors from corrupted image layers
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
-
+        
         if deployment_type == "slurm" and in_slurm_job:
-            print(
-                f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)"
-            )
+            print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
             # Remove any existing cached image to force fresh pull
             try:
-                self.console.sh(f"docker rmi -f {registry_image} 2>/dev/null || true")
+                self.console.sh(f"docker rmi -f {shlex.quote(registry_image)} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
             except Exception:
                 pass  # It's okay if image doesn't exist
-
+        
         try:
-            self.console.sh(f"docker pull {registry_image}")
+            self.console.sh(f"docker pull {shlex.quote(registry_image)}")
 
             if local_name:
-                self.console.sh(f"docker tag {registry_image} {local_name}")
+                self.console.sh(f"docker tag {shlex.quote(registry_image)} {shlex.quote(local_name)}")
                 print(f"🏷️  Tagged as: {local_name}")
-                self.rich_console.print(
-                    f"[bold green]✅ Successfully pulled and tagged image[/bold green]"
-                )
+                self.rich_console.print(f"[bold green]✅ Successfully pulled and tagged image[/bold green]")
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
                 return local_name
 
-            self.rich_console.print(
-                f"[bold green]✅ Successfully pulled image:[/bold green] [cyan]{registry_image}[/cyan]"
-            )
+            self.rich_console.print(f"[bold green]✅ Successfully pulled image:[/bold green] [cyan]{registry_image}[/cyan]")
             self.rich_console.print(f"[dim]{'='*80}[/dim]")
             return registry_image
 
         except Exception as e:
-            self.rich_console.print(
-                f"[red]❌ Failed to pull image {registry_image}: {e}[/red]"
-            )
+            self.rich_console.print(f"[red]❌ Failed to pull image {registry_image}: {e}[/red]")
             raise
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
@@ -682,6 +662,76 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
+    def _generate_local_launcher_command(self, launcher_type: str, nproc_per_node: int) -> str:
+        """Generate distributed process launcher command for Docker local deployment.
+
+        Docker local is always single-node. This parallels
+        SlurmDeployment._generate_launcher_command() and
+        KubernetesLauncherMixin._generate_torchrun_command() for the
+        Docker local path.
+
+        Args:
+            launcher_type: Distributed launcher (torchrun, megatron, deepspeed, etc.)
+            nproc_per_node: Number of GPUs (processes) per node.
+
+        Returns:
+            Launcher command string, or empty string for launchers that
+            manage their own process spawning (vllm, sglang).
+        """
+        if launcher_type in ("torchrun", "megatron", "megatron-lm", "torchtitan"):
+            return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
+        elif launcher_type == "deepspeed":
+            return f"deepspeed --num_gpus={nproc_per_node}"
+        elif launcher_type in ("vllm", "sglang", "sglang-disagg", "primus"):
+            return ""
+        else:
+            return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
+
+    # Deployment-mode sentinels that normalize_launcher emits for "no real
+    # launcher". Users may pass these explicitly; defaulting them to torchrun is
+    # expected, not an error, so they should not trigger an unrecognized warning.
+    _NON_LAUNCHER_SENTINELS = ("docker", "native")
+
+    def _resolve_local_multi_node_runner_env(
+        self, model_info: typing.Dict, resolved_gpu_count: int
+    ) -> None:
+        """Set ``docker_env_vars["MAD_MULTI_NODE_RUNNER"]`` for local Docker runs.
+
+        No-op if the env var is already set. Resolves launcher from
+        ``additional_context.distributed.launcher``, then ``model_info.distributed.launcher``,
+        then ``MAD_LAUNCHER``; falls back to ``torchrun`` for unknown values.
+        Self-managing launchers (vllm/sglang/sglang-disagg/primus) set the var
+        to an empty string so downstream scripts under ``set -u`` don't fail.
+        """
+        if "MAD_MULTI_NODE_RUNNER" in self.context.ctx["docker_env_vars"]:
+            return
+        launcher = ""
+        if self.additional_context:
+            launcher = self.additional_context.get("distributed", {}).get("launcher", "")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER", "")
+        canonical_launcher = canonicalize_distributed_launcher(launcher)
+        valid_local_launchers = (
+            "torchrun", "megatron", "megatron-lm", "torchtitan",
+            "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
+        )
+        if canonical_launcher in valid_local_launchers:
+            dist_launcher = canonical_launcher
+        else:
+            if launcher and launcher not in self._NON_LAUNCHER_SENTINELS:
+                print(f"⚠️  Unrecognized launcher '{launcher}'; "
+                      f"defaulting to torchrun for local deployment")
+            dist_launcher = "torchrun"
+        runtime_ngpus = int(self.context.ctx["docker_env_vars"].get(
+            "MAD_RUNTIME_NGPUS", str(resolved_gpu_count)))
+        launcher_cmd = self._generate_local_launcher_command(dist_launcher, runtime_ngpus)
+        self.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] = launcher_cmd
+        if launcher_cmd:
+            print(f"ℹ️  Set MAD_MULTI_NODE_RUNNER for local deployment "
+                  f"(launcher={dist_launcher}): {launcher_cmd}")
+
     _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     def get_env_arg(self, run_env: typing.Dict) -> str:
@@ -705,16 +755,24 @@ class ContainerRunner:
 
         return env_args
 
-    def get_mount_arg(self, mount_datapaths: typing.List) -> str:
-        """Get the mount arguments for docker run."""
+    def get_mount_arg(self, mount_datapaths: typing.List, excluded_container_targets: typing.Optional[typing.Set[str]] = None) -> str:
+        """Get the mount arguments for docker run.
+
+        excluded_container_targets lists container-side paths already mounted via
+        additional_docker_run_options so we do not emit a duplicate -v (docker
+        rejects \"Duplicate mount point\").
+        """
         mount_args = ""
+        excluded_container_targets = excluded_container_targets or set()
 
         # Mount data paths
         if mount_datapaths:
             for mount_datapath in mount_datapaths:
                 if mount_datapath:
+                    if mount_datapath["home"] in excluded_container_targets:
+                        continue
                     mount_args += (
-                        f"-v {mount_datapath['path']}:{mount_datapath['home']}"
+                        f"-v {shlex.quote(mount_datapath['path'])}:{shlex.quote(mount_datapath['home'])}"
                     )
                     if (
                         "readwrite" in mount_datapath
@@ -727,12 +785,13 @@ class ContainerRunner:
         # Mount context paths
         if "docker_mounts" in self.context.ctx:
             for mount_arg in self.context.ctx["docker_mounts"].keys():
+                if mount_arg in excluded_container_targets:
+                    continue
                 mount_args += (
-                    f"-v {self.context.ctx['docker_mounts'][mount_arg]}:{mount_arg} "
+                    f"-v {shlex.quote(self.context.ctx['docker_mounts'][mount_arg])}:{shlex.quote(mount_arg)} "
                 )
 
         return mount_args
-
     def apply_tools(
         self,
         pre_encapsulate_post_scripts: typing.Dict,
@@ -781,7 +840,7 @@ class ContainerRunner:
             # Update environment variables (always apply, even if cmd is duplicate)
             if "env_vars" in tool_config:
                 run_env.update(tool_config["env_vars"])
-
+            
             # Only add cmd if it hasn't been added yet
             # This prevents duplicate wrappers like get_library_trace.py
             if "cmd" in tool_config:
@@ -789,13 +848,172 @@ class ContainerRunner:
                 if cmd not in added_cmds:
                     # Prepend encapsulate cmd
                     pre_encapsulate_post_scripts["encapsulate_script"] = (
-                        cmd + " " + pre_encapsulate_post_scripts["encapsulate_script"]
+                        cmd
+                        + " "
+                        + pre_encapsulate_post_scripts["encapsulate_script"]
                     )
                     added_cmds.add(cmd)
                 else:
-                    print(
-                        f"  Note: Command '{cmd}' already added by another tool, skipping duplicate."
+                    print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
+
+    def _run_self_managed(
+        self,
+        model_info: typing.Dict,
+        build_info: typing.Dict,
+        log_file_path: str,
+        timeout: int,
+        run_results: typing.Dict,
+        pre_encapsulate_post_scripts: typing.Dict,
+        run_env: typing.Dict,
+    ) -> typing.Dict:
+        """
+        Run script directly on the host (self-managed launcher, not inside madengine Docker).
+        
+        Used for slurm_multi launchers that manage their own Docker containers
+        via SLURM srun commands. The script is executed directly on the node.
+        
+        Args:
+            model_info: Model configuration from manifest
+            build_info: Build information from manifest
+            log_file_path: Path to log file
+            timeout: Execution timeout in seconds
+            run_results: Dictionary to store run results
+            pre_encapsulate_post_scripts: Pre/post script configuration
+            run_env: Environment variables for the script
+
+        Returns:
+            Dictionary with run results
+        """
+        self.rich_console.print(f"[dim]{'='*80}[/dim]")
+
+        # Prepare script path
+        scripts_arg = model_info["scripts"]
+
+        # Get the current working directory (might be temp workspace)
+        cwd = os.getcwd()
+        print(f"📂 Current directory: {cwd}")
+
+        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm") or scripts_arg.endswith(".py"):
+            script_path = scripts_arg
+        else:
+            # Directory specified - look for run.sh
+            script_path = os.path.join(scripts_arg, "run.sh")
+        
+        # If script path is relative, make it absolute from cwd
+        if not os.path.isabs(script_path):
+            script_path = os.path.join(cwd, script_path)
+        
+        # Check script exists
+        if not os.path.exists(script_path):
+            print(f"⚠️ Script not found at: {script_path}")
+            # Try alternative locations
+            alt_path = os.path.join(cwd, os.path.basename(scripts_arg))
+            if os.path.exists(alt_path):
+                script_path = alt_path
+                print(f"✓ Found at alternative location: {script_path}")
+            else:
+                raise FileNotFoundError(f"Script not found: {script_path}")
+        
+        script_dir = os.path.dirname(script_path) or cwd
+        print(f"📜 Script: {script_path}")
+        print(f"📁 Working directory: {script_dir}")
+        
+        # Prepare model arguments
+        model_args = self.context.ctx.get("model_args", model_info.get("args", ""))
+        print(f"📝 Arguments: {model_args}")
+        
+        # Build command. The eventual `subprocess.run(..., shell=True)` below
+        # interprets shell metacharacters in `script_path` and `model_args`,
+        # so quote each piece explicitly. `model_args` is a CLI/manifest-
+        # supplied free-form string -- shlex.split + per-arg shlex.quote
+        # passes literal arguments to the script even when the input contains
+        # `$()`, backticks, `;`, etc.
+        _script_q = shlex.quote(script_path)
+        _args_q = (
+            " ".join(shlex.quote(a) for a in shlex.split(model_args))
+            if model_args
+            else ""
+        )
+        if script_path.endswith(".py"):
+            cmd = f"python3 {_script_q} {_args_q}".rstrip()
+        else:
+            cmd = f"bash {_script_q} {_args_q}".rstrip()
+
+        print(f"🔧 Command: {cmd}")
+        
+        # Prepare environment
+        env = os.environ.copy()
+        env.update(run_env)
+        
+        # Add model-specific env vars from model_info.
+        # Log keys only (not values) so credentials in env_vars (HF_TOKEN, MAD_DOCKERHUB_PASSWORD,
+        # CONNECT_*_TOKEN, etc.) carried via the model card don't leak into the run log.
+        if "env_vars" in model_info and model_info["env_vars"]:
+            for key, value in model_info["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}=<set>")
+
+        # Add env vars from additional_context.
+        # Log keys only (not values) for consistency with model_info env vars and to avoid
+        # leaking sensitive values while still showing operators what was applied.
+        if self.additional_context and "env_vars" in self.additional_context:
+            for key, value in self.additional_context["env_vars"].items():
+                env[key] = str(value)
+                print(f"  ENV: {key}=<set>")
+        
+        # Run script with logging
+        test_start_time = time.time()
+        self.rich_console.print("\n[bold blue]Running script (self-managed launcher)...[/bold blue]")
+        
+        try:
+            with open(log_file_path, mode="w", buffering=1) as outlog:
+                with redirect_stdout(
+                    PythonicTee(outlog, self.live_output)
+                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                    print(f"⏰ Setting timeout to {timeout} seconds.")
+                    print(f"🚀 Executing: {cmd}")
+                    print(f"📂 Working directory: {script_dir}")
+                    print(f"{'='*80}")
+                    
+                    # NOTE: shell=True is required because cmd embeds shell features
+                    # (pipes, redirects, env-var substitution) constructed earlier in this
+                    # method. cmd is built from validated model card / manifest fields and
+                    # any user-provided model_args are routed through shlex-quoted assembly
+                    # in the caller — do NOT concatenate raw user input directly into cmd.
+                    result = subprocess.run(  # noqa: S602 (shell=True intentional, see comment above)
+                        cmd,
+                        shell=True,
+                        cwd=script_dir,
+                        env=env,
+                        timeout=timeout if timeout > 0 else None,
                     )
+                    
+                    run_results["test_duration"] = time.time() - test_start_time
+                    print(f"\n{'='*80}")
+                    print(f"⏱️ Test Duration: {run_results['test_duration']:.2f} seconds")
+                    
+                    if result.returncode == 0:
+                        run_results["status"] = "SUCCESS"
+                        self.rich_console.print("[bold green]✓ Script completed successfully[/bold green]")
+                    else:
+                        run_results["status"] = "FAILURE"
+                        run_results["status_detail"] = f"Exit code {result.returncode}"
+                        self.rich_console.print(f"[bold red]✗ Script failed with exit code {result.returncode}[/bold red]")
+                        raise subprocess.CalledProcessError(result.returncode, cmd)
+                        
+        except subprocess.TimeoutExpired:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = f"Timeout after {timeout}s"
+            run_results["test_duration"] = time.time() - test_start_time
+            self.rich_console.print(f"[bold red]✗ Script timed out after {timeout}s[/bold red]")
+            raise
+        except Exception as e:
+            run_results["status"] = "FAILURE"
+            run_results["status_detail"] = str(e)
+            run_results["test_duration"] = time.time() - test_start_time
+            raise
+        
+        return run_results
 
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
@@ -819,6 +1037,12 @@ class ContainerRunner:
     ) -> None:
         """Gather system environment details.
 
+        Appends ``run_rocenv_tool.sh`` to pre_scripts with args:
+        ``<output_basename> <rocenv_mode> <guest_os>`` (e.g. ``my_model_env lite UBUNTU``).
+        ``guest_os`` comes from ``docker_env_vars.MAD_GUEST_OS`` (if set) else
+        ``context.ctx['guest_os']``, defaulting to ``UBUNTU`` — aligned with
+        ``MAD_GUEST_OS`` injected for the container before this runs.
+
         Args:
             pre_encapsulate_post_scripts: The pre, encapsulate and post scripts.
             model_name: The model name.
@@ -835,7 +1059,16 @@ class ContainerRunner:
         # initialize pre_env_details
         pre_env_details = {}
         pre_env_details["path"] = "scripts/common/pre_scripts/run_rocenv_tool.sh"
-        pre_env_details["args"] = model_name.replace("/", "_") + "_env"
+        output_name = model_name.replace("/", "_") + "_env"
+        rocenv_mode = self.context.ctx.get("rocenv_mode", "lite")
+        if rocenv_mode not in ("lite", "full"):
+            print(f"Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'")
+            rocenv_mode = "lite"
+        dv = self.context.ctx.get("docker_env_vars") or {}
+        guest_os = str(
+            dv.get("MAD_GUEST_OS") or self.context.ctx.get("guest_os", DEFAULT_GUEST_OS)
+        ).strip().upper()
+        pre_env_details["args"] = f"{output_name} {rocenv_mode} {guest_os}"
         pre_encapsulate_post_scripts["pre_scripts"].append(pre_env_details)
         print(f"pre encap post scripts: {pre_encapsulate_post_scripts}")
 
@@ -866,6 +1099,7 @@ class ContainerRunner:
         build_info: typing.Dict = None,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         timeout: int = 7200,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
@@ -879,6 +1113,7 @@ class ContainerRunner:
             build_info: Optional build information from manifest
             keep_alive: Whether to keep container alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             timeout: Execution timeout in seconds
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
@@ -887,9 +1122,7 @@ class ContainerRunner:
         Returns:
             dict: Execution results including performance metrics
         """
-        self.rich_console.print(
-            f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]"
-        )
+        self.rich_console.print(f"[bold green]🏃 Running model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan] [dim]in container[/dim] [yellow]{docker_image}[/yellow]")
 
         # Resolve image: if model-specific image is missing, try shared primus_pretrain image (one build for all configs)
         docker_image = self._resolve_docker_image(docker_image, model_info["name"])
@@ -961,11 +1194,11 @@ class ContainerRunner:
 
         # Add environment variables
         docker_options += f"--env MAD_MODEL_NAME='{model_info['name']}' "
-        if model_info.get("multiple_results"):
-            docker_options += (
-                f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
-            )
-        docker_options += f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
+        if model_info.get('multiple_results'):
+            docker_options += f"--env MAD_OUTPUT_CSV='{model_info['multiple_results']}' "
+        docker_options += (
+            f"--env JENKINS_BUILD_NUMBER='{get_build_number()}' "
+        )
 
         # Gather data and environment
         run_env = {}
@@ -980,9 +1213,7 @@ class ContainerRunner:
         # This ensures GPU resolution works correctly
         if os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm":
             if "NPROC_PER_NODE" in os.environ or "GPUS_PER_NODE" in os.environ:
-                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get(
-                    "GPUS_PER_NODE"
-                )
+                gpus_per_node_str = os.environ.get("NPROC_PER_NODE") or os.environ.get("GPUS_PER_NODE")
                 if gpus_per_node_str:
                     try:
                         gpus = int(gpus_per_node_str)
@@ -992,65 +1223,44 @@ class ContainerRunner:
                             self.additional_context = {}
                         if "gpus_per_node" not in self.additional_context:
                             self.additional_context["gpus_per_node"] = gpus
-                            print(
-                                f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)"
-                            )
+                            print(f"ℹ️  SLURM GPU override: {gpus} GPUs per node (from shell environment)")
                     except ValueError:
                         pass
-
+        
         # List of environment variables to pass from shell to Docker (for SLURM jobs)
         slurm_env_vars = [
-            "MASTER_ADDR",
-            "MASTER_PORT",
-            "WORLD_SIZE",
-            "RANK",
-            "NODE_RANK",
-            "NNODES",
-            "NPROC_PER_NODE",
-            "MAD_MULTI_NODE_RUNNER",
-            "MAD_COLLECT_METRICS",
-            "NCCL_SOCKET_IFNAME",
-            "GLOO_SOCKET_IFNAME",
-            "NCCL_DEBUG",
-            "NCCL_IB_DISABLE",
-            "NCCL_NET_GDR_LEVEL",
+            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
             # Primus launcher (config path and optional CLI extra args)
-            "PRIMUS_CONFIG_PATH",
-            "PRIMUS_CLI_EXTRA",
+            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
             # Rendezvous timeout so all nodes can join after pull
-            "TORCH_ELASTIC_RDZV_TIMEOUT",
+            'TORCH_ELASTIC_RDZV_TIMEOUT',
             # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
             # CRITICAL: These must be passed to Docker for proper GPU device mapping
-            "HIP_VISIBLE_DEVICES",
-            "ROCR_VISIBLE_DEVICES",
-            "CUDA_VISIBLE_DEVICES",
+            'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
         ]
-
+        
         # Check shell environment and add to docker_env_vars
         merged_from_env = 0
         for var_name in slurm_env_vars:
             if var_name in os.environ:
                 self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
                 merged_from_env += 1
-
+        
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
         # which tells Ray to IGNORE HIP_VISIBLE_DEVICES. We must explicitly override it.
         # This is only needed if HIP_VISIBLE_DEVICES is set (indicating AMD GPU usage with Ray)
-        if "HIP_VISIBLE_DEVICES" in self.context.ctx["docker_env_vars"]:
+        if 'HIP_VISIBLE_DEVICES' in self.context.ctx["docker_env_vars"]:
             # Set to empty string to disable Ray's behavior of ignoring HIP_VISIBLE_DEVICES
-            self.context.ctx["docker_env_vars"][
-                "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"
-            ] = ""
-            print(
-                "ℹ️  Overriding RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES to enable HIP_VISIBLE_DEVICES"
-            )
-
+            self.context.ctx["docker_env_vars"]['RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES'] = ''
+            print("ℹ️  Overriding RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES to enable HIP_VISIBLE_DEVICES")
+        
         if merged_from_env > 0:
-            print(
-                f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker"
-            )
-
+            print(f"ℹ️  Inherited {merged_from_env} environment variables from shell for Docker")
+        
         # Also merge from additional_context if present
         if self.additional_context and "docker_env_vars" in self.additional_context:
             merged_count = 0
@@ -1058,14 +1268,17 @@ class ContainerRunner:
                 self.context.ctx["docker_env_vars"][key] = value
                 merged_count += 1
             if merged_count > 0:
-                print(
-                    f"ℹ️  Merged {merged_count} environment variables from additional_context"
-                )
+                print(f"ℹ️  Merged {merged_count} environment variables from additional_context")
 
-        if (
-            self.context
-            and str(self.context.ctx.get("gpu_vendor", "")).upper().find("AMD") != -1
-        ):
+        # rocEnvTool full-mode installs: align container with madengine guest_os (after docker_env_vars merge)
+        if "MAD_GUEST_OS" not in self.context.ctx["docker_env_vars"]:
+            self.context.ctx["docker_env_vars"]["MAD_GUEST_OS"] = str(
+                self.context.ctx.get("guest_os", DEFAULT_GUEST_OS)
+            ).strip().upper()
+
+        if self.context and str(self.context.ctx.get("gpu_vendor", "")).upper().find(
+            "AMD"
+        ) != -1:
             from madengine.utils.rocm_path_resolver import finalize_container_rocm_path
 
             # Determine whether the user explicitly supplied ROCM_PATH for the container.
@@ -1074,11 +1287,13 @@ class ContainerRunner:
             # If they did not, clear any ROCM_PATH left from a previous model run so
             # finalize always re-resolves for the current docker_image (OCI config →
             # in-image probe → /opt/rocm default).
-            user_supplied_rocm_path = str(
-                (self.additional_context or {})
-                .get("docker_env_vars", {})
-                .get("ROCM_PATH", "")
-            ).strip()
+            user_supplied_rocm_path = (
+                str(
+                    (self.additional_context or {})
+                    .get("docker_env_vars", {})
+                    .get("ROCM_PATH", "")
+                ).strip()
+            )
             if not user_supplied_rocm_path:
                 self.context.ctx["docker_env_vars"].pop("ROCM_PATH", None)
 
@@ -1108,9 +1323,7 @@ class ContainerRunner:
         # Add system environment collection script to pre_scripts
         # Context can explicitly disable via gen_sys_env_details: false in additional_context
         ctx_sys_env = self.context.ctx.get("gen_sys_env_details")
-        should_collect_sys_env = (
-            ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
-        )
+        should_collect_sys_env = ctx_sys_env if ctx_sys_env is not None else generate_sys_env_details
         if should_collect_sys_env:
             self.gather_system_env_details(
                 pre_encapsulate_post_scripts, model_info["name"]
@@ -1122,36 +1335,35 @@ class ContainerRunner:
         docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
 
+        # Generate MAD_MULTI_NODE_RUNNER for Docker local deployment.
+        # SLURM and K8s generate this in their deployment layers (slurm.py,
+        # kubernetes_launcher_mixin.py). Docker local has no such layer, so
+        # we generate it here after GPU resolution provides MAD_RUNTIME_NGPUS.
+        self._resolve_local_multi_node_runner_env(model_info, resolved_gpu_count)
+
         # Filter out MIOPEN_USER_DB_PATH from run_env if it exists
         # It should be passed via docker_env_vars in context instead
         if "MIOPEN_USER_DB_PATH" in run_env:
             del run_env["MIOPEN_USER_DB_PATH"]
-            print(
-                "ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)"
-            )
-
+            print("ℹ️  Removed MIOPEN_USER_DB_PATH from run_env (will use context.docker_env_vars)")
+        
         # Add MIOPEN_USER_DB_PATH from shell environment to context.docker_env_vars
         # This is set by SLURM script with ${LOCAL_RANK} variable for per-process paths
-        if (
-            "MIOPEN_USER_DB_PATH" in os.environ
-            and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]
-        ):
-            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ[
-                "MIOPEN_USER_DB_PATH"
-            ]
-            print(
-                f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}"
-            )
-
+        if "MIOPEN_USER_DB_PATH" in os.environ and "MIOPEN_USER_DB_PATH" not in self.context.ctx["docker_env_vars"]:
+            self.context.ctx["docker_env_vars"]["MIOPEN_USER_DB_PATH"] = os.environ["MIOPEN_USER_DB_PATH"]
+            print(f"ℹ️  Added MIOPEN_USER_DB_PATH to docker_env_vars: {os.environ['MIOPEN_USER_DB_PATH']}")
+        
+        additional_opts = model_info.get('additional_docker_run_options', '')
+        excluded_mount_targets = self._extract_additional_mount_targets(additional_opts)
         docker_options += self.get_env_arg(run_env)
-        docker_options += self.get_mount_arg(mount_datapaths)
-        docker_options += f" {model_info.get('additional_docker_run_options', '')}"
+        docker_options += self.get_mount_arg(mount_datapaths, excluded_container_targets=excluded_mount_targets)
+        docker_options += f" {additional_opts}"
 
         # Generate container name
         base_container_name = "container_" + re.sub(
             ".*:", "", docker_image.replace("/", "_").replace(":", "_")
         )
-
+        
         # For multi-node SLURM jobs, add node rank to avoid name conflicts
         node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
         if node_rank is not None:
@@ -1159,11 +1371,38 @@ class ContainerRunner:
         else:
             container_name = base_container_name
 
-        print(f"Docker options: {docker_options}")
+        print(f"Docker options: {redact_secrets(docker_options)}")
 
-        self.rich_console.print(
-            f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]"
-        )
+        # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
+        # slurm_multi launchers run scripts directly on the host,
+        # not inside a madengine-managed Docker. The script manages its own containers via srun.
+        launcher = ""
+        if self.additional_context:
+            distributed_config = self.additional_context.get("distributed", {})
+            launcher = distributed_config.get("launcher", "")
+        if not launcher and model_info.get("distributed"):
+            launcher = model_info["distributed"].get("launcher", "")
+        if not launcher:
+            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+        if is_self_managed_launcher(launcher):
+            self.rich_console.print(
+                f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]"
+            )
+            self.rich_console.print(
+                "[dim]Script will manage its own Docker containers via SLURM[/dim]"
+            )
+            return self._run_self_managed(
+                model_info=model_info,
+                build_info=build_info,
+                log_file_path=log_file_path,
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts=pre_encapsulate_post_scripts,
+                run_env=run_env,
+            )
+        # ========== END SELF-MANAGED CHECK ==========
+
+        self.rich_console.print(f"\n[bold blue]🏃 Starting Docker container execution...[/bold blue]")
         print(f"🏷️  Image: {docker_image}")
         print(f"📦 Container: {container_name}")
         print(f"📝 Log file: {log_file_path}")
@@ -1173,13 +1412,12 @@ class ContainerRunner:
         # Run the container with logging
         try:
             with open(log_file_path, mode="w", buffering=1) as outlog:
-                with (
-                    redirect_stdout(PythonicTee(outlog, self.live_output)),
-                    redirect_stderr(PythonicTee(outlog, self.live_output)),
-                ):
+                with redirect_stdout(
+                    PythonicTee(outlog, self.live_output)
+                ), redirect_stderr(PythonicTee(outlog, self.live_output)):
                     # set timeout (print inside log redirection so it appears in log file)
                     print(f"⏰ Setting timeout to {str(timeout)} seconds.")
-
+                    
                     with Timeout(timeout):
                         model_docker = Docker(
                             docker_image,
@@ -1208,9 +1446,7 @@ class ContainerRunner:
                             model_docker.sh("/usr/bin/nvidia-smi || true")
 
                         # Print host vs container environment summary table
-                        _print_run_env_table(
-                            gpu_vendor, self.context, model_docker, self.rich_console
-                        )
+                        _print_run_env_table(gpu_vendor, self.context, model_docker, self.rich_console)
 
                         # Prepare model directory
                         model_dir = "run_directory"
@@ -1282,8 +1518,8 @@ class ContainerRunner:
 
                         # Prepare script execution
                         scripts_arg = model_info["scripts"]
-                        if scripts_arg.endswith(".sh"):
-                            # Shell script specified directly
+                        if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
+                            # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
                             dir_path = os.path.dirname(scripts_arg)
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):
@@ -1322,33 +1558,20 @@ class ContainerRunner:
                             and self.data
                         ):
                             self.data.prepare_data(model_info["data"], model_docker)
-
+                            
                             # Capture data provider information from selected_data_provider
                             if (
                                 hasattr(self.data, "selected_data_provider")
                                 and self.data.selected_data_provider
                             ):
                                 if "dataname" in self.data.selected_data_provider:
-                                    run_results["dataname"] = (
-                                        self.data.selected_data_provider["dataname"]
-                                    )
-                                if (
-                                    "data_provider_type"
-                                    in self.data.selected_data_provider
-                                ):
-                                    run_results["data_provider_type"] = (
-                                        self.data.selected_data_provider[
-                                            "data_provider_type"
-                                        ]
-                                    )
+                                    run_results["dataname"] = self.data.selected_data_provider["dataname"]
+                                if "data_provider_type" in self.data.selected_data_provider:
+                                    run_results["data_provider_type"] = self.data.selected_data_provider["data_provider_type"]
                                 if "duration" in self.data.selected_data_provider:
-                                    run_results["data_download_duration"] = (
-                                        self.data.selected_data_provider["duration"]
-                                    )
+                                    run_results["data_download_duration"] = self.data.selected_data_provider["duration"]
                                 if "size" in self.data.selected_data_provider:
-                                    run_results["data_size"] = (
-                                        self.data.selected_data_provider["size"]
-                                    )
+                                    run_results["data_size"] = self.data.selected_data_provider["size"]
                                 print(
                                     f"Data Provider Details: {run_results.get('dataname', '')}, "
                                     f"{run_results.get('data_provider_type', '')}, "
@@ -1359,24 +1582,84 @@ class ContainerRunner:
                         # Set permissions
                         model_docker.sh(f"chmod -R a+rw {model_dir}")
 
-                        # Run the model
+                        # Run the model (or skip, leaving container alive for manual exec)
                         test_start_time = time.time()
-                        self.rich_console.print(
-                            "[bold blue]Running model...[/bold blue]"
-                        )
-
-                        model_args = self.context.ctx.get(
-                            "model_args", model_info["args"]
-                        )
-                        # Use the container timeout (default 7200s) for script execution
-                        # to prevent indefinite hangs
-                        model_output = model_docker.sh(
-                            f"cd {model_dir} && {script_name} {model_args}",
-                            timeout=timeout,
-                        )
-                        # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
-                        if not self.live_output:
-                            print(model_output)
+                        model_args = self.context.ctx.get("model_args", model_info["args"])
+                        if skip_model_run:
+                            self.rich_console.print(
+                                "[bold cyan]Skipping model run (--skip-model-run).[/bold cyan]"
+                            )
+                            if keep_alive:
+                                self.rich_console.print(
+                                    f"[dim]To run model manually:[/dim] cd {model_dir} && {script_name} {model_args}"
+                                )
+                            else:
+                                self.rich_console.print(
+                                    "[dim]Tip: re-run with --keep-alive to keep the container and model dir for manual exec.[/dim]"
+                                )
+                        else:
+                            self.rich_console.print("[bold blue]Running model...[/bold blue]")
+                            # Use the container timeout (default 7200s) for script execution
+                            # to prevent indefinite hangs
+                            try:
+                                model_output = model_docker.sh(
+                                    f"cd {model_dir} && {script_name} {model_args}",
+                                    timeout=timeout,
+                                )
+                            except RuntimeError as run_err:
+                                # On script failure, collect lightweight diagnostics from the
+                                # running container (process table, listening ports, log tails).
+                                # These are printed via Console.sh so they land in the run log
+                                # alongside the failure. Failures here are non-fatal.
+                                run_err_str = str(run_err)
+                                container_id_match = re.search(
+                                    r"docker exec\s+([a-f0-9]+)\s+bash",
+                                    run_err_str,
+                                )
+                                failed_container_id = (
+                                    container_id_match.group(1)
+                                    if container_id_match
+                                    else None
+                                )
+                                if failed_container_id:
+                                    try:
+                                        self.console.sh(
+                                            f"docker exec {failed_container_id} bash -lc "
+                                            f"\"ps -eo pid,ppid,stat,etime,cmd | sed -n '1,160p'\"",
+                                            timeout=20,
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        self.console.sh(
+                                            f"docker exec {failed_container_id} bash -lc "
+                                            f"\"(ss -lntp 2>/dev/null || netstat -lntp 2>/dev/null "
+                                            f"|| lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true) "
+                                            f"| sed -n '1,200p'\"",
+                                            timeout=20,
+                                        )
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _md_q = _bash_quote_path(model_dir)
+                                        self.console.sh(
+                                            f"docker exec {failed_container_id} bash -lc "
+                                            f"\"for d in /run_logs /run_logs/${{SLURM_JOB_ID:-}} "
+                                            f"/myworkspace/{_md_q}; do "
+                                            f"if [ -d \\\"$d\\\" ]; then echo ===DIR:$d===; "
+                                            f"ls -lah \\\"$d\\\" | sed -n '1,80p'; fi; done; "
+                                            f"for f in /run_logs/*.log /run_logs/${{SLURM_JOB_ID:-}}/*.log "
+                                            f"/myworkspace/{_md_q}/*.log; do "
+                                            f"if [ -f \\\"$f\\\" ]; then echo ===$f===; "
+                                            f"tail -n 80 \\\"$f\\\"; fi; done\"",
+                                            timeout=30,
+                                        )
+                                    except Exception:
+                                        pass
+                                raise
+                            # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
+                            if not self.live_output:
+                                print(model_output)
 
                         run_results["test_duration"] = time.time() - test_start_time
                         print(f"Test Duration: {run_results['test_duration']} seconds")
@@ -1391,469 +1674,419 @@ class ContainerRunner:
                                 pre_encapsulate_post_scripts["post_scripts"],
                             )
 
-                        # When model writes performance to a file in run_directory, copy to cwd
-                        # so the host can read it (e.g. bind-mounted workspace) before extraction.
-                        multiple_results_file = (
-                            model_info.get("multiple_results") or ""
-                        ).strip()
-                        if multiple_results_file:
+                        if skip_model_run:
+                            run_results["status"] = "SKIPPED"
+                            self.rich_console.print(
+                                "[bold cyan]Status: SKIPPED (--skip-model-run)[/bold cyan]"
+                            )
+                        else:
+                            # When model writes performance to a file in run_directory, copy to cwd
+                            # so the host can read it (e.g. bind-mounted workspace) before extraction.
+                            multiple_results_file = (model_info.get("multiple_results") or "").strip()
+                            if multiple_results_file:
+                                try:
+                                    model_docker.sh(
+                                        _cp_model_dir_file_to_cwd_cmd(
+                                            model_dir, multiple_results_file
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+
+                            # Extract performance metrics from logs
+                            # Look for performance data in the log output similar to original run_models.py
                             try:
-                                model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(
-                                        model_dir, multiple_results_file
+                                # Check if multiple results file is specified in model_info
+                                multiple_results = model_info.get("multiple_results", None)
+                                if multiple_results:
+                                    multiple_results = multiple_results.strip()
+
+                                if multiple_results:
+                                    resolved_path = _resolve_multiple_results_path(
+                                        multiple_results, model_dir
                                     )
-                                )
-                            except Exception:
-                                pass
-
-                        # Extract performance metrics from logs
-                        # Look for performance data in the log output similar to original run_models.py
-                        try:
-                            # Check if multiple results file is specified in model_info
-                            multiple_results = model_info.get("multiple_results", None)
-                            if multiple_results:
-                                multiple_results = multiple_results.strip()
-
-                            if multiple_results:
-                                resolved_path = _resolve_multiple_results_path(
-                                    multiple_results, model_dir
-                                )
-                                if not resolved_path:
-                                    self.rich_console.print(
-                                        f"[yellow]Warning: Could not find multiple results file "
-                                        f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
-                                    )
-                                    run_results["performance"] = None
-                                else:
-                                    run_results["performance"] = resolved_path
-                                    # Validate multiple results file format using proper CSV parsing
-                                    try:
-                                        import csv
-
-                                        with open(resolved_path, "r") as f:
-                                            csv_reader = csv.DictReader(f)
-
-                                            # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
-                                            csv_reader.fieldnames = [
-                                                f.strip() for f in csv_reader.fieldnames
-                                            ]
-
-                                            # Check if 'performance' column exists
-                                            if (
-                                                "performance"
-                                                not in csv_reader.fieldnames
-                                            ):
-                                                print(
-                                                    "Error: 'performance' column not found in multiple results file."
-                                                )
-                                                run_results["performance"] = None
-                                            else:
-                                                # Check if at least one row has a non-empty performance value
-                                                has_valid_perf = False
-                                                for row in csv_reader:
-                                                    if row.get(
-                                                        "performance", ""
-                                                    ).strip():
-                                                        has_valid_perf = True
-                                                        break
-
-                                                if not has_valid_perf:
-                                                    run_results["performance"] = None
-                                                    print(
-                                                        "Error: Performance metric is empty in all rows of multiple results file."
-                                                    )
-                                    except Exception as e:
+                                    if not resolved_path:
                                         self.rich_console.print(
-                                            f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                            f"[yellow]Warning: Could not find multiple results file "
+                                            f"(tried cwd and {model_dir}/): {multiple_results}[/yellow]"
                                         )
                                         run_results["performance"] = None
-                            else:
-                                # Match the actual output format: "performance: 14164 samples_per_second"
-                                # Simple pattern to capture number and metric unit
+                                    else:
+                                        run_results["performance"] = resolved_path
+                                        # Validate multiple results file format using proper CSV parsing
+                                        try:
+                                            import csv
+                                            with open(resolved_path, "r") as f:
+                                                csv_reader = csv.DictReader(f)
 
-                                # Extract from log file
-                                try:
-                                    # Note: re and os are already imported at module level (lines 10, 15)
+                                                # Strip whitespace from fieldnames to handle headers like "model, performance, metric"
+                                                csv_reader.fieldnames = [f.strip() for f in csv_reader.fieldnames]
 
-                                    # Verify log file exists and is readable
-                                    if not os.path.exists(log_file_path):
-                                        print(
-                                            f"Warning: Log file not found: {log_file_path}"
-                                        )
+                                                # Check if 'performance' column exists
+                                                if 'performance' not in csv_reader.fieldnames:
+                                                    print("Error: 'performance' column not found in multiple results file.")
+                                                    run_results["performance"] = None
+                                                else:
+                                                    # Check if at least one row has a non-empty performance value
+                                                    has_valid_perf = False
+                                                    for row in csv_reader:
+                                                        if row.get('performance', '').strip():
+                                                            has_valid_perf = True
+                                                            break
+
+                                                    if not has_valid_perf:
+                                                        run_results["performance"] = None
+                                                        print("Error: Performance metric is empty in all rows of multiple results file.")
+                                        except Exception as e:
+                                            self.rich_console.print(
+                                                f"[yellow]Warning: Could not validate multiple results file: {e}[/yellow]"
+                                            )
+                                            run_results["performance"] = None
+                                else:
+                                    # Match the actual output format: "performance: 14164 samples_per_second"
+                                    # Simple pattern to capture number and metric unit
+
+                                    # Extract from log file
+                                    try:
+                                        # Note: re and os are already imported at module level (lines 10, 15)
+
+                                        # Verify log file exists and is readable
+                                        if not os.path.exists(log_file_path):
+                                            print(f"Warning: Log file not found: {log_file_path}")
+                                            run_results["performance"] = None
+                                            run_results["metric"] = None
+                                        else:
+                                            # Read the log file once (avoids rocprofv3 crash from shell pipelines)
+                                            # This approach matches the Kubernetes implementation pattern
+                                            with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                log_content = f.read()
+
+                                            # Try multiple patterns to match different log formats
+
+                                            # Pattern 1: "performance: <value>[<unit>][,] <metric>"
+                                            # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
+                                            match = re.search(PERFORMANCE_LOG_PATTERN, log_content)
+
+                                            if match:
+                                                run_results["performance"] = match.group(1).strip()
+                                                run_results["metric"] = match.group(2).strip()
+                                                print(f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}")
+                                            else:
+                                                # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
+                                                # This matches the actual output from HuggingFace Trainer
+                                                hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
+                                                hf_match = re.search(hf_pattern, log_content)
+
+                                                if hf_match:
+                                                    run_results["performance"] = hf_match.group(1).strip()
+                                                    run_results["metric"] = "samples_per_second"
+                                                    print(f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}")
+                                                else:
+                                                    # No performance metrics found
+                                                    print("Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'")
+                                                    run_results["performance"] = None
+                                                    run_results["metric"] = None
+
+                                    except Exception as e:
+                                        print(f"Warning: Error extracting performance metrics: {e}")
                                         run_results["performance"] = None
                                         run_results["metric"] = None
-                                    else:
-                                        # Read the log file once (avoids rocprofv3 crash from shell pipelines)
-                                        # This approach matches the Kubernetes implementation pattern
+                                        # Performance extraction is optional - don't fail the entire run
+                            except Exception as e:
+                                print(
+                                    f"Warning: Could not extract performance metrics: {e}"
+                                )
+
+                            # Set status based on performance and error patterns
+                            # First check for obvious failure patterns in the logs
+                            try:
+                                scan_logs, error_patterns, extra_benign = (
+                                    resolve_log_error_scan_config(
+                                        model_info, self.additional_context
+                                    )
+                                )
+
+                                has_errors = False
+                                if (
+                                    scan_logs
+                                    and log_file_path
+                                    and os.path.exists(log_file_path)
+                                ):
+                                    try:
+                                        # Benign: literal substrings (incl. user extra_benign) vs regex (ROCProf lines).
+                                        benign_substrings = [
+                                            "Failed to establish connection to the metrics exporter agent",
+                                            "RpcError: Running out of retries to initialize the metrics agent",
+                                            "Metrics will not be exported",
+                                            "FutureWarning",
+                                            "Opened result file:",
+                                            "SQLite3 generation ::",
+                                            "rocpd_op:",
+                                            "rpd_tracer:",
+                                        ]
+                                        benign_substrings.extend(extra_benign)
+                                        benign_regexes = [
+                                            # ROCProf/glog: E/W prefixes are log levels, not app errors
+                                            r"^E[0-9]{8}.*generateRocpd\.cpp",
+                                            r"^W[0-9]{8}.*simple_timer\.cpp",
+                                            r"^W[0-9]{8}.*generateRocpd\.cpp",
+                                            r"^E[0-9]{8}.*tool\.cpp",
+                                            r"\[rocprofv3\]",
+                                        ]
+
+                                        # Scan in Python (no shell; literals vs regex benign rules are explicit).
                                         with open(
                                             log_file_path,
                                             "r",
                                             encoding="utf-8",
                                             errors="ignore",
-                                        ) as f:
-                                            log_content = f.read()
+                                        ) as _lf:
+                                            log_scan_text = _lf.read()
 
-                                        # Try multiple patterns to match different log formats
-
-                                        # Pattern 1: "performance: <value>[<unit>][,] <metric>"
-                                        # See PERFORMANCE_LOG_PATTERN in deployment.base for accepted formats.
-                                        match = re.search(
-                                            PERFORMANCE_LOG_PATTERN, log_content
-                                        )
-
-                                        if match:
-                                            run_results["performance"] = match.group(
-                                                1
-                                            ).strip()
-                                            run_results["metric"] = match.group(
-                                                2
-                                            ).strip()
-                                            print(
-                                                f"✓ Extracted performance: {run_results['performance']} {run_results['metric']}"
-                                            )
-                                        else:
-                                            # Pattern 2: HuggingFace format - "'train_samples_per_second': 4.23" or "train_samples_per_second = 4.23"
-                                            # This matches the actual output from HuggingFace Trainer
-                                            hf_pattern = r'train_samples_per_second[\'"\s:=]+([0-9][0-9.eE+-]*)'
-                                            hf_match = re.search(
-                                                hf_pattern, log_content
-                                            )
-
-                                            if hf_match:
-                                                run_results["performance"] = (
-                                                    hf_match.group(1).strip()
-                                                )
-                                                run_results["metric"] = (
-                                                    "samples_per_second"
-                                                )
+                                        for pattern in error_patterns:
+                                            if log_text_has_error_pattern(
+                                                log_scan_text,
+                                                pattern,
+                                                benign_substrings,
+                                                benign_regexes,
+                                            ):
+                                                has_errors = True
                                                 print(
-                                                    f"✓ Extracted performance (HuggingFace format): {run_results['performance']} {run_results['metric']}"
+                                                    f"Found error pattern '{pattern}' in logs"
                                                 )
-                                            else:
-                                                # No performance metrics found
-                                                print(
-                                                    "Warning: Performance metric not found in expected format 'performance: NUMBER METRIC' or 'train_samples_per_second'"
-                                                )
-                                                run_results["performance"] = None
-                                                run_results["metric"] = None
-
-                                except Exception as e:
-                                    print(
-                                        f"Warning: Error extracting performance metrics: {e}"
-                                    )
-                                    run_results["performance"] = None
-                                    run_results["metric"] = None
-                                    # Performance extraction is optional - don't fail the entire run
-                        except Exception as e:
-                            print(
-                                f"Warning: Could not extract performance metrics: {e}"
-                            )
-
-                        # Set status based on performance and error patterns
-                        # First check for obvious failure patterns in the logs
-                        try:
-                            scan_logs, error_patterns, extra_benign = (
-                                resolve_log_error_scan_config(
-                                    model_info, self.additional_context
-                                )
-                            )
-
-                            has_errors = False
-                            if (
-                                scan_logs
-                                and log_file_path
-                                and os.path.exists(log_file_path)
-                            ):
-                                try:
-                                    # Benign: literal substrings (incl. user extra_benign) vs regex (ROCProf lines).
-                                    benign_substrings = [
-                                        "Failed to establish connection to the metrics exporter agent",
-                                        "RpcError: Running out of retries to initialize the metrics agent",
-                                        "Metrics will not be exported",
-                                        "FutureWarning",
-                                        "Opened result file:",
-                                        "SQLite3 generation ::",
-                                        "rocpd_op:",
-                                        "rpd_tracer:",
-                                    ]
-                                    benign_substrings.extend(extra_benign)
-                                    benign_regexes = [
-                                        # ROCProf/glog: E/W prefixes are log levels, not app errors
-                                        r"^E[0-9]{8}.*generateRocpd\.cpp",
-                                        r"^W[0-9]{8}.*simple_timer\.cpp",
-                                        r"^W[0-9]{8}.*generateRocpd\.cpp",
-                                        r"^E[0-9]{8}.*tool\.cpp",
-                                        r"\[rocprofv3\]",
-                                    ]
-
-                                    # Scan in Python (no shell; literals vs regex benign rules are explicit).
-                                    with open(
-                                        log_file_path,
-                                        "r",
-                                        encoding="utf-8",
-                                        errors="ignore",
-                                    ) as _lf:
-                                        log_scan_text = _lf.read()
-
-                                    for pattern in error_patterns:
-                                        if log_text_has_error_pattern(
-                                            log_scan_text,
-                                            pattern,
-                                            benign_substrings,
-                                            benign_regexes,
-                                        ):
-                                            has_errors = True
-                                            print(
-                                                f"Found error pattern '{pattern}' in logs"
-                                            )
-                                            break
-                                except Exception:
-                                    pass  # Error checking is optional
-                            elif not scan_logs:
-                                self.rich_console.print(
-                                    "[dim]ℹ️  Log error pattern scan disabled "
-                                    "(log_error_pattern_scan).[/dim]"
-                                )
-
-                            # Status logic: Must have performance AND no errors to be considered success
-                            # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
-                            # are not expected to report global performance metrics
-                            performance_value = run_results.get("performance")
-                            has_performance = (
-                                performance_value
-                                and performance_value.strip()
-                                and performance_value.strip() != "N/A"
-                            )
-
-                            # Check if this is a worker node (not collecting metrics)
-                            is_worker_node = (
-                                os.environ.get("MAD_COLLECT_METRICS", "true").lower()
-                                == "false"
-                            )
-
-                            if has_errors:
-                                run_results["status"] = "FAILURE"
-                                self.rich_console.print(
-                                    f"[red]Status: FAILURE (error patterns detected in logs)[/red]"
-                                )
-                            elif has_performance:
-                                run_results["status"] = "SUCCESS"
-                                self.rich_console.print(
-                                    f"[green]Status: SUCCESS (performance metrics found, no errors)[/green]"
-                                )
-                            elif is_worker_node:
-                                # Worker nodes don't report global performance metrics - this is expected
-                                run_results["status"] = "SUCCESS"
-                                self.rich_console.print(
-                                    f"[green]Status: SUCCESS (worker node, no errors detected)[/green]"
-                                )
-                            else:
-                                run_results["status"] = "FAILURE"
-                                self.rich_console.print(
-                                    f"[red]Status: FAILURE (no performance metrics)[/red]"
-                                )
-
-                        except Exception as e:
-                            self.rich_console.print(
-                                f"[yellow]Warning: Error in status determination: {e}[/yellow]"
-                            )
-                            # Fallback to simple performance check
-                            # Worker nodes don't need performance metrics
-                            is_worker_node = (
-                                os.environ.get("MAD_COLLECT_METRICS", "true").lower()
-                                == "false"
-                            )
-                            run_results["status"] = (
-                                "SUCCESS"
-                                if run_results.get("performance") or is_worker_node
-                                else "FAILURE"
-                            )
-
-                        print(
-                            f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
-                        )
-
-                        # =============================================================================
-                        # Multi-Node Performance Collection (Master Node Only)
-                        # =============================================================================
-                        # For distributed training, only master node should collect metrics
-                        # Check skip_perf_collection flag from additional_context
-                        skip_perf = self.additional_context.get(
-                            "skip_perf_collection", False
-                        )
-
-                        if skip_perf:
-                            self.rich_console.print(
-                                "[cyan]ℹ️  Worker node: Skipping performance metric collection "
-                                "(master node will collect results)[/cyan]"
-                            )
-                        else:
-                            # Generate performance results and update perf.csv
-                            self.ensure_perf_csv_exists()
-                            try:
-                                # Create run details dictionary for CSV generation
-                                run_details_dict = self.create_run_details_dict(
-                                    model_info, build_info, run_results
-                                )
-
-                                # Handle multiple results if specified
-                                multiple_results = model_info.get(
-                                    "multiple_results", None
-                                )
-                                resolved_multiple_results = (
-                                    _resolve_multiple_results_path(
-                                        multiple_results, model_dir
-                                    )
-                                    if multiple_results
-                                    else None
-                                )
-                                if (
-                                    resolved_multiple_results
-                                    and run_results.get("status") == "SUCCESS"
-                                ):
-                                    # Generate common info JSON for multiple results
-                                    common_info = run_details_dict.copy()
-                                    # Remove model-specific fields for common info
-                                    for key in [
-                                        "model",
-                                        "performance",
-                                        "metric",
-                                        "status",
-                                    ]:
-                                        common_info.pop(key, None)
-
-                                    with open("common_info.json", "w") as f:
-                                        json.dump(common_info, f)
-
-                                    # Update perf.csv with multiple results
-                                    update_perf_csv(
-                                        multiple_results=resolved_multiple_results,
-                                        perf_csv=self.perf_csv_path,
-                                        model_name=run_details_dict["model"],
-                                        common_info="common_info.json",
-                                    )
-                                    print(
-                                        f"Updated perf.csv with multiple results for {model_info['name']}"
+                                                break
+                                    except Exception:
+                                        pass  # Error checking is optional
+                                elif not scan_logs:
+                                    self.rich_console.print(
+                                        "[dim]ℹ️  Log error pattern scan disabled "
+                                        "(log_error_pattern_scan).[/dim]"
                                     )
 
-                                    # Update perf_super.json with multiple results
-                                    try:
-                                        scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(
-                                            scripts_path
-                                        )
+                                # Status logic: valid performance metrics take priority over a log
+                                # error-pattern match, since the scan cannot tell framework/harness
+                                # diagnostics apart from a model's own generated stdout (ROCM-27774).
+                                # Exception: Worker nodes in multi-node training (MAD_COLLECT_METRICS=false)
+                                # are not expected to report global performance metrics
+                                performance_value = run_results.get("performance")
+                                has_performance = bool(
+                                    performance_value
+                                    and performance_value.strip()
+                                    and performance_value.strip() != "N/A"
+                                )
 
-                                        # Reuse common_info.json for super files (no need for duplicate)
-                                        num_entries = update_perf_super_json(
-                                            multiple_results=resolved_multiple_results,
-                                            perf_super_json="perf_super.json",
-                                            model_name=run_details_dict["model"],
-                                            common_info="common_info.json",
-                                            scripts_base_dir=scripts_base_dir,
-                                        )
+                                # Check if this is a worker node (not collecting metrics)
+                                is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
 
-                                        # Generate CSV and JSON files from perf_super.json
-                                        update_perf_super_csv(
-                                            perf_super_json="perf_super.json",
-                                            perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries,
-                                        )
-                                    except Exception as e:
-                                        print(
-                                            f"⚠️  Warning: Could not update perf_super files: {e}"
-                                        )
+                                # Multi-node/SLURM in-job run: the login node aggregates the richest
+                                # per-node multiple_results CSV and writes the authoritative perf/status
+                                # record (slurm.collect_results + _select_best_multiple_results_csv).
+                                # Primus emits throughput only on the last global rank, which may land on a
+                                # different node than the designated collector (MAD_COLLECT_METRICS=true),
+                                # so an empty local perf here is not authoritative and must not fail the job.
+                                skip_perf_collection = bool(
+                                    self.additional_context.get("skip_perf_collection", False)
+                                )
+
+                                status, status_reason = resolve_run_status(
+                                    has_performance=has_performance,
+                                    has_errors=has_errors,
+                                    is_worker_node=is_worker_node,
+                                    skip_perf_collection=skip_perf_collection,
+                                )
+                                run_results["status"] = status
+
+                                if status == "FAILURE":
+                                    self.rich_console.print(
+                                        f"[red]Status: FAILURE ({status_reason})[/red]"
+                                    )
+                                elif has_errors:
+                                    # SUCCESS despite a log error-pattern match: performance metrics
+                                    # were valid, so the match is likely benign model-generated text.
+                                    # Surfaced in yellow (rather than plain green) for triage visibility.
+                                    self.rich_console.print(
+                                        f"[yellow]Status: SUCCESS ({status_reason})[/yellow]"
+                                    )
                                 else:
-                                    # Generate single result JSON
-                                    with open("perf_entry.json", "w") as f:
-                                        json.dump(run_details_dict, f)
-
-                                    # Update perf.csv with single result
-                                    if run_results.get("status") == "SUCCESS":
-                                        update_perf_csv(
-                                            single_result="perf_entry.json",
-                                            perf_csv=self.perf_csv_path,
-                                        )
-                                    else:
-                                        update_perf_csv(
-                                            exception_result="perf_entry.json",
-                                            perf_csv=self.perf_csv_path,
-                                        )
-                                    print(
-                                        f"Updated perf.csv with result for {model_info['name']}"
+                                    self.rich_console.print(
+                                        f"[green]Status: SUCCESS ({status_reason})[/green]"
                                     )
-
-                                    # Update perf_super.json with single result
-                                    try:
-                                        scripts_path = model_info.get("scripts", "")
-                                        scripts_base_dir = scripts_base_dir_from(
-                                            scripts_path
-                                        )
-
-                                        # Use perf_entry.json as input (already created above)
-                                        if run_results.get("status") == "SUCCESS":
-                                            num_entries = update_perf_super_json(
-                                                single_result="perf_entry.json",
-                                                perf_super_json="perf_super.json",
-                                                scripts_base_dir=scripts_base_dir,
-                                            )
-                                        else:
-                                            num_entries = update_perf_super_json(
-                                                exception_result="perf_entry.json",
-                                                perf_super_json="perf_super.json",
-                                                scripts_base_dir=scripts_base_dir,
-                                            )
-
-                                        # Generate CSV and JSON files from perf_super.json
-                                        update_perf_super_csv(
-                                            perf_super_json="perf_super.json",
-                                            perf_super_csv="perf_super.csv",
-                                            num_entries=num_entries,
-                                        )
-                                    except Exception as e:
-                                        print(
-                                            f"⚠️  Warning: Could not update perf_super files: {e}"
-                                        )
 
                             except Exception as e:
+                                self.rich_console.print(f"[yellow]Warning: Error in status determination: {e}[/yellow]")
+                                # Fallback to simple performance check
+                                # Worker nodes don't need performance metrics
+                                is_worker_node = os.environ.get("MAD_COLLECT_METRICS", "true").lower() == "false"
+                                run_results["status"] = (
+                                    "SUCCESS"
+                                    if run_results.get("performance")
+                                    or is_worker_node
+                                    or self.additional_context.get("skip_perf_collection", False)
+                                    else "FAILURE"
+                                )
+
+                            print(
+                                f"{model_info['name']} performance is {run_results.get('performance', 'N/A')} {run_results.get('metric', '')}"
+                            )
+
+                            # =============================================================================
+                            # Multi-Node Performance Collection (Master Node Only)
+                            # =============================================================================
+                            # For distributed training, only master node should collect metrics
+                            # Check skip_perf_collection flag from additional_context
+                            skip_perf = self.additional_context.get("skip_perf_collection", False)
+
+                            if skip_perf:
                                 self.rich_console.print(
-                                    f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]"
+                                    "[cyan]ℹ️  Worker node: Skipping performance metric collection "
+                                    "(master node will collect results)[/cyan]"
                                 )
+                            else:
+                                # Generate performance results and update perf.csv
+                                self.ensure_perf_csv_exists()
+                                try:
+                                    # Create run details dictionary for CSV generation
+                                    run_details_dict = self.create_run_details_dict(
+                                        model_info, build_info, run_results
+                                    )
 
-                        # Copy profiler/trace output files from run_directory to base directory before cleanup
-                        # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
-                        try:
-                            _md = model_dir.replace("\\", "/")
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_output.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
-                                f"{_bash_quote_path('.')} 2>/dev/null || true"
-                            )
-                            model_docker.sh(
-                                _cp_model_dir_file_to_cwd_cmd(
-                                    model_dir, "library_trace.csv"
-                                )
-                            )
-                        except Exception:
-                            # Ignore errors if no profiler/trace output files exist
-                            pass
+                                    # Handle multiple results if specified
+                                    multiple_results = model_info.get("multiple_results", None)
+                                    resolved_multiple_results = (
+                                        _resolve_multiple_results_path(multiple_results, model_dir)
+                                        if multiple_results
+                                        else None
+                                    )
+                                    if (
+                                        resolved_multiple_results
+                                        and run_results.get("status") == "SUCCESS"
+                                    ):
+                                        # Generate common info JSON for multiple results
+                                        common_info = run_details_dict.copy()
+                                        # Remove model-specific fields for common info
+                                        for key in ["model", "performance", "metric", "status"]:
+                                            common_info.pop(key, None)
 
-                        # Copy multiple_results CSV to workspace root before run_directory is removed
-                        # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
-                        mult_res = (model_info.get("multiple_results") or "").strip()
-                        if mult_res:
+                                        with open("common_info.json", "w") as f:
+                                            json.dump(common_info, f)
+
+                                        # Update perf.csv with multiple results
+                                        update_perf_csv(
+                                            multiple_results=resolved_multiple_results,
+                                            perf_csv=self.perf_csv_path,
+                                            model_name=run_details_dict["model"],
+                                            common_info="common_info.json",
+                                        )
+                                        print(
+                                            f"Updated perf.csv with multiple results for {model_info['name']}"
+                                        )
+
+                                        # Update perf_super.json with multiple results
+                                        try:
+                                            scripts_path = model_info.get("scripts", "")
+                                            scripts_base_dir = scripts_base_dir_from(scripts_path)
+
+                                            # Reuse common_info.json for super files (no need for duplicate)
+                                            num_entries = update_perf_super_json(
+                                                multiple_results=resolved_multiple_results,
+                                                perf_super_json="perf_super.json",
+                                                model_name=run_details_dict["model"],
+                                                common_info="common_info.json",
+                                                scripts_base_dir=scripts_base_dir,
+                                            )
+
+                                            # Generate CSV and JSON files from perf_super.json
+                                            update_perf_super_csv(
+                                                perf_super_json="perf_super.json",
+                                                perf_super_csv="perf_super.csv",
+                                                num_entries=num_entries
+                                            )
+                                        except Exception as e:
+                                            print(f"⚠️  Warning: Could not update perf_super files: {e}")
+                                    else:
+                                        # Generate single result JSON
+                                        with open("perf_entry.json", "w") as f:
+                                            json.dump(run_details_dict, f)
+
+                                        # Update perf.csv with single result
+                                        if run_results.get("status") == "SUCCESS":
+                                            update_perf_csv(
+                                                single_result="perf_entry.json",
+                                                perf_csv=self.perf_csv_path,
+                                            )
+                                        else:
+                                            update_perf_csv(
+                                                exception_result="perf_entry.json",
+                                                perf_csv=self.perf_csv_path,
+                                            )
+                                        print(
+                                            f"Updated perf.csv with result for {model_info['name']}"
+                                        )
+
+                                        # Update perf_super.json with single result
+                                        try:
+                                            scripts_path = model_info.get("scripts", "")
+                                            scripts_base_dir = scripts_base_dir_from(scripts_path)
+
+                                            # Use perf_entry.json as input (already created above)
+                                            if run_results.get("status") == "SUCCESS":
+                                                num_entries = update_perf_super_json(
+                                                    single_result="perf_entry.json",
+                                                    perf_super_json="perf_super.json",
+                                                    scripts_base_dir=scripts_base_dir,
+                                                )
+                                            else:
+                                                num_entries = update_perf_super_json(
+                                                    exception_result="perf_entry.json",
+                                                    perf_super_json="perf_super.json",
+                                                    scripts_base_dir=scripts_base_dir,
+                                                )
+
+                                            # Generate CSV and JSON files from perf_super.json
+                                            update_perf_super_csv(
+                                                perf_super_json="perf_super.json",
+                                                perf_super_csv="perf_super.csv",
+                                                num_entries=num_entries
+                                            )
+                                        except Exception as e:
+                                            print(f"⚠️  Warning: Could not update perf_super files: {e}")
+
+                                except Exception as e:
+                                    self.rich_console.print(f"[yellow]Warning: Could not update perf.csv: {e}[/yellow]")
+
+                            # Copy profiler/trace output files from run_directory to base directory before cleanup
+                            # This ensures test files like gpu_info_power_profiler_output.csv and library_trace.csv are accessible
                             try:
+                                _md = model_dir.replace("\\", "/")
                                 model_docker.sh(
-                                    _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                    f"cp -- {_bash_quote_path(_md)}/*_profiler_output.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
                                 )
-                            except Exception:
+                                model_docker.sh(
+                                    f"cp -- {_bash_quote_path(_md)}/*_output.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
+                                )
+                                model_docker.sh(
+                                    f"cp -- {_bash_quote_path(_md)}/*_trace.csv "
+                                    f"{_bash_quote_path('.')} 2>/dev/null || true"
+                                )
+                                model_docker.sh(
+                                    _cp_model_dir_file_to_cwd_cmd(model_dir, "library_trace.csv")
+                                )
+                            except Exception as e:
+                                # Ignore errors if no profiler/trace output files exist
                                 pass
+
+                            # Copy multiple_results CSV to workspace root before run_directory is removed
+                            # so SLURM single-node copy can find it at $WORKSPACE/{{ multiple_results }}
+                            mult_res = (model_info.get("multiple_results") or "").strip()
+                            if mult_res:
+                                try:
+                                    model_docker.sh(
+                                        _cp_model_dir_file_to_cwd_cmd(model_dir, mult_res)
+                                    )
+                                except Exception:
+                                    pass
 
                         # Cleanup if not keeping alive and not keeping model directory
                         if not keep_alive and not keep_model_dir:
@@ -1902,27 +2135,25 @@ class ContainerRunner:
                 try:
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
-
+                    
                     # Use perf_entry.json as input (already created above)
                     num_entries = update_perf_super_json(
                         exception_result="perf_entry.json",
                         perf_super_json="perf_super.json",
                         scripts_base_dir=scripts_base_dir,
                     )
-
+                    
                     # Generate CSV and JSON files from perf_super.json
                     update_perf_super_csv(
                         perf_super_json="perf_super.json",
                         perf_super_csv="perf_super.csv",
-                        num_entries=num_entries,
+                        num_entries=num_entries
                     )
                 except Exception as e:
                     print(f"⚠️  Warning: Could not update perf_super files: {e}")
 
             except Exception as csv_e:
-                self.rich_console.print(
-                    f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]"
-                )
+                self.rich_console.print(f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]")
 
         return run_results
 
@@ -1934,6 +2165,601 @@ class ContainerRunner:
         """
         self.credentials = credentials
 
+    def _get_build_args(self) -> str:
+        """Build ``docker build --build-arg`` string from ``docker_build_arg`` context.
+
+        Values are passed to ``Console.sh`` (``shell=True``); the key and the
+        value of each ``--build-arg`` are wrapped with :func:`shlex.quote`
+        individually so quotes / whitespace / shell metacharacters in either
+        component cannot break the build command or be injected when
+        ``docker_build_arg`` comes from manifests or user context.
+        """
+        docker_build_arg = self.context.ctx.get("docker_build_arg", {}) if self.context else {}
+        if not docker_build_arg:
+            return ""
+        build_args = ""
+        for key, value in docker_build_arg.items():
+            build_args += (
+                "--build-arg "
+                + shlex.quote(str(key))
+                + "="
+                + shlex.quote(str(value))
+                + " "
+            )
+        return build_args
+
+    def _get_node_rank(self) -> int:
+        """Return the current node rank for distributed runs.
+
+        Raises RuntimeError when NODE_RANK / RANK is set but cannot be parsed
+        as an integer. Treating a malformed rank as 0 would let a worker take
+        the primary code path (image build, tar save) and diverge.
+        """
+        node_rank_raw = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            return int(node_rank_raw)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid NODE_RANK/RANK env value {node_rank_raw!r}: {e}")
+
+    def _local_image_exists(self, run_image: str) -> bool:
+        """Check whether a Docker image already exists locally."""
+        try:
+            self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+            return True
+        except (subprocess.CalledProcessError, RuntimeError):
+            return False
+
+    # Label baked into locally-built images so the run phase can tell whether an
+    # image found under a reused tag was built from the *current* manifest inputs
+    # (Dockerfile + build args) rather than a stale build sharing the same tag.
+    BUILD_FINGERPRINT_LABEL = "mad.build_fingerprint"
+
+    def _local_image_id(self, run_image: str) -> typing.Optional[str]:
+        """Return the local Docker image ID (``sha256:...``) for *run_image*, or None.
+
+        Used to compare image identity across nodes: two images sharing a tag may
+        still differ in content (e.g. built from different RCCL commits), so the
+        tag alone is not a safe equality check.
+        """
+        try:
+            out = self.console.sh(
+                f"docker image inspect --format '{{{{.Id}}}}' {shlex.quote(run_image)} 2>/dev/null",
+                canFail=True,
+                secret=True,
+            )
+        except (subprocess.CalledProcessError, RuntimeError):
+            return None
+        for line in reversed((out or "").splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("sha256:"):
+                return stripped
+        return None
+
+    def _image_label(self, run_image: str, label: str) -> typing.Optional[str]:
+        """Return the value of *label* on *run_image*, or None if absent/unset."""
+        fmt = "{{ index .Config.Labels " + json.dumps(label) + " }}"
+        try:
+            out = self.console.sh(
+                f"docker image inspect --format {shlex.quote(fmt)} {shlex.quote(run_image)} 2>/dev/null",
+                canFail=True,
+                secret=True,
+            )
+        except (subprocess.CalledProcessError, RuntimeError):
+            return None
+        lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+        if not lines:
+            return None
+        value = lines[-1]
+        if not value or value == "<no value>":
+            return None
+        return value
+
+    def _build_fingerprint(self, build_info: typing.Dict) -> str:
+        """Deterministic fingerprint of the build inputs (Dockerfile + build args).
+
+        Returns "" when there is no buildable dockerfile (e.g. pull/registry or
+        local-image-mode entries) so callers skip content-staleness checks for
+        images madengine does not build.
+        """
+        dockerfile = (build_info or {}).get("dockerfile", "")
+        if not dockerfile or dockerfile == "N/A (local image mode)":
+            return ""
+        payload: typing.Dict[str, typing.Any] = {
+            "docker_build_arg": self.context.ctx.get("docker_build_arg", {}) if self.context else {},
+        }
+        try:
+            with open(dockerfile, "rb") as handle:
+                payload["dockerfile_sha256"] = hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            payload["dockerfile_sha256"] = ""
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def _get_local_image_tar_path(self, run_image: str) -> typing.Optional[str]:
+        """Resolve the shared tar path for a local image, if configured.
+
+        When MAD_DOCKER_BUILDS points at a shared directory (e.g. a network
+        filesystem visible to all nodes), this path is used to stage a
+        ``docker save`` tar of the pre-built local image so that worker nodes
+        can ``docker load`` it instead of rebuilding or pulling.
+        """
+        builds_dir = (os.environ.get("MAD_DOCKER_BUILDS") or "").strip()
+        if not builds_dir:
+            return None
+        safe_image_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_image).strip("._")
+        if not safe_image_name:
+            safe_image_name = "docker_image"
+        return os.path.join(builds_dir, f"{safe_image_name}.tar")
+
+    def _load_local_image_from_tar(self, run_image: str, tar_path: str) -> None:
+        """Load a Docker image from a previously saved tar archive."""
+        if not os.path.exists(tar_path):
+            raise RuntimeError(f"Image tar not found for {run_image}: {tar_path}")
+        self.rich_console.print(f"[yellow]📦 Loading local image tar:[/yellow] {tar_path}")
+        self.console.sh(f"docker load -i {shlex.quote(tar_path)}", timeout=None)
+        self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+        self.rich_console.print(f"[green]✅ Loaded local image from tar:[/green] {run_image}")
+
+    def _save_local_image_to_tar(self, run_image: str, tar_path: str) -> None:
+        """Persist a local Docker image into the shared tar cache.
+
+        Written atomically: ``docker save`` streams into a sibling tmp file
+        which is renamed into place only on success, so peers never load a
+        half-written tar (POSIX rename is atomic within a single filesystem).
+        """
+        tar_dir = os.path.dirname(tar_path)
+        if tar_dir:
+            os.makedirs(tar_dir, exist_ok=True)
+        tmp_path = f"{tar_path}.tmp.{os.getpid()}"
+        self.rich_console.print(f"[yellow]💾 Saving local image tar:[/yellow] {tar_path}")
+        try:
+            self.console.sh(f"docker save -o {shlex.quote(tmp_path)} {shlex.quote(run_image)}", timeout=None)
+            os.replace(tmp_path, tar_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
+        self.rich_console.print(f"[green]✅ Saved local image tar:[/green] {tar_path}")
+
+    def _build_or_pull_local_image(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Ensure the local image exists by building it first and pulling as fallback."""
+        self.rich_console.print(f"[yellow]⚠️  Image {run_image} not found on this node.[/yellow]")
+        try:
+            self._build_local_image_from_manifest(run_image=run_image, build_info=build_info, model_info=model_info)
+        except Exception as build_error:
+            self.rich_console.print("[yellow]⚠️  Local build failed, attempting pull as fallback...[/yellow]")
+            try:
+                self.pull_image(run_image)
+            except Exception as pull_error:
+                raise RuntimeError(
+                    f"Failed to build or pull local image {run_image}: "
+                    f"build_error={build_error}; pull_error={pull_error}"
+                )
+
+    def _build_local_image_from_manifest(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Build run_image on the current compute node using its manifest dockerfile.
+
+        Used by ``run --manifest-file`` in distributed mode when the local image
+        is not present on a compute node and pulling is not desired or possible.
+        """
+        dockerfile = build_info.get("dockerfile", "")
+        if not dockerfile or dockerfile == "N/A (local image mode)":
+            raise RuntimeError(f"Cannot build image {run_image}: dockerfile is missing in manifest")
+        if not os.path.exists(dockerfile):
+            raise RuntimeError(f"Cannot build image {run_image}: dockerfile not found at {dockerfile!r}")
+        docker_context = model_info.get("dockercontext", "") or "./docker"
+        if not os.path.exists(docker_context):
+            docker_context = os.path.dirname(dockerfile) or "."
+        build_args = self._get_build_args()
+        # Bake a content fingerprint so a later run can detect a stale image that
+        # reuses this tag but was built from different inputs (e.g. RCCL commit).
+        fingerprint = self._build_fingerprint(build_info)
+        label_arg = ""
+        if fingerprint:
+            label_arg = f"--label {shlex.quote(self.BUILD_FINGERPRINT_LABEL + '=' + fingerprint)} "
+        build_command = (
+            f"docker build --network=host -t {shlex.quote(run_image)} {label_arg}--pull "
+            f"-f {shlex.quote(dockerfile)} {build_args}{shlex.quote(docker_context)}"
+        )
+        self.rich_console.print(f"[yellow]🔨 Building missing local image on this node:[/yellow] {run_image}")
+        self.rich_console.print(f"[dim]  Dockerfile: {dockerfile}[/dim]")
+        self.rich_console.print(f"[dim]  Context: {docker_context}[/dim]")
+        self.console.sh(build_command, timeout=None)
+        self.console.sh(f"docker image inspect {shlex.quote(run_image)} > /dev/null 2>&1")
+        self.rich_console.print(f"[green]✅ Built local image on this node:[/green] {run_image}")
+
+    def _sync_after_local_image_ready(
+        self,
+        run_image: str,
+        master_image_id: typing.Optional[str] = None,
+        timeout_s: int = 1800,
+    ) -> typing.Optional[str]:
+        """Barrier for multi-node local-image runs so all nodes continue together.
+
+        Uses a TCP rendezvous between NODE_RANK=0 and worker nodes so no shared
+        filesystem visibility is required (more robust than the Stage B shared-FS
+        poll under NFS/Weka metadata lag). No-op for single-node runs (NNODES<=1).
+
+        Rank 0 broadcasts *master_image_id* (the ID of the image it ensured) over
+        the same rendezvous; the return value is that ID as seen by every node, so
+        workers can verify their local image matches rank 0 before the run starts.
+        """
+        nnodes_raw = os.environ.get("NNODES") or os.environ.get("WORLD_SIZE") or "1"
+        node_rank = os.environ.get("NODE_RANK") or os.environ.get("RANK") or "0"
+        try:
+            nnodes = int(nnodes_raw)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid NNODES/WORLD_SIZE env value {nnodes_raw!r}: {e}")
+        if nnodes <= 1:
+            return master_image_id
+        return self._tcp_image_ready_barrier(
+            nnodes=nnodes,
+            node_rank=node_rank,
+            timeout_s=timeout_s,
+            master_image_id=master_image_id,
+        )
+    def _image_is_stale(self, run_image: str, want_fingerprint: str) -> bool:
+        """True when *run_image* exists but was built from different inputs.
+
+        Only reports stale when a fingerprint label is present AND differs from
+        *want_fingerprint*. Images without the label (pulled, or built before this
+        feature) are treated as not-stale so we never force spurious rebuilds.
+        """
+        if not want_fingerprint:
+            return False
+        have = self._image_label(run_image, self.BUILD_FINGERPRINT_LABEL)
+        return bool(have) and have != want_fingerprint
+
+    def _ensure_local_image_available(self, run_image: str, build_info: typing.Dict, model_info: typing.Dict) -> None:
+        """Prepare a correct local image on this node, optionally via a shared tar.
+
+        Two correctness guarantees:
+
+        * Content freshness (single- and multi-node): a tag reused for a different
+          build (e.g. a new RCCL commit) is detected via the
+          ``mad.build_fingerprint`` label and rebuilt instead of silently run.
+        * Cross-node identity (multi-node): rank 0 broadcasts the ID of the image
+          it ensured over the rendezvous barrier. When a shared tar cache
+          (MAD_DOCKER_BUILDS) is configured, workers whose local image ID differs
+          from rank 0 (e.g. a stale image already present under the same tag)
+          force-reload rank 0's tar so every node runs the identical image.
+
+        Multi-node invariant: every rank reaches ``_sync_after_local_image_ready``
+        exactly once.
+        """
+        tar_path = self._get_local_image_tar_path(run_image)
+        node_rank = self._get_node_rank()
+        is_primary_node = node_rank == 0
+        want_fingerprint = self._build_fingerprint(build_info)
+
+        master_image_id: typing.Optional[str] = None
+        if is_primary_node:
+            image_exists = self._local_image_exists(run_image)
+            tar_exists = bool(tar_path) and os.path.exists(tar_path)
+            tar_dirty = False
+            if image_exists and self._image_is_stale(run_image, want_fingerprint):
+                self.rich_console.print(
+                    f"[yellow]♻️  Local image {run_image} is stale "
+                    f"(build inputs changed under the same tag); rebuilding.[/yellow]"
+                )
+                self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                tar_dirty = True  # any existing tar is now stale
+            elif not image_exists:
+                if tar_path and tar_exists:
+                    self._load_local_image_from_tar(run_image, tar_path)
+                    if self._image_is_stale(run_image, want_fingerprint):
+                        self.rich_console.print(
+                            f"[yellow]♻️  Tar image for {run_image} is stale; rebuilding.[/yellow]"
+                        )
+                        self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                        tar_dirty = True
+                else:
+                    self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+                    tar_dirty = True
+            if tar_path and (not tar_exists or tar_dirty):
+                self._save_local_image_to_tar(run_image, tar_path)
+            master_image_id = self._local_image_id(run_image)
+
+        master_image_id = self._sync_after_local_image_ready(
+            run_image=run_image, master_image_id=master_image_id
+        )
+
+        if is_primary_node:
+            return
+
+        local_id = self._local_image_id(run_image)
+        if tar_path:
+            need_reload = (master_image_id and local_id != master_image_id) or (
+                not master_image_id and local_id is None
+            )
+            if need_reload:
+                if not os.path.exists(tar_path):
+                    raise RuntimeError(f"Node 0 did not produce image tar for {run_image}: {tar_path}")
+                self.rich_console.print(
+                    f"[yellow]🔁 Worker image for {run_image} differs from rank 0 "
+                    f"(local={local_id or 'none'}, master={master_image_id or 'unknown'}); "
+                    f"reloading from master tar.[/yellow]"
+                )
+                self._load_local_image_from_tar(run_image, tar_path)
+                local_id = self._local_image_id(run_image)
+                if master_image_id and local_id != master_image_id:
+                    raise RuntimeError(
+                        f"Image mismatch persists after tar reload for {run_image}: "
+                        f"local={local_id} master={master_image_id}"
+                    )
+        else:
+            # No shared tar to reconcile by ID: keep each worker content-correct
+            # via the build fingerprint instead.
+            stale = (local_id is not None) and self._image_is_stale(run_image, want_fingerprint)
+            if local_id is None or stale:
+                self._build_or_pull_local_image(run_image=run_image, build_info=build_info, model_info=model_info)
+            elif master_image_id and local_id != master_image_id:
+                self.rich_console.print(
+                    f"[yellow]⚠️  Worker image for {run_image} differs from rank 0 and "
+                    f"MAD_DOCKER_BUILDS is unset, so it cannot be reconciled by tar. "
+                    f"Proceeding with the content-verified local image.[/yellow]"
+                )
+
+
+    @staticmethod
+    def _recv_line(sock: "socket.socket", max_len: int = 128) -> str:
+        """Read one newline-terminated line from a socket.
+
+        socket.recv may return a partial read (TCP is a byte stream), so using
+        it directly to parse a protocol line can reject valid peers when the
+        line is split across reads, manifesting as flaky barrier timeouts. This
+        loops on recv until a newline or max_len bytes, honoring the socket
+        timeout. Trailing newline and surrounding whitespace are stripped; an
+        empty string is returned on EOF before any data.
+        """
+        buf = bytearray()
+        while len(buf) < max_len:
+            chunk = sock.recv(max_len - len(buf))
+            if not chunk:
+                break
+            buf.extend(chunk)
+            nl = buf.find(b"\n")
+            if nl != -1:
+                buf = buf[:nl]
+                break
+        return buf.decode("utf-8", errors="ignore").strip()
+
+    @staticmethod
+    def _parse_go_image_id(
+        ack: str, expected_prefix: str
+    ) -> typing.Tuple[bool, typing.Optional[str]]:
+        """Parse a barrier ``GO`` line, returning (matched, master_image_id).
+
+        Accepts both the bare ``GO <token> <rank>`` form and the extended
+        ``GO <token> <rank> <image_id>`` form; ``-`` (or an empty trailer) maps
+        to None so callers treat the master image ID as unknown.
+        """
+        if ack == expected_prefix or ack.startswith(expected_prefix + " "):
+            image_id = ack[len(expected_prefix):].strip()
+            return True, (image_id if (image_id and image_id != "-") else None)
+        return False, None
+
+    def _tcp_image_ready_barrier(
+        self,
+        nnodes: int,
+        node_rank: str,
+        timeout_s: int,
+        master_image_id: typing.Optional[str] = None,
+    ) -> typing.Optional[str]:
+        """TCP rendezvous barrier that does not require shared filesystem visibility.
+
+        Node 0 listens on one of candidate_ports derived from MASTER_PORT and
+        SLURM_JOB_ID; workers send "READY <token> <rank>" and wait for
+        "GO <token> <rank> <image_id>". The port range and token defend against
+        multiple concurrent jobs reusing the same master host. MAD_BARRIER_TOKEN
+        can set an opaque secret token; otherwise it defaults to JOB<SLURM_JOB_ID>.
+        The listener binds to MASTER_ADDR resolved IP first (skipping loopback)
+        and only falls back to 0.0.0.0.
+
+        Rank 0 appends its ensured image ID (or ``-`` when unknown) to the GO
+        line; the method returns that ID on every rank so callers can reconcile
+        worker images against rank 0.
+        """
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        job_id_raw = os.environ.get("SLURM_JOB_ID", "0")
+        try:
+            job_id = int(job_id_raw)
+        except Exception:
+            job_id = 0
+        token = (os.environ.get("MAD_BARRIER_TOKEN") or "").strip() or f"JOB{job_id}"
+        master_port_raw = os.environ.get("MASTER_PORT", "29500")
+        try:
+            master_port = int(master_port_raw)
+        except Exception:
+            master_port = 29500
+        base_port = 43000 + ((master_port + job_id) % 1000)
+        candidate_ports = [base_port + i for i in range(0, 16)]
+        deadline = time.time() + timeout_s
+        try:
+            rank_int = int(node_rank)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"TCP barrier: invalid NODE_RANK/RANK value {node_rank!r}: {e}")
+
+        if rank_int == 0:
+            accepted = 0
+            peers: typing.Dict[int, str] = {}
+            waiting: typing.Dict[int, "socket.socket"] = {}
+            server = None
+            port = None
+            try:
+                master_ip = socket.gethostbyname(master_addr)
+            except Exception:
+                master_ip = ""
+            bind_hosts: typing.List[str] = []
+
+            def _is_loopback(ip: str) -> bool:
+                if not ip:
+                    return True
+                if ip in ("0.0.0.0", "::"):
+                    return True
+                if ip.startswith("127.") or ip == "::1":
+                    return True
+                return False
+
+            if master_ip and not _is_loopback(master_ip):
+                bind_hosts.append(master_ip)
+            if "0.0.0.0" not in bind_hosts:
+                bind_hosts.append("0.0.0.0")
+            try:
+                bind_errors = []
+                for bind_host in bind_hosts:
+                    for candidate in candidate_ports:
+                        trial = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        try:
+                            trial.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            trial.bind((bind_host, candidate))
+                            server = trial
+                            port = candidate
+                            break
+                        except Exception as e:
+                            bind_errors.append({"host": bind_host, "port": candidate, "error": str(e)})
+                            try:
+                                trial.close()
+                            except Exception:
+                                pass
+                    if server is not None:
+                        break
+                if server is None or port is None:
+                    raise RuntimeError(f"TCP barrier bind failed on all candidate ports: {bind_errors}")
+                server.listen(max(1, nnodes - 1))
+                server.settimeout(2.0)
+                while accepted < max(0, nnodes - 1) and time.time() < deadline:
+                    try:
+                        conn, addr = server.accept()
+                        conn.settimeout(2.0)
+                        try:
+                            payload = self._recv_line(conn)
+                        except Exception:
+                            conn.close()
+                            continue
+                        parts = payload.split()
+                        if len(parts) != 3 or parts[0] != "READY" or parts[1] != token:
+                            conn.close()
+                            continue
+                        try:
+                            worker_rank = int(parts[2])
+                        except Exception:
+                            conn.close()
+                            continue
+                        if worker_rank <= 0 or worker_rank >= nnodes:
+                            conn.close()
+                            continue
+                        if worker_rank in waiting:
+                            try:
+                                waiting[worker_rank].close()
+                            except Exception:
+                                pass
+                        waiting[worker_rank] = conn
+                        peers[worker_rank] = f"{addr[0]}:r{worker_rank}"
+                        accepted = len(waiting)
+                    except socket.timeout:
+                        continue
+                if accepted < max(0, nnodes - 1):
+                    for conn in waiting.values():
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                    raise RuntimeError(
+                        f"TCP barrier timeout on master: accepted={accepted}/{max(0, nnodes - 1)} port={port}"
+                    )
+                go_payload = master_image_id if master_image_id else "-"
+                for worker_rank, conn in waiting.items():
+                    try:
+                        conn.sendall(f"GO {token} {worker_rank} {go_payload}\n".encode("utf-8"))
+                    finally:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                if peers:
+                    pretty = ", ".join(peers[r] for r in sorted(peers))
+                    self.rich_console.print(
+                        f"[dim]TCP barrier master: released {accepted} peer(s): {pretty} (port={port})[/dim]"
+                    )
+                return master_image_id
+            finally:
+                try:
+                    if server is not None:
+                        server.close()
+                except Exception:
+                    pass
+
+        expected_prefix = f"GO {token} {rank_int}"
+        last_error = ""
+        connect_attempts = 0
+        while time.time() < deadline:
+            for candidate in candidate_ports:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                connect_attempts += 1
+                try:
+                    sock.settimeout(1.5)
+                    sock.connect((master_addr, candidate))
+                    sock.sendall(f"READY {token} {rank_int}\n".encode("utf-8"))
+                    remaining_s = max(1.0, deadline - time.time())
+                    sock.settimeout(remaining_s)
+                    ack = self._recv_line(sock, max_len=256)
+                    matched, image_id = self._parse_go_image_id(ack, expected_prefix)
+                    if matched:
+                        return image_id
+                    last_error = f"unexpected_ack={ack!r} port={candidate}"
+                except Exception as e:
+                    last_error = f"{e} port={candidate}"
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+            time.sleep(1)
+
+        raise RuntimeError(
+            f"TCP barrier timeout on worker rank={rank_int} master={master_addr} "
+            f"ports={candidate_ports} attempts={connect_attempts} last_error={last_error}"
+        )
+
+    def _extract_additional_mount_targets(self, additional_opts: str) -> typing.Set[str]:
+        """Extract container-side mount targets from free-form docker run options.
+
+        Parses -v / --volume tokens from additional_docker_run_options and
+        returns the container paths already being mounted, so get_mount_arg can
+        skip duplicates that docker would reject ("Duplicate mount point").
+        """
+        targets: typing.Set[str] = set()
+        if not additional_opts:
+            return targets
+        try:
+            tokens = shlex.split(additional_opts)
+        except Exception:
+            return targets
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in ("-v", "--volume") and i + 1 < len(tokens):
+                spec = tokens[i + 1]
+                i += 2
+            elif token.startswith("-v") and len(token) > 2:
+                spec = token[2:]
+                i += 1
+            elif token.startswith("--volume="):
+                spec = token.split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
+                continue
+            parts = spec.split(":")
+            if len(parts) >= 2:
+                targets.add(parts[1])
+        return targets
+
+
     def run_models_from_manifest(
         self,
         manifest_file: str,
@@ -1941,6 +2767,7 @@ class ContainerRunner:
         timeout: int = 7200,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
+        skip_model_run: bool = False,
         phase_suffix: str = "",
     ) -> typing.Dict:
         """Run all models from a build manifest file.
@@ -1953,114 +2780,87 @@ class ContainerRunner:
             timeout: Execution timeout per model in seconds
             keep_alive: Whether to keep containers alive after execution
             keep_model_dir: Whether to keep model directory after execution
+            skip_model_run: Whether to skip the model script invocation
             phase_suffix: Suffix for log files (e.g., ".run")
 
         Returns:
             dict: Execution summary with successful and failed runs
         """
-        self.rich_console.print(
-            f"[bold blue]📦 Loading manifest:[/bold blue] {manifest_file}"
-        )
-
+        self.rich_console.print(f"[bold blue]📦 Loading manifest:[/bold blue] {manifest_file}")
+        
         # Load manifest
         manifest = self.load_build_manifest(manifest_file)
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
-
+        
         # Load deployment_config from manifest for GPU resolution
         if "deployment_config" in manifest and not self.additional_context:
-            self.additional_context = {
-                "deployment_config": manifest["deployment_config"]
-            }
+            self.additional_context = {"deployment_config": manifest["deployment_config"]}
         # Merge manifest context (e.g. skip_perf_collection for multi-node SLURM aggregation)
         if "context" in manifest and isinstance(manifest["context"], dict):
-            self.additional_context = {
-                **(self.additional_context or {}),
-                **manifest["context"],
-            }
+            self.additional_context = {**(self.additional_context or {}), **manifest["context"]}
 
         if not built_images:
             self.rich_console.print("[yellow]⚠️  No images found in manifest[/yellow]")
             return {"successful_runs": [], "failed_runs": []}
-
-        self.rich_console.print(
-            f"[green]Found {len(built_images)} image(s) to run[/green]\n"
-        )
-
+        
+        self.rich_console.print(f"[green]Found {len(built_images)} image(s) to run[/green]\n")
+        
         # Login to registry if needed
         if registry or any(img.get("registry") for img in built_images.values()):
             effective_registry = registry or next(
-                (
-                    img.get("registry")
-                    for img in built_images.values()
-                    if img.get("registry")
-                ),
-                None,
+                (img.get("registry") for img in built_images.values() if img.get("registry")), 
+                None
             )
             if effective_registry:
                 try:
                     self.login_to_registry(effective_registry, self.credentials)
                 except Exception as e:
-                    self.rich_console.print(
-                        f"[yellow]Warning: Registry login failed: {e}[/yellow]"
-                    )
-                    self.rich_console.print(
-                        "[yellow]Proceeding with local images only[/yellow]\n"
-                    )
-
+                    self.rich_console.print(f"[yellow]Warning: Registry login failed: {e}[/yellow]")
+                    self.rich_console.print("[yellow]Proceeding with local images only[/yellow]\n")
+        
         # Track results
         successful_runs = []
         failed_runs = []
-
+        
         # Run each model
         for image_name, build_info in built_images.items():
             model_info = built_models.get(image_name, {})
             if not model_info:
-                self.rich_console.print(
-                    f"[yellow]⚠️  No model info for {image_name}, skipping[/yellow]"
-                )
+                self.rich_console.print(f"[yellow]⚠️  No model info for {image_name}, skipping[/yellow]")
                 continue
-
+            
             try:
                 # Handle different image sources
                 if build_info.get("local_image"):
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
-                    self.rich_console.print(
-                        f"[yellow]🏠 Using local image: {run_image}[/yellow]"
+                    self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
+                    
+                    # Ensure the local image is available on this node. In a
+                    # multi-node SLURM run only the primary may have the
+                    # locally-built image; the shared-tar cache
+                    # (MAD_DOCKER_BUILDS) lets workers load it instead of
+                    # pulling (local images are not in any registry).
+                    self._ensure_local_image_available(
+                        run_image=run_image,
+                        build_info=build_info,
+                        model_info=model_info,
                     )
-
-                    # Verify image exists
-                    try:
-                        self.console.sh(
-                            f"docker image inspect {run_image} > /dev/null 2>&1"
-                        )
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        self.rich_console.print(
-                            f"[yellow]⚠️  Image {run_image} not found, attempting to pull...[/yellow]"
-                        )
-                        try:
-                            self.pull_image(run_image)
-                        except Exception as e:
-                            raise RuntimeError(
-                                f"Failed to find or pull local image {run_image}: {e}"
-                            )
-
+                
                 elif build_info.get("registry_image"):
                     # Registry image: Pull from registry
                     try:
                         self.pull_image(build_info["registry_image"])
                         # Update docker_image to use registry image
                         run_image = build_info["registry_image"]
-                    except Exception:
-                        self.rich_console.print(
-                            f"[yellow]Warning: Could not pull from registry, using local image[/yellow]"
-                        )
+                    except Exception as pull_error:
+                        self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name
                 else:
                     # Normal built image: Use the image name directly
                     run_image = image_name
-
+                
                 # Run the container
                 run_results = self.run_container(
                     model_info=model_info,
@@ -2068,52 +2868,53 @@ class ContainerRunner:
                     build_info=build_info,
                     keep_alive=keep_alive,
                     keep_model_dir=keep_model_dir,
+                    skip_model_run=skip_model_run,
                     timeout=timeout,
                     phase_suffix=phase_suffix,
                 )
-
+                
                 # Check actual status and track accordingly
                 status = run_results.get("status", "SUCCESS")
                 if status == "SUCCESS":
-                    successful_runs.append(
-                        {
-                            "model": model_info["name"],
-                            "image": run_image,
-                            "status": status,
-                            "performance": run_results.get("performance"),
-                            "duration": run_results.get("test_duration"),
-                        }
+                    successful_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": status,
+                        "performance": run_results.get("performance"),
+                        "duration": run_results.get("test_duration"),
+                    })
+                elif status == "SKIPPED":
+                    successful_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": "SKIPPED",
+                        "performance": None,
+                        "duration": run_results.get("test_duration"),
+                    })
+                    self.rich_console.print(
+                        f"[cyan]⏭️  Skipped model run for {model_info['name']}[/cyan]"
                     )
                 else:
                     # Status is FAILURE - track as failed
-                    failed_runs.append(
-                        {
-                            "model": model_info["name"],
-                            "image": run_image,
-                            "status": status,
-                            "error": "Container execution failed - check logs for details",
-                        }
-                    )
-                    self.rich_console.print(
-                        f"[red]❌ Run failed for {model_info['name']}: Status={status}[/red]"
-                    )
-
+                    failed_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": status,
+                        "error": "Container execution failed - check logs for details",
+                    })
+                    self.rich_console.print(f"[red]❌ Run failed for {model_info['name']}: Status={status}[/red]")
+                
             except Exception as e:
-                self.rich_console.print(
-                    f"[red]❌ Failed to run {model_info['name']}: {e}[/red]"
-                )
+                self.rich_console.print(f"[red]❌ Failed to run {model_info['name']}: {e}[/red]")
                 error_msg = str(e)
-                failed_runs.append(
-                    {
-                        "model": model_info.get("name", image_name),
-                        "image": image_name,
-                        "error": error_msg,
-                    }
-                )
+                failed_runs.append({
+                    "model": model_info.get("name", image_name),
+                    "image": image_name,
+                    "error": error_msg,
+                })
                 # Record failure in performance table so status is consistent and table is complete
                 try:
                     import tempfile
-
                     self.ensure_perf_csv_exists()
                     perf_entry = self._create_setup_failure_perf_entry(
                         model_info=model_info,
@@ -2140,14 +2941,12 @@ class ContainerRunner:
                     self.rich_console.print(
                         f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
                     )
-
+        
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")
-        self.rich_console.print(
-            f"  [green]✓ Successful:[/green] {len(successful_runs)}"
-        )
+        self.rich_console.print(f"  [green]✓ Successful:[/green] {len(successful_runs)}")
         self.rich_console.print(f"  [red]✗ Failed:[/red] {len(failed_runs)}")
-
+        
         return {
             "successful_runs": successful_runs,
             "failed_runs": failed_runs,

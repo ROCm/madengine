@@ -218,6 +218,149 @@ class TestDockerBuilder:
     @patch.object(Context, "get_docker_gpus", return_value="all")
     @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
     @patch.object(Console, "sh")
+    def test_build_image_uses_model_card_docker_build_arg(
+        self,
+        mock_sh,
+        mock_render,
+        mock_docker_gpu,
+        mock_hip,
+        mock_arch,
+        mock_ngpus,
+        mock_vendor,
+    ):
+        """A model card's docker_build_arg reaches the docker build command."""
+        context = Context()
+        context.ctx = {"docker_build_arg": {}}
+        builder = DockerBuilder(context, Console())
+        mock_sh.return_value = "Success"
+
+        model_info = {
+            "name": "test_model",
+            "dockercontext": "./docker",
+            "docker_build_arg": {"VLLM_REF": "abc123"},
+        }
+
+        result = builder.build_image(model_info, "./docker/Dockerfile")
+
+        assert f"--build-arg VLLM_REF={shlex.quote('abc123')}" in result["build_command"]
+
+    @patch.object(Context, "get_gpu_vendor", return_value="AMD")
+    @patch.object(Context, "get_system_ngpus", return_value=1)
+    @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
+    @patch.object(Context, "get_system_hip_version", return_value="5.4")
+    @patch.object(Context, "get_docker_gpus", return_value="all")
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
+    @patch.object(Console, "sh")
+    def test_context_docker_build_arg_overrides_model_card(
+        self,
+        mock_sh,
+        mock_render,
+        mock_docker_gpu,
+        mock_hip,
+        mock_arch,
+        mock_ngpus,
+        mock_vendor,
+    ):
+        """--additional-context wins over the model card for the same build arg."""
+        context = Context()
+        context.ctx = {"docker_build_arg": {"VLLM_REF": "from_context"}}
+        builder = DockerBuilder(context, Console())
+        mock_sh.return_value = "Success"
+
+        model_info = {
+            "name": "test_model",
+            "dockercontext": "./docker",
+            "docker_build_arg": {"VLLM_REF": "from_card"},
+        }
+
+        result = builder.build_image(model_info, "./docker/Dockerfile")
+
+        assert (
+            f"--build-arg VLLM_REF={shlex.quote('from_context')}"
+            in result["build_command"]
+        )
+        assert "from_card" not in result["build_command"]
+
+    @patch.object(Context, "get_gpu_vendor", return_value="AMD")
+    @patch.object(Context, "get_system_ngpus", return_value=1)
+    @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
+    @patch.object(Context, "get_system_hip_version", return_value="5.4")
+    @patch.object(Context, "get_docker_gpus", return_value="all")
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
+    @patch.object(Console, "sh")
+    def test_model_card_docker_build_arg_does_not_shadow_multi_arch(
+        self,
+        mock_sh,
+        mock_render,
+        mock_docker_gpu,
+        mock_hip,
+        mock_arch,
+        mock_ngpus,
+        mock_vendor,
+    ):
+        """Multi-arch build args passed by the caller win over the model card."""
+        context = Context()
+        context.ctx = {"docker_build_arg": {}}
+        builder = DockerBuilder(context, Console())
+        mock_sh.return_value = "Success"
+
+        model_info = {
+            "name": "test_model",
+            "dockercontext": "./docker",
+            "docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx908"},
+        }
+
+        result = builder.build_image(
+            model_info,
+            "./docker/Dockerfile",
+            additional_build_args={"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"},
+        )
+
+        assert (
+            f"--build-arg MAD_SYSTEM_GPU_ARCHITECTURE={shlex.quote('gfx942')}"
+            in result["build_command"]
+        )
+        assert "gfx908" not in result["build_command"]
+
+    @patch.object(Context, "get_gpu_vendor", return_value="AMD")
+    @patch.object(Context, "get_system_ngpus", return_value=1)
+    @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
+    @patch.object(Context, "get_system_hip_version", return_value="5.4")
+    @patch.object(Context, "get_docker_gpus", return_value="all")
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
+    @patch.object(Console, "sh")
+    def test_malformed_model_card_docker_build_arg_raises(
+        self,
+        mock_sh,
+        mock_render,
+        mock_docker_gpu,
+        mock_hip,
+        mock_arch,
+        mock_ngpus,
+        mock_vendor,
+    ):
+        """A non-object docker_build_arg fails with a targeted message, not AttributeError."""
+        context = Context()
+        context.ctx = {"docker_build_arg": {}}
+        builder = DockerBuilder(context, Console())
+        mock_sh.return_value = "Success"
+
+        model_info = {
+            "name": "test_model",
+            "dockercontext": "./docker",
+            "docker_build_arg": "VLLM_REF=abc123",
+        }
+
+        with pytest.raises(RuntimeError, match="must be a JSON object"):
+            builder.build_image(model_info, "./docker/Dockerfile")
+
+    @patch.object(Context, "get_gpu_vendor", return_value="AMD")
+    @patch.object(Context, "get_system_ngpus", return_value=1)
+    @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
+    @patch.object(Context, "get_system_hip_version", return_value="5.4")
+    @patch.object(Context, "get_docker_gpus", return_value="all")
+    @patch.object(Context, "get_gpu_renderD_nodes", return_value=["renderD128"])
+    @patch.object(Console, "sh")
     def test_build_image_success(
         self,
         mock_sh,

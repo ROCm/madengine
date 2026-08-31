@@ -149,6 +149,12 @@ class TestErrorHandler:
 class TestGlobalErrorHandler:
     """Test global error handler functionality."""
 
+    def setup_method(self):
+        set_error_handler(None)
+
+    def teardown_method(self):
+        set_error_handler(None)
+
     def test_set_and_get_error_handler(self):
         """Test setting and getting global error handler."""
         mock_console = Mock(spec=Console)

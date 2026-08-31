@@ -59,6 +59,22 @@ def build(
             "--batch-manifest", help="Input batch.json file for batch build mode"
         ),
     ] = None,
+    # Pass `--use-image auto` to auto-detect the image from the model card's
+    # DOCKER_IMAGE_NAME, or `--use-image NAME` to use an explicit image.
+    use_image: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-image",
+            help="Skip Docker build and use a pre-built image. Pass an image name, or 'auto' to auto-detect from the model card's DOCKER_IMAGE_NAME",
+        ),
+    ] = None,
+    build_on_compute: Annotated[
+        bool,
+        typer.Option(
+            "--build-on-compute",
+            help="Build Docker images on SLURM compute node instead of login node"
+        ),
+    ] = False,
     additional_context: Annotated[
         str,
         typer.Option(
@@ -117,6 +133,31 @@ def build(
     if additional_context_file and additional_context != "{}":
         console.print(
             "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if use_image and registry:
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --use-image and --registry options[/bold red]\n"
+            "[yellow]Use --use-image for pre-built external images.[/yellow]\n"
+            "[yellow]Use --registry to push locally built images.[/yellow]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if use_image and build_on_compute:
+        console.print(
+            "❌ [bold red]Error: Cannot specify both --use-image and --build-on-compute options[/bold red]\n"
+            "[yellow]--use-image skips Docker build entirely.[/yellow]\n"
+            "[yellow]--build-on-compute builds on SLURM compute nodes.[/yellow]"
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    if build_on_compute and not registry:
+        console.print(
+            "❌ [bold red]Error: --build-on-compute requires --registry option[/bold red]\n"
+            "[yellow]Build on compute node pushes image to registry.[/yellow]\n"
+            "[yellow]Run phase will pull image in parallel on all nodes.[/yellow]\n"
+            "[dim]Example: --build-on-compute --registry docker.io/myorg[/dim]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
 
@@ -179,7 +220,7 @@ def build(
     try:
         # Validate additional context and merge file + CLI; defaults wired into orchestrator
         validated_context = validate_additional_context(
-            additional_context, additional_context_file
+            additional_context, additional_context_file, use_image
         )
 
         # Create arguments object
@@ -195,6 +236,8 @@ def build(
             verbose=verbose,
             _separate_phases=True,
             batch_build_metadata=batch_build_metadata if batch_build_metadata else None,
+            use_image=use_image,
+            build_on_compute=build_on_compute,
         )
 
         # Initialize orchestrator in build-only mode
@@ -215,6 +258,8 @@ def build(
                 clean_cache=clean_docker_cache,
                 manifest_output=manifest_output,
                 batch_build_metadata=batch_build_metadata,
+                use_image=use_image,
+                build_on_compute=build_on_compute,
             )
 
             # Load build summary for display

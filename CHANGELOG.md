@@ -5,13 +5,7 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Changed
-
-- **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
-
-## [2.1.0] - 2026-04-28
+## [Unreleased]
 
 ### Changed
 
@@ -27,11 +21,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Publish workflow** (`.github/workflows/publish.yml`): Builds sdist + wheel, verifies install and CLI entry point across Python 3.9–3.12, then publishes via PyPI trusted publishing. Supports manual dispatch to TestPyPI and automatic publish on GitHub release.
 
-- **`MANIFEST.in`**: Ensures `LICENSE`, `README.md`, `CHANGELOG.md`, scripts, presets, and templates are included in source distributions.
-
 ### Removed
 
 - **`setup.py`**: Deleted the 307-line legacy setup script. All packaging configuration now lives in `pyproject.toml`.
+
+- **`MANIFEST.in`**: Removed — hatchling ignores it; sdist/wheel inclusion is configured via `[tool.hatch.build]` in `pyproject.toml`.
+
+## [2.1.3] - 2026-07-15
+
+### Added
+
+- **Unscoped tags match dir-prefixed model short names** (#159): Per-directory `models.json` prefixes model names with their directory (e.g. `pyt_foo` becomes `dir/pyt_foo`), which silently broke `--tags pyt_foo` for users referencing models by their original flat name. `DiscoverModels` now falls back to matching the short name (the part after the last `/`) for unscoped tags, so existing `--tags` invocations keep working after the migration.
+
+### Fixed
+
+- **`amd-smi` path resolution in `get_gpu_renderD_nodes`** (#156, ROCM-27727): `amd-smi` was invoked as a bare command, relying on `PATH`, while every other call site in `core/context.py` resolves it via `self._rocm_path`. On hosts where `/opt/rocm*/bin` is not on `PATH`, this caused GPU detection to fail with exit code 127. The call now resolves through `self._rocm_path` like the rest of the file.
+
+### Docs
+
+- **Stale directory-scoped model tag examples corrected** (#158): Colon-separated tags (e.g. `dummy2:dummy_2`) are parsed as model name plus extra script args, not directory scope. Directory-scoped selection uses `scope/tag` syntax (e.g. `dummy2/model1`) since #109. README and `docs/{cli-reference,usage}.md` examples updated accordingly.
+
+## [2.1.2] - 2026-07-13
+
+### Changed
+
+- **Log error-pattern match no longer overrides valid performance metrics** (#154, ROCM-27774): The post-run log scanner greps the entire run log, including a model's own generated stdout, so a generative benchmark (e.g. an LLM emitting `"ValueError:"` in a code sample) could flip an otherwise-successful run to `FAILURE`. Since the scan cannot distinguish framework/harness diagnostics from model output, valid extracted performance metrics now take priority: a pattern match no longer fails a run that produced valid perf data — the match is still surfaced (in yellow) for triage instead of silently failing. Status logic was extracted into a new `resolve_run_status()` helper (`execution/container_runner_helpers.py`) with unit tests. When no valid metrics exist, a pattern match still fails the run as before.
+
+- **`sglang-disagg` SLURM launcher supports a co-located proxy** (#149): The launcher previously hard-required a dedicated proxy node and a minimum of 3 nodes (1 proxy + 1 prefill + 1 decode), unlike `vllm-disagg` which leaves topology to the model script. It now also accepts a co-located proxy/router on the first prefill node, lowering the minimum cluster size to 2 nodes. Custom-split validation accepts both topologies — dedicated proxy (`1 + xP + yD == nnodes`) or co-located (`xP + yD == nnodes`); the proxy is started by the model `run.sh`, so both layouts are valid. Docstrings, error messages, and the generated cluster-config header were updated accordingly.
+
+### Fixed
+
+- **`sglang-disagg` default split invalid for 2-node co-located topology** (#149): The default (no custom prefill/decode) split assumed a dedicated proxy and computed `yD = nnodes - 1 - xP`, yielding `yD=0` for `nnodes=2` — an invalid topology that contradicted the new 2-node co-located minimum. `nnodes == 2` is now special-cased to a co-located 1 prefill + 1 decode split. Unit tests added in `tests/unit/test_slurm_multi.py` cover the default-split path across supported node counts.
+
+### Security
+
+- **`MAD_SECRETS_*` values redacted in printed/raised commands** (#150): `docker run`/`docker build` commands and the "Docker options:" line were printed with `MAD_SECRETS_HFTOKEN` (and similar) in plaintext, leaking the HF token into SLURM and run logs. A central `redact_secrets()` helper (`core/console.py`) now masks secret values at every command print/exception site — `Console.sh` stdout, the raised `RuntimeError` message, and `container_runner` Docker options. Only the logged representation is scrubbed; the executed command is unchanged. The `MAD_SECRETS*=value` matcher handles unquoted, single-/double-quoted (including spaces), and empty values, with optional whitespace around `=`; a fallback also masks known token shapes (`hf_`, `sk-`, `ghp_`/`gho_`/…, `xoxb-`/…). Covered by a new `TestRedactSecrets` integration suite.
+
+## [2.1.1] - 2026-06-02
+
+### Changed
+
+- **All dependencies are now included by default**: Kubernetes support (`kubernetes>=28.0.0`) and development tools (`pytest>=7.0`, `black`, `mypy`, `isort`, `pre-commit`, etc.) are bundled into the base `dependencies` list. The `[kubernetes]`, `[dev]`, and `[all]` extras have been removed — a plain `pip install madengine` or `pip install -e .` installs everything. All documentation and in-package install guidance has been updated accordingly.
+
+- **`pytest` lower bound pinned to `>=7.0`**: Aligns the dependency pin with `minversion = "7.0"` already declared in `[tool.pytest.ini_options]`, preventing accidental resolution of older pytest versions that cannot run this project's tests.
+
+### Changed
+
+- **`--skip-model-run` now matches v1 semantics**: The flag previously short-circuited the entire run before any container started, and only took effect when a build ran in the same invocation (otherwise it was ignored with a warning). It now starts the container and runs `pre_scripts` and `post_scripts` as normal, skipping **only** the model script invocation — regardless of whether a build ran. The skip decision was moved out of `RunOrchestrator` and into `ContainerRunner`, so it applies uniformly to build+run and manifest-only (`--manifest-file`) invocations.
+
+- **`--skip-model-run` runs report `SKIPPED`, not `FAILURE`**: A skipped model is now aggregated as a successful run with status `SKIPPED`, and the overall workflow exits `0`. Previously a skipped run could surface as a failure.
+
+### Added
+
+- **`--skip-model-run --keep-alive` for live container debugging**: Combining the two flags leaves a fully-set-up container alive after the skipped run, ready for manual exec (`docker exec -it <container> bash`). When `--keep-alive` is set, the run prints the exact `cd <model_dir> && <script> <args>` command to invoke the model by hand; otherwise it hints to re-run with `--keep-alive`.
+
+- **Warning for local-only flags on distributed targets**: Passing `--skip-model-run`, `--keep-alive`, or `--keep-model-dir` with a SLURM or Kubernetes target now prints a yellow warning that these local Docker-only flags are ignored.
+
+### Fixed
+
+- **`tools/` build context path corrected**: `docker build` now resolves the shared tools directory as `./docker/common` (project root) instead of `./scripts/common/tools`. The previous path was stale — `scripts/common/tools` is a temporary directory populated at runtime by `madengine run`, so it was absent during standalone `madengine build` invocations, silently omitting the `--build-context tools=…` flag and breaking Dockerfiles that rely on it via `COPY --from=tools`.
+
+- **Hatch package artifacts include `scripts/`**: `pyproject.toml` now uses `[tool.hatch.build.artifacts]` to include the `scripts/` directory in the built wheel. The previous `force-include` directive caused `duplicate file` errors with newer hatchling versions (which are stricter about files already covered by the default source inclusion). Switching to `artifacts` bypasses `.gitignore` exclusion without risk of duplication. The `deployment/templates` force-include was also removed as it is already captured by the default wheel source scan.
+
+## [2.1.0] - 2026-05-28
+
+### Added
+
+- **`slurm_multi` SLURM escape-hatch launcher**: New self-managed multi-node launcher for workloads that orchestrate their own per-node Docker containers via `srun` (e.g. SGLang Disaggregated proxy + prefill + decode topologies). Selected via `distributed.launcher: "slurm_multi"` (or `"slurm-multi"` alias). Generates a wrapper SBATCH script that runs the model's `.slurm` script directly on baremetal so `srun`/`scontrol` work inside it; performs parallel `srun docker pull` of the registry image on all allocated nodes when the model card sets `env_vars.DOCKER_IMAGE_NAME`. Honors model-card and `--additional-context` `slurm` fields (`partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `nodelist`). This launcher coexists with the standard templated launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan, primus) — those continue to flow through the standard sbatch template unchanged; only `slurm_multi`/`slurm-multi` takes the self-managed bypass path.
+
+- **`madengine build --use-image [IMAGE | auto]`**: Skip the local Docker build and use a pre-built image instead. With no value, resolves to the model card's `env_vars.DOCKER_IMAGE_NAME` automatically. Mutually exclusive with `--registry` and `--build-on-compute`. Manifest entries are keyed by model name with `local_image: True` so `ContainerRunner.run_models_from_manifest()` resolves `run_image` correctly and pulls on demand.
+
+- **`madengine build --build-on-compute`**: Build Docker images on a SLURM compute node and push to a registry, then have `madengine run` pull the image in parallel on all allocated nodes. Requires `--registry`. The resulting manifest carries `built_on_compute: true`.
+
+- **slurm_multi build registry gate**: When `madengine build` discovers a `slurm_multi` model and no `--registry`/`--use-image`/`--build-on-compute` is given, the orchestrator either auto-uses `env_vars.DOCKER_IMAGE_NAME` from the model card (implicit `--use-image` fallback) or raises a structured `ConfigurationError` with the four supported options listed.
+
+- **bash-in-salloc execution path** for slurm_multi: when `madengine run` detects `SLURM_JOB_ID` (i.e. running inside an existing `salloc`), the slurm_multi launcher runs the generated wrapper synchronously with `bash` instead of nesting another `sbatch` job. Other launchers continue to use `sbatch` even inside `salloc` (no behavior change for non-slurm_multi).
+
+- **Local self-managed launcher execution** (`container_runner.py`): `ContainerRunner._run_self_managed()` runs the model script directly on the host for self-managed launchers, bypassing madengine's Docker wrapper. Used when `madengine run` detects a `slurm_multi` launcher in local/non-SLURM contexts. Environment variables from the model card and `--additional-context` are injected; keys are logged without values to avoid leaking credentials.
+
+- **Model card config merge into manifest `deployment_config`**: `_execute_with_prebuilt_image` now merges the model card's `distributed` and `slurm` sections into the manifest's `deployment_config`, so the run phase auto-detects SLURM deployment and launcher settings without requiring `--additional-context`. User-supplied CLI values take precedence over model card defaults.
+
+- **`DockerBuilder` registry image injection for parallel pull**: After a successful registry push, `DockerBuilder.generate_manifest()` now sets `DOCKER_IMAGE_NAME` in each `built_models` entry's `env_vars` to the registry image, enabling slurm_multi parallel `srun docker pull` on all nodes without requiring manual image specification.
+
+- **`DeploymentResult.skip_monitoring`** (`deployment/base.py`): new dataclass field so synchronous deploy paths (e.g. slurm_multi's bash-in-salloc) can skip the monitor poll.
+
+- **`SlurmNodeSelector` `reservation` parameter**: optional reservation name forwarded to srun health/cleanup commands so node-prep srun calls run inside the reservation.
+
+- **`tests/unit/test_slurm_multi.py`**: contract tests for `slurm_multi` registry membership, hyphen alias normalization, end-to-end env_vars-export contract against MAD-private PR #186's `pyt_sglang_disagg_qwen3-32b_short` model card, and `_execute_with_prebuilt_image` manifest key-set contract (`built_images.keys() == built_models.keys()`).
+
+- **`examples/slurm-configs/minimal/slurm-multi-minimal.json`**: minimal reference config for the new launcher.
+
+- **Docker build context — shared `tools/` API access**: `docker build` now passes `--build-context tools=./tools`, making the `./tools` directory available as a named build context inside every Dockerfile. This allows Dockerfiles to `COPY --from=tools` shared helper scripts and APIs without duplicating them into each model's build context.
+
+### Changed
+
+- **Early model discovery reuse in `BuildOrchestrator`**: The `DiscoverModels` result from the slurm_multi registry-gate check is now cached and reused for the actual build step, avoiding duplicate `get_models_json.py` execution and duplicate console output.
+
+- **E2E test cleanup defaults expanded**: `DEFAULT_CLEAN_FILES` in `tests/fixtures/utils.py` now includes `build_manifest.json` and related perf artefacts (`perf_super.json`, `perf_entry.csv`, etc.) so stale manifests from prior e2e tests cannot silently cause the wrong image to be executed.
+
+### Fixed
+
+- **slurm_multi: cwd `perf.csv` aggregation**: After a successful slurm_multi run, `madengine run` previously printed a cosmetic `Performance CSV not found: perf.csv` warning even though `_collect_slurm_multi_results` had ingested the per-job CSV from `/shared_inference/$USER/$JOBID/perf.csv`. The reporter (`display_performance_table`) reads cwd `perf.csv` by default. Now `_collect_slurm_multi_results` also writes the per-job rows into cwd `perf.csv` (copy if absent, append-data-rows if present) so reporting and HTML generation work without extra args. Local + classic-SLURM flows are unchanged.
+
+### Security
+
+- **Shell injection hardening in slurm_multi wrapper scripts**: `shlex.quote()` is applied to env_var values, the model script name, and model args in the generated SBATCH wrapper script (`slurm.py::_prepare_slurm_multi_script`) and the local self-managed runner (`container_runner.py::_run_self_managed`), preventing shell metacharacters (`$()`, backticks, `;`, `"`, etc.) in user-supplied inputs from triggering host-shell expansion.
+
+## [2.0.3] - 2026-05-26
+
+### Added
+
+- **rocEnvTool full mode** (`rocenv_mode` in `--additional-context`, default `"lite"`): set `"rocenv_mode": "full"` to also collect `hardware_information` (lshw), `bios_settings` (dmidecode), `dmsg_gpu_drm_atom_logs` (dmesg), and `amdgpu_modinfo` (modinfo). Missing diagnostic tools are auto-installed best-effort using the `guest_os`-native package manager — `apt-get` on `UBUNTU`, `microdnf`/`dnf`/`yum` (first one found) on `CENTOS`. Install failures (no network, unprivileged container, unsupported guest) are non-fatal: the affected sections are simply omitted. Wired through both local Docker runs (`container_runner.py`) and Kubernetes deployments (`k8s_scripts.py`, `k8s_template_context.py`). See [System environment collection](docs/configuration.md#system-environment-collection-rocenvtool).
+
+- **`MAD_GUEST_OS` in container env**: `container_runner` now exports the run's `guest_os` as `MAD_GUEST_OS` so in-container pre-scripts (notably `run_rocenv_tool.sh`) can select the correct package manager without re-detecting from `/etc/os-release`.
+
+- **K8s `storage_class` field**: New generic `storage_class` key in the K8s preset defaults (`src/madengine/deployment/presets/k8s/defaults.json`). It is the broadest fallback for both the data PVC and the single-node results PVC, behind the more specific `data_storage_class` / `nfs_storage_class` and `single_node_results_storage_class` / `local_path_storage_class` keys. The legacy `local_path_storage_class` key continues to be honoured for backward compatibility. **Default change**: the bundled preset now sets `storage_class: "nfs-banff"` in place of `local_path_storage_class: "local-path"`, so out-of-the-box single-node results PVCs land on the NFS class instead of `local-path`. Clusters that still want local-path should set `"local_path_storage_class": "local-path"` (or `"single_node_results_storage_class": "local-path"`) in `--additional-context`. See [K8s storage classes](examples/k8s-configs/README.md).
+
+### Changed
+
+- **Profiling**: `rocm_trace_lite` now sets `RTL_MODE=lite` explicitly; added tool `rocm_trace_lite_default` with `RTL_MODE=default` for A/B overhead comparison. `rtl_trace_wrapper.sh` passes `rtl trace --mode …` when `RTL_MODE` is set.
+
+- **Kubernetes deployment refactor**: Decomposed the monolithic `kubernetes.py` (~2800 lines) into focused mixin modules — `k8s_pvc.py` (PVC lifecycle), `k8s_results.py` (log/artifact collection and performance aggregation), `k8s_scripts.py` (script extraction and ConfigMap building), and `k8s_template_context.py` (Jinja2 template context assembly). `KubernetesDeployment` now composes these mixins; no functional changes.
+
+- **`run_rocenv_tool.sh` argument signature**: now accepts `<output_basename> <rocenv_mode> <guest_os>` (was just `<output_basename>`). `rocenv_mode` and `guest_os` default to `lite` and `UBUNTU` respectively when omitted, so existing direct callers remain functional. `container_runner` and the K8s scripts mixin pass all three.
+
+- **Pytest configuration consolidation**: pytest settings now live solely in `[tool.pytest.ini_options]` in `pyproject.toml`; the redundant `pytest.ini` was removed. `tests/conftest.py` lost its `sys.path` hack and duplicate marker registration (markers are declared in `pyproject.toml`). The `minversion` value was also corrected from `"3.8"` (which was the Python version) to `"7.0"` — the actual pytest floor required for the `pythonpath` option used by the config.
+
+### Fixed
+
+- **Multi-arch image names broken for slashed model names**: `_create_base_image_name` in `execution/docker_builder.py` interpolated `model_info["name"]` directly into the image tag, so a model named `dummy/dummy` built with `--target-archs gfx950` produced `ci-dummy/dummy_dummy/dummy.ubuntu.amd_gfx950`. Docker image tags cannot contain `/` (it is a repository separator), so the subsequent `docker tag … rocm/mad-private:<image>` failed with `invalid reference format` and the registry push was skipped, even though the local build succeeded. Single-arch builds were unaffected because `build_image()` already sanitised the name. The helper now mirrors the single-arch convention — lowercase the model name, replace `/` with `_`, and append the dockerfile basename — yielding `ci-dummy_dummy_dummy.ubuntu.amd_gfx950`. Regression tests added in `tests/integration/test_platform_integration.py` cover both the helper and the end-to-end multi-arch path with a slashed model name (existing tests used `"name": "dummy"` and never tripped the bug).
+
+- **K8s collector pod name mismatch**: The cleanup code in `kubernetes.py` used the full job name (`collector-{job_name}`) while the creation code in `k8s_results.py` truncated it (`collector-{deployment_id[:15]}`). For any job name longer than 15 characters (i.e. virtually all real jobs), cleanup would fail to delete the collector pod, leaving it running and potentially blocking PVC deletion on the next deploy. Extracted a shared `collector_pod_name()` helper so both sites use the same truncated name.
+
+- **rocEnvTool full-mode dumps crashed on empty tool output**: `dump_hardware_information_in_csv`, `dump_bios_settings_in_csv`, `dump_dmsg_gpu_drm_atom_logs_in_csv`, and `dump_amdgpu_modinfo_in_csv` indexed `lines[0]` unconditionally. In unprivileged containers, `dmesg` (no `CAP_SYSLOG`) and `dmidecode` (no `/dev/mem`) commonly emit empty output, which raised `IndexError` and aborted the entire CSV dump — losing the sections that had succeeded. Each handler now returns `[]` early when the source file is empty.
+
+- **RPD pre-script: `xxd` missing in rocm/pytorch base image**: upstream `rocmProfileData/rpd_tracer/Makefile` uses `xxd -i` to embed `tableSchema.cmd`/`utilitySchema.cmd` as C arrays, so `make rpd` exited 127 and the e2e suite saw no `trace.rpd`. `trace.sh` now installs `xxd` on Ubuntu and `vim-common` (provides `xxd`) on CentOS.
+
+- **RPD pre-script: failed as root with no `sudo`**: the install path used `sudo apt`/`sudo yum` unconditionally, which is missing in many CI containers running as `root`. `trace.sh` now branches on `id -u` — direct `apt-get`/`yum` when root, `sudo` otherwise — and adds the build deps the upstream Makefile expects (`git`, `build-essential`, `pkg-config` on Ubuntu; `gcc`, `gcc-c++`, `make`, `git` on CentOS).
+
+- **`TypeError` on restricted ROCm < 6.4.1 systems**: `Context` assumed every `/dev/dri/renderD*` entry exposed a non-`None` `kfd_renderDs` value. On restricted hosts (ROCm < 6.4.1, certain VFIO/passthrough setups) this returned `None` and crashed downstream consumers. `core/context.py` now guards the iteration so missing/`None` entries are skipped instead of raising.
+
+- **Deployment monitor infinite loop on cancelled jobs**: `BaseDeployment._monitor_job` treated only `COMPLETED`/`FAILED` as terminal, so a `CANCELLED` job (manual `scancel`, K8s job deletion, etc.) would loop forever waiting for a state that never arrived. `CANCELLED` is now in the terminal-state set in `deployment/base.py`.
+
+- **Docker local: missing `MAD_MULTI_NODE_RUNNER`**: SLURM (`job.sh.j2`) and Kubernetes (`kubernetes_launcher_mixin.py`) already export `MAD_MULTI_NODE_RUNNER` with the appropriate distributed launcher command, but local Docker runs had no equivalent. Models that delegate process spawning to `$MAD_MULTI_NODE_RUNNER` (e.g. Megatron-LM `train_7b.sh`) failed on `madengine run` with `MULTI_NODE_RUNNER is not defined`. `ContainerRunner` now resolves the launcher from `--additional-context` → model `distributed.launcher` → `MAD_LAUNCHER` (same priority chain as elsewhere), treats deployment-level values (`docker`, `native`) as `torchrun`, and sets `MAD_MULTI_NODE_RUNNER` via `_generate_local_launcher_command()` after GPU resolution (`MAD_RUNTIME_NGPUS`). Supports torchrun, megatron-lm, torchtitan, deepspeed, vllm, sglang, and primus; models that hardcode their own launcher (e.g. HuggingFace scripts) simply ignore the variable. Skipped when `MAD_MULTI_NODE_RUNNER` is already set in `docker_env_vars`.
+
+### Security
+
+- **Shell injection hardening (extended)**: `shlex.quote()` is now applied to every shell interpolation of a user-controlled value across `core/docker.py`, `execution/container_runner.py`, `execution/docker_builder.py`, and `orchestration/run_orchestrator.py` (image names, paths, container names, build-args). A follow-up pass closed the last remaining sites in `docker_builder.py` (`grep`, `docker manifest inspect`, `docker tag`, `docker push`, `head`). This is a defence-in-depth extension of the v2.0.2 build-arg quoting work — values that flow through `--additional-context`, model configs, or registry credentials can no longer break out of the shell command they are embedded in.
+
+### Tests
+
+- **Dummy `dummy_rocenv_full` fixture**: new Dockerfile installs `lshw`, `dmidecode`, `kmod`, and `util-linux` so e2e tests can exercise rocenv full mode end-to-end inside the container.
+
+- **RCCL profiling e2e stabilization**: `tests/fixtures/dummy/scripts/dummy/run_nccl_trace.sh` now pins `HIP_VISIBLE_DEVICES`/`NCCL_IB_DISABLE`/`NCCL_SOCKET_IFNAME` defaults to avoid topology-detection hangs in CI. The `rccl_trace` log assertion in `tests/e2e/test_profiling_workflows.py` was relaxed for minor NCCL log-format drift.
+
+- **New `test_shell_quoting.py`**: 11-test suite covering the shell-quoting behaviour described above end-to-end across `docker.py`, `container_runner.py`, `docker_builder.py`, and `run_orchestrator.py`. Includes regression coverage for spaces, `$`, backticks, command-substitution, and quote characters in interpolated values.
+
+- **Test isolation fix**: `tests/unit/test_error_handling.py` was leaking the global error-handler state across tests, so test order could mask or fabricate failures. The handler is now reset around the affected tests.
+
+### Known Issues
+
+- **K8s multi-node: node reported as FAILED due to log collection error**: In multi-node Kubernetes jobs, a node may be reported as `FAILED` in the results table even though the pod completed successfully (`Status: Succeeded`). This happens when the kubelet on the node becomes unreachable (502 Bad Gateway) between job completion and log collection — madengine cannot retrieve stdout logs and therefore cannot parse performance metrics for that node. The PVC artifacts are still collected. Check `kubectl describe pod <pod>` to confirm the pod actually succeeded; the issue is infrastructure-level (kubelet/API server), not a workload failure.
+
+## [2.0.2] - 2026-04-28
 
 ### Fixed
 
@@ -531,8 +683,8 @@ black src/ tests/ && isort src/ tests/
 # Run pre-commit hooks manually
 pre-commit run --all-files
 
-# Build without running (CI/CD)
-madengine run --tags model --skip-model-run
+# Skip model script (container starts, pre_scripts run); leave live container for debugging
+madengine run --tags model --skip-model-run --keep-alive
 
 # Debug with verbose output
 madengine run --tags model --verbose --live-output

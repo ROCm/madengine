@@ -74,6 +74,7 @@ class SlurmNodeSelector:
         auto_cleanup: bool = False,
         verbose: bool = False,
         timeout: int = 30,
+        reservation: Optional[str] = None,
     ):
         """
         Initialize node selector.
@@ -83,11 +84,13 @@ class SlurmNodeSelector:
             auto_cleanup: Automatically clean dirty nodes
             verbose: Enable verbose logging
             timeout: Timeout for srun commands (seconds)
+            reservation: SLURM reservation name (passed through to srun health/cleanup)
         """
         self.console = console or Console()
         self.auto_cleanup = auto_cleanup
         self.verbose = verbose
         self.timeout = timeout
+        self.reservation = reservation
 
     # Max candidates to check (avoids excessive checks on large clusters)
     MAX_CANDIDATES_CAP = 100
@@ -216,6 +219,8 @@ echo "===END_PROCESSES==="
         ]
         if job_name:
             srun_cmd.append(f"--job-name={job_name}")
+        if self.reservation:
+            srun_cmd.append(f"--reservation={self.reservation}")
         srun_cmd.extend(["bash", "-c", check_script])
 
         try:
@@ -332,6 +337,8 @@ echo "CLEANUP_OK"
         ]
         if job_name:
             srun_cmd.append(f"--job-name={job_name}")
+        if self.reservation:
+            srun_cmd.append(f"--reservation={self.reservation}")
         srun_cmd.extend(["bash", "-c", cleanup_script])
 
         try:

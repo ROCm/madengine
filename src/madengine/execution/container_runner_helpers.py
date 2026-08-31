@@ -149,6 +149,57 @@ def log_text_has_error_pattern(
     return False
 
 
+def resolve_run_status(
+    has_performance: bool,
+    has_errors: bool,
+    is_worker_node: bool = False,
+    skip_perf_collection: bool = False,
+) -> typing.Tuple[str, str]:
+    """
+    Decide the final run status ("SUCCESS"/"FAILURE") and a short human-readable reason.
+
+    Priority (see ROCM-27774):
+
+    1. Valid extracted performance metrics are the strongest evidence a run actually
+       completed successfully. A post-hoc log error-pattern match cannot distinguish
+       madengine/framework diagnostics from a model's own generated stdout (e.g. an LLM
+       benchmark whose response text contains ``"ValueError:"``), so it must not override
+       a run that already produced valid performance data. The match is still reported so
+       it remains visible for triage, without failing an otherwise-successful run.
+    2. Otherwise, a matched error pattern fails the run (no performance data to
+       contradict it).
+    3. Otherwise, worker nodes / deferred perf-collection runs are expected to have no
+       local performance and are not failed for that reason.
+    4. Otherwise, no performance metrics and no exemption applies -> FAILURE.
+
+    Args:
+        has_performance: Whether valid performance metrics were extracted from the log.
+        has_errors: Whether a configured error pattern was matched in the log.
+        is_worker_node: Whether this is a non-collecting worker node
+            (``MAD_COLLECT_METRICS=false``) in multi-node training.
+        skip_perf_collection: Whether local perf collection is deferred to a login-node
+            aggregator (e.g. multi-node SLURM runs).
+
+    Returns:
+        (status, reason) tuple, e.g. ``("SUCCESS", "performance metrics found, no errors")``.
+    """
+    if has_performance:
+        if has_errors:
+            return (
+                "SUCCESS",
+                "performance metrics found; error pattern also matched in logs "
+                "(likely model-generated output, not treated as failure)",
+            )
+        return "SUCCESS", "performance metrics found, no errors"
+    if has_errors:
+        return "FAILURE", "error patterns detected in logs"
+    if is_worker_node:
+        return "SUCCESS", "worker node, no errors detected"
+    if skip_perf_collection:
+        return "SUCCESS", "perf collection deferred to login-node aggregation"
+    return "FAILURE", "no performance metrics"
+
+
 def resolve_run_timeout(
     model_info: typing.Dict,
     cli_timeout: int,

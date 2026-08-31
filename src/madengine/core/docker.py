@@ -88,10 +88,11 @@ class Docker:
         # add mounts
         if mounts is not None:
             for mount in mounts:
-                command += "-v " + mount + ":" + mount + " "
+                quoted_mount = shlex.quote(mount)
+                command += "-v " + quoted_mount + ":" + quoted_mount + " "
 
         # add current working directory
-        command += "-v " + cwd + ":/myworkspace/ "
+        command += "-v " + shlex.quote(cwd) + ":/myworkspace/ "
 
         # add envVars
         _env_key_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -102,8 +103,9 @@ class Docker:
                 command += "-e " + evar + "=" + shlex.quote(str(envVars[evar])) + " "
 
         command += "--workdir /myworkspace/ "
-        command += "--name " + container_name + " "
-        command += image + " "
+        command += "--name " + shlex.quote(container_name) + " "
+        command += shlex.quote(image) + " "
+
 
         # Use 'cat' to keep container alive (blocks waiting for stdin)
         # Works reliably across all deployment types (local, k8s, slurm)
@@ -136,13 +138,13 @@ class Docker:
     def __del__(self):
         """Destructor of the Docker class."""
         # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
-        if not self.keep_alive and self.docker_sha:
+        if not getattr(self, "keep_alive", False) and getattr(self, "docker_sha", None):
             self.console.sh("docker stop -t 1 " + self.docker_sha)
             self.console.sh("docker rm -f " + self.docker_sha)
             return
 
         # print docker sha
-        if self.docker_sha:
+        if getattr(self, "docker_sha", None):
             print("==========================================")
             print("Keeping docker alive, sha :", self.docker_sha)
             print(

@@ -13,20 +13,42 @@ case "$tool" in
 
 rpd)
 	# OS packages only needed for RPD build; other tools (e.g. rocm_trace_lite) skip this.
+	# Docker madengine runs often use root with no sudo — use apt-get/yum directly when uid==0.
 	os=''
-	if command -v apt >/dev/null 2>&1; then
+	if command -v apt-get >/dev/null 2>&1; then
 		os=ubuntu
 	elif command -v yum >/dev/null 2>&1; then
 		os=centos
 	else
-		echo 'Unable to detect Host OS in pre_script (need apt or yum for RPD dependencies)' >&2
+		echo 'Unable to detect Host OS in pre_script (need apt-get or yum for RPD dependencies)' >&2
 		exit 1
 	fi
 	if [ "$os" == 'ubuntu' ]; then
-		sudo apt update
-		sudo apt install -y sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev
+		if [ "$(id -u)" -eq 0 ]; then
+			apt-get update -qq
+			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
+				git build-essential pkg-config xxd
+		elif command -v sudo >/dev/null 2>&1; then
+			sudo apt-get update -qq
+			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
+				git build-essential pkg-config xxd
+		else
+			echo 'RPD pre-script: need root or sudo for apt-get' >&2
+			exit 1
+		fi
 	elif [ "$os" == 'centos' ]; then
-		sudo yum install -y libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel
+		if [ "$(id -u)" -eq 0 ]; then
+			yum install -y gcc gcc-c++ make git \
+				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
+		elif command -v sudo >/dev/null 2>&1; then
+			sudo yum install -y gcc gcc-c++ make git \
+				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
+		else
+			echo 'RPD pre-script: need root or sudo for yum' >&2
+			exit 1
+		fi
 	else
 		echo "Unable to detect Host OS in trace pre-script"
 	fi

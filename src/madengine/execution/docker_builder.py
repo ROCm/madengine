@@ -11,13 +11,19 @@ import json
 import os
 import re
 import shlex
+import sys
+from pathlib import Path
 import time
 import typing
 from contextlib import redirect_stderr, redirect_stdout
 
 from rich.console import Console as RichConsole
 
-from madengine.core.auth import login_to_registry
+from madengine.core.auth import (
+    explain_registry_denial,
+    has_ambient_docker_auth,
+    login_to_registry,
+)
 from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.execution.dockerfile_utils import (
@@ -84,12 +90,13 @@ class DockerBuilder:
             return ""
 
         build_args = ""
-        for build_arg in self.context.ctx["docker_build_arg"].keys():
+        context_build_arg = self.context.ctx.get("docker_build_arg", {})
+        for build_arg in context_build_arg.keys():
             build_args += (
                 "--build-arg "
                 + shlex.quote(str(build_arg))
                 + "="
-                + shlex.quote(str(self.context.ctx["docker_build_arg"][build_arg]))
+                + shlex.quote(str(context_build_arg[build_arg]))
                 + " "
             )
 
@@ -104,6 +111,72 @@ class DockerBuilder:
                 )
 
         return build_args
+
+    def _resolve_base_docker(self, dockerfile: str) -> str:
+        """Resolve the base image the Dockerfile builds ``FROM``.
+
+        Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context,
+        otherwise reads ``ARG BASE_DOCKER=`` from the Dockerfile.
+
+        Args:
+            dockerfile: Path to the Dockerfile.
+
+        Returns:
+            str: The base image reference, or ``""`` if it cannot be determined.
+        """
+        if (
+            "docker_build_arg" in self.context.ctx
+            and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
+        ):
+            return str(self.context.ctx["docker_build_arg"]["BASE_DOCKER"])
+        try:
+            return str(
+                self.console.sh(
+                    f"grep '^ARG BASE_DOCKER=' {shlex.quote(dockerfile)} | sed -E 's/ARG BASE_DOCKER=//g'"
+                )
+            )
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _registry_of(image: str) -> str:
+        """Return the registry an image reference points at.
+
+        Args:
+            image: An image reference such as ``rocm/pytorch:latest`` or
+                ``myhost:5000/team/img:tag``.
+
+        Returns:
+            str: The registry host, or ``"docker.io"`` for Docker Hub references.
+        """
+        first_segment = (image or "").strip().split("/")[0]
+        if "." in first_segment or ":" in first_segment or first_segment == "localhost":
+            return first_segment
+        return "docker.io"
+
+    def _report_registry_denial(self, log_file_path: str, base_docker: str) -> None:
+        """Print an actionable hint if a build log shows a registry denial.
+
+        Called from inside the build's stdout redirection, so the hint is written
+        to the real stdout as well to make sure it reaches the terminal and not
+        only the build log.
+
+        Args:
+            log_file_path: Path to the build log written by this build.
+            base_docker: The base image the build was pulling.
+        """
+        try:
+            with open(log_file_path, encoding="utf-8", errors="replace") as log:
+                log_text = log.read()
+        except OSError:
+            return
+        hint = explain_registry_denial(log_text, base_docker)
+        if not hint:
+            return
+        message = f"[bold red]❌ {hint}[/bold red]"
+        self.rich_console.print(f"\n{message}")
+        if not self.live_output and sys.__stdout__ is not None:
+            RichConsole(file=sys.__stdout__).print(f"\n{message}")
 
     def build_image(
         self,
@@ -180,6 +253,23 @@ class DockerBuilder:
         if additional_build_args:
             run_build_arg.update(additional_build_args)
 
+        # Per-model build args declared in the model card (models.json). Lets a model
+        # pin build-time sources (e.g. VLLM_REPO/VLLM_REF) in-repo instead of requiring
+        # every caller to pass --additional-context. Context and multi-arch/cred args
+        # win on conflict, matching _pick_context_over_model() for run-time keys.
+        card_build_arg = model_info.get("docker_build_arg") or {}
+        if not isinstance(card_build_arg, dict):
+            raise RuntimeError(
+                f"docker_build_arg for model {model_info['name']} must be a JSON object "
+                f"mapping build-arg names to values, got {type(card_build_arg).__name__}"
+            )
+        for card_arg, card_value in card_build_arg.items():
+            if card_arg in self.context.ctx.get("docker_build_arg", {}):
+                continue
+            if card_arg in run_build_arg:
+                continue
+            run_build_arg[card_arg] = card_value
+
         build_args = self.get_build_arg(run_build_arg)
 
         use_cache_str = "--no-cache" if clean_cache else ""
@@ -187,20 +277,45 @@ class DockerBuilder:
         # Build the image with logging
         build_start_time = time.time()
 
+        tools_build_context = ""
+        docker_api_dir = Path("docker/common")
+        if docker_api_dir.exists():
+            tools_build_context = f"--build-context tools={docker_api_dir} "
+
         build_command = (
             f"docker build {use_cache_str} --network=host "
-            f"-t {docker_image} --pull -f {dockerfile} "
-            f"{build_args} {docker_context}"
+            f"{tools_build_context}"
+            f"-t {shlex.quote(docker_image)} --pull -f {shlex.quote(dockerfile)} "
+            f"{build_args} {shlex.quote(docker_context)}"
         )
 
         # Execute build with log redirection
         with open(log_file_path, mode="w", buffering=1) as outlog:
-            with (
-                redirect_stdout(PythonicTee(outlog, self.live_output)),
-                redirect_stderr(PythonicTee(outlog, self.live_output)),
-            ):
+            with redirect_stdout(
+                PythonicTee(outlog, self.live_output)
+            ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+                # `docker build --pull` resolves the base image itself, so it only
+                # works if this machine can authenticate to the base image's
+                # registry. Log in when — and only when — there is no existing
+                # login to reuse, so an ambient `docker login` (e.g. an
+                # organisation access token) is left alone.
+                base_docker = self._resolve_base_docker(dockerfile)
+                base_registry = self._registry_of(base_docker)
+                if credentials and not has_ambient_docker_auth(base_registry):
+                    login_to_registry(
+                        base_registry,
+                        credentials,
+                        console=self.console,
+                        rich_console=self.rich_console,
+                        raise_on_failure=False,
+                    )
+
                 print(f"🔨 Executing build command...")
-                self.console.sh(build_command, timeout=None)
+                try:
+                    self.console.sh(build_command, timeout=None)
+                except Exception:
+                    self._report_registry_denial(log_file_path, base_docker)
+                    raise
 
                 build_duration = time.time() - build_start_time
 
@@ -212,24 +327,13 @@ class DockerBuilder:
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
 
                 # Get base docker info
-                base_docker = ""
-                if (
-                    "docker_build_arg" in self.context.ctx
-                    and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
-                ):
-                    base_docker = self.context.ctx["docker_build_arg"]["BASE_DOCKER"]
-                else:
-                    base_docker = self.console.sh(
-                        f"grep '^ARG BASE_DOCKER=' {dockerfile} | sed -E 's/ARG BASE_DOCKER=//g'"
-                    )
-
                 print(f"BASE DOCKER is {base_docker}")
 
                 # Get docker SHA
                 docker_sha = ""
                 try:
                     docker_sha = self.console.sh(
-                        f'docker manifest inspect {base_docker} | grep digest | head -n 1 | cut -d \\" -f 4'
+                        f'docker manifest inspect {shlex.quote(base_docker)} | grep digest | head -n 1 | cut -d \\" -f 4'
                     )
                     print(f"BASE DOCKER SHA is {docker_sha}")
                 except Exception as e:
@@ -314,7 +418,7 @@ class DockerBuilder:
             # Tag the image if different from local name
             if registry_image != docker_image:
                 print(f"Tagging image: docker tag {docker_image} {registry_image}")
-                tag_command = f"docker tag {docker_image} {registry_image}"
+                tag_command = f"docker tag {shlex.quote(docker_image)} {shlex.quote(registry_image)}"
                 self.console.sh(tag_command)
             else:
                 print(
@@ -322,7 +426,7 @@ class DockerBuilder:
                 )
 
             # Push the image
-            push_command = f"docker push {registry_image}"
+            push_command = f"docker push {shlex.quote(registry_image)}"
             self.rich_console.print(
                 f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]"
             )
@@ -388,6 +492,31 @@ class DockerBuilder:
                 build_info["registry"] = batch_build_metadata[model_name].get(
                     "registry"
                 )
+
+        # Update built_models with registry image name for parallel pull in slurm_multi
+        # Map local image to registry image for env_vars
+        for image_name, build_info in self.built_images.items():
+            registry_image = build_info.get("registry_image")
+            if not registry_image:
+                continue
+            if image_name not in self.built_models:
+                # built_images and built_models are keyed by docker_image in the
+                # normal build path (see _build_single_model). If a future code
+                # path keys them differently, this injection would silently no-op
+                # and slurm_multi parallel pulls would fall back to the local
+                # image tag. Surface the mismatch so it's caught early.
+                self.rich_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"No built_models entry found for local image key '{image_name}' "
+                    f"while setting DOCKER_IMAGE_NAME='{registry_image}'. "
+                    "built_images and built_models may be keyed differently."
+                )
+                continue
+            model_data = self.built_models[image_name]
+            if "env_vars" not in model_data:
+                model_data["env_vars"] = {}
+            # Set DOCKER_IMAGE_NAME to registry image for parallel pull
+            model_data["env_vars"]["DOCKER_IMAGE_NAME"] = registry_image
 
         manifest = {
             "built_images": self.built_images,
@@ -614,7 +743,7 @@ class DockerBuilder:
             for cur_docker_file in all_dockerfiles:
                 # Get context of dockerfile
                 dockerfiles[cur_docker_file] = self.console.sh(
-                    f"head -n5 {cur_docker_file} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
+                    f"head -n5 {shlex.quote(cur_docker_file)} | grep '# CONTEXT ' | sed 's/# CONTEXT //g'"
                 )
 
             # Filter dockerfiles based on context
@@ -799,20 +928,14 @@ class DockerBuilder:
         return ""
 
     def _create_base_image_name(self, model_info: typing.Dict, dockerfile: str) -> str:
-        """Create base image name from model info and dockerfile."""
-        # Extract dockerfile context suffix (e.g., "ubuntu.amd" from "dummy.ubuntu.amd.Dockerfile")
-        dockerfile_name = os.path.basename(dockerfile)
-        if "." in dockerfile_name:
-            # Remove the .Dockerfile extension and get context
-            context_parts = dockerfile_name.replace(".Dockerfile", "").split(".")[
-                1:
-            ]  # Skip model name
-            context_suffix = ".".join(context_parts) if context_parts else "default"
-        else:
-            context_suffix = "default"
+        """Create base image name from model info and dockerfile.
 
-        # Create base image name: ci-{model}_{model}.{context}
-        return f"ci-{model_info['name']}_{model_info['name']}.{context_suffix}"
+        Mirrors the single-arch naming in ``build_image`` so multi-arch builds
+        produce valid Docker references when the model name contains ``/``.
+        """
+        safe_name = model_info["name"].replace("/", "_").lower()
+        dockerfile_base = os.path.basename(dockerfile).replace(".Dockerfile", "")
+        return f"ci-{safe_name}_{dockerfile_base}"
 
     def _create_registry_image_name(
         self,
