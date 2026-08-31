@@ -241,6 +241,7 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 
     def _make_mixin(self):
         from unittest.mock import MagicMock
+
         from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
 
         mixin = KubernetesScriptsMixin()

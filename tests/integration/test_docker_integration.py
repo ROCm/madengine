@@ -242,7 +242,9 @@ class TestDockerBuilder:
 
         result = builder.build_image(model_info, "./docker/Dockerfile")
 
-        assert f"--build-arg VLLM_REF={shlex.quote('abc123')}" in result["build_command"]
+        assert (
+            f"--build-arg VLLM_REF={shlex.quote('abc123')}" in result["build_command"]
+        )
 
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)

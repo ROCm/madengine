@@ -625,7 +625,9 @@ class RunOrchestrator:
             if "docker_mounts" in manifest_context:
                 if "docker_mounts" not in self.context.ctx:
                     self.context.ctx["docker_mounts"] = {}
-                for container_path, host_path in manifest_context["docker_mounts"].items():
+                for container_path, host_path in manifest_context[
+                    "docker_mounts"
+                ].items():
                     if container_path not in self.context.ctx["docker_mounts"]:
                         self.context.ctx["docker_mounts"][container_path] = host_path
             if "docker_build_arg" in manifest_context:
@@ -634,9 +636,15 @@ class RunOrchestrator:
                 for key, value in manifest_context["docker_build_arg"].items():
                     if key not in self.context.ctx["docker_build_arg"]:
                         self.context.ctx["docker_build_arg"][key] = value
-            if "docker_gpus" in manifest_context and "docker_gpus" not in self.context.ctx:
+            if (
+                "docker_gpus" in manifest_context
+                and "docker_gpus" not in self.context.ctx
+            ):
                 self.context.ctx["docker_gpus"] = manifest_context["docker_gpus"]
-            if "gpu_vendor" in manifest_context and "gpu_vendor" not in self.context.ctx:
+            if (
+                "gpu_vendor" in manifest_context
+                and "gpu_vendor" not in self.context.ctx
+            ):
                 self.context.ctx["gpu_vendor"] = manifest_context["gpu_vendor"]
             if "guest_os" in manifest_context and "guest_os" not in self.context.ctx:
                 self.context.ctx["guest_os"] = manifest_context["guest_os"]

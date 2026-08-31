@@ -15,9 +15,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import normalize_launcher
 from madengine.utils.path_utils import scripts_base_dir_from
-from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
+from madengine.utils.run_details import (
+    flatten_tags_in_place,
+    get_build_number,
+    get_pipeline,
+)
+
+from .common import normalize_launcher
 
 try:
     from kubernetes.client.rest import ApiException
@@ -28,7 +33,11 @@ except ImportError:
 
 try:
     from madengine.reporting.update_perf_csv import update_perf_csv
-    from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
+    from madengine.reporting.update_perf_super import (
+        update_perf_super_csv,
+        update_perf_super_json,
+    )
+
     REPORTING_AVAILABLE = True
 except ImportError:
     REPORTING_AVAILABLE = False
@@ -37,6 +46,7 @@ except ImportError:
 def _pod_job_name_label_selector(deployment_id: str) -> str:
     """Selector for the ``job-name`` pod label; value must be a valid <=63-char label value."""
     from .k8s_names import sanitize_k8s_label_value
+
     return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
@@ -87,7 +97,9 @@ class KubernetesResultsMixin:
         results_dir = Path(f"./k8s_results/{deployment_id}")
         results_dir.mkdir(parents=True, exist_ok=True)
 
-        self.console.print(f"[cyan]📦 Collecting results from K8s job: {deployment_id}[/cyan]")
+        self.console.print(
+            f"[cyan]📦 Collecting results from K8s job: {deployment_id}[/cyan]"
+        )
 
         try:
             # Get pods for this job
@@ -161,11 +173,13 @@ class KubernetesResultsMixin:
 
                 # Extract node rank from pod name (e.g., madengine-dummy-torchrun-0 -> 0)
                 try:
-                    node_rank = int(pod_name.rsplit('-', 1)[-1])
+                    node_rank = int(pod_name.rsplit("-", 1)[-1])
                 except (ValueError, IndexError):
                     node_rank = pod_index
 
-                self.console.print(f"[dim]  Collecting from pod: {pod_name} (node-{node_rank})[/dim]")
+                self.console.print(
+                    f"[dim]  Collecting from pod: {pod_name} (node-{node_rank})[/dim]"
+                )
 
                 try:
                     # 1. Collect pod logs
@@ -174,11 +188,9 @@ class KubernetesResultsMixin:
                     )
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
-                    results["logs"].append({
-                        "pod": pod_name,
-                        "log": log,
-                        "file": str(log_file)
-                    })
+                    results["logs"].append(
+                        {"pod": pod_name, "log": log, "file": str(log_file)}
+                    )
 
                     # 2. Parse NODE-LOCAL performance from log
                     perf_data = self._parse_performance_from_log(
@@ -196,12 +208,18 @@ class KubernetesResultsMixin:
                     node_info = {
                         "node_id": node_rank,
                         "pod_name": pod_name,
-                        "status": "SUCCESS" if pod_status == "Succeeded" and pod_exit_code == 0 else "FAILED",
+                        "status": (
+                            "SUCCESS"
+                            if pod_status == "Succeeded" and pod_exit_code == 0
+                            else "FAILED"
+                        ),
                         "exit_code": pod_exit_code,
-                        "performance": perf_data.get("performance") if perf_data else None,
+                        "performance": (
+                            perf_data.get("performance") if perf_data else None
+                        ),
                         "metric": perf_data.get("metric") if perf_data else None,
                         "duration": perf_data.get("duration") if perf_data else None,
-                        "log_file": str(log_file)
+                        "log_file": str(log_file),
                     }
                     results["nodes"].append(node_info)
 
@@ -223,28 +241,32 @@ class KubernetesResultsMixin:
                     self.console.print(
                         f"[red]✗ Failed to get logs for pod {pod_name}: {e.reason}[/red]"
                     )
-                    results["nodes"].append({
-                        "node_id": node_rank,
-                        "pod_name": pod_name,
-                        "status": "FAILED",
-                        "exit_code": -1,
-                        "performance": None,
-                        "metric": None,
-                        "error": f"Failed to get logs: {e.reason}"
-                    })
+                    results["nodes"].append(
+                        {
+                            "node_id": node_rank,
+                            "pod_name": pod_name,
+                            "status": "FAILED",
+                            "exit_code": -1,
+                            "performance": None,
+                            "metric": None,
+                            "error": f"Failed to get logs: {e.reason}",
+                        }
+                    )
                 except Exception as e:
                     self.console.print(
                         f"[red]✗ Error collecting from pod {pod_name}: {e}[/red]"
                     )
-                    results["nodes"].append({
-                        "node_id": node_rank,
-                        "pod_name": pod_name,
-                        "status": "FAILED",
-                        "exit_code": -1,
-                        "performance": None,
-                        "metric": None,
-                        "error": str(e)
-                    })
+                    results["nodes"].append(
+                        {
+                            "node_id": node_rank,
+                            "pod_name": pod_name,
+                            "status": "FAILED",
+                            "exit_code": -1,
+                            "performance": None,
+                            "metric": None,
+                            "error": str(e),
+                        }
+                    )
 
             self.console.print(
                 f"[green]✓ Collected logs from {len(results['logs'])} pods[/green]"
@@ -252,7 +274,9 @@ class KubernetesResultsMixin:
 
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
             k8s_pod_names = [p.metadata.name for p in sorted_pods]
-            self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
+            self._collect_from_pvc(
+                deployment_id, results_dir, results, pod_names=k8s_pod_names
+            )
 
             # ========================================================================
             # Aggregate per-node metrics
@@ -279,19 +303,21 @@ class KubernetesResultsMixin:
                         "nnodes": nnodes,
                         "launcher": launcher_type or "N/A",
                         "deployment_type": "kubernetes",
-                        "gpu_architecture": per_node_metrics[0].get("gpu_architecture", "N/A"),
+                        "gpu_architecture": per_node_metrics[0].get(
+                            "gpu_architecture", "N/A"
+                        ),
                         "duration": per_node_metrics[0].get("duration", "N/A"),
                         "data_name": per_node_metrics[0].get("data_name", "N/A"),
-                        "data_provider": per_node_metrics[0].get("data_provider", "N/A"),
+                        "data_provider": per_node_metrics[0].get(
+                            "data_provider", "N/A"
+                        ),
                         "aggregation_method": "scaled_by_nnodes",
-                        "nodes_contributing": nnodes
+                        "nodes_contributing": nnodes,
                     }
                 else:
                     # Use new aggregation logic for other launchers
                     aggregated_record = self._aggregate_node_metrics(
-                        per_node_metrics,
-                        nnodes,
-                        launcher_type
+                        per_node_metrics, nnodes, launcher_type
                     )
 
                 if aggregated_record:
@@ -304,9 +330,13 @@ class KubernetesResultsMixin:
                     with open(perf_entry_path, "w", encoding="utf-8") as f:
                         json.dump(run_details_dict, f, indent=2)
                     if run_details_dict.get("status") == "SUCCESS":
-                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv", single_result=str(perf_entry_path)
+                        )
                     else:
-                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv", exception_result=str(perf_entry_path)
+                        )
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
                     try:
@@ -328,13 +358,17 @@ class KubernetesResultsMixin:
                             num_entries=num_entries,
                         )
                     except Exception as e:
-                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
-                    results["successful_runs"].append({
-                        "model": model_info.get("name"),
-                        "perf_data": aggregated_record,
-                        "nodes": results["nodes"],
-                        "per_node_metrics": per_node_metrics
-                    })
+                        self.console.print(
+                            f"[yellow]⚠ Could not update perf_super: {e}[/yellow]"
+                        )
+                    results["successful_runs"].append(
+                        {
+                            "model": model_info.get("name"),
+                            "perf_data": aggregated_record,
+                            "nodes": results["nodes"],
+                            "per_node_metrics": per_node_metrics,
+                        }
+                    )
                     self.console.print(
                         f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
                     )
@@ -384,15 +418,20 @@ class KubernetesResultsMixin:
                     )
                     # Build successful_runs for display (one entry per CSV row)
                     import csv as _csv
+
                     model_name = model_info.get("name", "")
-                    with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(
+                        resolved_csv_path, "r", encoding="utf-8", errors="ignore"
+                    ) as f:
                         reader = _csv.DictReader(f)
                         for row in reader:
                             row = {k.strip(): v for k, v in row.items() if k}
                             if row.get("performance") and row.get("metric"):
                                 display_model = f"{model_name}_{row.get('model', '')}"
                                 record = self._create_multiple_result_row_record(
-                                    model_info, build_info, deployment_id,
+                                    model_info,
+                                    build_info,
+                                    deployment_id,
                                     {
                                         "model": display_model,
                                         "performance": row.get("performance"),
@@ -402,12 +441,22 @@ class KubernetesResultsMixin:
                                     },
                                 )
                                 if record:
-                                    results["successful_runs"].append({
-                                        "model": display_model,
-                                        "perf_data": record,
-                                        "nodes": [],
-                                        "per_node_metrics": [{"model": display_model, "performance": row.get("performance"), "metric": row.get("metric", "")}],
-                                    })
+                                    results["successful_runs"].append(
+                                        {
+                                            "model": display_model,
+                                            "perf_data": record,
+                                            "nodes": [],
+                                            "per_node_metrics": [
+                                                {
+                                                    "model": display_model,
+                                                    "performance": row.get(
+                                                        "performance"
+                                                    ),
+                                                    "metric": row.get("metric", ""),
+                                                }
+                                            ],
+                                        }
+                                    )
                     self.console.print(
                         f"[green]✓ Updated perf.csv, perf_entry.*, perf_super.* (Docker-compatible)[/green]"
                     )
@@ -423,12 +472,14 @@ class KubernetesResultsMixin:
                             )
                             if record:
                                 self._write_to_perf_csv(record)
-                                results["successful_runs"].append({
-                                    "model": item["model"],
-                                    "perf_data": record,
-                                    "nodes": [],
-                                    "per_node_metrics": [item],
-                                })
+                                results["successful_runs"].append(
+                                    {
+                                        "model": item["model"],
+                                        "perf_data": record,
+                                        "nodes": [],
+                                        "per_node_metrics": [item],
+                                    }
+                                )
                         self.console.print(
                             f"[green]✓ Wrote {len(fallback_metrics)} row(s) from multiple_results to perf.csv[/green]"
                         )
@@ -439,26 +490,34 @@ class KubernetesResultsMixin:
                         model_info, build_info, deployment_id, error_msg
                     )
                     self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
                     self.console.print(
                         f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
                     )
-                elif resolved_csv_path and not REPORTING_AVAILABLE and not results.get("successful_runs"):
+                elif (
+                    resolved_csv_path
+                    and not REPORTING_AVAILABLE
+                    and not results.get("successful_runs")
+                ):
                     # Legacy path ran but produced no valid rows
                     error_msg = "No performance metrics found from any node"
                     failure_record = self._create_failure_record(
                         model_info, build_info, deployment_id, error_msg
                     )
                     self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
                     self.console.print(
                         f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
                     )
@@ -488,9 +547,13 @@ class KubernetesResultsMixin:
             artifacts = self._collect_pod_artifacts(pod_name, pod_dir)
 
             if artifacts:
-                self.console.print(f"[green]✓ Collected {len(artifacts)} artifacts from {pod_name}[/green]")
+                self.console.print(
+                    f"[green]✓ Collected {len(artifacts)} artifacts from {pod_name}[/green]"
+                )
             else:
-                self.console.print(f"[yellow]⚠ No artifacts collected from {pod_name}[/yellow]")
+                self.console.print(
+                    f"[yellow]⚠ No artifacts collected from {pod_name}[/yellow]"
+                )
 
         except Exception as e:
             self.console.print(f"[yellow]⚠ Error collecting artifacts: {e}[/yellow]")
@@ -522,7 +585,10 @@ class KubernetesResultsMixin:
             {"pattern": "results*", "type": "profiling"},
             {"pattern": "*.db", "type": "profiling"},
             {"pattern": "trace.*", "type": "tracing"},
-            {"pattern": "prof.csv", "type": "profiling"},  # Raw profiler output before post-script renames it
+            {
+                "pattern": "prof.csv",
+                "type": "profiling",
+            },  # Raw profiler output before post-script renames it
             {"pattern": "gpu_info_*.csv", "type": "profiling"},
             {"pattern": "library_trace.csv", "type": "tracing"},
         ]
@@ -534,12 +600,18 @@ class KubernetesResultsMixin:
             try:
                 # Try direct kubectl cp without exec (works during the sleep period)
                 # For patterns with wildcards, try common specific filenames
-                if '*' in pattern:
+                if "*" in pattern:
                     # Expand pattern to specific known files
                     if pattern == "*_env.csv":
-                        specific_files = ["dummy_prof_env.csv", "dummy_data_minio_env.csv"]
+                        specific_files = [
+                            "dummy_prof_env.csv",
+                            "dummy_data_minio_env.csv",
+                        ]
                     elif pattern == "gpu_info_*.csv":
-                        specific_files = ["gpu_info_power_profiler_output.csv", "gpu_info_vram_profiler_output.csv"]
+                        specific_files = [
+                            "gpu_info_power_profiler_output.csv",
+                            "gpu_info_vram_profiler_output.csv",
+                        ]
                     elif pattern == "results*":
                         specific_files = ["results.csv", "results.txt", "results.json"]
                     elif pattern == "trace.*":
@@ -550,9 +622,10 @@ class KubernetesResultsMixin:
                     for filename in specific_files:
                         local_path = dest_dir / filename
                         cp_cmd = [
-                            "kubectl", "cp",
+                            "kubectl",
+                            "cp",
                             f"{self.namespace}/{pod_name}:/workspace/{filename}",
-                            str(local_path)
+                            str(local_path),
                         ]
 
                         cp_result = subprocess.run(
@@ -560,17 +633,21 @@ class KubernetesResultsMixin:
                         )
 
                         if cp_result.returncode == 0 and local_path.exists():
-                            artifacts.append({
-                                "pod": pod_name,
-                                "type": artifact_type,
-                                "source": f"/workspace/{filename}",
-                                "local_path": str(local_path),
-                                "size": local_path.stat().st_size
-                            })
+                            artifacts.append(
+                                {
+                                    "pod": pod_name,
+                                    "type": artifact_type,
+                                    "source": f"/workspace/{filename}",
+                                    "local_path": str(local_path),
+                                    "size": local_path.stat().st_size,
+                                }
+                            )
                             self.console.print(
                                 f"[dim]    ✓ Collected {artifact_type}: {filename}[/dim]"
                             )
-                        elif cp_result.stderr and "No such file" not in cp_result.stderr:
+                        elif (
+                            cp_result.stderr and "No such file" not in cp_result.stderr
+                        ):
                             # Log unexpected errors (but not "file not found")
                             self.console.print(
                                 f"[yellow]    ⚠ Failed to collect {filename}: {cp_result.stderr.strip()}[/yellow]"
@@ -579,9 +656,10 @@ class KubernetesResultsMixin:
                     # Direct file - try to copy it
                     local_path = dest_dir / pattern
                     cp_cmd = [
-                        "kubectl", "cp",
+                        "kubectl",
+                        "cp",
                         f"{self.namespace}/{pod_name}:/workspace/{pattern}",
-                        str(local_path)
+                        str(local_path),
                     ]
 
                     cp_result = subprocess.run(
@@ -589,13 +667,15 @@ class KubernetesResultsMixin:
                     )
 
                     if cp_result.returncode == 0 and local_path.exists():
-                        artifacts.append({
-                            "pod": pod_name,
-                            "type": artifact_type,
-                            "source": f"/workspace/{pattern}",
-                            "local_path": str(local_path),
-                            "size": local_path.stat().st_size
-                        })
+                        artifacts.append(
+                            {
+                                "pod": pod_name,
+                                "type": artifact_type,
+                                "source": f"/workspace/{pattern}",
+                                "local_path": str(local_path),
+                                "size": local_path.stat().st_size,
+                            }
+                        )
                         self.console.print(
                             f"[dim]    ✓ Collected {artifact_type}: {pattern}[/dim]"
                         )
@@ -616,9 +696,10 @@ class KubernetesResultsMixin:
             try:
                 local_dir = dest_dir / dir_name
                 cp_cmd = [
-                    "kubectl", "cp",
+                    "kubectl",
+                    "cp",
                     f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
-                    str(local_dir)
+                    str(local_dir),
                 ]
 
                 cp_result = subprocess.run(
@@ -627,17 +708,23 @@ class KubernetesResultsMixin:
 
                 if cp_result.returncode == 0 and local_dir.exists():
                     # Count files in directory
-                    file_count = sum(1 for _ in local_dir.rglob('*') if _.is_file())
+                    file_count = sum(1 for _ in local_dir.rglob("*") if _.is_file())
                     if file_count > 0:
-                        total_size = sum(f.stat().st_size for f in local_dir.rglob('*') if f.is_file())
-                        artifacts.append({
-                            "pod": pod_name,
-                            "type": "tool_output_directory",
-                            "source": f"/workspace/{dir_name}",
-                            "local_path": str(local_dir),
-                            "file_count": file_count,
-                            "size": total_size
-                        })
+                        total_size = sum(
+                            f.stat().st_size
+                            for f in local_dir.rglob("*")
+                            if f.is_file()
+                        )
+                        artifacts.append(
+                            {
+                                "pod": pod_name,
+                                "type": "tool_output_directory",
+                                "source": f"/workspace/{dir_name}",
+                                "local_path": str(local_dir),
+                                "file_count": file_count,
+                                "size": total_size,
+                            }
+                        )
                         self.console.print(
                             f"[dim]    ✓ Collected directory: {dir_name} ({file_count} files, {total_size} bytes)[/dim]"
                         )
@@ -679,17 +766,26 @@ class KubernetesResultsMixin:
             # Create a temporary pod to access PVC
             coll_pod_name = collector_pod_name(deployment_id)
 
-            self.console.print(f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]")
+            self.console.print(
+                f"[dim]📦 Collecting artifacts from PVC: {pvc_name}[/dim]"
+            )
 
             collector_spec: Dict[str, Any] = {
                 "restartPolicy": "Never",
-                "containers": [{
-                    "name": "collector",
-                    "image": "busybox:latest",
-                    "command": ["sh", "-c", "sleep 600"],
-                    "volumeMounts": [{"name": "results", "mountPath": "/results"}]
-                }],
-                "volumes": [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
+                "containers": [
+                    {
+                        "name": "collector",
+                        "image": "busybox:latest",
+                        "command": ["sh", "-c", "sleep 600"],
+                        "volumeMounts": [{"name": "results", "mountPath": "/results"}],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "results",
+                        "persistentVolumeClaim": {"claimName": pvc_name},
+                    }
+                ],
             }
             ips = getattr(self, "_image_pull_secrets_for_pods", None) or []
             if ips:
@@ -726,7 +822,9 @@ class KubernetesResultsMixin:
                 except ApiException as e:
                     # Pod not found yet or not ready - this is expected during startup
                     if e.status != 404:
-                        self.console.print(f"[dim]Waiting for collector pod (status: {e.status})...[/dim]")
+                        self.console.print(
+                            f"[dim]Waiting for collector pod (status: {e.status})...[/dim]"
+                        )
                 time.sleep(1)
             else:
                 raise Exception("Collector pod did not start in time")
@@ -800,11 +898,15 @@ class KubernetesResultsMixin:
                         str(local_pod_dir),
                     ]
 
-                    cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
+                    cp_result = subprocess.run(
+                        cp_cmd, capture_output=True, text=True, timeout=60
+                    )
 
                     if cp_result.returncode == 0:
                         # Count collected files
-                        file_count = sum(1 for _ in local_pod_dir.rglob('*') if _.is_file())
+                        file_count = sum(
+                            1 for _ in local_pod_dir.rglob("*") if _.is_file()
+                        )
                         if file_count > 0:
                             art: Dict[str, Any] = {
                                 "source": f"PVC:{pvc_name}/{pod_dir_name}",
@@ -880,7 +982,9 @@ class KubernetesResultsMixin:
         # Group artifacts by type
         for artifact in results["artifacts"]:
             artifact_type = artifact.get("type", "unknown")
-            summary["artifacts_by_type"][artifact_type] = summary["artifacts_by_type"].get(artifact_type, 0) + 1
+            summary["artifacts_by_type"][artifact_type] = (
+                summary["artifacts_by_type"].get(artifact_type, 0) + 1
+            )
 
         summary_file = results_dir / "results_summary.json"
         summary_file.write_text(json.dumps(summary, indent=2))
@@ -890,6 +994,7 @@ class KubernetesResultsMixin:
         # Print summary table if artifacts were collected
         if summary["artifacts_by_type"]:
             from rich.table import Table
+
             table = Table(title="Collected Artifacts")
             table.add_column("Type", style="cyan")
             table.add_column("Count", justify="right", style="green")
@@ -899,7 +1004,9 @@ class KubernetesResultsMixin:
 
             self.console.print(table)
 
-    def _create_failure_record(self, model_info: Dict, build_info: Dict, pod_name: str, error_msg: str) -> Dict:
+    def _create_failure_record(
+        self, model_info: Dict, build_info: Dict, pod_name: str, error_msg: str
+    ) -> Dict:
         """
         Create a failure record for perf.csv when performance metrics are missing.
 
@@ -930,45 +1037,40 @@ class KubernetesResultsMixin:
             "n_gpus": str(nnodes * nproc_per_node),
             "nnodes": str(nnodes),
             "gpus_per_node": str(nproc_per_node),
-
             # Model configuration
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
             "tags": model_info.get("tags", ""),
-
             # Build information
             "docker_file": build_info.get("dockerfile", ""),
             "base_docker": build_info.get("base_docker", ""),
             "docker_sha": build_info.get("docker_sha", ""),
             "docker_image": build_info.get("docker_image", ""),
-
             # Runtime information
             "git_commit": "",
             "machine_name": pod_name,
             "deployment_type": "kubernetes",
             "launcher": launcher,
             "gpu_architecture": "",
-
             # Performance metrics - FAILED
             "performance": "0",
             "metric": error_msg,  # Store error message in metric field
             "relative_change": "",
             "status": "FAILURE",  # Use "FAILURE" to match CSV schema
-
             # Timing
             "build_duration": build_info.get("build_duration", ""),
             "test_duration": "",
-
             # Data information
             "dataname": model_info.get("data", ""),
             "data_provider_type": "",
             "data_size": "",
             "data_download_duration": "",
-
             # Build tracking
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
@@ -997,12 +1099,16 @@ class KubernetesResultsMixin:
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
         launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
-        test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
+        test_duration = aggregated_record.get("test_duration") or aggregated_record.get(
+            "duration", ""
+        )
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
             "n_gpus": str(aggregated_record.get("n_gpus", nnodes * nproc_per_node)),
             "nnodes": str(aggregated_record.get("nnodes", nnodes)),
-            "gpus_per_node": str(aggregated_record.get("gpus_per_node", nproc_per_node)),
+            "gpus_per_node": str(
+                aggregated_record.get("gpus_per_node", nproc_per_node)
+            ),
             "training_precision": model_info.get("training_precision", ""),
             "pipeline": get_pipeline(),
             "args": model_info.get("args", ""),
@@ -1027,7 +1133,9 @@ class KubernetesResultsMixin:
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(run_details)
         try:
@@ -1089,7 +1197,9 @@ class KubernetesResultsMixin:
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
@@ -1143,7 +1253,9 @@ class KubernetesResultsMixin:
             "data_size": "",
             "data_download_duration": "",
             "build_number": get_build_number(),
-            "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
+            "additional_docker_run_options": model_info.get(
+                "additional_docker_run_options", ""
+            ),
         }
         flatten_tags_in_place(result)
         return result
@@ -1164,6 +1276,7 @@ class KubernetesResultsMixin:
             List of perf_data dicts (same shape as _parse_node_performance), or empty list.
         """
         import csv as csv_module
+
         multiple_results_file = model_info.get("multiple_results")
         filename = Path(multiple_results_file).name if multiple_results_file else None
         # Try to get gpu_architecture from first pod log
@@ -1191,7 +1304,11 @@ class KubernetesResultsMixin:
                 with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
                     reader = csv_module.DictReader(f)
                     reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
-                    if not reader.fieldnames or "performance" not in reader.fieldnames or "metric" not in reader.fieldnames:
+                    if (
+                        not reader.fieldnames
+                        or "performance" not in reader.fieldnames
+                        or "metric" not in reader.fieldnames
+                    ):
                         continue
                     for row_idx, row in enumerate(reader):
                         perf_val = row.get("performance", "").strip()
@@ -1205,17 +1322,19 @@ class KubernetesResultsMixin:
                         # Same model naming as local handle_multiple_results: model_name + "_" + str(model)
                         row_model = row.get("model", row_idx)
                         display_model = f"{model_info.get('name')}_{row_model}"
-                        parsed_list.append({
-                            "model": display_model,
-                            "performance": perf_float,
-                            "metric": metric_val,
-                            "node_id": row_idx,
-                            "local_gpus": 1,
-                            "duration": "N/A",
-                            "gpu_architecture": gpu_arch,
-                            "data_name": "N/A",
-                            "data_provider": "N/A",
-                        })
+                        parsed_list.append(
+                            {
+                                "model": display_model,
+                                "performance": perf_float,
+                                "metric": metric_val,
+                                "node_id": row_idx,
+                                "local_gpus": 1,
+                                "duration": "N/A",
+                                "gpu_architecture": gpu_arch,
+                                "data_name": "N/A",
+                                "data_provider": "N/A",
+                            }
+                        )
                 if parsed_list:
                     self.console.print(
                         f"[green]  ✓ Parsed performance from {csv_path.name} ({len(parsed_list)} row(s))[/green]"
@@ -1235,21 +1354,43 @@ class KubernetesResultsMixin:
         """
         col = column_name.lower().strip()
         # Sum: counts, totals, throughput-like
-        if any(k in col for k in [
-            "count", "total", "samples", "tokens", "throughput",
-            "requests", "images", "bandwidth", "ops"
-        ]):
+        if any(
+            k in col
+            for k in [
+                "count",
+                "total",
+                "samples",
+                "tokens",
+                "throughput",
+                "requests",
+                "images",
+                "bandwidth",
+                "ops",
+            ]
+        ):
             return "sum"
         # Average: rates per unit, utilization, ratios
-        if any(k in col for k in [
-            "utilization", "usage", "percent", "ratio", "latency",
-            "time_ms", "ttft", "tpot", "accuracy", "loss"
-        ]):
+        if any(
+            k in col
+            for k in [
+                "utilization",
+                "usage",
+                "percent",
+                "ratio",
+                "latency",
+                "time_ms",
+                "ttft",
+                "tpot",
+                "accuracy",
+                "loss",
+            ]
+        ):
             return "average"
         # Max: duration (slowest node), memory, capacity
-        if any(k in col for k in [
-            "duration", "time", "seconds", "memory", "bytes", "mb", "gb"
-        ]):
+        if any(
+            k in col
+            for k in ["duration", "time", "seconds", "memory", "bytes", "mb", "gb"]
+        ):
             return "max"
         return "first"
 
@@ -1332,7 +1473,11 @@ class KubernetesResultsMixin:
                     continue
                 values = [r.get(col) for r in group]
                 try:
-                    nums = [float(str(v).strip()) for v in values if v is not None and str(v).strip()]
+                    nums = [
+                        float(str(v).strip())
+                        for v in values
+                        if v is not None and str(v).strip()
+                    ]
                 except (ValueError, TypeError):
                     nums = []
                 if nums:
@@ -1353,7 +1498,9 @@ class KubernetesResultsMixin:
             return False
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv_module.DictWriter(f, fieldnames=all_columns, extrasaction="ignore")
+            writer = csv_module.DictWriter(
+                f, fieldnames=all_columns, extrasaction="ignore"
+            )
             writer.writeheader()
             writer.writerows(merged_rows)
         self.console.print(

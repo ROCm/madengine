@@ -346,18 +346,27 @@ class TestGenerateLocalLauncherCommand:
     def _runner(self):
         return ContainerRunner.__new__(ContainerRunner)
 
-    @pytest.mark.parametrize("launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"])
+    @pytest.mark.parametrize(
+        "launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"]
+    )
     def test_torchrun_family_emits_torchrun_standalone(self, launcher):
-        cmd = self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+        cmd = self._runner()._generate_local_launcher_command(
+            launcher, nproc_per_node=8
+        )
         assert cmd == "torchrun --standalone --nproc_per_node=8"
 
     def test_deepspeed_emits_deepspeed_command(self):
-        cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
+        cmd = self._runner()._generate_local_launcher_command(
+            "deepspeed", nproc_per_node=4
+        )
         assert cmd == "deepspeed --num_gpus=4"
 
     @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
     def test_self_managed_launchers_emit_empty(self, launcher):
-        assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
+        assert (
+            self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+            == ""
+        )
 
     def test_unknown_launcher_falls_back_to_torchrun(self):
         cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
@@ -389,7 +398,9 @@ class TestResolveLocalMultiNodeRunnerEnv:
             additional_context={"distributed": {"launcher": launcher}},
         )
         runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
-        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+        )
 
     def test_does_not_override_user_provided_value(self):
         runner = self._runner(
@@ -505,21 +516,28 @@ class TestRunContainerSkipModelRun:
         def noop_timeout(_):
             yield
 
-        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
-             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
-             patch.object(ContainerRunner, "gather_system_env_details"), \
-             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
-             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
-             patch("madengine.execution.container_runner._print_run_env_table"), \
-             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
-             patch.object(Docker, "__init__", return_value=None), \
-             patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
-             patch.object(Docker, "__del__", return_value=None), \
-             patch("builtins.open", mock_open(read_data="")):
+        with (
+            patch.object(
+                ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"
+            ),
+            patch.object(ContainerRunner, "get_gpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_cpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_env_arg", return_value=""),
+            patch.object(ContainerRunner, "get_mount_arg", return_value=""),
+            patch.object(ContainerRunner, "gather_system_env_details"),
+            patch.object(ContainerRunner, "ensure_perf_csv_exists"),
+            patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"),
+            patch("madengine.execution.container_runner._print_run_env_table"),
+            patch("madengine.execution.container_runner.Timeout", noop_timeout),
+            patch.object(Docker, "__init__", return_value=None),
+            patch.object(
+                Docker,
+                "sh",
+                side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok",
+            ),
+            patch.object(Docker, "__del__", return_value=None),
+            patch("builtins.open", mock_open(read_data="")),
+        ):
             return runner.run_container(
                 model_info=model_info,
                 docker_image="ci-dummy",
@@ -539,7 +557,9 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         result = self._run_container_with_mocks(
-            runner, model_info, docker_sh_calls,
+            runner,
+            model_info,
+            docker_sh_calls,
             skip_model_run=True,
             keep_alive=True,
         )
@@ -563,7 +583,9 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         self._run_container_with_mocks(
-            runner, model_info, docker_sh_calls,
+            runner,
+            model_info,
+            docker_sh_calls,
             skip_model_run=False,
         )
 

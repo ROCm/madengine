@@ -171,7 +171,9 @@ class TestLoginToRegistry:
             )
         console.sh.assert_not_called()
 
-    def test_invalid_credentials_format_returns_when_not_raise_on_failure(self, mock_ambient):
+    def test_invalid_credentials_format_returns_when_not_raise_on_failure(
+        self, mock_ambient
+    ):
         """Returns silently when credentials format invalid and raise_on_failure=False."""
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"token": "abc"}}
@@ -185,7 +187,9 @@ class TestLoginToRegistry:
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"repository": "r", "username": "", "password": ""}}
         with pytest.raises(RuntimeError, match="username|password"):
-            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+            login_to_registry(
+                "docker.io", credentials, console, rich_console, raise_on_failure=True
+            )
         console.sh.assert_not_called()
 
     def test_docker_io_normalised_to_dockerhub(self, mock_ambient):
@@ -241,7 +245,9 @@ class TestLoginToRegistryWithAmbientAuth:
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"repository": "r", "username": "", "password": ""}}
         # No raise even with raise_on_failure=True: the machine is authenticated.
-        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        login_to_registry(
+            "docker.io", credentials, console, rich_console, raise_on_failure=True
+        )
         console.sh.assert_not_called()
 
     @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
@@ -249,7 +255,9 @@ class TestLoginToRegistryWithAmbientAuth:
         """A registry with no credential.json entry falls back to the existing login."""
         console, rich_console = self._mocks()
         credentials = {"other_registry": {"username": "u", "password": "p"}}
-        login_to_registry("myregistry.io", credentials, console, rich_console, raise_on_failure=True)
+        login_to_registry(
+            "myregistry.io", credentials, console, rich_console, raise_on_failure=True
+        )
         console.sh.assert_not_called()
 
     @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
@@ -267,7 +275,9 @@ class TestLoginToRegistryWithAmbientAuth:
         console, rich_console = self._mocks()
         credentials = {"dockerhub": {"username": "  ", "password": "\t"}}
         with pytest.raises(RuntimeError, match="username|password"):
-            login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+            login_to_registry(
+                "docker.io", credentials, console, rich_console, raise_on_failure=True
+            )
         console.sh.assert_not_called()
 
 
@@ -279,7 +289,9 @@ class TestSkipDockerLogin:
         """MAD_SKIP_DOCKER_LOGIN=1 defers to ambient credentials unconditionally."""
         console, rich_console = MagicMock(), MagicMock()
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
-        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        login_to_registry(
+            "docker.io", credentials, console, rich_console, raise_on_failure=True
+        )
         console.sh.assert_not_called()
 
 
@@ -311,7 +323,9 @@ class TestHasAmbientDockerAuth:
 
     def test_cred_helper_detected(self, tmp_path):
         """A credHelpers entry counts as authenticated."""
-        env = self._write_config(tmp_path, {"credHelpers": {"myregistry.io": "ecr-login"}})
+        env = self._write_config(
+            tmp_path, {"credHelpers": {"myregistry.io": "ecr-login"}}
+        )
         with patch.dict(os.environ, env, clear=False):
             assert has_ambient_docker_auth("myregistry.io/team/img") is True
             assert has_ambient_docker_auth("docker.io") is False
@@ -328,7 +342,9 @@ class TestHasAmbientDockerAuth:
 
     def test_empty_auth_entry_without_creds_store(self, tmp_path):
         """An empty entry with no credential store is not usable."""
-        env = self._write_config(tmp_path, {"auths": {"https://index.docker.io/v1/": {}}})
+        env = self._write_config(
+            tmp_path, {"auths": {"https://index.docker.io/v1/": {}}}
+        )
         with patch.dict(os.environ, env, clear=False):
             assert has_ambient_docker_auth("docker.io") is False
 
@@ -393,7 +409,9 @@ class TestExplainRegistryDenial:
 
     def test_unrelated_failure_returns_none(self):
         """Non-registry build failures produce no hint."""
-        assert explain_registry_denial("RUN apt-get install failed: exit code 100") is None
+        assert (
+            explain_registry_denial("RUN apt-get install failed: exit code 100") is None
+        )
 
     def test_empty_log_returns_none(self):
         """Empty output produces no hint."""

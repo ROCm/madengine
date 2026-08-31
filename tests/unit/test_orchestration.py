@@ -231,9 +231,7 @@ class TestSkipModelRun:
                         "successful_runs": [],
                         "failed_runs": [],
                     }
-                    with patch.object(
-                        RunOrchestrator, "_combine_build_and_run_logs"
-                    ):
+                    with patch.object(RunOrchestrator, "_combine_build_and_run_logs"):
                         orchestrator.execute(
                             manifest_file=None, tags=["dummy"], timeout=60
                         )
@@ -242,9 +240,7 @@ class TestSkipModelRun:
         mock_cleanup.assert_called()
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_run_only_still_calls_execute_local(
-        self, mock_cleanup, tmp_path
-    ):
+    def test_skip_run_only_still_calls_execute_local(self, mock_cleanup, tmp_path):
         """Run-only (existing manifest): skip_model_run still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
@@ -301,7 +297,9 @@ class TestSkipModelRun:
 
         orchestrator = RunOrchestrator(mock_args)
 
-        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+        with patch.object(
+            RunOrchestrator, "_build_phase", return_value=str(manifest_path)
+        ):
             with patch.object(
                 RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
             ):
@@ -310,9 +308,7 @@ class TestSkipModelRun:
                         "successful_runs": [],
                         "failed_runs": [],
                     }
-                    orchestrator.execute(
-                        manifest_file=None, tags=["dummy"], timeout=60
-                    )
+                    orchestrator.execute(manifest_file=None, tags=["dummy"], timeout=60)
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
@@ -325,6 +321,7 @@ class TestRunOrchestrator:
     def test_distributed_warns_on_local_only_flags(self, tmp_path):
         """_execute_distributed warns when local-only flags are set."""
         from unittest.mock import MagicMock, patch
+
         from madengine.orchestration.run_orchestrator import RunOrchestrator
 
         mock_args = MagicMock()
@@ -348,7 +345,9 @@ class TestRunOrchestrator:
         fake_result.logs_path = None
         fake_result.metrics = {"successful_runs": [], "failed_runs": []}
 
-        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create"
+        ) as mock_create:
             mock_deploy = MagicMock()
             mock_deploy.execute.return_value = fake_result
             mock_create.return_value = mock_deploy
@@ -356,9 +355,7 @@ class TestRunOrchestrator:
             orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
 
         # Verify warning was printed mentioning the active flags
-        printed = " ".join(
-            str(call) for call in mock_rich_console.print.call_args_list
-        )
+        printed = " ".join(str(call) for call in mock_rich_console.print.call_args_list)
         assert "--keep-alive" in printed
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
@@ -413,7 +410,8 @@ class TestCreateManifestFromLocalImage:
     @patch("madengine.orchestration.run_orchestrator.Context")
     def test_multiple_results_defaults_to_empty_string(self, mock_context, tmp_path):
         """Models without multiple_results in models.json still get the key (empty),
-        so ContainerRunner's model_info.get("multiple_results") lookups never KeyError."""
+        so ContainerRunner's model_info.get("multiple_results") lookups never KeyError.
+        """
         mock_context.return_value.ctx = {}
         mock_args = MagicMock()
         mock_args.additional_context = None

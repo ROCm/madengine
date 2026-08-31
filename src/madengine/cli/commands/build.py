@@ -72,7 +72,7 @@ def build(
         bool,
         typer.Option(
             "--build-on-compute",
-            help="Build Docker images on SLURM compute node instead of login node"
+            help="Build Docker images on SLURM compute node instead of login node",
         ),
     ] = False,
     additional_context: Annotated[

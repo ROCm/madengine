@@ -12,10 +12,10 @@ import logging
 # built-in modules
 import multiprocessing
 import os
+import shutil
 import signal
 import subprocess
 import sys
-import shutil
 import threading
 import time
 import typing

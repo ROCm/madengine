@@ -25,10 +25,10 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import logging
-import sys
 
 # built-in modules
 import os
+import sys
 
 
 # Utility function for optional verbose logging of configuration
@@ -81,7 +81,9 @@ def _setup_model_dir():
 # Only setup model directory if explicitly requested and invocation is not metadata-only.
 if os.environ.get("MAD_SETUP_MODEL_DIR", "").lower() == "true":
     if _is_lightweight_cli_invocation():
-        _log_config_info("Skipping MODEL_DIR setup for lightweight CLI invocation (--version/--help).")
+        _log_config_info(
+            "Skipping MODEL_DIR setup for lightweight CLI invocation (--version/--help)."
+        )
     else:
         _setup_model_dir()
 

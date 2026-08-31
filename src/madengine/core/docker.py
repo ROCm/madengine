@@ -106,7 +106,6 @@ class Docker:
         command += "--name " + shlex.quote(container_name) + " "
         command += shlex.quote(image) + " "
 
-
         # Use 'cat' to keep container alive (blocks waiting for stdin)
         # Works reliably across all deployment types (local, k8s, slurm)
         # with fresh image pulls preventing corrupted layer issues

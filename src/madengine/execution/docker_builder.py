@@ -12,10 +12,10 @@ import os
 import re
 import shlex
 import sys
-from pathlib import Path
 import time
 import typing
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 from rich.console import Console as RichConsole
 
@@ -291,9 +291,10 @@ class DockerBuilder:
 
         # Execute build with log redirection
         with open(log_file_path, mode="w", buffering=1) as outlog:
-            with redirect_stdout(
-                PythonicTee(outlog, self.live_output)
-            ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+            with (
+                redirect_stdout(PythonicTee(outlog, self.live_output)),
+                redirect_stderr(PythonicTee(outlog, self.live_output)),
+            ):
                 # `docker build --pull` resolves the base image itself, so it only
                 # works if this machine can authenticate to the base image's
                 # registry. Log in when — and only when — there is no existing

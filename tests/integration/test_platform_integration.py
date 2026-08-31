@@ -627,12 +627,19 @@ class TestMultiGPUArch:
 
     @patch.object(DockerBuilder, "_get_dockerfiles_for_model")
     @patch.object(DockerBuilder, "build_image")
-    def test_multi_arch_build_image_naming_slashed_model(self, mock_build_image, mock_get_dockerfiles):
+    def test_multi_arch_build_image_naming_slashed_model(
+        self, mock_build_image, mock_get_dockerfiles
+    ):
         """End-to-end naming through ``_build_model_for_arch`` for slashed names."""
         model_info = {"name": "dummy/dummy"}
         mock_get_dockerfiles.return_value = ["docker/dummy.ubuntu.amd.Dockerfile"]
-        mock_build_image.return_value = {"docker_image": "unused", "build_duration": 1.0}
-        self.builder._build_model_for_arch(model_info, "gfx950", None, False, None, "", None)
+        mock_build_image.return_value = {
+            "docker_image": "unused",
+            "build_duration": 1.0,
+        }
+        self.builder._build_model_for_arch(
+            model_info, "gfx950", None, False, None, "", None
+        )
         override = mock_build_image.call_args.kwargs["override_image_name"]
         assert "/" not in override
         assert override == "ci-dummy_dummy_dummy.ubuntu.amd_gfx950"

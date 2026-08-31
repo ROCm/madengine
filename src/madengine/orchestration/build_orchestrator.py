@@ -288,8 +288,11 @@ class BuildOrchestrator:
             # env_vars.DOCKER_IMAGE_NAME, treat it as an implicit --use-image so
             # users do not have to repeat the image on the CLI for slurm_multi.
             slurm_multi_models = [
-                m for m in _discovered_models
-                if is_self_managed_launcher((m.get("distributed") or {}).get("launcher", ""))
+                m
+                for m in _discovered_models
+                if is_self_managed_launcher(
+                    (m.get("distributed") or {}).get("launcher", "")
+                )
             ]
             if slurm_multi_models and not registry:
                 card_images = {
@@ -499,20 +502,22 @@ class BuildOrchestrator:
     ) -> str:
         """
         Generate manifest for a pre-built Docker image (skip Docker build).
-        
+
         This is useful when using external images like:
         - lmsysorg/sglang:v0.5.2rc1-rocm700-mi30x
         - nvcr.io/nvidia/pytorch:24.01-py3
-        
+
         Args:
             use_image: Pre-built Docker image name
             manifest_output: Output file for build manifest
-            
+
         Returns:
             Path to generated build_manifest.json
         """
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
-        self.rich_console.print("[bold blue]🔨 BUILD PHASE (Pre-built Image Mode)[/bold blue]")
+        self.rich_console.print(
+            "[bold blue]🔨 BUILD PHASE (Pre-built Image Mode)[/bold blue]"
+        )
         self.rich_console.print(f"[cyan]Using pre-built image: {use_image}[/cyan]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
@@ -538,8 +543,10 @@ class BuildOrchestrator:
             self.rich_console.print(f"[green]✓ Found {len(models)} models[/green]\n")
 
             # Step 2: Generate manifest with pre-built image
-            self.rich_console.print("[bold cyan]📄 Generating manifest for pre-built image...[/bold cyan]")
-            
+            self.rich_console.print(
+                "[bold cyan]📄 Generating manifest for pre-built image...[/bold cyan]"
+            )
+
             manifest = {
                 # built_images and built_models MUST share the same key set so
                 # ContainerRunner.run_models_from_manifest() can join them via
@@ -548,7 +555,7 @@ class BuildOrchestrator:
                 # same pre-built use_image) so multi-model --use-image runs work.
                 "built_images": {},
                 "built_models": {},
-                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
                 "credentials_required": [],
                 "summary": {
                     "successful_builds": [],
@@ -609,23 +616,25 @@ class BuildOrchestrator:
 
             # Save deployment config
             self._save_deployment_config(manifest_output)
-            
+
             # Merge model's distributed and slurm config into deployment_config
             # This ensures launcher and slurm settings are in deployment_config even if not in additional-context
             if models:
                 with open(manifest_output, "r") as f:
                     saved_manifest = json.load(f)
-                
+
                 if "deployment_config" not in saved_manifest:
                     saved_manifest["deployment_config"] = {}
-                
+
                 # Merge model's distributed config from the first model.
                 # If multiple models have differing distributed configs, warn — only the first wins here.
                 # Use json.dumps for the hash key so nested dicts (e.g. sglang_disagg / vllm_disagg)
                 # don't trigger TypeError: unhashable type: 'dict' from `tuple(sorted(items()))`.
                 if len(models) > 1:
                     distinct_distributed = {
-                        json.dumps(m.get("distributed") or {}, sort_keys=True, default=str)
+                        json.dumps(
+                            m.get("distributed") or {}, sort_keys=True, default=str
+                        )
                         for m in models
                     }
                     if len(distinct_distributed) > 1:
@@ -637,12 +646,26 @@ class BuildOrchestrator:
                 if model_distributed:
                     if "distributed" not in saved_manifest["deployment_config"]:
                         saved_manifest["deployment_config"]["distributed"] = {}
-                    
+
                     # Copy launcher and other critical fields from model config
-                    for key in ["launcher", "nnodes", "nproc_per_node", "backend", "port", "sglang_disagg", "vllm_disagg"]:
-                        if key in model_distributed and key not in saved_manifest["deployment_config"]["distributed"]:
-                            saved_manifest["deployment_config"]["distributed"][key] = model_distributed[key]
-                
+                    for key in [
+                        "launcher",
+                        "nnodes",
+                        "nproc_per_node",
+                        "backend",
+                        "port",
+                        "sglang_disagg",
+                        "vllm_disagg",
+                    ]:
+                        if (
+                            key in model_distributed
+                            and key
+                            not in saved_manifest["deployment_config"]["distributed"]
+                        ):
+                            saved_manifest["deployment_config"]["distributed"][key] = (
+                                model_distributed[key]
+                            )
+
                 # Merge model's slurm config into deployment_config.slurm from the first model.
                 # This enables run phase to auto-detect SLURM deployment without --additional-context.
                 # Warn when multiple models have differing slurm configs (only the first wins here).
@@ -661,20 +684,36 @@ class BuildOrchestrator:
                 if model_slurm:
                     if "slurm" not in saved_manifest["deployment_config"]:
                         saved_manifest["deployment_config"]["slurm"] = {}
-                    
+
                     # Copy slurm settings from model config (model card fills in
                     # values not explicitly set by --additional-context).
                     # Use _original_user_slurm_keys (captured before ConfigLoader
                     # applies defaults) so model card values override defaults
                     # but user's explicit CLI values still win.
-                    for key in ["partition", "nodes", "gpus_per_node", "time", "exclusive", "reservation", "output_dir", "nodelist"]:
-                        if key in model_slurm and key not in self._original_user_slurm_keys:
-                            saved_manifest["deployment_config"]["slurm"][key] = model_slurm[key]
-                
+                    for key in [
+                        "partition",
+                        "nodes",
+                        "gpus_per_node",
+                        "time",
+                        "exclusive",
+                        "reservation",
+                        "output_dir",
+                        "nodelist",
+                    ]:
+                        if (
+                            key in model_slurm
+                            and key not in self._original_user_slurm_keys
+                        ):
+                            saved_manifest["deployment_config"]["slurm"][key] = (
+                                model_slurm[key]
+                            )
+
                 with open(manifest_output, "w") as f:
                     json.dump(saved_manifest, f, indent=2)
 
-            self.rich_console.print(f"[green]✓ Generated manifest: {manifest_output}[/green]")
+            self.rich_console.print(
+                f"[green]✓ Generated manifest: {manifest_output}[/green]"
+            )
             self.rich_console.print(f"  Pre-built image: {use_image}")
             self.rich_console.print(f"  Models: {len(models)}")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
@@ -695,23 +734,25 @@ class BuildOrchestrator:
     def _resolve_image_from_model_card(self) -> str:
         """
         Resolve Docker image name from model card's DOCKER_IMAGE_NAME env var.
-        
+
         This method discovers models and extracts the DOCKER_IMAGE_NAME from
         env_vars. If multiple models have different images, uses the first
         and prints a warning.
-        
+
         Returns:
             Docker image name from model card
-            
+
         Raises:
             ConfigurationError: If no DOCKER_IMAGE_NAME found in any model
         """
-        self.rich_console.print("[bold cyan]🔍 Auto-detecting image from model card...[/bold cyan]")
-        
+        self.rich_console.print(
+            "[bold cyan]🔍 Auto-detecting image from model card...[/bold cyan]"
+        )
+
         # Discover models to get their env_vars
         discover_models = DiscoverModels(args=self.args)
         models = discover_models.run()
-        
+
         if not models:
             raise ConfigurationError(
                 "No models discovered for image auto-detection",
@@ -725,17 +766,17 @@ class BuildOrchestrator:
                     "Verify --tags parameter is correct",
                 ],
             )
-        
+
         # Collect DOCKER_IMAGE_NAME from all models
         images_found = {}
         for model in models:
             model_name = model.get("name", "unknown")
             env_vars = model.get("env_vars", {})
             docker_image = env_vars.get("DOCKER_IMAGE_NAME")
-            
+
             if docker_image:
                 images_found[model_name] = docker_image
-        
+
         if not images_found:
             model_names = [m.get("name", "unknown") for m in models]
             raise ConfigurationError(
@@ -751,11 +792,11 @@ class BuildOrchestrator:
                     'Example: "env_vars": {"DOCKER_IMAGE_NAME": "myimage:tag"}',
                 ],
             )
-        
+
         # Use first model's image
         first_model = list(images_found.keys())[0]
         resolved_image = images_found[first_model]
-        
+
         # Warn if multiple models have different images
         unique_images = set(images_found.values())
         if len(unique_images) > 1:
@@ -768,8 +809,10 @@ class BuildOrchestrator:
                 f"[yellow]   Using image from '{first_model}': {resolved_image}[/yellow]\n"
             )
         else:
-            self.rich_console.print(f"[green]✓ Auto-detected image: {resolved_image}[/green]\n")
-        
+            self.rich_console.print(
+                f"[green]✓ Auto-detected image: {resolved_image}[/green]\n"
+            )
+
         return resolved_image
 
     def _execute_build_on_compute(
@@ -781,29 +824,32 @@ class BuildOrchestrator:
     ) -> str:
         """
         Execute Docker build on a SLURM compute node and push to registry.
-        
+
         Build workflow:
         1. Build on 1 compute node only
         2. Push image to registry
         3. Store registry image name in manifest
         4. Run phase will pull image in parallel on all nodes
-        
+
         Args:
             registry: Registry to push images to (REQUIRED)
             clean_cache: Whether to use --no-cache for Docker builds
             manifest_output: Output file for build manifest
             batch_build_metadata: Optional batch build metadata
-            
+
         Returns:
             Path to generated build_manifest.json
         """
-        import subprocess
-        import os
         import glob
-        
+        import subprocess
+
         self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
-        self.rich_console.print("[bold blue]🔨 BUILD PHASE (Compute Node Mode)[/bold blue]")
-        self.rich_console.print("[cyan]Building on 1 compute node, pushing to registry...[/cyan]")
+        self.rich_console.print(
+            "[bold blue]🔨 BUILD PHASE (Compute Node Mode)[/bold blue]"
+        )
+        self.rich_console.print(
+            "[cyan]Building on 1 compute node, pushing to registry...[/cyan]"
+        )
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
         # registry is required for the build-on-compute flow (it must be pushed somewhere
@@ -846,12 +892,12 @@ class BuildOrchestrator:
                 additional_info={"registry": r},
             ),
             suggestions=[
-                'Dockerhub: --registry docker.io/<namespace>(/<repo>)',
-                'GHCR:      --registry ghcr.io/<owner>(/<repo>)',
-                'Quay:      --registry quay.io/<namespace>(/<repo>)',
-                'NGC:       --registry nvcr.io/<org>(/<team>)',
-                'Self-hosted: --registry <fqdn>(:<port>)(/<path>)',
-                'Local:     --registry localhost:5000(/<path>)',
+                "Dockerhub: --registry docker.io/<namespace>(/<repo>)",
+                "GHCR:      --registry ghcr.io/<owner>(/<repo>)",
+                "Quay:      --registry quay.io/<namespace>(/<repo>)",
+                "NGC:       --registry nvcr.io/<org>(/<team>)",
+                "Self-hosted: --registry <fqdn>(:<port>)(/<path>)",
+                "Local:     --registry localhost:5000(/<path>)",
             ],
         )
         normalized = registry.strip().rstrip("/")
@@ -886,7 +932,7 @@ class BuildOrchestrator:
         self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
         discover_models = DiscoverModels(args=self.args)
         models = discover_models.run()
-        
+
         if not models:
             raise DiscoveryError(
                 "No models discovered for build-on-compute",
@@ -899,7 +945,7 @@ class BuildOrchestrator:
                     "Verify --tags parameter is correct",
                 ],
             )
-        
+
         # SLURM config is derived from the first model card + --additional-context overrides.
         # All models are built in a single sbatch job, so one SLURM config applies to all.
         first_model = models[0]
@@ -908,11 +954,17 @@ class BuildOrchestrator:
         slurm_config = {**model_slurm_config, **context_slurm_config}
 
         self.rich_console.print(f"[green]✓ Found {len(models)} model(s)[/green]\n")
-        self.rich_console.print("[bold cyan]📋 SLURM Configuration (merged):[/bold cyan]")
+        self.rich_console.print(
+            "[bold cyan]📋 SLURM Configuration (merged):[/bold cyan]"
+        )
         if model_slurm_config:
-            self.rich_console.print(f"  [dim]From model card:[/dim] {list(model_slurm_config.keys())}")
+            self.rich_console.print(
+                f"  [dim]From model card:[/dim] {list(model_slurm_config.keys())}"
+            )
         if context_slurm_config:
-            self.rich_console.print(f"  [dim]From --additional-context (overrides):[/dim] {list(context_slurm_config.keys())}")
+            self.rich_console.print(
+                f"  [dim]From --additional-context (overrides):[/dim] {list(context_slurm_config.keys())}"
+            )
 
         # Validate required fields
         partition = slurm_config.get("partition")
@@ -931,21 +983,21 @@ class BuildOrchestrator:
 
         reservation = slurm_config.get("reservation", "")
         time_limit = slurm_config.get("time", "02:00:00")
-        
+
         self.rich_console.print(f"  Partition: {partition}")
         self.rich_console.print(f"  Time limit: {time_limit}")
         if reservation:
             self.rich_console.print(f"  Reservation: {reservation}")
         self.rich_console.print("")
-        
+
         # Validate registry credentials
         self.rich_console.print("[bold cyan]🔐 Registry Configuration:[/bold cyan]")
         self.rich_console.print(f"  Registry: {registry}")
-        
+
         # Check for credentials - either from environment or credential.json
         dockerhub_user = os.environ.get("MAD_DOCKERHUB_USER", "")
         dockerhub_password = os.environ.get("MAD_DOCKERHUB_PASSWORD", "")
-        
+
         # Try to load from credential.json if env vars not set
         credential_file = Path("credential.json")
         if not dockerhub_user and credential_file.exists():
@@ -956,16 +1008,22 @@ class BuildOrchestrator:
                     dockerhub_user = dockerhub_creds.get("username", "")
                     dockerhub_password = dockerhub_creds.get("password", "")
                     if dockerhub_user:
-                        self.rich_console.print(f"  Credentials: Found in credential.json")
+                        self.rich_console.print(
+                            f"  Credentials: Found in credential.json"
+                        )
             except (json.JSONDecodeError, IOError) as e:
-                self.rich_console.print(f"  [yellow]Warning: Could not read credential.json: {e}[/yellow]")
+                self.rich_console.print(
+                    f"  [yellow]Warning: Could not read credential.json: {e}[/yellow]"
+                )
         elif dockerhub_user:
-            self.rich_console.print(f"  Credentials: Found in environment (MAD_DOCKERHUB_USER)")
-        
+            self.rich_console.print(
+                f"  Credentials: Found in environment (MAD_DOCKERHUB_USER)"
+            )
+
         # Determine if registry requires authentication
         public_registries = ["docker.io", "ghcr.io", "gcr.io", "quay.io", "nvcr.io"]
         registry_lower = registry.lower() if registry else ""
-        
+
         # For docker.io pushes, authentication is always required
         # Per-registry guidance for the missing-credentials error message.
         # Today only Docker Hub credentials (MAD_DOCKERHUB_USER/PASSWORD or credential.json)
@@ -985,7 +1043,7 @@ class BuildOrchestrator:
             ],
             "gcr.io": [
                 "Google Container Registry: use a service-account JSON key as password",
-                "Set MAD_DOCKERHUB_USER=_json_key, MAD_DOCKERHUB_PASSWORD=\"$(cat key.json)\"",
+                'Set MAD_DOCKERHUB_USER=_json_key, MAD_DOCKERHUB_PASSWORD="$(cat key.json)"',
             ],
             "quay.io": [
                 "Quay.io: use a robot account or encrypted password",
@@ -997,7 +1055,11 @@ class BuildOrchestrator:
             ],
         }
         _matched_hints = next(
-            (hints for reg_key, hints in _registry_hints.items() if reg_key in registry_lower),
+            (
+                hints
+                for reg_key, hints in _registry_hints.items()
+                if reg_key in registry_lower
+            ),
             _registry_hints["docker.io"],
         )
         if any(pub_reg in registry_lower for pub_reg in public_registries):
@@ -1031,10 +1093,12 @@ class BuildOrchestrator:
                 self.rich_console.print(f"  Auth: Will login to registry before push")
         else:
             # Private/internal registry - may not need auth
-            self.rich_console.print(f"  Auth: Private registry (auth may not be required)")
-        
+            self.rich_console.print(
+                f"  Auth: Private registry (auth may not be required)"
+            )
+
         self.rich_console.print("")
-        
+
         # Check if we're inside an existing allocation
         inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         existing_job_id = os.environ.get("SLURM_JOB_ID", "")
@@ -1075,21 +1139,27 @@ class BuildOrchestrator:
             # Docker repository names must be lowercase; cover the edge case where the
             # Dockerfile filename is just `Dockerfile` (no suffix to strip).
             dockerfile_basename = (
-                Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
+                Path(dockerfile_path)
+                .name.replace(".Dockerfile", "")
+                .replace(".ubuntu.amd", "")
             )
             local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
             if len(registry_parts) >= 2:
                 registry_image_name = f"{registry}:{model_name}"
             else:
                 registry_image_name = f"{registry}/{model_name}:latest"
-            self.rich_console.print(f"  {model_name}: {dockerfile_path} -> {registry_image_name}")
-            per_model_data.append({
-                "model": model,
-                "model_name": model_name,
-                "dockerfile_path": dockerfile_path,
-                "local_image_name": local_image_name,
-                "registry_image_name": registry_image_name,
-            })
+            self.rich_console.print(
+                f"  {model_name}: {dockerfile_path} -> {registry_image_name}"
+            )
+            per_model_data.append(
+                {
+                    "model": model,
+                    "model_name": model_name,
+                    "dockerfile_path": dockerfile_path,
+                    "local_image_name": local_image_name,
+                    "registry_image_name": registry_image_name,
+                }
+            )
         self.rich_console.print("")
 
         # Shell-quote values that end up inside bash commands (defense-in-depth,
@@ -1194,29 +1264,31 @@ echo "============================================================"
 
 exit 0
 """
-        
+
         build_script_path = Path("madengine_build_job.sh")
         build_script_path.write_text(build_script_content)
         build_script_path.chmod(0o755)
-        
+
         if inside_allocation:
-            self.rich_console.print(f"[cyan]Running build via srun (inside allocation {existing_job_id})...[/cyan]")
+            self.rich_console.print(
+                f"[cyan]Running build via srun (inside allocation {existing_job_id})...[/cyan]"
+            )
             cmd = ["srun", "-N1", "--ntasks=1", "bash", str(build_script_path)]
         else:
             self.rich_console.print("[cyan]Submitting build job via sbatch...[/cyan]")
             cmd = ["sbatch", "--wait", str(build_script_path)]
-        
+
         self.rich_console.print(f"  Build script: {build_script_path}")
         self.rich_console.print(f"  Command: {' '.join(cmd)}")
         self.rich_console.print("")
-        
+
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=False,
                 text=True,
             )
-            
+
             if result.returncode != 0:
                 raise BuildError(
                     f"Build on compute node failed with exit code {result.returncode}",
@@ -1231,10 +1303,12 @@ exit 0
                         "Verify registry credentials are configured",
                     ],
                 )
-            
+
             # Generate manifest keyed by model_name — same shape as _execute_with_prebuilt_image
             # so ContainerRunner.run_models_from_manifest() can join via built_models.get(key).
-            self.rich_console.print(f"\n[bold cyan]📄 Generating manifest...[/bold cyan]")
+            self.rich_console.print(
+                f"\n[bold cyan]📄 Generating manifest...[/bold cyan]"
+            )
 
             built_images: Dict = {}
             built_models: Dict = {}
@@ -1279,7 +1353,9 @@ exit 0
                     "successful_builds": list(built_models.keys()),
                     "failed_builds": [],
                     "total_build_time": 0,
-                    "successful_pushes": [pmd["registry_image_name"] for pmd in per_model_data],
+                    "successful_pushes": [
+                        pmd["registry_image_name"] for pmd in per_model_data
+                    ],
                     "failed_pushes": [],
                 },
             }
@@ -1289,12 +1365,14 @@ exit 0
 
             self.rich_console.print(f"[green]✓ Build completed on compute node[/green]")
             for pmd in per_model_data:
-                self.rich_console.print(f"[green]✓ Image pushed: {pmd['registry_image_name']}[/green]")
+                self.rich_console.print(
+                    f"[green]✓ Image pushed: {pmd['registry_image_name']}[/green]"
+                )
             self.rich_console.print(f"[green]✓ Manifest: {manifest_output}[/green]")
             self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
-            
+
             return manifest_output
-            
+
         except subprocess.TimeoutExpired:
             raise BuildError(
                 "Build on compute node timed out",
@@ -1313,6 +1391,7 @@ exit 0
                     component="BuildOrchestrator",
                 ),
             ) from e
+
     def _save_build_summary(self, manifest_file: str, build_summary: Dict):
         """Save build summary to manifest for display purposes."""
         try:

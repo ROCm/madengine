@@ -37,7 +37,6 @@ from .common import (
     is_self_managed_launcher,
     normalize_launcher,
 )
-from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .config_loader import ConfigLoader, apply_deployment_config
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .slurm_node_selector import SlurmNodeSelector
@@ -101,7 +100,7 @@ class SlurmDeployment(BaseDeployment):
         self.inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         self.existing_job_id = os.environ.get("SLURM_JOB_ID", "")
         self.allocation_nodes = self._get_allocation_node_count()
-        
+
         if self.inside_allocation:
             self.console.print(
                 f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
@@ -113,15 +112,15 @@ class SlurmDeployment(BaseDeployment):
     def _get_allocation_node_count(self) -> int:
         """
         Get number of nodes in current SLURM allocation.
-        
+
         Note: SLURM_NNODES reflects the current job step, not the full allocation.
         We query the job directly using scontrol to get the actual node count.
         """
         if not self.inside_allocation:
             return 0
-        
+
         job_id = self.existing_job_id
-        
+
         # Query the actual job's node count using scontrol (most accurate)
         try:
             result = subprocess.run(
@@ -143,7 +142,7 @@ class SlurmDeployment(BaseDeployment):
                                     pass
         except Exception:
             pass
-        
+
         # Fallback: Try SLURM_JOB_NUM_NODES (full job node count, if set)
         job_num_nodes = os.environ.get("SLURM_JOB_NUM_NODES")
         if job_num_nodes:
@@ -151,7 +150,7 @@ class SlurmDeployment(BaseDeployment):
                 return int(job_num_nodes)
             except ValueError:
                 pass
-        
+
         # Fallback: SLURM_NNODES (may be step-specific, not full allocation)
         nnodes = os.environ.get("SLURM_NNODES")
         if nnodes:
@@ -159,7 +158,7 @@ class SlurmDeployment(BaseDeployment):
                 return int(nnodes)
             except ValueError:
                 pass
-        
+
         # Last resort: count nodes in SLURM_NODELIST
         nodelist = os.environ.get("SLURM_NODELIST")
         if nodelist:
@@ -174,35 +173,35 @@ class SlurmDeployment(BaseDeployment):
                     return len(result.stdout.strip().split("\n"))
             except Exception:
                 pass
-        
+
         return 0
 
     def _validate_allocation_nodes(self) -> tuple:
         """
         Validate that existing allocation has enough nodes for the job.
-        
+
         Returns:
             Tuple of (is_valid, error_message)
         """
         if not self.inside_allocation:
             return True, ""
-        
+
         requested_nodes = self.nodes
         available_nodes = self.allocation_nodes
-        
+
         if available_nodes < requested_nodes:
             return False, (
                 f"Insufficient nodes in current allocation. "
                 f"Requested: {requested_nodes}, Available: {available_nodes}. "
                 f"Either reduce nodes in config or use a larger allocation."
             )
-        
+
         if available_nodes > requested_nodes:
             self.console.print(
                 f"[yellow]⚠ Note: Using {requested_nodes} of {available_nodes} "
                 f"available nodes in allocation[/yellow]"
             )
-        
+
         return True, ""
 
     def validate(self) -> bool:
@@ -325,10 +324,9 @@ class SlurmDeployment(BaseDeployment):
             if model_keys_peek:
                 model_info_peek = self.manifest["built_models"][model_keys_peek[0]]
                 model_distributed_peek = model_info_peek.get("distributed", {})
-                launcher_type_peek = (
-                    model_distributed_peek.get("launcher")
-                    or self.distributed_config.get("launcher", "torchrun")
-                )
+                launcher_type_peek = model_distributed_peek.get(
+                    "launcher"
+                ) or self.distributed_config.get("launcher", "torchrun")
                 if is_self_managed_launcher(launcher_type_peek):
                     self.output_dir.mkdir(parents=True, exist_ok=True)
                     self.console.print(
@@ -388,7 +386,9 @@ class SlurmDeployment(BaseDeployment):
             return None
         return ",".join(n.strip() for n in nodelist.split(",") if n.strip())
 
-    def _prepare_slurm_multi_script(self, model_info: Dict, docker_image_name: str = None) -> bool:
+    def _prepare_slurm_multi_script(
+        self, model_info: Dict, docker_image_name: str = None
+    ) -> bool:
         """
         Escape hatch for self-orchestrating multi-container SLURM topologies.
 
@@ -409,41 +409,47 @@ class SlurmDeployment(BaseDeployment):
         if not model_script:
             self.console.print("[red]✗ No scripts defined in model_info[/red]")
             return False
-        
+
         # Get manifest directory (where the model script is relative to)
         manifest_dir = Path(self.config.manifest_file).parent.absolute()
         model_script_path = manifest_dir / model_script
-        
+
         if not model_script_path.exists():
-            self.console.print(f"[red]✗ Model script not found: {model_script_path}[/red]")
+            self.console.print(
+                f"[red]✗ Model script not found: {model_script_path}[/red]"
+            )
             return False
-        
+
         # Get environment variables
         env_vars = {}
-        
+
         # From model_info.env_vars
         if "env_vars" in model_info:
             env_vars.update(model_info["env_vars"])
-        
+
         # From additional_context.env_vars
         if "env_vars" in self.config.additional_context:
             env_vars.update(self.config.additional_context["env_vars"])
-        
+
         # From distributed config (model's distributed section)
         model_distributed = model_info.get("distributed", {})
-        sglang_disagg_config = model_distributed.get("sglang_disagg", {}) or self.distributed_config.get("sglang_disagg", {})
+        sglang_disagg_config = model_distributed.get(
+            "sglang_disagg", {}
+        ) or self.distributed_config.get("sglang_disagg", {})
         if sglang_disagg_config:
             if "xP" not in env_vars:
                 env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
             if "yD" not in env_vars:
                 env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
-        
+
         # Override DOCKER_IMAGE_NAME with the built image from manifest
         # This ensures the run uses the freshly built image, not the base image
         # Priority: docker_image_name param > model_info.docker_image > env_vars.DOCKER_IMAGE_NAME
         if docker_image_name and docker_image_name.startswith("ci-"):
             # The manifest key IS the built image name for madengine-built images
-            self.console.print(f"[cyan]Using built Docker image: {docker_image_name}[/cyan]")
+            self.console.print(
+                f"[cyan]Using built Docker image: {docker_image_name}[/cyan]"
+            )
             env_vars["DOCKER_IMAGE_NAME"] = docker_image_name
         elif "docker_image" in model_info:
             built_image = model_info["docker_image"]
@@ -454,7 +460,7 @@ class SlurmDeployment(BaseDeployment):
             built_image = model_info["image"]
             self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
             env_vars["DOCKER_IMAGE_NAME"] = built_image
-        
+
         # Get model args. The wrapper script below is executed by bash, so the
         # script name and free-form args string must be shell-quoted to prevent
         # embedded metacharacters ($(), backticks, ;, etc.) from being evaluated
@@ -467,7 +473,7 @@ class SlurmDeployment(BaseDeployment):
             else ""
         )
         _bash_invocation = f"bash {_script_name_q} {_model_args_q}".rstrip()
-        
+
         # Generate simple wrapper script
         # IMPORTANT: SBATCH directives MUST be at the top, right after #!/bin/bash
         script_lines = [
@@ -487,82 +493,92 @@ class SlurmDeployment(BaseDeployment):
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
         if self.slurm_config.get("exclusive", True):
             script_lines.append("#SBATCH --exclusive")
-        
+
         # Add reservation if specified
         if self.reservation:
             script_lines.append(f"#SBATCH --reservation={self.reservation}")
-        
+
         # Add nodelist if specified (from model card or --additional-context)
         nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
         if nodelist:
             script_lines.append(f"#SBATCH --nodelist={nodelist}")
-        
-        script_lines.extend([
-            "",
-            f"# slurm_multi launcher script for {model_info['name']}",
-            f"# Generated by madengine for slurm_multi",
-            "",
-            "set -e",
-            "",
-            "# Environment variables",
-        ])
-        
+
+        script_lines.extend(
+            [
+                "",
+                f"# slurm_multi launcher script for {model_info['name']}",
+                f"# Generated by madengine for slurm_multi",
+                "",
+                "set -e",
+                "",
+                "# Environment variables",
+            ]
+        )
+
         for key, value in env_vars.items():
             script_lines.append(f"export {key}={shlex.quote(str(value))}")
-        
+
         script_lines.append("")
-        script_lines.extend([
-            "echo '=========================================='",
-            "echo 'slurm_multi Launcher'",
-            "echo '=========================================='",
-            f"echo 'Model: {model_info['name']}'",
-            f"echo 'Script: {model_script_path}'",
-            "echo 'SLURM_JOB_ID:' $SLURM_JOB_ID",
-            "echo 'SLURM_NNODES:' $SLURM_NNODES",
-            "echo 'SLURM_NODELIST:' $SLURM_NODELIST",
-            "echo ''",
-        ])
-        
+        script_lines.extend(
+            [
+                "echo '=========================================='",
+                "echo 'slurm_multi Launcher'",
+                "echo '=========================================='",
+                f"echo 'Model: {model_info['name']}'",
+                f"echo 'Script: {model_script_path}'",
+                "echo 'SLURM_JOB_ID:' $SLURM_JOB_ID",
+                "echo 'SLURM_NNODES:' $SLURM_NNODES",
+                "echo 'SLURM_NODELIST:' $SLURM_NODELIST",
+                "echo ''",
+            ]
+        )
+
         # Check if image needs parallel pull on all nodes
         # Pull if: image is from registry (contains / or .) and not a local ci-* build
         docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
-        is_registry_image = docker_image and not docker_image.startswith("ci-") and ("/" in docker_image or "." in docker_image)
-        
+        is_registry_image = (
+            docker_image
+            and not docker_image.startswith("ci-")
+            and ("/" in docker_image or "." in docker_image)
+        )
+
         if is_registry_image:
             # Add parallel docker pull on all nodes
             # This ensures all nodes have the image before running
-            script_lines.extend([
-                "",
-                "# Pull Docker image in parallel on all nodes",
-                "echo '=========================================='",
-                "echo 'Pulling Docker image on all nodes in parallel'",
-                "echo '=========================================='",
-                f"echo 'Image: {docker_image}'",
-                "echo ''",
-                "",
-                f"srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c \"",
-                f"    echo \\\"[\\$(hostname)] Pulling {docker_image}...\\\"",
-                f"    docker pull {docker_image}",
-                "    PULL_RC=\\$?",
-                "    if [ \\$PULL_RC -eq 0 ]; then",
-                "        echo \\\"[\\$(hostname)] Pull SUCCESS\\\"",
-                "    else",
-                "        echo \\\"[\\$(hostname)] Pull FAILED with exit code \\$PULL_RC\\\"",
-                "    fi",
-                "    exit \\$PULL_RC",
-                "\"",
-                "PULL_EXIT=$?",
-                "",
-                "if [ $PULL_EXIT -ne 0 ]; then",
-                "    echo 'Docker pull failed on one or more nodes'",
-                "    exit $PULL_EXIT",
-                "fi",
-                "",
-                "echo ''",
-                "echo 'Docker image pulled on all nodes'",
-                "echo ''",
-            ])
-        
+            script_lines.extend(
+                [
+                    "",
+                    "# Pull Docker image in parallel on all nodes",
+                    "echo '=========================================='",
+                    "echo 'Pulling Docker image on all nodes in parallel'",
+                    "echo '=========================================='",
+                    f"echo 'Image: {docker_image}'",
+                    "echo ''",
+                    "",
+                    f'srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c "',
+                    f'    echo \\"[\\$(hostname)] Pulling {docker_image}...\\"',
+                    f"    docker pull {docker_image}",
+                    "    PULL_RC=\\$?",
+                    "    if [ \\$PULL_RC -eq 0 ]; then",
+                    '        echo \\"[\\$(hostname)] Pull SUCCESS\\"',
+                    "    else",
+                    '        echo \\"[\\$(hostname)] Pull FAILED with exit code \\$PULL_RC\\"',
+                    "    fi",
+                    "    exit \\$PULL_RC",
+                    '"',
+                    "PULL_EXIT=$?",
+                    "",
+                    "if [ $PULL_EXIT -ne 0 ]; then",
+                    "    echo 'Docker pull failed on one or more nodes'",
+                    "    exit $PULL_EXIT",
+                    "fi",
+                    "",
+                    "echo ''",
+                    "echo 'Docker image pulled on all nodes'",
+                    "echo ''",
+                ]
+            )
+
         # Create completion marker path for robust completion detection.
         # Namespace by SLURM_JOB_ID so concurrent / repeat runs of the same model
         # tag don't collide on each other's marker files. monitor() reconstructs
@@ -572,36 +588,38 @@ class SlurmDeployment(BaseDeployment):
             completion_marker_dir
             / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}.complete"
         )
-        
+
         # Disable `set -e` around the model script bash invocation below so a
         # non-zero exit doesn't terminate the wrapper before SCRIPT_EXIT_CODE is
         # captured and the completion marker is written. monitor() relies on the
         # marker to distinguish 'failed' from 'still running'; without this,
         # a failed model run would look like a hang.
-        script_lines.extend([
-            "",
-            "# Change to script directory",
-            f"cd {model_script_path.parent}",
-            "",
-            "# Run the model script directly on the host (with -e disabled so we",
-            "# can capture the exit code and write the completion marker even on failure).",
-            f"echo 'Executing: {_bash_invocation}'",
-            "set +e",
-            _bash_invocation,
-            "SCRIPT_EXIT_CODE=$?",
-            "set -e",
-            "",
-            "echo ''",
-            "echo 'Script completed.'",
-            "",
-            "# Write completion marker for madengine to detect (job-id namespaced)",
-            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker_template}",
-            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker_template}",
-            f"echo \"Completion marker written: {completion_marker_template}\"",
-            "",
-            "exit $SCRIPT_EXIT_CODE",
-        ])
-        
+        script_lines.extend(
+            [
+                "",
+                "# Change to script directory",
+                f"cd {model_script_path.parent}",
+                "",
+                "# Run the model script directly on the host (with -e disabled so we",
+                "# can capture the exit code and write the completion marker even on failure).",
+                f"echo 'Executing: {_bash_invocation}'",
+                "set +e",
+                _bash_invocation,
+                "SCRIPT_EXIT_CODE=$?",
+                "set -e",
+                "",
+                "echo ''",
+                "echo 'Script completed.'",
+                "",
+                "# Write completion marker for madengine to detect (job-id namespaced)",
+                f'echo "exit_code=$SCRIPT_EXIT_CODE" > {completion_marker_template}',
+                f'echo "timestamp=$(date -Iseconds)" >> {completion_marker_template}',
+                f'echo "Completion marker written: {completion_marker_template}"',
+                "",
+                "exit $SCRIPT_EXIT_CODE",
+            ]
+        )
+
         # Store marker info for monitor() to reconstruct the path with deployment_id.
         self._completion_marker_dir = completion_marker_dir
         self._completion_marker_basename_template = (
@@ -612,19 +630,22 @@ class SlurmDeployment(BaseDeployment):
         self._completion_marker = (
             completion_marker_dir / f"madengine_{model_info['name']}_local.complete"
         )
-        
+
         script_content = "\n".join(script_lines)
-        
+
         # Save script
         self.script_path = self.output_dir / f"madengine_{model_info['name']}.sh"
         self.script_path.write_text(script_content)
         self.script_path.chmod(0o755)
-        
-        self.console.print(f"[green]✓ Generated slurm_multi script: {self.script_path}[/green]")
+
+        self.console.print(
+            f"[green]✓ Generated slurm_multi script: {self.script_path}[/green]"
+        )
         self.console.print(f"  Model script: {model_script_path}")
         self.console.print(f"  Environment: {len(env_vars)} variables")
-        
+
         return True
+
     def _prepare_template_context(self, model_info: Dict) -> Dict[str, Any]:
         """Prepare context for Jinja2 template rendering."""
         # Use hierarchical GPU resolution: runtime > deployment > model > default
@@ -639,7 +660,9 @@ class SlurmDeployment(BaseDeployment):
 
         # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
         # passes through normalize_launcher instead of being mapped to "docker".
-        launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
+        launcher_type = (
+            canonicalize_distributed_launcher(launcher_type) or launcher_type
+        )
         # Normalize launcher based on deployment type and validity
         launcher_type = normalize_launcher(launcher_type, "slurm")
         # Persist the resolved launcher so downstream readers (reporting paths,
@@ -922,8 +945,10 @@ export SGLANG_PIPELINE_PARALLEL_SIZE=1
             # co-located proxy/router on the first prefill node (xP + yD == nnodes),
             # mirroring the vllm-disagg layout. The proxy is launched by the model
             # script (not by this launcher), so both topologies are valid here.
-            if (prefill_nodes + decode_nodes != nnodes
-                    and prefill_nodes + decode_nodes + 1 != nnodes):
+            if (
+                prefill_nodes + decode_nodes != nnodes
+                and prefill_nodes + decode_nodes + 1 != nnodes
+            ):
                 raise ValueError(
                     f"Custom split validation failed: prefill_nodes ({prefill_nodes}) + "
                     f"decode_nodes ({decode_nodes}) = {prefill_nodes + decode_nodes} must equal "
@@ -1292,7 +1317,7 @@ export MASTER_PORT={master_port}
     def _run_inside_existing_allocation(self) -> DeploymentResult:
         """
         Run script directly inside existing salloc allocation using bash.
-        
+
         The script will use the nodes already allocated to the current job.
         SLURM environment variables (SLURM_NODELIST, etc.) are inherited.
         """
@@ -1304,16 +1329,18 @@ export MASTER_PORT={master_port}
                 deployment_id=self.existing_job_id,
                 message=error_msg,
             )
-        
+
         self.console.print(
             f"\n[bold cyan]Running inside existing SLURM allocation[/bold cyan]"
         )
         self.console.print(f"  Job ID: {self.existing_job_id}")
-        self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
+        self.console.print(
+            f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes"
+        )
         self.console.print(f"  GPUs per node: {self.gpus_per_node}")
         self.console.print(f"  Script: {self.script_path}")
         self.console.print(f"\n[dim]Executing: bash {self.script_path}[/dim]\n")
-        
+
         try:
             # Run script directly with bash (synchronous, blocks until done)
             # Don't capture output - let it stream directly to console
@@ -1321,7 +1348,7 @@ export MASTER_PORT={master_port}
                 ["bash", str(self.script_path)],
                 timeout=self.config.timeout if self.config.timeout > 0 else None,
             )
-            
+
             if result.returncode == 0:
                 self.console.print(
                     f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
@@ -1344,7 +1371,7 @@ export MASTER_PORT={master_port}
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
                 )
-                
+
         except subprocess.TimeoutExpired:
             self.console.print(
                 f"\n[red]✗ Script timed out after {self.config.timeout}s[/red]"
@@ -1730,7 +1757,9 @@ export MASTER_PORT={master_port}
         flatten_tags(result)
         return result
 
-    def _select_best_multiple_results_csv(self, candidates: List[Path]) -> Optional[Path]:
+    def _select_best_multiple_results_csv(
+        self, candidates: List[Path]
+    ) -> Optional[Path]:
         """Pick the CSV with the most non-empty performance entries.
 
         In multi-node SLURM runs every node copies its local multi-results CSV
@@ -1748,6 +1777,7 @@ export MASTER_PORT={master_port}
         if len(candidates) == 1:
             return candidates[0]
         import csv as _csv
+
         best_candidate: Optional[Path] = None
         best_score = -1
         best_rows = -1
@@ -1764,7 +1794,10 @@ export MASTER_PORT={master_port}
                     for row in reader:
                         total_rows += 1
                         if has_perf_column:
-                            normalized_row = {(k.strip() if isinstance(k, str) else k): v for k, v in row.items()}
+                            normalized_row = {
+                                (k.strip() if isinstance(k, str) else k): v
+                                for k, v in row.items()
+                            }
                             value = (normalized_row.get("performance") or "").strip()
                             if value:
                                 non_empty_perf += 1
@@ -1782,7 +1815,6 @@ export MASTER_PORT={master_port}
                 f"[dim]  Selected multiple_results CSV with {best_score} non-empty performance rows: {best_candidate}[/dim]"
             )
         return best_candidate
-
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.
@@ -1830,7 +1862,6 @@ export MASTER_PORT={master_port}
                 return self._collect_slurm_multi_results(
                     deployment_id, results, session_start_row
                 )
-
 
         build_info = {}
         built_images = self.manifest.get("built_images") or {}
@@ -2172,17 +2203,22 @@ export MASTER_PORT={master_port}
         return results
 
     def _collect_slurm_multi_results(
-        self, deployment_id: str, results: Dict[str, Any], session_start_row: Optional[int]
+        self,
+        deployment_id: str,
+        results: Dict[str, Any],
+        session_start_row: Optional[int],
     ) -> Dict[str, Any]:
         """
         Collect results for slurm_multi launchers.
-        
+
         slurm_multi model scripts generate their own perf.csv via their
         benchmark scripts (e.g. generate_perf_csv.py). We collect SLURM
         logs for diagnostics and read the model-generated perf.csv for metrics.
         """
         # Collect SLURM output logs for diagnostics
-        flat_out_files = sorted(self.output_dir.glob(f"madengine-*_{deployment_id}_*.out"))
+        flat_out_files = sorted(
+            self.output_dir.glob(f"madengine-*_{deployment_id}_*.out")
+        )
         results["logs"] = [str(f) for f in flat_out_files]
 
         # Look for model-generated perf.csv. Inner scripts in MAD-private write
@@ -2203,16 +2239,23 @@ export MASTER_PORT={master_port}
             user = os.environ.get("USER", "")
             shared_candidates = []
             if user:
-                shared_candidates.extend([
-                    Path(f"/shared_inference/{user}/{deployment_id}/perf.csv"),
-                    Path(f"/shared_inference/{user}/model_blog_logs/{deployment_id}/perf.csv"),
-                ])
+                shared_candidates.extend(
+                    [
+                        Path(f"/shared_inference/{user}/{deployment_id}/perf.csv"),
+                        Path(
+                            f"/shared_inference/{user}/model_blog_logs/{deployment_id}/perf.csv"
+                        ),
+                    ]
+                )
             workspace_perf_dir = Path("slurm_output/perf_csv")
-            workspace_candidates = list(workspace_perf_dir.glob(f"*{deployment_id}*.csv"))
+            workspace_candidates = list(
+                workspace_perf_dir.glob(f"*{deployment_id}*.csv")
+            )
             workspace_perf = Path("perf.csv")
 
             # Retry briefly for NFS propagation after SLURM job completion
             import time
+
             for _attempt in range(6):
                 for cand in shared_candidates:
                     if cand.exists() and cand.stat().st_size > 0:
@@ -2228,7 +2271,9 @@ export MASTER_PORT={master_port}
                     break
                 time.sleep(5)
                 # Re-glob in case the file appeared during the wait.
-                workspace_candidates = list(workspace_perf_dir.glob(f"*{deployment_id}*.csv"))
+                workspace_candidates = list(
+                    workspace_perf_dir.glob(f"*{deployment_id}*.csv")
+                )
 
         if perf_csv_path:
             results["perf_files"] = [str(perf_csv_path)]
@@ -2240,11 +2285,14 @@ export MASTER_PORT={master_port}
             # update_perf_csv(); slurm_multi flows did not, so this mirrors
             # that convention without modifying the original per-job file.
             import shutil
+
             cwd_perf = Path("perf.csv")
             try:
                 if cwd_perf.exists():
                     with open(perf_csv_path, "r") as src, open(cwd_perf, "a") as dst:
-                        next(src, None)  # skip per-job header so cwd CSV stays single-headed
+                        next(
+                            src, None
+                        )  # skip per-job header so cwd CSV stays single-headed
                         for line in src:
                             dst.write(line)
                 else:
@@ -2257,7 +2305,9 @@ export MASTER_PORT={master_port}
                     f"[yellow]⚠ Could not aggregate per-job perf into cwd perf.csv: {e}[/yellow]"
                 )
         else:
-            self.console.print("[yellow]No perf.csv found from slurm_multi model script[/yellow]")
+            self.console.print(
+                "[yellow]No perf.csv found from slurm_multi model script[/yellow]"
+            )
 
         self.console.print(
             f"[green]Collected slurm_multi results: {len(results['perf_files'])} perf files, "
