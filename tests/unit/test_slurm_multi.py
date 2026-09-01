@@ -33,6 +33,7 @@ from madengine.deployment.common import (
 )
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
+from madengine.core.errors import ConfigurationError
 
 
 # ---------------------------------------------------------------------------
@@ -602,3 +603,90 @@ class TestSglangDisaggDefaultSplit:
             deployment_factory._generate_sglang_disagg_command(
                 nnodes=1, nproc_per_node=8, master_port=12345
             )
+
+
+DIGEST = "sha256:" + "df36ef7e" * 8
+
+
+class TestSlurmMultiRequirePinnedImage:
+    """slurm_multi wrapper pins DOCKER_IMAGE_NAME (and thus the pull) when required."""
+
+    IMAGE_KEY = "rocm/pytorch-private:sglang_disagg_mori_20260502"
+
+    def _deployment(self, tmp_path, require_pinned, image_digest):
+        script_rel = PR186_MODEL_ENTRY["scripts"]
+        script_abs = tmp_path / script_rel
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text("#!/bin/bash\n# placeholder\n")
+
+        image_entry = {
+            "image_name": self.IMAGE_KEY,
+            "docker_image": self.IMAGE_KEY,
+            "registry_image": self.IMAGE_KEY,
+        }
+        if image_digest:
+            image_entry["image_digest"] = image_digest
+
+        manifest = {
+            "built_images": {self.IMAGE_KEY: image_entry},
+            "built_models": {self.IMAGE_KEY: PR186_MODEL_ENTRY},
+            "context": {
+                "docker_env_vars": {},
+                "docker_mounts": {},
+                "docker_build_arg": {},
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "docker_gpus": "all",
+            },
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        additional_context = {
+            "deploy": "slurm",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "slurm": dict(
+                PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")
+            ),
+            "distributed": PR186_MODEL_ENTRY["distributed"],
+        }
+        if require_pinned:
+            additional_context["require_pinned_image"] = True
+
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context=additional_context,
+        )
+        return SlurmDeployment(cfg)
+
+    def test_default_exports_tag(self, tmp_path):
+        dep = self._deployment(tmp_path, require_pinned=False, image_digest=DIGEST)
+        assert dep.prepare() is True
+        script_text = Path(dep.script_path).read_text()
+        assert f"export DOCKER_IMAGE_NAME={shlex.quote(self.IMAGE_KEY)}" in script_text
+        assert DIGEST not in script_text
+
+    def test_enabled_exports_pinned_reference(self, tmp_path):
+        dep = self._deployment(tmp_path, require_pinned=True, image_digest=DIGEST)
+        assert dep.prepare() is True
+        script_text = Path(dep.script_path).read_text()
+
+        pinned = f"rocm/pytorch-private@{DIGEST}"
+        assert f"export DOCKER_IMAGE_NAME={shlex.quote(pinned)}" in script_text
+        # The parallel pull interpolates the same value, so it is pinned too.
+        assert f"docker pull {pinned}" in script_text
+
+    def test_enabled_without_digest_does_not_silently_fall_through(self, tmp_path):
+        """A missing digest must abort, not quietly take the standard template path.
+
+        prepare()'s launcher peek wraps the slurm_multi dispatch in a bare
+        `except Exception: pass`. Without the re-raise, a ConfigurationError
+        here would be swallowed and prepare() would generate an ordinary
+        (unpinned) sbatch script instead — the exact silent degradation the
+        flag exists to prevent.
+        """
+        dep = self._deployment(tmp_path, require_pinned=True, image_digest=None)
+        with pytest.raises(ConfigurationError):
+            dep.prepare()
