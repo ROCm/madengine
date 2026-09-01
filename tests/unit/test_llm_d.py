@@ -153,21 +153,20 @@ class TestRegistration:
         assert excinfo.value.exit_code == ExitCode.INVALID_ARGS
 
 
+FIXTURE_MODELS_JSON = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "dummy" / "models.json"
+)
 ROOT_MODELS_JSON = Path(__file__).resolve().parents[2] / "models.json"
 
 
-@pytest.mark.skipif(
-    not ROOT_MODELS_JSON.exists(),
-    reason="root models.json is a gitignored dev fixture; absent on a clean checkout",
-)
-class TestReferenceModelTags:
+class _ReferenceModelTagChecks:
     """dummy_llm_d needs an llm-d cluster, so no shared tag may reach it."""
 
     SHARED_TAGS = {"dummies", "inference", "dummy_distributed", "pyt", "training"}
+    models_json: Path
 
-    @staticmethod
-    def _models():
-        return json.loads(ROOT_MODELS_JSON.read_text())
+    def _models(self):
+        return json.loads(self.models_json.read_text())
 
     def test_reference_model_is_registered(self):
         assert any(m["name"] == "dummy_llm_d" for m in self._models())
@@ -186,6 +185,22 @@ class TestReferenceModelTags:
         tagged = [m["name"] for m in self._models() if "llm_d" in m.get("tags", [])]
 
         assert tagged == ["dummy_llm_d"]
+
+
+class TestFixtureReferenceModelTags(_ReferenceModelTagChecks):
+    """The git-tracked fixture used by madengine's own test/CI suite."""
+
+    models_json = FIXTURE_MODELS_JSON
+
+
+@pytest.mark.skipif(
+    not ROOT_MODELS_JSON.exists(),
+    reason="root models.json is a gitignored dev fixture; absent on a clean checkout",
+)
+class TestRootReferenceModelTags(_ReferenceModelTagChecks):
+    """A local dev checkout mirroring a MAD repo, used for ad-hoc manual runs."""
+
+    models_json = ROOT_MODELS_JSON
 
 
 # ---------------------------------------------------------------------------

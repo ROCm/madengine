@@ -42,3 +42,19 @@ Attach mode is the safe default on a shared cluster: with `endpoint_url` set, ma
 cannot install or uninstall anything. Managed mode installs three helm releases
 (`<prefix>-infra`, `<prefix>-gaie`, `<prefix>-modelservice`) and removes them on the way
 out — including after a failure, and including after a *successful* run.
+
+## Validating the client contract without a cluster
+
+None of the models above can be run without a real llm-d stack — standing one up needs a
+Kubernetes cluster with GPU nodes and the Gateway API/GAIE CRDs installed. To sanity-check
+just the client side of the contract (the `MAD_LLM_D_*` env vars madengine injects), use the
+`dummy_llm_d` fixture (`tests/fixtures/dummy/`, tags `dummy_llm_d`/`llm_d`). It needs no
+GPU — point it at any OpenAI-compatible server, such as a local `vllm serve`:
+
+```bash
+MAD_LLM_D_ENDPOINT=http://localhost:8000 MAD_LLM_D_MODEL=facebook/opt-125m \
+  bash tests/fixtures/dummy/scripts/dummy_llm_d/run.sh
+```
+
+This does not exercise helm standup, Gateway resolution, or GPU-backed serving — only that
+the endpoint and model name reach the client and a real request round-trips.

@@ -396,6 +396,19 @@
     "args": ""
   },
   {
+    "name": "dummy_llm_d",
+    "dockerfile": "docker/dummy_llm_d",
+    "scripts": "scripts/dummy_llm_d/run.sh",
+    "n_gpus": "0",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "llm_d",
+      "dummy_llm_d"
+    ],
+    "args": ""
+  },
+  {
     "name": "dummy_torchtitan",
     "dockerfile": "docker/dummy_torchtitan",
     "scripts": "scripts/dummy_torchtitan/run.sh",
