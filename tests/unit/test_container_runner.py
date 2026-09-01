@@ -739,3 +739,52 @@ class TestRequirePinnedImageLocalRun:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+
+
+class TestSlurmEnvPassthrough:
+    """Launcher variables must reach the container.
+
+    The SLURM job script computes the SGLang topology and peer list, but the
+    model only sees variables named in the passthrough allowlist. Dropping or
+    misspelling one silently restores the single-node fallback
+    (xP=1/yD=1, IPADDRS=localhost) with every other test still green.
+    """
+
+    SGLANG_VARS = {
+        "SGLANG_DISAGG_MODE": "enabled",
+        "SGLANG_DISAGG_PREFILL_NODES": "2",
+        "SGLANG_DISAGG_DECODE_NODES": "2",
+        "SGLANG_DISAGG_TOTAL_NODES": "4",
+        "SGLANG_NODE_IPS": "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+        "SGLANG_NODE_RANK": "0",
+        "SGLANG_TP_SIZE": "8",
+    }
+
+    def test_allowlist_covers_sglang_disagg(self):
+        from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
+
+        missing = [v for v in self.SGLANG_VARS if v not in SLURM_PASSTHROUGH_ENV_VARS]
+        assert not missing, f"not forwarded into the container: {missing}"
+
+    def test_shell_values_reach_docker_env(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, self.SGLANG_VARS, clear=False):
+            merged = runner._merge_slurm_env_from_shell()
+
+        docker_env = ctx.ctx["docker_env_vars"]
+        for name, value in self.SGLANG_VARS.items():
+            assert docker_env.get(name) == value, f"{name} not passed through"
+        assert merged >= len(self.SGLANG_VARS)
+
+    def test_absent_values_are_not_invented(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, {}, clear=True):
+            runner._merge_slurm_env_from_shell()
+
+        assert ctx.ctx["docker_env_vars"] == {}
