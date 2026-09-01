@@ -255,10 +255,7 @@ class TestUnifiedErrorSystem:
     def test_nested_error_handling(self):
         """Nested errors with cause chain are handled."""
         from madengine.core.errors import ExecutionError as MADRuntimeError
-        from madengine.core.errors import (
-            NetworkError,
-            OrchestrationError,
-        )
+        from madengine.core.errors import NetworkError, OrchestrationError
 
         orig = NetworkError("Network timeout")
         runtime = MADRuntimeError("Operation failed", cause=orig)
