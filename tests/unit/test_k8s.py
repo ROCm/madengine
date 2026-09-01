@@ -6,9 +6,13 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
+from madengine.core.errors import ConfigurationError
+from madengine.deployment import kubernetes as k8s_module
+from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
     sanitize_k8s_label_value,
@@ -31,8 +35,6 @@ from madengine.deployment.kubernetes import (
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
-from madengine.core.errors import ConfigurationError
-from madengine.deployment.base import DeploymentConfig
 
 
 def test_merge_secrets_config_defaults():
@@ -297,7 +299,19 @@ class TestK8sRequirePinnedImage:
         _prepare_template_context reads the manifest and the model's scripts
         directory from the current working directory, so the test runs inside
         tmp_path with a minimal model tree.
+
+        KubernetesDeployment.__init__ loads a kubeconfig and builds API
+        clients; neither exists on a CI runner, so both are stubbed out.
         """
+        monkeypatch.setattr(
+            k8s_module.k8s_config, "load_incluster_config", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            k8s_module.k8s_config, "load_kube_config", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(k8s_module.client, "BatchV1Api", MagicMock())
+        monkeypatch.setattr(k8s_module.client, "CoreV1Api", MagicMock())
+
         monkeypatch.chdir(tmp_path)
         (tmp_path / "scripts" / "dummy").mkdir(parents=True)
         (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")
