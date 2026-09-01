@@ -31,6 +31,7 @@ from .primus_backend import (
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.core.dataprovider import Data
 from madengine.core.errors import ConfigurationError
+from madengine.core.timeout import resolve_run_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root
 
@@ -545,7 +546,11 @@ class KubernetesTemplateContextMixin:
             "nnodes": nnodes,
             "nproc_per_node": nproc_per_node,
             "master_port": master_port,
-            "timeout": self.config.timeout,
+            # Resolved here, not taken from config.timeout: that value caps the
+            # submitting process's wait on the Job and never saw the model card.
+            # K8s has no inner madengine to re-resolve against the card (unlike
+            # SLURM), so the card's timeout has to be applied at render time.
+            "timeout": resolve_run_timeout(model_info, self.config.cli_timeout),
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
             # Volumes

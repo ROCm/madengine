@@ -360,6 +360,128 @@ class TestRunOrchestrator:
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
 
+    @pytest.mark.parametrize(
+        "cli_timeout,expected_config_timeout",
+        [
+            (-1, 7200),  # unspecified -> shared default, not left as -1
+            (0, 0),  # explicit "no timeout" passed through
+            (120, 120),  # explicit timeout passed through
+        ],
+    )
+    def test_distributed_resolves_timeout_sentinel(
+        self, tmp_path, cli_timeout, expected_config_timeout
+    ):
+        """_execute_distributed must resolve the CLI sentinel before building
+        DeploymentConfig.
+
+        Regression: unlike the local path (which calls resolve_run_timeout() in
+        container_runner.py), the distributed path forwarded args.timeout to
+        DeploymentConfig verbatim. A default run (--timeout unspecified, i.e.
+        -1) therefore left DeploymentConfig.timeout == -1, which
+        subprocess_timeout() maps to None -- silently dropping the wall-clock
+        cap on the SLURM in-allocation path instead of applying the intended
+        7200s default.
+        """
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.timeout = cli_timeout
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        deployment_config = mock_create.call_args.args[0]
+        assert deployment_config.timeout == expected_config_timeout
+        assert isinstance(deployment_config.timeout, int)
+        # The sentinel itself must also survive, unresolved, for the job script
+        # to forward to the madengine it re-invokes.
+        assert deployment_config.cli_timeout == cli_timeout
+
+    def test_model_card_timeout_survives_the_distributed_round_trip(self, tmp_path):
+        """A model card's timeout must still win on SLURM when no --timeout is given.
+
+        Regression: _execute_distributed resolved the sentinel and the template
+        rendered that resolved value, so the job re-invoked madengine with an
+        explicit --timeout 7200. Precedence (correctly) ranks an explicit CLI
+        timeout above the model card, so the card's own value was discarded --
+        only on distributed targets, and only because madengine had synthesized
+        the value it was now treating as user intent.
+        """
+        from madengine.core.timeout import resolve_run_timeout
+
+        model_card = {"name": "foo", "timeout": 3600}
+
+        # Hop 1: the orchestrator, which has no model card in hand.
+        rendered = -1  # DeploymentConfig.cli_timeout for an unspecified --timeout
+        # Hop 2: the in-job madengine, resolving against the card.
+        assert resolve_run_timeout(model_card, rendered) == 3600
+        # ... matching what the single-hop local path produces.
+        assert resolve_run_timeout(model_card, -1) == 3600
+
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            ({}, -1),  # omitted -> sentinel, so the model card can still win
+            ({"timeout": 120}, 120),
+            ({"timeout": 0}, 0),
+            ({"timeout": -1}, -1),
+        ],
+    )
+    def test_execute_forwards_timeout_sentinel_to_local(
+        self, tmp_path, kwargs, expected
+    ):
+        """execute()'s own default must be the sentinel, not DEFAULT_RUN_TIMEOUT.
+
+        Regression: the parameter defaulted to 7200, which _execute_local hands
+        to resolve_run_timeout() as an explicit CLI timeout. A programmatic
+        caller that omitted `timeout` therefore silently outranked every model
+        card, contradicting the documented precedence.
+        """
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_cleanup_model_dir_copies"), \
+             patch.object(RunOrchestrator, "_execute_local") as mock_local:
+            mock_local.return_value = {"successful_runs": [], "failed_runs": []}
+            orchestrator.execute(manifest_file=str(manifest_path), **kwargs)
+
+        assert mock_local.call_args.args[1] == expected
+
 
 @pytest.mark.unit
 class TestCreateManifestFromLocalImage:

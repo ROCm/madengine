@@ -25,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -132,7 +133,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = 3600,
+        timeout: int = -1,
     ) -> Dict:
         """
         Execute run workflow.
@@ -149,7 +150,8 @@ class RunOrchestrator:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
             registry: Optional registry override
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
 
         Returns:
             Execution results dict
@@ -453,7 +455,9 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", None),  # Optional timeout override
+                # None (JSON null) = the card specified none; a card's -1 is a
+                # real value meaning "no timeout", so it cannot double as filler.
+                "timeout": model.get("timeout"),
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
@@ -730,7 +734,19 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", 3600),
+            # Two different values, deliberately. `timeout` caps this process's
+            # own wait on the deployment, so the sentinel has to be resolved
+            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
+            # in-allocation path runs unbounded. `cli_timeout` is what the
+            # generated job script forwards to the madengine it re-invokes, and
+            # must stay verbatim: that inner run resolves against the model card
+            # itself, and a concrete value here would read as an explicit
+            # --timeout and outrank the card. No model card is consulted at this
+            # level, hence the empty dict.
+            timeout=resolve_run_timeout(
+                {}, getattr(self.args, "timeout", -1)
+            ),
+            cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )

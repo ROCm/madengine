@@ -24,6 +24,7 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
 )
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 
 from ..constants import (
     ExitCode,
@@ -188,14 +189,14 @@ def run(
         effective_additional_context = repr(merged)
         effective_additional_context_file = None
 
-    # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
-    if timeout == -1:
-        timeout = 7200
-    # 0 means "no timeout" per the help text — map to None so subprocess never expires
-    elif timeout == 0:
-        timeout = None
-
-    timeout_display = "disabled" if timeout is None else f"{timeout}s"
+    # The sentinel is passed through untouched (-1 unspecified, 0 no timeout);
+    # resolve_run_timeout applies precedence against the model card downstream.
+    if timeout == 0:
+        timeout_display = "disabled"
+    elif timeout == -1:
+        timeout_display = f"{DEFAULT_RUN_TIMEOUT}s (default)"
+    else:
+        timeout_display = f"{timeout}s"
 
     try:
         # Check if we're doing execution-only or full workflow

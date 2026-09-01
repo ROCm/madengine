@@ -355,7 +355,9 @@ Format: Comma-separated list with hyphen ranges.
 
 ### Timeout Settings
 
-Set a per-model timeout (seconds) in `models.json`:
+Set a per-model timeout (seconds) in `models.json`. Omit the field to get the
+7200s (2 hour) default. Use `0` (or any non-positive value) to run the model
+without a timeout:
 
 ```json
 {
@@ -368,6 +370,10 @@ Or use the command-line option, which overrides the model's timeout:
 ```bash
 madengine run --tags model --timeout 7200
 ```
+
+Full precedence rules, including the `-1` sentinel and how the timeout is
+applied on SLURM and Kubernetes, are in
+[Usage — Custom Timeouts](usage.md#custom-timeouts).
 
 ### Local Data Mirroring
 

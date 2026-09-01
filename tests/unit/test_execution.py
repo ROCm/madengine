@@ -1,12 +1,18 @@
 """Unit tests for execution: container_runner_helpers and dockerfile_utils."""
 
+import json
+
 import pytest
 
-from madengine.core.timeout import Timeout
+from madengine.core.timeout import (
+    DEFAULT_RUN_TIMEOUT,
+    Timeout,
+    resolve_run_timeout,
+    subprocess_timeout,
+)
 from madengine.execution.container_runner_helpers import (
     _docker_image_ref_for_log_naming,
     make_run_log_file_path,
-    resolve_run_timeout,
 )
 from madengine.execution.dockerfile_utils import (
     GPU_ARCH_VARIABLES,
@@ -40,33 +46,91 @@ class TestTimeout:
 # ---- container_runner_helpers ----
 
 class TestResolveRunTimeout:
-    """resolve_run_timeout behavior."""
+    """resolve_run_timeout: default < model card < CLI (v1 precedence).
 
-    def test_model_timeout_used_when_cli_default(self):
-        assert resolve_run_timeout({"timeout": 3600}, 7200) == 3600
-        assert resolve_run_timeout({"timeout": 100}, 7200) == 100
+    Only the CLI has a sentinel: -1 means --timeout was not passed. A model
+    card timeout is taken as-is, and any non-positive result means no timeout.
+    """
 
-    def test_cli_timeout_used_when_explicit(self):
+    def test_default_when_nothing_specified(self):
+        assert resolve_run_timeout({}, -1) == DEFAULT_RUN_TIMEOUT
+        assert resolve_run_timeout({"name": "x"}, -1) == DEFAULT_RUN_TIMEOUT
+
+    def test_model_timeout_overrides_default(self):
+        assert resolve_run_timeout({"timeout": 360}, -1) == 360
+        assert resolve_run_timeout({"timeout": 100}, -1) == 100
+
+    def test_cli_timeout_overrides_model(self):
+        assert resolve_run_timeout({"timeout": 360}, 120) == 120
         assert resolve_run_timeout({"timeout": 3600}, 6000) == 6000
-        assert resolve_run_timeout({"timeout": 3600}, 100) == 100
 
-    def test_cli_default_returned_when_no_model_timeout(self):
-        assert resolve_run_timeout({}, 7200) == 7200
-        assert resolve_run_timeout({"name": "x"}, 3600) == 3600
+    def test_explicit_cli_equal_to_default_still_wins(self):
+        # Regression: the old resolver detected "CLI is default" by comparing
+        # against 7200, so an explicit --timeout 7200 silently lost to the model
+        # card. With the -1 sentinel the two are distinguishable.
+        assert resolve_run_timeout({"timeout": 360}, DEFAULT_RUN_TIMEOUT) == DEFAULT_RUN_TIMEOUT
 
-    @pytest.mark.parametrize("model_timeout", [None, 0])
-    def test_falsy_model_timeout_ignored_uses_cli(self, model_timeout):
-        assert resolve_run_timeout({"timeout": model_timeout}, 7200) == 7200
+    def test_non_positive_means_no_timeout(self):
+        # v1 read the model card unconditionally and handed the value to
+        # Timeout/subprocess, where anything non-positive runs unbounded. Real
+        # MAD cards set -1 for exactly that, so it must not fall through to the
+        # 7200s default.
+        assert resolve_run_timeout({"timeout": -1}, -1) == -1
+        assert resolve_run_timeout({"timeout": 0}, -1) == 0
+        assert resolve_run_timeout({"timeout": 360}, 0) == 0
+        assert resolve_run_timeout({}, 0) == 0
 
-    def test_custom_default_cli(self):
-        assert resolve_run_timeout({"timeout": 100}, 5000, default_cli_timeout=5000) == 100
-        assert resolve_run_timeout({"timeout": 100}, 7200, default_cli_timeout=5000) == 7200
+    def test_none_in_manifest_treated_as_unset(self):
+        # Manifests store null when the card specified no timeout.
+        assert resolve_run_timeout({"timeout": None}, -1) == DEFAULT_RUN_TIMEOUT
+        assert resolve_run_timeout({"timeout": None}, 120) == 120
 
-    def test_no_timeout_sentinel_none_passthrough(self):
-        # --timeout 0 is converted to None by the CLI; resolve_run_timeout must
-        # pass None through unchanged (model timeout must NOT override "no timeout").
-        assert resolve_run_timeout({"timeout": 3600}, None) is None
-        assert resolve_run_timeout({}, None) is None
+    @pytest.mark.parametrize(
+        "card_timeout, expected",
+        [
+            (None, DEFAULT_RUN_TIMEOUT),  # no "timeout" key in the model card
+            (-1, -1),  # explicit "no timeout"
+            (0, 0),
+            (360, 360),
+        ],
+    )
+    def test_manifest_round_trip_preserves_intent(self, card_timeout, expected):
+        """A card's timeout must survive being written to a manifest and read back.
+
+        Regression: the manifest writers filled an absent timeout with -1, which
+        collided with a card explicitly setting -1 to mean "no timeout". A card
+        with no timeout field then resolved to unbounded instead of the 7200s
+        default. The filler is None (JSON null), which cannot be a real value.
+        """
+        model_card = {} if card_timeout is None else {"timeout": card_timeout}
+        # Mirrors the manifest writers in build_orchestrator/run_orchestrator.
+        manifest_entry = json.loads(json.dumps({"timeout": model_card.get("timeout")}))
+        assert resolve_run_timeout(manifest_entry, -1) == expected
+
+    def test_custom_default(self):
+        assert resolve_run_timeout({}, -1, default_timeout=5000) == 5000
+        assert resolve_run_timeout({"timeout": 100}, -1, default_timeout=5000) == 100
+
+    def test_always_returns_int(self):
+        # No None ever escapes the resolver — downstream consumers rely on this.
+        for model, cli in (({}, -1), ({"timeout": None}, -1), ({"timeout": 0}, -1), ({}, 0)):
+            assert isinstance(resolve_run_timeout(model, cli), int)
+
+
+class TestSubprocessTimeout:
+    """subprocess_timeout: resolved timeout -> subprocess/communicate semantics.
+
+    subprocess treats timeout=0 as "expire immediately", not "no timeout", so
+    any non-positive value must become None.
+    """
+
+    @pytest.mark.parametrize("value", [0, -1, None])
+    def test_no_timeout_values_become_none(self, value):
+        assert subprocess_timeout(value) is None
+
+    @pytest.mark.parametrize("value", [1, 120, 7200])
+    def test_positive_passes_through(self, value):
+        assert subprocess_timeout(value) == value
 
 
 class TestDockerImageRefForLogNaming:
