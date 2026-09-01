@@ -1,0 +1,13 @@
+{
+  "_comment": "Attach mode: benchmark an llm-d stack that already exists. madengine installs nothing and tears nothing down. The safest starting point on a shared cluster.",
+  "k8s": {
+    "namespace": "llm-d-bench",
+    "gpu_count": 0
+  },
+  "llm_d": {
+    "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
+    "model": {
+      "name": "Qwen3-32B"
+    }
+  }
+}

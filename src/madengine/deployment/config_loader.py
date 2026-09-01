@@ -225,6 +225,32 @@ class ConfigLoader:
         return config
     
     @classmethod
+    def load_llmd_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Load complete llm-d configuration.
+
+        The llm-d benchmark client is an ordinary single-pod Kubernetes Job, so
+        the full k8s preset stack applies unchanged; llm-d defaults are layered
+        underneath it.
+
+        Layers:
+        1. llm-d defaults (presets/llm-d/defaults.json)
+        2. Everything load_k8s_config produces (k8s defaults, GPU vendor,
+           profile, then user configuration)
+
+        Args:
+            user_config: User-provided configuration
+
+        Returns:
+            Complete configuration with both k8s and llm-d defaults applied
+        """
+        config = cls.load_k8s_config(user_config)
+        llmd_defaults = cls.load_preset("llm-d/defaults.json")
+
+        # llm-d defaults are the base; user configuration still wins.
+        return cls.deep_merge(llmd_defaults, config)
+
+    @classmethod
     def infer_and_validate_deploy_type(cls, user_config: Dict[str, Any]) -> str:
         """
         Infer deployment type from config structure and validate for conflicts.

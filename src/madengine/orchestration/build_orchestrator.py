@@ -1316,7 +1316,11 @@ exit 0
             target = self.additional_context.get("deploy")
             if not target:
                 # Auto-detect based on config presence
-                if self.additional_context.get("slurm"):
+                # llm-d is checked first: its config also carries a "k8s" block,
+                # which configures the benchmark-client Job.
+                if self.additional_context.get("llm_d"):
+                    target = "llm-d"
+                elif self.additional_context.get("slurm"):
                     target = "slurm"
                 elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
                     target = "k8s"
@@ -1335,6 +1339,7 @@ exit 0
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),
+                "llm_d": self.additional_context.get("llm_d"),
                 "distributed": self.additional_context.get("distributed"),
                 "vllm": self.additional_context.get("vllm"),
                 "env_vars": env_vars,

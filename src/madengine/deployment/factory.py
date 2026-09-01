@@ -97,6 +97,16 @@ def register_default_deployments():
             stacklevel=2,
         )
 
+    # Register llm-d in its own try/except: it builds on the Kubernetes target,
+    # so a failure here must never take slurm or k8s down with it.
+    try:
+        from .llm_d import LlmdDeployment
+
+        DeploymentFactory.register("llm-d", LlmdDeployment)
+        DeploymentFactory.register("llm_d", LlmdDeployment)
+    except ImportError:
+        pass
+
 
 # Auto-register on module import
 register_default_deployments()

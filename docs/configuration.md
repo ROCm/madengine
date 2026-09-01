@@ -597,6 +597,51 @@ Node health preflight, shared-storage, and results-collection keys (`enable_node
 }
 ```
 
+## llm-d Deployment
+
+Adding an `llm_d` key benchmarks a [llm-d](https://github.com/llm-d/llm-d) inference
+stack. The config also carries a `k8s` block, which configures the benchmark-client Job;
+`llm_d` is checked first during target inference, so it wins.
+
+**Attach mode** — benchmark a stack that already exists:
+
+```json
+{
+  "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
+  "llm_d": {
+    "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
+    "model": {"name": "Qwen3-32B"}
+  }
+}
+```
+
+**Managed mode** — madengine installs the stack with `helm` and removes it afterwards:
+
+```json
+{
+  "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
+  "llm_d": {
+    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen3-32B", "hf_token_secret": "hf-token"},
+    "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
+    "decode": {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
+    "charts": {
+      "infra": {"version": "<pin>"},
+      "gaie": {"version": "<pin>"},
+      "modelservice": {"version": "<pin>"}
+    }
+  }
+}
+```
+
+Managed mode requires `helm` on `PATH`, Gateway API + Inference Extension CRDs, and
+**pinned chart versions** — it refuses to run on a floating version. Set
+`llm_d.dry_run: true` to render the values and `helm template` output without installing
+anything.
+
+The full key reference, reliability behaviour and troubleshooting are in
+[llm-d.md](llm-d.md); ready-made configs are in
+[examples/llm-d-configs/](../examples/llm-d-configs/).
+
 ## Distributed Training
 
 ### Launcher Configuration
@@ -833,7 +878,7 @@ For Kubernetes/SLURM deployments:
 2. User config file (`--additional-context-file`)
 3. Profile presets (single-gpu/multi-gpu/multi-node)
 4. GPU vendor presets (AMD/NVIDIA optimizations)
-5. Base defaults (k8s/defaults.json)
+5. Base defaults (k8s/defaults.json; llm-d layers `llm-d/defaults.json` beneath these)
 6. Environment variables
 7. Built-in fallbacks - Lowest
 
