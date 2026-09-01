@@ -654,7 +654,7 @@ madengine run --tags model --additional-context '{
 ### 📝 Installation & Setup
 
 #### Requirements
-- **Python**: 3.9+ (3.8 support dropped in v2.0.2)
+- **Python**: 3.8+ (use `typing_extensions` for 3.8 compatibility)
 - **Docker**: Required for all execution (local and distributed)
 - **MAD Package**: Separate repo (`git clone https://github.com/ROCm/MAD.git`) for model definitions
 - **Pre-commit** (dev): `pip install pre-commit && pre-commit install`
