@@ -33,7 +33,6 @@ from madengine.deployment.common import (
 )
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
-from madengine.core.errors import ConfigurationError
 
 
 # ---------------------------------------------------------------------------

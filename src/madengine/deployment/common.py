@@ -37,17 +37,21 @@ _DOCUMENTED_ALIASES: Dict[str, str] = {
 }
 
 # Deployment-mode sentinels meaning "no distributed launcher". They are produced
-# by launcher_for_reporting(), never typed by a user, and must pass validation
-# unchanged so a round-trip through a report does not raise.
+# by launcher_for_reporting() for the perf.csv ``launcher`` column and are never
+# read back as config, so validate_launcher rejects them: a user who writes
+# ``launcher: docker`` means "no launcher" and should say so by omitting the key,
+# not by naming a value that has no dispatch arm.
 _LAUNCHER_SENTINELS = frozenset({"docker", "native"})
 
 
 def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     """Validate a user-supplied launcher and return its canonical spelling.
 
-    Empty values mean "no launcher configured" and return None. Unknown values
-    raise rather than falling back, because a silently-defaulted launcher runs
-    the model as a plain single-process job and still reports SUCCESS.
+    ``None`` and blank strings mean "no launcher configured" and return None.
+    Every other value must be a recognized launcher: unknown values raise rather
+    than falling back, because a silently-defaulted launcher runs the model as a
+    plain single-process job and still reports SUCCESS. Other falsy values (0,
+    False, []) are misconfiguration, not absence, and raise.
 
     Args:
         launcher: Raw launcher value from config, model card, or environment.
@@ -60,7 +64,7 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     Raises:
         ConfigurationError: If the value is not a recognized launcher.
     """
-    if not launcher:
+    if launcher is None:
         return None
     if not isinstance(launcher, str):
         raise ConfigurationError(
@@ -75,16 +79,23 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
         )
 
     normalized = launcher.strip().lower()
-    if normalized in _LAUNCHER_SENTINELS:
-        return normalized
+    if not normalized:
+        return None
     normalized = _DOCUMENTED_ALIASES.get(normalized, normalized)
     if normalized in VALID_LAUNCHERS:
         return normalized
 
     suggestions = []
-    close = difflib.get_close_matches(normalized, VALID_LAUNCHERS, n=1, cutoff=0.6)
-    if close:
-        suggestions.append(f"Did you mean '{close[0]}'?")
+    if normalized in _LAUNCHER_SENTINELS:
+        # Emitted into perf.csv by launcher_for_reporting(); has no dispatch arm.
+        suggestions.append(
+            f"'{normalized}' is a reporting value for runs with no distributed "
+            "launcher — omit the launcher key instead of setting it"
+        )
+    else:
+        close = difflib.get_close_matches(normalized, VALID_LAUNCHERS, n=1, cutoff=0.6)
+        if close:
+            suggestions.append(f"Did you mean '{close[0]}'?")
     suggestions.append(f"Supported launchers: {', '.join(VALID_LAUNCHERS)}")
     raise ConfigurationError(
         f"Unknown launcher '{launcher}' in {source}",
@@ -143,6 +154,24 @@ def tools_include_rocprof_family(tools_config: List[Dict]) -> bool:
         if name in _ROCPROF_FAMILY_TOOL_NAMES:
             return True
     return False
+
+
+# Launchers that run one independent replica per node, so a node-local metric is
+# a per-replica figure and job throughput is that figure scaled by nnodes.
+#
+# Deliberately NOT the same set as the Ray-based launchers guarded in the job
+# templates: sglang-disagg is Ray-based but its nodes are heterogeneous roles
+# (proxy + prefill + decode) cooperating on a single endpoint, not replicas.
+# Its throughput is reported once, by the proxy — scaling that by nnodes would
+# multiply a whole-cluster number.
+PER_REPLICA_LAUNCHERS: frozenset = frozenset({"vllm", "sglang"})
+
+
+def is_per_replica_launcher(launcher_type: Optional[str]) -> bool:
+    """Return True if each node reports its own replica's metric, not the job's."""
+    if not launcher_type or not isinstance(launcher_type, str):
+        return False
+    return launcher_type.strip().lower() in PER_REPLICA_LAUNCHERS
 
 
 _SELF_MANAGED_LAUNCHERS: frozenset = frozenset({"slurm_multi"})

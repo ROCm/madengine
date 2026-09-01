@@ -340,6 +340,18 @@ class TestValidateLauncherContext:
             )
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
 
+    @pytest.mark.parametrize("sentinel", ["docker", "native"])
+    def test_reporting_sentinels_are_rejected_at_the_cli_boundary(self, sentinel):
+        """These are perf.csv output values with no dispatch arm. Accepting one
+        here would let it fall through to the unknown-launcher default at
+        dispatch time — the silent single-process run this validation exists
+        to prevent."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(distributed={"launcher": sentinel})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
     def test_documented_slurm_multi_alias_is_accepted_and_canonicalized(self):
         result = validate_additional_context(
             additional_context=self._context(distributed={"launcher": "slurm-multi"})

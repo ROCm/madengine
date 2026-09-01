@@ -11,6 +11,7 @@ from madengine.deployment.base import BaseDeployment, DeploymentConfig, create_j
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
     configure_multi_node_profiling,
+    is_per_replica_launcher,
     is_rocprofv3_available,
     launcher_for_reporting,
     tools_include_rocprof_family,
@@ -83,9 +84,15 @@ class TestValidateLauncher:
     def test_every_valid_launcher_is_accepted(self, launcher):
         assert validate_launcher(launcher, source="test") == launcher
 
-    @pytest.mark.parametrize("value", [None, ""])
+    @pytest.mark.parametrize("value", [None, "", "   "])
     def test_empty_means_no_launcher_configured(self, value):
         assert validate_launcher(value, source="test") is None
+
+    @pytest.mark.parametrize("value", [0, False, []])
+    def test_other_falsy_values_are_misconfiguration_not_absence(self, value):
+        """`if not launcher` would have waved these through as 'nothing configured'."""
+        with pytest.raises(ConfigurationError):
+            validate_launcher(value, source="test")
 
     def test_documented_hyphen_alias_for_slurm_multi(self):
         """docs/launchers.md advertises slurm-multi; that promise is kept."""
@@ -100,8 +107,12 @@ class TestValidateLauncher:
         assert validate_launcher(value, source="test") == canonical
 
     @pytest.mark.parametrize("launcher", ["docker", "native"])
-    def test_reporting_sentinels_survive_a_round_trip(self, launcher):
-        assert validate_launcher(launcher, source="test") == launcher
+    def test_reporting_sentinels_are_rejected_as_config(self, launcher):
+        """They are perf.csv output values with no dispatch arm; accepting one at a
+        config boundary would reinstate the silent single-process run."""
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_launcher(launcher, source="additional_context")
+        assert "omit the launcher key" in " ".join(exc_info.value.suggestions)
 
     @pytest.mark.parametrize("bad,canonical", [
         ("megatron", "megatron-lm"),
@@ -123,6 +134,23 @@ class TestValidateLauncher:
     def test_non_string_is_rejected(self):
         with pytest.raises(ConfigurationError):
             validate_launcher(["torchrun"], source="test")
+
+
+class TestIsPerReplicaLauncher:
+    """Which launchers report a node-local metric per replica."""
+
+    @pytest.mark.parametrize("launcher", ["vllm", "sglang"])
+    def test_data_parallel_launchers_are_per_replica(self, launcher):
+        assert is_per_replica_launcher(launcher) is True
+
+    def test_sglang_disagg_is_not_per_replica(self):
+        """Ray-based, but its nodes are proxy/prefill/decode roles serving one
+        endpoint — scaling the proxy's number by nnodes would inflate it."""
+        assert is_per_replica_launcher("sglang-disagg") is False
+
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "docker", None, ""])
+    def test_everything_else_aggregates_normally(self, launcher):
+        assert is_per_replica_launcher(launcher) is False
 
 
 class TestToolsIncludeRocprofFamily:
