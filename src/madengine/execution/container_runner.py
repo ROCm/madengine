@@ -43,6 +43,7 @@ from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
+    container_name_from_image_ref,
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
@@ -1360,10 +1361,10 @@ class ContainerRunner:
         docker_options += self.get_mount_arg(mount_datapaths, excluded_container_targets=excluded_mount_targets)
         docker_options += f" {additional_opts}"
 
-        # Generate container name
-        base_container_name = "container_" + re.sub(
-            ".*:", "", docker_image.replace("/", "_").replace(":", "_")
-        )
+        # Generate container name. docker_image may be digest-pinned
+        # (repo@sha256:...) under require_pinned_image, and "@" is not a legal
+        # container-name character, so this must not use the raw reference.
+        base_container_name = container_name_from_image_ref(docker_image)
         
         # For multi-node SLURM jobs, add node rank to avoid name conflicts
         node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
