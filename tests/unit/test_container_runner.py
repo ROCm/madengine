@@ -634,8 +634,11 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ),
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
@@ -652,9 +655,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
@@ -677,9 +683,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(
-                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
-            ), patch.object(runner, "run_container") as mock_run:
+            with (
+                patch.object(
+                    runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+                ),
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -696,11 +705,12 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(
-                runner, "pull_image", side_effect=RuntimeError("offline")
-            ), patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image", side_effect=RuntimeError("offline")),
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == "img1"
@@ -713,9 +723,10 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container"
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -747,9 +758,10 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(
-                runner, "_ensure_local_image_available"
-            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
+            with (
+                patch.object(runner, "_ensure_local_image_available") as mock_ensure,
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -771,9 +783,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "_ensure_local_image_available"), patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "_ensure_local_image_available"),
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == pinned
@@ -793,7 +808,12 @@ class TestRequirePinnedImageLocalRun:
                             }
                         },
                         "built_models": {
-                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                            "img1": {
+                                "name": "m",
+                                "tags": "t",
+                                "n_gpus": "1",
+                                "args": "",
+                            }
                         },
                         "context": {"require_pinned_image": True},
                     },
@@ -802,8 +822,11 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ),
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 

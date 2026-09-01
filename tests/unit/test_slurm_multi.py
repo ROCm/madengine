@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from madengine.core.errors import ConfigurationError
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
@@ -32,7 +33,6 @@ from madengine.deployment.common import (
     normalize_launcher,
 )
 from madengine.deployment.slurm import SlurmDeployment
-from madengine.core.errors import ConfigurationError
 
 # ---------------------------------------------------------------------------
 # 1. Registry membership
