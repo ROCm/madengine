@@ -593,6 +593,50 @@ class TestRequirePinnedImageLocalRun:
             assert mock_run.call_args[1]["docker_image"] == f"myorg/ci@{DIGEST}"
 
     @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pull_failure_does_not_fall_back_to_local_tag(self, _mock_csv):
+        """A failed pinned pull must fail the model, not silently run a local tag.
+
+        The local tag is mutable, so the tag-fallback would defeat the flag in
+        exactly the case it matters most (digest/tag mismatch, auth errors).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+            ), patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require_pinned_image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_pull_failure_still_falls_back_when_not_enforcing(self, _mock_csv):
+        """Default behaviour is unchanged: a failed pull falls back to the local tag."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("offline")
+            ), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == "img1"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
     def test_enabled_without_digest_fails_before_pulling(self, _mock_csv):
         with tempfile.TemporaryDirectory() as tmpdir:
             manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})

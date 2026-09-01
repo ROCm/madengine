@@ -2880,6 +2880,14 @@ class ContainerRunner:
                         # Update docker_image to use registry image
                         run_image = pull_target
                     except Exception as pull_error:
+                        if (self.additional_context or {}).get("require_pinned_image"):
+                            # The local tag is mutable too, so falling back to it
+                            # would break the very guarantee the flag exists for.
+                            raise RuntimeError(
+                                f"require_pinned_image: failed to pull "
+                                f"{pull_target} for model "
+                                f"{model_info.get('name', image_name)}: {pull_error}"
+                            ) from pull_error
                         self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name
                 else:

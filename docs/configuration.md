@@ -144,6 +144,7 @@ madengine run --manifest-file build_manifest.json \
 | Manifest has no `image_digest` | Pull by tag | **Fails immediately**, no tag fallback |
 | Image reference is already `repo@sha256:...` | Used as-is | Used as-is (already pinned) |
 | Tag moved since the build | Silently runs the newer image | Registry rejects the pull (`manifest unknown`) |
+| Registry pull fails | Falls back to the local tag | **Fails that model**, no local-tag fallback |
 
 Applies to all three execution paths: local Docker, Kubernetes (the pod spec
 `image` field), and SLURM. On SLURM the setting is written into the manifest's
