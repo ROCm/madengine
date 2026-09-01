@@ -69,9 +69,11 @@ Changelog = "https://github.com/ROCm/madengine/blob/develop/CHANGELOG.md"
 
 [tool.hatch.build]
 # scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
+# presets/**/*.json are excluded by the blanket *.json gitignore rule (for user models.json etc).
 # artifacts bypasses VCS exclusion without risk of duplicate-file errors from force-include.
 artifacts = [
   "src/madengine/scripts/**",
+  "src/madengine/deployment/presets/**/*.json",
 ]
 
 [tool.hatch.version]
