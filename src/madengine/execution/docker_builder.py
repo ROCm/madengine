@@ -90,12 +90,13 @@ class DockerBuilder:
             return ""
 
         build_args = ""
-        for build_arg in self.context.ctx["docker_build_arg"].keys():
+        context_build_arg = self.context.ctx.get("docker_build_arg", {})
+        for build_arg in context_build_arg.keys():
             build_args += (
                 "--build-arg "
                 + shlex.quote(str(build_arg))
                 + "="
-                + shlex.quote(str(self.context.ctx["docker_build_arg"][build_arg]))
+                + shlex.quote(str(context_build_arg[build_arg]))
                 + " "
             )
 
@@ -243,6 +244,23 @@ class DockerBuilder:
         # Add additional build args if provided (for multi-architecture builds)
         if additional_build_args:
             run_build_arg.update(additional_build_args)
+
+        # Per-model build args declared in the model card (models.json). Lets a model
+        # pin build-time sources (e.g. VLLM_REPO/VLLM_REF) in-repo instead of requiring
+        # every caller to pass --additional-context. Context and multi-arch/cred args
+        # win on conflict, matching _pick_context_over_model() for run-time keys.
+        card_build_arg = model_info.get("docker_build_arg") or {}
+        if not isinstance(card_build_arg, dict):
+            raise RuntimeError(
+                f"docker_build_arg for model {model_info['name']} must be a JSON object "
+                f"mapping build-arg names to values, got {type(card_build_arg).__name__}"
+            )
+        for card_arg, card_value in card_build_arg.items():
+            if card_arg in self.context.ctx.get("docker_build_arg", {}):
+                continue
+            if card_arg in run_build_arg:
+                continue
+            run_build_arg[card_arg] = card_value
 
         build_args = self.get_build_arg(run_build_arg)
 
