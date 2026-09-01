@@ -120,6 +120,46 @@ madengine run --tags my_unit_test_suite \
 
 Disabling the scan does **not** change performance metric extraction from the log; it only affects the post-hoc grep used to set `has_errors` for status.
 
+## Pinned image digests
+
+Every build records the digest of the image it pushes as `image_digest` on each
+`built_images` entry in `build_manifest.json`. This capture is always on and
+costs nothing: by default the digest is carried along and never used.
+
+Pass `--require-pinned-image` (or set `"require_pinned_image": true` in
+`--additional-context`) to make the run phase pull `repo@sha256:...` instead of
+the tag:
+
+```bash
+madengine run --manifest-file build_manifest.json --require-pinned-image
+
+# Equivalent, for pipelines that drive madengine through additional context
+madengine run --manifest-file build_manifest.json \
+  --additional-context "{'require_pinned_image': True}"
+```
+
+| Behaviour | Flag absent (default) | Flag set |
+|---|---|---|
+| Registry pull | By tag | By digest (`repo@sha256:...`) |
+| Manifest has no `image_digest` | Pull by tag | **Fails immediately**, no tag fallback |
+| Image reference is already `repo@sha256:...` | Used as-is | Used as-is (already pinned) |
+| Tag moved since the build | Silently runs the newer image | Registry rejects the pull (`manifest unknown`) |
+| Registry pull fails | Falls back to the local tag | **Fails that model**, no local-tag fallback |
+
+Applies to all three execution paths: local Docker, Kubernetes (the pod spec
+`image` field), and SLURM. On SLURM the setting is written into the manifest's
+`context` block so the nested `madengine run` on each compute node inherits it.
+
+**Limitations**
+
+- This does not prevent two concurrent builds from racing to push the same
+  mutable tag. It converts the resulting silent wrong-image run into a fast,
+  clear failure. Eliminating the race requires unique tags per build in the
+  calling CI pipeline.
+- Manifests produced by the build-on-compute-node path (SLURM batch builds,
+  which push from inside a generated sbatch script) carry no `image_digest`.
+  Runs against those manifests fail fast when the flag is set.
+
 ## System environment collection (rocEnvTool)
 
 Before each container run, madengine appends `scripts/common/pre_scripts/run_rocenv_tool.sh` to the model's pre-scripts. It captures a CSV snapshot of the container's environment (OS, CPU, GPU, ROCm/CUDA, packages, env vars, NUMA). The output ends up at `<model_name>_env.csv` in the workspace root.
@@ -304,6 +344,26 @@ Pass build-time variables:
   }
 }
 ```
+
+A model can also declare its own `docker_build_arg` in its `models.json` entry, so
+build-time pins live with the model instead of on every command line:
+
+```json
+{
+  "name": "my_model",
+  "dockerfile": "docker/my_model",
+  "tags": ["my_model"],
+  "docker_build_arg": {
+    "VLLM_REPO": "https://github.com/myorg/vllm.git",
+    "VLLM_REF": "d723eb305eb78d1bda0ed357b2b54cc29487221f"
+  }
+}
+```
+
+Each model's args apply only to its own build, so models built in the same
+invocation can pin different values. `--additional-context` overrides the model
+entry for the same key, so an operator can still redirect a build without editing
+`models.json`.
 
 ### Mount Host Directories
 

@@ -16,6 +16,7 @@ from madengine.core.additional_context_defaults import (
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import ConfigurationError
+from madengine.cli.utils import create_args_namespace
 
 
 # ---- image_filtering ----
@@ -160,6 +161,9 @@ class TestRunOrchestratorInit:
         mock_args = MagicMock()
         mock_args.additional_context = None
         mock_args.live_output = True
+        # A bare MagicMock auto-vivifies truthy attributes; pin the flags this
+        # assertion depends on so they cannot leak into additional_context.
+        mock_args.require_pinned_image = False
 
         orchestrator = RunOrchestrator(mock_args)
 
@@ -446,3 +450,61 @@ class TestCreateManifestFromLocalImage:
 
         built_model = next(iter(manifest["built_models"].values()))
         assert built_model["multiple_results"] == ""
+
+
+class TestRequirePinnedImageContext:
+    """--require-pinned-image and require_pinned_image both reach additional_context."""
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_cli_flag_sets_context_key(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_flag_absent_leaves_key_unset(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=False,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert "require_pinned_image" not in orch.additional_context
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_additional_context_key_alone_is_honoured(self, mock_context):
+        args = create_args_namespace(
+            additional_context="{'require_pinned_image': True}",
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_key_is_persisted_into_manifest_context(self, mock_context, tmp_path):
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+                    "built_models": {"img1": {"name": "m"}},
+                    "context": {},
+                    "deployment_config": {},
+                }
+            )
+        )
+
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        orch._load_and_merge_manifest(str(manifest_path))
+
+        written = json.loads(manifest_path.read_text())
+        assert written["context"]["require_pinned_image"] is True

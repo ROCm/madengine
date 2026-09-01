@@ -23,6 +23,7 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
+from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import Timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
@@ -42,6 +43,7 @@ from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
+    container_name_from_image_ref,
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
@@ -1359,10 +1361,10 @@ class ContainerRunner:
         docker_options += self.get_mount_arg(mount_datapaths, excluded_container_targets=excluded_mount_targets)
         docker_options += f" {additional_opts}"
 
-        # Generate container name
-        base_container_name = "container_" + re.sub(
-            ".*:", "", docker_image.replace("/", "_").replace(":", "_")
-        )
+        # Generate container name. docker_image may be digest-pinned
+        # (repo@sha256:...) under require_pinned_image, and "@" is not a legal
+        # container-name character, so this must not use the raw reference.
+        base_container_name = container_name_from_image_ref(docker_image)
         
         # For multi-node SLURM jobs, add node rank to avoid name conflicts
         node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
@@ -2836,7 +2838,21 @@ class ContainerRunner:
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
+
+                    # This branch also covers build-on-compute-node manifests,
+                    # whose docker_image is a registry reference. Enforce here
+                    # too, otherwise those manifests would silently bypass the
+                    # flag by never reaching the registry branch below.
+                    run_image = resolve_pinned_image(
+                        run_image,
+                        build_info.get("image_digest"),
+                        bool(
+                            (self.additional_context or {}).get("require_pinned_image")
+                        ),
+                        model_name=model_info.get("name", ""),
+                    )
+
+
                     # Ensure the local image is available on this node. In a
                     # multi-node SLURM run only the primary may have the
                     # locally-built image; the shared-tar cache
@@ -2849,12 +2865,29 @@ class ContainerRunner:
                     )
                 
                 elif build_info.get("registry_image"):
-                    # Registry image: Pull from registry
+                    # Registry image: Pull from registry. Under
+                    # require_pinned_image this resolves to repo@sha256:... and
+                    # raises (outside the pull try/except, so there is no tag
+                    # fallback) when the manifest recorded no digest.
+                    pull_target = resolve_pinned_image(
+                        build_info["registry_image"],
+                        build_info.get("image_digest"),
+                        bool((self.additional_context or {}).get("require_pinned_image")),
+                        model_name=model_info.get("name", ""),
+                    )
                     try:
-                        self.pull_image(build_info["registry_image"])
+                        self.pull_image(pull_target)
                         # Update docker_image to use registry image
-                        run_image = build_info["registry_image"]
+                        run_image = pull_target
                     except Exception as pull_error:
+                        if (self.additional_context or {}).get("require_pinned_image"):
+                            # The local tag is mutable too, so falling back to it
+                            # would break the very guarantee the flag exists for.
+                            raise RuntimeError(
+                                f"require_pinned_image: failed to pull "
+                                f"{pull_target} for model "
+                                f"{model_info.get('name', image_name)}: {pull_error}"
+                            ) from pull_error
                         self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name
                 else:
