@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -28,6 +29,8 @@ from .common import (
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
+from madengine.core.errors import ConfigurationError
+from madengine.core.image_digest import resolve_pinned_image
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
@@ -77,6 +80,8 @@ class SlurmDeployment(BaseDeployment):
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
         self.reservation = self.slurm_config.get("reservation", None)
+        # Some clusters expose no GPU GRES, so sbatch rejects --gpus-per-node.
+        self.skip_gpus_directive = self.slurm_config.get("skip_gpus_directive", False)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -226,6 +231,22 @@ class SlurmDeployment(BaseDeployment):
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
 
+    @staticmethod
+    def _submission_bin_dir() -> Optional[str]:
+        """
+        Directory the madengine console script was resolved from at submission time.
+
+        A batch job is not guaranteed to inherit the submitter's PATH: a site can
+        default sbatch to --export=NONE, and `module load` can rewrite PATH before
+        the job body runs. Passing the directory into the job script lets it put
+        the same madengine back on PATH instead of relying on inheritance.
+
+        Returns:
+            Optional[str]: absolute directory, or None if madengine is not on PATH
+        """
+        cli_path = shutil.which("madengine")
+        return str(Path(cli_path).resolve().parent) if cli_path else None
+
     def _validate_cli_availability(self) -> bool:
         """
         Validate madengine is available before job submission.
@@ -241,7 +262,9 @@ class SlurmDeployment(BaseDeployment):
                 ["madengine", "--version"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # A cold import off shared/NFS storage can take far longer than a
+                # local one, so this only guards against a hung interpreter.
+                timeout=600,
                 check=False
             )
             if result.returncode == 0:
@@ -315,6 +338,11 @@ class SlurmDeployment(BaseDeployment):
                     return self._prepare_slurm_multi_script(
                         model_info_peek, docker_image_name=model_keys_peek[0]
                     )
+        except ConfigurationError:
+            # Enforcement failures (e.g. --require-pinned-image with no recorded
+            # digest) are deliberate aborts, not peek errors. Falling through to
+            # the standard path here would silently generate an unpinned script.
+            raise
         except Exception:
             # Fall through to develop's standard flow on any peek error
             pass
@@ -432,7 +460,29 @@ class SlurmDeployment(BaseDeployment):
             built_image = model_info["image"]
             self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
             env_vars["DOCKER_IMAGE_NAME"] = built_image
-        
+
+        # Under require_pinned_image, pin DOCKER_IMAGE_NAME to the digest recorded
+        # at build time. slurm_multi runs the model's own script (no nested
+        # `madengine run` on the compute nodes), so enforcement has to happen here.
+        # Pinning the variable covers both the parallel `srun docker pull` below,
+        # which interpolates it, and the `docker run` inside the model script.
+        require_pinned = bool(
+            self.config.additional_context.get("require_pinned_image")
+        )
+        if require_pinned and env_vars.get("DOCKER_IMAGE_NAME"):
+            image_entry = (self.manifest.get("built_images") or {}).get(
+                docker_image_name, {}
+            )
+            env_vars["DOCKER_IMAGE_NAME"] = resolve_pinned_image(
+                env_vars["DOCKER_IMAGE_NAME"],
+                image_entry.get("image_digest"),
+                True,
+                model_name=model_info.get("name", ""),
+            )
+            self.console.print(
+                f"[cyan]Pinned Docker image: {env_vars['DOCKER_IMAGE_NAME']}[/cyan]"
+            )
+
         # Get model args. The wrapper script below is executed by bash, so the
         # script name and free-form args string must be shell-quoted to prevent
         # embedded metacharacters ($(), backticks, ;, etc.) from being evaluated
@@ -456,7 +506,10 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.nodes}",
-            f"#SBATCH --gpus-per-node={self.gpus_per_node}",
+        ]
+        if not self.skip_gpus_directive:
+            script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
+        script_lines += [
             f"#SBATCH --time={self.time_limit}",
         ]
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
@@ -669,6 +722,7 @@ class SlurmDeployment(BaseDeployment):
             "partition": self.partition,
             "nodes": self.nodes,
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
+            "skip_gpus_directive": self.skip_gpus_directive,
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": master_port,
@@ -682,6 +736,7 @@ class SlurmDeployment(BaseDeployment):
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
+            "submission_bin_dir": self._submission_bin_dir(),
             "env_vars": self.config.additional_context.get("env_vars", {}),
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
