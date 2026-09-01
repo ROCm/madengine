@@ -84,6 +84,11 @@ madengine run --tags my_llm_d_benchmark --additional-context '{
 `model.name` is required in both modes: it is the model string sent in inference
 requests and the value recorded in `perf.csv`.
 
+The examples on this page use `Qwen/Qwen3-32B`, `deepseek-ai/DeepSeek-R1-0528` and
+`meta-llama/Llama-3.1-8B-Instruct` — repos MAD already tracks for standalone vLLM
+benchmarking (`scripts/vllm/models.json`). llm-d benchmarks the same repos, served
+through an external gateway instead of inside the benchmark container.
+
 ## Quick start — managed mode
 
 ```bash

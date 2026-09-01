@@ -1,5 +1,5 @@
 {
-  "_comment": "Managed mode, prefill/decode disaggregated on MI300X: 2 prefill pods and 1 decode pod, 8 GPUs and TP=8 each. madengine stands the stack up, benchmarks it, and tears it back down.",
+  "_comment": "Managed mode, prefill/decode disaggregated on MI300X: 2 prefill pods and 1 decode pod, 8 GPUs and TP=8 each. DeepSeek-R1-0528 is the same repo MAD's pyt_vllm_deepseek-r1 model benchmarks standalone; here it is served through llm-d instead, which is where disaggregation actually pays off for a model this size. madengine stands the stack up, benchmarks it, and tears it back down.",
   "k8s": {
     "namespace": "llm-d-bench",
     "gpu_count": 0,
@@ -7,9 +7,10 @@
   },
   "llm_d": {
     "model": {
-      "uri": "hf://Qwen/Qwen3-32B",
-      "name": "Qwen3-32B",
-      "hf_token_secret": "hf-token"
+      "uri": "hf://deepseek-ai/DeepSeek-R1-0528",
+      "name": "DeepSeek-R1-0528",
+      "hf_token_secret": "hf-token",
+      "size": "1500Gi"
     },
     "gateway": "agentgateway",
     "prefill": { "replicas": 2, "tensor_parallel": 8, "gpu_count": 8 },

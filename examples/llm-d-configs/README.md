@@ -4,12 +4,18 @@ Ready-to-use `--additional-context` configs for benchmarking
 [llm-d](https://github.com/llm-d/llm-d). See [docs/llm-d.md](../../docs/llm-d.md) for
 the full reference.
 
-| File | Mode | What it shows |
-|---|---|---|
-| [01-attach-existing-stack.json](01-attach-existing-stack.json) | attach | Benchmark a stack you already run. Installs nothing, tears nothing down. |
-| [02-managed-dry-run.json](02-managed-dry-run.json) | managed (dry run) | Render values + `helm template`, install nothing. **Start here** before a real managed run. |
-| [03-managed-disaggregated.json](03-managed-disaggregated.json) | managed | Prefill/decode disaggregation on MI300X, TP=8. |
-| [04-managed-aggregated-keep-stack.json](04-managed-aggregated-keep-stack.json) | managed | Aggregated serving (`prefill.replicas: 0`), `teardown: false`, `extra_values`. |
+| File | Mode | What it shows | Model repo |
+|---|---|---|---|
+| [01-attach-existing-stack.json](01-attach-existing-stack.json) | attach | Benchmark a stack you already run. Installs nothing, tears nothing down. | `Qwen/Qwen3-32B` |
+| [02-managed-dry-run.json](02-managed-dry-run.json) | managed (dry run) | Render values + `helm template`, install nothing. **Start here** before a real managed run. | `Qwen/Qwen3-32B` |
+| [03-managed-disaggregated.json](03-managed-disaggregated.json) | managed | Prefill/decode disaggregation on MI300X, TP=8. | `deepseek-ai/DeepSeek-R1-0528` |
+| [04-managed-aggregated-keep-stack.json](04-managed-aggregated-keep-stack.json) | managed | Aggregated serving (`prefill.replicas: 0`), `teardown: false`, `extra_values`. | `meta-llama/Llama-3.1-8B-Instruct` |
+
+Each model repo above is one MAD already tracks for standalone vLLM benchmarking
+(`scripts/vllm/models.json` — `pyt_vllm_qwen3-32b`, `pyt_vllm_deepseek-r1`,
+`pyt_vllm_llama-3.1-8b`). Those models run vLLM serve-and-benchmark inside a single
+container; these configs benchmark the *same* repos served instead through an
+external llm-d gateway, with disaggregated prefill/decode where it matters.
 
 ## Usage
 
