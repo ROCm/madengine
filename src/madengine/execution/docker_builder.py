@@ -398,7 +398,8 @@ class DockerBuilder:
             self.rich_console.print(f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]")
             print(f"📤 Registry: {registry}")
             print(f"🏷️  Image: {registry_image}")
-            push_output = self.console.sh(push_command)
+            # No timeout: pushing multi-GB images routinely exceeds the 60s default.
+            push_output = self.console.sh(push_command, timeout=None)
 
             self._record_pushed_digest(registry_image, push_output)
 

@@ -74,6 +74,23 @@ class TestPushImageRecordsDigest:
         assert result == "localhost:5000/ci-dummy"
         assert builder.pushed_digests["localhost:5000/ci-dummy"] == DIGEST
 
+    def test_push_runs_without_a_timeout(self):
+        """Multi-GB pushes routinely exceed Console.sh's 60s default."""
+
+        def sh(command, *args, **kwargs):
+            if "docker push" in command:
+                return f"mymodel: digest: {DIGEST} size: 4738"
+            return ""
+
+        builder = self._builder(sh)
+        builder.push_image("ci-dummy", "localhost:5000", None, "localhost:5000/ci-dummy")
+
+        push_calls = [
+            c for c in builder.console.sh.call_args_list if "docker push" in c.args[0]
+        ]
+        assert len(push_calls) == 1
+        assert push_calls[0].kwargs.get("timeout") is None
+
     def test_falls_back_to_image_inspect_when_push_output_has_no_digest(self):
         def sh(command, *args, **kwargs):
             if "docker push" in command:
