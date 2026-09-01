@@ -11,15 +11,16 @@ Usage:
   torchrun --standalone --nproc_per_node=8 run_torchrun_multi.py
 """
 
+import csv
 import os
+import socket
 import sys
 import time
-import socket
-import csv
+
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Configuration

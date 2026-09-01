@@ -11,6 +11,7 @@ from symlinks, binaries, or Python packages; those are handled elsewhere.
 * ``<root>/share/therock/therock_manifest.json``
 * ``<root>/share/therock/dist_info.json``
 """
+
 from __future__ import annotations
 
 from pathlib import Path

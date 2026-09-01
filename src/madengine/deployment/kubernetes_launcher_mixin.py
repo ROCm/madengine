@@ -28,28 +28,28 @@ class KubernetesLauncherMixin:
     ) -> str:
         """
         Generate torchrun launcher command for K8s Indexed Jobs.
-        
+
         For single-node (nnodes=1), generates standalone torchrun command.
         For multi-node (nnodes>1), generates distributed torchrun with headless
         service DNS for coordination.
-        
+
         Uses K8s environment variables for distributed coordination:
         - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
         - Headless service DNS for MASTER_ADDR
-        
+
         CRITICAL FIX: For bash scripts that use ${BASH_SOURCE[0]}, we cd into the
         script directory first so relative paths resolve correctly. This fixes the
         issue where profiling tool wrappers prevent BASH_SOURCE from resolving.
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
-        
+
         Returns:
             Complete torchrun command string
-        
+
         Raises:
             ValueError: If any parameter is invalid
         """
@@ -57,15 +57,19 @@ class KubernetesLauncherMixin:
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
+
         # Check if model_script is a bash script
         # If so, execute it directly as it handles torchrun internally
-        if model_script.endswith('.sh'):
+        if model_script.endswith(".sh"):
             # For bash scripts, set environment variables and execute script
             # The script itself will invoke torchrun with the appropriate Python file
             # CRITICAL: cd to script directory first so BASH_SOURCE[0] resolves correctly
@@ -82,7 +86,7 @@ export MASTER_PORT={master_port}
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
 cd {script_dir} && bash {script_name}"""
-        
+
         # For Python scripts, invoke torchrun directly
         # For single-node, simpler standalone command
         if nnodes == 1:
@@ -91,7 +95,7 @@ cd {script_dir} && bash {script_name}"""
     --nnodes=1 \\
     --nproc_per_node={nproc_per_node} \\
     {model_script}"""
-        
+
         # Multi-node: Use headless service DNS and JOB_COMPLETION_INDEX
         return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
 export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
@@ -118,32 +122,32 @@ torchrun \\
     --role=worker \\
     --tee=3 \\
     {model_script}"""
-    
+
     def _generate_deepspeed_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
         """
         Generate DeepSpeed launcher command for K8s Indexed Jobs.
-        
+
         DeepSpeed has its own launcher that handles:
         - ZeRO optimization stages (ZeRO-1, ZeRO-2, ZeRO-3)
         - Gradient accumulation
         - Mixed precision training
         - Pipeline parallelism
         - Hostfile management (handled by K8s in our case)
-        
+
         For single-node (nnodes=1), uses localhost setup.
         For multi-node (nnodes>1), uses headless service DNS for coordination.
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
-        
+
         Returns:
             Complete DeepSpeed launcher command string
-        
+
         Raises:
             ValueError: If any parameter is invalid
         """
@@ -151,12 +155,16 @@ torchrun \\
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
+
         # For single-node
         if nnodes == 1:
             return f"""# DeepSpeed Single-Node Setup
@@ -176,7 +184,7 @@ echo "  NUM_GPUS: {nproc_per_node}"
 deepspeed --num_gpus={nproc_per_node} \\
     --master_port={master_port} \\
     {model_script}"""
-        
+
         # Multi-node: Use K8s headless service for coordination
         return f"""# Multi-node DeepSpeed setup (Kubernetes Indexed Job)
 export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
@@ -217,25 +225,25 @@ deepspeed --hostfile=/tmp/hostfile \\
     --num_nodes={nnodes} \\
     --num_gpus={nproc_per_node} \\
     {model_script}"""
-    
+
     def _generate_bash_script_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
         """
         Generate command to execute a bash script directly.
-        
+
         This is used when the model script is a .sh file that handles
         launcher invocation internally (e.g., using torchrun inside the script).
-        
+
         Sets up environment variables for distributed training that the bash
         script can use.
-        
+
         Args:
             nnodes: Number of nodes (pods)
             nproc_per_node: GPUs per node
             master_port: Master communication port
             model_script: Path to the bash script
-        
+
         Returns:
             Command to execute the bash script with environment setup
         """
@@ -262,7 +270,7 @@ echo ""
 
 # Execute the bash script directly
 bash {model_script}"""
-        
+
         # Multi-node: Use K8s headless service for coordination
         return f"""# Bash Script Execution (Multi-Node)
 # Setting up environment for script to use
@@ -286,47 +294,47 @@ echo ""
 
 # Execute the bash script directly
 bash {model_script}"""
-    
+
     def _generate_torchtitan_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
         """
         Generate TorchTitan launcher command for K8s Indexed Jobs.
-        
+
         TorchTitan is a PyTorch native platform for large-scale LLM pre-training
         that supports multi-dimensional parallelism:
         - FSDP2 (Fully Sharded Data Parallel v2)
         - Tensor Parallel (TP)
         - Pipeline Parallel (PP)
         - Context Parallel (CP)
-        
+
         TorchTitan uses torchrun as its underlying distributed launcher but
         requires additional configuration for its parallelism strategies.
-        
+
         For single-node (nnodes=1): Uses standalone torchrun with TP
         For multi-node (nnodes>1): Uses distributed torchrun with TP+PP+FSDP2
-        
+
         Uses K8s environment variables for distributed coordination:
         - JOB_COMPLETION_INDEX: Pod index (0, 1, 2, ...)
         - Headless service DNS for MASTER_ADDR
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
-        
+
         Returns:
             Complete torchtitan launch command string with environment setup
-        
+
         Raises:
             ValueError: If any parameter is invalid
-        
+
         Example single-node output:
             export TORCHTITAN_TENSOR_PARALLEL_SIZE=8
             export TORCHTITAN_PIPELINE_PARALLEL_SIZE=1
             torchrun --standalone --nproc_per_node=8 train.py --config llama3_8b.toml
-        
+
         Example multi-node output:
             export MASTER_ADDR="job-0.job.namespace.svc.cluster.local"
             export TORCHTITAN_TENSOR_PARALLEL_SIZE=8
@@ -338,12 +346,16 @@ bash {model_script}"""
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
+
         # For single-node, use standalone mode with Tensor Parallelism only
         if nnodes == 1:
             return f"""# TorchTitan single-node setup (Tensor Parallelism)
@@ -362,7 +374,7 @@ torchrun \\
     --nnodes=1 \\
     --nproc_per_node={nproc_per_node} \\
     {model_script}"""
-        
+
         # Multi-node: Use headless service DNS and enable all parallelism strategies
         return f"""# TorchTitan multi-node setup (K8s Indexed Job)
 export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
@@ -399,34 +411,34 @@ torchrun \\
     --role=worker \\
     --tee=3 \\
     {model_script}"""
-    
+
     def _generate_sglang_disagg_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
     ) -> str:
         """
         Generate SGLang Disaggregated launcher command for K8s Indexed Jobs.
-        
+
         SGLang Disaggregated uses separate node pools for:
         - Proxy (index 0): Load balancer and request router
         - Prefill (indices 1 to xP): Prompt processing
         - Decode (indices xP+1 to end): Token generation
-        
+
         Communication via Mooncake framework for efficient KV cache transfer.
-        
+
         Architecture:
         - Pod 0: Runs mini_lb (proxy/load balancer)
         - Pods 1-xP: Run prefill servers
         - Pods xP+1 to N-1: Run decode servers
-        
+
         Args:
             nnodes: Total number of pods (must be >= 3)
             nproc_per_node: GPUs per pod
             master_port: Port for proxy service
             model_script: Path to model launch script
-            
+
         Returns:
             Complete disaggregated launch setup
-            
+
         Raises:
             ValueError: If nnodes < 3 or invalid parameters
         """
@@ -439,12 +451,14 @@ torchrun \\
             raise ValueError(f"nproc_per_node must be >= 1, got {nproc_per_node}")
         if not model_script or not isinstance(model_script, str):
             raise ValueError(f"model_script must be non-empty string")
-        
+
         # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        sglang_disagg_config = self.config.additional_context.get(
+            "distributed", {}
+        ).get("sglang_disagg", {})
         prefill_nodes = sglang_disagg_config.get("prefill_nodes")
         decode_nodes = sglang_disagg_config.get("decode_nodes")
-        
+
         if prefill_nodes is not None and decode_nodes is not None:
             # User specified custom split - validate
             if prefill_nodes < 1 or decode_nodes < 1:
@@ -464,18 +478,22 @@ torchrun \\
             # Default automatic split (can be customized via additional_context)
             xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% prefill
             yD = nnodes - 1 - xP  # remaining decode
-        
+
         # Build prefill and decode server lists
-        prefill_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
-            for i in range(1, xP + 1)
-        ])
-        
-        decode_servers = " ".join([
-            f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
-            for i in range(xP + 1, nnodes)
-        ])
-        
+        prefill_servers = " ".join(
+            [
+                f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
+                for i in range(1, xP + 1)
+            ]
+        )
+
+        decode_servers = " ".join(
+            [
+                f"http://{self.job_name}-{i}.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local:30000"
+                for i in range(xP + 1, nnodes)
+            ]
+        )
+
         return f"""# SGLang Disaggregated K8s Setup
 # ============================================
 # Cluster: {nnodes} pods total
@@ -544,7 +562,7 @@ fi
 
 echo "SGLang Disaggregated setup complete"
 """
-    
+
     def _generate_vllm_command(
         self,
         nnodes: int,
@@ -555,32 +573,32 @@ echo "SGLang Disaggregated setup complete"
     ) -> str:
         """
         Generate vLLM launcher command for K8s Indexed Jobs.
-        
+
         vLLM is an inference engine with its own process management via Ray.
         Unlike training frameworks, vLLM doesn't use torchrun.
-        
+
         Architecture:
         - Single-node: Tensor Parallelism (TP) across GPUs, no Ray needed
         - Multi-node: Data Parallelism where each node runs independent vLLM replica
           * Each replica uses TP across its local GPUs
           * Ray coordinates resources on each node independently
           * Benefits: Simpler, more robust, better for inference serving
-        
+
         For K8s multi-node:
         - Each pod runs its own independent vLLM instance
         - Uses Ray for local GPU coordination
         - NO shared Ray cluster across pods (Data Parallelism mode)
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port (for Ray). Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
             model_args: CLI args for the script (e.g. --model_repo openai/gpt-oss-20b).
-        
+
         Returns:
             Complete vLLM launch setup with environment configuration
-        
+
         Raises:
             ValueError: If any parameter is invalid
         """
@@ -588,17 +606,23 @@ echo "SGLang Disaggregated setup complete"
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
 
         # Run script from its directory so relative paths (run_vllm.py, configs/) resolve
         script_dir = str(Path(model_script).parent)
         script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
-        
+        run_cmd = (
+            f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        )
+
         # For single-node, simple TP setup (no Ray needed)
         if nnodes == 1:
             return f"""# vLLM single-node setup (Tensor Parallelism)
@@ -617,7 +641,7 @@ echo "  Total GPUs: {nproc_per_node}"
 
 # vLLM handles process management - run script from its directory so run_vllm.py/configs resolve
 {run_cmd}"""
-        
+
         # Multi-node: Data Parallelism with independent Ray clusters per pod
         return f"""# vLLM multi-node setup (K8s Data Parallelism Mode)
 export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
@@ -677,31 +701,31 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
     ) -> str:
         """
         Generate SGLang launcher command for K8s Indexed Jobs.
-        
+
         SGLang is an inference engine with native launcher (sglang.launch_server).
         Similar to vLLM, it manages its own process spawning via Ray.
-        
+
         Architecture:
         - Single-node: Tensor Parallelism (TP) across GPUs
         - Multi-node: Uses SGLang's native multi-node launcher with Ray
           * TP across GPUs within each node
           * Ray for distributed coordination
-        
+
         For K8s:
         - Uses headless service for node discovery (similar to torchrun)
         - Each pod knows its rank via JOB_COMPLETION_INDEX
         - SGLang native launcher handles Ray cluster setup
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port (for NCCL/Ray). Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
             model_args: CLI args for the script (e.g. --model_repo ...).
-        
+
         Returns:
             Complete SGLang launch setup with environment configuration
-        
+
         Raises:
             ValueError: If any parameter is invalid
         """
@@ -709,16 +733,22 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
 
         # Run script from its directory so relative paths resolve; pass model args
         script_dir = str(Path(model_script).parent)
         script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = (
+            f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        )
 
         # For single-node, simple TP setup
         if nnodes == 1:
@@ -781,30 +811,30 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
     ) -> str:
         """
         Generate Megatron-LM launcher command for K8s Indexed Jobs.
-        
+
         Megatron-LM is a training framework for large transformers with tensor and pipeline parallelism.
         It uses torchrun as the underlying launcher but with Megatron-specific environment variables.
-        
+
         Architecture:
         - Single-node: Tensor Parallelism (TP) across GPUs
         - Multi-node: Tensor + Pipeline Parallelism
           * TP across GPUs within each node
           * PP across nodes
-        
+
         For K8s:
         - Uses headless service for node discovery (like torchrun/deepspeed)
         - Each pod knows its rank via JOB_COMPLETION_INDEX
         - Sets TENSOR_MODEL_PARALLEL_SIZE and PIPELINE_MODEL_PARALLEL_SIZE (Megatron-Core standard)
-        
+
         Args:
             nnodes: Number of nodes (pods). Must be >= 1.
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port (for NCCL). Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
-        
+
         Returns:
             Complete Megatron-LM launch setup with environment configuration
-        
+
         Raises:
             ValueError: If any parameter is invalid
         """
@@ -812,12 +842,16 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
         if not isinstance(nnodes, int) or nnodes < 1:
             raise ValueError(f"nnodes must be integer >= 1, got {nnodes}")
         if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-            raise ValueError(f"nproc_per_node must be integer >= 1, got {nproc_per_node}")
+            raise ValueError(
+                f"nproc_per_node must be integer >= 1, got {nproc_per_node}"
+            )
         if not isinstance(master_port, int) or not (1 <= master_port <= 65535):
             raise ValueError(f"master_port must be 1-65535, got {master_port}")
         if not model_script or not isinstance(model_script, str):
-            raise ValueError(f"model_script must be non-empty string, got {model_script}")
-        
+            raise ValueError(
+                f"model_script must be non-empty string, got {model_script}"
+            )
+
         # For single-node, use TP only
         if nnodes == 1:
             return f"""# Megatron-LM single-node setup (Tensor Parallelism)
@@ -840,7 +874,7 @@ torchrun \\
     --standalone \\
     --nproc_per_node={nproc_per_node} \\
     {model_script}"""
-        
+
         # Multi-node: TP + PP
         else:
             # Use headless service for node discovery (set by template)
@@ -913,7 +947,9 @@ torchrun \\
             manifest if isinstance(manifest, dict) else None,
             self.config.additional_context,
         )
-        config_path = primus_cfg.get("config_path", "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml")
+        config_path = primus_cfg.get(
+            "config_path", "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml"
+        )
         cli_extra = primus_cfg.get("cli_extra", "")
         config_path_quoted = config_path.replace('"', '\\"')
         lines = [
@@ -945,9 +981,7 @@ torchrun \\
                 ]
             )
         else:
-            master_dns = (
-                f"{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
-            )
+            master_dns = f"{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
             lines.extend(
                 [
                     "# Multi-node: Indexed Job + headless Service (pod-0 DNS as master)",
@@ -969,4 +1003,3 @@ torchrun \\
             lines.append(f"cd {script_dir} && bash {script_name}")
 
         return "\n".join(lines)
-

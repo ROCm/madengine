@@ -16,9 +16,10 @@ Reference: https://github.com/ROCm/Megatron-LM
 """
 
 import os
+import socket
 import sys
 import time
-import socket
+
 import torch
 import torch.nn as nn
 
@@ -26,11 +27,11 @@ import torch.nn as nn
 try:
     from megatron.core import mpu, tensor_parallel
     from megatron.core.parallel_state import (
-        initialize_model_parallel,
         destroy_model_parallel,
-        get_tensor_model_parallel_world_size,
-        get_pipeline_model_parallel_world_size,
         get_data_parallel_world_size,
+        get_pipeline_model_parallel_world_size,
+        get_tensor_model_parallel_world_size,
+        initialize_model_parallel,
     )
     MEGATRON_AVAILABLE = True
 except ImportError:

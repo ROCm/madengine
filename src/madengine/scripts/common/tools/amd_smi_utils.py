@@ -6,16 +6,15 @@ This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+import logging
 import os
 import sys
-import logging
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 _ROCM_PATH = os.environ.get("ROCM_PATH", "/opt/rocm")
 sys.path.append(f"{_ROCM_PATH}/libexec/amdsmi_cli/")
 try:
-    from amdsmi_init import amdsmi_interface
-    from amdsmi_init import amdsmi_cli_init, amdsmi_cli_shutdown
+    from amdsmi_init import amdsmi_cli_init, amdsmi_cli_shutdown, amdsmi_interface
 except ImportError:
     raise ImportError(f"Could not import {_ROCM_PATH}/libexec/amdsmi_cli/amdsmi_init.py")
 

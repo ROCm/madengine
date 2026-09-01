@@ -6,9 +6,13 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
+from madengine.core.errors import ConfigurationError
+from madengine.deployment import kubernetes as k8s_module
+from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
     sanitize_k8s_label_value,
@@ -19,11 +23,11 @@ from madengine.deployment.k8s_secrets import (
     SECRETS_STRATEGY_EXISTING,
     SECRETS_STRATEGY_FROM_LOCAL,
     SECRETS_STRATEGY_OMIT,
+    build_registry_secret_data,
     estimate_configmap_payload_bytes,
     merge_secrets_config,
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
-    build_registry_secret_data,
 )
 from madengine.deployment.kubernetes import (
     KubernetesDeployment,
@@ -31,8 +35,6 @@ from madengine.deployment.kubernetes import (
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
-from madengine.core.errors import ConfigurationError
-from madengine.deployment.base import DeploymentConfig
 
 
 def test_merge_secrets_config_defaults():
@@ -107,9 +109,7 @@ def test_resolve_runtime_secret_name_existing():
 
 
 def test_resolve_runtime_secret_name_omit_optional():
-    assert (
-        resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
-    )
+    assert resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
 
 
 def test_estimate_skips_credential_when_not_in_configmap():
@@ -128,9 +128,15 @@ def test_estimate_skips_credential_when_not_in_configmap():
 
 def test_pvc_match_exact():
     assigned: set = set()
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod"
+    )
     assigned.add("my-pod")
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod-0-abc"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod-0-abc"
+    )
 
 
 def test_pvc_match_prefix_indexed_job():
@@ -242,6 +248,7 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 
     def _make_mixin(self):
         from unittest.mock import MagicMock
+
         from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
 
         mixin = KubernetesScriptsMixin()
@@ -292,7 +299,19 @@ class TestK8sRequirePinnedImage:
         _prepare_template_context reads the manifest and the model's scripts
         directory from the current working directory, so the test runs inside
         tmp_path with a minimal model tree.
+
+        KubernetesDeployment.__init__ loads a kubeconfig and builds API
+        clients; neither exists on a CI runner, so both are stubbed out.
         """
+        monkeypatch.setattr(
+            k8s_module.k8s_config, "load_incluster_config", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            k8s_module.k8s_config, "load_kube_config", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(k8s_module.client, "BatchV1Api", MagicMock())
+        monkeypatch.setattr(k8s_module.client, "CoreV1Api", MagicMock())
+
         monkeypatch.chdir(tmp_path)
         (tmp_path / "scripts" / "dummy").mkdir(parents=True)
         (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")

@@ -45,7 +45,9 @@ class KubernetesScriptsMixin:
             guest_os: UBUNTU / CENTOS (madengine additional_context); defaults to UBUNTU
         """
         if rocenv_mode not in ("lite", "full"):
-            self.console.print(f"[yellow]Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: Unknown rocenv_mode '{rocenv_mode}', defaulting to 'lite'[/yellow]"
+            )
             rocenv_mode = "lite"
         go = (guest_os or DEFAULT_GUEST_OS).strip().upper() or DEFAULT_GUEST_OS
         output_name = model_name.replace("/", "_") + "_env"
@@ -54,9 +56,13 @@ class KubernetesScriptsMixin:
             "args": f"{output_name} {rocenv_mode} {go}",
         }
         pre_scripts.append(pre_env_details)
-        self.console.print(f"[dim]Added rocEnvTool (mode={rocenv_mode}) to pre-scripts with args: {pre_env_details['args']}[/dim]")
+        self.console.print(
+            f"[dim]Added rocEnvTool (mode={rocenv_mode}) to pre-scripts with args: {pre_env_details['args']}[/dim]"
+        )
 
-    def _add_tool_scripts(self, pre_scripts: List[Dict], post_scripts: List[Dict]) -> None:
+    def _add_tool_scripts(
+        self, pre_scripts: List[Dict], post_scripts: List[Dict]
+    ) -> None:
         """
         Add tool pre/post scripts to execution lists (similar to local execution).
 
@@ -123,27 +129,41 @@ class KubernetesScriptsMixin:
                     rocenv_dir = abs_script_path.parent / "rocEnvTool"
                     if rocenv_dir.exists() and rocenv_dir.is_dir():
                         for py_file in rocenv_dir.glob("*.py"):
-                            rel_path = f"scripts/common/pre_scripts/rocEnvTool/{py_file.name}"
+                            rel_path = (
+                                f"scripts/common/pre_scripts/rocEnvTool/{py_file.name}"
+                            )
                             with open(py_file, "r") as f:
                                 script_contents[rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
+                            self.console.print(
+                                f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]"
+                            )
 
                         for json_file in rocenv_dir.glob("*.json"):
                             rel_path = f"scripts/common/pre_scripts/rocEnvTool/{json_file.name}"
                             with open(json_file, "r") as f:
                                 script_contents[rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]")
+                            self.console.print(
+                                f"[dim]Loaded rocEnvTool file: {rel_path}[/dim]"
+                            )
             else:
-                self.console.print(f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Script not found: {script_path} (at {abs_script_path})[/yellow]"
+                )
 
         tools_config = self._get_tools_config()
         if tools_config:
-            self._load_tool_wrapper_scripts(script_contents, tools_config, madengine_root)
+            self._load_tool_wrapper_scripts(
+                script_contents, tools_config, madengine_root
+            )
 
         return script_contents
 
-    def _load_tool_wrapper_scripts(self, script_contents: Dict[str, str],
-                                   tools_config: List[Dict], madengine_root: Path) -> None:
+    def _load_tool_wrapper_scripts(
+        self,
+        script_contents: Dict[str, str],
+        tools_config: List[Dict],
+        madengine_root: Path,
+    ) -> None:
         """
         Load tool wrapper scripts and tools.json for K8s ConfigMap.
 
@@ -158,10 +178,14 @@ class KubernetesScriptsMixin:
         if tools_json_path.exists():
             with open(tools_json_path, "r") as f:
                 tools_definitions = json.load(f)
-                script_contents["scripts/common/tools.json"] = json.dumps(tools_definitions, indent=2)
+                script_contents["scripts/common/tools.json"] = json.dumps(
+                    tools_definitions, indent=2
+                )
             self.console.print(f"[dim]Loaded tools.json[/dim]")
         else:
-            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]"
+            )
             return
 
         for tool in tools_config:
@@ -170,7 +194,9 @@ class KubernetesScriptsMixin:
                 continue
 
             if tool_name not in tools_definitions.get("tools", {}):
-                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]"
+                )
                 continue
 
             tool_def = tools_definitions["tools"][tool_name]
@@ -187,21 +213,35 @@ class KubernetesScriptsMixin:
                         if abs_script_path.exists() and abs_script_path.is_file():
                             with open(abs_script_path, "r") as f:
                                 script_contents[script_rel_path] = f.read()
-                            self.console.print(f"[dim]Loaded tool script: {script_rel_path}[/dim]")
+                            self.console.print(
+                                f"[dim]Loaded tool script: {script_rel_path}[/dim]"
+                            )
 
-                            if script_rel_path.endswith('.py'):
+                            if script_rel_path.endswith(".py"):
                                 tools_dir = abs_script_path.parent
-                                utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                utility_modules = [
+                                    "amd_smi_utils.py",
+                                    "rocm_smi_utils.py",
+                                    "pynvml_utils.py",
+                                ]
                                 for util_file in utility_modules:
                                     util_path = tools_dir / util_file
                                     if util_path.exists():
-                                        util_rel_path = f"scripts/common/tools/{util_file}"
+                                        util_rel_path = (
+                                            f"scripts/common/tools/{util_file}"
+                                        )
                                         if util_rel_path not in script_contents:
                                             with open(util_path, "r") as f:
-                                                script_contents[util_rel_path] = f.read()
-                                            self.console.print(f"[dim]Loaded tool utility module: {util_rel_path}[/dim]")
+                                                script_contents[util_rel_path] = (
+                                                    f.read()
+                                                )
+                                            self.console.print(
+                                                f"[dim]Loaded tool utility module: {util_rel_path}[/dim]"
+                                            )
                         else:
-                            self.console.print(f"[yellow]Warning: Tool script not found: {script_rel_path} (at {abs_script_path})[/yellow]")
+                            self.console.print(
+                                f"[yellow]Warning: Tool script not found: {script_rel_path} (at {abs_script_path})[/yellow]"
+                            )
                         break
 
             for script_config in tool_def.get("pre_scripts", []):
@@ -211,7 +251,9 @@ class KubernetesScriptsMixin:
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_contents[script_path] = f.read()
-                        self.console.print(f"[dim]Loaded tool pre-script: {script_path}[/dim]")
+                        self.console.print(
+                            f"[dim]Loaded tool pre-script: {script_path}[/dim]"
+                        )
 
             for script_config in tool_def.get("post_scripts", []):
                 script_path = script_config.get("path", "")
@@ -220,7 +262,9 @@ class KubernetesScriptsMixin:
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_contents[script_path] = f.read()
-                        self.console.print(f"[dim]Loaded tool post-script: {script_path}[/dim]")
+                        self.console.print(
+                            f"[dim]Loaded tool post-script: {script_path}[/dim]"
+                        )
 
             for script_config in tool_def.get("pre_scripts", []):
                 script_path = script_config.get("path", "")
@@ -229,27 +273,47 @@ class KubernetesScriptsMixin:
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_content = f.read()
-                            tool_refs = re.findall(r'(?:\.\./)?scripts/common/tools/[\w_]+\.py', script_content)
+                            tool_refs = re.findall(
+                                r"(?:\.\./)?scripts/common/tools/[\w_]+\.py",
+                                script_content,
+                            )
                             for tool_ref in tool_refs:
-                                tool_script_path = tool_ref.strip('"\'').replace("../", "")
+                                tool_script_path = tool_ref.strip("\"'").replace(
+                                    "../", ""
+                                )
                                 abs_tool_path = madengine_root / tool_script_path
 
-                                if abs_tool_path.exists() and tool_script_path not in script_contents:
+                                if (
+                                    abs_tool_path.exists()
+                                    and tool_script_path not in script_contents
+                                ):
                                     with open(abs_tool_path, "r") as tf:
                                         script_contents[tool_script_path] = tf.read()
-                                    self.console.print(f"[dim]Loaded tool dependency: {tool_script_path}[/dim]")
+                                    self.console.print(
+                                        f"[dim]Loaded tool dependency: {tool_script_path}[/dim]"
+                                    )
 
-                                    if tool_script_path.endswith('.py'):
+                                    if tool_script_path.endswith(".py"):
                                         tools_dir = abs_tool_path.parent
-                                        utility_modules = ['amd_smi_utils.py', 'rocm_smi_utils.py', 'pynvml_utils.py']
+                                        utility_modules = [
+                                            "amd_smi_utils.py",
+                                            "rocm_smi_utils.py",
+                                            "pynvml_utils.py",
+                                        ]
                                         for util_file in utility_modules:
                                             util_path = tools_dir / util_file
                                             if util_path.exists():
-                                                util_rel_path = f"scripts/common/tools/{util_file}"
+                                                util_rel_path = (
+                                                    f"scripts/common/tools/{util_file}"
+                                                )
                                                 if util_rel_path not in script_contents:
                                                     with open(util_path, "r") as uf:
-                                                        script_contents[util_rel_path] = uf.read()
-                                                    self.console.print(f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]")
+                                                        script_contents[
+                                                            util_rel_path
+                                                        ] = uf.read()
+                                                    self.console.print(
+                                                        f"[dim]Loaded utility module (from dependency): {util_rel_path}[/dim]"
+                                                    )
 
     def _bundle_primus_k8s_examples_overlay(
         self, model_scripts_contents: Dict[str, str], model_name: str = ""
@@ -306,7 +370,9 @@ class KubernetesScriptsMixin:
         req = primus_repo / "requirements.txt"
         if req.is_file():
             if _add_primus_file(req):
-                self.console.print("[dim]Primus K8s: bundled Primus/requirements.txt[/dim]")
+                self.console.print(
+                    "[dim]Primus K8s: bundled Primus/requirements.txt[/dim]"
+                )
 
         ex_scripts = primus_repo / "examples" / "scripts"
         if ex_scripts.is_dir():
@@ -323,7 +389,9 @@ class KubernetesScriptsMixin:
         run_pre = primus_repo / "examples" / "run_pretrain.sh"
         if run_pre.is_file():
             if _add_primus_file(run_pre):
-                self.console.print("[dim]Primus K8s: bundled Primus/examples/run_pretrain.sh[/dim]")
+                self.console.print(
+                    "[dim]Primus K8s: bundled Primus/examples/run_pretrain.sh[/dim]"
+                )
 
         for sub in subdirs:
             base = primus_repo / "examples" / sub
@@ -357,8 +425,12 @@ class KubernetesScriptsMixin:
                 with open(k8s_tools_file, "r") as f:
                     return json.load(f)
             except Exception as e:
-                self.console.print(f"[yellow]Warning: Failed to load K8s tools config: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Failed to load K8s tools config: {e}[/yellow]"
+                )
                 return {}
         else:
-            self.console.print(f"[yellow]Warning: K8s tools.json not found at {k8s_tools_file}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: K8s tools.json not found at {k8s_tools_file}[/yellow]"
+            )
             return {}

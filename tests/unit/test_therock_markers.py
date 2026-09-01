@@ -2,8 +2,9 @@
 Unit tests for TheRock on-disk marker helpers.
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from madengine.utils.therock_markers import (
     is_therock_tree,
@@ -28,5 +29,8 @@ def test_is_therock_tree_false_without_markers(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_relpath_helpers_match_expected_layout() -> None:
     root = Path("/opt/rocm-7.0.0")
-    assert therock_manifest_path(root) == root / "share" / "therock" / "therock_manifest.json"
+    assert (
+        therock_manifest_path(root)
+        == root / "share" / "therock" / "therock_manifest.json"
+    )
     assert therock_dist_info_path(root) == root / "share" / "therock" / "dist_info.json"

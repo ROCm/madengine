@@ -16,8 +16,8 @@ from madengine.deployment.common import (
     tools_include_rocprof_family,
 )
 
-
 # ---- deployment.base (create_jinja_env) ----
+
 
 class TestCreateJinjaEnv:
     """Test create_jinja_env helper."""
@@ -26,7 +26,9 @@ class TestCreateJinjaEnv:
         """create_jinja_env returns Environment with dirname and basename filters."""
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir)
-            (p / "test.j2").write_text("dir={{ path | dirname }} name={{ path | basename }}")
+            (p / "test.j2").write_text(
+                "dir={{ path | dirname }} name={{ path | basename }}"
+            )
             env = create_jinja_env(p)
             template = env.get_template("test.j2")
             out = template.render(path="/foo/bar/baz.txt")
@@ -43,6 +45,7 @@ class TestCreateJinjaEnv:
 
 
 # ---- deployment.common ----
+
 
 class TestValidLaunchers:
     """VALID_LAUNCHERS constant."""
@@ -98,7 +101,9 @@ class TestToolsIncludeRocprofFamily:
 
     def test_false_for_rocm_trace_lite(self):
         assert tools_include_rocprof_family([{"name": "rocm_trace_lite"}]) is False
-        assert tools_include_rocprof_family([{"name": "rocm_trace_lite_default"}]) is False
+        assert (
+            tools_include_rocprof_family([{"name": "rocm_trace_lite_default"}]) is False
+        )
 
 
 class TestIsRocprofv3Available:
@@ -126,6 +131,7 @@ class TestIsRocprofv3Available:
 
     def test_returns_false_on_timeout(self):
         import subprocess
+
         with patch("madengine.deployment.common.subprocess.run") as m:
             m.side_effect = subprocess.TimeoutExpired("rocprofv3", 5)
             assert is_rocprofv3_available() is False
@@ -210,17 +216,29 @@ class TestConfigureMultiNodeProfiling:
 
 # ---- BaseDeployment._parse_performance_from_log ----
 
+
 class _ConcreteDeployment(BaseDeployment):
     """Minimal concrete subclass to exercise BaseDeployment methods under test."""
 
     DEPLOYMENT_TYPE = "test"
 
-    def validate(self): pass
-    def prepare(self): pass
-    def deploy(self): pass
-    def monitor(self, deployment_id): pass
-    def collect_results(self, deployment_id): pass
-    def cleanup(self, deployment_id): pass
+    def validate(self):
+        pass
+
+    def prepare(self):
+        pass
+
+    def deploy(self):
+        pass
+
+    def monitor(self, deployment_id):
+        pass
+
+    def collect_results(self, deployment_id):
+        pass
+
+    def cleanup(self, deployment_id):
+        pass
 
 
 def _make_deployment():

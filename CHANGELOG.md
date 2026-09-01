@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Modern PyPI packaging**: Migrated from legacy `setup.py` to `pyproject.toml`-only build using `hatchling` as the build backend. Version is now derived automatically from git tags via `versioningit` — no hardcoded version strings. Added PyPI classifiers, keywords, license metadata, and `py.typed` (PEP 561) marker for type checker support.
+
+- **Python 3.9+ baseline**: Raised minimum Python version from 3.8 to 3.9. Updated `black`, `mypy`, and classifier targets accordingly.
+
+- **Dependency lower bounds**: All core dependencies now specify minimum version constraints (e.g. `pandas>=1.3`, `sqlalchemy>=1.4`) instead of unpinned names, improving reproducibility.
+
+### Added
+
+- **CI workflow** (`.github/workflows/ci.yml`): Runs unit tests on Python 3.9–3.12 matrix and lint checks (black, isort, flake8) on every push/PR to `develop` and `main`.
+
+- **Publish workflow** (`.github/workflows/publish.yml`): Builds sdist + wheel, verifies install and CLI entry point across Python 3.9–3.12, then publishes via PyPI trusted publishing. Supports manual dispatch to TestPyPI and automatic publish on GitHub release.
+
+### Removed
+
+- **`setup.py`**: Deleted the 307-line legacy setup script. All packaging configuration now lives in `pyproject.toml`.
+
+- **`MANIFEST.in`**: Removed — hatchling ignores it; sdist/wheel inclusion is configured via `[tool.hatch.build]` in `pyproject.toml`.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added

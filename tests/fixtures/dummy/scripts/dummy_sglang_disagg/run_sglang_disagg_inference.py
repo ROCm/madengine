@@ -8,9 +8,9 @@ requiring actual models or Mooncake infrastructure.
 """
 
 import os
+import socket
 import sys
 import time
-import socket
 from typing import Optional
 
 

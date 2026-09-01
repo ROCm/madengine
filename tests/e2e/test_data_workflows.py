@@ -3,22 +3,27 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import csv
+import json
+
 # built-in modules
 import os
-import csv
 import re
-import json
 import tempfile
 
 # third-party modules
 import pytest
 
-# project modules
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
-from tests.fixtures.utils import global_data
-from tests.fixtures.utils import clean_test_temp_files
-from tests.fixtures.utils import DEFAULT_CLEAN_FILES
 from madengine.core.dataprovider import Data
+
+# project modules
+from tests.fixtures.utils import (
+    BASE_DIR,
+    DEFAULT_CLEAN_FILES,
+    MODEL_DIR,
+    clean_test_temp_files,
+    global_data,
+)
 
 
 class TestDataProviders:

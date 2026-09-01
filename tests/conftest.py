@@ -14,10 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ============================================================================
 # Platform Configuration Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def amd_gpu_context():
@@ -90,6 +90,7 @@ def multi_platform_context(request, amd_gpu_context, nvidia_gpu_context, cpu_con
 # Mock Args Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_build_args():
     """Mock args for build command."""
@@ -143,6 +144,7 @@ def mock_run_args():
 # ============================================================================
 # Test Data Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def sample_models():
@@ -268,17 +270,16 @@ def sample_manifest():
 # Temporary File Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def temp_manifest_file(sample_manifest):
     """Create a temporary manifest file."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(sample_manifest, f)
         manifest_path = f.name
-    
+
     yield manifest_path
-    
+
     # Cleanup
     if os.path.exists(manifest_path):
         os.unlink(manifest_path)
@@ -290,15 +291,16 @@ def temp_working_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         original_cwd = os.getcwd()
         os.chdir(tmpdir)
-        
+
         yield tmpdir
-        
+
         os.chdir(original_cwd)
 
 
 # ============================================================================
 # Mock Builder and Runner Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_docker_builder(sample_build_summary_success):
@@ -344,6 +346,7 @@ def mock_container_runner():
 # Integration Test Helpers
 # ============================================================================
 
+
 @pytest.fixture
 def integration_test_env():
     """Setup integration test environment variables."""
@@ -351,7 +354,7 @@ def integration_test_env():
         "MODEL_DIR": "tests/fixtures/dummy",
         "MAD_SKIP_GPU_CHECK": "1",  # Skip actual GPU detection in tests
     }
-    
+
     with patch.dict(os.environ, env_vars, clear=False):
         yield env_vars
 
@@ -360,40 +363,42 @@ def integration_test_env():
 # Utility Functions for Tests
 # ============================================================================
 
+
 def assert_build_manifest_valid(manifest_path):
     """Assert that a build manifest file is valid."""
     assert os.path.exists(manifest_path), f"Manifest not found: {manifest_path}"
-    
+
     with open(manifest_path) as f:
         manifest = json.load(f)
-    
+
     # Check required keys
     assert "built_images" in manifest
     assert "built_models" in manifest
     assert "summary" in manifest
-    
+
     # Check summary structure
     summary = manifest["summary"]
     assert "successful_builds" in summary
     assert "failed_builds" in summary
     assert isinstance(summary["successful_builds"], list)
     assert isinstance(summary["failed_builds"], list)
-    
+
     return manifest
 
 
 def assert_perf_csv_valid(csv_path):
     """Assert that a performance CSV file is valid."""
     assert os.path.exists(csv_path), f"Performance CSV not found: {csv_path}"
-    
+
     import pandas as pd
+
     df = pd.read_csv(csv_path)
-    
+
     # Check required columns
     required_columns = ["model", "n_gpus", "gpu_architecture", "status"]
     for col in required_columns:
         assert col in df.columns, f"Missing column: {col}"
-    
+
     return df
 
 
@@ -402,4 +407,3 @@ __all__ = [
     "assert_build_manifest_valid",
     "assert_perf_csv_valid",
 ]
-

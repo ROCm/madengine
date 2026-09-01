@@ -19,12 +19,11 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from madengine.reporting.csv_to_html import ConvertCsvToHtml
 from madengine.reporting.csv_to_email import ConvertCsvToEmail
+from madengine.reporting.csv_to_html import ConvertCsvToHtml
 
 from ..constants import ExitCode
-from ..utils import console, setup_logging, create_args_namespace
-
+from ..utils import console, create_args_namespace, setup_logging
 
 # Create a sub-app for report commands
 report_app = typer.Typer(
@@ -39,10 +38,7 @@ report_app = typer.Typer(
 def to_html(
     csv_file_path: Annotated[
         str,
-        typer.Option(
-            "--csv-file-path",
-            help="Path to the CSV file to convert to HTML"
-        ),
+        typer.Option("--csv-file-path", help="Path to the CSV file to convert to HTML"),
     ],
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -50,10 +46,10 @@ def to_html(
 ) -> None:
     """
     📄 Convert a single CSV file to HTML report.
-    
+
     This command converts a CSV file to an HTML table format,
     useful for viewing performance metrics in a web browser.
-    
+
     Examples:
         madengine report to-html --csv-file-path perf_amd.csv
         madengine report to-html --csv-file-path results/perf_mi300.csv
@@ -71,29 +67,37 @@ def to_html(
 
     # Validate input
     if not os.path.exists(csv_file_path):
-        console.print(f"❌ [bold red]Error: CSV file not found: {csv_file_path}[/bold red]")
+        console.print(
+            f"❌ [bold red]Error: CSV file not found: {csv_file_path}[/bold red]"
+        )
         raise typer.Exit(ExitCode.FAILURE)
-    
+
     if not os.path.isfile(csv_file_path):
-        console.print(f"❌ [bold red]Error: Path is not a file: {csv_file_path}[/bold red]")
+        console.print(
+            f"❌ [bold red]Error: Path is not a file: {csv_file_path}[/bold red]"
+        )
         raise typer.Exit(ExitCode.FAILURE)
-    
-    if not csv_file_path.endswith('.csv'):
-        console.print(f"❌ [bold red]Error: File must be a CSV file: {csv_file_path}[/bold red]")
+
+    if not csv_file_path.endswith(".csv"):
+        console.print(
+            f"❌ [bold red]Error: File must be a CSV file: {csv_file_path}[/bold red]"
+        )
         raise typer.Exit(ExitCode.FAILURE)
 
     try:
         # Create args namespace for compatibility with existing code
         args = create_args_namespace(csv_file_path=csv_file_path)
-        
+
         # Use ConvertCsvToHtml class
         converter = ConvertCsvToHtml(args=args)
         result = converter.run()
-        
+
         if result:
             # Determine output file name
-            output_file = str(Path(csv_file_path).with_suffix('.html'))
-            console.print(f"✅ [bold green]Successfully converted to: {output_file}[/bold green]")
+            output_file = str(Path(csv_file_path).with_suffix(".html"))
+            console.print(
+                f"✅ [bold green]Successfully converted to: {output_file}[/bold green]"
+            )
         else:
             console.print("❌ [bold red]Conversion failed[/bold red]")
             raise typer.Exit(ExitCode.FAILURE)
@@ -112,16 +116,12 @@ def to_email(
         typer.Option(
             "--directory",
             "--dir",
-            help="Path to directory containing CSV files to consolidate"
+            help="Path to directory containing CSV files to consolidate",
         ),
     ] = ".",
     output: Annotated[
         str,
-        typer.Option(
-            "--output",
-            "-o",
-            help="Output HTML filename"
-        ),
+        typer.Option("--output", "-o", help="Output HTML filename"),
     ] = "run_results.html",
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -129,10 +129,10 @@ def to_email(
 ) -> None:
     """
     📧 Convert all CSV files in a directory to consolidated email-ready HTML report.
-    
+
     This command scans a directory for CSV files and combines them into a single
     HTML report with sections for each CSV file, suitable for email distribution.
-    
+
     Examples:
         madengine report to-email
         madengine report to-email --directory ./results
@@ -152,26 +152,36 @@ def to_email(
 
     # Validate input
     if not os.path.exists(directory):
-        console.print(f"❌ [bold red]Error: Directory not found: {directory}[/bold red]")
+        console.print(
+            f"❌ [bold red]Error: Directory not found: {directory}[/bold red]"
+        )
         raise typer.Exit(ExitCode.FAILURE)
-    
+
     if not os.path.isdir(directory):
-        console.print(f"❌ [bold red]Error: Path is not a directory: {directory}[/bold red]")
-        console.print(f"💡 [cyan]Tip: Use 'to-html' command for single CSV files[/cyan]")
+        console.print(
+            f"❌ [bold red]Error: Path is not a directory: {directory}[/bold red]"
+        )
+        console.print(
+            f"💡 [cyan]Tip: Use 'to-html' command for single CSV files[/cyan]"
+        )
         raise typer.Exit(ExitCode.FAILURE)
 
     try:
         # Create args namespace for compatibility with existing code
         # The old code expects 'csv_file_path' to be the directory
         args = create_args_namespace(csv_file_path=directory, output_file=output)
-        
+
         # Use ConvertCsvToEmail class
         converter = ConvertCsvToEmail(args=args)
         result = converter.run()
-        
+
         if result:
-            output_path = os.path.join(directory, output) if directory != "." else output
-            console.print(f"✅ [bold green]Successfully generated email report: {output_path}[/bold green]")
+            output_path = (
+                os.path.join(directory, output) if directory != "." else output
+            )
+            console.print(
+                f"✅ [bold green]Successfully generated email report: {output_path}[/bold green]"
+            )
         else:
             console.print("⚠️  [yellow]No CSV files found to process[/yellow]")
 
@@ -186,4 +196,3 @@ def to_email(
 def report() -> typer.Typer:
     """Return the report sub-app."""
     return report_app
-

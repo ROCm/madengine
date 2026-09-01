@@ -5,6 +5,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 import subprocess
 
+
 class Console:
   """ Console class
   class to run console commands

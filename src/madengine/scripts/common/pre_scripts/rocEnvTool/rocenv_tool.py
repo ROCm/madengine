@@ -2,14 +2,15 @@
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-import os
-import sys
 import argparse
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
 from console import Console
 from csv_parser import CSVParser
 

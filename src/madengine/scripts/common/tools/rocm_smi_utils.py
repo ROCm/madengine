@@ -6,9 +6,9 @@ This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+import logging
 import os
 import sys
-import logging
 from typing import List
 
 _ROCM_PATH = os.environ.get("ROCM_PATH", "/opt/rocm")

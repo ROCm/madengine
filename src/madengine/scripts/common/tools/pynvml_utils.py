@@ -6,10 +6,11 @@ This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+import logging
+
 # built-in modules
 import typing
-import logging
-from typing import Optional, List
+from typing import List, Optional
 
 # third-party modules
 import pynvml

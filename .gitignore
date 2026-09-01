@@ -41,6 +41,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+*.whl
+*.tar.gz
 
 # PyInstaller
 # Usually these files are written by a Python script from a template

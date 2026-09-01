@@ -103,7 +103,11 @@ class KubernetesPVCMixin:
                 )
                 return pvc_name
             except ApiException as e:
-                if e.status == 409 and e.body and "object is being deleted" in (e.body or ""):
+                if (
+                    e.status == 409
+                    and e.body
+                    and "object is being deleted" in (e.body or "")
+                ):
                     if attempt < max_create_retries - 1:
                         self.console.print(
                             f"[dim]PVC still terminating, waiting {create_wait_seconds}s before retry ({attempt + 1}/{max_create_retries})[/dim]"

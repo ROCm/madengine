@@ -17,19 +17,23 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.core.errors import BuildError, ConfigurationError, DiscoveryError
+from madengine.orchestration.build_orchestrator import BuildOrchestrator
 
-from ..constants import ExitCode, DEFAULT_MANIFEST_FILE
+from ..constants import DEFAULT_MANIFEST_FILE, ExitCode
 from ..utils import (
     console,
+    create_args_namespace,
+    display_results_table,
+    save_summary_with_feedback,
     setup_logging,
     split_comma_separated_tags,
-    create_args_namespace,
-    save_summary_with_feedback,
-    display_results_table,
 )
-from ..validators import validate_additional_context, process_batch_manifest, process_batch_manifest_entries
+from ..validators import (
+    process_batch_manifest,
+    process_batch_manifest_entries,
+    validate_additional_context,
+)
 
 
 def build(
@@ -40,9 +44,9 @@ def build(
     target_archs: Annotated[
         List[str],
         typer.Option(
-            "--target-archs", 
-            "-a", 
-            help="Target GPU architectures to build for (e.g., gfx908,gfx90a,gfx942). If not specified, builds single image with MAD_SYSTEM_GPU_ARCHITECTURE from additional_context or detected GPU architecture."
+            "--target-archs",
+            "-a",
+            help="Target GPU architectures to build for (e.g., gfx908,gfx90a,gfx942). If not specified, builds single image with MAD_SYSTEM_GPU_ARCHITECTURE from additional_context or detected GPU architecture.",
         ),
     ] = [],
     registry: Annotated[
@@ -68,7 +72,7 @@ def build(
         bool,
         typer.Option(
             "--build-on-compute",
-            help="Build Docker images on SLURM compute node instead of login node"
+            help="Build Docker images on SLURM compute node instead of login node",
         ),
     ] = False,
     additional_context: Annotated[
@@ -118,15 +122,15 @@ def build(
     # Process tags to handle comma-separated values
     # Supports both: --tags dummy --tags multi AND --tags dummy,multi
     processed_tags = split_comma_separated_tags(tags)
-    
+
     # Validate mutually exclusive options
     if batch_manifest and processed_tags:
         console.print(
             "❌ [bold red]Error: Cannot specify both --batch-manifest and --tags options[/bold red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
-    
-    if additional_context_file and additional_context!="{}":
+
+    if additional_context_file and additional_context != "{}":
         console.print(
             "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
         )
@@ -243,13 +247,13 @@ def build(
             console=console,
         ) as progress:
             task = progress.add_task("Initializing build orchestrator...", total=None)
-            
+
             # Use new BuildOrchestrator
             orchestrator = BuildOrchestrator(args)
             progress.update(task, description="Building models...")
 
             # Execute build workflow
-            manifest_file = orchestrator.execute(
+            orchestrator.execute(
                 registry=registry,
                 clean_cache=clean_docker_cache,
                 manifest_output=manifest_output,
@@ -257,12 +261,12 @@ def build(
                 use_image=use_image,
                 build_on_compute=build_on_compute,
             )
-            
+
             # Load build summary for display
-            with open(manifest_output, 'r') as f:
+            with open(manifest_output, "r") as f:
                 manifest = json.load(f)
                 build_summary = manifest.get("summary", {})
-            
+
             progress.update(task, description="Build completed!")
 
         # Handle batch manifest post-processing
@@ -285,7 +289,7 @@ def build(
         # Check results and exit with appropriate code
         failed_builds = len(build_summary.get("failed_builds", []))
         successful_builds = len(build_summary.get("successful_builds", []))
-        
+
         if failed_builds == 0:
             console.print(
                 "🎉 [bold green]All builds completed successfully![/bold green]"
@@ -303,9 +307,7 @@ def build(
             raise typer.Exit(ExitCode.BUILD_FAILURE)  # Non-zero exit for CI/CD
         else:
             # All failed
-            console.print(
-                f"💥 [bold red]All builds failed[/bold red]"
-            )
+            console.print(f"💥 [bold red]All builds failed[/bold red]")
             raise typer.Exit(ExitCode.BUILD_FAILURE)
 
     except typer.Exit:
@@ -313,52 +315,52 @@ def build(
     except BuildError as e:
         # Specific build error handling
         console.print(f"💥 [bold red]Build error: {e}[/bold red]")
-        if hasattr(e, 'suggestions') and e.suggestions:
+        if hasattr(e, "suggestions") and e.suggestions:
             console.print("\n💡 [cyan]Suggestions:[/cyan]")
             for suggestion in e.suggestions:
                 console.print(f"  • {suggestion}")
         raise typer.Exit(ExitCode.BUILD_FAILURE)
-        
+
     except ConfigurationError as e:
         # Configuration errors
         console.print(f"⚙️  [bold red]Configuration error: {e}[/bold red]")
-        if hasattr(e, 'suggestions') and e.suggestions:
+        if hasattr(e, "suggestions") and e.suggestions:
             console.print("\n💡 [cyan]Suggestions:[/cyan]")
             for suggestion in e.suggestions:
                 console.print(f"  • {suggestion}")
         raise typer.Exit(ExitCode.INVALID_ARGS)
-        
+
     except DiscoveryError as e:
         # Model discovery errors
         console.print(f"🔍 [bold red]Discovery error: {e}[/bold red]")
         console.print("💡 Check MODEL_DIR or models.json configuration")
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except KeyboardInterrupt:
         console.print("\n🛑 [yellow]Build cancelled by user[/yellow]")
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except PermissionError as e:
         console.print(f"🔒 [bold red]Permission denied: {e}[/bold red]")
-        console.print("💡 Check file/directory permissions or run with appropriate privileges")
+        console.print(
+            "💡 Check file/directory permissions or run with appropriate privileges"
+        )
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except FileNotFoundError as e:
         console.print(f"📁 [bold red]File not found: {e}[/bold red]")
         console.print("💡 Check that all required files exist")
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except Exception as e:
         console.print(f"💥 [bold red]Unexpected error: {e}[/bold red]")
         if verbose:
             console.print_exception()
-        
-        from madengine.core.errors import handle_error, create_error_context
+
+        from madengine.core.errors import create_error_context, handle_error
+
         context = create_error_context(
-            operation="build",
-            phase="build",
-            component="build_command"
+            operation="build", phase="build", component="build_command"
         )
         handle_error(e, context=context)
         raise typer.Exit(ExitCode.FAILURE)
-

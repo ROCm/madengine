@@ -26,7 +26,6 @@ import pytest
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
 
-
 MODEL_ENTRY = {
     "name": "dummy_torchrun_multinode",
     "url": "",
@@ -104,6 +103,7 @@ def _render(deployment: SlurmDeployment) -> str:
 # ---------------------------------------------------------------------------
 # 1. PATH is re-established inside the job
 
+
 class TestJobScriptPath:
     """The job script must not depend on the submitter's PATH being inherited."""
 
@@ -112,7 +112,10 @@ class TestJobScriptPath:
         assert 'export PATH="$HOME/.local/bin:$PATH"' in script
 
     def test_submission_bin_dir_is_prepended(self, tmp_path):
-        with patch("madengine.deployment.slurm.shutil.which", return_value="/opt/venv/bin/madengine"):
+        with patch(
+            "madengine.deployment.slurm.shutil.which",
+            return_value="/opt/venv/bin/madengine",
+        ):
             script = _render(_build_deployment(tmp_path))
         assert 'export PATH="/opt/venv/bin:$PATH"' in script
 
@@ -125,13 +128,19 @@ class TestJobScriptPath:
 
     def test_path_is_set_before_madengine_is_looked_up(self, tmp_path):
         """The export is useless if it lands after `command -v madengine`."""
-        with patch("madengine.deployment.slurm.shutil.which", return_value="/opt/venv/bin/madengine"):
+        with patch(
+            "madengine.deployment.slurm.shutil.which",
+            return_value="/opt/venv/bin/madengine",
+        ):
             script = _render(_build_deployment(tmp_path))
-        assert script.index('export PATH="/opt/venv/bin:$PATH"') < script.index("command -v madengine")
+        assert script.index('export PATH="/opt/venv/bin:$PATH"') < script.index(
+            "command -v madengine"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 2. Shared-filesystem probe
+
 
 class TestSharedFilesystemProbe:
     """`df -T` reports nfs4 on modern mounts; the probe must not miss it.
@@ -147,20 +156,23 @@ class TestSharedFilesystemProbe:
         assert match, "shared-filesystem probe not found in rendered script"
         return match.group(1)
 
-    @pytest.mark.parametrize("fstype,expected", [
-        ("nfs", True),
-        ("nfs3", True),
-        ("nfs4", True),
-        ("lustre", True),
-        ("gpfs", True),
-        ("ceph", True),
-        ("beegfs", True),
-        ("panfs", True),
-        ("ext4", False),
-        ("xfs", False),
-        ("overlay", False),
-        ("tmpfs", False),
-    ])
+    @pytest.mark.parametrize(
+        "fstype,expected",
+        [
+            ("nfs", True),
+            ("nfs3", True),
+            ("nfs4", True),
+            ("lustre", True),
+            ("gpfs", True),
+            ("ceph", True),
+            ("beegfs", True),
+            ("panfs", True),
+            ("ext4", False),
+            ("xfs", False),
+            ("overlay", False),
+            ("tmpfs", False),
+        ],
+    )
     def test_probe_matches_shared_filesystems(self, tmp_path, fstype, expected):
         # The probe only exists on the single-node branch of the template.
         deployment = _build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1})
@@ -188,6 +200,7 @@ class TestSharedFilesystemProbe:
 
 # ---------------------------------------------------------------------------
 # 3. GPU GRES directive opt-out
+
 
 class TestGpusPerNodeDirective:
     """A cluster with GresTypes=(null) rejects any job carrying --gpus-per-node."""

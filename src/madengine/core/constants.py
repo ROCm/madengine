@@ -22,10 +22,12 @@ Configuration Loading:
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
-# built-in modules
-import os
+
 import json
 import logging
+
+# built-in modules
+import os
 import sys
 
 
@@ -57,14 +59,14 @@ MODEL_DIR = os.environ.get("MODEL_DIR", ".")
 
 def _setup_model_dir():
     """Setup model directory if MODEL_DIR environment variable is set.
-    
+
     MODEL_DIR defaults to "." (current directory) if not set.
     Only copies if MODEL_DIR points to a different directory than current working directory.
     """
     # Get absolute paths to compare
     model_dir_abs = os.path.abspath(MODEL_DIR)
     cwd_abs = os.path.abspath(".")
-    
+
     # Only copy if MODEL_DIR points to a different directory (not current dir)
     if model_dir_abs != cwd_abs:
         # Copy MODEL_DIR to the current working directory.
@@ -79,7 +81,9 @@ def _setup_model_dir():
 # Only setup model directory if explicitly requested and invocation is not metadata-only.
 if os.environ.get("MAD_SETUP_MODEL_DIR", "").lower() == "true":
     if _is_lightweight_cli_invocation():
-        _log_config_info("Skipping MODEL_DIR setup for lightweight CLI invocation (--version/--help).")
+        _log_config_info(
+            "Skipping MODEL_DIR setup for lightweight CLI invocation (--version/--help)."
+        )
     else:
         _setup_model_dir()
 

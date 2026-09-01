@@ -3,35 +3,37 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import csv
+import json
+
 # built-in modules
 import os
-import csv
 
 # third-party modules
 import pytest
-import json
-
-# project modules
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
-from tests.fixtures.utils import global_data
-from tests.fixtures.utils import clean_test_temp_files
-from tests.fixtures.utils import get_gpu_nodeid_map
-from tests.fixtures.utils import get_num_gpus
-from tests.fixtures.utils import get_num_cpus
-from tests.fixtures.utils import requires_gpu
-from tests.fixtures.utils import generate_additional_context_for_machine
-from tests.fixtures.utils import (
-    DEFAULT_CLEAN_FILES,
-    build_run_command,
-    assert_model_in_perf_csv,
-)
 
 from madengine.core.context import Context
 
+# project modules
+from tests.fixtures.utils import (
+    BASE_DIR,
+    DEFAULT_CLEAN_FILES,
+    MODEL_DIR,
+    assert_model_in_perf_csv,
+    build_run_command,
+    clean_test_temp_files,
+    generate_additional_context_for_machine,
+    get_gpu_nodeid_map,
+    get_num_cpus,
+    get_num_gpus,
+    global_data,
+    requires_gpu,
+)
 
 # ============================================================================
 # Context Handling Tests
 # ============================================================================
+
 
 class TestContexts:
 
@@ -331,9 +333,7 @@ class TestContexts:
             )
 
     @requires_gpu("docker gpus requires GPU hardware")
-    @pytest.mark.skipif(
-        get_num_gpus() < 8, reason="test requires atleast 8 gpus"
-    )
+    @pytest.mark.skipif(get_num_gpus() < 8, reason="test requires atleast 8 gpus")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
         [["perf.csv", "perf.html", "results_dummy_gpubind.csv"]],
@@ -364,24 +364,24 @@ class TestContexts:
                         gpu_node_ids.append(row["performance"])
                     else:
                         pytest.fail("model in perf_test.csv did not run successfully.")
-        
+
         # Debug information
         print(f"GPU node IDs from performance: {gpu_node_ids}")
         print(f"GPU nodeid map: {gpu_nodeid_map}")
         mapped_gpus = [gpu_nodeid_map.get(node_id) for node_id in gpu_node_ids]
         print(f"Mapped GPUs: {mapped_gpus}")
-        
+
         # Filter out None values and sort
         valid_mapped_gpus = [gpu for gpu in mapped_gpus if gpu is not None]
         sorted_gpus = sorted(valid_mapped_gpus)
         print(f"Sorted valid GPUs: {sorted_gpus}")
-        
-        if sorted_gpus != [0, 2, 3, 4, 5, 7]:
-            pytest.fail(f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}")
 
-    @pytest.mark.skipif(
-        get_num_cpus() < 64, reason="test requires atleast 64 cpus"
-    )
+        if sorted_gpus != [0, 2, 3, 4, 5, 7]:
+            pytest.fail(
+                f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}"
+            )
+
+    @pytest.mark.skipif(get_num_cpus() < 64, reason="test requires atleast 64 cpus")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
         [["perf.csv", "perf.html", "results_dummy_cpubind.csv"]],
@@ -425,24 +425,24 @@ class TestContexts:
         """
 
         context = Context()
-        product_name = context.ctx['docker_env_vars']["MAD_SYSTEM_GPU_PRODUCT_NAME"]
+        product_name = context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"]
 
-        #fail the test if GPU product name is empty
+        # fail the test if GPU product name is empty
         if not product_name or not product_name.strip():
             pytest.fail("GPU product name is empty or just whitespaces")
 
         product_name = product_name.upper()
 
-        #if product name has AMD or NVIDIA in it then it's a safe bet
-        #that it was parsed properly
+        # if product name has AMD or NVIDIA in it then it's a safe bet
+        # that it was parsed properly
         if not ("AMD" in product_name or "NVIDIA" in product_name):
             pytest.fail(f"Incorrect product name={product_name!r}")
-
 
 
 # ============================================================================
 # Tag Filtering Tests
 # ============================================================================
+
 
 class TestTagsFunctionality:
 
@@ -463,7 +463,7 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            +             f"python3 -m madengine.cli.app run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
+            + f"python3 -m madengine.cli.app run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
         )
 
         # Check for model execution (handles ANSI codes in output)
@@ -520,11 +520,9 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            +             f"python3 -m madengine.cli.app run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
+            + f"python3 -m madengine.cli.app run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
         )
 
         # Check for model execution (handles ANSI codes in output)
         if "dummy" not in output or "ci-dummy_dummy" not in output:
             pytest.fail("dummy tag not selected with commandline --tags argument")
-
-

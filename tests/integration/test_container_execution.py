@@ -8,19 +8,21 @@ Previous: Used deprecated tools/container_runner.py (removed).
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import json
+
 # built-in modules
 import os
-import json
 import unittest.mock
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
 # third-party modules
 import pytest
 
+from madengine.core.console import Console
+from madengine.core.context import Context
+
 # project modules
 from madengine.execution.container_runner import ContainerRunner
-from madengine.core.context import Context
-from madengine.core.console import Console
 
 
 class TestContainerRunner:
@@ -188,14 +190,17 @@ class TestContainerRunner:
         mock_sh.return_value = "hostname"
 
         # Mock log file with performance metrics
-        log_content = "Running test...\nperformance: 100.5 samples_per_second\nTest completed"
+        log_content = (
+            "Running test...\nperformance: 100.5 samples_per_second\nTest completed"
+        )
         mock_file.return_value.read.return_value = log_content
-        
+
         # Mock os.path.exists to return True for log file
         def exists_side_effect(path):
             if path.endswith(".live.log"):
                 return True
             return False
+
         mock_exists.side_effect = exists_side_effect
 
         model_info = {

@@ -37,7 +37,9 @@ def test_create_registry_image_name_uses_dockerhub_repository(docker_builder):
     assert out == "myorg/ci:ci-dummy_dummy.ubuntu.amd"
 
 
-def test_create_registry_image_name_without_credentials_matches_local_tag(docker_builder):
+def test_create_registry_image_name_without_credentials_matches_local_tag(
+    docker_builder,
+):
     out = docker_builder._create_registry_image_name(
         "ci-dummy_dummy.ubuntu.amd",
         "dockerhub",
@@ -83,7 +85,9 @@ class TestPushImageRecordsDigest:
             return ""
 
         builder = self._builder(sh)
-        builder.push_image("ci-dummy", "localhost:5000", None, "localhost:5000/ci-dummy")
+        builder.push_image(
+            "ci-dummy", "localhost:5000", None, "localhost:5000/ci-dummy"
+        )
 
         push_calls = [
             c for c in builder.console.sh.call_args_list if "docker push" in c.args[0]
@@ -185,18 +189,24 @@ class TestBuildInfoCarriesImageDigest:
             builder.pushed_digests[explicit_registry_image] = DIGEST
             return explicit_registry_image
 
-        with patch.object(
-            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
-        ), patch.object(
-            builder,
-            "build_image",
-            return_value={"docker_image": "ci-dummy", "model": "dummy"},
-        ), patch.object(
-            builder, "_get_effective_gpu_architecture", return_value=""
-        ), patch.object(
-            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
-        ), patch.object(
-            builder, "push_image", side_effect=fake_push
+        with (
+            patch.object(
+                builder,
+                "_get_dockerfiles_for_model",
+                return_value=["docker/dummy.ubuntu"],
+            ),
+            patch.object(
+                builder,
+                "build_image",
+                return_value={"docker_image": "ci-dummy", "model": "dummy"},
+            ),
+            patch.object(builder, "_get_effective_gpu_architecture", return_value=""),
+            patch.object(
+                builder,
+                "_create_registry_image_name",
+                return_value="localhost:5000/ci-dummy",
+            ),
+            patch.object(builder, "push_image", side_effect=fake_push),
         ):
             results = self._run_single_arch(builder)
 
@@ -208,18 +218,24 @@ class TestBuildInfoCarriesImageDigest:
     def test_single_arch_push_without_digest_omits_key(self):
         builder = self._builder()
 
-        with patch.object(
-            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
-        ), patch.object(
-            builder,
-            "build_image",
-            return_value={"docker_image": "ci-dummy", "model": "dummy"},
-        ), patch.object(
-            builder, "_get_effective_gpu_architecture", return_value=""
-        ), patch.object(
-            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
-        ), patch.object(
-            builder, "push_image", return_value="localhost:5000/ci-dummy"
+        with (
+            patch.object(
+                builder,
+                "_get_dockerfiles_for_model",
+                return_value=["docker/dummy.ubuntu"],
+            ),
+            patch.object(
+                builder,
+                "build_image",
+                return_value={"docker_image": "ci-dummy", "model": "dummy"},
+            ),
+            patch.object(builder, "_get_effective_gpu_architecture", return_value=""),
+            patch.object(
+                builder,
+                "_create_registry_image_name",
+                return_value="localhost:5000/ci-dummy",
+            ),
+            patch.object(builder, "push_image", return_value="localhost:5000/ci-dummy"),
         ):
             results = self._run_single_arch(builder)
 
