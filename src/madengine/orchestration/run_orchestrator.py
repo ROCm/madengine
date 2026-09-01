@@ -90,6 +90,13 @@ class RunOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+
+        # The CLI flag and the require_pinned_image context key are equivalent;
+        # the key lets CI pipelines that drive madengine through
+        # --additional-context opt in the same way as for k8s/slurm/tools.
+        if getattr(args, "require_pinned_image", False):
+            self.additional_context["require_pinned_image"] = True
+
         keys_str = (
             ", ".join(sorted(self.additional_context.keys()))
             if self.additional_context
@@ -573,7 +580,15 @@ class RunOrchestrator:
             if "context" not in manifest:
                 manifest["context"] = {}
 
-            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
+            merge_keys = [
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                # Persisted so nested runs on SLURM compute nodes (which re-enter
+                # `madengine run --manifest-file`) inherit the enforcement setting.
+                "require_pinned_image",
+            ]
             context_updated = False
             for key in merge_keys:
                 if key in self.additional_context:

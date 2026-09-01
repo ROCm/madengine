@@ -265,6 +265,37 @@ def _docker_image_ref_for_log_naming(docker_image: str) -> str:
     return ref_without_digest.replace("/", "_").replace(":", "_").replace("@", "_")
 
 
+def container_name_from_image_ref(docker_image: str) -> str:
+    """
+    Derive a Docker-legal ``--name`` value from an image reference.
+
+    Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]*`` for container names, so a
+    digest-pinned reference (``repo@sha256:...``, produced when
+    ``require_pinned_image`` is set) cannot be used verbatim: the ``@`` is
+    rejected by the daemon. The digest is dropped rather than encoded because it
+    adds no disambiguation a run needs, and the tag is kept so containers for
+    different tags of the same repo stay distinct.
+
+    Tagged references keep their historical name, e.g. ``registry/ns/img:ci-m_df``
+    -> ``container_registry_ns_img_ci-m_df``. Unlike
+    :func:`_docker_image_ref_for_log_naming`, CI-style tags are *not* collapsed
+    to the bare tag, so existing container names are unchanged.
+
+    Args:
+        docker_image: Image reference, with or without tag/digest.
+
+    Returns:
+        A container name, always prefixed with ``container_``.
+    """
+    ref_without_digest = (docker_image or "").strip().split("@", 1)[0]
+    # Legal image references only contain [a-z0-9._-] plus "/" and ":", so the
+    # final sanitize is a no-op for them; it keeps the Docker-legal invariant
+    # true for anything unexpected instead of failing at `docker run`.
+    safe = ref_without_digest.replace("/", "_").replace(":", "_")
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", safe)
+    return "container_" + safe
+
+
 def make_run_log_file_path(
     model_info: typing.Dict,
     docker_image: str,

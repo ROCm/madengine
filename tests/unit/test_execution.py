@@ -1,10 +1,13 @@
 """Unit tests for execution: container_runner_helpers and dockerfile_utils."""
 
+import re
+
 import pytest
 
 from madengine.core.timeout import Timeout
 from madengine.execution.container_runner_helpers import (
     _docker_image_ref_for_log_naming,
+    container_name_from_image_ref,
     make_run_log_file_path,
     resolve_run_timeout,
 )
@@ -94,6 +97,67 @@ class TestDockerImageRefForLogNaming:
 
     def test_short_ci_tag_unchanged(self):
         assert _docker_image_ref_for_log_naming("ci-model_ubuntu") == "ci-model_ubuntu"
+
+    def test_pinned_reference_names_same_as_untagged_reference(self):
+        digest = "sha256:" + "df36ef7e" * 8
+        assert _docker_image_ref_for_log_naming(
+            f"registry/ns/myimg@{digest}"
+        ) == _docker_image_ref_for_log_naming("registry/ns/myimg")
+
+    def test_pinned_ci_reference_still_yields_tag(self):
+        digest = "sha256:" + "df36ef7e" * 8
+        assert (
+            _docker_image_ref_for_log_naming(f"rocm/ns/img:ci-m_model_df@{digest}")
+            == "ci-m_model_df"
+        )
+
+
+class TestContainerNameFromImageRef:
+    """container_name_from_image_ref: names must satisfy Docker's charset."""
+
+    # Docker: "only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed".
+    DOCKER_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+    def test_digest_pinned_ref_is_docker_legal(self):
+        # Regression: require_pinned_image rewrites the run image to
+        # repo@sha256:..., which previously produced a name containing "@" and
+        # made `docker run` fail with "Invalid container name".
+        digest = "sha256:" + "af99a16c" * 8
+        name = container_name_from_image_ref(f"registry/ns/mad-private@{digest}")
+        assert "@" not in name
+        assert self.DOCKER_NAME_RE.match(name)
+        assert name == "container_registry_ns_mad-private"
+
+    def test_digest_pinned_ref_keeps_tag(self):
+        digest = "sha256:" + "af99a16c" * 8
+        assert (
+            container_name_from_image_ref(f"registry/ns/img:ci-m_model_df@{digest}")
+            == "container_registry_ns_img_ci-m_model_df"
+        )
+
+    @pytest.mark.parametrize(
+        "image, expected",
+        [
+            # Historical names for non-pinned refs must not change.
+            ("ci-model_ubuntu", "container_ci-model_ubuntu"),
+            ("ubuntu:22.04", "container_ubuntu_22.04"),
+            ("registry/ns/myimg:latest", "container_registry_ns_myimg_latest"),
+            (
+                "registry/ns/img:ci-m_model_df",
+                "container_registry_ns_img_ci-m_model_df",
+            ),
+            ("localhost:5000/ns/img:tag", "container_localhost_5000_ns_img_tag"),
+        ],
+    )
+    def test_unpinned_refs_keep_previous_names(self, image, expected):
+        assert container_name_from_image_ref(image) == expected
+        assert self.DOCKER_NAME_RE.match(expected)
+
+    def test_pinned_and_unpinned_agree_on_same_repo_tag(self):
+        digest = "sha256:" + "af99a16c" * 8
+        assert container_name_from_image_ref(
+            f"registry/ns/img:tag@{digest}"
+        ) == container_name_from_image_ref("registry/ns/img:tag")
 
 
 class TestMakeRunLogFilePath:

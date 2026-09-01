@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from madengine.core.errors import ConfigurationError
+from madengine.core.image_digest import resolve_pinned_image
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -335,6 +337,11 @@ class SlurmDeployment(BaseDeployment):
                     return self._prepare_slurm_multi_script(
                         model_info_peek, docker_image_name=model_keys_peek[0]
                     )
+        except ConfigurationError:
+            # Enforcement failures (e.g. --require-pinned-image with no recorded
+            # digest) are deliberate aborts, not peek errors. Falling through to
+            # the standard path here would silently generate an unpinned script.
+            raise
         except Exception:
             # Fall through to develop's standard flow on any peek error
             pass
@@ -460,6 +467,28 @@ class SlurmDeployment(BaseDeployment):
             built_image = model_info["image"]
             self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
             env_vars["DOCKER_IMAGE_NAME"] = built_image
+
+        # Under require_pinned_image, pin DOCKER_IMAGE_NAME to the digest recorded
+        # at build time. slurm_multi runs the model's own script (no nested
+        # `madengine run` on the compute nodes), so enforcement has to happen here.
+        # Pinning the variable covers both the parallel `srun docker pull` below,
+        # which interpolates it, and the `docker run` inside the model script.
+        require_pinned = bool(
+            self.config.additional_context.get("require_pinned_image")
+        )
+        if require_pinned and env_vars.get("DOCKER_IMAGE_NAME"):
+            image_entry = (self.manifest.get("built_images") or {}).get(
+                docker_image_name, {}
+            )
+            env_vars["DOCKER_IMAGE_NAME"] = resolve_pinned_image(
+                env_vars["DOCKER_IMAGE_NAME"],
+                image_entry.get("image_digest"),
+                True,
+                model_name=model_info.get("name", ""),
+            )
+            self.console.print(
+                f"[cyan]Pinned Docker image: {env_vars['DOCKER_IMAGE_NAME']}[/cyan]"
+            )
 
         # Get model args. The wrapper script below is executed by bash, so the
         # script name and free-form args string must be shell-quoted to prevent
