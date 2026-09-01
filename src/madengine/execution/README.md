@@ -44,17 +44,13 @@ result = builder.build_image(
 
 # Build all models
 results = builder.build_all_models(
-    models=[model1, model2, model3],
+    models_list=[model1, model2, model3],
     target_archs=["gfx90a", "gfx942"]
 )
 
 # Export build manifest
 builder.export_build_manifest(output_file="build_manifest.json")
 ```
-
-### **`dockerfile_utils.py`**
-
-Helper functions for multi-architecture Dockerfile parsing (e.g., `parse_dockerfile_gpu_variables`, `normalize_architecture_name`, `is_target_arch_compatible_with_variable`, `is_compilation_arch_compatible`) used by `docker_builder.py`.
 
 ### **`container_runner.py`**
 
@@ -77,18 +73,15 @@ runner = ContainerRunner(context, data, console)
 # Run model in container
 result = runner.run_container(
     model_info=model_dict,
-    docker_image="model1:latest",
+    model_docker=docker_client,
+    gpu_ids="0,1",
     timeout=3600
 )
 
 # Result includes status, metrics, logs
-print(result["status"])  # "SUCCESS", "FAILURE", "SKIPPED"
-print(result["test_duration"])
+print(result["status"])  # "successful", "failed", "timeout"
+print(result["duration"])
 ```
-
-### **`container_runner_helpers.py`**
-
-Backs `container_runner.py`'s timeout management and error-detection features (e.g., `resolve_log_error_scan_config`, `log_text_has_error_pattern`, `resolve_run_status`, `resolve_run_timeout`, `make_run_log_file_path`).
 
 ---
 

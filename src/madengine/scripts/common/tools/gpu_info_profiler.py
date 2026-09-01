@@ -14,7 +14,6 @@ import subprocess
 import sys
 import csv
 import os
-import shutil
 import logging
 import typing
 import signal
@@ -28,11 +27,10 @@ def check_amd_smi_available() -> bool:
         bool: True if amd-smi is available, False otherwise.
     """
     # First check for Python bindings (more reliable for programmatic access)
-    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
     try:
-        sys.path.append(f"{rocm_path}/libexec/amdsmi_cli/")
+        sys.path.append("/opt/rocm/libexec/amdsmi_cli/")
         from amdsmi_init import amdsmi_interface
-        logging.debug(f"amd-smi Python bindings found at {rocm_path}/libexec/amdsmi_cli/")
+        logging.debug("amd-smi Python bindings found at /opt/rocm/libexec/amdsmi_cli/")
         return True
     except ImportError:
         logging.debug("amd-smi Python bindings not found")
@@ -76,11 +74,9 @@ def get_rocm_version() -> Optional[float]:
         logging.debug(f"hipconfig check failed: {e}")
     
     try:
-        # Fallback to $ROCM_PATH/.info/version
-        rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-        version_file = f"{rocm_path}/.info/version"
-        if os.path.exists(version_file):
-            result = subprocess.run(['cat', version_file],
+        # Fallback to /opt/rocm/.info/version
+        if os.path.exists("/opt/rocm/.info/version"):
+            result = subprocess.run(['cat', '/opt/rocm/.info/version'], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 version_str = result.stdout.strip().split('-')[0]  # Remove build suffix
@@ -100,21 +96,15 @@ def detect_gpu_vendor() -> tuple[bool, bool]:
     Raises:
         ValueError: If no GPU management tools are found.
     """
-    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-    if shutil.which("nvidia-smi"):
+    if os.path.exists("/usr/bin/nvidia-smi"):
         return True, False
-    elif (
-        shutil.which("rocm-smi")
-        or os.path.exists(f"{rocm_path}/bin/rocm-smi")
-        or check_amd_smi_available()
-    ):
+    elif os.path.exists("/opt/rocm/bin/rocm-smi") or check_amd_smi_available():
         return False, True
     else:
         error_msg = (
             "Unable to detect GPU vendor. No GPU management tools found.\n"
-            "For NVIDIA: nvidia-smi not found on PATH\n"
-            f"For AMD: rocm-smi not found on PATH or in {rocm_path}/bin, "
-            "and amd-smi not available\n\n"
+            "For NVIDIA: /usr/bin/nvidia-smi not found\n"
+            "For AMD: /opt/rocm/bin/rocm-smi and amd-smi not found\n\n"
             "Please ensure:\n"
             "  1. GPU drivers are installed\n"
             "  2. For AMD GPUs: ROCm is properly installed (https://rocm.docs.amd.com)\n"

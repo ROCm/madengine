@@ -42,7 +42,7 @@ The deployment type is **inferred** from the configuration structure:
 
 | File | Description | Nodes | GPUs | Use Case |
 |------|-------------|-------|------|----------|
-| `01-single-node-single-gpu.json` | Single GPU training | 1 | 1 | Quick tests, small models |
+| `01-torchrun-single-node-single-gpu.json` | Single GPU training | 1 | 1 | Quick tests, small models |
 | `02-single-node-multi-gpu.json` | Single node, 8 GPUs | 1 | 8 | Single-node distributed workload |
 | `03-multi-node-basic.json` | 2 nodes, 8 GPUs each | 2 | 16 | Multi-node distributed workload |
 | `03-multi-node-basic-nodelist.json` | Same as 03 with `nodelist` | 2 | 16 | Pin job to specific nodes (e.g. node01,node02) |
@@ -58,13 +58,15 @@ The deployment type is **inferred** from the configuration structure:
 ### Minimal Examples (`minimal/`)
 
 Stripped-down configurations showing only essential fields:
-- `torchrun-single-gpu-minimal.json` - Minimal single GPU config
-- `torchrun-multi-gpu-minimal.json` - Minimal 8 GPU config
-- `torchrun-multi-node-minimal.json` - Minimal 2-node config
+- `single-gpu-minimal.json` - Minimal single GPU config
+- `multi-gpu-minimal.json` - Minimal 8 GPU config
+- `multi-node-minimal.json` - Minimal 2-node config
+- `primus-minimal.json` - Minimal Primus pretrain (`distributed.launcher: "primus"`; edit `primus.config_path`)
 - `vllm-single-node-minimal.json` - Minimal vLLM single-node
 - `vllm-multi-node-minimal.json` - Minimal vLLM multi-node
 - `slurm-multi-minimal.json` - Minimal slurm_multi self-managed launcher (3 nodes)
 
+For Primus options and environment variables, see [Launchers Guide](../../docs/launchers.md#5-primus).
 For slurm_multi escape-hatch launcher, see [Launchers Guide](../../docs/launchers.md#9-slurm_multi-self-managed-escape-hatch).
 
 ## 🔄 Configuration Workflow
@@ -125,7 +127,7 @@ ssh user@hpc-cluster.example.com
 # Phase 1: Build with configuration
 MODEL_DIR=models/my-model madengine build \
   --tags model_tag \
-  --additional-context-file examples/slurm-configs/basic/03-multi-node-basic.json \
+  --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --manifest-output build_manifest.json
 
 # Phase 2: Run from manifest
@@ -144,7 +146,7 @@ For quick tests without custom `env_vars`:
 
 ```bash
 madengine run --tags model_tag \
-  --additional-context-file examples/slurm-configs/minimal/torchrun-single-gpu-minimal.json
+  --additional-context-file examples/slurm-configs/minimal/single-gpu-minimal.json
 ```
 
 ### 3. CLI Override
@@ -166,7 +168,7 @@ madengine run --tags model_tag \
 ```bash
 # Use base config, override specific fields
 madengine run --tags model_tag \
-  --additional-context-file examples/slurm-configs/basic/03-multi-node-basic.json \
+  --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --additional-context '{"slurm": {"nodes": 4, "time": "48:00:00"}}'
 ```
 
@@ -390,22 +392,12 @@ madengine uses intelligent multi-layer configuration merging:
     "qos": "high",                   // Quality of Service
     "account": "project-name",       // SLURM account
     "network_interface": "ib0",      // Network interface (ib0/eth0)
-    "modules": ["rocm/5.7.0"],      // Environment modules to load
-    "enable_node_check": true,       // Run node health preflight before submission (default: true)
-    "auto_cleanup_nodes": false,     // Automatically clean up unhealthy nodes found during preflight (default: false)
-    "allow_submit_without_clean_nodes": false, // Submit even if fewer clean nodes than requested are found (default: false)
-    "verbose_node_check": false      // Print detailed node health-check output (default: false)
+    "modules": ["rocm/5.7.0"]       // Environment modules to load
   }
 }
 ```
 
 **nodelist**: When set to a comma-separated list of node names (e.g. `"node01,node02"`), the job runs only on those nodes. Automatic node health preflight is skipped when `nodelist` is set.
-
-**Node Health Preflight**: Before submitting multi-node jobs, madengine runs a health check across candidate nodes and pins the job to the healthy ones (skipped if `nodelist` is set).
-- **`enable_node_check`** (default `true`): Enables/disables the preflight health check.
-- **`auto_cleanup_nodes`** (default `false`): Automatically attempts to clean up unhealthy nodes found during preflight.
-- **`allow_submit_without_clean_nodes`** (default `false`): If fewer clean nodes are found than requested, submit anyway instead of failing.
-- **`verbose_node_check`** (default `false`): Print detailed health-check output during preflight.
 
 ### Distributed Execution Section
 
@@ -460,7 +452,7 @@ For slurm_multi, the model's `.slurm` script runs on baremetal and manages Docke
 
 ```bash
 madengine run --tags my_model \
-  --additional-context-file examples/slurm-configs/minimal/torchrun-single-gpu-minimal.json
+  --additional-context-file examples/slurm-configs/minimal/single-gpu-minimal.json
 ```
 
 ### Multi-Node Training
@@ -469,7 +461,7 @@ madengine run --tags my_model \
 # Build with config
 MODEL_DIR=models/my-model madengine build \
   --tags training \
-  --additional-context-file examples/slurm-configs/basic/03-multi-node-basic.json
+  --additional-context-file examples/slurm-configs/03-multi-node-basic.json
 
 # Run from manifest
 MODEL_DIR=models/my-model madengine run \
@@ -506,7 +498,7 @@ MODEL_DIR=models/llama2-70b madengine run \
 
 ```bash
 madengine build --tags my_model \
-  --additional-context-file examples/slurm-configs/basic/04-multi-node-advanced.json
+  --additional-context-file examples/slurm-configs/04-multi-node-advanced.json
 
 madengine run --manifest-file build_manifest.json
 ```
@@ -767,7 +759,7 @@ module load python/3.9
 # 3. Build with configuration
 MODEL_DIR=models/my-model madengine build \
   --tags llama2_training \
-  --additional-context-file examples/slurm-configs/basic/03-multi-node-basic.json \
+  --additional-context-file examples/slurm-configs/03-multi-node-basic.json \
   --manifest-output build_manifest.json
 
 # 4. Run from manifest

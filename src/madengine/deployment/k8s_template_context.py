@@ -31,7 +31,6 @@ from .primus_backend import (
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.core.dataprovider import Data
 from madengine.core.errors import ConfigurationError
-from madengine.core.image_digest import resolve_pinned_image
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root
 
@@ -484,15 +483,6 @@ class KubernetesTemplateContextMixin:
             else None
         )
 
-        # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
-        # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
-        resolved_image = resolve_pinned_image(
-            image_info["registry_image"],
-            image_info.get("image_digest"),
-            bool(additional_context.get("require_pinned_image")),
-            model_name=model_name,
-        )
-
         # Build complete context
         context = {
             # Job metadata
@@ -525,7 +515,7 @@ class KubernetesTemplateContextMixin:
             "data_provider_script": data_provider_script,
             "data_provider_script_content": data_provider_script_content,
             # Image
-            "image": resolved_image,
+            "image": image_info["registry_image"],
             "image_pull_policy": self.k8s_config.get("image_pull_policy", "Always"),
             # Resources
             "gpu_resource_name": self.gpu_resource_name,

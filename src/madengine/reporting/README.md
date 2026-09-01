@@ -26,41 +26,43 @@ from madengine.reporting.update_perf_csv import update_perf_csv, flatten_tags
 
 # Update CSV with new results
 update_perf_csv(
-    perf_csv="performance.csv",
-    single_result="results.json",
+    perf_json_path="results.json",
+    output_csv="performance.csv"
 )
 
-# Flatten nested tags in place (no return value)
-flatten_tags(perf_entry)  # mutates perf_entry in place
+# Flatten nested tags for CSV export
+flattened = flatten_tags(perf_entry)
 ```
 
-### **`update_perf_super.py`**
+---
 
-Maintains `perf_super.json`, a cumulative superset performance record that also
-captures matched config data, and provides conversion to `perf_super.csv` /
-`perf_entry_super.json` / `perf_entry_super.csv`.
+## 🗂️ Legacy Reporting Tools
 
-**Used by:**
-- ✅ `execution/container_runner.py` (modern madengine CLI)
+The following legacy-only reporting tools remain in `tools/`:
 
-### **`csv_to_html.py`**
+| File | Purpose | Used By | Status |
+|------|---------|---------|--------|
+| `tools/csv_to_html.py` | Convert CSV to HTML | `mad.py`, `run_models.py` | Legacy only |
+| `tools/csv_to_email.py` | Email CSV reports | `mad.py` | Legacy only |
 
-Converts a single CSV file to an HTML table. Provides the `ConvertCsvToHtml`
-handler class (`ConvertCsvToHtml.__init__(self, args: argparse.Namespace)`,
-`.run(self) -> bool`) used by the CLI.
+These tools are **NOT** used by the modern `madengine` CLI.
 
-**Used by:**
-- ✅ `cli/commands/report.py` (backs `madengine report to-html`)
+---
 
-### **`csv_to_email.py`**
+## 📋 Architecture Decision
 
-Converts all CSV files in a directory into a single consolidated HTML report
-suitable for emailing. Provides the `ConvertCsvToEmail` handler class
-(`ConvertCsvToEmail.__init__(self, args: argparse.Namespace)`, `.run(self) -> bool`)
-used by the CLI.
+**Why is `update_perf_csv.py` in `reporting/` instead of `tools/`?**
 
-**Used by:**
-- ✅ `cli/commands/report.py` (backs `madengine report to-email`)
+1. ✅ **Shared across architectures**: Used by both legacy and new CLI
+2. ✅ **Active development**: Not deprecated, actively maintained
+3. ✅ **Clear responsibility**: Performance data processing
+4. ✅ **Semantic clarity**: Reporting is a distinct concern
+
+**Why are other CSV tools still in `tools/`?**
+
+- They are **not used** by the modern `madengine` CLI
+- Kept for backward compatibility only
+- Will be deprecated when legacy CLI is retired
 
 ---
 
@@ -72,10 +74,10 @@ used by the CLI.
 from madengine.reporting.update_perf_csv import update_perf_csv
 
 # After model execution completes
-perf_csv = "/path/to/performance.csv"
 results_json = "/path/to/results.json"
+output_csv = "/path/to/performance.csv"
 
-update_perf_csv(perf_csv, single_result=results_json)
+update_perf_csv(results_json, output_csv)
 ```
 
 ### **Legacy madengine** (via `run_models.py` or `mad.py`)
@@ -104,10 +106,6 @@ Performance CSV
 (Optional) CSV → HTML (legacy only)
 (Optional) CSV → Email (legacy only)
 ```
-
-**Note:** As a side effect, `update_perf_csv()` (and the `handle_*_result()` helpers it
-calls) also always write/append `perf_entry.csv` and `perf_entry.json` with the
-latest result, regardless of the output file passed in.
 
 ---
 

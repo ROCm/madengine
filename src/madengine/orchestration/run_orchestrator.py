@@ -83,13 +83,6 @@ class RunOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
-
-        # The CLI flag and the require_pinned_image context key are equivalent;
-        # the key lets CI pipelines that drive madengine through
-        # --additional-context opt in the same way as for k8s/slurm/tools.
-        if getattr(args, "require_pinned_image", False):
-            self.additional_context["require_pinned_image"] = True
-
         keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
         self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
 
@@ -466,7 +459,6 @@ class RunOrchestrator:
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
-                "multiple_results": model.get("multiple_results", ""),
             }
         
         # Write manifest to file
@@ -503,15 +495,7 @@ class RunOrchestrator:
             if "context" not in manifest:
                 manifest["context"] = {}
             
-            merge_keys = [
-                "tools",
-                "pre_scripts",
-                "post_scripts",
-                "encapsulate_script",
-                # Persisted so nested runs on SLURM compute nodes (which re-enter
-                # `madengine run --manifest-file`) inherit the enforcement setting.
-                "require_pinned_image",
-            ]
+            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
             context_updated = False
             for key in merge_keys:
                 if key in self.additional_context:
@@ -780,17 +764,14 @@ class RunOrchestrator:
         self.console.sh("echo 'MAD Run Models'")
 
         host_os = self.context.ctx.get("host_os", "")
-        # This is purely informational, but a package manager can block forever on
-        # an interactive prompt (e.g. yum asking to import a repo GPG key) with no
-        # tty to answer it, so every query is capped.
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
+            print(self.console.sh("yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
+            print(self.console.sh("zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 

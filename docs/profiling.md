@@ -93,8 +93,6 @@ madengine uses `rocprof_wrapper.sh` to automatically handle the transition betwe
    ```
 3. **Backward Compatibility:** The `--` works with both rocprof and rocprofv3, ensuring your configurations work across ROCm versions
 
-**Related presets:** `rocprof_hip_only` (HIP trace only) and `rocprof_sys` (system trace only) wrap the same `rocprof_wrapper.sh` with fixed flags, for when you don't need a custom `cmd`.
-
 **Example - Custom Command with Wrapper:**
 ```json
 {
@@ -260,8 +258,6 @@ ROCprofv3 is the next-generation profiler for ROCm 7.0+ with enhanced features a
 - **Metrics**: Program counter sampling at 1000 Hz
 - **Output Format**: Perfetto trace with PC samples
 
-**Other presets:** `rocprofv3` (bare `--runtime-trace` invocation, no wrapper), `rocprofv3_agent` (CSV stats/kernel trace via `rocprof_wrapper.sh`), and `rocprofv3_agent_counter` (same as `rocprofv3_agent` plus hardware counters from `counters/instruction_mix.txt`) are also available as `{"name": "..."}` tool entries.
-
 #### Using Pre-Configured Profiles
 
 madengine provides ready-to-use configuration files in `examples/profiling-configs/`:
@@ -325,7 +321,6 @@ Custom counter files are in `scripts/common/tools/counters/`:
 - `memory_bound.txt` - Cache and memory metrics
 - `communication_bound.txt` - PCIe and synchronization metrics
 - `full_profile.txt` - Comprehensive metrics
-- `instruction_mix.txt` - Instruction mix metrics (used by `rocprofv3_agent_counter`)
 
 Create your own counter file:
 ```text
@@ -364,8 +359,6 @@ Trace rocBLAS API calls and configurations:
 - `library_trace.csv` with library call summary
 
 **Use Case:** Analyze BLAS operations, identify optimization opportunities
-
-**Related:** `hipblaslt_trace` traces hipBLASLt calls the same way (sets `HIPBLASLT_TRACE=1`).
 
 ### miopen_trace - MIOpen Library Tracing
 
@@ -516,6 +509,9 @@ Profile real-time GPU memory consumption:
 }
 ```
 This will generate both `gpu_info_power_profiler_output.csv` and `gpu_info_vram_profiler_output.csv`.
+- `SAMPLING_RATE` - Sampling interval in seconds
+- `MODE` - Must be `"vram"` for this tool
+- `DUAL-GCD` - Enable dual-GCD mode
 
 **Supported Platforms:** ROCm and CUDA
 
@@ -670,8 +666,8 @@ madengine run --tags model \
       {
         "name": "gpu_info_power_profiler",
         "env_vars": {
-          "POWER_DEVICE": "all",
-          "POWER_SAMPLING_RATE": "0.1"
+          "DEVICE": "all",
+          "SAMPLING_RATE": "0.1"
         }
       },
       {"name": "rccl_trace"}
@@ -781,7 +777,7 @@ Balance detail vs. overhead:
     {
       "name": "gpu_info_power_profiler",
       "env_vars": {
-        "POWER_SAMPLING_RATE": "1.0"  // Less overhead, less detail
+        "SAMPLING_RATE": "1.0"  // Less overhead, less detail
       }
     }
   ]
@@ -927,19 +923,15 @@ Tool defaults are defined in `scripts/common/tools.json`:
 ```json
 {
   "rocprof": {
-    "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --runtime-trace --",
-    "env_vars": {},
-    "post_scripts": [
-      {"path": "scripts/common/post_scripts/trace.sh", "args": "rocprof"}
-    ]
+    "cmd": "rocprof --hip-trace",
+    "env_vars": {}
   },
   "gpu_info_power_profiler": {
     "env_vars": {
-      "POWER_DEVICE": "all",
-      "POWER_SAMPLING_RATE": "0.1",
-      "POWER_MODE": "power",
-      "POWER_DUAL_GCD": "false",
-      "POWER_OUTPUT_FILE": "gpu_info_power_profiler_output.csv"
+      "DEVICE": "0",
+      "SAMPLING_RATE": "0.1",
+      "MODE": "power",
+      "DUAL-GCD": "false"
     }
   }
 }
@@ -964,7 +956,8 @@ Validate [TheRock](https://github.com/ROCm/TheRock) ROCm installations before ru
 
 ```bash
 madengine run --tags dummy_therock \
-  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU", "tools": [{"name": "therock_check"}]}'
+  --tools therock_check \
+  --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
 **Standalone detection:**

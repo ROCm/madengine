@@ -139,7 +139,7 @@ class Console:
         self,
         command: str,
         canFail: bool = False,
-        timeout: typing.Optional[int] = 60,
+        timeout: int = 60,
         secret: bool = False,
         prefix: str = "",
         env: typing.Optional[typing.Dict[str, str]] = None,
@@ -149,7 +149,7 @@ class Console:
         Args:
             command (str): The shell command.
             canFail (bool): The flag to allow failure.
-            timeout (typing.Optional[int]): The timeout in seconds; None waits indefinitely.
+            timeout (int): The timeout in seconds.
             secret (bool): The flag to hide the command.
             prefix (str): The prefix of the output.
             env (typing.Optional[typing.Dict[str, str]]): The environment variables.
@@ -228,12 +228,6 @@ class Console:
 
         # Check for failure
         success = proc.returncode == 0
-
-        # When output is captured rather than streamed it is discarded on
-        # failure, and the RuntimeError below carries only the command and the
-        # exit code. Echo it so the log records why the command actually failed.
-        if not success and not canFail and not secret and not self.live_output and outs:
-            print(redact_secrets(outs), flush=True)
 
         # Show docker operation completion status
         if not secret:

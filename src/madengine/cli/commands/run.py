@@ -106,18 +106,6 @@ def run(
             ),
         ),
     ] = False,
-    require_pinned_image: Annotated[
-        bool,
-        typer.Option(
-            "--require-pinned-image",
-            help=(
-                "Pull registry images by the digest recorded in the build manifest "
-                "instead of by tag. Fails immediately if the manifest has no digest "
-                "for an image. Equivalent to the 'require_pinned_image' "
-                "additional-context key."
-            ),
-        ),
-    ] = False,
     manifest_output: Annotated[
         str,
         typer.Option(
@@ -246,7 +234,6 @@ def run(
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
-                require_pinned_image=require_pinned_image,
                 _separate_phases=True,
             )
 
@@ -351,7 +338,6 @@ def run(
                 verbose=verbose,
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
-                require_pinned_image=require_pinned_image,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 

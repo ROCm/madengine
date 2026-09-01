@@ -61,7 +61,7 @@ pytest
 pytest --cov=src/madengine --cov-report=html
 
 # Run specific test file
-pytest tests/unit/test_cli.py
+pytest tests/test_cli.py
 
 # Run tests matching pattern
 pytest -k "test_build"

@@ -5,8 +5,6 @@ Keep new K8s-focused unit tests here to avoid many small `test_k8s_*.py` files.
 Integration/e2e tests stay in their own modules.
 """
 
-import json
-
 import pytest
 
 from madengine.deployment.k8s_names import (
@@ -26,13 +24,10 @@ from madengine.deployment.k8s_secrets import (
     build_registry_secret_data,
 )
 from madengine.deployment.kubernetes import (
-    KubernetesDeployment,
     _pod_job_name_label_selector,
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
-from madengine.core.errors import ConfigurationError
-from madengine.deployment.base import DeploymentConfig
 
 
 def test_merge_secrets_config_defaults():
@@ -279,72 +274,3 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="bogus")
         assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"
-
-
-class TestK8sRequirePinnedImage:
-    """The generated pod spec image field honours require_pinned_image."""
-
-    DIGEST = "sha256:" + "df36ef7e" * 8
-
-    def _template_context(self, tmp_path, monkeypatch, require_pinned, image_digest):
-        """Build a real template context, the way prepare() does.
-
-        _prepare_template_context reads the manifest and the model's scripts
-        directory from the current working directory, so the test runs inside
-        tmp_path with a minimal model tree.
-        """
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "scripts" / "dummy").mkdir(parents=True)
-        (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")
-
-        image_info = {"registry_image": "myorg/ci:m"}
-        if image_digest:
-            image_info["image_digest"] = image_digest
-        model_info = {
-            "name": "m",
-            "tags": ["t"],
-            "n_gpus": "1",
-            "args": "",
-            "scripts": "scripts/dummy/run.sh",
-            "dockerfile": "docker/dummy",
-        }
-        manifest = {
-            "built_images": {"img1": image_info},
-            "built_models": {"img1": model_info},
-            "context": {},
-        }
-        (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
-
-        additional_context = {
-            "k8s": {"namespace": "default"},
-            "gpu_vendor": "AMD",
-            "guest_os": "UBUNTU",
-        }
-        if require_pinned:
-            additional_context["require_pinned_image"] = True
-
-        cfg = DeploymentConfig(
-            target="k8s",
-            manifest_file="build_manifest.json",
-            additional_context=additional_context,
-        )
-        deployment = KubernetesDeployment(cfg)
-        return deployment._prepare_template_context(model_info, image_info)
-
-    def test_default_uses_tag(self, tmp_path, monkeypatch):
-        ctx = self._template_context(
-            tmp_path, monkeypatch, require_pinned=False, image_digest=self.DIGEST
-        )
-        assert ctx["image"] == "myorg/ci:m"
-
-    def test_enabled_uses_pinned_reference(self, tmp_path, monkeypatch):
-        ctx = self._template_context(
-            tmp_path, monkeypatch, require_pinned=True, image_digest=self.DIGEST
-        )
-        assert ctx["image"] == f"myorg/ci@{self.DIGEST}"
-
-    def test_enabled_without_digest_raises(self, tmp_path, monkeypatch):
-        with pytest.raises(ConfigurationError):
-            self._template_context(
-                tmp_path, monkeypatch, require_pinned=True, image_digest=None
-            )

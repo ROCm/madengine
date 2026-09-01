@@ -91,6 +91,7 @@ madengine run --tags dummy \
 ```bash
 # Check installation
 madengine --version
+madengine --version
 
 # Test basic functionality (requires MAD package)
 cd /path/to/MAD

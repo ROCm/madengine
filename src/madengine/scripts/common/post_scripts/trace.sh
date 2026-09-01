@@ -33,12 +33,8 @@ rpd)
 	if [ -f "./rocmProfileData/tools/rpd2tracing.py" ]; then
 		echo "RPD post-script: rpd2tracing.py found"
 		if [ -f "trace.rpd" ] && [ -s "trace.rpd" ]; then
-			if python3 ./rocmProfileData/tools/rpd2tracing.py trace.rpd trace.json; then
-				mv trace.rpd trace.json "$OUTPUT"
-			else
-				echo "RPD post-script: rpd2tracing.py failed (likely no captured trace data); saving raw trace.rpd only"
-				mv trace.rpd "$OUTPUT"
-			fi
+			python3 ./rocmProfileData/tools/rpd2tracing.py trace.rpd trace.json
+			mv trace.rpd trace.json "$OUTPUT"
 		else
 			echo "RPD post-script: Skipping rpd2tracing.py because trace.rpd is missing or empty"
 			# Create empty files so the directory structure exists
