@@ -95,7 +95,7 @@ through an external gateway instead of inside the benchmark container.
 madengine run --tags my_llm_d_benchmark --additional-context '{
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
-    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen3-32B", "hf_token_secret": "hf-token"},
+    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "hf_token_secret": "hf-token"},
     "gateway": "agentgateway",
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode":  {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
@@ -111,11 +111,53 @@ madengine run --tags my_llm_d_benchmark --additional-context '{
 What happens:
 
 1. `validate()` checks cluster access, GPU nodes, `helm`, pinned chart versions and CRDs.
-2. `prepare()` installs three helm releases in order — `*-infra`, `*-gaie`,
-   `*-modelservice` — then waits for the model-server Deployments and reads the
-   gateway address off the live `Gateway` resource.
+2. `prepare()` ensures the `madengine-shared-data` PVC exists if `model.uri` names it,
+   populates it with `model.hf_repo` if `model.cache_pvc` is set (see
+   [Model weights: `hf_repo` vs `uri`](#model-weights-hf_repo-vs-uri)), installs three helm
+   releases in order — `*-infra`, `*-gaie`, `*-modelservice` — then waits for the
+   model-server Deployments and reads the gateway address off the live `Gateway` resource.
 3. The benchmark client Job is rendered with that endpoint and submitted.
 4. On the way out — **success or failure** — the three releases are uninstalled.
+
+## Which container serves the model
+
+`prefill.image`/`decode.image` default to the **same image the `--tags`-selected model
+builds** for every other target — `madengine run --tags <model>` determines what serves
+the model here exactly as it does for `k8s`, not just what benchmarks it. Point `--tags`
+at a model whose Dockerfile is itself a serving container (vLLM/SGLang baked in and
+tuned, `pyt_vllm_*`-style in `scripts/vllm/models.json`), and that image — pinned to a
+digest when `require_pinned_image` is set, same as every other target — is what the
+prefill/decode pods run. `model.uri`/`hf_repo` still tell that image which weights to
+load; the Dockerfile supplies the serving stack, not the weights.
+
+Set `prefill.image`/`decode.image` explicitly to override this, e.g. to benchmark an
+upstream vLLM image unrelated to any madengine model build.
+
+## Model weights: `hf_repo` vs `uri`
+
+`model.uri` is the literal artifact URI the modelservice chart reads. `model.hf_repo` is
+shorthand for the common case: set it to an HF repo id and madengine builds
+`hf://<hf_repo>` itself. Either way, plain `hf://` downloads the model fresh on **every**
+standup — the chart's `hf://` scheme has no caching of its own.
+
+The chart's `pvc://`/`pvc+hf://` schemes look like a caching mechanism but are not one:
+they only **mount** an already-populated PVC by claim name — they contain no download
+logic. Set `model.cache_pvc` to a PVC name alongside `hf_repo` to get real caching:
+madengine downloads the repo onto that PVC itself, in a one-off Job it runs before
+`helm install` (bounded by `model.cache_timeout`, default `7200` seconds), then points the
+chart at `pvc+hf://<cache_pvc>/hf_hub_cache/<hf_repo>`. Re-runs against the same PVC are
+fast — the download Job still starts, but `huggingface_hub.snapshot_download`'s own
+per-file check means it re-verifies rather than re-downloads. If `cache_pvc` is
+`madengine-shared-data`, madengine creates the PVC itself (the same PVC the `k8s` target
+already manages for datasets; see `k8s_pvc.py`) so there is something to populate;
+anything else must already exist. `model.cache_job_image` overrides the download Job's
+image (default `python:3.11-slim`); `model.hf_token_secret` is reused for the download
+Job's own `HF_TOKEN` env var (same Secret and key, `HF_TOKEN`, the chart itself reads).
+
+An explicit `model.uri` always wins over `hf_repo`/`cache_pvc`, so a raw `hf://` or
+`pvc://` URI still works unchanged — set it directly if you'd rather pre-populate a PVC
+out-of-band (see llm-d-modelservice's own `examples/pvc/README.md`) instead of using
+madengine's own download Job.
 
 ### Always dry-run first
 
@@ -198,14 +240,18 @@ config, so you only specify what differs.
 | `dry_run` | `false` | Render values + `helm template`, install nothing |
 | `release_prefix` | `"madengine"` | Prefix for the three helm release names |
 | `gateway` | `"agentgateway"` | `gatewayClassName` and GAIE provider |
-| `model.uri` | `null` | Artifact the servers load, e.g. `hf://Qwen/Qwen3-32B`. Required in managed mode |
+| `model.uri` | `null` | Artifact the servers load, e.g. `hf://Qwen/Qwen3-32B`. Required in managed mode unless `hf_repo` is set |
+| `model.hf_repo` | `null` | Simpler alternative to `uri`: an HF repo id, e.g. `Qwen/Qwen3-32B`. Resolves to `hf://<hf_repo>` (re-downloaded every run), or to `pvc+hf://<cache_pvc>/hf_hub_cache/<hf_repo>` if `cache_pvc` is also set. Ignored if `uri` is set |
+| `model.cache_pvc` | `null` | PVC to cache `hf_repo` onto. madengine downloads it there once, in a Job run before standup, instead of re-downloading every run |
+| `model.cache_timeout` | `7200` | Bounds the cache-population Job, seconds |
+| `model.cache_job_image` | `null` | Image for the cache-population Job. Defaults to `python:3.11-slim` |
 | `model.name` | `null` | Model name in requests and `perf.csv`. **Required in both modes** |
-| `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token |
+| `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token (key `HF_TOKEN`). Also used by the cache-population Job |
 | `model.size` | `null` | Size of the model-artifact volume |
 | `prefill.replicas` | `1` | `0` disables the prefill role (aggregated serving) |
 | `prefill.tensor_parallel` | `1` | `--tensor-parallel-size` |
 | `prefill.gpu_count` | `1` | GPUs per prefill pod |
-| `prefill.image` | unset | Override the model-server image |
+| `prefill.image` | the `--tags`-selected model's own built image | Override the model-server image |
 | `decode.*` | same shape | Decode role |
 | `charts.<c>.ref` | OCI refs | Chart location; override for an air-gapped mirror |
 | `charts.<c>.version` | `null` | **Must be pinned** in managed mode |
@@ -295,6 +341,9 @@ role at all, and all traffic goes to decode pods:
 Things worth knowing before you point this at a shared cluster:
 
 - **Nothing is torn down that madengine did not install.** Attach mode never uninstalls.
+- **The shared-data PVC is never deleted.** `madengine-shared-data`, created on demand for
+  a `pvc://`/`pvc+hf://` `model.uri`, outlives teardown — that is the point, so a cached
+  model survives to the next run.
 - **A failed standup unwinds.** If `*-modelservice` fails, `*-gaie` and `*-infra` are
   uninstalled in reverse order before the error is reported. A half-installed stack
   holding GPUs is the outcome this is designed to prevent. Set `teardown: false` to keep
@@ -304,6 +353,10 @@ Things worth knowing before you point this at a shared cluster:
   GPU-holding releases.
 - **A teardown failure never masks your results.** It is logged with the exact
   `helm uninstall` command to run by hand, and the benchmark result is returned unchanged.
+- **Cache population is a standalone Job.** When `model.cache_pvc` is set, madengine runs a
+  one-off download Job before `helm install`, bounded by `model.cache_timeout`, and deletes
+  the Job object afterwards either way — only the downloaded weights persist on the PVC. A
+  failed download unwinds like any other standup failure.
 - **Readiness is two-stage.** `helm --wait` can return before a model server has finished
   loading weights, so madengine additionally polls the model-server Deployments. If those
   Deployments carry unexpected labels, it says so and moves on rather than blocking a run

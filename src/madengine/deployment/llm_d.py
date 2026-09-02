@@ -23,13 +23,15 @@ Two modes:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import shlex
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from madengine.core.console import Console as ShellConsole
 from madengine.core.errors import ConfigurationError
+from madengine.core.image_digest import resolve_pinned_image
 
 from .base import DeploymentResult, DeploymentStatus
 from .config_loader import ConfigLoader, apply_deployment_config
@@ -82,6 +84,11 @@ class LlmdDeployment(KubernetesDeployment):
 
         self.llmd_config: Dict[str, Any] = config.additional_context.get("llm_d", {})
         self.endpoint_url: Optional[str] = self.llmd_config.get("endpoint_url")
+
+        # --tags selects the model everywhere else (local, k8s, slurm); do the
+        # same here before anything reads model.uri or prefill/decode.image.
+        self._resolve_model_uri()
+        self._resolve_model_images()
 
         # Releases installed by this run, newest last. Used to unwind a partial
         # standup and to tear down on the way out.
@@ -137,6 +144,243 @@ class LlmdDeployment(KubernetesDeployment):
         )
         # Helm release names are DNS labels: no dots.
         return sanitize_k8s_container_name(name, max_len=_MAX_RELEASE_PREFIX_LEN)
+
+    def _resolve_model_uri(self) -> None:
+        """Default ``model.uri`` from the simpler ``hf_repo`` field.
+
+        With ``hf_repo`` alone, ``model.uri`` becomes ``hf://<hf_repo>``, which
+        re-downloads the model on every standup — sugar, not a PVC-caching
+        mechanism. With ``hf_repo`` and ``cache_pvc`` both set, ``model.uri``
+        instead becomes ``pvc+hf://<cache_pvc>/hf_hub_cache/<hf_repo>``, and
+        ``_populate_model_cache`` downloads the repo onto that PVC before
+        standup so the chart's ``pvc+hf://`` scheme — which only mounts an
+        *already populated* PVC and contains no download logic of its own —
+        has something to mount. An explicit ``model.uri`` always wins here, so
+        this is opt-in and changes nothing for existing configs.
+        """
+        model = self.llmd_config.get("model")
+        if not model or model.get("uri") or not model.get("hf_repo"):
+            return
+        if model.get("cache_pvc"):
+            model["uri"] = (
+                f"pvc+hf://{model['cache_pvc']}/hf_hub_cache/{model['hf_repo']}"
+            )
+        else:
+            model["uri"] = f"hf://{model['hf_repo']}"
+
+    def _resolve_model_images(self) -> None:
+        """Default prefill/decode.image to the ``--tags``-selected model's own
+        built image, unless the user already named one explicitly.
+
+        Every other target (local, k8s, slurm) runs the image built from the
+        selected model's own Dockerfile; llm-d's model-server roles did not,
+        because ``prefill.image``/``decode.image`` had no default. This makes
+        ``--tags`` determine what actually serves the model here too — the
+        chart still needs ``model.uri``/``hf_repo`` to know which weights to
+        load into that image.
+        """
+        model_keys = list(self.manifest.get("built_models", {}).keys())
+        if not model_keys:
+            return
+        image_info = self.manifest.get("built_images", {}).get(model_keys[0], {})
+        built_image = image_info.get("registry_image") or image_info.get("docker_image")
+        if not built_image:
+            return
+
+        resolved_image = resolve_pinned_image(
+            built_image,
+            image_info.get("image_digest"),
+            bool(self.config.additional_context.get("require_pinned_image")),
+            model_name=model_keys[0],
+        )
+        for role in ("prefill", "decode"):
+            role_config = self.llmd_config.setdefault(role, {})
+            role_config.setdefault("image", resolved_image)
+
+    def _ensure_model_pvc(self) -> None:
+        """Create the shared-data PVC an explicit ``model.uri`` names, if it is
+        the one madengine itself manages.
+
+        The chart only *mounts* the named PVC by ``claimName`` — it never
+        creates or populates one (see ``_resolve_model_uri``). Only
+        ``madengine-shared-data`` is madengine's to create — the exact PVC
+        :class:`~madengine.deployment.k8s_pvc.KubernetesPVCMixin` already
+        creates or reuses for the k8s target's datasets — so this only saves
+        the user a manual ``kubectl apply`` before it gets populated, whether
+        by ``_populate_model_cache`` or by hand out-of-band. A ``uri`` naming
+        any other PVC is assumed to already exist, the same assumption managed
+        mode makes about the namespace itself.
+        """
+        uri = ((self.llmd_config.get("model") or {}).get("uri")) or ""
+        if not (uri.startswith("pvc://") or uri.startswith("pvc+hf://")):
+            return
+        pvc_name = uri.split("://", 1)[1].split("/", 1)[0]
+        if pvc_name != "madengine-shared-data":
+            return
+        self.console.print(f"[dim]Ensuring model PVC '{pvc_name}' exists...[/dim]")
+        self._create_or_get_data_pvc()
+
+    def _populate_model_cache(self) -> None:
+        """Download ``model.hf_repo`` onto ``model.cache_pvc`` once, ahead of
+        standup, so the chart's ``pvc+hf://`` scheme has something to mount.
+
+        Skipped unless ``cache_pvc`` is set — the default remains the
+        ``hf://`` re-download-every-run behaviour ``_resolve_model_uri``
+        already produces. Idempotency is left to
+        ``huggingface_hub.snapshot_download``'s own per-file check: a repeat
+        run still spins up the Job, it just re-verifies rather than
+        re-downloads. Job names are not unique per run — Job specs are
+        immutable, so a stale Job from a previous run is deleted before a
+        fresh one is created, the same convergence goal ``helm upgrade
+        --install`` serves for the three chart releases.
+        """
+        model = self.llmd_config.get("model") or {}
+        cache_pvc = model.get("cache_pvc")
+        hf_repo = model.get("hf_repo")
+        if not cache_pvc or not hf_repo:
+            return
+
+        job_name = sanitize_k8s_container_name(f"{self._release_prefix()}-hf-cache")
+        timeout = int(model.get("cache_timeout", 7200))
+
+        self.console.print(
+            f"[blue]Populating '{hf_repo}' onto PVC '{cache_pvc}'...[/blue]"
+        )
+        self._delete_cache_job(job_name)
+        self.batch_v1.create_namespaced_job(
+            namespace=self.namespace,
+            body=self._cache_job_manifest(job_name, cache_pvc, hf_repo, model, timeout),
+        )
+        try:
+            self._wait_for_cache_job(job_name, timeout)
+            self.console.print(
+                f"[green]✓ '{hf_repo}' cached on PVC '{cache_pvc}'[/green]"
+            )
+        finally:
+            self._delete_cache_job(job_name)
+
+    def _cache_job_manifest(
+        self,
+        job_name: str,
+        cache_pvc: str,
+        hf_repo: str,
+        model: Dict[str, Any],
+        timeout: int,
+    ) -> Dict[str, Any]:
+        """Build the one-off download Job as a plain dict, matching
+        ``llm_d_stack.py``'s style for this family of files.
+
+        Pip-installs ``huggingface_hub`` on demand rather than requiring a
+        custom image, the same convention
+        ``scripts/k8s/data/download_aws.sh`` uses for the AWS CLI. The
+        resulting cache directory layout (``models--<org>--<repo>/...`` under
+        ``cache_dir``) is exactly what the modelservice chart's ``HF_HUB_CACHE``
+        expects to find.
+        """
+        image = model.get("cache_job_image") or "python:3.11-slim"
+        download_script = (
+            "import os\n"
+            "from huggingface_hub import snapshot_download\n"
+            f"snapshot_download(repo_id={hf_repo!r}, "
+            "cache_dir='/data/hf_hub_cache', "
+            "token=os.environ.get('HF_TOKEN'))\n"
+        )
+        command = [
+            "sh",
+            "-c",
+            "pip install --no-cache-dir -q -U 'huggingface_hub[hf_transfer]' && "
+            f"python -c {shlex.quote(download_script)}",
+        ]
+
+        env: List[Dict[str, Any]] = [
+            {"name": "HF_HUB_ENABLE_HF_TRANSFER", "value": "1"}
+        ]
+        if model.get("hf_token_secret"):
+            # Same Secret and key the modelservice chart itself reads
+            # (llm-d-modelservice's _helpers.tpl: authSecretName -> HF_TOKEN).
+            env.append(
+                {
+                    "name": "HF_TOKEN",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": model["hf_token_secret"],
+                            "key": "HF_TOKEN",
+                        }
+                    },
+                }
+            )
+
+        return {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {"name": job_name, "namespace": self.namespace},
+            "spec": {
+                "backoffLimit": 1,
+                "activeDeadlineSeconds": timeout,
+                "template": {
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [
+                            {
+                                "name": "populate-cache",
+                                "image": image,
+                                "command": command,
+                                "env": env,
+                                "volumeMounts": [
+                                    {"name": "cache", "mountPath": "/data"}
+                                ],
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "cache",
+                                "persistentVolumeClaim": {"claimName": cache_pvc},
+                            }
+                        ],
+                    }
+                },
+            },
+        }
+
+    def _wait_for_cache_job(self, job_name: str, timeout: int) -> None:
+        """Poll the download Job until it succeeds, fails, or times out."""
+        deadline = time.monotonic() + timeout
+        while True:
+            job = self.batch_v1.read_namespaced_job_status(
+                name=job_name, namespace=self.namespace
+            )
+            if job.status.succeeded:
+                return
+            if job.status.failed:
+                raise ConfigurationError(
+                    f"Model-cache download Job '{job_name}' failed. Inspect it "
+                    f"with 'kubectl -n {self.namespace} logs job/{job_name}'."
+                )
+            if time.monotonic() >= deadline:
+                raise ConfigurationError(
+                    f"Timed out after {timeout}s waiting for model-cache "
+                    f"download Job '{job_name}'. Large models can exceed the "
+                    "default; raise llm_d.model.cache_timeout, or inspect with "
+                    f"'kubectl -n {self.namespace} logs job/{job_name}'."
+                )
+            time.sleep(_READINESS_POLL_INTERVAL)
+
+    def _delete_cache_job(self, job_name: str) -> None:
+        """Delete the download Job, ignoring not-found. Never raises."""
+        from kubernetes.client.rest import ApiException
+
+        try:
+            self.batch_v1.delete_namespaced_job(
+                name=job_name,
+                namespace=self.namespace,
+                propagation_policy="Background",
+            )
+        except ApiException as e:
+            if e.status != 404:
+                self.console.print(
+                    f"[yellow]⚠ Could not delete model-cache Job '{job_name}': "
+                    f"{e}[/yellow]"
+                )
 
     @property
     def stack(self) -> LlmdStack:
@@ -215,7 +459,9 @@ class LlmdDeployment(KubernetesDeployment):
         if not model_uri:
             self.console.print(
                 "[red]✗ llm_d.model.uri is required in managed mode — it is the "
-                "artifact the model servers load (e.g. 'hf://Qwen/Qwen3-32B').[/red]\n"
+                "artifact the model servers load. Set llm_d.model.hf_repo instead "
+                "(e.g. 'Qwen/Qwen3-32B') to have madengine build "
+                "'hf://Qwen/Qwen3-32B' for you.[/red]\n"
                 "[yellow]  Set llm_d.endpoint_url instead to benchmark an existing "
                 "stack.[/yellow]"
             )
@@ -298,6 +544,8 @@ class LlmdDeployment(KubernetesDeployment):
             LlmdStackError: If any helm operation fails.
             ConfigurationError: If the stack comes up but publishes no address.
         """
+        self._ensure_model_pvc()
+        self._populate_model_cache()
         values_paths = self.stack.write_values(self.output_dir)
         self.console.print(
             f"[dim]Rendered llm-d chart values to {self.output_dir}[/dim]"

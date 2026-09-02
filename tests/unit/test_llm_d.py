@@ -41,7 +41,9 @@ ATTACH_CONTEXT = {
 }
 
 
-def _build_deployment(tmp_path: Path, additional_context: dict):
+def _build_deployment(
+    tmp_path: Path, additional_context: dict, built_images: dict = None
+):
     """A real LlmdDeployment over a minimal manifest, with the k8s client mocked."""
     scripts_dir = tmp_path / "scripts" / "dummy_llm_d"
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +53,8 @@ def _build_deployment(tmp_path: Path, additional_context: dict):
     manifest_file.write_text(
         json.dumps(
             {
-                "built_images": {"dummy_llm_d": {"docker_image": "client:latest"}},
+                "built_images": built_images
+                or {"dummy_llm_d": {"docker_image": "client:latest"}},
                 "built_models": {"dummy_llm_d": MODEL_ENTRY},
                 "context": {
                     "docker_env_vars": {},
@@ -632,3 +635,497 @@ class TestTeardown:
             deployment._teardown_stack()
 
         uninstall.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_model_uri(): hf_repo -> hf:// URI shorthand
+# ---------------------------------------------------------------------------
+
+
+class TestResolveModelUri:
+    def test_hf_repo_becomes_hf_uri(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+            },
+        )
+
+        assert deployment.llmd_config["model"]["uri"] == "hf://Qwen/Qwen3-32B"
+
+    def test_explicit_uri_wins_over_hf_repo(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "uri": "hf://explicit/repo",
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+
+        assert deployment.llmd_config["model"]["uri"] == "hf://explicit/repo"
+
+    def test_neither_uri_nor_hf_repo_leaves_uri_unset(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path, {"k8s": {}, "llm_d": {"model": {"name": "Qwen3-32B"}}}
+        )
+
+        assert deployment.llmd_config["model"]["uri"] is None
+
+    def test_hf_repo_with_cache_pvc_becomes_pvc_hf_uri(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+
+        assert deployment.llmd_config["model"]["uri"] == (
+            "pvc+hf://madengine-shared-data/hf_hub_cache/Qwen/Qwen3-32B"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _resolve_model_images(): --tags built image -> prefill/decode.image
+# ---------------------------------------------------------------------------
+
+
+class TestResolveModelImages:
+    def test_registry_image_defaults_both_roles(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            ATTACH_CONTEXT,
+            built_images={
+                "dummy_llm_d": {
+                    "docker_image": "client:latest",
+                    "registry_image": "registry.example.com/dummy_llm_d:latest",
+                }
+            },
+        )
+
+        assert (
+            deployment.llmd_config["prefill"]["image"]
+            == "registry.example.com/dummy_llm_d:latest"
+        )
+        assert (
+            deployment.llmd_config["decode"]["image"]
+            == "registry.example.com/dummy_llm_d:latest"
+        )
+
+    def test_falls_back_to_docker_image_without_a_registry_image(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            ATTACH_CONTEXT,
+            built_images={"dummy_llm_d": {"docker_image": "client:latest"}},
+        )
+
+        assert deployment.llmd_config["prefill"]["image"] == "client:latest"
+        assert deployment.llmd_config["decode"]["image"] == "client:latest"
+
+    def test_explicit_role_image_is_not_overridden(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                **ATTACH_CONTEXT,
+                "llm_d": {
+                    **ATTACH_CONTEXT["llm_d"],
+                    "prefill": {"image": "custom/prefill:pinned"},
+                },
+            },
+            built_images={
+                "dummy_llm_d": {
+                    "docker_image": "client:latest",
+                    "registry_image": "registry.example.com/dummy_llm_d:latest",
+                }
+            },
+        )
+
+        assert deployment.llmd_config["prefill"]["image"] == "custom/prefill:pinned"
+        # The sibling role, untouched by the user, still gets the default.
+        assert (
+            deployment.llmd_config["decode"]["image"]
+            == "registry.example.com/dummy_llm_d:latest"
+        )
+
+    def test_digest_pinning_applied_when_required(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {**ATTACH_CONTEXT, "require_pinned_image": True},
+            built_images={
+                "dummy_llm_d": {
+                    "docker_image": "client:latest",
+                    "registry_image": "registry.example.com/dummy_llm_d:latest",
+                    "image_digest": "sha256:" + "a" * 64,
+                }
+            },
+        )
+
+        assert deployment.llmd_config["prefill"]["image"] == (
+            "registry.example.com/dummy_llm_d@sha256:" + "a" * 64
+        )
+
+
+# ---------------------------------------------------------------------------
+# _ensure_model_pvc(): create madengine's own shared-data PVC, and only that one
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureModelPvc:
+    def test_creates_the_default_shared_data_pvc(self, tmp_path):
+        """An explicit uri naming madengine's own shared PVC gets it created."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "uri": "pvc+hf://madengine-shared-data/hf_hub_cache/Qwen/Qwen3-32B",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+
+        with patch.object(deployment, "_create_or_get_data_pvc") as create_pvc:
+            deployment._ensure_model_pvc()
+
+        create_pvc.assert_called_once()
+
+    def test_does_not_create_a_custom_pvc_name(self, tmp_path):
+        """A uri naming any other PVC is assumed to already exist."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "uri": "pvc://my-model-cache/path/to/model",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+
+        with patch.object(deployment, "_create_or_get_data_pvc") as create_pvc:
+            deployment._ensure_model_pvc()
+
+        create_pvc.assert_not_called()
+
+    def test_does_not_create_anything_for_a_plain_hf_uri(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {"model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+            },
+        )
+
+        with patch.object(deployment, "_create_or_get_data_pvc") as create_pvc:
+            deployment._ensure_model_pvc()
+
+        create_pvc.assert_not_called()
+
+    def test_is_called_first_by_standup(self, tmp_path):
+        """Backstop: the PVC must exist before the chart values are written."""
+        from unittest.mock import PropertyMock
+
+        from madengine.deployment.llm_d import COMPONENTS
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+            },
+        )
+
+        calls = []
+
+        def _write_values(*a, **k):
+            calls.append("write_values")
+            return {c: f"/tmp/{c}.yaml" for c in COMPONENTS}
+
+        stack = MagicMock()
+        stack.write_values.side_effect = _write_values
+
+        with (
+            patch.object(
+                type(deployment), "stack", new_callable=PropertyMock
+            ) as stack_prop,
+            patch.object(
+                deployment,
+                "_ensure_model_pvc",
+                side_effect=lambda: calls.append("ensure_pvc"),
+            ),
+            patch.object(deployment, "_wait_for_model_servers"),
+            patch.object(deployment, "_resolve_endpoint", return_value="http://gw"),
+        ):
+            stack_prop.return_value = stack
+            deployment._standup()
+
+        assert calls == ["ensure_pvc", "write_values"]
+
+
+# ---------------------------------------------------------------------------
+# _populate_model_cache(): download hf_repo onto cache_pvc before standup
+# ---------------------------------------------------------------------------
+
+
+def _succeeded_job():
+    job = MagicMock()
+    job.status.succeeded = 1
+    job.status.failed = None
+    return job
+
+
+def _failed_job():
+    job = MagicMock()
+    job.status.succeeded = None
+    job.status.failed = 1
+    return job
+
+
+class TestPopulateModelCache:
+    def test_skips_when_cache_pvc_unset(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+            },
+        )
+
+        deployment._populate_model_cache()
+
+        deployment.batch_v1.create_namespaced_job.assert_not_called()
+
+    def test_skips_when_hf_repo_unset(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+
+        deployment._populate_model_cache()
+
+        deployment.batch_v1.create_namespaced_job.assert_not_called()
+
+    def test_creates_job_mounting_the_cache_pvc(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "hf_token_secret": "hf-token",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _succeeded_job()
+
+        deployment._populate_model_cache()
+
+        deployment.batch_v1.create_namespaced_job.assert_called_once()
+        _, kwargs = deployment.batch_v1.create_namespaced_job.call_args
+        job_body = kwargs["body"]
+        pod_spec = job_body["spec"]["template"]["spec"]
+        assert pod_spec["volumes"][0]["persistentVolumeClaim"]["claimName"] == (
+            "madengine-shared-data"
+        )
+        container = pod_spec["containers"][0]
+        assert container["volumeMounts"][0]["mountPath"] == "/data"
+        assert "Qwen/Qwen3-32B" in container["command"][-1]
+        env_names = {e["name"] for e in container["env"]}
+        assert "HF_TOKEN" in env_names
+        hf_token_env = next(e for e in container["env"] if e["name"] == "HF_TOKEN")
+        assert hf_token_env["valueFrom"]["secretKeyRef"] == {
+            "name": "hf-token",
+            "key": "HF_TOKEN",
+        }
+
+    def test_no_hf_token_env_without_a_secret(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _succeeded_job()
+
+        deployment._populate_model_cache()
+
+        _, kwargs = deployment.batch_v1.create_namespaced_job.call_args
+        container = kwargs["body"]["spec"]["template"]["spec"]["containers"][0]
+        env_names = {e["name"] for e in container["env"]}
+        assert "HF_TOKEN" not in env_names
+
+    def test_job_name_derived_from_release_prefix(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _succeeded_job()
+
+        deployment._populate_model_cache()
+
+        expected_name = f"{deployment._release_prefix()}-hf-cache"
+        _, kwargs = deployment.batch_v1.create_namespaced_job.call_args
+        assert kwargs["body"]["metadata"]["name"] == expected_name
+        deployment.batch_v1.read_namespaced_job_status.assert_called_with(
+            name=expected_name, namespace=deployment.namespace
+        )
+
+    def test_deletes_the_job_on_success(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _succeeded_job()
+
+        deployment._populate_model_cache()
+
+        expected_name = f"{deployment._release_prefix()}-hf-cache"
+        # Once to clear any stale Job from a prior run, once after this run.
+        assert deployment.batch_v1.delete_namespaced_job.call_count == 2
+        for _, kwargs in deployment.batch_v1.delete_namespaced_job.call_args_list:
+            assert kwargs["name"] == expected_name
+
+    def test_a_failed_job_raises_and_is_still_deleted(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _failed_job()
+
+        with pytest.raises(ConfigurationError):
+            deployment._populate_model_cache()
+
+        assert deployment.batch_v1.delete_namespaced_job.call_count == 2
+
+    def test_a_failed_download_unwinds_via_prepare(self, tmp_path):
+        """End-to-end: a failed cache population propagates into prepare()'s
+        existing unwind path, same as any other standup failure."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _failed_job()
+
+        with patch.object(deployment, "_unwind") as unwind:
+            result = deployment.prepare()
+
+        assert result is False
+        unwind.assert_called_once()
+
+    def test_is_called_between_ensure_pvc_and_write_values(self, tmp_path):
+        from unittest.mock import PropertyMock
+
+        from madengine.deployment.llm_d import COMPONENTS
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.return_value = _succeeded_job()
+
+        calls = []
+        stack = MagicMock()
+        stack.write_values.side_effect = lambda *a, **k: (
+            calls.append("write_values") or {c: f"/tmp/{c}.yaml" for c in COMPONENTS}
+        )
+
+        with (
+            patch.object(
+                type(deployment), "stack", new_callable=PropertyMock
+            ) as stack_prop,
+            patch.object(
+                deployment,
+                "_ensure_model_pvc",
+                side_effect=lambda: calls.append("ensure_pvc"),
+            ),
+            patch.object(deployment, "_wait_for_model_servers"),
+            patch.object(deployment, "_resolve_endpoint", return_value="http://gw"),
+        ):
+            stack_prop.return_value = stack
+            deployment._standup()
+
+        assert calls == ["ensure_pvc", "write_values"]
+        deployment.batch_v1.create_namespaced_job.assert_called_once()

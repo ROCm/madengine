@@ -17,6 +17,14 @@ Each model repo above is one MAD already tracks for standalone vLLM benchmarking
 container; these configs benchmark the *same* repos served instead through an
 external llm-d gateway, with disaggregated prefill/decode where it matters.
 
+`model.hf_repo` (02) is shorthand for `model.uri: "hf://<hf_repo>"` — simplest to write, but
+re-downloads the model on every standup. `03` adds `model.cache_pvc`, since re-downloading
+1.5TiB every run is impractical: madengine downloads the repo onto that PVC itself, in a Job
+it runs before standup, and reuses it on later runs (the chart's own `pvc://`/`pvc+hf://`
+schemes only mount an already-populated PVC — they have no download logic of their own).
+`04` uses a literal `model.uri`, with the plain `hf://` scheme. See
+[Model weights: `hf_repo` vs `uri`](../../docs/llm-d.md#model-weights-hf_repo-vs-uri).
+
 ## Usage
 
 ```bash
