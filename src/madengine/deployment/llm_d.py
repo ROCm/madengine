@@ -594,9 +594,13 @@ class LlmdDeployment(KubernetesDeployment):
         A stack whose Deployments carry different labels than expected is not
         an error — ``helm --wait`` already gated readiness once, so this stage
         reports that it found nothing to watch and moves on rather than
-        blocking a run that would otherwise succeed.
+        blocking a run that would otherwise succeed. The same applies if the
+        API call itself fails (e.g. RBAC forbids listing Deployments): this
+        stage is best-effort on top of helm's own readiness gate, not a hard
+        requirement.
         """
         from kubernetes import client
+        from kubernetes.client.rest import ApiException
 
         selector = (
             f"app.kubernetes.io/instance={self.stack.release_name('modelservice')}"
@@ -607,9 +611,16 @@ class LlmdDeployment(KubernetesDeployment):
         )
 
         while True:
-            deployments = apps_v1.list_namespaced_deployment(
-                namespace=self.namespace, label_selector=selector
-            ).items
+            try:
+                deployments = apps_v1.list_namespaced_deployment(
+                    namespace=self.namespace, label_selector=selector
+                ).items
+            except ApiException as e:
+                self.console.print(
+                    f"[yellow]⚠ Could not list model-server Deployments ({e}); "
+                    "relying on helm's own readiness gate[/yellow]"
+                )
+                return
 
             if not deployments:
                 self.console.print(

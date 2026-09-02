@@ -1233,3 +1233,80 @@ class TestResolveEndpoint:
         """Some providers label the Gateway after its class, not the release."""
         _, url = self._resolve(tmp_path, [_gateway("gw", address="10.0.0.9")])
         assert url == "http://10.0.0.9:8000"
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_model_servers(): best-effort on top of helm's own readiness gate
+# ---------------------------------------------------------------------------
+
+
+def _deployment(ready_replicas, replicas, name="model-server"):
+    dep = MagicMock()
+    dep.metadata.name = name
+    dep.status.ready_replicas = ready_replicas
+    dep.spec.replicas = replicas
+    return dep
+
+
+class TestWaitForModelServers:
+    MANAGED_CONTEXT = {
+        "k8s": {},
+        "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+    }
+
+    def _deployment_with_apps_v1(self, tmp_path, apps_v1):
+        deployment = _build_deployment(tmp_path, dict(self.MANAGED_CONTEXT))
+        with patch("kubernetes.client.AppsV1Api", return_value=apps_v1):
+            deployment._wait_for_model_servers()
+        return deployment
+
+    def test_no_matching_deployments_returns(self, tmp_path):
+        apps_v1 = MagicMock()
+        apps_v1.list_namespaced_deployment.return_value.items = []
+
+        self._deployment_with_apps_v1(tmp_path, apps_v1)  # must not raise
+
+    def test_ready_deployments_return(self, tmp_path):
+        apps_v1 = MagicMock()
+        apps_v1.list_namespaced_deployment.return_value.items = [
+            _deployment(ready_replicas=2, replicas=2)
+        ]
+
+        self._deployment_with_apps_v1(tmp_path, apps_v1)  # must not raise
+
+    def test_api_failure_is_best_effort_not_fatal(self, tmp_path):
+        """RBAC forbidding list_namespaced_deployment must not abort the run.
+
+        helm --wait already gated readiness once; this stage is a bonus that
+        degrades to a warning when the API call itself fails.
+        """
+        from kubernetes.client.rest import ApiException
+
+        apps_v1 = MagicMock()
+        apps_v1.list_namespaced_deployment.side_effect = ApiException(
+            status=403, reason="Forbidden"
+        )
+
+        self._deployment_with_apps_v1(tmp_path, apps_v1)  # must not raise
+
+    def test_timeout_still_raises(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"},
+                    "readiness_timeout": 0,
+                },
+            },
+        )
+        apps_v1 = MagicMock()
+        apps_v1.list_namespaced_deployment.return_value.items = [
+            _deployment(ready_replicas=0, replicas=2)
+        ]
+
+        with patch("kubernetes.client.AppsV1Api", return_value=apps_v1):
+            with pytest.raises(ConfigurationError, match="Timed out"):
+                deployment._wait_for_model_servers()
