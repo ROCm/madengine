@@ -104,8 +104,15 @@ def register_default_deployments():
 
         DeploymentFactory.register("llm-d", LlmdDeployment)
         DeploymentFactory.register("llm_d", LlmdDeployment)
-    except ImportError:
-        pass
+    except Exception as e:  # noqa: BLE001 - llm-d must never break registration
+        import warnings
+
+        warnings.warn(
+            f"llm-d deployment target is unavailable: {type(e).__name__}: {e}. "
+            "Other deployment targets are unaffected.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 # Auto-register on module import

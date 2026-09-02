@@ -128,15 +128,49 @@ class TestRegistration:
         # would fall back to plain k8s.
         assert saved["llm_d"]["endpoint_url"] == "http://llm-d-gw.example.com"
 
-    def test_llm_d_survives_the_manifest_round_trip(self):
-        """The build->run key lists must both carry llm_d, or it is dropped."""
-        import inspect
+    def _merge_manifest(self, tmp_path, deployment_config, additional_context):
+        """Run _load_and_merge_manifest over a manifest and return the result."""
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
 
-        from madengine.orchestration import run_orchestrator
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(
+            json.dumps(
+                {
+                    "built_images": {},
+                    "built_models": {},
+                    "context": {},
+                    "deployment_config": deployment_config,
+                }
+            )
+        )
 
-        source = inspect.getsource(run_orchestrator)
-        # Both merge loops enumerate their keys literally; neither may omit llm_d.
-        assert source.count('"llm_d"') >= 2
+        # _load_and_merge_manifest only reads self.additional_context.
+        orch = MagicMock()
+        orch.additional_context = additional_context
+        RunOrchestrator._load_and_merge_manifest(orch, str(manifest_file))
+
+        return json.loads(manifest_file.read_text())["deployment_config"]
+
+    def test_manifest_llm_d_survives_an_unrelated_runtime_override(self, tmp_path):
+        """A build-time llm_d block must not be dropped by the run-time merge."""
+        merged = self._merge_manifest(
+            tmp_path,
+            {"target": "llm-d", "llm_d": ATTACH_CONTEXT["llm_d"]},
+            {"tools": ["rocprof"]},
+        )
+
+        assert merged["llm_d"] == ATTACH_CONTEXT["llm_d"]
+
+    def test_runtime_llm_d_overrides_the_manifest(self, tmp_path):
+        """--additional-context llm_d must win over the stored block."""
+        runtime = {"endpoint_url": "http://runtime-gw.example.com"}
+        merged = self._merge_manifest(
+            tmp_path,
+            {"target": "llm-d", "llm_d": ATTACH_CONTEXT["llm_d"]},
+            {"llm_d": runtime},
+        )
+
+        assert merged["llm_d"] == runtime
 
     def test_validator_accepts_an_llm_d_object(self):
         from madengine.cli.validators import validate_additional_context_structure
@@ -1129,3 +1163,73 @@ class TestPopulateModelCache:
 
         assert calls == ["ensure_pvc", "write_values"]
         deployment.batch_v1.create_namespaced_job.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_endpoint(): never guess which Gateway fronts the stack
+# ---------------------------------------------------------------------------
+
+
+def _gateway(name, release=None, address="10.0.0.1", port=8000):
+    labels = {"app.kubernetes.io/instance": release} if release else {}
+    return {
+        "metadata": {"name": name, "labels": labels},
+        "spec": {"listeners": [{"port": port}]},
+        "status": {"addresses": [{"value": address}]},
+    }
+
+
+class TestResolveEndpoint:
+    """Ambiguous Gateway selection must fail, not benchmark the wrong stack."""
+
+    MANAGED_CONTEXT = {
+        "k8s": {},
+        "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+    }
+
+    def _resolve(self, tmp_path, gateways):
+        deployment = _build_deployment(tmp_path, dict(self.MANAGED_CONTEXT))
+        api = MagicMock()
+        api.list_namespaced_custom_object.return_value = {"items": gateways}
+
+        with patch("kubernetes.client.CustomObjectsApi", return_value=api):
+            return deployment, deployment._resolve_endpoint()
+
+    def test_single_owned_gateway_resolves(self, tmp_path):
+        deployment = _build_deployment(tmp_path, dict(self.MANAGED_CONTEXT))
+        infra = deployment.stack.release_name("infra")
+        api = MagicMock()
+        api.list_namespaced_custom_object.return_value = {
+            "items": [_gateway("gw", release=infra), _gateway("unrelated")]
+        }
+
+        with patch("kubernetes.client.CustomObjectsApi", return_value=api):
+            assert deployment._resolve_endpoint() == "http://10.0.0.1:8000"
+
+    def test_multiple_owned_gateways_fail(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        deployment = _build_deployment(tmp_path, dict(self.MANAGED_CONTEXT))
+        infra = deployment.stack.release_name("infra")
+        api = MagicMock()
+        api.list_namespaced_custom_object.return_value = {
+            "items": [
+                _gateway("gw-a", release=infra, address="10.0.0.1"),
+                _gateway("gw-b", release=infra, address="10.0.0.2"),
+            ]
+        }
+
+        with patch("kubernetes.client.CustomObjectsApi", return_value=api):
+            with pytest.raises(ConfigurationError, match="gw-a, gw-b"):
+                deployment._resolve_endpoint()
+
+    def test_multiple_unowned_gateways_fail(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="none is identifiably owned"):
+            self._resolve(tmp_path, [_gateway("gw-a"), _gateway("gw-b")])
+
+    def test_lone_unowned_gateway_is_accepted(self, tmp_path):
+        """Some providers label the Gateway after its class, not the release."""
+        _, url = self._resolve(tmp_path, [_gateway("gw", address="10.0.0.9")])
+        assert url == "http://10.0.0.9:8000"

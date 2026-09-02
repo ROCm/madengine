@@ -681,6 +681,17 @@ class LlmdDeployment(KubernetesDeployment):
             )
             == infra_release
         ]
+        if len(owned) > 1:
+            names = ", ".join(
+                sorted(g.get("metadata", {}).get("name", "<unnamed>") for g in owned)
+            )
+            raise ConfigurationError(
+                f"Found {len(owned)} Gateways in namespace '{self.namespace}' "
+                f"labelled for release '{infra_release}' ({names}). madengine "
+                "cannot tell which one fronts the stack, and benchmarking the "
+                "wrong one would be worse than failing. Set llm_d.endpoint_url "
+                "explicitly."
+            )
         # Fall back to a lone Gateway in the namespace: some gateway providers
         # label the Gateway after the gateway class rather than the release.
         candidates = owned or (gateways if len(gateways) == 1 else [])

@@ -23,6 +23,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import builtins
 import json
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -179,7 +180,19 @@ class TestFactoryRegistrationResilience:
         assert "k8s" in available
         assert "kubernetes" in available
 
-    def test_core_targets_survive_a_failing_llm_d_import(self):
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ImportError("simulated failure importing llm_d"),
+            # Not every import-time failure is an ImportError: a missing
+            # optional dependency, a bad module-level constant, or an outright
+            # bug can raise anything. None may escape.
+            RuntimeError("simulated non-import failure in llm_d"),
+            AttributeError("simulated bad module-level access in llm_d"),
+        ],
+        ids=["import-error", "runtime-error", "attribute-error"],
+    )
+    def test_core_targets_survive_a_failing_llm_d_import(self, error):
         """Force the optional llm_d module import to fail.
 
         register_default_deployments() must still leave slurm and k8s
@@ -191,16 +204,19 @@ class TestFactoryRegistrationResilience:
         def exploding_import(name, globals=None, locals=None, fromlist=(), level=0):
             # Relative imports from the factory arrive as level>0, name=="llm_d".
             if name == "llm_d" or name.endswith("deployment.llm_d"):
-                raise ImportError("simulated failure importing llm_d")
+                raise error
             return real_import(name, globals, locals, fromlist, level)
 
         with patch.object(builtins, "__import__", side_effect=exploding_import):
-            try:
-                register_default_deployments()
-            except ImportError:
-                pytest.fail(
-                    "register_default_deployments() let an optional import failure escape"
-                )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                try:
+                    register_default_deployments()
+                except Exception as e:  # noqa: BLE001 - that is the regression
+                    pytest.fail(
+                        "register_default_deployments() let an optional import "
+                        f"failure escape: {type(e).__name__}: {e}"
+                    )
 
         available = DeploymentFactory.available_deployments()
         assert "slurm" in available
