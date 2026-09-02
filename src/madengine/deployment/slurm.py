@@ -980,10 +980,51 @@ export SGLANG_TP_SIZE={nproc_per_node}
 # Master coordination
 export MASTER_PORT={master_port}
 
-# Build node IP list from SLURM
+# Build node IP list from SLURM. Each node must resolve to a real (non-loopback)
+# address: on Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+# `getent hosts "$node"` returns the loopback for whichever node runs this loop.
+# Every node then publishes its own entry as 127.0.1.1, which poisons downstream
+# rendezvous/barrier peer lists — an all-nodes barrier can never be satisfied.
+# Skip 127.* and fall back to the primary non-loopback interface for the local node.
+# Address this node advertises when its own hostname only maps to loopback.
+# Prefer the configured cluster interface, else the source address the kernel
+# would use for outbound traffic. Deliberately not `hostname -I`: it lists every
+# interface in unspecified order and is not IPv4-only, so it can hand back a
+# docker bridge or management address that peers cannot reach.
+_MAD_LOCAL_IP=""
+if [ -n "${{NCCL_SOCKET_IFNAME:-}}" ]; then
+    _MAD_LOCAL_IP=$(ip -4 -o addr show dev "${{NCCL_SOCKET_IFNAME%%,*}}" 2>/dev/null \\
+        | awk '{{print $4}}' | cut -d/ -f1 | grep -vE '^127\\.' | head -n1)
+fi
+if [ -z "$_MAD_LOCAL_IP" ]; then
+    _MAD_LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null \\
+        | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
+fi
+
 SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
-    getent hosts "$node" | awk '{{print $1}}'
+    node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
+    # Only the local node may fall back to its own address; doing this for a peer
+    # would publish this node's IP in that peer's slot. The list holds NodeName
+    # values, which may differ from the machine's hostname when the config sets
+    # NodeHostname, so ask SLURM first and keep the hostnames for when it is unset.
+    if [ -z "$node_ip" ] && {{ [ "$node" = "${{SLURMD_NODENAME:-}}" ] \\
+        || [ "$node" = "$(hostname -s)" ] || [ "$node" = "$(hostname)" ]; }}; then
+        node_ip="$_MAD_LOCAL_IP"
+    fi
+    if [ -z "$node_ip" ]; then
+        echo "UNRESOLVED:$node"
+    else
+        echo "$node_ip"
+    fi
 done | tr '\\n' ',' | sed 's/,$//')
+
+# A peer we cannot resolve must fail the job, not silently corrupt the peer list.
+case "$SLURM_NODE_IPS" in
+    *UNRESOLVED:*)
+        echo "ERROR: no non-loopback address for node(s): $(echo "$SLURM_NODE_IPS" | tr ',' '\\n' | grep '^UNRESOLVED:' | cut -d: -f2 | tr '\\n' ' ')" >&2
+        exit 1
+        ;;
+esac
 
 export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
 export SGLANG_NODE_RANK=${{SLURM_PROCID}}

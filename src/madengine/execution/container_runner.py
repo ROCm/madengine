@@ -52,6 +52,30 @@ from madengine.execution.container_runner_helpers import (
 )
 
 
+# Shell environment variables forwarded into the container for SLURM jobs.
+# A launcher's variables must be listed here or they never reach the model
+# script, which then silently falls back to its single-node defaults.
+SLURM_PASSTHROUGH_ENV_VARS = [
+    'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+    'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+    'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+    'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+    # Primus launcher (config path and optional CLI extra args)
+    'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
+    # Rendezvous timeout so all nodes can join after pull
+    'TORCH_ELASTIC_RDZV_TIMEOUT',
+    # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
+    # CRITICAL: These must be passed to Docker for proper GPU device mapping
+    'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES',
+    # SGLang disaggregated topology and peer list, exported by the SLURM job
+    # script. Without them the model run.sh falls back to a single-node default
+    # (xP=1/yD=1, IPADDRS=localhost) and multi-node bring-up silently degrades.
+    'SGLANG_DISAGG_MODE', 'SGLANG_DISAGG_PREFILL_NODES',
+    'SGLANG_DISAGG_DECODE_NODES', 'SGLANG_DISAGG_TOTAL_NODES',
+    'SGLANG_NODE_IPS', 'SGLANG_NODE_RANK', 'SGLANG_TP_SIZE',
+]
+
+
 def _print_run_env_table(
     gpu_vendor: str,
     context,
@@ -214,6 +238,16 @@ def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
 
 class ContainerRunner:
     """Class responsible for running Docker containers with models."""
+
+    def _merge_slurm_env_from_shell(self) -> int:
+        """Copy the allowlisted SLURM/launcher variables from the shell into
+        ``docker_env_vars``. Returns how many were found."""
+        merged = 0
+        for var_name in SLURM_PASSTHROUGH_ENV_VARS:
+            if var_name in os.environ:
+                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged += 1
+        return merged
 
     def __init__(
         self,
@@ -1229,27 +1263,8 @@ class ContainerRunner:
                     except ValueError:
                         pass
         
-        # List of environment variables to pass from shell to Docker (for SLURM jobs)
-        slurm_env_vars = [
-            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
-            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
-            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
-            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
-            # Primus launcher (config path and optional CLI extra args)
-            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
-            # Rendezvous timeout so all nodes can join after pull
-            'TORCH_ELASTIC_RDZV_TIMEOUT',
-            # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
-            # CRITICAL: These must be passed to Docker for proper GPU device mapping
-            'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
-        ]
-        
         # Check shell environment and add to docker_env_vars
-        merged_from_env = 0
-        for var_name in slurm_env_vars:
-            if var_name in os.environ:
-                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
-                merged_from_env += 1
+        merged_from_env = self._merge_slurm_env_from_shell()
         
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
