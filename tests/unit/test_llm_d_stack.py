@@ -430,14 +430,17 @@ class TestStandup:
 
         assert [c.args[0] for c in install.call_args_list] == list(COMPONENTS)
         assert deployment._installed_releases == [
-            "rel-infra",
-            "rel-gaie",
-            "rel-modelservice",
+            deployment.stack.release_name(c) for c in COMPONENTS
         ]
         assert deployment.endpoint_url == "http://gw:80"
 
-    def test_standup_records_a_release_only_after_helm_succeeds(self, tmp_path):
-        """The unwind list must never name a release that was never created."""
+    def test_standup_records_a_release_before_helm_runs(self, tmp_path):
+        """The release helm was mid-way through must still be torn down.
+
+        helm can create a release and then fail — or be interrupted — so the
+        unwind list is recorded up-front. Naming a release that was never
+        created is free: _uninstall_release passes --ignore-not-found.
+        """
         deployment = _managed_deployment(tmp_path)
 
         def install(component, values, timeout):
@@ -451,7 +454,10 @@ class TestStandup:
         ):
             deployment._standup()
 
-        assert deployment._installed_releases == ["rel-infra"]
+        assert deployment._installed_releases == [
+            deployment.stack.release_name("infra"),
+            deployment.stack.release_name("gaie"),
+        ]
 
     def test_a_failed_standup_unwinds_and_fails_prepare(self, tmp_path):
         deployment = _managed_deployment(tmp_path)

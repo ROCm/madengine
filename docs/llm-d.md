@@ -133,6 +133,10 @@ load; the Dockerfile supplies the serving stack, not the weights.
 Set `prefill.image`/`decode.image` explicitly to override this, e.g. to benchmark an
 upstream vLLM image unrelated to any madengine model build.
 
+If you leave them defaulted, `validate()` prints a warning naming the image the
+prefill/decode pods will run. From madengine's side a real serving image and a
+client-only image are indistinguishable, so it says so rather than guessing.
+
 ## Model weights: `hf_repo` vs `uri`
 
 `model.uri` is the literal artifact URI the modelservice chart reads. `model.hf_repo` is
@@ -223,7 +227,11 @@ throughput=$(grep -oP 'Output token throughput.*?\K[0-9.]+' bench.log)
 echo "performance: ${throughput} tokens_per_second"
 ```
 
-The client image needs no GPU and no ROCm — a `python:3.11-slim` base is enough. For the
+The client image needs no GPU and no ROCm — a `python:3.11-slim` base is enough — in
+attach mode, and in managed mode whenever `prefill.image`/`decode.image` are set
+explicitly. Left defaulted in managed mode, that same image also *serves* the model and
+must be a serving container: see
+[Which container serves the model](#which-container-serves-the-model). For the
 same reason the llm-d preset sets `generate_sys_env_details: false`: collecting ROCm
 environment details in a pod with no GPU would only record an empty environment. Set it
 back to `true` if you want it anyway.
@@ -262,6 +270,12 @@ config, so you only specify what differs.
 
 The GPU resource name (`amd.com/gpu` vs `nvidia.com/gpu`) comes from
 `k8s.gpu_resource_name`, shared with the ordinary Kubernetes target.
+
+One `k8s` key behaves differently under llm-d: **`k8s.gpu_count` defaults to `0`**, not
+`1`. The GPUs belong to the llm-d model servers; the benchmark client is a CPU-only load
+generator, and a client Job that reserves a GPU it never uses competes with the very
+stack it is measuring. Setting `k8s.gpu_count` yourself still wins, as do the usual
+runtime GPU overrides.
 
 ### Chart versions
 

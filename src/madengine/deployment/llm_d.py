@@ -178,7 +178,14 @@ class LlmdDeployment(KubernetesDeployment):
         ``--tags`` determine what actually serves the model here too — the
         chart still needs ``model.uri``/``hf_repo`` to know which weights to
         load into that image.
+
+        Roles that take this default are recorded in
+        ``_roles_using_client_image`` so ``_validate_managed_prerequisites`` can
+        warn about it: the default is only correct when the image both serves
+        and benchmarks, which a purpose-built slim client image does not.
         """
+        self._roles_using_client_image: List[str] = []
+
         model_keys = list(self.manifest.get("built_models", {}).keys())
         if not model_keys:
             return
@@ -195,7 +202,10 @@ class LlmdDeployment(KubernetesDeployment):
         )
         for role in ("prefill", "decode"):
             role_config = self.llmd_config.setdefault(role, {})
-            role_config.setdefault("image", resolved_image)
+            # Same semantics as setdefault: an explicit image always wins.
+            if "image" not in role_config:
+                role_config["image"] = resolved_image
+                self._roles_using_client_image.append(role)
 
     def _ensure_model_pvc(self) -> None:
         """Create the shared-data PVC an explicit ``model.uri`` names, if it is
@@ -344,11 +354,26 @@ class LlmdDeployment(KubernetesDeployment):
 
     def _wait_for_cache_job(self, job_name: str, timeout: int) -> None:
         """Poll the download Job until it succeeds, fails, or times out."""
+        from kubernetes.client.rest import ApiException
+
         deadline = time.monotonic() + timeout
         while True:
-            job = self.batch_v1.read_namespaced_job_status(
-                name=job_name, namespace=self.namespace
-            )
+            try:
+                job = self.batch_v1.read_namespaced_job_status(
+                    name=job_name, namespace=self.namespace
+                )
+            except ApiException as e:
+                # Most likely the Job was deleted out from under us (404), or
+                # RBAC forbids reading it. Either way the download's outcome is
+                # unknowable, and continuing would mount a PVC that may hold
+                # nothing — so report it as the configuration problem it is
+                # rather than letting a raw ApiException escape.
+                raise ConfigurationError(
+                    f"Could not read the status of model-cache download Job "
+                    f"'{job_name}': {e}. Populate the PVC out-of-band and set "
+                    "llm_d.model.uri to it, or clear llm_d.model.cache_pvc to "
+                    "download on every standup instead."
+                ) from e
             if job.status.succeeded:
                 return
             if job.status.failed:
@@ -417,17 +442,78 @@ class LlmdDeployment(KubernetesDeployment):
             )
             return False
 
-        if not super().validate():
-            return False
+        self._warn_if_manifest_holds_several_models()
 
+        # Attach mode only ever runs the CPU-only client Job from this cluster:
+        # the GPUs belong to a stack madengine did not install, which may not
+        # even be in this cluster. KubernetesDeployment.validate() rejects a
+        # cluster with no node advertising gpu_resource_name, so attach mode
+        # checks access without that gate. Managed mode keeps it — there,
+        # madengine really is about to schedule GPU pods here.
         if self.is_attach_mode:
+            if not self._validate_cluster_access():
+                return False
             self.console.print(
                 f"[green]✓ Attach mode: benchmarking existing endpoint "
                 f"{self.endpoint_url}[/green]"
             )
             return True
 
+        if not super().validate():
+            return False
+
         return self._validate_managed_prerequisites()
+
+    def _validate_cluster_access(self) -> bool:
+        """Check cluster connectivity and namespace, without the GPU-node gate.
+
+        Mirrors the first two checks of ``KubernetesDeployment.validate()``
+        rather than calling it, because the third one there — a node
+        advertising ``gpu_resource_name`` — is a requirement attach mode does
+        not have.
+        """
+        from kubernetes import client
+        from kubernetes.client.rest import ApiException
+
+        try:
+            version = client.VersionApi().get_code()
+            self.console.print(
+                f"[green]✓ Connected to K8s cluster "
+                f"(v{version.major}.{version.minor})[/green]"
+            )
+            self.core_v1.read_namespace(self.namespace)
+            self.console.print(f"[green]✓ Namespace '{self.namespace}' exists[/green]")
+            return True
+        except ApiException as e:
+            if e.status == 404:
+                self.console.print(
+                    f"[yellow]⚠ Namespace '{self.namespace}' not found[/yellow]"
+                )
+            else:
+                self.console.print(f"[red]✗ Validation failed: {e}[/red]")
+            return False
+        except Exception as e:
+            self.console.print(f"[red]✗ Validation failed: {e}[/red]")
+            return False
+
+    def _warn_if_manifest_holds_several_models(self) -> None:
+        """Warn that only the first model is used.
+
+        Inherited from the Kubernetes target, which also benchmarks
+        ``model_keys[0]`` alone — but here the choice additionally decides which
+        model the *stack* serves and which image serves it, so it is worth
+        saying out loud rather than letting ``--tags`` quietly widen.
+        """
+        model_keys = list(self.manifest.get("built_models", {}).keys())
+        if len(model_keys) < 2:
+            return
+        self.console.print(
+            f"[yellow]⚠ {len(model_keys)} models matched --tags; llm-d "
+            f"benchmarks only the first ('{model_keys[0]}') and ignores: "
+            f"{', '.join(model_keys[1:])}[/yellow]\n"
+            "[yellow]  Narrow --tags to one model to be explicit about which "
+            "one the stack serves.[/yellow]"
+        )
 
     def _validate_managed_prerequisites(self) -> bool:
         """Check helm, pinned chart versions, and Gateway API CRDs."""
@@ -470,12 +556,41 @@ class LlmdDeployment(KubernetesDeployment):
         if not self._validate_crds():
             return False
 
+        self._warn_if_serving_with_the_client_image()
+
         self.console.print(
             f"[green]✓ Managed mode: releases "
             f"{', '.join(self.stack.release_names)} in namespace "
             f"{self.namespace}[/green]"
         )
         return True
+
+    def _warn_if_serving_with_the_client_image(self) -> None:
+        """Warn when the model servers will run the benchmark client's image.
+
+        ``_resolve_model_images`` defaults ``prefill``/``decode.image`` to the
+        ``--tags``-selected model's own built image. That is right for a vLLM
+        image, which both serves and benchmarks — and wrong for the slim,
+        GPU-less client image the docs otherwise recommend, which cannot serve
+        anything. The two cases are indistinguishable from here, so warn rather
+        than fail: guessing wrong in either direction is worse than saying so.
+        """
+        if not self._roles_using_client_image:
+            return
+
+        roles = ", ".join(self._roles_using_client_image)
+        image = (self.llmd_config.get(self._roles_using_client_image[0]) or {}).get(
+            "image"
+        )
+        self.console.print(
+            f"[yellow]⚠ llm-d {roles} will serve the model with this run's own "
+            f"benchmark-client image:[/yellow]\n"
+            f"[yellow]    {image}[/yellow]\n"
+            "[yellow]  That works only if the image is itself a serving "
+            "container (vLLM/SGLang baked in). A client-only image will fail to "
+            "serve. Set llm_d.prefill.image / llm_d.decode.image to name the "
+            "serving image explicitly.[/yellow]"
+        )
 
     def _validate_crds(self) -> bool:
         """Report missing Gateway API / InferencePool CRDs; do not install them."""
@@ -557,10 +672,15 @@ class LlmdDeployment(KubernetesDeployment):
                 f"[blue]Installing llm-d {component} "
                 f"({self.stack.release_name(component)})...[/blue]"
             )
+            # Record *before* helm runs, not after. A Ctrl-C mid-install raises
+            # KeyboardInterrupt, which is a BaseException and so passes straight
+            # through prepare()'s `except Exception` — while helm may already
+            # have created the release. Teardown only walks this list, so
+            # recording after success is how a GPU-holding release gets
+            # orphaned. uninstall passes --ignore-not-found, which makes naming
+            # a release that was never created free.
+            self._installed_releases.append(self.stack.release_name(component))
             release = self.stack.install(component, values_paths[component], timeout)
-            # Record only after helm reports success, so the unwind list never
-            # names a release that was never created.
-            self._installed_releases.append(release)
             self.console.print(f"[green]✓ Installed {release}[/green]")
 
         self._wait_for_model_servers()
@@ -726,9 +846,26 @@ class LlmdDeployment(KubernetesDeployment):
                 f"'kubectl -n {self.namespace} get gateway'."
             )
 
+        # Prefer a plain-HTTP listener over whatever happens to be first: a
+        # Gateway commonly publishes both http and https, and listener order is
+        # not meaningful. The OpenAI-compatible endpoint the client calls is
+        # normally the HTTP one.
         listeners = (gateway.get("spec") or {}).get("listeners") or []
-        port = listeners[0].get("port", 80) if listeners else 80
-        return f"http://{address}:{port}"
+        listener = next(
+            (
+                candidate
+                for candidate in listeners
+                if str(candidate.get("protocol", "")).upper() == "HTTP"
+            ),
+            listeners[0] if listeners else None,
+        )
+        if listener is None:
+            return f"http://{address}:80"
+
+        protocol = str(listener.get("protocol", "HTTP")).upper()
+        scheme = "https" if protocol in ("HTTPS", "TLS") else "http"
+        port = listener.get("port", 443 if scheme == "https" else 80)
+        return f"{scheme}://{address}:{port}"
 
     def deploy(self) -> DeploymentResult:
         """Submit the benchmark client Job.

@@ -92,6 +92,13 @@ def _render_job(deployment) -> str:
     return deployment.jinja_env.get_template("job.yaml.j2").render(**context)
 
 
+def _printed(deployment) -> str:
+    """Everything the deployment printed, joined — for asserting on warnings."""
+    return "\n".join(
+        str(call.args[0]) for call in deployment.console.print.call_args_list
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registration and target inference
 # ---------------------------------------------------------------------------
@@ -296,6 +303,40 @@ class TestConfigMerge:
 
         assert llmd["k8s"] == k8s_only["k8s"]
 
+    def test_client_job_defaults_to_zero_gpus(self, tmp_path):
+        """The GPUs belong to the model servers, not to the load generator."""
+        deployment = _build_deployment(
+            tmp_path,
+            {"llm_d": {"endpoint_url": "http://gw", "model": {"name": "Qwen3-32B"}}},
+        )
+
+        assert deployment.k8s_config["gpu_count"] == 0
+
+    def test_an_explicit_gpu_count_still_wins(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {"gpu_count": 2},
+                "llm_d": {"endpoint_url": "http://gw", "model": {"name": "Qwen3-32B"}},
+            },
+        )
+
+        assert deployment.k8s_config["gpu_count"] == 2
+
+    def test_zeroing_gpus_keeps_the_rest_of_the_profile(self):
+        """Only gpu_count is overridden; the profile's other values survive."""
+        llmd = ConfigLoader.load_llmd_config({"llm_d": {}})
+
+        assert llmd["k8s"]["gpu_count"] == 0
+        assert (
+            llmd["k8s"]["memory"]
+            == ConfigLoader.load_preset("k8s/profiles/single-gpu.json")["k8s"]["memory"]
+        )
+
+    def test_plain_k8s_deployments_keep_their_gpus(self):
+        """The zeroing is llm-d-only; it must not leak into the k8s target."""
+        assert ConfigLoader.load_k8s_config({"k8s": {}})["k8s"]["gpu_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Mode selection
@@ -351,10 +392,11 @@ class TestValidate:
         deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
 
         with (
+            patch.object(deployment, "_validate_cluster_access", return_value=True),
             patch(
                 "madengine.deployment.kubernetes.KubernetesDeployment.validate",
                 return_value=True,
-            ),
+            ) as parent_validate,
             patch(
                 "madengine.deployment.llm_d.shutil.which", return_value=None
             ) as which,
@@ -362,6 +404,21 @@ class TestValidate:
             assert deployment.validate() is True
 
         which.assert_not_called()
+        # The parent's validate() also gates on a node advertising the GPU
+        # resource. Attach mode runs only the CPU-only client here — the GPUs
+        # live in a stack madengine did not install — so it must not be used.
+        parent_validate.assert_not_called()
+
+    def test_attach_mode_still_checks_cluster_access(self, tmp_path):
+        """Skipping the GPU gate must not mean skipping validation entirely."""
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+
+        with patch.object(
+            deployment, "_validate_cluster_access", return_value=False
+        ) as access:
+            assert deployment.validate() is False
+
+        access.assert_called_once()
 
     def test_managed_mode_requires_helm(self, tmp_path):
         deployment = _build_deployment(
@@ -399,8 +456,8 @@ class TestValidate:
         # Rejected on the version pins, before ever reaching the cluster.
         crds.assert_not_called()
 
-    def test_managed_mode_is_not_implemented_yet(self, tmp_path):
-        """Every real prerequisite passes; standup itself is still missing."""
+    def test_managed_mode_requires_a_model_uri(self, tmp_path):
+        """helm, pins and CRDs all pass; the artifact to serve is still missing."""
         deployment = _build_deployment(
             tmp_path,
             {
@@ -460,6 +517,66 @@ class TestValidate:
 
         # Got past the pin check, so "_comment" was not treated as an unpinned chart.
         crds.assert_called_once()
+
+    def test_several_matched_models_are_warned_about(self, tmp_path):
+        """--tags can widen quietly; here it also picks what the stack serves."""
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        deployment.manifest["built_models"]["other_model"] = dict(MODEL_ENTRY)
+        deployment.console = MagicMock()
+
+        with patch.object(deployment, "_validate_cluster_access", return_value=True):
+            assert deployment.validate() is True
+
+        printed = _printed(deployment)
+        assert "2 models matched --tags" in printed
+        assert "dummy_llm_d" in printed and "other_model" in printed
+
+    def test_a_single_matched_model_warns_about_nothing(self, tmp_path):
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        deployment.console = MagicMock()
+
+        with patch.object(deployment, "_validate_cluster_access", return_value=True):
+            deployment.validate()
+
+        assert "matched --tags" not in _printed(deployment)
+
+
+# ---------------------------------------------------------------------------
+# _validate_cluster_access(): attach mode's stand-in for the parent's validate()
+# ---------------------------------------------------------------------------
+
+
+class TestValidateClusterAccess:
+    def test_a_reachable_cluster_and_namespace_pass(self, tmp_path):
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+
+        with patch("kubernetes.client.VersionApi") as version_api:
+            version_api.return_value.get_code.return_value = MagicMock(
+                major="1", minor="29"
+            )
+            assert deployment._validate_cluster_access() is True
+
+        deployment.core_v1.read_namespace.assert_called_once_with("llm-d-bench")
+
+    def test_a_missing_namespace_fails(self, tmp_path):
+        from kubernetes.client.rest import ApiException
+
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        deployment.core_v1.read_namespace.side_effect = ApiException(status=404)
+        deployment.console = MagicMock()
+
+        with patch("kubernetes.client.VersionApi"):
+            assert deployment._validate_cluster_access() is False
+
+        assert "not found" in _printed(deployment)
+
+    def test_an_unreachable_cluster_fails(self, tmp_path):
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+
+        with patch(
+            "kubernetes.client.VersionApi", side_effect=RuntimeError("no kubeconfig")
+        ):
+            assert deployment._validate_cluster_access() is False
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +775,34 @@ class TestTeardown:
         # Both are still attempted; one failure does not abandon the rest.
         assert uninstall.call_count == 2
 
+    def test_a_release_is_recorded_before_helm_installs_it(self, tmp_path):
+        """An interrupt mid-install must still leave the release tearable-down.
+
+        KeyboardInterrupt is a BaseException, so it bypasses prepare()'s
+        ``except Exception`` — recording only on success is how a GPU-holding
+        release gets orphaned.
+        """
+        from madengine.deployment.llm_d_stack import COMPONENTS
+
+        deployment = _build_deployment(
+            tmp_path,
+            {"k8s": {}, "llm_d": {"model": {"name": "m", "uri": "hf://a/b"}}},
+        )
+        stack = MagicMock()
+        stack.release_name.side_effect = lambda component: f"madengine-{component}"
+        stack.write_values.return_value = {c: f"/values/{c}.yaml" for c in COMPONENTS}
+        stack.install.side_effect = KeyboardInterrupt
+        deployment._stack = stack
+
+        with (
+            patch.object(deployment, "_ensure_model_pvc"),
+            patch.object(deployment, "_populate_model_cache"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            deployment._standup()
+
+        assert deployment._installed_releases == ["madengine-infra"]
+
     def test_teardown_false_leaves_the_stack_up(self, tmp_path):
         deployment = _build_deployment(
             tmp_path,
@@ -810,6 +955,54 @@ class TestResolveModelImages:
         assert deployment.llmd_config["prefill"]["image"] == (
             "registry.example.com/dummy_llm_d@sha256:" + "a" * 64
         )
+
+    def test_defaulted_roles_are_tracked_for_the_warning(self, tmp_path):
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+
+        assert deployment._roles_using_client_image == ["prefill", "decode"]
+
+    def test_an_explicit_role_image_is_not_tracked(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                **ATTACH_CONTEXT,
+                "llm_d": {
+                    **ATTACH_CONTEXT["llm_d"],
+                    "prefill": {"image": "custom/prefill:pinned"},
+                },
+            },
+        )
+
+        assert deployment._roles_using_client_image == ["decode"]
+
+    def test_the_warning_names_the_roles_and_the_image(self, tmp_path):
+        """The client image only serves if it is itself a serving container."""
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        deployment.console = MagicMock()
+
+        deployment._warn_if_serving_with_the_client_image()
+
+        printed = _printed(deployment)
+        assert "prefill, decode" in printed
+        assert "client:latest" in printed
+
+    def test_no_warning_when_both_roles_name_their_image(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                **ATTACH_CONTEXT,
+                "llm_d": {
+                    **ATTACH_CONTEXT["llm_d"],
+                    "prefill": {"image": "vllm/prefill:pinned"},
+                    "decode": {"image": "vllm/decode:pinned"},
+                },
+            },
+        )
+        deployment.console = MagicMock()
+
+        deployment._warn_if_serving_with_the_client_image()
+
+        deployment.console.print.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1096,6 +1289,35 @@ class TestPopulateModelCache:
 
         assert deployment.batch_v1.delete_namespaced_job.call_count == 2
 
+    def test_an_unreadable_job_becomes_a_configuration_error(self, tmp_path):
+        """RBAC or a vanished Job makes the download's outcome unknowable."""
+        from kubernetes.client.rest import ApiException
+
+        from madengine.core.errors import ConfigurationError
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.side_effect = ApiException(
+            status=403, reason="Forbidden"
+        )
+
+        with pytest.raises(ConfigurationError, match="Could not read the status"):
+            deployment._populate_model_cache()
+
+        # Still cleaned up: the raw ApiException must not escape the finally.
+        assert deployment.batch_v1.delete_namespaced_job.call_count == 2
+
     def test_a_failed_download_unwinds_via_prepare(self, tmp_path):
         """End-to-end: a failed cache population propagates into prepare()'s
         existing unwind path, same as any other standup failure."""
@@ -1233,6 +1455,35 @@ class TestResolveEndpoint:
         """Some providers label the Gateway after its class, not the release."""
         _, url = self._resolve(tmp_path, [_gateway("gw", address="10.0.0.9")])
         assert url == "http://10.0.0.9:8000"
+
+    def _resolve_listeners(self, tmp_path, listeners):
+        gateway = _gateway("gw", address="10.0.0.5")
+        gateway["spec"]["listeners"] = listeners
+        return self._resolve(tmp_path, [gateway])[1]
+
+    def test_a_plain_http_listener_beats_listener_order(self, tmp_path):
+        """Gateways commonly publish both; the client speaks plain HTTP."""
+        url = self._resolve_listeners(
+            tmp_path,
+            [{"protocol": "HTTPS", "port": 443}, {"protocol": "HTTP", "port": 8000}],
+        )
+
+        assert url == "http://10.0.0.5:8000"
+
+    def test_an_https_only_gateway_keeps_its_scheme(self, tmp_path):
+        url = self._resolve_listeners(tmp_path, [{"protocol": "HTTPS", "port": 443}])
+
+        assert url == "https://10.0.0.5:443"
+
+    def test_a_portless_listener_falls_back_by_scheme(self, tmp_path):
+        url = self._resolve_listeners(tmp_path, [{"protocol": "HTTPS"}])
+
+        assert url == "https://10.0.0.5:443"
+
+    def test_a_gateway_without_listeners_falls_back_to_port_80(self, tmp_path):
+        url = self._resolve_listeners(tmp_path, [])
+
+        assert url == "http://10.0.0.5:80"
 
 
 # ---------------------------------------------------------------------------
