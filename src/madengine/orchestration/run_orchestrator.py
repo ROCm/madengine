@@ -803,6 +803,7 @@ class RunOrchestrator:
         - scripts/common/pre_scripts/
         - scripts/common/post_scripts/
         - scripts/common/tools/
+        - scripts/common/entrypoints/
         
         This preserves the user's actual scripts/ and docker/ directories in MAD project.
         """
@@ -820,7 +821,8 @@ class RunOrchestrator:
             "test_echo.sh",
             "pre_scripts",
             "post_scripts",
-            "tools"
+            "tools",
+            "entrypoints"
         ]
         
         for item_name in items_to_cleanup:
@@ -1000,8 +1002,8 @@ class RunOrchestrator:
             # Ensure the destination directory exists before copying
             dest_common.mkdir(parents=True, exist_ok=True)
             
-            # Copy pre_scripts, post_scripts, tools if they exist
-            for item in ["pre_scripts", "post_scripts", "tools", "tools.json", "test_echo.sh"]:
+            # Copy pre_scripts, post_scripts, tools, entrypoints if they exist
+            for item in ["pre_scripts", "post_scripts", "tools", "entrypoints", "tools.json", "test_echo.sh"]:
                 src_item = madengine_common / item
                 if src_item.exists():
                     dest_item = dest_common / item

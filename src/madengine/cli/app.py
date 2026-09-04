@@ -18,7 +18,7 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from .commands import build, run, discover, report_app, database
+from .commands import build, run, discover, report_app, database, setup_page
 from .constants import ExitCode
 from .utils import console
 
@@ -39,6 +39,7 @@ app.command()(build)
 app.command()(run)
 app.command()(discover)
 app.command()(database)
+app.command(name="setup-page")(setup_page)
 app.add_typer(report_app, name="report")
 
 

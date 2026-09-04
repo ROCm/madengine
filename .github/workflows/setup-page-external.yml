@@ -1,0 +1,100 @@
+# madengine Setup Page for an external repo -> GitHub Pages
+#
+# This workflow lives in the madengine repo. Unlike the drop-in template
+# (examples/github-actions/madengine-setup-page.yml), it does NOT read this
+# repo's models.json -- instead you point it at ANY other repo that follows
+# madengine mechanics (has a models.json, and optionally scripts/*/models.json
+# or scripts/*/get_models_json.py). It generates that repo's setup picker page
+# and publishes it to this repo's GitHub Pages.
+#
+# Run it from: Actions -> "Setup Page (external repo)" -> Run workflow.
+#
+# One-time setup:
+#   - Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+#   - For a PRIVATE target repo, add a repo/org secret named SETUP_PAGE_TOKEN
+#     (a PAT with read access to the target repo). Public targets work with the
+#     default GITHUB_TOKEN.
+
+name: Setup Page (external repo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repo with a models.json (owner/repo)"
+        required: true
+        type: string
+      target_ref:
+        description: "Branch, tag, or SHA of the target repo (blank = default branch)"
+        required: false
+        type: string
+        default: ""
+      title:
+        description: "Page title (blank = '<owner/repo> - madengine Setup')"
+        required: false
+        type: string
+        default: ""
+
+# Required for actions/deploy-pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout madengine
+        uses: actions/checkout@v4
+        with:
+          path: madengine
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.target_ref }}
+          token: ${{ secrets.SETUP_PAGE_TOKEN || github.token }}
+          path: target
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install madengine
+        run: pip install ./madengine
+
+      - name: Generate setup page
+        working-directory: target
+        run: |
+          TITLE="${{ inputs.title }}"
+          if [ -z "$TITLE" ]; then
+            TITLE="${{ inputs.target_repo }} - madengine Setup"
+          fi
+          madengine setup-page \
+            --output "${GITHUB_WORKSPACE}/_site/index.html" \
+            --title "$TITLE" \
+            --repo-url "${{ github.server_url }}/${{ inputs.target_repo }}"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
