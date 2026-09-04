@@ -230,13 +230,14 @@ madengine run [OPTIONS]
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
 | `--skip-model-run` | | FLAG | `False` | Skip the model script inside each container. The container still starts and `pre_scripts` still run; only the model script invocation is skipped (status reported as `SKIPPED`, exit code `0`). Combine with `--keep-alive` to leave a live container for manual exec. Ignored with a warning on SLURM/K8s targets. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
+| `--require-pinned-image` | | FLAG | `False` | Pull registry images by the `sha256` digest recorded in the build manifest (`repo@sha256:...`) instead of by tag, so a tag that moved between build and run fails loudly instead of silently running a different image. Fails immediately — with no tag fallback — if the manifest has no digest for an image. Equivalent to the `require_pinned_image` additional-context key. See [Configuration — Pinned image digests](configuration.md#pinned-image-digests). |
 | `--manifest-output` | | TEXT | `build_manifest.json` | Output file for build manifest (full workflow) |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for summary JSON |
 | `--live-output` | `-l` | FLAG | `False` | Print output in real-time |
-| `--output` | `-o` | TEXT | `perf_entry.csv` | Performance output file |
+| `--output` | `-o` | TEXT | `perf.csv` | Performance output file |
 | `--ignore-deprecated` | | FLAG | `False` | Force run deprecated models |
 | `--data-config` | | TEXT | `data.json` | Custom data configuration file |
-| `--tools-config` | | TEXT | `tools.json` | Custom tools JSON configuration |
+| `--tools-config` | | TEXT | `./scripts/common/tools.json` | Custom tools JSON configuration |
 | `--sys-env-details` | | FLAG | `True` | Generate system config env details |
 | `--force-mirror-local` | | TEXT | `None` | Path to force local data mirroring |
 | `--disable-skip-gpu-arch` | | FLAG | `False` | Disable skipping models based on GPU architecture |
@@ -356,7 +357,7 @@ madengine run --tags model \
 
 **Performance Output:**
 
-Results are saved to CSV file (default: `perf_entry.csv`) with metrics including:
+Results are saved to CSV file (default: `perf.csv`) with metrics including:
 - Execution time
 - GPU utilization
 - Memory usage
@@ -384,20 +385,20 @@ madengine report to-html [OPTIONS]
 
 | Option | Short | Type | Required | Description |
 |--------|-------|------|----------|-------------|
-| `--csv-file` | | TEXT | **Yes** | Path to the CSV file to convert |
+| `--csv-file-path` | | TEXT | **Yes** | Path to the CSV file to convert |
 | `--verbose` | `-v` | FLAG | No | Enable verbose logging |
 
 **Examples:**
 
 ```bash
 # Convert CSV to HTML
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # With custom CSV file
-madengine report to-html --csv-file results/perf_mi300.csv
+madengine report to-html --csv-file-path results/perf_mi300.csv
 
 # Verbose output
-madengine report to-html --csv-file perf.csv --verbose
+madengine report to-html --csv-file-path perf.csv --verbose
 ```
 
 **Output:** Creates `{filename}.html` in the same directory as the CSV file.
@@ -444,7 +445,7 @@ madengine report to-email --directory ./results --verbose
 
 ### `database` - Upload to MongoDB
 
-Upload CSV performance data to MongoDB database.
+Upload CSV or JSON performance data to MongoDB (format is auto-detected).
 
 **Usage:**
 
@@ -456,32 +457,30 @@ madengine database [OPTIONS]
 
 | Option | Short | Type | Default | Required | Description |
 |--------|-------|------|---------|----------|-------------|
-| `--csv-file` | | TEXT | `perf_entry.csv` | No | Path to the CSV file to upload |
-| `--database-name` | `--db` | TEXT | `None` | **Yes** | Name of the MongoDB database |
-| `--collection-name` | `--collection` | TEXT | `None` | **Yes** | Name of the MongoDB collection |
-| `--verbose` | `-v` | FLAG | `False` | No | Enable verbose logging |
+| `--file` | `-f` | TEXT | `None` | **Yes** | Path to file (CSV or JSON, auto-detected) |
+| `--database` | `--db` | TEXT | `None` | **Yes** | MongoDB database name |
+| `--collection` | `-c` | TEXT | `None` | **Yes** | MongoDB collection name |
+| `--unique-key` | `-k` | TEXT | `None` | No | Unique field(s) for deduplication (comma-separated, auto-detected if not specified) |
+| `--batch-size` | | INT | `1000` | No | Batch size for bulk operations |
+| `--no-upsert` | | FLAG | `False` | No | Insert only (don't update existing documents) |
+| `--no-index` | | FLAG | `False` | No | Skip automatic index creation |
+| `--dry-run` | | FLAG | `False` | No | Validate without uploading |
+| `--verbose` | `-v` | FLAG | `False` | No | Verbose output |
 
 **Examples:**
 
 ```bash
-# Upload to MongoDB
-madengine database \
-  --csv-file perf_entry.csv \
-  --database-name mydb \
-  --collection-name results
+# Upload JSON with auto-detection
+madengine database -f perf_entry_super.json --db mydb -c perf_super
 
-# Short option names
-madengine database \
-  --csv-file perf.csv \
-  --db test \
-  --collection perf_data
+# Upload CSV with custom unique key
+madengine database -f perf.csv --db test -c results -k model,timestamp
+
+# Dry run to validate
+madengine database -f data.json --db test -c data --dry-run
 
 # With verbose output
-madengine database \
-  --csv-file perf.csv \
-  --db mydb \
-  --collection results \
-  --verbose
+madengine database -f perf.csv --db mydb -c results --verbose
 ```
 
 **Environment Variables:**
@@ -490,10 +489,12 @@ MongoDB connection details are read from environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `MONGO_HOST` | MongoDB host address | `localhost` or `mongodb.example.com` |
-| `MONGO_PORT` | MongoDB port | `27017` |
+| `MONGO_HOST` | MongoDB host address (default: `localhost`) | `localhost` or `mongodb.example.com` |
+| `MONGO_PORT` | MongoDB port (default: `27017`) | `27017` |
 | `MONGO_USER` | MongoDB username | `admin` |
 | `MONGO_PASSWORD` | MongoDB password | `secretpassword` |
+| `MONGO_AUTH_SOURCE` | MongoDB authentication database (default: `admin`) | `admin` |
+| `MONGO_TIMEOUT_MS` | Server selection timeout in milliseconds (default: `5000`) | `5000` |
 
 **Example Setup:**
 
@@ -504,7 +505,7 @@ export MONGO_USER=myuser
 export MONGO_PASSWORD=mypassword
 
 madengine database \
-  --csv-file perf_entry.csv \
+  --file perf_entry.csv \
   --db performance_db \
   --collection model_runs
 ```
@@ -637,11 +638,16 @@ madengine recognizes these environment variables:
 | `MAD_DOCKERHUB_USER` | Docker Hub username | None |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password/token | None |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | None |
-| `MAD_CONTAINER_IMAGE` | Pre-built container image to use | None |
+| `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login madengine reuses | `~/.docker` |
+| `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login`; always defer to the machine's existing credentials | Unset |
 | `MONGO_HOST` | MongoDB host for database command | `localhost` |
 | `MONGO_PORT` | MongoDB port for database command | `27017` |
 | `MONGO_USER` | MongoDB username | None |
 | `MONGO_PASSWORD` | MongoDB password | None |
+
+> `MAD_CONTAINER_IMAGE` is **not** an environment variable. It is an
+> `--additional-context` key that selects a pre-built image and skips the build
+> phase — see [Configuration](configuration.md#pre-built-container-images).
 
 ---
 
@@ -669,6 +675,6 @@ madengine recognizes these environment variables:
 
 ---
 
-**Version:** 2.1.0  
-**Last Updated:** May 2026
+Run `madengine --version` for the installed version (derived from git tags via
+versioningit). Release history is in [CHANGELOG.md](../CHANGELOG.md).
 
