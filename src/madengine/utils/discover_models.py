@@ -32,9 +32,13 @@ class CustomModel:
     args: str = ""
     multiple_results: str = ""
     skip_gpu_arch: str = ""
+    _fs_rel_path: str = field(default="", repr=False)  # Internal: filesystem relative path
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Remove internal fields from dict representation
+        d.pop("_fs_rel_path", None)
+        return d
 
     def update_model(self) -> None:
         """Override this method to update your custom model data after initialization.
@@ -155,6 +159,9 @@ class DiscoverModels:
     def discover_models(self) -> None:
         """Discover models in models.json and models.json in model_dir under scripts directory.
 
+        Supports both flat structure (scripts/<dir>/models.json) and nested structure
+        (scripts/<submodule>/<dir>/models.json) for git submodules like MAD and MAD-private.
+
         Raises:
             FileNotFoundError: models.json file not found.
         """
@@ -172,67 +179,120 @@ class DiscoverModels:
             self.rich_console.print("[red]❌ models.json file not found.[/red]")
             raise FileNotFoundError("models.json file not found.")
 
-        # walk through the subdirs in model_dir/scripts directory to find the models.json file
-        for dirname in os.listdir(os.path.join(model_dir, "scripts")):
-            root = os.path.join(model_dir, "scripts", dirname)
-            if os.path.isdir(root):
-                files = os.listdir(root)
+        # Recursively walk through scripts directory to find all models.json files
+        # This supports both flat structure and nested submodule structure
+        scripts_dir = os.path.join(model_dir, "scripts")
+        for root, dirs, files in os.walk(scripts_dir):
+            # Calculate relative path from scripts directory
+            rel_path = os.path.relpath(root, scripts_dir)
 
-                if "models.json" in files and "get_models_json.py" in files:
-                    self.rich_console.print(f"[red]❌ Both models.json and get_models_json.py found in {root}.[/red]")
-                    raise ValueError(
-                        f"Both models.json and get_models_json.py found in {root}."
+            # Skip the scripts root directory itself (rel_path == ".")
+            if rel_path == ".":
+                continue
+
+            if "models.json" in files and "get_models_json.py" in files:
+                self.rich_console.print(f"[red]❌ Both models.json and get_models_json.py found in {root}.[/red]")
+                raise ValueError(
+                    f"Both models.json and get_models_json.py found in {root}."
+                )
+
+            if "models.json" in files:
+                with open(os.path.join(root, "models.json")) as f:
+                    model_dict_list: typing.List[dict] = json.load(f)
+                    for model_dict in model_dict_list:
+                        # Strip "scripts" from path and keep from the directory before last "scripts"
+                        # e.g., Model-Repo1/scripts/Model-Repo2/scripts/dummy -> Model-Repo2/dummy
+                        # This identifies submodule boundaries: the dir before "scripts" is the submodule name
+                        path_parts = rel_path.split(os.sep)
+
+                        # Find the last occurrence of "scripts" directory
+                        last_scripts_idx = -1
+                        for i, part in enumerate(path_parts):
+                            if part.lower() == "scripts":
+                                last_scripts_idx = i
+
+                        # If "scripts" found and there's a directory before it, include that directory
+                        # plus everything after "scripts"
+                        if last_scripts_idx >= 1:
+                            # Include the directory before "scripts" + everything after "scripts"
+                            clean_parts = [path_parts[last_scripts_idx - 1]] + path_parts[last_scripts_idx + 1:]
+                        elif last_scripts_idx == 0:
+                            # "scripts" is first element, just take what's after
+                            clean_parts = path_parts[last_scripts_idx + 1:]
+                        else:
+                            # No "scripts" in path, keep all parts
+                            clean_parts = path_parts
+
+                        clean_path = "/".join(clean_parts) if clean_parts else rel_path
+
+                        # Update model name using cleaned path
+                        model_dict["name"] = clean_path + "/" + model_dict["name"]
+                        # Store the original filesystem path for later use (internal field)
+                        model_dict["_fs_rel_path"] = rel_path
+                        # Update relative path for dockerfile and scripts (keep full path with "scripts")
+                        model_dict["dockerfile"] = os.path.normpath(
+                            os.path.join(
+                                "scripts", rel_path, model_dict["dockerfile"]
+                            )
+                        )
+                        model_dict["scripts"] = os.path.normpath(
+                            os.path.join("scripts", rel_path, model_dict["scripts"])
+                        )
+                        # Keep tags as-is (do not prefix with dirname); tags are logical names for filtering
+                        self.models.append(model_dict)
+                        self.model_list.append(model_dict["name"])
+
+            if "get_models_json.py" in files:
+                try:
+                    # load the module get_models_json.py
+                    spec = importlib.util.spec_from_file_location(
+                        "get_models_json", os.path.join(root, "get_models_json.py")
                     )
+                    get_models_json = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(get_models_json)
+                    assert hasattr(
+                        get_models_json, "list_models"
+                    ), "Please define a list_models function in get_models_json.py."
+                    custom_model_list = get_models_json.list_models()
 
-                if "models.json" in files:
-                    with open(f"{root}/models.json") as f:
-                        model_dict_list: typing.List[dict] = json.load(f)
-                        for model_dict in model_dict_list:
-                            # Update model name using backslash-separated path
-                            model_dict["name"] = dirname + "/" + model_dict["name"]
-                            # Update relative path for dockerfile and scripts
-                            model_dict["dockerfile"] = os.path.normpath(
-                                os.path.join(
-                                    "scripts", dirname, model_dict["dockerfile"]
-                                )
+                    for custom_model in custom_model_list:
+                        if not isinstance(custom_model, CustomModel):
+                            raise TypeError(
+                                "Please use or subclass "
+                                "madengine.utils.discover_models.CustomModel "
+                                "to define your custom model."
                             )
-                            model_dict["scripts"] = os.path.normpath(
-                                os.path.join("scripts", dirname, model_dict["scripts"])
-                            )
-                            # Keep tags as-is (do not prefix with dirname); tags are logical names for filtering
-                            self.models.append(model_dict)
-                            self.model_list.append(model_dict["name"])
+                        # Strip "scripts" from path - keep from directory before last "scripts"
+                        path_parts = rel_path.split(os.sep)
 
-                if "get_models_json.py" in files:
-                    try:
-                        # load the module get_models_json.py
-                        spec = importlib.util.spec_from_file_location(
-                            "get_models_json", f"{root}/get_models_json.py"
-                        )
-                        get_models_json = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(get_models_json)
-                        assert hasattr(
-                            get_models_json, "list_models"
-                        ), "Please define a list_models function in get_models_json.py."
-                        custom_model_list = get_models_json.list_models()
+                        # Find the last occurrence of "scripts" directory
+                        last_scripts_idx = -1
+                        for i, part in enumerate(path_parts):
+                            if part.lower() == "scripts":
+                                last_scripts_idx = i
 
-                        for custom_model in custom_model_list:
-                            if not isinstance(custom_model, CustomModel):
-                                raise TypeError(
-                                    "Please use or subclass "
-                                    "madengine.utils.discover_models.CustomModel "
-                                    "to define your custom model."
-                                )
-                            # Update model name using backslash-separated path
-                            custom_model.name = dirname + "/" + custom_model.name
-                            # Defer updating script and dockerfile paths until update_model is called
-                            self.custom_models.append(custom_model)
-                            self.model_list.append(custom_model.name)
-                    except AssertionError:
-                        self.rich_console.print(
-                            "[yellow]💡 See madengine/tests/fixtures/dummy/scripts/dummy3/get_models_json.py for an example.[/yellow]"
-                        )
-                        raise
+                        # If "scripts" found and there's a directory before it, include that directory
+                        if last_scripts_idx >= 1:
+                            clean_parts = [path_parts[last_scripts_idx - 1]] + path_parts[last_scripts_idx + 1:]
+                        elif last_scripts_idx == 0:
+                            clean_parts = path_parts[last_scripts_idx + 1:]
+                        else:
+                            clean_parts = path_parts
+
+                        clean_path = "/".join(clean_parts) if clean_parts else rel_path
+
+                        # Update model name using cleaned path
+                        custom_model.name = clean_path + "/" + custom_model.name
+                        # Store the original filesystem path for later use
+                        custom_model._fs_rel_path = rel_path
+                        # Defer updating script and dockerfile paths until update_model is called
+                        self.custom_models.append(custom_model)
+                        self.model_list.append(custom_model.name)
+                except AssertionError:
+                    self.rich_console.print(
+                        "[yellow]💡 See madengine/tests/fixtures/dummy/scripts/dummy3/get_models_json.py for an example.[/yellow]"
+                    )
+                    raise
 
     @staticmethod
     def _model_entry_has_tag(tags: typing.Any, tag_value: str) -> bool:
@@ -250,8 +310,14 @@ class DiscoverModels:
         """Get the selected models by parsing the --tags argument and expanding custom models.
 
         Scoped tags: ``scope/tag`` (exactly one ``/``, no ``:``) limits to models under
-        ``scripts/<scope>/`` (names ``scope/...``) and matches by tag, ``all``, or full
-        model short name (e.g. ``MAD-private/inference`` → tag ``inference``).
+        ``scripts/<scope>/`` (names ``scope/...``) and matches by:
+        - tag field value
+        - ``all`` to select all models in scope
+        - exact model name (e.g. ``MAD/inference``)
+        - directory path prefix (e.g. ``MAD/dummy_multi`` matches ``MAD/dummy_multi/model1``)
+
+        The directory path matching provides backward compatibility when models are organized
+        in nested directories within submodules.
 
         Raises:
             ValueError: No models found corresponding to the given tags.
@@ -287,14 +353,27 @@ class DiscoverModels:
                     scope, tag_filter = scoped
                     prefix = scope + "/"
                     full_name_match = prefix + tag_filter
+                    # Also match directory paths: MAD/dummy_multi matches MAD/dummy_multi/model1
+                    dir_prefix_match = full_name_match + "/"
 
                     for model in self.models:
                         if not model["name"].startswith(prefix):
                             continue
+
+                        # Extract path after scope for component matching
+                        # e.g., "MAD/dummy/dummy_multi/model1" -> "dummy/dummy_multi/model1"
+                        path_after_scope = model["name"][len(prefix):]
+                        # Split into components: ["dummy", "dummy_multi", "model1"]
+                        path_components = path_after_scope.split("/")
+                        # Check if filter matches any path component
+                        has_component_match = tag_filter in path_components
+
                         if (
                             tag_filter == "all"
                             or self._model_entry_has_tag(model.get("tags"), tag_filter)
                             or model["name"] == full_name_match
+                            or model["name"].startswith(dir_prefix_match)
+                            or has_component_match
                         ):
                             model_dict = model.copy()
                             model_dict["args"] = model_dict["args"] + extra_args
@@ -303,18 +382,27 @@ class DiscoverModels:
                     for custom_model in self.custom_models:
                         if not custom_model.name.startswith(prefix):
                             continue
+
+                        # Extract path after scope for component matching
+                        path_after_scope = custom_model.name[len(prefix):]
+                        path_components = path_after_scope.split("/")
+                        has_component_match = tag_filter in path_components
+
                         if (
                             tag_filter == "all"
                             or self._model_entry_has_tag(custom_model.tags, tag_filter)
                             or custom_model.name == full_name_match
+                            or custom_model.name.startswith(dir_prefix_match)
+                            or has_component_match
                         ):
                             custom_model.update_model()
-                            dirname = custom_model.name.split("/")[0]
+                            # Use the stored filesystem path (includes "scripts" directories)
+                            rel_path = custom_model._fs_rel_path
                             custom_model.dockerfile = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                                os.path.join("scripts", rel_path, custom_model.dockerfile)
                             )
                             custom_model.scripts = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.scripts)
+                                os.path.join("scripts", rel_path, custom_model.scripts)
                             )
                             model_dict = custom_model.to_dict()
                             model_dict["args"] = model_dict["args"] + extra_args
@@ -339,12 +427,13 @@ class DiscoverModels:
                             or model_name == "all"
                         ):
                             custom_model.update_model()
-                            dirname = custom_model.name.split("/")[0]
+                            # Use the stored filesystem path (includes "scripts" directories)
+                            rel_path = custom_model._fs_rel_path
                             custom_model.dockerfile = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.dockerfile)
+                                os.path.join("scripts", rel_path, custom_model.dockerfile)
                             )
                             custom_model.scripts = os.path.normpath(
-                                os.path.join("scripts", dirname, custom_model.scripts)
+                                os.path.join("scripts", rel_path, custom_model.scripts)
                             )
                             model_dict = custom_model.to_dict()
                             model_dict["args"] = model_dict["args"] + extra_args
