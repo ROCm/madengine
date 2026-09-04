@@ -158,6 +158,25 @@ rocm_trace_lite)
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: rocm_trace_lite output directory may be empty"
 	;;
 
+torch_profiler)
+	# OUTPUT is torch_profiler_output, the directory Kineto wrote traces into
+	# (see TORCH_PROFILE_OUTPUT_DIR in tools.json).
+	echo "torch.profiler post-script: Collecting Kineto traces under ${OUTPUT}..."
+	if ! compgen -G "${OUTPUT}/*.json*" > /dev/null; then
+		echo "WARNING: no traces found in ${OUTPUT} (see the dynolog_stop.sh output above)."
+	fi
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: torch_profiler output directory may be empty"
+	;;
+
+tracelens)
+	# OUTPUT is tracelens_output, written by post_scripts/tracelens.sh.
+	echo "TraceLens post-script: Collecting reports under ${OUTPUT}..."
+	if [ ! -f "${OUTPUT}/tracelens_summary.csv" ]; then
+		echo "WARNING: ${OUTPUT}/tracelens_summary.csv not found (analysis may have failed)."
+	fi
+	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: tracelens output directory may be empty"
+	;;
+
 esac
 
 chmod -R a+rw "${SAVESPACE}/${OUTPUT}"

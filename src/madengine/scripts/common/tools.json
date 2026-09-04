@@ -211,6 +211,157 @@
         }
       ]
     },
+    "torch_profiler_dynolog": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "dynolog"
+        },
+        {
+          "path": "scripts/common/pre_scripts/dynolog_start.sh"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "KINETO_USE_DAEMON": "1",
+        "KINETO_DAEMON_INIT_DELAY_S": "3",
+        "DYNOLOG_PORT": "1778",
+        "TORCH_PROFILE_OUTPUT_DIR": "torch_profiler_output",
+        "TORCH_PROFILE_LOG_FILE": "libkineto_trace.json",
+        "TORCH_PROFILE_ITERATIONS": "5",
+        "TORCH_PROFILE_WARMUP_S": "60",
+        "TORCH_PROFILE_RETRY_INTERVAL_S": "15",
+        "TORCH_PROFILE_MAX_ATTEMPTS": "40",
+        "TORCH_PROFILE_PROCESS_LIMIT": "64",
+        "TORCH_PROFILE_RECORD_SHAPES": "1",
+        "TORCH_PROFILE_WITH_STACKS": "1",
+        "TORCH_PROFILE_WITH_MODULES": "1"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/dynolog_stop.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "torch_profiler"
+        }
+      ]
+    },
+    "tracelens": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "TRACELENS_VENV": "/opt/madengine-tracelens-venv",
+        "TRACELENS_OUTPUT_DIR": "tracelens_output",
+        "TRACELENS_MODE": "auto"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/tracelens.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ]
+    },
+    "tracelens_pytorch": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "TRACELENS_VENV": "/opt/madengine-tracelens-venv",
+        "TRACELENS_OUTPUT_DIR": "tracelens_output",
+        "TRACELENS_MODE": "pytorch"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/tracelens.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ]
+    },
+    "tracelens_rocprof": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "TRACELENS_VENV": "/opt/madengine-tracelens-venv",
+        "TRACELENS_OUTPUT_DIR": "tracelens_output",
+        "TRACELENS_MODE": "rocprof"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/tracelens.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ]
+    },
+    "tracelens_pftrace": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "TRACELENS_VENV": "/opt/madengine-tracelens-venv",
+        "TRACELENS_OUTPUT_DIR": "tracelens_output",
+        "TRACELENS_MODE": "pftrace"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/tracelens.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ]
+    },
+    "tracelens_collective": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "TRACELENS_VENV": "/opt/madengine-tracelens-venv",
+        "TRACELENS_OUTPUT_DIR": "tracelens_output",
+        "TRACELENS_MODE": "collective"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/tracelens.sh"
+        },
+        {
+          "path": "scripts/common/post_scripts/trace.sh",
+          "args": "tracelens"
+        }
+      ]
+    },
     "rocblas_trace": {
       "env_vars": {
         "ROCBLAS_TRACE": "1"
