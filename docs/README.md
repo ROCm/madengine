@@ -18,6 +18,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 | [Configuration](configuration.md) | Advanced configuration options (includes [run log error pattern scan](configuration.md#run-phase-log-error-pattern-scan)) |
 | [Batch Build](batch-build.md) | Selective builds with batch manifests |
 | [Deployment](deployment.md) | Kubernetes and SLURM deployment |
+| [llm-d](llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Launchers](launchers.md) | Multi-node training frameworks |
 
 ### Advanced Topics

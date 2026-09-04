@@ -1,0 +1,26 @@
+{
+  "_comment": "Managed mode, aggregated serving: prefill.replicas 0 disables the prefill role entirely and all traffic goes to decode pods. teardown false leaves the releases running so several benchmarks can be run against one standup — remember to 'helm uninstall' them yourself.",
+  "k8s": {
+    "namespace": "llm-d-bench",
+    "gpu_count": 0
+  },
+  "llm_d": {
+    "model": {
+      "uri": "hf://meta-llama/Llama-3.1-8B-Instruct",
+      "name": "Llama-3.1-8B-Instruct",
+      "hf_token_secret": "hf-token"
+    },
+    "prefill": { "replicas": 0 },
+    "decode": { "replicas": 4, "tensor_parallel": 2, "gpu_count": 2 },
+    "charts": {
+      "infra": { "version": "<pin>" },
+      "gaie": { "version": "<pin>" },
+      "modelservice": { "version": "<pin>" }
+    },
+    "teardown": false,
+    "_comment_extra": "Escape hatch for any chart value madengine does not model. Deep-merged last, so it wins.",
+    "extra_values": {
+      "gaie": { "inferenceExtension": { "replicas": 2 } }
+    }
+  }
+}

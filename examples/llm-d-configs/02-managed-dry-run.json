@@ -1,0 +1,25 @@
+{
+  "_comment": "Managed mode dry run: render the chart values and 'helm template' output to k8s.output_dir, install nothing, submit no benchmark Job. Run this before spending cluster GPUs, to check the generated values against the chart versions you pinned.",
+  "k8s": {
+    "namespace": "llm-d-bench",
+    "gpu_count": 0,
+    "output_dir": "./k8s_manifests"
+  },
+  "llm_d": {
+    "dry_run": true,
+    "model": {
+      "uri": "hf://Qwen/Qwen3-32B",
+      "name": "Qwen3-32B",
+      "hf_token_secret": "hf-token"
+    },
+    "gateway": "agentgateway",
+    "prefill": { "replicas": 2, "tensor_parallel": 8, "gpu_count": 8 },
+    "decode": { "replicas": 1, "tensor_parallel": 8, "gpu_count": 8 },
+    "_comment_charts": "Replace every <pin> with a real chart version. 'helm show chart <ref>' lists them. Managed mode refuses to run while any version is null.",
+    "charts": {
+      "infra": { "version": "<pin>" },
+      "gaie": { "version": "<pin>" },
+      "modelservice": { "version": "<pin>" }
+    }
+  }
+}

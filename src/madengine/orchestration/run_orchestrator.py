@@ -236,7 +236,7 @@ class RunOrchestrator:
                 self.additional_context = {}
             
             # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+            for key in ["slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
@@ -494,7 +494,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 manifest["deployment_config"] = stored_config
@@ -1126,17 +1126,22 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
         
         Convention over Configuration:
+        - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
         - Neither present → local execution
-        
+
         Args:
             config: Configuration dictionary
-            
+
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "llm-d", "k8s", "slurm", or "local"
         """
-        if "k8s" in config or "kubernetes" in config:
+        # Checked first: an llm-d config also carries a "k8s" block, which
+        # configures the benchmark-client Job.
+        if "llm_d" in config:
+            return "llm-d"
+        elif "k8s" in config or "kubernetes" in config:
             return "k8s"
         elif "slurm" in config:
             return "slurm"

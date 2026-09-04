@@ -1,0 +1,66 @@
+{
+  "_comment": "llm-d deployment defaults. Layered on top of the k8s presets, since the benchmark client is an ordinary single-pod Kubernetes Job.",
+
+  "_comment_rocenv": "The benchmark client pod has no GPU and no ROCm — the inference runs on the llm-d model-server pods. Collecting ROCm environment details there would only record an empty environment. Set true to re-enable.",
+  "generate_sys_env_details": false,
+
+  "llm_d": {
+    "_comment_mode": "Set endpoint_url to benchmark an already-running llm-d stack (attach mode). Leave it null to have madengine stand the stack up and tear it down (managed mode).",
+    "endpoint_url": null,
+    "release_prefix": "madengine",
+    "gateway": "agentgateway",
+
+    "_comment_dry_run": "Managed mode only. Render the chart values and 'helm template' output to k8s.output_dir, install nothing, submit no benchmark Job. Use this to check the generated values against the chart versions you pinned before spending cluster GPUs.",
+    "dry_run": false,
+
+    "_comment_model": "uri is the artifact the model servers load (e.g. 'hf://Qwen/Qwen3-32B', 'pvc://<pvc>/<path>', 'pvc+hf://<pvc>/<path>') and is required in managed mode. name is the model name sent in inference requests and recorded in perf.csv; required in both modes. hf_repo is shorthand for uri: set it to an HF repo id (e.g. 'Qwen/Qwen3-32B') and madengine builds 'hf://<hf_repo>' itself; ignored if uri is set explicitly. hf_repo alone re-downloads the model on every run, same as writing the hf:// URI by hand. Set cache_pvc to a PVC name alongside hf_repo to cache instead: madengine downloads the repo onto that PVC once (a download Job, bounded by cache_timeout) before standup, and points the chart at 'pvc+hf://<cache_pvc>/hf_hub_cache/<hf_repo>' — later runs re-verify rather than re-download. If cache_pvc is 'madengine-shared-data', madengine creates the PVC itself; any other name is assumed to already exist. cache_job_image overrides the download Job's image (default 'python:3.11-slim'). A uri set explicitly always wins over hf_repo/cache_pvc, and can instead point at a PVC populated out-of-band (see llm-d-modelservice's examples/pvc/README.md) if madengine's own download Job is not wanted. hf_token_secret names a Secret (key 'HF_TOKEN') that must already exist in the namespace — the token itself never reaches a values file, a helm command line, or a download Job's command. size, if set, sizes the model-artifact volume (used for the hf:// scheme's ephemeral download volume).",
+    "model": {
+      "uri": null,
+      "hf_repo": null,
+      "cache_pvc": null,
+      "cache_timeout": 7200,
+      "cache_job_image": null,
+      "name": null,
+      "hf_token_secret": null,
+      "size": null
+    },
+
+    "_comment_roles": "Set prefill.replicas to 0 for aggregated (non-disaggregated) serving: madengine then tells the chart not to create the prefill role at all. Each role's 'image' defaults to the --tags-selected model's own built image (the same image the k8s target would run), so --tags determines what serves the model here too; set 'image' explicitly to override it.",
+    "prefill": {
+      "replicas": 1,
+      "tensor_parallel": 1,
+      "gpu_count": 1
+    },
+    "decode": {
+      "replicas": 1,
+      "tensor_parallel": 1,
+      "gpu_count": 1
+    },
+
+    "_comment_charts": "Chart versions are intentionally null. Managed mode refuses to run until they are pinned, because floating chart versions make benchmark numbers non-reproducible and let an upstream release break madengine without a madengine change.",
+    "charts": {
+      "infra": {
+        "ref": "oci://ghcr.io/llm-d-incubation/llm-d-infra/llm-d-infra",
+        "version": null
+      },
+      "gaie": {
+        "ref": "oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool",
+        "version": null
+      },
+      "modelservice": {
+        "ref": "oci://ghcr.io/llm-d-incubation/llm-d-modelservice/llm-d-modelservice",
+        "version": null
+      }
+    },
+
+    "_comment_timeouts": "standup_timeout bounds each 'helm upgrade --install --wait'. readiness_timeout bounds the second readiness stage, which polls the model-server Deployments after helm returns — helm can report success before a large model has finished loading weights.",
+    "standup_timeout": 1800,
+    "readiness_timeout": 1800,
+
+    "_comment_teardown": "Applies to managed mode only; a stack reached via endpoint_url is never torn down. Set false to leave the releases running for debugging — including after a failed standup, where the partially installed releases are left in place instead of unwound.",
+    "teardown": true,
+
+    "_comment_extra_values": "Deep-merged into the generated chart values, last. Either keyed by component ({\"infra\": {...}, \"gaie\": {...}, \"modelservice\": {...}}) or a bare dict, which is applied to modelservice. This is the escape hatch for any chart value madengine does not model.",
+    "extra_values": {}
+  }
+}

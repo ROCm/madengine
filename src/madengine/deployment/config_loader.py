@@ -225,6 +225,51 @@ class ConfigLoader:
         return config
     
     @classmethod
+    def load_llmd_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Load complete llm-d configuration.
+
+        The llm-d benchmark client is an ordinary single-pod Kubernetes Job, so
+        the full k8s preset stack applies unchanged; llm-d defaults are layered
+        underneath it.
+
+        Layers:
+        1. llm-d defaults (presets/llm-d/defaults.json)
+        2. Everything load_k8s_config produces (k8s defaults, GPU vendor,
+           profile, then user configuration)
+        3. k8s.gpu_count defaulted to 0, unless the user asked for GPUs
+
+        Args:
+            user_config: User-provided configuration
+
+        Returns:
+            Complete configuration with both k8s and llm-d defaults applied
+        """
+        config = cls.load_k8s_config(user_config)
+        llmd_defaults = cls.load_preset("llm-d/defaults.json")
+
+        # llm-d defaults are the base; user configuration still wins.
+        merged = cls.deep_merge(llmd_defaults, config)
+
+        # The benchmark client is a CPU-only pod: the GPUs belong to the llm-d
+        # model servers, not to the load generator. load_k8s_config picks a
+        # profile preset for it anyway, and k8s/profiles/single-gpu.json sets
+        # gpu_count 1 — so without this the client Job requests a GPU it never
+        # uses and competes with the very stack it is benchmarking.
+        #
+        # This cannot live in presets/llm-d/defaults.json: those are the *base*
+        # of the merge above, so the profile's gpu_count would overwrite them.
+        # Keying off user_config instead of the merged result is what separates
+        # "the user asked for GPUs" from "a profile defaulted them" — an
+        # explicit k8s.gpu_count still wins, as do the runtime overrides
+        # resolve_runtime_gpus reads straight off additional_context.
+        user_k8s = user_config.get("k8s") or user_config.get("kubernetes") or {}
+        if "gpu_count" not in user_k8s:
+            merged.setdefault("k8s", {})["gpu_count"] = 0
+
+        return merged
+
+    @classmethod
     def infer_and_validate_deploy_type(cls, user_config: Dict[str, Any]) -> str:
         """
         Infer deployment type from config structure and validate for conflicts.

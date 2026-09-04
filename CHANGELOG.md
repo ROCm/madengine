@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`llm-d` deployment target** (#181): Benchmarks an [llm-d](https://llm-d.ai) stack — vLLM/SGLang model servers behind a Gateway API Inference Extension `InferencePool` — from an ordinary single-pod Kubernetes Job, so the existing ConfigMap bundling, log streaming, result harvesting and `perf.csv` path are reused unchanged. Two modes: **attach** (`llm_d.endpoint_url` set: madengine benchmarks a stack it did not create and never installs or uninstalls anything) and **managed** (madengine installs three pinned helm releases, waits for model-server readiness, reads the endpoint off the live `Gateway`, benchmarks, then tears the releases down on the way out — on success as well as on failure). Target selection follows the existing Convention over Configuration rule: an `llm_d` key selects it, checked before `k8s` because an llm-d config carries both. The benchmark client itself is CPU-only — `k8s.gpu_count` defaults to `0` under llm-d so the load generator does not compete with the stack it measures. See `docs/llm-d.md`.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added

@@ -22,6 +22,8 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
 
+> **llm-d is not a launcher.** A launcher is a way madengine starts a workload *inside its own container*. [llm-d](llm-d.md) is a deployment target: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`, not `distributed.launcher`.
+
 ---
 
 ## Quick Start
@@ -748,6 +750,7 @@ Structured generation      → SGLang or SGLang Disaggregated
 Memory constrained         → vLLM (PagedAttention)
 Large-scale clusters (5+)  → SGLang Disaggregated
 Workload-specific tuning   → SGLang Disaggregated
+Gateway-routed serving     → llm-d (deployment target, see llm-d.md)
 ```
 
 ### 2. Resource Allocation
