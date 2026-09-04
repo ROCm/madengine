@@ -250,6 +250,47 @@ def _validate_gpu_vendor_guest_after_defaults(context: Dict[str, Any]) -> None:
     )
 
 
+def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
+    """Validate any launcher in the context and rewrite it to its canonical spelling.
+
+    Fails here rather than at deploy time: a launcher madengine does not recognize
+    used to run the model as a plain single-process job and still report SUCCESS,
+    so the benchmark number was wrong with nothing to indicate it.
+    """
+    from madengine.core.errors import ConfigurationError
+    from madengine.deployment.common import validate_launcher
+
+    launcher_cfg = context.get("launcher")
+    if launcher_cfg is not None and not isinstance(launcher_cfg, dict):
+        # A bare string is a natural mistake, since distributed.launcher *is* a
+        # string. Name both valid shapes rather than only rejecting this one.
+        console.print(f"❌ Invalid launcher: [red]{launcher_cfg!r}[/red]")
+        console.print("💡 'launcher' must be an object. Use one of:")
+        console.print(
+            '   [green]{"launcher": {"type": "torchrun", "nnodes": 2}}[/green]'
+        )
+        console.print(
+            '   [green]{"distributed": {"launcher": "torchrun", "nnodes": 2}}[/green]'
+        )
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    targets = []
+    distributed = context.get("distributed")
+    if isinstance(distributed, dict) and "launcher" in distributed:
+        targets.append((distributed, "launcher"))
+    if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
+        targets.append((launcher_cfg, "type"))
+
+    for holder, key in targets:
+        try:
+            holder[key] = validate_launcher(holder[key], source="additional_context")
+        except ConfigurationError as exc:
+            console.print(f"❌ Invalid launcher: [red]{holder[key]!r}[/red]")
+            for suggestion in exc.suggestions or []:
+                console.print(f"💡 [green]{suggestion}[/green]")
+            raise typer.Exit(ExitCode.INVALID_ARGS)
+
+
 def finalize_additional_context_dict(
     context: Dict[str, Any],
     *,
@@ -280,6 +321,7 @@ def finalize_additional_context_dict(
     validate_additional_context_structure(context)
     _normalize_docker_build_arg_values(context)
     _validate_gpu_vendor_guest_after_defaults(context)
+    _validate_launcher_after_defaults(context)
     return context
 
 

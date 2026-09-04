@@ -34,7 +34,6 @@ from madengine.reporting.update_perf_csv import (
 )
 from madengine.reporting.update_perf_super import update_perf_super_json, update_perf_super_csv
 from madengine.utils.gpu_config import resolve_runtime_gpus
-from madengine.deployment.common import canonicalize_distributed_launcher
 from madengine.utils.config_parser import ConfigParser
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -331,32 +330,8 @@ class ContainerRunner:
         except (ValueError, TypeError):
             total_gpus = resolved_gpu_count
         
-        # Extract launcher from multiple sources in priority order:
-        # 1. additional_context (passed via --additional-context CLI arg)
-        # 2. model_info distributed config (in models.json)
-        # 3. MAD_LAUNCHER environment variable
-        # 4. Default to 'docker' for local deployments
-        launcher = ""
-        
-        # Check additional_context first (highest priority)
-        if self.additional_context:
-            distributed_config = self.additional_context.get("distributed", {})
-            launcher = distributed_config.get("launcher", "")
-            if launcher:
-                print(f"🚀 Launcher from additional_context: {launcher}")
-        
-        # Check model_info distributed config
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-            if launcher:
-                print(f"🚀 Launcher from model_info: {launcher}")
-        
-        # Fallback to environment variable
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER", "")
-            if launcher:
-                print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
-        
+        launcher = self._resolve_launcher(model_info, announce=True)
+
         # Apply deployment-specific defaults if no launcher specified
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         if not launcher:
@@ -664,6 +639,45 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
+    def _resolve_launcher(
+        self, model_info: typing.Dict, announce: bool = False
+    ) -> str:
+        """Resolve the configured launcher for this run, in source priority order.
+
+        1. ``additional_context.distributed.launcher`` (the --additional-context CLI arg)
+        2. ``model_info.distributed.launcher`` (models.json)
+        3. ``MAD_LAUNCHER_TYPE`` / ``MAD_LAUNCHER`` (exported by the SLURM job script)
+
+        Does not validate. Launchers are validated at the config boundary — in
+        ``cli/validators.py`` for the CLI and ``BaseDeployment.__init__`` for
+        SLURM/K8s — so anything arriving here is already canonical. Callers on the
+        local Docker path warn and default rather than fail, which is why this
+        returns the value as given instead of raising on it.
+
+        Args:
+            model_info: The model card being run.
+            announce: Print which source supplied the launcher.
+
+        Returns:
+            The launcher name, or ``""`` if none is configured.
+        """
+        sources = [
+            (
+                (self.additional_context or {}).get("distributed", {}).get("launcher", ""),
+                "additional_context",
+            ),
+            ((model_info.get("distributed") or {}).get("launcher", ""), "model_info"),
+            (os.environ.get("MAD_LAUNCHER_TYPE", ""), "MAD_LAUNCHER_TYPE env"),
+            (os.environ.get("MAD_LAUNCHER", ""), "MAD_LAUNCHER env"),
+        ]
+        for value, label in sources:
+            if not value:
+                continue
+            if announce:
+                print(f"🚀 Launcher from {label}: {value}")
+            return value
+        return ""
+
     def _generate_local_launcher_command(self, launcher_type: str, nproc_per_node: int) -> str:
         """Generate distributed process launcher command for Docker local deployment.
 
@@ -680,7 +694,7 @@ class ContainerRunner:
             Launcher command string, or empty string for launchers that
             manage their own process spawning (vllm, sglang).
         """
-        if launcher_type in ("torchrun", "megatron", "megatron-lm", "torchtitan"):
+        if launcher_type in ("torchrun", "megatron-lm", "torchtitan"):
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
         elif launcher_type == "deepspeed":
             return f"deepspeed --num_gpus={nproc_per_node}"
@@ -689,9 +703,9 @@ class ContainerRunner:
         else:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
 
-    # Deployment-mode sentinels that normalize_launcher emits for "no real
-    # launcher". Users may pass these explicitly; defaulting them to torchrun is
-    # expected, not an error, so they should not trigger an unrecognized warning.
+    # Deployment-mode sentinels meaning "no real launcher". Users may pass these
+    # explicitly; defaulting them to torchrun is expected, not an error, so they
+    # should not trigger an unrecognized warning.
     _NON_LAUNCHER_SENTINELS = ("docker", "native")
 
     def _resolve_local_multi_node_runner_env(
@@ -699,28 +713,20 @@ class ContainerRunner:
     ) -> None:
         """Set ``docker_env_vars["MAD_MULTI_NODE_RUNNER"]`` for local Docker runs.
 
-        No-op if the env var is already set. Resolves launcher from
-        ``additional_context.distributed.launcher``, then ``model_info.distributed.launcher``,
-        then ``MAD_LAUNCHER``; falls back to ``torchrun`` for unknown values.
-        Self-managing launchers (vllm/sglang/sglang-disagg/primus) set the var
-        to an empty string so downstream scripts under ``set -u`` don't fail.
+        No-op if the env var is already set. Resolves the launcher via
+        :meth:`_resolve_launcher`, falling back to ``torchrun``. Self-managing
+        launchers (vllm/sglang/sglang-disagg/primus) set the var to an empty
+        string so downstream scripts under ``set -u`` don't fail.
         """
         if "MAD_MULTI_NODE_RUNNER" in self.context.ctx["docker_env_vars"]:
             return
-        launcher = ""
-        if self.additional_context:
-            launcher = self.additional_context.get("distributed", {}).get("launcher", "")
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER", "")
-        canonical_launcher = canonicalize_distributed_launcher(launcher)
+        launcher = self._resolve_launcher(model_info)
         valid_local_launchers = (
-            "torchrun", "megatron", "megatron-lm", "torchtitan",
+            "torchrun", "megatron-lm", "torchtitan",
             "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
         )
-        if canonical_launcher in valid_local_launchers:
-            dist_launcher = canonical_launcher
+        if launcher in valid_local_launchers:
+            dist_launcher = launcher
         else:
             if launcher and launcher not in self._NON_LAUNCHER_SENTINELS:
                 print(f"⚠️  Unrecognized launcher '{launcher}'; "
@@ -1378,14 +1384,7 @@ class ContainerRunner:
         # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
         # slurm_multi launchers run scripts directly on the host,
         # not inside a madengine-managed Docker. The script manages its own containers via srun.
-        launcher = ""
-        if self.additional_context:
-            distributed_config = self.additional_context.get("distributed", {})
-            launcher = distributed_config.get("launcher", "")
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+        launcher = self._resolve_launcher(model_info)
         if is_self_managed_launcher(launcher):
             self.rich_console.print(
                 f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]"
