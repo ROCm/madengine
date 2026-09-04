@@ -45,14 +45,17 @@ delete anything belonging to a stack it did not create.
 
 Both modes:
 
-- A Kubernetes cluster with a GPU device plugin
-  ([AMD](https://github.com/ROCm/k8s-device-plugin) / [NVIDIA](https://github.com/NVIDIA/k8s-device-plugin))
 - Kubeconfig configured (`~/.kube/config` or in-cluster)
 - **The target namespace must already exist.** madengine never creates or deletes a
   namespace.
 
 Managed mode additionally:
 
+- A Kubernetes cluster with a GPU device plugin
+  ([AMD](https://github.com/ROCm/k8s-device-plugin) / [NVIDIA](https://github.com/NVIDIA/k8s-device-plugin)).
+  Attach mode has no GPU-node requirement of its own: the GPUs belong to a stack
+  madengine did not install, possibly not even in this cluster; only cluster
+  connectivity and the namespace are checked.
 - `helm` on `PATH`
 - Gateway API and Gateway API Inference Extension CRDs, plus a gateway controller
   watching your `gatewayClassName`. These are cluster-admin installs; madengine
@@ -372,9 +375,11 @@ Things worth knowing before you point this at a shared cluster:
   the Job object afterwards either way — only the downloaded weights persist on the PVC. A
   failed download unwinds like any other standup failure.
 - **Readiness is two-stage.** `helm --wait` can return before a model server has finished
-  loading weights, so madengine additionally polls the model-server Deployments. If those
-  Deployments carry unexpected labels, it says so and moves on rather than blocking a run
-  that would otherwise succeed.
+  loading weights, so madengine additionally polls the model-server Deployments. This
+  stage is best-effort on top of helm's own readiness gate: if those Deployments carry
+  unexpected labels, or the API call itself fails (e.g. RBAC forbids listing
+  Deployments), it says so and moves on rather than blocking a run that would otherwise
+  succeed.
 - **The endpoint is read, not guessed.** It comes from the live `Gateway` resource's
   `status.addresses`, not from a chart naming convention. If the Gateway is ambiguous or
   has published no address, madengine fails with the reason and tells you to set
