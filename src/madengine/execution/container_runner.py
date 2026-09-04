@@ -1548,6 +1548,13 @@ class ContainerRunner:
                         print("MODEL REPO COMMIT: ", commit)
                         print("======================================================")
 
+                        model_docker.sh(
+                            f'for f in {dir_path}/*; do '
+                            f'if [ -e "{model_dir}/$(basename $f)" ]; then '
+                            f'echo "ERROR: $f already exists in {model_dir}"; exit 1; fi; '
+                            'done'
+                        )
+
                         # Copy scripts to model directory
                         model_docker.sh(
                             f"cp -vLR --preserve=all {dir_path}/. {model_dir}/"
