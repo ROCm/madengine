@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Containers no longer outlive a cancelled run**: A cancelled CI job (or any `SIGINT`/`SIGTERM`/`SIGHUP`) left madengine's detached benchmark container running, holding the GPU until the host was rebooted — the GitHub Actions runner signals only the step's top-level shell and then kills that process tree, which a container started with `docker run -d` was never part of. Three layers now cover this, in decreasing order of what they can survive:
+
+  - **In-container dead man's switch**: every container madengine starts runs a POSIX-shell watchdog as PID 1 that stops the container as soon as madengine stops refreshing a heartbeat file in the bind-mounted workspace. This holds even when madengine is `SIGKILL`ed, since it needs nothing from the host. Images without a shell fall back to the previous `cat` PID 1, with a warning that the container is unwatched. `--keep-alive` opts out, since leaving the container behind is its purpose. Tunable via `MADENGINE_HEARTBEAT_INTERVAL` (default 15s) and `MADENGINE_HEARTBEAT_STALE_AFTER` (default 120s).
+  - **Signal handlers** (`core/lifecycle.py`): drop the heartbeats, then tear down registered containers within a 6s budget — inside the ~7.5s the runner allows between `SIGINT` and `SIGTERM` — and exit 130. Every docker call during teardown has a hard deadline and runs in its own session, because a wedged GPU blocks the docker daemon too and a cleanup path that can hang is worse than none.
+  - **`madengine cleanup`**: sweeps containers labelled `madengine.session=*` whose owning process is gone. Safe to run from `if: always()`, cron, or by hand on a shared runner — containers with a live owner are skipped. `--all` ignores ownership, `--dry-run` reports only.
+
+  Teardown escalates `docker stop` → `docker kill` → `docker rm -f` → direct `SIGKILL` of the container's host PIDs (read from the cgroup, so it works when dockerd itself is unresponsive). Processes stuck in uninterruptible sleep inside the GPU driver cannot be recovered from userspace: those are reported rather than retried — a `gpu_wedged.json` marker is written to the state dir and `madengine cleanup` exits `5` (`ExitCode.GPU_WEDGED`) so CI can pull the runner out of rotation. A wedge is only claimed on evidence (D-state PIDs, or a container the daemon still reports after being told twice to remove it); an unresponsive daemon alone is not enough.
+
 ## [2.1.3] - 2026-07-15
 
 ### Added
