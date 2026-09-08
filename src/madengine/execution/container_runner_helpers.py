@@ -8,6 +8,10 @@ Extracted so run_container logic is easier to test and maintain.
 import re
 import typing
 
+# Timeout resolution lives in core.timeout so the deployment layer can share it;
+# re-exported here for existing importers.
+from madengine.core.timeout import resolve_run_timeout  # noqa: F401
+
 # Default substrings matched in container run logs post-hoc (see ContainerRunner).
 DEFAULT_LOG_ERROR_PATTERNS: typing.Tuple[str, ...] = (
     "OutOfMemoryError",
@@ -198,35 +202,6 @@ def resolve_run_status(
     if skip_perf_collection:
         return "SUCCESS", "perf collection deferred to login-node aggregation"
     return "FAILURE", "no performance metrics"
-
-
-def resolve_run_timeout(
-    model_info: typing.Dict,
-    cli_timeout: int,
-    default_cli_timeout: int = 7200,
-) -> int:
-    """
-    Resolve effective run timeout from model config and CLI.
-
-    - If model has a timeout and CLI is using default (7200), use model's timeout.
-    - If CLI timeout is explicitly set (not default), it overrides model timeout.
-
-    Args:
-        model_info: Model info dict; may have "timeout" key.
-        cli_timeout: Timeout from CLI.
-        default_cli_timeout: Value considered "default" for CLI (typically 7200).
-
-    Returns:
-        Effective timeout in seconds.
-    """
-    if (
-        "timeout" in model_info
-        and model_info["timeout"] is not None
-        and model_info["timeout"] > 0
-        and cli_timeout == default_cli_timeout
-    ):
-        return model_info["timeout"]
-    return cli_timeout
 
 
 def _docker_image_ref_for_log_naming(docker_image: str) -> str:
