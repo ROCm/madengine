@@ -291,18 +291,25 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 # Run timeout on the K8s path
 
 
-def _k8s_template_context(model_timeout=None, cli_timeout=-1, tmp_path=None):
+def _k8s_template_context(
+    model_timeout=None, cli_timeout=-1, tmp_path=None, launcher_type=None
+):
     """Template context for a minimal single-node job, without touching a cluster.
 
     Builds the context off the same mixin the deployment uses, so the timeout
-    the template sees is the one a real render would get.
+    the template sees is the one a real render would get. Pass ``launcher_type``
+    (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
+    instead of the direct-script branch.
     """
     from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
     from madengine.deployment.k8s_template_context import (
         KubernetesTemplateContextMixin,
     )
+    from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
 
-    class _Harness(KubernetesTemplateContextMixin, KubernetesScriptsMixin):
+    class _Harness(
+        KubernetesTemplateContextMixin, KubernetesScriptsMixin, KubernetesLauncherMixin
+    ):
         pass
 
     model_info = {
@@ -323,11 +330,18 @@ def _k8s_template_context(model_timeout=None, cli_timeout=-1, tmp_path=None):
     manifest_path.write_text(json.dumps(manifest))
 
     k8s_config = {"namespace": "ns"}
+    additional_context = {"k8s": k8s_config}
+    if launcher_type is not None:
+        additional_context["launcher"] = {
+            "type": launcher_type,
+            "nnodes": 1,
+            "nproc_per_node": 1,
+        }
     harness = _Harness()
     harness.config = DeploymentConfig(
         target="k8s",
         manifest_file=str(manifest_path),
-        additional_context={"k8s": k8s_config},
+        additional_context=additional_context,
         cli_timeout=cli_timeout,
     )
     harness.k8s_config = k8s_config
@@ -421,6 +435,59 @@ class TestK8sJobScriptTimeout:
                 ["bash", "-n", str(script_path)], capture_output=True, text=True
             )
             assert result.returncode == 0, result.stderr
+
+
+class TestK8sJobScriptTimeoutLauncherBranch:
+    """Same guarantees as TestK8sJobScriptTimeout, but for the launcher branch.
+
+    torchrun/deepspeed-style jobs render through the `launcher_command` branch of
+    job.yaml.j2, not the direct-script branch -- the timeout wrapper and exit-code
+    capture are templated separately in each, so each needs its own coverage.
+    """
+
+    def test_model_script_is_wrapped_in_timeout(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        assert ctx["launcher_command"] is not None
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 360 bash /tmp/run_model.sh" in script
+
+    def test_non_positive_timeout_runs_unbounded(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=0, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 0 " not in script
+        assert "No timeout set" in script
+        assert "bash /tmp/run_model.sh" in script
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        for card_timeout in (360, 0):
+            ctx = _k8s_template_context(
+                model_timeout=card_timeout, launcher_type="torchrun", tmp_path=tmp_path
+            )
+            script_path = tmp_path / f"job_launcher_{card_timeout}.sh"
+            script_path.write_text(_render_k8s_job_script(ctx))
+            result = subprocess.run(
+                ["bash", "-n", str(script_path)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(self, model_exit_code, tmp_path):
+        """Same set -e hazard as the direct-script branch: exit code must be
+        captured, not acted on, so post-scripts and artifact copy still run."""
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"launcher_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
 
 
 def _run_model_invocation_block(script, model_exit_code, tmp_path, name):
