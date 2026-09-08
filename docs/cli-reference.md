@@ -223,7 +223,7 @@ madengine run [OPTIONS]
 | `--tags` | `-t` | TEXT | `[]` | Model tags to run (can specify multiple) |
 | `--manifest-file` | `-m` | TEXT | `""` | Build manifest file path (for pre-built images) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry URL |
-| `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
+| `--timeout` | | INT | `-1` | Timeout in seconds. `-1` means "not passed" and falls through to the model card's `timeout`, or 7200s if it has none; `0` disables the timeout; a positive value overrides the model card. See [Usage — Custom Timeouts](usage.md#custom-timeouts). |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
