@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, call, mock_open, patch
 
 import pytest
 
@@ -438,7 +438,9 @@ class TestRunContainerSkipModelRun:
         runner.perf_csv_path = "/tmp/test_perf.csv"
         return runner
 
-    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+    def _run_container_with_mocks(
+        self, runner, model_info, docker_sh_calls, docker_sh=None, **kwargs
+    ):
         """Call run_container with all the infrastructure mocked away.
 
         Patches:
@@ -470,7 +472,9 @@ class TestRunContainerSkipModelRun:
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
              patch.object(Docker, "__init__", return_value=None), \
              patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+                          side_effect=docker_sh or (
+                              lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"
+                          )), \
              patch.object(Docker, "__del__", return_value=None), \
              patch("builtins.open", mock_open(read_data="")):
             return runner.run_container(
@@ -523,6 +527,66 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestContainerInitCommand:
+    def _run(self, context, docker_sh, **kwargs):
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        runner.context.ctx.update(context)
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        return harness._run_container_with_mocks(
+            runner, model_info, [], docker_sh=docker_sh, **kwargs
+        )
+
+    @pytest.mark.parametrize("context", [{}, {"container_init_command": ""}])
+    def test_unset_command_preserves_startup(self, context):
+        docker_sh = MagicMock(return_value="ok")
+
+        result = self._run(context, docker_sh, skip_model_run=True)
+
+        assert result["status"] == "SKIPPED"
+        assert docker_sh.call_args_list[0] == call("whoami")
+        docker_sh.assert_any_call(
+            "git config --global --add safe.directory /myworkspace"
+        )
+
+    @pytest.mark.parametrize("init_timeout", [None, 900])
+    def test_init_runs_before_diagnostics_and_git_with_its_timeout(self, init_timeout):
+        context = {"container_init_command": "apt-get update && apt-get install -y git"}
+        if init_timeout is not None:
+            context["container_init_timeout"] = init_timeout
+        docker_sh = MagicMock(return_value="ok")
+
+        result = self._run(context, docker_sh, skip_model_run=True)
+
+        assert result["status"] == "SKIPPED"
+        assert docker_sh.call_args_list[:2] == [
+            call(context["container_init_command"], timeout=init_timeout or 600),
+            call("whoami"),
+        ]
+        docker_sh.assert_any_call(
+            "git config --global --add safe.directory /myworkspace"
+        )
+
+    @pytest.mark.parametrize(
+        "error", ["Console script error", "Console script timeout"]
+    )
+    def test_init_failure_stops_setup_and_model_execution(self, error):
+        docker_sh = MagicMock(side_effect=RuntimeError(error))
+
+        result = self._run(
+            {"container_init_command": "install-dependencies"}, docker_sh
+        )
+
+        assert result["status"] == "FAILURE"
+        docker_sh.assert_called_once_with("install-dependencies", timeout=600)
 
 
 class TestRunModelsFromManifestDefaultTimeoutIsSentinel:

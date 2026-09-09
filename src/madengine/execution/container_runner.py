@@ -1430,6 +1430,16 @@ class ContainerRunner:
                             console=self.console,
                         )
 
+                        # Initialize dependencies before diagnostics and Git setup.
+                        init_command = self.context.ctx.get("container_init_command")
+                        if init_command:
+                            model_docker.sh(
+                                init_command,
+                                timeout=self.context.ctx.get(
+                                    "container_init_timeout", 600
+                                ),
+                            )
+
                         # Check user
                         whoami = model_docker.sh("whoami")
                         print(f"👤 Running as user: {whoami}")
