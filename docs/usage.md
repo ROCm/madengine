@@ -46,7 +46,7 @@ madengine provides five main commands:
 | `build` | Build Docker images | `--tags`, `--registry`, `--batch-manifest` |
 | `run` | Execute models | `--tags`, `--manifest-file`, `--timeout` |
 | `report` | Generate HTML reports | `to-html`, `to-email` |
-| `database` | Upload to MongoDB | `--csv-file`, `--database-name` |
+| `database` | Upload to MongoDB | `--file`, `--db` |
 
 For complete command options and detailed examples, see **[CLI Command Reference](cli-reference.md)**.
 
@@ -66,11 +66,11 @@ madengine run --tags model
 # madengine build --tags model --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate HTML report
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # Upload to MongoDB
-madengine database --csv-file perf_entry.csv \
-  --database-name mydb --collection-name results
+madengine database --file perf_entry.csv \
+  --database mydb --collection results
 ```
 
 ## Model Discovery
@@ -82,7 +82,7 @@ madengine supports three discovery methods:
 Central model definitions in MAD package root:
 
 ```bash
-madengine discover --tags dummy pyt_huggingface_bert
+madengine discover --tags dummy --tags pyt_huggingface_bert
 ```
 
 ### 2. Directory-Specific Models
@@ -117,17 +117,31 @@ Creates `build_manifest.json`:
 
 ```json
 {
-  "models": [
-    {
-      "model_name": "my_model",
-      "image": "localhost:5000/my_model:20240115_123456",
-      "tag": "my_model"
+  "built_images": {
+    "ci-my_model_ubuntu": {
+      "model": "my_model",
+      "docker_image": "ci-my_model_ubuntu",
+      "dockerfile": "docker/my_model.ubuntu.amd.Dockerfile",
+      "build_duration": 42.3,
+      "registry": "localhost:5000"
     }
-  ],
-  "registry": "localhost:5000",
-  "build_timestamp": "2024-01-15T12:34:56Z"
+  },
+  "built_models": {
+    "ci-my_model_ubuntu": {
+      "name": "my_model",
+      "dockerfile": "my_model",
+      "n_gpus": "1"
+    }
+  },
+  "context": {
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU"
+  },
+  "credentials_required": []
 }
 ```
+
+`built_images` and `built_models` are both keyed by the built Docker image name. Depending on the build, the manifest may also include `deployment_config` and `summary` keys.
 
 ### Build with Deployment Config
 
@@ -432,6 +446,23 @@ madengine run --tags model --timeout 7200
 madengine run --tags model --timeout 0
 ```
 
+Precedence, lowest to highest: the 7200s default, then a model card's `timeout`
+field, then `--timeout`. `--timeout -1` (the default) means "not passed" and
+falls through to the level below, so an explicit `--timeout 7200` still
+overrides a model card timeout even though it equals the default. A resolved
+timeout of `0` or less means no timeout — including a model card that sets
+`"timeout": 0` or `-1`.
+
+The same default and precedence apply to distributed runs. On SLURM the
+submitting process caps its own wait at the resolved timeout, and forwards
+`--timeout` unresolved to the job, so a model card's value still wins there.
+On Kubernetes the timeout is resolved when the Job manifest is rendered — the
+pod has no inner `madengine` to resolve it — and the model script is wrapped in
+`timeout`, so a model that overruns is killed with exit code 124 and logs
+`model script timed out after Ns`. A pod whose model fails or times out still
+runs its post-scripts and copies its artifacts to the results PVC before
+exiting on the model's code, so failed runs remain diagnosable.
+
 ### Debugging
 
 ```bash
@@ -493,7 +524,7 @@ Convert performance CSV files to viewable HTML reports:
 
 ```bash
 # Single CSV to HTML
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # Result: Creates perf_entry.html in same directory
 ```
@@ -532,13 +563,13 @@ export MONGO_PASSWORD=secretpassword
 
 # Upload results
 madengine database \
-  --csv-file perf_entry.csv \
-  --database-name performance_tracking \
-  --collection-name model_runs
+  --file perf_entry.csv \
+  --database performance_tracking \
+  --collection model_runs
 
 # Upload specific results
 madengine database \
-  --csv-file results/perf_mi300.csv \
+  --file results/perf_mi300.csv \
   --db benchmarks \
   --collection mi300_results
 ```
@@ -547,15 +578,15 @@ madengine database \
 
 ```bash
 # 1. Run benchmarks
-madengine run --tags model1 model2 model3 \
+madengine run --tags model1 --tags model2 --tags model3 \
   --output perf_entry.csv
 
 # 2. Generate HTML report
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # 3. Upload to database
 madengine database \
-  --csv-file perf_entry.csv \
+  --file perf_entry.csv \
   --db benchmarks \
   --collection daily_runs
 
@@ -586,7 +617,7 @@ Configure distributed training:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (K8s + SLURM)
+- `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
 - `vllm` - LLM inference
 - `sglang` - Structured generation
@@ -671,6 +702,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
+| `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login is reused | `/etc/docker-oat` |
+| `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login` and always defer to the machine's existing credentials | `"1"` |
 
 ## Best Practices
 
@@ -764,7 +797,7 @@ if [ $? -eq 0 ]; then
   # Generate and upload results
   madengine report to-email --output ci_results.html
   madengine database \
-    --csv-file perf.csv \
+    --file perf.csv \
     --db ci_results \
     --collection ${CI_BUILD_ID}
 else
