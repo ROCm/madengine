@@ -677,7 +677,7 @@ echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): about to run
 # Environment variables (MASTER_ADDR, MAD_MULTI_NODE_RUNNER, etc.) are inherited
 $MAD_CLI_COMMAND run \
     --manifest-file "$EXEC_MANIFEST" \
-    --timeout {{ timeout | default(3600) }} \
+    --timeout {{ timeout }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
     {% if live_output %}--live-output{% endif %} \
     > "${NODE_LOG_OUT}" 2>> "${NODE_LOG_ERR}"
@@ -766,7 +766,7 @@ echo ""
 # Environment variables (MASTER_ADDR, MAD_MULTI_NODE_RUNNER, etc.) are inherited
 $MAD_CLI_COMMAND run \
     {% if manifest_file %}--manifest-file "$EXEC_MANIFEST"{% else %}--tags {{ tags }}{% endif %} \
-    --timeout {{ timeout | default(3600) }} \
+    --timeout {{ timeout }} \
     {% if shared_data %}--force-mirror-local {{ shared_data }}{% endif %} \
     {% if live_output %}--live-output{% endif %}
 

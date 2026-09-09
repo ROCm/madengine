@@ -6,9 +6,15 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+from madengine.deployment.base import DeploymentConfig, create_jinja_env
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
     sanitize_k8s_label_value,
@@ -279,6 +285,286 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="bogus")
         assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"
+
+
+# ---------------------------------------------------------------------------
+# Run timeout on the K8s path
+
+
+def _k8s_template_context(
+    model_timeout=None, cli_timeout=-1, tmp_path=None, launcher_type=None
+):
+    """Template context for a minimal single-node job, without touching a cluster.
+
+    Builds the context off the same mixin the deployment uses, so the timeout
+    the template sees is the one a real render would get. Pass ``launcher_type``
+    (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
+    instead of the direct-script branch.
+    """
+    from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
+    from madengine.deployment.k8s_template_context import (
+        KubernetesTemplateContextMixin,
+    )
+    from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
+
+    class _Harness(
+        KubernetesTemplateContextMixin, KubernetesScriptsMixin, KubernetesLauncherMixin
+    ):
+        pass
+
+    model_info = {
+        "name": "dummy",
+        "scripts": "scripts/dummy/run.sh",
+        "args": "",
+        "n_gpus": "1",
+    }
+    if model_timeout is not None:
+        model_info["timeout"] = model_timeout
+
+    manifest = {
+        "built_images": {"dummy": {"docker_image": "dummy:latest"}},
+        "built_models": {"dummy": model_info},
+        "context": {"gpu_vendor": "AMD", "guest_os": "UBUNTU"},
+    }
+    manifest_path = tmp_path / "build_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    k8s_config = {"namespace": "ns"}
+    additional_context = {"k8s": k8s_config}
+    if launcher_type is not None:
+        additional_context["launcher"] = {
+            "type": launcher_type,
+            "nnodes": 1,
+            "nproc_per_node": 1,
+        }
+    harness = _Harness()
+    harness.config = DeploymentConfig(
+        target="k8s",
+        manifest_file=str(manifest_path),
+        additional_context=additional_context,
+        cli_timeout=cli_timeout,
+    )
+    harness.k8s_config = k8s_config
+    harness.console = MagicMock()
+    harness.manifest = manifest
+    harness.namespace = "ns"
+    harness.job_name = "j"
+    harness.job_label = "j"
+    harness.main_container_name = "c"
+    harness.configmap_name = "cm"
+    harness.service_name = "s"
+    harness.gpu_resource_name = "amd.com/gpu"
+    harness.data = None
+
+    return harness._prepare_template_context(
+        model_info, {"registry_image": "dummy:latest"}
+    )
+
+
+def _render_k8s_job_script(context):
+    """Render job.yaml.j2 and return the main container's shell script."""
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = (
+        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**context)
+    )
+    job = list(yaml.safe_load_all(rendered))[0]
+    return job["spec"]["template"]["spec"]["containers"][0]["args"][0]
+
+
+class TestK8sRunTimeoutResolution:
+    """The model card's timeout must reach the K8s job, following v1 precedence.
+
+    Unlike SLURM, no inner madengine re-resolves inside the pod, so the card has
+    to be applied at render time -- config.timeout only bounds the submitting
+    process's wait on the Job and never saw the card.
+    """
+
+    def test_default_when_neither_card_nor_cli_specifies(self, tmp_path):
+        ctx = _k8s_template_context(tmp_path=tmp_path)
+        assert ctx["timeout"] == DEFAULT_RUN_TIMEOUT
+
+    def test_model_card_overrides_default(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, tmp_path=tmp_path)
+        assert ctx["timeout"] == 360
+
+    def test_cli_overrides_model_card(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=360, cli_timeout=120, tmp_path=tmp_path
+        )
+        assert ctx["timeout"] == 120
+
+    @pytest.mark.parametrize("card_timeout", [0, -1])
+    def test_model_card_can_ask_for_no_timeout(self, card_timeout, tmp_path):
+        ctx = _k8s_template_context(model_timeout=card_timeout, tmp_path=tmp_path)
+        assert ctx["timeout"] == card_timeout
+
+    def test_cli_zero_disables_a_model_card_timeout(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, cli_timeout=0, tmp_path=tmp_path)
+        assert ctx["timeout"] == 0
+
+
+class TestK8sJobScriptTimeout:
+    """The rendered job script must actually enforce the resolved timeout."""
+
+    def test_model_script_is_wrapped_in_timeout(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 360 bash /tmp/run_model.sh" in script
+
+    def test_non_positive_timeout_runs_unbounded(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=0, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 0 " not in script
+        assert "No timeout set" in script
+        assert "bash /tmp/run_model.sh" in script
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        """The heredoc terminator must land in column 0 after YAML dedent."""
+        for card_timeout in (360, 0):
+            ctx = _k8s_template_context(model_timeout=card_timeout, tmp_path=tmp_path)
+            script_path = tmp_path / f"job_{card_timeout}.sh"
+            script_path.write_text(_render_k8s_job_script(ctx))
+            result = subprocess.run(
+                ["bash", "-n", str(script_path)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+
+class TestK8sJobScriptTimeoutLauncherBranch:
+    """Same guarantees as TestK8sJobScriptTimeout, but for the launcher branch.
+
+    torchrun/deepspeed-style jobs render through the `launcher_command` branch of
+    job.yaml.j2, not the direct-script branch -- the timeout wrapper and exit-code
+    capture are templated separately in each, so each needs its own coverage.
+    """
+
+    def test_model_script_is_wrapped_in_timeout(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        assert ctx["launcher_command"] is not None
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 360 bash /tmp/run_model.sh" in script
+
+    def test_non_positive_timeout_runs_unbounded(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=0, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 0 " not in script
+        assert "No timeout set" in script
+        assert "bash /tmp/run_model.sh" in script
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        for card_timeout in (360, 0):
+            ctx = _k8s_template_context(
+                model_timeout=card_timeout, launcher_type="torchrun", tmp_path=tmp_path
+            )
+            script_path = tmp_path / f"job_launcher_{card_timeout}.sh"
+            script_path.write_text(_render_k8s_job_script(ctx))
+            result = subprocess.run(
+                ["bash", "-n", str(script_path)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(self, model_exit_code, tmp_path):
+        """Same set -e hazard as the direct-script branch: exit code must be
+        captured, not acted on, so post-scripts and artifact copy still run."""
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"launcher_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+
+
+def _run_model_invocation_block(script, model_exit_code, tmp_path, name):
+    """Execute just the model-invocation block of a rendered job script.
+
+    Takes the lines from MODEL_START_TIME to MODEL_END_TIME verbatim, runs them
+    under `set -e` against a stub model script exiting with `model_exit_code`,
+    and reports whether execution reached the end of the block (i.e. whether the
+    container would go on to run post-scripts and copy artifacts).
+    """
+    lines = script.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME="))
+    end = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME="))
+    block = "\n".join(l.strip() for l in lines[start:end])
+
+    stub = tmp_path / f"run_model_{name}.sh"
+    stub.write_text(f"#!/bin/bash\nexit {model_exit_code}\n")
+    harness = tmp_path / f"harness_{name}.sh"
+    harness.write_text(
+        "set -e\n"
+        f"cp {stub} /tmp/run_model.sh\n"
+        f"{block}\n"
+        'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+    )
+    return subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, timeout=60
+    )
+
+
+class TestK8sJobScriptPublishesResultsOnFailure:
+    """A failed or timed-out model must not abort the container early.
+
+    The script runs under `set -e` and copies artifacts to the results PVC only
+    after the model returns, so a bare invocation (or an early `exit`) would
+    throw away perf.csv and the logs for exactly the runs worth diagnosing.
+    Both branches capture the exit code and defer to the single exit at the end.
+    """
+
+    @pytest.mark.parametrize("model_timeout", [360, 0])
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(
+        self, model_timeout, model_exit_code, tmp_path
+    ):
+        ctx = _k8s_template_context(model_timeout=model_timeout, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"{model_timeout}_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+
+    def test_timeout_exit_code_is_reported(self, tmp_path):
+        """A real `timeout` kill (124) must be labelled, not just propagated."""
+        ctx = _k8s_template_context(model_timeout=1, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        lines = script.splitlines()
+        start = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME=")
+        )
+        end = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME=")
+        )
+        block = "\n".join(l.strip() for l in lines[start:end])
+
+        harness = tmp_path / "harness_real_timeout.sh"
+        harness.write_text(
+            "set -e\n"
+            'printf "#!/bin/bash\\nsleep 30\\n" > /tmp/run_model.sh\n'
+            f"{block}\n"
+            'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+        )
+        result = subprocess.run(
+            ["bash", str(harness)], capture_output=True, text=True, timeout=60
+        )
+        assert "model script timed out after 1s" in result.stdout
+        assert "REACHED_ARTIFACT_COPY exit=124" in result.stdout
 
 
 class TestK8sRequirePinnedImage:
