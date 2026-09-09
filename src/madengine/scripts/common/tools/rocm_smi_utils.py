@@ -6,16 +6,18 @@ This script maintains API consistency across GPU vendor utilities.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+import os
 import sys
 import logging
 from typing import List
 
-sys.path.append("/opt/rocm/libexec/rocm_smi/")
+_ROCM_PATH = os.environ.get("ROCM_PATH", "/opt/rocm")
+sys.path.append(f"{_ROCM_PATH}/libexec/rocm_smi/")
 try:
     import rocm_smi
     from rsmiBindings import *
 except ImportError:
-    raise ImportError("Could not import /opt/rocm/libexec/rocm_smi/rocm_smi.py")
+    raise ImportError(f"Could not import {_ROCM_PATH}/libexec/rocm_smi/rocm_smi.py")
 
 
 class ProfUtils:

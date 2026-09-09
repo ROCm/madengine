@@ -25,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -83,6 +84,13 @@ class RunOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+
+        # The CLI flag and the require_pinned_image context key are equivalent;
+        # the key lets CI pipelines that drive madengine through
+        # --additional-context opt in the same way as for k8s/slurm/tools.
+        if getattr(args, "require_pinned_image", False):
+            self.additional_context["require_pinned_image"] = True
+
         keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
         self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
 
@@ -132,7 +140,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = 3600,
+        timeout: int = -1,
     ) -> Dict:
         """
         Execute run workflow.
@@ -149,7 +157,8 @@ class RunOrchestrator:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
             registry: Optional registry override
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
 
         Returns:
             Execution results dict
@@ -453,12 +462,15 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", None),  # Optional timeout override
+                # None (JSON null) = the card specified none; a card's -1 is a
+                # real value meaning "no timeout", so it cannot double as filler.
+                "timeout": model.get("timeout"),
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+                "multiple_results": model.get("multiple_results", ""),
             }
         
         # Write manifest to file
@@ -495,7 +507,15 @@ class RunOrchestrator:
             if "context" not in manifest:
                 manifest["context"] = {}
             
-            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
+            merge_keys = [
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                # Persisted so nested runs on SLURM compute nodes (which re-enter
+                # `madengine run --manifest-file`) inherit the enforcement setting.
+                "require_pinned_image",
+            ]
             context_updated = False
             for key in merge_keys:
                 if key in self.additional_context:
@@ -729,7 +749,19 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", 3600),
+            # Two different values, deliberately. `timeout` caps this process's
+            # own wait on the deployment, so the sentinel has to be resolved
+            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
+            # in-allocation path runs unbounded. `cli_timeout` is what the
+            # generated job script forwards to the madengine it re-invokes, and
+            # must stay verbatim: that inner run resolves against the model card
+            # itself, and a concrete value here would read as an explicit
+            # --timeout and outrank the card. No model card is consulted at this
+            # level, hence the empty dict.
+            timeout=resolve_run_timeout(
+                {}, getattr(self.args, "timeout", -1)
+            ),
+            cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )
@@ -764,14 +796,17 @@ class RunOrchestrator:
         self.console.sh("echo 'MAD Run Models'")
 
         host_os = self.context.ctx.get("host_os", "")
+        # This is purely informational, but a package manager can block forever on
+        # an interactive prompt (e.g. yum asking to import a repo GPG key) with no
+        # tty to answer it, so every query is capped.
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("yum info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("zypper info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 

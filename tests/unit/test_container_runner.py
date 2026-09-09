@@ -523,3 +523,400 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
+    """The manifest entry point must forward the sentinel, not a concrete 7200.
+
+    Same regression as run_container(): a DEFAULT_RUN_TIMEOUT default here would
+    reach run_container() as an explicit CLI timeout and outrank every card.
+    """
+
+    def _forwarded_timeout(self, tmp_path, **kwargs):
+        manifest_path = str(tmp_path / "build_manifest.json")
+        manifest = {
+            "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+            "built_models": {
+                "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+            },
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        ctx.ensure_runtime_context = MagicMock()
+        mock_console = MagicMock()
+        mock_console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=mock_console)
+        runner.perf_csv_path = str(tmp_path / "perf.csv")
+        runner.set_credentials({})
+
+        with patch.object(
+            runner, "run_container", return_value={"status": "SUCCESS"}
+        ) as mock_run:
+            runner.run_models_from_manifest(manifest_file=manifest_path, **kwargs)
+
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    def test_omitted_timeout_forwards_the_sentinel(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path) == -1
+
+    def test_explicit_timeout_forwarded_verbatim(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path, timeout=120) == 120
+
+    @pytest.mark.parametrize("sentinel", [0, -1])
+    def test_no_timeout_sentinels_forwarded_verbatim(self, tmp_path, sentinel):
+        assert self._forwarded_timeout(tmp_path, timeout=sentinel) == sentinel
+
+
+class TestRunContainerDefaultTimeoutIsSentinel:
+    """Omitting `timeout` must not outrank a model card.
+
+    Regression: the parameter defaulted to DEFAULT_RUN_TIMEOUT, but
+    resolve_run_timeout() reads any non-negative value as an explicit
+    --timeout, so a programmatic caller that omitted the argument silently
+    forced 7200s over the card. The default is the -1 sentinel instead, which
+    still resolves to 7200s when no card timeout exists.
+    """
+
+    def _resolved_timeout(self, model_info, **kwargs):
+        """Run run_container with mocks and return what reached subprocess."""
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        docker_sh_timeouts = []
+
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
+                              (cmd, kw.get("timeout"))
+                          ) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            runner.run_container(
+                model_info=model_info, docker_image="ci-dummy", **kwargs
+            )
+
+        model_runs = [
+            t for cmd, t in docker_sh_timeouts if "run.sh" in cmd and cmd.startswith("cd ")
+        ]
+        assert len(model_runs) == 1, docker_sh_timeouts
+        return model_runs[0]
+
+    def _model_info(self, card_timeout=None):
+        info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        if card_timeout is not None:
+            info["timeout"] = card_timeout
+        return info
+
+    def test_model_card_wins_when_timeout_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=360)) == 360
+
+    def test_card_asking_for_no_timeout_is_honored_when_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=-1)) is None
+
+    def test_default_still_applies_without_a_card_timeout(self):
+        from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
+        assert self._resolved_timeout(self._model_info()) == DEFAULT_RUN_TIMEOUT
+
+    def test_explicit_timeout_still_outranks_the_card(self):
+        assert (
+            self._resolved_timeout(self._model_info(card_timeout=360), timeout=120)
+            == 120
+        )
+
+
+class TestSelfManagedLauncherTimeout:
+    """`--timeout 0` (no timeout) must reach subprocess.run as None, not 0.
+
+    Regression: the call site read `timeout if timeout > 0 else None`, which
+    raised TypeError once the CLI started handing down None for "no timeout",
+    and would have expired the run instantly under the int sentinel:
+    subprocess spells "no timeout" as None, and treats 0 as "expire now".
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        return runner
+
+    def _invoke(self, tmp_path, timeout):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+        run_results = {}
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            return_value=subprocess.CompletedProcess("", 0),
+        ) as mock_run:
+            self._make_runner()._run_self_managed(
+                model_info={"name": "dummy", "scripts": str(script), "args": ""},
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1])
+    def test_no_timeout_sentinels_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_legacy_none_does_not_raise_type_error(self, tmp_path):
+        # The bare `timeout > 0` this replaced raised TypeError on None, which
+        # is what the CLI used to send for --timeout 0. The sentinel contract
+        # keeps None out of here now, but manifests and older callers still
+        # carry it, so the guard must absorb it rather than crash.
+        assert self._invoke(tmp_path, None) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120
+
+
+DIGEST = "sha256:" + "df36ef7e" * 8
+
+
+class TestRequirePinnedImageLocalRun:
+    """run_models_from_manifest honours require_pinned_image for registry pulls."""
+
+    def _manifest(self, tmpdir, build_info):
+        manifest_path = os.path.join(tmpdir, "build_manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump(
+                {
+                    "built_images": {"img1": build_info},
+                    "built_models": {
+                        "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                    },
+                },
+                f,
+            )
+        return manifest_path
+
+    def _runner(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        ctx.ensure_runtime_context = MagicMock()
+        console = MagicMock()
+        console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=console)
+        runner.set_credentials({})
+        return runner
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_default_pulls_by_tag_even_when_digest_present(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with("myorg/ci:m")
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pulls_pinned_reference(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+            # The container must run the same pinned reference that was pulled.
+            assert mock_run.call_args[1]["docker_image"] == f"myorg/ci@{DIGEST}"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pull_failure_does_not_fall_back_to_local_tag(self, _mock_csv):
+        """A failed pinned pull must fail the model, not silently run a local tag.
+
+        The local tag is mutable, so the tag-fallback would defeat the flag in
+        exactly the case it matters most (digest/tag mismatch, auth errors).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+            ), patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require_pinned_image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_pull_failure_still_falls_back_when_not_enforcing(self, _mock_csv):
+        """Default behaviour is unchanged: a failed pull falls back to the local tag."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("offline")
+            ), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == "img1"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_without_digest_fails_before_pulling(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container"
+            ) as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_pull.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_entry_with_registry_ref_is_not_a_bypass(self, _mock_csv):
+        """build_info["local_image"] must not smuggle an unpinned registry tag through.
+
+        The build-on-compute-node path writes entries carrying BOTH a truthy
+        local_image and a registry reference in docker_image. That branch runs
+        before the registry branch, so without enforcement here the flag is
+        silently a no-op for those manifests.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {
+                    "local_image": "ci-m_ubuntu",
+                    "docker_image": "myorg/ci:m",
+                    "built_on_compute": True,
+                },
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "_ensure_local_image_available"
+            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_ensure.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_already_pinned_is_accepted(self, _mock_csv):
+        """An explicitly digest-pinned MAD_CONTAINER_IMAGE already meets the guarantee."""
+        pinned = f"myorg/ci@{DIGEST}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir, {"local_image": True, "docker_image": pinned}
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "_ensure_local_image_available"), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == pinned
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_manifest_context_key_enables_enforcement(self, _mock_csv):
+        """A nested run on a SLURM compute node inherits the setting via manifest context."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, "build_manifest.json")
+            with open(manifest_path, "w") as f:
+                json.dump(
+                    {
+                        "built_images": {
+                            "img1": {
+                                "registry_image": "myorg/ci:m",
+                                "image_digest": DIGEST,
+                            }
+                        },
+                        "built_models": {
+                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                        },
+                        "context": {"require_pinned_image": True},
+                    },
+                    f,
+                )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
