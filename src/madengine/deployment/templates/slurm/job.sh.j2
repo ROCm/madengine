@@ -1,7 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=madengine-{{ model_name }}
+{% if scheduler == 'spur' %}
+# Log names use %A (array job id, the id sbatch returns) rather than %j (each
+# array task's own job id) so result collection can find them by deployment id.
+# %a is the array index, i.e. the node rank.
+#SBATCH --output={{ output_dir }}/madengine-{{ model_name }}_%A_%a.out
+#SBATCH --error={{ output_dir }}/madengine-{{ model_name }}_%A_%a.err
+{% else %}
 #SBATCH --output={{ output_dir }}/madengine-{{ model_name }}_%j_%t.out
 #SBATCH --error={{ output_dir }}/madengine-{{ model_name }}_%j_%t.err
+{% endif %}
 #SBATCH --partition={{ partition }}
 {% if scheduler == 'spur' %}
 # Spur scheduler: srun cannot fan out tasks across nodes, so instead of one
@@ -74,6 +82,10 @@ mad_expand_nodelist() {
         echo "$nl" | tr ',' '\n'
     fi
 }
+# Export so the generated TASK_SCRIPT (run as a separate `bash` process) can use
+# it. Callers still guard with `command -v` in case the scheduler strips
+# BASH_FUNC_* entries from the task environment.
+export -f mad_expand_nodelist
 {% if scheduler == 'spur' %}
 # --- Spur job-array rank + rendezvous ----------------------------------------
 # Each array task is one node. SLURM_ARRAY_TASK_ID is the node rank. We emulate
@@ -82,6 +94,9 @@ mad_expand_nodelist() {
 # for and read it. The port is derived from the shared SLURM_ARRAY_JOB_ID so it
 # is identical across all tasks (mirrors the model launcher's rendezvous).
 export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"
+# Each array task is its own single-node allocation, so SLURM_NODEID is 0
+# everywhere; MAD_NODE_RANK (exported below for model scripts) needs the rank.
+export SLURM_NODEID="${SLURM_ARRAY_TASK_ID:-0}"
 export SLURM_NNODES={{ nodes }}
 export SLURM_NTASKS={{ nodes }}
 export SLURM_LOCALID="${SLURM_LOCALID:-0}"
@@ -94,19 +109,7 @@ export SLURM_LOCALID="${SLURM_LOCALID:-0}"
 export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"
 # spur may not set SLURM_SUBMIT_DIR; the manifest mounts it for /run_logs.
 export SLURM_SUBMIT_DIR="${SLURM_SUBMIT_DIR:-{{ manifest_file | dirname }}}"
-_MAD_REND_DIR="{{ rendezvous_dir }}/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}"
-mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true
-_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"
-_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk '{print $1}')"
-if [ "${SLURM_PROCID}" = "0" ]; then
-    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"
-    export MASTER_ADDR="$_MAD_MY_IP"
-else
-    for _i in $(seq 1 180); do [ -s "$_MAD_REND_DIR/master_addr" ] && break; sleep 1; done
-    export MASTER_ADDR="$(cat "$_MAD_REND_DIR/master_addr" 2>/dev/null)"
-fi
-echo "[spur-rendezvous] rank=${SLURM_PROCID} node=$(hostname) my_ip=$_MAD_MY_IP MASTER_ADDR=${MASTER_ADDR}"
+{{ spur_rendezvous_block }}
 export MASTER_PORT={{ master_port | default(29500) }}
 export WORLD_SIZE={{ nodes }}
 export LOCAL_RANK=0

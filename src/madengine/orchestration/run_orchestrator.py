@@ -250,21 +250,13 @@ class RunOrchestrator:
             ))
             self.rich_console.print()
 
-            # An explicit non-local "target" in deployment_config wins. This is
-            # required for schedulers that reuse another backend's config block:
-            # e.g. the spur backend reuses the "slurm" block, so structural
-            # inference alone would mis-detect it as plain "slurm".
-            explicit_target = deployment_config.get("target")
-            if explicit_target and explicit_target != "local":
-                target = explicit_target
-            else:
-                # Infer deployment target from config structure (Convention over Configuration)
-                # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
-                target = self._infer_deployment_target(self.additional_context)
+            # Infer deployment target from config structure (Convention over Configuration)
+            # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
+            target = self._infer_deployment_target(self.additional_context)
 
-                # Legacy support: check manifest for explicit target
-                if not target or target == "local":
-                    target = deployment_config.get("target", "local")
+            # Legacy support: check manifest for explicit target
+            if not target or target == "local":
+                target = deployment_config.get("target", "local")
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
@@ -1117,17 +1109,24 @@ class RunOrchestrator:
         Convention over Configuration:
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
+          - ...with slurm.scheduler == "spur" → spur deployment
         - Neither present → local execution
-        
+
         Args:
             config: Configuration dictionary
-            
+
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "k8s", "spur", "slurm", or "local"
         """
         if "k8s" in config or "kubernetes" in config:
             return "k8s"
         elif "slurm" in config:
+            # Spur reuses the "slurm" config block (it ships SLURM-compatible
+            # CLI shims), so the flavor is distinguished by an inner key rather
+            # than by a top-level one.
+            slurm_config = config.get("slurm") or {}
+            if str(slurm_config.get("scheduler", "")).lower() == "spur":
+                return "spur"
             return "slurm"
         else:
             return "local"

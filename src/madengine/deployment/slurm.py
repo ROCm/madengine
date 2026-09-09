@@ -105,7 +105,7 @@ class SlurmDeployment(BaseDeployment):
             )
 
     @staticmethod
-    def _expand_nodelist(nodelist: str) -> list:
+    def _expand_nodelist(nodelist: str) -> List[str]:
         """Expand a SLURM nodelist string into a list of hostnames.
 
         Stock SLURM emits a compressed form (e.g. "node[01-03,05]") that needs
@@ -480,19 +480,25 @@ class SlurmDeployment(BaseDeployment):
         script_lines = [
             "#!/bin/bash",
             f"#SBATCH --job-name=madengine-{model_info['name']}",
-            f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j_%t.out",
-            f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j_%t.err",
-            f"#SBATCH --partition={self.partition}",
         ]
         if self.IS_SPUR:
             # spur: one single-node task per node via a job array (srun cannot fan out).
+            # Log names MUST use %A (array job id, == the id sbatch returns) rather
+            # than %j (each array task's own job id), so collect_results() and
+            # _show_log_summary() can find them by deployment_id. %a is the node rank.
             script_lines.extend([
+                f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%A_%a.out",
+                f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%A_%a.err",
+                f"#SBATCH --partition={self.partition}",
                 "#SBATCH --nodes=1",
                 "#SBATCH --ntasks=1",
                 f"#SBATCH --array=0-{self.nodes - 1}",
             ])
         else:
             script_lines.extend([
+                f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j_%t.out",
+                f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j_%t.err",
+                f"#SBATCH --partition={self.partition}",
                 f"#SBATCH --nodes={self.nodes}",
                 f"#SBATCH --ntasks={self.nodes}",
             ])
@@ -533,7 +539,11 @@ class SlurmDeployment(BaseDeployment):
             # the shared SLURM_ARRAY_JOB_ID so the launcher's rendezvous port and
             # /run_logs/<id> dir match across nodes. rank 0 publishes its transport
             # IP; peers read it as MASTER_ADDR (see also job.sh.j2 spur branch).
+            # Imported lazily: spur.SpurDeployment subclasses this module.
+            from .spur import DEFAULT_RENDEZVOUS_TIMEOUT, render_rendezvous_block
+
             rendezvous_dir = getattr(self, "rendezvous_dir", str(self.output_dir.resolve() / "spur_rendezvous"))
+            rendezvous_timeout = getattr(self, "rendezvous_timeout", DEFAULT_RENDEZVOUS_TIMEOUT)
             script_lines.extend([
                 "# --- spur job-array rank + rendezvous ---",
                 'export NODE_RANK="${SLURM_ARRAY_TASK_ID:-0}"',
@@ -543,21 +553,11 @@ class SlurmDeployment(BaseDeployment):
                 f"export WORLD_SIZE={self.nodes}",
                 'export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"',
                 f'export SLURM_SUBMIT_DIR="${{SLURM_SUBMIT_DIR:-{manifest_dir}}}"',
-                f'_MAD_REND_DIR="{rendezvous_dir}/${{SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}}"',
-                'mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true',
-                '_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"',
-                '_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk \'{print $4}\' | cut -d/ -f1 | head -n1)"',
-                '[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk \'{print $1}\')"',
-                'if [ "${NODE_RANK}" = "0" ]; then',
-                '    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"',
-                '    export MASTER_ADDR="$_MAD_MY_IP"',
-                'else',
-                '    for _i in $(seq 1 180); do [ -s "$_MAD_REND_DIR/master_addr" ] && break; sleep 1; done',
-                '    export MASTER_ADDR="$(cat "$_MAD_REND_DIR/master_addr" 2>/dev/null)"',
-                'fi',
-                'echo "[spur-rendezvous] rank=${NODE_RANK} node=$(hostname) my_ip=$_MAD_MY_IP MASTER_ADDR=${MASTER_ADDR}"',
-                "",
             ])
+            script_lines.extend(
+                render_rendezvous_block(rendezvous_dir, rendezvous_timeout)
+            )
+            script_lines.append("")
         script_lines.extend([
             "echo '=========================================='",
             "echo 'slurm_multi Launcher'",
@@ -580,13 +580,14 @@ class SlurmDeployment(BaseDeployment):
             script_lines.extend([
                 "",
                 "# Pull Docker image on this node (one array task per node)",
+                f"MAD_PULL_IMAGE={shlex.quote(docker_image)}",
                 "echo '=========================================='",
-                f"echo \"[$(hostname)] Pulling {docker_image}...\"",
+                "echo \"[$(hostname)] Pulling $MAD_PULL_IMAGE...\"",
                 "echo '=========================================='",
-                f"docker pull {docker_image}",
+                'docker pull "$MAD_PULL_IMAGE"',
                 "PULL_EXIT=$?",
                 "if [ $PULL_EXIT -ne 0 ]; then",
-                f"    echo \"[$(hostname)] Docker pull failed for {docker_image}\"",
+                "    echo \"[$(hostname)] Docker pull failed for $MAD_PULL_IMAGE\"",
                 "    exit $PULL_EXIT",
                 "fi",
                 "echo ''",
@@ -631,9 +632,12 @@ class SlurmDeployment(BaseDeployment):
         # tag don't collide on each other's marker files. monitor() reconstructs
         # the same path using the deployment_id returned by sbatch.
         completion_marker_dir = self.output_dir.resolve()
+        # On spur every array task pins SLURM_JOB_ID to the shared SLURM_ARRAY_JOB_ID,
+        # so the job id alone is not unique per node - add the array rank.
+        marker_rank_suffix = "_rank${SLURM_ARRAY_TASK_ID:-0}" if self.IS_SPUR else ""
         completion_marker_template = (
             completion_marker_dir
-            / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}.complete"
+            / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}{marker_rank_suffix}.complete"
         )
         
         # Disable `set -e` around the model script bash invocation below so a
@@ -1616,17 +1620,11 @@ export MASTER_PORT={master_port}
         _SACCT_RETRIES = 3
         _SACCT_RETRY_DELAY = 5  # seconds
 
-        # Spur compatibility: spur's sacct shim does NOT support the "-X"
-        # (allocations-only) flag and errors out on it. Omit it. Without "-X",
-        # sacct returns the main job row plus sub-steps (.batch/.extern); we take
-        # the first (main job) row as the authoritative State below.
-        sacct_cmd = ["sacct", "-j", job_id, "-n", "-o", "State"]
-
         try:
             result = None
             for attempt in range(1, _SACCT_RETRIES + 1):
                 result = subprocess.run(
-                    sacct_cmd,
+                    ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -1642,34 +1640,11 @@ export MASTER_PORT={master_port}
                     time.sleep(_SACCT_RETRY_DELAY)
 
             if result.returncode == 0:
-                # First non-empty line is the main job row (State without step
-                # suffix). Sub-step rows (.batch/.extern) follow when "-X" is absent.
-                _lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
-                status = (_lines[0].upper() if _lines else "")
+                status = result.stdout.strip().upper()
                 self.console.print(f"[dim]SLURM job {job_id} final status: {status}[/dim]")
 
                 # Check if live output is enabled
                 live_output = self.config.additional_context.get("live_output", False)
-
-                # The queue check (squeue) can transiently report a job as gone on
-                # eventually-consistent schedulers (e.g. spur's Raft control plane)
-                # while it is still active. If sacct still reports an active state,
-                # treat it as RUNNING instead of FAILED.
-                _ACTIVE_STATES = (
-                    "RUNNING",
-                    "PENDING",
-                    "CONFIGURING",
-                    "COMPLETING",
-                    "REQUEUED",
-                    "RESIZING",
-                    "SUSPENDED",
-                )
-                if any(s in status for s in _ACTIVE_STATES):
-                    return DeploymentResult(
-                        status=DeploymentStatus.RUNNING,
-                        deployment_id=job_id,
-                        message=f"Job {job_id} is {status.lower()}",
-                    )
 
                 if "COMPLETED" in status:
                     # Show final output or summary based on live_output flag

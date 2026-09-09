@@ -230,20 +230,23 @@ class ConfigLoader:
         Infer deployment type from config structure and validate for conflicts.
         
         Convention over Configuration: Presence of k8s/slurm field indicates deployment intent.
-        
+        The SLURM flavor ("slurm" vs "spur") is distinguished by slurm.scheduler,
+        because spur ships SLURM-compatible CLI shims and reuses the same block.
+
         Args:
             user_config: User configuration dictionary
-            
+
         Returns:
-            Deployment type: "k8s", "slurm", or "local"
-            
+            Deployment type: "k8s", "spur", "slurm", or "local"
+
         Raises:
             ValueError: If conflicting deployment configs present
         """
         has_k8s = "k8s" in user_config or "kubernetes" in user_config
         has_slurm = "slurm" in user_config
         explicit_deploy = user_config.get("deploy", "").lower()
-        
+        scheduler = str((user_config.get("slurm") or {}).get("scheduler", "") or "").lower()
+
         # Validation Rule 1: Can't have both k8s and slurm configs
         if has_k8s and has_slurm:
             raise ValueError(
@@ -258,22 +261,34 @@ class ConfigLoader:
                     f"Conflicting deployment: 'deploy' field is '{explicit_deploy}' but no 'k8s' config present. "
                     "Either add 'k8s' config or remove 'deploy' field."
                 )
-            if explicit_deploy == "slurm" and not has_slurm:
+            if explicit_deploy in ["slurm", "spur"] and not has_slurm:
                 raise ValueError(
-                    f"Conflicting deployment: 'deploy' field is 'slurm' but no 'slurm' config present. "
+                    f"Conflicting deployment: 'deploy' field is '{explicit_deploy}' but no 'slurm' config present. "
                     "Either add 'slurm' config or remove 'deploy' field."
+                )
+            if explicit_deploy == "spur" and scheduler not in ("", "spur"):
+                raise ValueError(
+                    f"Conflicting deployment: 'deploy' field is 'spur' but slurm.scheduler is '{scheduler}'. "
+                    "Set slurm.scheduler to 'spur' or remove 'deploy' field."
                 )
             if explicit_deploy == "local" and (has_k8s or has_slurm):
                 raise ValueError(
                     f"Conflicting deployment: 'deploy' field is 'local' but k8s/slurm config present. "
                     "Remove k8s/slurm config for local execution."
                 )
-        
+
+        # Validation Rule 3: slurm.scheduler must name a known SLURM flavor
+        if has_slurm and scheduler not in ("", "slurm", "spur"):
+            raise ValueError(
+                f"Unknown slurm.scheduler '{scheduler}'. Supported values are 'slurm' (default) and 'spur'."
+            )
+
         # Infer deployment type from config presence
         if has_k8s:
             return "k8s"
         elif has_slurm:
-            return "slurm"
+            # Spur reuses the "slurm" block; the flavor comes from slurm.scheduler.
+            return "spur" if scheduler == "spur" or explicit_deploy == "spur" else "slurm"
         else:
             return "local"
     
@@ -308,7 +323,8 @@ class ConfigLoader:
         # Note: We do NOT add a "deploy" field - type is inferred from structure
         if deploy_type == "k8s":
             return cls.load_k8s_config(user_config)
-        elif deploy_type == "slurm":
+        elif deploy_type in ("slurm", "spur"):
+            # Spur reuses the SLURM presets; only the scheduler flavor differs.
             return cls.load_slurm_config(user_config)
         else:
             # Local - return as-is (no deploy field needed)

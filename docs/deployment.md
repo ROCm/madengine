@@ -249,8 +249,41 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `exclusive`: Exclusive node access (default: `true`)
 - `mail_user`: Email for job notifications
 - `mail_type`: Notification types (BEGIN, END, FAIL, ALL)
+- `scheduler`: SLURM flavor - `slurm` (default) or `spur` (see below)
+- `rendezvous_timeout`: spur only; seconds a node waits for rank 0 to publish `MASTER_ADDR` (default: 900)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
+
+### Spur (Crusoe) Scheduler
+
+Spur exposes SLURM-compatible CLI shims but `srun` cannot fan tasks out across
+nodes, so multi-node runs use a job **array** of single-node tasks instead: each
+array task runs on one node, `SLURM_ARRAY_TASK_ID` is the node rank, and the
+tasks self-form the cluster through a shared-filesystem rendezvous (rank 0
+publishes its transport IP; the other ranks read it as `MASTER_ADDR`).
+
+Select it with `slurm.scheduler`; everything else in the `slurm` block is
+unchanged:
+
+```json
+{
+  "slurm": {
+    "scheduler": "spur",
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "02:00:00"
+  }
+}
+```
+
+A job array carries no gang-scheduling guarantee, so tasks may start minutes
+apart. A node that does not see rank 0's address within `rendezvous_timeout`
+fails the run with a diagnostic rather than starting with an empty
+`MASTER_ADDR`; raise the timeout if your queue wait is longer than that.
+
+`slurm.output_dir` must be on a filesystem shared by every node - it holds the
+rendezvous files.
 
 ### Multi-Node Training
 
