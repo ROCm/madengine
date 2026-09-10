@@ -55,6 +55,11 @@ MODEL_SERVER_LABEL = {"llm-d.ai/inference-serving": "true"}
 # cluster. Anything else must be "none", the chart's own default.
 _GAIE_PROVIDERS = {"gke", "istio"}
 
+# modelservice chart's accelerator.type matching our GPU resource name. Needed
+# because the chart's own resource auto-fill keys off accelerator.type, not off
+# whatever key we already put in resources.limits (see _modelservice_values).
+_ACCELERATOR_TYPES = {"amd.com/gpu": "amd", "nvidia.com/gpu": "nvidia"}
+
 
 class LlmdStackError(RuntimeError):
     """A helm operation failed."""
@@ -213,7 +218,7 @@ class LlmdStack:
         if model.get("size"):
             artifacts["size"] = model["size"]
 
-        return {
+        values: Dict[str, Any] = {
             "modelArtifacts": artifacts,
             # No InferencePool reference here: the gaie release owns the only
             # InferencePool, and it discovers model-server pods purely by the
@@ -223,6 +228,16 @@ class LlmdStack:
             "prefill": self._role_values("prefill", prefill),
             "decode": self._role_values("decode", decode),
         }
+        accelerator_type = _ACCELERATOR_TYPES.get(self.gpu_resource_name)
+        if accelerator_type:
+            # Left unset, the chart defaults accelerator.type to "nvidia" and
+            # auto-fills a nvidia.com/gpu resource request alongside our
+            # correct one, since its auto-fill check only skips a resource
+            # name it computes from accelerator.type -- not any resource name
+            # we already set ourselves. On an AMD-only cluster that leaves the
+            # pod requesting a resource no node advertises, unschedulable.
+            values["accelerator"] = {"type": accelerator_type}
+        return values
 
     def _role_values(self, role: str, role_config: Dict[str, Any]) -> Dict[str, Any]:
         """Values for one prefill/decode role."""

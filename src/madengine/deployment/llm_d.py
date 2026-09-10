@@ -85,6 +85,13 @@ class LlmdDeployment(KubernetesDeployment):
 
         self.llmd_config: Dict[str, Any] = config.additional_context.get("llm_d", {})
         self.endpoint_url: Optional[str] = self.llmd_config.get("endpoint_url")
+        # Frozen at construction, unlike self.endpoint_url: a managed standup
+        # overwrites self.endpoint_url with the resolved gateway address once
+        # it comes up, and that must not retroactively make is_attach_mode
+        # true -- it would skip teardown (and the release-prefix env var) on
+        # every successful managed run, the exact GPU-leak the try/finally in
+        # execute() exists to prevent.
+        self._attach_mode = bool(self.endpoint_url)
 
         # --tags selects the model everywhere else (local, k8s, slurm); do the
         # same here before anything reads model.uri or prefill/decode.image.
@@ -107,8 +114,13 @@ class LlmdDeployment(KubernetesDeployment):
 
     @property
     def is_attach_mode(self) -> bool:
-        """True when pointed at an already-running llm-d stack."""
-        return bool(self.endpoint_url)
+        """True when pointed at an already-running llm-d stack.
+
+        Fixed at construction (``_attach_mode``), not derived from
+        ``self.endpoint_url`` — a managed standup overwrites that with the
+        resolved gateway address, which must not flip this.
+        """
+        return self._attach_mode
 
     @property
     def is_dry_run(self) -> bool:
