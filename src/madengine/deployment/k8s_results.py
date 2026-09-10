@@ -169,8 +169,16 @@ class KubernetesResultsMixin:
 
                 try:
                     # 1. Collect pod logs
+                    # Pods have an extract-scripts init container alongside the main
+                    # workload container, so the container must be named explicitly
+                    # (unlike `kubectl logs`, the API has no defaulting behavior).
+                    primary_container = (
+                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
+                    )
                     log = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name, namespace=self.namespace
+                        name=pod_name,
+                        namespace=self.namespace,
+                        container=primary_container,
                     )
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)

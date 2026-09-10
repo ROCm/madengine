@@ -634,3 +634,64 @@ class TestK8sRequirePinnedImage:
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
             )
+
+
+class TestK8sPodLogContainerParam:
+    """Job pods have an extract-scripts init container alongside the main workload
+    container, so read_namespaced_pod_log() must be given an explicit container name
+    (the raw API has no defaulting behavior, unlike `kubectl logs`)."""
+
+    def _deployment(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        manifest = {
+            "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+            "built_models": {"img1": {"name": "m", "tags": ["t"]}},
+            "context": {},
+        }
+        (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
+
+        cfg = DeploymentConfig(
+            target="k8s",
+            manifest_file="build_manifest.json",
+            additional_context={"k8s": {"namespace": "default"}},
+        )
+        deployment = KubernetesDeployment(cfg)
+        deployment.core_v1 = MagicMock()
+        return deployment
+
+    def _fake_pod(self, name, main_container_name):
+        pod = MagicMock()
+        pod.metadata.name = name
+        main_container = MagicMock()
+        main_container.name = main_container_name
+        pod.spec.containers = [main_container]
+        pod.status.phase = "Succeeded"
+        pod.status.container_statuses = []
+        return pod
+
+    def test_collect_results_passes_main_container_name(self, tmp_path, monkeypatch):
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = "log output"
+        deployment.core_v1.read_namespaced_pod.return_value = pod
+
+        deployment.collect_results("job")
+
+        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs["container"] == "main-container"
+
+    def test_print_pod_logs_on_failure_passes_main_container_name(
+        self, tmp_path, monkeypatch
+    ):
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = "log output"
+
+        deployment._print_pod_logs_on_failure("job")
+
+        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs["container"] == "main-container"

@@ -584,6 +584,7 @@ class KubernetesDeployment(
         self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
 
         pod_name = None
+        container_name = None
         log_position = 0
 
         while True:
@@ -600,7 +601,13 @@ class KubernetesDeployment(
                         label_selector=_pod_job_name_label_selector(deployment_id),
                     )
                     if pods.items:
-                        pod_name = pods.items[0].metadata.name
+                        pod = pods.items[0]
+                        pod_name = pod.metadata.name
+                        container_name = (
+                            pod.spec.containers[0].name
+                            if pod.spec and pod.spec.containers
+                            else None
+                        )
                         self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
 
                 # Stream logs if we have a pod
@@ -610,6 +617,7 @@ class KubernetesDeployment(
                         logs = self.core_v1.read_namespaced_pod_log(
                             name=pod_name,
                             namespace=self.namespace,
+                            container=container_name,
                             tail_lines=100 if log_position == 0 else None
                         )
 
@@ -670,9 +678,13 @@ class KubernetesDeployment(
             for pod in pods.items:
                 pod_name = pod.metadata.name
                 try:
+                    primary_container = (
+                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
+                    )
                     logs = self.core_v1.read_namespaced_pod_log(
                         name=pod_name,
                         namespace=self.namespace,
+                        container=primary_container,
                         tail_lines=50
                     )
                     self.console.print(f"[dim]Pod: {pod_name}[/dim]")
