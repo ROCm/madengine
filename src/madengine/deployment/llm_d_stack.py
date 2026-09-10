@@ -45,7 +45,15 @@ COMPONENTS = ("infra", "gaie", "modelservice")
 MODEL_SERVER_PORT = 8000
 
 # Label llm-d's charts put on model-server pods; the InferencePool selects on it.
-MODEL_SERVER_LABEL = {"llm-d.ai/inferenceServing": "true"}
+# Set explicitly on both sides (modelservice's pod labels and gaie's InferencePool
+# selector) rather than relying on the two charts' defaults to keep matching.
+MODEL_SERVER_LABEL = {"llm-d.ai/inference-serving": "true"}
+
+# provider.name accepted by the GAIE inferencepool chart. This is a narrow enum
+# for provider-specific extras (istio DestinationRules, GKE Autopilot quirks),
+# unlike llm-d-infra's gatewayClassName, which is any GatewayClass on the
+# cluster. Anything else must be "none", the chart's own default.
+_GAIE_PROVIDERS = {"gke", "istio"}
 
 
 class LlmdStackError(RuntimeError):
@@ -148,6 +156,20 @@ class LlmdStack:
             }
         }
 
+    def _gateway_fullname(self) -> str:
+        """Name of the Gateway object created by the infra release.
+
+        Matches the llm-d-infra chart's ``gateway.fullname`` helper
+        (``<release>-inference-gateway``); madengine never sets
+        ``gateway.nameOverride``.
+        """
+        return f"{self.release_name('infra')}-inference-gateway"
+
+    def _gaie_provider_name(self) -> str:
+        """``provider.name`` for the gaie chart; ``gatewayClassName`` otherwise."""
+        gateway_class = self.llmd_config.get("gateway", "agentgateway")
+        return gateway_class if gateway_class in _GAIE_PROVIDERS else "none"
+
     def _gaie_values(self) -> Dict[str, Any]:
         """Values for the GAIE inferencepool chart (InferencePool + EPP)."""
         return {
@@ -156,7 +178,13 @@ class LlmdStack:
                 "modelServers": {"matchLabels": dict(MODEL_SERVER_LABEL)},
             },
             "inferenceExtension": {"replicas": 1},
-            "provider": {"name": self.llmd_config.get("gateway", "agentgateway")},
+            "provider": {"name": self._gaie_provider_name()},
+            # The modelservice chart has no HTTPRoute template of its own; the
+            # gaie chart's is the only one that exists, so it must create it.
+            "experimentalHttpRoute": {
+                "enabled": True,
+                "inferenceGatewayName": self._gateway_fullname(),
+            },
         }
 
     def _modelservice_values(self) -> Dict[str, Any]:
@@ -165,27 +193,33 @@ class LlmdStack:
         prefill = self.llmd_config.get("prefill") or {}
         decode = self.llmd_config.get("decode") or {}
 
-        artifacts: Dict[str, Any] = {"uri": model.get("uri")}
+        uri = model.get("uri") or ""
+        artifacts: Dict[str, Any] = {
+            "uri": uri,
+            "name": model.get("name"),
+            "labels": dict(MODEL_SERVER_LABEL),
+        }
         # The HF token is referenced by Secret name and read by the model-server
         # pod. It never appears in a values file or on a helm command line.
         if model.get("hf_token_secret"):
             artifacts["authSecretName"] = model["hf_token_secret"]
+        if uri.startswith("hf://") and not model.get("size"):
+            raise LlmdStackError(
+                "llm_d.model.size is required when model.uri uses the 'hf://' "
+                "protocol: the chart sizes an emptyDir model cache from it, and "
+                "the chart's own default (5Mi) is unusable for a real model. "
+                "Set it comfortably above the model's on-disk size, e.g. '20Gi'."
+            )
         if model.get("size"):
             artifacts["size"] = model["size"]
 
         return {
             "modelArtifacts": artifacts,
-            "routing": {
-                "modelName": model.get("name"),
-                "servicePort": MODEL_SERVER_PORT,
-                "inferencePool": {
-                    # The GAIE release owns the InferencePool; modelservice
-                    # must reference it, not create a second one.
-                    "create": False,
-                    "name": self.release_name("gaie"),
-                },
-                "httpRoute": {"create": True},
-            },
+            # No InferencePool reference here: the gaie release owns the only
+            # InferencePool, and it discovers model-server pods purely by the
+            # matchLabels selector above -- the modelservice chart's schema has
+            # no field to name or reference an InferencePool at all.
+            "routing": {"servicePort": MODEL_SERVER_PORT},
             "prefill": self._role_values("prefill", prefill),
             "decode": self._role_values("decode", decode),
         }

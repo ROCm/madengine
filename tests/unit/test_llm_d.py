@@ -450,6 +450,7 @@ class TestValidate:
                 "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
             ),
             patch.object(deployment, "_validate_crds", return_value=True) as crds,
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
         ):
             assert deployment.validate() is False
 
@@ -482,6 +483,7 @@ class TestValidate:
                 "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
             ),
             patch.object(deployment, "_validate_crds", return_value=True),
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
         ):
             assert deployment.validate() is False
 
@@ -512,6 +514,7 @@ class TestValidate:
                 "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
             ),
             patch.object(deployment, "_validate_crds", return_value=True) as crds,
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
         ):
             deployment.validate()
 
@@ -539,6 +542,50 @@ class TestValidate:
             deployment.validate()
 
         assert "matched --tags" not in _printed(deployment)
+
+
+# ---------------------------------------------------------------------------
+# _validate_gateway_class(): llm_d.gateway must name a real GatewayClass
+# ---------------------------------------------------------------------------
+
+
+class TestValidateGatewayClass:
+    MANAGED_CONTEXT = {
+        "k8s": {},
+        "llm_d": {
+            "model": {
+                "name": "Qwen3-32B",
+                "uri": "hf://Qwen/Qwen3-32B",
+                "size": "80Gi",
+            },
+            "gateway": "istio",
+        },
+    }
+
+    def _classes(self, tmp_path, names, gateway="istio"):
+        context = json.loads(json.dumps(self.MANAGED_CONTEXT))
+        context["llm_d"]["gateway"] = gateway
+        deployment = _build_deployment(tmp_path, context)
+        api = MagicMock()
+        api.list_cluster_custom_object.return_value = {
+            "items": [{"metadata": {"name": n}} for n in names]
+        }
+        with patch("kubernetes.client.CustomObjectsApi", return_value=api):
+            return deployment._validate_gateway_class()
+
+    def test_present_gateway_class_passes(self, tmp_path):
+        assert self._classes(tmp_path, ["istio", "kgateway"]) is True
+
+    def test_missing_gateway_class_is_rejected(self, tmp_path):
+        assert self._classes(tmp_path, ["kgateway"]) is False
+
+    def test_a_listing_failure_skips_the_check(self, tmp_path):
+        deployment = _build_deployment(tmp_path, dict(self.MANAGED_CONTEXT))
+        api = MagicMock()
+        api.list_cluster_custom_object.side_effect = RuntimeError("no cluster")
+
+        with patch("kubernetes.client.CustomObjectsApi", return_value=api):
+            assert deployment._validate_gateway_class() is True
 
 
 # ---------------------------------------------------------------------------

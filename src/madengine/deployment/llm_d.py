@@ -57,6 +57,7 @@ INFERENCEPOOL_CRDS = (
 GATEWAY_GROUP = "gateway.networking.k8s.io"
 GATEWAY_VERSION = "v1"
 GATEWAY_PLURAL = "gateways"
+GATEWAYCLASS_PLURAL = "gatewayclasses"
 
 # Helm release names must be <= 53 characters. Reserve room for the longest
 # component suffix ("-modelservice") so no component can overflow.
@@ -556,6 +557,9 @@ class LlmdDeployment(KubernetesDeployment):
         if not self._validate_crds():
             return False
 
+        if not self._validate_gateway_class():
+            return False
+
         self._warn_if_serving_with_the_client_image()
 
         self.console.print(
@@ -625,6 +629,45 @@ class LlmdDeployment(KubernetesDeployment):
         self.console.print(
             "[green]✓ Gateway API and InferencePool CRDs present[/green]"
         )
+        return True
+
+    def _validate_gateway_class(self) -> bool:
+        """Check that ``llm_d.gateway`` names a GatewayClass on the cluster.
+
+        A gatewayClassName with no matching GatewayClass never fails fast — the
+        Gateway just sits unprogrammed until standup times out. Catch it here,
+        before any helm command runs.
+        """
+        gateway_class = self.llmd_config.get("gateway", "agentgateway")
+        try:
+            from kubernetes import client
+
+            api = client.CustomObjectsApi()
+            classes = api.list_cluster_custom_object(
+                group=GATEWAY_GROUP,
+                version=GATEWAY_VERSION,
+                plural=GATEWAYCLASS_PLURAL,
+            )
+            present = {c["metadata"]["name"] for c in classes.get("items", [])}
+        except Exception as e:
+            self.console.print(
+                f"[yellow]⚠ Could not list GatewayClasses ({e}); skipping "
+                "prerequisite check[/yellow]"
+            )
+            return True
+
+        if gateway_class not in present:
+            self.console.print(
+                f"[red]✗ GatewayClass '{gateway_class}' (llm_d.gateway) not found "
+                "on this cluster. Available: "
+                f"{', '.join(sorted(present)) or 'none'}.[/red]\n"
+                "[yellow]  Set llm_d.gateway to a GatewayClass this cluster's "
+                "Gateway API controller actually registers — check with "
+                "'kubectl get gatewayclass'.[/yellow]"
+            )
+            return False
+
+        self.console.print(f"[green]✓ GatewayClass '{gateway_class}' present[/green]")
         return True
 
     # ------------------------------------------------------------------

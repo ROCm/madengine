@@ -35,7 +35,7 @@ PINNED_CHARTS = {
 }
 
 MANAGED_LLMD = {
-    "model": {"name": "Qwen3-32B", "uri": "hf://Qwen/Qwen3-32B"},
+    "model": {"name": "Qwen3-32B", "uri": "hf://Qwen/Qwen3-32B", "size": "80Gi"},
     "gateway": "agentgateway",
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode": {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
@@ -176,7 +176,7 @@ class TestModelserviceValues:
     def test_model_uri_and_name_are_wired_through(self):
         values = _stack().values("modelservice")
         assert values["modelArtifacts"]["uri"] == "hf://Qwen/Qwen3-32B"
-        assert values["routing"]["modelName"] == "Qwen3-32B"
+        assert values["modelArtifacts"]["name"] == "Qwen3-32B"
         assert values["routing"]["servicePort"] == MODEL_SERVER_PORT
 
     def test_replicas_and_tensor_parallel_reach_both_roles(self):
@@ -198,11 +198,11 @@ class TestModelserviceValues:
         assert values["prefill"] == {"create": False}
         assert values["decode"]["create"] is True
 
-    def test_modelservice_does_not_create_a_second_inferencepool(self):
+    def test_modelservice_values_carry_no_inferencepool_reference(self):
+        """The chart's schema has no field for one; the gaie release owns the
+        only InferencePool and discovers pods purely via matchLabels."""
         values = _stack().values("modelservice")
-        pool = values["routing"]["inferencePool"]
-        assert pool["create"] is False
-        assert pool["name"] == "madengine-dummy-llm-d-gaie"
+        assert "inferencePool" not in values["routing"]
 
     def test_hf_token_is_referenced_by_secret_name_only(self):
         """The token itself must never reach a values file."""
@@ -218,6 +218,23 @@ class TestModelserviceValues:
     def test_auth_secret_is_omitted_when_unset(self):
         assert "authSecretName" not in _stack().values("modelservice")["modelArtifacts"]
 
+    def test_model_artifacts_labels_match_the_inferencepool_selector(self):
+        artifacts = _stack().values("modelservice")["modelArtifacts"]
+        assert artifacts["labels"] == {"llm-d.ai/inference-serving": "true"}
+
+    def test_hf_uri_without_size_is_refused(self):
+        """The chart's own default (5Mi) is too small for any real model."""
+        model = {k: v for k, v in MANAGED_LLMD["model"].items() if k != "size"}
+        stack = _stack({"model": model})
+        with pytest.raises(LlmdStackError, match="model.size is required"):
+            stack.values("modelservice")
+
+    def test_non_hf_uri_does_not_require_size(self):
+        model = {k: v for k, v in MANAGED_LLMD["model"].items() if k != "size"}
+        model["uri"] = "pvc://existing"
+        stack = _stack({"model": model})
+        assert "size" not in stack.values("modelservice")["modelArtifacts"]
+
     def test_role_image_override(self):
         values = _stack(
             {"decode": dict(MANAGED_LLMD["decode"], image="rocm/vllm:latest")}
@@ -231,12 +248,29 @@ class TestInfraAndGaieValues:
         assert stack.values("infra")["gateway"]["gatewayClassName"] == "istio"
         assert stack.values("gaie")["provider"]["name"] == "istio"
 
+    def test_unrecognized_gateway_class_is_not_passed_as_gaie_provider(self):
+        # "agentgateway" is a valid GatewayClass but not one of the gaie
+        # chart's provider.name enum (gke|istio|none) — passing it through
+        # verbatim would fail chart validation.
+        stack = _stack({"gateway": "agentgateway"})
+        assert stack.values("infra")["gateway"]["gatewayClassName"] == "agentgateway"
+        assert stack.values("gaie")["provider"]["name"] == "none"
+
     def test_inferencepool_targets_the_model_server_port(self):
         pool = _stack().values("gaie")["inferencePool"]
         assert pool["targetPortNumber"] == MODEL_SERVER_PORT
         assert pool["modelServers"]["matchLabels"] == {
-            "llm-d.ai/inferenceServing": "true"
+            "llm-d.ai/inference-serving": "true"
         }
+
+    def test_gaie_creates_the_httproute_against_the_infra_gateway(self):
+        stack = _stack(release_prefix="madengine-dummy-llm-d")
+        http_route = stack.values("gaie")["experimentalHttpRoute"]
+        assert http_route["enabled"] is True
+        assert (
+            http_route["inferenceGatewayName"]
+            == "madengine-dummy-llm-d-infra-inference-gateway"
+        )
 
     def test_unknown_component_is_rejected(self):
         with pytest.raises(LlmdStackError, match="Unknown llm-d component"):
@@ -263,10 +297,10 @@ class TestExtraValues:
         assert stack.values("infra")["gateway"]["enabled"] is True
 
     def test_extra_values_deep_merge_rather_than_replace(self):
-        stack = _stack({"extra_values": {"routing": {"servicePort": 9000}}})
-        routing = stack.values("modelservice")["routing"]
-        assert routing["servicePort"] == 9000
-        assert routing["modelName"] == "Qwen3-32B"  # sibling survived
+        stack = _stack({"extra_values": {"modelArtifacts": {"size": "200Gi"}}})
+        artifacts = stack.values("modelservice")["modelArtifacts"]
+        assert artifacts["size"] == "200Gi"
+        assert artifacts["name"] == "Qwen3-32B"  # sibling survived
 
     def test_extra_values_win_over_generated_values(self):
         """The escape hatch is only useful if it is applied last."""
@@ -367,6 +401,7 @@ class TestManagedValidate:
                 "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
             ),
             patch.object(deployment, "_validate_crds", return_value=True),
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
         ):
             return deployment.validate()
 
