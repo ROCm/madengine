@@ -21,8 +21,7 @@ madengine run --tags model --additional-context-file config.json
 ```json
 {
   "gpu_vendor": "AMD",
-  "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0
+  "guest_os": "UBUNTU"
 }
 ```
 
@@ -86,9 +85,11 @@ Defaults only apply to the **build** command where Dockerfile selection requires
 
 ## Run phase: log error pattern scan
 
-After a successful container run, madengine may scan the **run log file** for fixed substrings (for example `RuntimeError:`, `OutOfMemoryError`, `Traceback (most recent call last)`). If a match is found, the run can be marked `FAILURE` even when performance metrics exist—intended as a safety net when logs show obvious Python or OOM errors.
+After a successful container run, madengine may scan the **run log file** for fixed substrings (for example `RuntimeError:`, `OutOfMemoryError`, `Traceback (most recent call last)`)—intended as a safety net when logs show obvious Python or OOM errors. If a match is found **and no valid performance metrics were extracted**, the run is marked `FAILURE`.
 
-Some suites (for example layer unit tests) intentionally print benign `RuntimeError:` text while pytest still passes. In those cases you can **disable** the scan or **narrow** what counts as an error.
+If valid performance metrics *were* extracted, a pattern match no longer fails the run: the log scan cannot distinguish madengine/framework diagnostics from a model's own generated stdout, so a generative model whose output happens to contain a banned substring (e.g. an LLM writing `"ValueError:"` in a code sample) no longer produces a false `FAILURE` (see ROCM-27774). The match is still printed (in yellow) for triage visibility.
+
+Some suites (for example layer unit tests) intentionally print benign `RuntimeError:` text while pytest still passes, with no performance metrics to fall back on. In those cases you can **disable** the scan or **narrow** what counts as an error.
 
 Keys can be set in `--additional-context` / `--additional-context-file`, or on the **model** entry in `models.json` (same keys). **Runtime context overrides the model** when both are set.
 
@@ -206,6 +207,87 @@ examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
 
 Artifact verification commands are documented in `examples/cluster-smoke-checklist.md`.
 
+## Pinned image digests
+
+Every build records the digest of the image it pushes as `image_digest` on each
+`built_images` entry in `build_manifest.json`. This capture is always on and
+costs nothing: by default the digest is carried along and never used.
+
+Pass `--require-pinned-image` (or set `"require_pinned_image": true` in
+`--additional-context`) to make the run phase pull `repo@sha256:...` instead of
+the tag:
+
+```bash
+madengine run --manifest-file build_manifest.json --require-pinned-image
+
+# Equivalent, for pipelines that drive madengine through additional context
+madengine run --manifest-file build_manifest.json \
+  --additional-context "{'require_pinned_image': True}"
+```
+
+| Behaviour | Flag absent (default) | Flag set |
+|---|---|---|
+| Registry pull | By tag | By digest (`repo@sha256:...`) |
+| Manifest has no `image_digest` | Pull by tag | **Fails immediately**, no tag fallback |
+| Image reference is already `repo@sha256:...` | Used as-is | Used as-is (already pinned) |
+| Tag moved since the build | Silently runs the newer image | Registry rejects the pull (`manifest unknown`) |
+| Registry pull fails | Falls back to the local tag | **Fails that model**, no local-tag fallback |
+
+Applies to all three execution paths: local Docker, Kubernetes (the pod spec
+`image` field), and SLURM. On SLURM the setting is written into the manifest's
+`context` block so the nested `madengine run` on each compute node inherits it.
+
+**Limitations**
+
+- This does not prevent two concurrent builds from racing to push the same
+  mutable tag. It converts the resulting silent wrong-image run into a fast,
+  clear failure. Eliminating the race requires unique tags per build in the
+  calling CI pipeline.
+- Manifests produced by the build-on-compute-node path (SLURM batch builds,
+  which push from inside a generated sbatch script) carry no `image_digest`.
+  Runs against those manifests fail fast when the flag is set.
+
+## System environment collection (rocEnvTool)
+
+Before each container run, madengine appends `scripts/common/pre_scripts/run_rocenv_tool.sh` to the model's pre-scripts. It captures a CSV snapshot of the container's environment (OS, CPU, GPU, ROCm/CUDA, packages, env vars, NUMA). The output ends up at `<model_name>_env.csv` in the workspace root.
+
+Two collection modes, selected via `rocenv_mode` in `--additional-context`:
+
+| `rocenv_mode` | Sections collected | In-container tool requirements |
+|---|---|---|
+| `"lite"` (default) | OS, CPU, GPU, memory, ROCm/CUDA info, packages, env vars, NUMA balancing | Already present in standard ROCm/CUDA base images |
+| `"full"` | Lite **plus** `hardware_information` (lshw), `bios_settings` (dmidecode), `dmsg_gpu_drm_atom_logs` (dmesg), `amdgpu_modinfo` (modinfo) | Auto-installed best-effort if missing |
+
+**Full-mode auto-install** uses the `guest_os`-native package manager:
+
+- `UBUNTU` → `apt-get install -y -qq lshw dmidecode kmod util-linux`
+- `CENTOS` → `microdnf` / `dnf` / `yum install -y …` (first one found)
+
+The install is **best-effort**: if the package manager is missing, the network is unreachable, or the container lacks permissions, the pre-script logs a warning and continues — the affected sections are simply omitted from the CSV. Empty tool output (for example, `dmesg` in a container without `CAP_SYSLOG`, or `dmidecode` without `/dev/mem` access) is also handled gracefully — the section is skipped and the rest of the CSV still parses.
+
+**Examples:**
+
+```bash
+# Default (lite): low overhead, works in any ROCm/CUDA base image
+madengine run --tags model
+
+# Full: include hardware/BIOS/dmesg/amdgpu modinfo
+madengine run --tags model \
+  --additional-context '{"rocenv_mode": "full"}'
+
+# CentOS guest with full mode (auto-install uses microdnf/dnf/yum)
+madengine run --tags model \
+  --additional-context '{"guest_os": "CENTOS", "rocenv_mode": "full"}'
+
+# Skip system-env collection entirely (e.g. GPU-binding smoke tests)
+madengine run --tags model \
+  --additional-context '{"generate_sys_env_details": false}'
+```
+
+`guest_os` from `--additional-context` (default `UBUNTU`) controls which package manager is used. The same value is also exported into the container as `MAD_GUEST_OS`, so the pre-script picks the correct package manager without re-detecting from `/etc/os-release`.
+
+Unknown `rocenv_mode` values fall back to `lite` with a warning.
+
 ## Basic Configuration
 
 **gpu_vendor** (case-insensitive):
@@ -223,13 +305,13 @@ Artifact verification commands are documented in `examples/cluster-smoke-checkli
 **Overrides** (recommended for CI):
 
 - **Additional context (host):** top-level `"MAD_ROCM_PATH": "/path/to/host/rocm"` — controls where madengine looks for host GPU tools (`rocminfo`, `amd-smi`, etc.).
-- **Additional context (container):** `"docker_env_vars": { "MAD_ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
+- **Additional context (container):** `"docker_env_vars": { "ROCM_PATH": "/path/inside/image" }` — sets the in-container `ROCM_PATH` for Docker runs. If omitted, at `run` time madengine uses the image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) if present, then an in-container probe, then defaults to `/opt/rocm`. The host-resolved path is **not** mirrored into the container.
 
 These two keys are independent, allowing host and container to use different ROCm installations without confusion.
 
 Precedence (host): top-level `MAD_ROCM_PATH` → auto-detect (unless disabled) → `ROCM_PATH` → `/opt/rocm`.
 
-Precedence (container, **local Docker `run`**, **AMD**): `docker_env_vars.MAD_ROCM_PATH` (maps to `ROCM_PATH` for the workload) or explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
+Precedence (container, **local Docker `run`**, **AMD**): explicit `ROCM_PATH` in `docker_env_vars` → image OCI `Env` (`ROCM_PATH` / `ROCM_HOME`) → in-image probe → default `/opt/rocm` with a warning. Implemented in `ContainerRunner.run_container` after the run image is resolved.
 
 This applies to the run phase; build uses build-only context (no GPU detection) but still honors `MAD_ROCM_PATH` in context when set.
 
@@ -308,17 +390,25 @@ Pass environment variables to containers:
 }
 ```
 
-### Custom Base Image
+### Pre-Built Container Images
 
-Override Docker base image:
+`MAD_CONTAINER_IMAGE` runs the model in an image you already have, **skipping the
+build phase entirely**. madengine validates the image exists locally (pulling it
+if not) and writes a synthetic `build_manifest.json` for it:
 
-```json
-{
-  "MAD_CONTAINER_IMAGE": "rocm/pytorch:custom-tag"
-}
+```bash
+madengine run --tags my_model \
+  --additional-context "{'MAD_CONTAINER_IMAGE': 'rocm/pytorch:custom-tag'}"
 ```
 
-Or override BASE_DOCKER in FROM line:
+`--tags` is required in this mode — without it madengine has no models to map
+onto the image and fails with a configuration error. Note this is an
+`--additional-context` key, not an environment variable.
+
+### Custom Base Image
+
+To keep the normal build but change the image the Dockerfile's `FROM` line
+resolves to, override `BASE_DOCKER` as a build argument:
 
 ```json
 {
@@ -341,6 +431,26 @@ Pass build-time variables:
   }
 }
 ```
+
+A model can also declare its own `docker_build_arg` in its `models.json` entry, so
+build-time pins live with the model instead of on every command line:
+
+```json
+{
+  "name": "my_model",
+  "dockerfile": "docker/my_model",
+  "tags": ["my_model"],
+  "docker_build_arg": {
+    "VLLM_REPO": "https://github.com/myorg/vllm.git",
+    "VLLM_REF": "d723eb305eb78d1bda0ed357b2b54cc29487221f"
+  }
+}
+```
+
+Each model's args apply only to its own build, so models built in the same
+invocation can pin different values. `--additional-context` overrides the model
+entry for the same key, so an operator can still redirect a build without editing
+`models.json`.
 
 ### Mount Host Directories
 
@@ -372,17 +482,25 @@ Format: Comma-separated list with hyphen ranges.
 
 ### Timeout Settings
 
+Set a per-model timeout (seconds) in `models.json`. Omit the field to get the
+7200s (2 hour) default. Use `0` (or any non-positive value) to run the model
+without a timeout:
+
 ```json
 {
-  "timeout_multiplier": 2.0
+  "timeout": 7200
 }
 ```
 
-Or use command-line option:
+Or use the command-line option, which overrides the model's timeout:
 
 ```bash
 madengine run --tags model --timeout 7200
 ```
+
+Full precedence rules, including the `-1` sentinel and how the timeout is
+applied on SLURM and Kubernetes, are in
+[Usage — Custom Timeouts](usage.md#custom-timeouts).
 
 ### Local Data Mirroring
 
@@ -432,7 +550,6 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
     "memory_limit": "64Gi",
     "cpu": "16",
     "cpu_limit": "32",
-    "service_account": "madengine-sa",
     "image_pull_policy": "Always",
     "ttl_seconds_after_finished": null,
     "allow_privileged_profiling": null,
@@ -453,13 +570,32 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `memory_limit` - Memory limit (default: 2× memory request)
 - `cpu` - CPU cores request (default: auto-scaled by GPU count)
 - `cpu_limit` - CPU cores limit (default: 2× CPU request)
-- `service_account` - Service account name
 - `image_pull_policy` - `Always`, `IfNotPresent`, or `Never`
 - `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
 - `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
 - `secrets.strategy` - `from_local_credentials` (default): create `Secret` objects from local `credential.json` at deploy time; `existing`: only reference pre-created Secrets; `omit`: no runtime Secret from client
 - `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
+
+**Cluster and scheduling keys:**
+- `kubeconfig` - Path to kubeconfig (default: `~/.kube/config`)
+- `gpu_resource_name` - GPU resource name (default: `amd.com/gpu`; use `nvidia.com/gpu` for NVIDIA)
+- `node_selector` - Label selectors for pod placement (default: `{}`)
+- `tolerations` - Tolerations for tainted nodes (default: `[]`)
+- `backoff_limit` - Job retry attempts before marking failed (default: `3`)
+- `output_dir` - Directory for generated manifests (default: `./k8s_manifests`)
+
+**Storage keys:**
+- `data_pvc` - Name of an existing PVC to use for data, skipping auto-creation
+- `storage_class` - Broad fallback StorageClass for both the shared-data PVC and the single-node results PVC
+- `nfs_storage_class` / `data_storage_class` - RWX class for shared data and multi-node results
+- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the legacy single-node fallback)
+- `results_storage_size` / `data_storage_size` - PVC sizes (defaults: `10Gi` / `100Gi`)
+- `recreate_shared_data_pvc` - Delete and recreate `madengine-shared-data` before use. **Destroys existing data** — back up first; intended for migrating an RWO PVC to RWX
+
+Multi-node jobs require an RWX results StorageClass; madengine warns when one is
+not set. The full key reference, PVC access-mode matrix, and preset defaults are
+in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
 
 ### Multi-Node Kubernetes
 
@@ -502,9 +638,12 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
     "nodes": 2,
     "nodelist": "node01,node02",
     "time": "24:00:00",
-    "mem": "64G",
-    "mail_user": "user@example.com",
-    "mail_type": "ALL"
+    "exclusive": true,
+    "constraint": "mi300x",
+    "exclude": "node07,node09",
+    "modules": ["rocm/6.2"],
+    "network_interface": "ib0",
+    "output_dir": "./slurm_results"
   }
 }
 ```
@@ -515,13 +654,23 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `partition` - SLURM partition name (required)
 - `account` - Billing account
 - `qos` - Quality of Service
-- `gpus_per_node` - GPUs per node (default: 1)
+- `gpus_per_node` - GPUs per node (default: 8)
 - `nodes` - Number of nodes (default: 1)
 - `nodelist` - Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job is restricted to these nodes and automatic node health preflight is skipped
-- `time` - Wall time limit HH:MM:SS (required)
-- `mem` - Memory per node (e.g., "64G")
-- `mail_user` - Email for notifications
-- `mail_type` - Notification types (BEGIN, END, FAIL, ALL)
+- `reservation` - SLURM reservation name; forwarded to srun health/cleanup commands and SBATCH directives
+- `exclusive` - Exclusive node access (default: `true`)
+- `time` - Wall time limit HH:MM:SS (default: `24:00:00`)
+- `constraint` - SBATCH `--constraint` feature expression
+- `exclude` - Comma-separated nodes to exclude; node health preflight appends to this list
+- `modules` - Array of environment modules to `module load` in the job (default: `[]`)
+- `network_interface` - Interface exported as `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` (e.g. `ib0`)
+- `output_dir` - Directory for SLURM `.out`/`.err` files (default: `./slurm_results`)
+- `skip_gpus_directive` - Omit the `#SBATCH --gpus-per-node` directive (default: `false`). Set `true` on clusters that expose no GPU GRES and reject any job script carrying it; allocation then relies on `exclusive` / `nproc_per_node`.
+
+Node health preflight, shared-storage, and results-collection keys (`enable_node_check`,
+`auto_cleanup_nodes`, `allow_submit_without_clean_nodes`, `verbose_node_check`,
+`shared_workspace`, `results_dir`) are documented in
+[examples/slurm-configs/README.md](../examples/slurm-configs/README.md).
 
 ### Multi-Node SLURM
 
@@ -565,10 +714,13 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (K8s + SLURM)
+- `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated SGLang
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 
@@ -597,13 +749,11 @@ See [Launchers Guide](launchers.md) for details.
     "launcher": "vllm",
     "nnodes": 2,
     "nproc_per_node": 4
-  },
-  "vllm": {
-    "tensor_parallel_size": 4,
-    "pipeline_parallel_size": 1
   }
 }
 ```
+
+`nproc_per_node` is exported into the container as `VLLM_TENSOR_PARALLEL_SIZE`; there is no separate `vllm.*` config block for tensor/pipeline parallel sizing.
 
 ## Profiling Configuration
 
@@ -695,14 +845,11 @@ Configure in `data.json` (MAD package root):
 
 ```json
 {
-  "data_sources": {
-    "model_data": {
-      "nas": {"path": "/home/datum"},
-      "minio": {"path": "s3://datasets/datum"},
-      "aws": {"path": "s3://datasets/datum"}
-    }
-  },
-  "mirrorlocal": "/tmp/local_mirror"
+  "model_data": {
+    "nas": {"path": "/home/datum", "mirrorlocal": "/tmp/local_mirror"},
+    "minio": {"path": "s3://datasets/datum"},
+    "aws": {"path": "s3://datasets/datum"}
+  }
 }
 ```
 
@@ -717,13 +864,13 @@ Configure in `credential.json` (MAD package root):
     "password": "your_token",
     "repository": "myorg"
   },
-  "AMD_GITHUB": {
+  "PUBLIC_GITHUB_ROCM_KEY": {
     "username": "github_username",
-    "password": "github_token"
+    "token": "github_token"
   },
   "MAD_AWS_S3": {
-    "username": "aws_access_key",
-    "password": "aws_secret_key"
+    "USERNAME": "aws_access_key",
+    "PASSWORD": "aws_secret_key"
   }
 }
 ```
@@ -735,6 +882,42 @@ export MAD_DOCKERHUB_USER=myusername
 export MAD_DOCKERHUB_PASSWORD=mytoken
 export MAD_DOCKERHUB_REPO=myorg
 ```
+
+### Registry Authentication
+
+madengine reuses an existing `docker login` — including an organization access
+token (OAT) — rather than requiring credentials to be duplicated into
+`credential.json`. Ambient credentials are read from
+`${DOCKER_CONFIG:-~/.docker}/config.json` exactly as the Docker CLI reads them,
+covering `auths` entries, `credHelpers`, and `credsStore`.
+
+Blank values are treated as **not configured**, not as credentials. A placeholder
+entry such as `{"username": "", "password": ""}` will never override or break a
+working `docker login`.
+
+| Existing `docker login` | Credentials in `credential.json` / env | Behavior |
+|---|---|---|
+| no  | yes (non-blank) | `docker login` with the configured credentials |
+| yes | yes (non-blank) | `docker login` with the configured credentials (explicit wins) |
+| yes | absent or blank | Reuse the existing login; no `docker login` is run |
+| no  | absent or blank | Push fails with an actionable error; pull warns and continues |
+
+Before `docker build`, madengine logs in to the base image's registry only when
+that registry has no existing login and usable credentials are configured, so a
+node authenticated with an OAT is never re-authenticated.
+
+Relevant environment variables:
+
+- `DOCKER_CONFIG` — directory holding `config.json` (default `~/.docker`)
+- `MAD_SKIP_DOCKER_LOGIN=1` — never run `docker login`; always defer to the
+  credentials the machine already has
+
+If a base image pull is denied, madengine distinguishes the two causes:
+credentials were rejected (authentication — supply credentials or run
+`docker login`), versus credentials were accepted but the registry granted no
+pull scope for that repository (`insufficient_scope` — an authorization problem,
+where the access token needs to be scoped to the repository and re-running
+`docker login` will not help).
 
 ## Configuration Priority
 

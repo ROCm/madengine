@@ -9,14 +9,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
-import sys
 import tempfile
-from pathlib import Path
-
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if _SRC.is_dir() and str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 
@@ -359,35 +354,6 @@ def integration_test_env():
     
     with patch.dict(os.environ, env_vars, clear=False):
         yield env_vars
-
-
-# ============================================================================
-# Pytest Configuration
-# ============================================================================
-
-def pytest_configure(config):
-    """Configure pytest with custom markers."""
-    config.addinivalue_line(
-        "markers", "integration: marks tests as integration tests (may be slow)"
-    )
-    config.addinivalue_line(
-        "markers", "unit: marks tests as fast unit tests"
-    )
-    config.addinivalue_line(
-        "markers", "gpu: marks tests that require GPU hardware"
-    )
-    config.addinivalue_line(
-        "markers", "amd: marks tests specific to AMD GPUs"
-    )
-    config.addinivalue_line(
-        "markers", "nvidia: marks tests specific to NVIDIA GPUs"
-    )
-    config.addinivalue_line(
-        "markers", "cpu: marks tests for CPU-only execution"
-    )
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
 
 
 # ============================================================================

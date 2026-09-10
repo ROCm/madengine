@@ -16,6 +16,7 @@ from madengine.core.additional_context_defaults import (
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import ConfigurationError
+from madengine.cli.utils import create_args_namespace
 
 
 # ---- image_filtering ----
@@ -160,6 +161,9 @@ class TestRunOrchestratorInit:
         mock_args = MagicMock()
         mock_args.additional_context = None
         mock_args.live_output = True
+        # A bare MagicMock auto-vivifies truthy attributes; pin the flags this
+        # assertion depends on so they cannot leak into additional_context.
+        mock_args.require_pinned_image = False
 
         orchestrator = RunOrchestrator(mock_args)
 
@@ -195,12 +199,12 @@ class TestManifestValidation:
 
 
 @pytest.mark.unit
-class TestSkipModelRunPolicyA:
-    """Policy A: --skip-model-run only skips execution after an internal build."""
+class TestSkipModelRun:
+    """--skip-model-run is forwarded to the container runner; it never short-circuits _execute_local."""
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_after_build_skips_execute_local(self, mock_cleanup, tmp_path):
-        """Full workflow: skip_model_run + build phase skips _execute_local."""
+    def test_skip_after_build_calls_execute_local(self, mock_cleanup, tmp_path):
+        """Full workflow: skip_model_run + build phase still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
@@ -226,22 +230,25 @@ class TestSkipModelRunPolicyA:
                 RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
             ):
                 with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
                     with patch.object(
                         RunOrchestrator, "_combine_build_and_run_logs"
-                    ) as mock_combine:
+                    ):
                         orchestrator.execute(
                             manifest_file=None, tags=["dummy"], timeout=60
                         )
 
-        mock_local.assert_not_called()
-        mock_combine.assert_not_called()
+        mock_local.assert_called_once()
         mock_cleanup.assert_called()
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
-    def test_skip_ignored_when_run_only_still_calls_execute_local(
+    def test_skip_run_only_still_calls_execute_local(
         self, mock_cleanup, tmp_path
     ):
-        """Run-only: skip_model_run is ignored; _execute_local runs."""
+        """Run-only (existing manifest): skip_model_run still calls _execute_local (skip handled inside container runner)."""
         perf = tmp_path / "perf.csv"
         manifest_path = tmp_path / "build_manifest.json"
         manifest_path.write_text(
@@ -271,3 +278,355 @@ class TestSkipModelRunPolicyA:
 
         mock_local.assert_called_once()
         mock_cleanup.assert_called()
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_skip_model_run_calls_execute_local(self, mock_cleanup, tmp_path):
+        """skip_model_run no longer short-circuits before _execute_local."""
+        perf = tmp_path / "perf.csv"
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.skip_model_run = True
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(perf)
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_build_phase", return_value=str(manifest_path)):
+            with patch.object(
+                RunOrchestrator, "_load_and_merge_manifest", side_effect=lambda f: f
+            ):
+                with patch.object(RunOrchestrator, "_execute_local") as mock_local:
+                    mock_local.return_value = {
+                        "successful_runs": [],
+                        "failed_runs": [],
+                    }
+                    orchestrator.execute(
+                        manifest_file=None, tags=["dummy"], timeout=60
+                    )
+
+        mock_local.assert_called_once()
+        mock_cleanup.assert_called()
+
+
+@pytest.mark.unit
+class TestRunOrchestrator:
+    """Test RunOrchestrator methods."""
+
+    def test_distributed_warns_on_local_only_flags(self, tmp_path):
+        """_execute_distributed warns when local-only flags are set."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = True
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = True
+        mock_args.timeout = 60
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+
+        # Replace rich_console with a mock so we can inspect print calls
+        mock_rich_console = MagicMock()
+        orchestrator.rich_console = mock_rich_console
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        # Verify warning was printed mentioning the active flags
+        printed = " ".join(
+            str(call) for call in mock_rich_console.print.call_args_list
+        )
+        assert "--keep-alive" in printed
+        assert "--skip-model-run" in printed
+        assert "--keep-model-dir" not in printed  # was False, must not appear
+
+    @pytest.mark.parametrize(
+        "cli_timeout,expected_config_timeout",
+        [
+            (-1, 7200),  # unspecified -> shared default, not left as -1
+            (0, 0),  # explicit "no timeout" passed through
+            (120, 120),  # explicit timeout passed through
+        ],
+    )
+    def test_distributed_resolves_timeout_sentinel(
+        self, tmp_path, cli_timeout, expected_config_timeout
+    ):
+        """_execute_distributed must resolve the CLI sentinel before building
+        DeploymentConfig.
+
+        Regression: unlike the local path (which calls resolve_run_timeout() in
+        container_runner.py), the distributed path forwarded args.timeout to
+        DeploymentConfig verbatim. A default run (--timeout unspecified, i.e.
+        -1) therefore left DeploymentConfig.timeout == -1, which
+        subprocess_timeout() maps to None -- silently dropping the wall-clock
+        cap on the SLURM in-allocation path instead of applying the intended
+        7200s default.
+        """
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.timeout = cli_timeout
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        deployment_config = mock_create.call_args.args[0]
+        assert deployment_config.timeout == expected_config_timeout
+        assert isinstance(deployment_config.timeout, int)
+        # The sentinel itself must also survive, unresolved, for the job script
+        # to forward to the madengine it re-invokes.
+        assert deployment_config.cli_timeout == cli_timeout
+
+    def test_model_card_timeout_survives_the_distributed_round_trip(self, tmp_path):
+        """A model card's timeout must still win on SLURM when no --timeout is given.
+
+        Regression: _execute_distributed resolved the sentinel and the template
+        rendered that resolved value, so the job re-invoked madengine with an
+        explicit --timeout 7200. Precedence (correctly) ranks an explicit CLI
+        timeout above the model card, so the card's own value was discarded --
+        only on distributed targets, and only because madengine had synthesized
+        the value it was now treating as user intent.
+        """
+        from madengine.core.timeout import resolve_run_timeout
+
+        model_card = {"name": "foo", "timeout": 3600}
+
+        # Hop 1: the orchestrator, which has no model card in hand.
+        rendered = -1  # DeploymentConfig.cli_timeout for an unspecified --timeout
+        # Hop 2: the in-job madengine, resolving against the card.
+        assert resolve_run_timeout(model_card, rendered) == 3600
+        # ... matching what the single-hop local path produces.
+        assert resolve_run_timeout(model_card, -1) == 3600
+
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            ({}, -1),  # omitted -> sentinel, so the model card can still win
+            ({"timeout": 120}, 120),
+            ({"timeout": 0}, 0),
+            ({"timeout": -1}, -1),
+        ],
+    )
+    def test_execute_forwards_timeout_sentinel_to_local(
+        self, tmp_path, kwargs, expected
+    ):
+        """execute()'s own default must be the sentinel, not DEFAULT_RUN_TIMEOUT.
+
+        Regression: the parameter defaulted to 7200, which _execute_local hands
+        to resolve_run_timeout() as an explicit CLI timeout. A programmatic
+        caller that omitted `timeout` therefore silently outranked every model
+        card, contradicting the documented precedence.
+        """
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_cleanup_model_dir_copies"), \
+             patch.object(RunOrchestrator, "_execute_local") as mock_local:
+            mock_local.return_value = {"successful_runs": [], "failed_runs": []}
+            orchestrator.execute(manifest_file=str(manifest_path), **kwargs)
+
+        assert mock_local.call_args.args[1] == expected
+
+
+@pytest.mark.unit
+class TestCreateManifestFromLocalImage:
+    """MAD_CONTAINER_IMAGE (local image) mode must carry every models.json field
+    that ContainerRunner relies on -- including multiple_results, whose absence
+    silently drops perf-CSV-based result reporting (falls back to scraping the
+    log for a 'performance: NUMBER METRIC' line and reports FAILURE)."""
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_multiple_results_field_is_preserved(self, mock_context, tmp_path):
+        mock_context.return_value.ctx = {}
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.console = MagicMock()
+        orchestrator.rich_console = MagicMock()
+
+        fake_model = {
+            "name": "uber_storefront/v1t1",
+            "tags": ["inference"],
+            "scripts": "run.sh",
+            "n_gpus": "1",
+            "data": "uber_storefront_models",
+            "args": "--model-dir v1t1",
+            "multiple_results": "perf_uber_storefront_v1t1.csv",
+        }
+
+        manifest_output = str(tmp_path / "build_manifest.json")
+
+        with patch(
+            "madengine.utils.discover_models.DiscoverModels.run",
+            return_value=[fake_model],
+        ):
+            orchestrator._create_manifest_from_local_image(
+                image_name="registry.io/org/model:ci-tag",
+                tags=["inference"],
+                manifest_output=manifest_output,
+            )
+
+        with open(manifest_output) as f:
+            manifest = json.load(f)
+
+        built_model = next(iter(manifest["built_models"].values()))
+        assert built_model["multiple_results"] == "perf_uber_storefront_v1t1.csv"
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_multiple_results_defaults_to_empty_string(self, mock_context, tmp_path):
+        """Models without multiple_results in models.json still get the key (empty),
+        so ContainerRunner's model_info.get("multiple_results") lookups never KeyError."""
+        mock_context.return_value.ctx = {}
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.console = MagicMock()
+        orchestrator.rich_console = MagicMock()
+
+        fake_model = {
+            "name": "dummy/model",
+            "tags": ["inference"],
+            "scripts": "run.sh",
+            "n_gpus": "1",
+            "data": "",
+            "args": "",
+        }
+
+        manifest_output = str(tmp_path / "build_manifest.json")
+
+        with patch(
+            "madengine.utils.discover_models.DiscoverModels.run",
+            return_value=[fake_model],
+        ):
+            orchestrator._create_manifest_from_local_image(
+                image_name="registry.io/org/model:ci-tag",
+                tags=["inference"],
+                manifest_output=manifest_output,
+            )
+
+        with open(manifest_output) as f:
+            manifest = json.load(f)
+
+        built_model = next(iter(manifest["built_models"].values()))
+        assert built_model["multiple_results"] == ""
+
+
+class TestRequirePinnedImageContext:
+    """--require-pinned-image and require_pinned_image both reach additional_context."""
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_cli_flag_sets_context_key(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_flag_absent_leaves_key_unset(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=False,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert "require_pinned_image" not in orch.additional_context
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_additional_context_key_alone_is_honoured(self, mock_context):
+        args = create_args_namespace(
+            additional_context="{'require_pinned_image': True}",
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_key_is_persisted_into_manifest_context(self, mock_context, tmp_path):
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+                    "built_models": {"img1": {"name": "m"}},
+                    "context": {},
+                    "deployment_config": {},
+                }
+            )
+        )
+
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        orch._load_and_merge_manifest(str(manifest_path))
+
+        written = json.loads(manifest_path.read_text())
+        assert written["context"]["require_pinned_image"] is True

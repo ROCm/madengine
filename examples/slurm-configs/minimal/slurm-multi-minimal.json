@@ -1,0 +1,23 @@
+{
+  "_comment": "Minimal slurm_multi launcher configuration - 3 nodes minimum",
+  "_description": "Self-managed multi-node SLURM launcher (script runs on baremetal, manages its own Docker via srun)",
+  "_architecture": "Wrapper SBATCH exports env_vars and runs the model's .slurm script directly on the head node; the script orchestrates per-node containers via srun",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "deploy": "slurm",
+
+  "slurm": {
+    "partition": "gpu",
+    "nodes": 3,
+    "gpus_per_node": 8,
+    "time": "04:00:00",
+    "exclusive": true
+  },
+
+  "distributed": {
+    "launcher": "slurm_multi",
+    "nnodes": 3,
+    "nproc_per_node": 8
+  }
+}

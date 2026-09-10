@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Dict, Optional
@@ -24,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -82,6 +84,13 @@ class RunOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+
+        # The CLI flag and the require_pinned_image context key are equivalent;
+        # the key lets CI pipelines that drive madengine through
+        # --additional-context opt in the same way as for k8s/slurm/tools.
+        if getattr(args, "require_pinned_image", False):
+            self.additional_context["require_pinned_image"] = True
+
         keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
         self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
 
@@ -131,7 +140,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = 3600,
+        timeout: int = -1,
     ) -> Dict:
         """
         Execute run workflow.
@@ -140,15 +149,16 @@ class RunOrchestrator:
         1. Run-only: If manifest_file provided
         2. Full workflow: If tags provided (build + run)
 
-        When args.skip_model_run is True (Policy A), the model execution step is
-        skipped only if this invocation ran a build (_did_build_phase). Otherwise
-        the flag is ignored with a warning.
+        When args.skip_model_run is True, the model script inside each container
+        is skipped (container still starts, pre_scripts still run). Use with
+        --keep-alive to leave a live container for manual exec.
 
         Args:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
             registry: Optional registry override
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
 
         Returns:
             Execution results dict
@@ -259,34 +269,6 @@ class RunOrchestrator:
             
             self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
 
-            # Use `is True` so MagicMock-based test doubles do not count as enabled.
-            skip_requested = getattr(self.args, "skip_model_run", False) is True
-            if skip_requested and not self._did_build_phase:
-                self.rich_console.print(
-                    "[yellow]⚠️  --skip-model-run is ignored "
-                    "(not a build+run workflow in this invocation).[/yellow]\n"
-                )
-
-            if skip_requested and self._did_build_phase:
-                self.rich_console.print(
-                    "[bold cyan]Skipping model run (--skip-model-run) after build.[/bold cyan]\n"
-                )
-                results = {
-                    "successful_runs": [],
-                    "failed_runs": [],
-                    "total_runs": 0,
-                    "skipped_model_run": True,
-                }
-                results["session_start_row"] = session_start_row
-                results["session_row_count"] = (
-                    self.session_tracker.get_session_row_count()
-                )
-                self.rich_console.print(
-                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
-                )
-                self._cleanup_model_dir_copies()
-                return results
-
             # Step 4: Execute based on target
             try:
                 if target == "local" or target == "docker":
@@ -389,14 +371,17 @@ class RunOrchestrator:
         self.rich_console.print(f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]")
         self.rich_console.print(f"[dim]Skipping build phase, creating synthetic manifest...[/dim]\n")
         
-        # Validate that the image exists locally or can be pulled
+        # Validate that the image exists locally or can be pulled.
+        # image_name is interpolated into shell commands run with shell=True,
+        # so shell-escape it to avoid command injection / breakage on special chars.
+        quoted_image_name = shlex.quote(image_name)
         try:
-            self.console.sh(f"docker image inspect {image_name} > /dev/null 2>&1")
+            self.console.sh(f"docker image inspect {quoted_image_name} > /dev/null 2>&1")
             self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
         except (subprocess.CalledProcessError, RuntimeError) as e:
             self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
             try:
-                self.console.sh(f"docker pull {image_name}")
+                self.console.sh(f"docker pull {quoted_image_name}")
                 self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
             except Exception as e:
                 raise RuntimeError(
@@ -492,12 +477,15 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", None),  # Optional timeout override
+                # None (JSON null) = the card specified none; a card's -1 is a
+                # real value meaning "no timeout", so it cannot double as filler.
+                "timeout": model.get("timeout"),
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+                "multiple_results": model.get("multiple_results", ""),
             }
         
         # Write manifest to file
@@ -534,7 +522,15 @@ class RunOrchestrator:
             if "context" not in manifest:
                 manifest["context"] = {}
             
-            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
+            merge_keys = [
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                # Persisted so nested runs on SLURM compute nodes (which re-enter
+                # `madengine run --manifest-file`) inherit the enforcement setting.
+                "require_pinned_image",
+            ]
             context_updated = False
             for key in merge_keys:
                 if key in self.additional_context:
@@ -578,6 +574,27 @@ class RunOrchestrator:
         # Restore context from manifest if present
         if "context" in manifest:
             manifest_context = manifest["context"]
+            # Restore host-level runtime context fields from manifest.
+            # Keep runtime-detected values as priority; bring missing keys from manifest
+            # (especially docker_mounts for host path visibility on compute nodes).
+            if "docker_mounts" in manifest_context:
+                if "docker_mounts" not in self.context.ctx:
+                    self.context.ctx["docker_mounts"] = {}
+                for container_path, host_path in manifest_context["docker_mounts"].items():
+                    if container_path not in self.context.ctx["docker_mounts"]:
+                        self.context.ctx["docker_mounts"][container_path] = host_path
+            if "docker_build_arg" in manifest_context:
+                if "docker_build_arg" not in self.context.ctx:
+                    self.context.ctx["docker_build_arg"] = {}
+                for key, value in manifest_context["docker_build_arg"].items():
+                    if key not in self.context.ctx["docker_build_arg"]:
+                        self.context.ctx["docker_build_arg"][key] = value
+            if "docker_gpus" in manifest_context and "docker_gpus" not in self.context.ctx:
+                self.context.ctx["docker_gpus"] = manifest_context["docker_gpus"]
+            if "gpu_vendor" in manifest_context and "gpu_vendor" not in self.context.ctx:
+                self.context.ctx["gpu_vendor"] = manifest_context["gpu_vendor"]
+            if "guest_os" in manifest_context and "guest_os" not in self.context.ctx:
+                self.context.ctx["guest_os"] = manifest_context["guest_os"]
             if "tools" in manifest_context:
                 self.context.ctx["tools"] = manifest_context["tools"]
             if "pre_scripts" in manifest_context:
@@ -586,12 +603,16 @@ class RunOrchestrator:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
                 self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
-            # Restore docker_env_vars from build context (e.g. MAD_SECRET_HFTOKEN for Primus HF-backed configs)
+            # Restore docker_env_vars from build context (e.g. MAD_SECRETS_HFTOKEN for Primus HF-backed configs).
+            # Keep runtime-detected values as priority (consistent with docker_mounts / docker_build_arg):
+            # values already populated by Context (e.g. MAD_SECRETS_* read from os.environ) must not be
+            # overwritten by manifest entries that may still contain unexpanded "${VAR}" placeholders.
             if "docker_env_vars" in manifest_context and manifest_context["docker_env_vars"]:
                 if "docker_env_vars" not in self.context.ctx:
                     self.context.ctx["docker_env_vars"] = {}
                 for k, v in manifest_context["docker_env_vars"].items():
-                    self.context.ctx["docker_env_vars"][k] = v
+                    if k not in self.context.ctx["docker_env_vars"]:
+                        self.context.ctx["docker_env_vars"][k] = v
 
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
@@ -699,6 +720,7 @@ class RunOrchestrator:
             keep_alive=getattr(self.args, "keep_alive", False),
             keep_model_dir=getattr(self.args, "keep_model_dir", False),
             phase_suffix=phase_suffix,
+            skip_model_run=getattr(self.args, "skip_model_run", False),
         )
 
         self.rich_console.print(f"\n[green]✓ Local execution complete[/green]")
@@ -709,6 +731,20 @@ class RunOrchestrator:
     def _execute_distributed(self, target: str, manifest_file: str) -> Dict:
         """Execute on distributed infrastructure."""
         self.rich_console.print(f"[cyan]Deploying to {target}...[/cyan]\n")
+
+        # Warn about local-only flags that have no effect on distributed targets
+        _local_only_flags = {
+            "--keep-alive": getattr(self.args, "keep_alive", False),
+            "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
+            "--skip-model-run": getattr(self.args, "skip_model_run", False),
+        }
+        _active_local_flags = [name for name, val in _local_only_flags.items() if val]
+        if _active_local_flags:
+            self.rich_console.print(
+                f"[yellow]⚠️  The following flags have no effect on distributed "
+                f"({target}) targets and will be ignored: "
+                f"{', '.join(_active_local_flags)}[/yellow]\n"
+            )
 
         # Import from deployment layer
         from madengine.deployment.factory import DeploymentFactory
@@ -728,7 +764,19 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", 3600),
+            # Two different values, deliberately. `timeout` caps this process's
+            # own wait on the deployment, so the sentinel has to be resolved
+            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
+            # in-allocation path runs unbounded. `cli_timeout` is what the
+            # generated job script forwards to the madengine it re-invokes, and
+            # must stay verbatim: that inner run resolves against the model card
+            # itself, and a concrete value here would read as an explicit
+            # --timeout and outrank the card. No model card is consulted at this
+            # level, hence the empty dict.
+            timeout=resolve_run_timeout(
+                {}, getattr(self.args, "timeout", -1)
+            ),
+            cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )
@@ -763,14 +811,17 @@ class RunOrchestrator:
         self.console.sh("echo 'MAD Run Models'")
 
         host_os = self.context.ctx.get("host_os", "")
+        # This is purely informational, but a package manager can block forever on
+        # an interactive prompt (e.g. yum asking to import a repo GPG key) with no
+        # tty to answer it, so every query is capped.
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("yum info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("zypper info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 

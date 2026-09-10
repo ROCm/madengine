@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
@@ -67,7 +69,15 @@ class DeploymentConfig:
     target: str  # "slurm", "k8s" (NOT "local" - that uses container_runner)
     manifest_file: str
     additional_context: Dict[str, Any] = field(default_factory=dict)
-    timeout: int = 3600
+    timeout: int = DEFAULT_RUN_TIMEOUT
+    # The CLI's --timeout verbatim (-1 unspecified, 0 no timeout), for the
+    # generated job script to forward to the madengine it re-invokes. Distinct
+    # from `timeout` above, which is this process's own wall-clock cap and must
+    # already be resolved. Resolving both alike would flatten the sentinel into
+    # a concrete value, which the inner CLI cannot distinguish from an explicit
+    # --timeout and would therefore rank above the model card. Defaults to the
+    # sentinel so a config built without it forwards "unspecified".
+    cli_timeout: int = -1
     monitor: bool = True
     cleanup_on_failure: bool = True
 
@@ -82,6 +92,7 @@ class DeploymentResult:
     metrics: Optional[Dict[str, Any]] = None
     logs_path: Optional[str] = None
     artifacts: Optional[List[str]] = None
+    skip_monitoring: bool = False  # Set True for synchronous runs (e.g., inside salloc)
 
     @property
     def is_success(self) -> bool:
@@ -196,7 +207,8 @@ class BaseDeployment(ABC):
                 return result
 
             # Step 4: Monitor (optional)
-            if self.config.monitor:
+            # Skip monitoring if deploy() already ran synchronously (e.g., inside salloc)
+            if self.config.monitor and not result.skip_monitoring:
                 result = self._monitor_until_complete(result.deployment_id)
 
             # Step 5: Collect Results (always collect, even on failure to record failed runs)
@@ -239,7 +251,7 @@ class BaseDeployment(ABC):
         while True:
             status = self.monitor(deployment_id)
 
-            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN]:
+            if status.status in [DeploymentStatus.SUCCESS, DeploymentStatus.FAILED, DeploymentStatus.UNKNOWN, DeploymentStatus.CANCELLED]:
                 return status
 
             # Still running, wait and check again

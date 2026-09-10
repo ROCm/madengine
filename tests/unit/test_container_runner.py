@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -231,3 +231,692 @@ class TestRunModelsFromManifestSetupFailureRecordsToPerfCsv:
             call_kw = mock_update_perf_csv.call_args[1]
             assert call_kw.get("perf_csv") == perf_csv_path
             assert "exception_result" in call_kw
+
+
+class TestGatherSystemEnvDetailsRocenvMode:
+    """gather_system_env_details passes rocenv_mode to run_rocenv_tool.sh args."""
+
+    def _make_runner(self, ctx_overrides=None):
+        ctx = MagicMock()
+        ctx.ctx = ctx_overrides or {}
+        return ContainerRunner(context=ctx, console=MagicMock())
+
+    def test_default_mode_is_lite(self):
+        """When rocenv_mode is absent, args should end with 'lite' and default guest_os UBUNTU."""
+        runner = self._make_runner()
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite UBUNTU"
+
+    def test_explicit_lite_mode(self):
+        """When rocenv_mode is 'lite', args should end with 'lite' and guest_os."""
+        runner = self._make_runner({"rocenv_mode": "lite"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite UBUNTU"
+
+    def test_full_mode(self):
+        """When rocenv_mode is 'full', args should end with 'full' and guest_os."""
+        runner = self._make_runner({"rocenv_mode": "full"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "org/my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "org_my_model_env full UBUNTU"
+
+    def test_guest_os_centos(self):
+        """guest_os in context is passed as third arg (uppercased)."""
+        runner = self._make_runner({"rocenv_mode": "lite", "guest_os": "centos"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        assert pep["pre_scripts"][0]["args"] == "my_model_env lite CENTOS"
+
+    def test_mad_guest_os_overrides_guest_os(self):
+        """docker_env_vars MAD_GUEST_OS wins over top-level guest_os for script args."""
+        runner = self._make_runner(
+            {
+                "guest_os": "UBUNTU",
+                "docker_env_vars": {"MAD_GUEST_OS": "CENTOS"},
+            }
+        )
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        assert pep["pre_scripts"][0]["args"] == "my_model_env lite CENTOS"
+
+    def test_invalid_mode_falls_back_to_lite(self):
+        """When rocenv_mode is invalid, should fall back to 'lite'."""
+        runner = self._make_runner({"rocenv_mode": "invalid"})
+        pep = {"pre_scripts": [], "encapsulate_script": "", "post_scripts": []}
+        runner.gather_system_env_details(pep, "my_model")
+        args = pep["pre_scripts"][0]["args"]
+        assert args == "my_model_env lite UBUNTU"
+
+
+class TestGenerateLocalLauncherCommand:
+    """_generate_local_launcher_command: launcher_type → MAD_MULTI_NODE_RUNNER command."""
+
+    def _runner(self):
+        return ContainerRunner.__new__(ContainerRunner)
+
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"])
+    def test_torchrun_family_emits_torchrun_standalone(self, launcher):
+        cmd = self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+        assert cmd == "torchrun --standalone --nproc_per_node=8"
+
+    def test_deepspeed_emits_deepspeed_command(self):
+        cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
+        assert cmd == "deepspeed --num_gpus=4"
+
+    @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
+    def test_self_managed_launchers_emit_empty(self, launcher):
+        assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
+
+    def test_unknown_launcher_falls_back_to_torchrun(self):
+        cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
+        assert cmd == "torchrun --standalone --nproc_per_node=2"
+
+
+class TestResolveLocalMultiNodeRunnerEnv:
+    """_resolve_local_multi_node_runner_env: wires launcher → docker_env_vars."""
+
+    def _runner(self, docker_env_vars=None, additional_context=None):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {"docker_env_vars": dict(docker_env_vars or {})}
+        runner.additional_context = additional_context
+        return runner
+
+    @pytest.mark.parametrize(
+        "launcher,expected",
+        [
+            ("torchrun", "torchrun --standalone --nproc_per_node=8"),
+            ("megatron", "torchrun --standalone --nproc_per_node=8"),
+            ("megatron-lm", "torchrun --standalone --nproc_per_node=8"),
+            ("torchtitan", "torchrun --standalone --nproc_per_node=8"),
+            ("deepspeed", "deepspeed --num_gpus=8"),
+        ],
+    )
+    def test_sets_expected_command_from_additional_context(self, launcher, expected):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": launcher}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+
+    def test_does_not_override_user_provided_value(self):
+        runner = self._runner(
+            docker_env_vars={"MAD_MULTI_NODE_RUNNER": "custom-runner --foo"},
+            additional_context={"distributed": {"launcher": "torchrun"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "custom-runner --foo"
+        )
+
+    @pytest.mark.parametrize(
+        "launcher",
+        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+    )
+    def test_self_managed_launchers_set_empty_string(self, launcher):
+        """Self-managing launchers set the var to "" (defined but empty),
+        so downstream scripts under set -u don't fail referencing it.
+        Covers the ``sglang_disagg`` underscore alias to lock in the
+        canonicalize_distributed_launcher() routing."""
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": launcher}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=4)
+        assert "MAD_MULTI_NODE_RUNNER" in runner.context.ctx["docker_env_vars"]
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == ""
+
+    def test_falls_back_to_model_info_launcher(self):
+        runner = self._runner(additional_context=None)
+        runner._resolve_local_multi_node_runner_env(
+            {"distributed": {"launcher": "deepspeed"}}, resolved_gpu_count=2
+        )
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "deepspeed --num_gpus=2"
+        )
+
+    def test_unknown_launcher_defaults_to_torchrun(self, capsys):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "docker"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=1)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=1"
+        )
+        # "docker" is a deployment-mode sentinel, not an unknown launcher, so it
+        # must not emit the "Unrecognized launcher" warning.
+        assert "Unrecognized launcher" not in capsys.readouterr().out
+
+    def test_truly_unknown_launcher_warns(self, capsys):
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "boguslauncher"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=1)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=1"
+        )
+        assert "Unrecognized launcher 'boguslauncher'" in capsys.readouterr().out
+
+    def test_uses_mad_runtime_ngpus_when_set(self):
+        runner = self._runner(
+            docker_env_vars={"MAD_RUNTIME_NGPUS": "4"},
+            additional_context={"distributed": {"launcher": "torchrun"}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"]
+            == "torchrun --standalone --nproc_per_node=4"
+        )
+
+
+class TestRunContainerSkipModelRun:
+    """Tests for skip_model_run flag in run_container."""
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {
+            "gpu_vendor": "AMD",
+            "docker_env_vars": {},
+            "guest_os": "UBUNTU",
+        }
+        runner.console = MagicMock()
+        runner.console.sh = MagicMock(return_value="root")
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        runner.credentials = {}
+        runner.data = None
+        runner.perf_csv_path = "/tmp/test_perf.csv"
+        return runner
+
+    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+        """Call run_container with all the infrastructure mocked away.
+
+        Patches:
+        - _resolve_docker_image  — skip Docker image existence check
+        - get_gpu_arg / get_cpu_arg / get_env_arg / get_mount_arg — skip option building
+        - gather_system_env_details — skip env-probe scripts injection
+        - finalize_container_rocm_path — skip in-container ROCm probe (AMD path)
+        - Timeout — replace with a no-op context manager
+        - Docker.__init__ / Docker.sh / Docker.__del__ — intercept all container calls
+        - builtins.open — avoid writing real log files
+        """
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            return runner.run_container(
+                model_info=model_info,
+                docker_image="ci-dummy",
+                **kwargs,
+            )
+
+    def test_skip_model_run_does_not_exec_script(self):
+        """With skip_model_run=True the model script is never executed."""
+        runner = self._make_runner()
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        docker_sh_calls = []
+        result = self._run_container_with_mocks(
+            runner, model_info, docker_sh_calls,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert result["status"] == "SKIPPED"
+        # The model run command: "cd run_directory && bash run.sh "
+        assert not any(
+            "run.sh" in c and "cd " in c for c in docker_sh_calls
+        ), f"Model script was executed despite skip_model_run=True: {docker_sh_calls}"
+
+    def test_skip_model_run_false_does_exec_script(self):
+        """With skip_model_run=False (default) the model script IS executed."""
+        runner = self._make_runner()
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        docker_sh_calls = []
+        self._run_container_with_mocks(
+            runner, model_info, docker_sh_calls,
+            skip_model_run=False,
+        )
+
+        assert any(
+            "run.sh" in c and "cd " in c for c in docker_sh_calls
+        ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
+    """The manifest entry point must forward the sentinel, not a concrete 7200.
+
+    Same regression as run_container(): a DEFAULT_RUN_TIMEOUT default here would
+    reach run_container() as an explicit CLI timeout and outrank every card.
+    """
+
+    def _forwarded_timeout(self, tmp_path, **kwargs):
+        manifest_path = str(tmp_path / "build_manifest.json")
+        manifest = {
+            "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+            "built_models": {
+                "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+            },
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        ctx.ensure_runtime_context = MagicMock()
+        mock_console = MagicMock()
+        mock_console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=mock_console)
+        runner.perf_csv_path = str(tmp_path / "perf.csv")
+        runner.set_credentials({})
+
+        with patch.object(
+            runner, "run_container", return_value={"status": "SUCCESS"}
+        ) as mock_run:
+            runner.run_models_from_manifest(manifest_file=manifest_path, **kwargs)
+
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    def test_omitted_timeout_forwards_the_sentinel(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path) == -1
+
+    def test_explicit_timeout_forwarded_verbatim(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path, timeout=120) == 120
+
+    @pytest.mark.parametrize("sentinel", [0, -1])
+    def test_no_timeout_sentinels_forwarded_verbatim(self, tmp_path, sentinel):
+        assert self._forwarded_timeout(tmp_path, timeout=sentinel) == sentinel
+
+
+class TestRunContainerDefaultTimeoutIsSentinel:
+    """Omitting `timeout` must not outrank a model card.
+
+    Regression: the parameter defaulted to DEFAULT_RUN_TIMEOUT, but
+    resolve_run_timeout() reads any non-negative value as an explicit
+    --timeout, so a programmatic caller that omitted the argument silently
+    forced 7200s over the card. The default is the -1 sentinel instead, which
+    still resolves to 7200s when no card timeout exists.
+    """
+
+    def _resolved_timeout(self, model_info, **kwargs):
+        """Run run_container with mocks and return what reached subprocess."""
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        docker_sh_timeouts = []
+
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
+                              (cmd, kw.get("timeout"))
+                          ) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            runner.run_container(
+                model_info=model_info, docker_image="ci-dummy", **kwargs
+            )
+
+        model_runs = [
+            t for cmd, t in docker_sh_timeouts if "run.sh" in cmd and cmd.startswith("cd ")
+        ]
+        assert len(model_runs) == 1, docker_sh_timeouts
+        return model_runs[0]
+
+    def _model_info(self, card_timeout=None):
+        info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        if card_timeout is not None:
+            info["timeout"] = card_timeout
+        return info
+
+    def test_model_card_wins_when_timeout_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=360)) == 360
+
+    def test_card_asking_for_no_timeout_is_honored_when_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=-1)) is None
+
+    def test_default_still_applies_without_a_card_timeout(self):
+        from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
+        assert self._resolved_timeout(self._model_info()) == DEFAULT_RUN_TIMEOUT
+
+    def test_explicit_timeout_still_outranks_the_card(self):
+        assert (
+            self._resolved_timeout(self._model_info(card_timeout=360), timeout=120)
+            == 120
+        )
+
+
+class TestSelfManagedLauncherTimeout:
+    """`--timeout 0` (no timeout) must reach subprocess.run as None, not 0.
+
+    Regression: the call site read `timeout if timeout > 0 else None`, which
+    raised TypeError once the CLI started handing down None for "no timeout",
+    and would have expired the run instantly under the int sentinel:
+    subprocess spells "no timeout" as None, and treats 0 as "expire now".
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        return runner
+
+    def _invoke(self, tmp_path, timeout):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+        run_results = {}
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            return_value=subprocess.CompletedProcess("", 0),
+        ) as mock_run:
+            self._make_runner()._run_self_managed(
+                model_info={"name": "dummy", "scripts": str(script), "args": ""},
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1])
+    def test_no_timeout_sentinels_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_legacy_none_does_not_raise_type_error(self, tmp_path):
+        # The bare `timeout > 0` this replaced raised TypeError on None, which
+        # is what the CLI used to send for --timeout 0. The sentinel contract
+        # keeps None out of here now, but manifests and older callers still
+        # carry it, so the guard must absorb it rather than crash.
+        assert self._invoke(tmp_path, None) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120
+
+
+DIGEST = "sha256:" + "df36ef7e" * 8
+
+
+class TestRequirePinnedImageLocalRun:
+    """run_models_from_manifest honours require_pinned_image for registry pulls."""
+
+    def _manifest(self, tmpdir, build_info):
+        manifest_path = os.path.join(tmpdir, "build_manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump(
+                {
+                    "built_images": {"img1": build_info},
+                    "built_models": {
+                        "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                    },
+                },
+                f,
+            )
+        return manifest_path
+
+    def _runner(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        ctx.ensure_runtime_context = MagicMock()
+        console = MagicMock()
+        console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=console)
+        runner.set_credentials({})
+        return runner
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_default_pulls_by_tag_even_when_digest_present(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with("myorg/ci:m")
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pulls_pinned_reference(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+            # The container must run the same pinned reference that was pulled.
+            assert mock_run.call_args[1]["docker_image"] == f"myorg/ci@{DIGEST}"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_pull_failure_does_not_fall_back_to_local_tag(self, _mock_csv):
+        """A failed pinned pull must fail the model, not silently run a local tag.
+
+        The local tag is mutable, so the tag-fallback would defeat the flag in
+        exactly the case it matters most (digest/tag mismatch, auth errors).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {"registry_image": "myorg/ci:m", "image_digest": DIGEST},
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+            ), patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require_pinned_image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_pull_failure_still_falls_back_when_not_enforcing(self, _mock_csv):
+        """Default behaviour is unchanged: a failed pull falls back to the local tag."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("offline")
+            ), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == "img1"
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_enabled_without_digest_fails_before_pulling(self, _mock_csv):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(tmpdir, {"registry_image": "myorg/ci:m"})
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container"
+            ) as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_pull.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_entry_with_registry_ref_is_not_a_bypass(self, _mock_csv):
+        """build_info["local_image"] must not smuggle an unpinned registry tag through.
+
+        The build-on-compute-node path writes entries carrying BOTH a truthy
+        local_image and a registry reference in docker_image. That branch runs
+        before the registry branch, so without enforcement here the flag is
+        silently a no-op for those manifests.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir,
+                {
+                    "local_image": "ci-m_ubuntu",
+                    "docker_image": "myorg/ci:m",
+                    "built_on_compute": True,
+                },
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(
+                runner, "_ensure_local_image_available"
+            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
+                result = runner.run_models_from_manifest(
+                    manifest_file=manifest_path, timeout=60
+                )
+
+            mock_ensure.assert_not_called()
+            mock_run.assert_not_called()
+            assert len(result["failed_runs"]) == 1
+            assert "require-pinned-image" in result["failed_runs"][0]["error"]
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_local_image_already_pinned_is_accepted(self, _mock_csv):
+        """An explicitly digest-pinned MAD_CONTAINER_IMAGE already meets the guarantee."""
+        pinned = f"myorg/ci@{DIGEST}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._manifest(
+                tmpdir, {"local_image": True, "docker_image": pinned}
+            )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+            runner.additional_context = {"require_pinned_image": True}
+
+            with patch.object(runner, "_ensure_local_image_available"), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            assert mock_run.call_args[1]["docker_image"] == pinned
+
+    @patch("madengine.execution.container_runner.update_perf_csv")
+    def test_manifest_context_key_enables_enforcement(self, _mock_csv):
+        """A nested run on a SLURM compute node inherits the setting via manifest context."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, "build_manifest.json")
+            with open(manifest_path, "w") as f:
+                json.dump(
+                    {
+                        "built_images": {
+                            "img1": {
+                                "registry_image": "myorg/ci:m",
+                                "image_digest": DIGEST,
+                            }
+                        },
+                        "built_models": {
+                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                        },
+                        "context": {"require_pinned_image": True},
+                    },
+                    f,
+                )
+            runner = self._runner()
+            runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
+
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ):
+                runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
+
+            mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
