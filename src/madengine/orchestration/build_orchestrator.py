@@ -1319,7 +1319,11 @@ exit 0
             if not target:
                 # Auto-detect based on config presence
                 if self.additional_context.get("slurm"):
-                    target = "slurm"
+                    # Spur reuses the "slurm" block; slurm.scheduler picks the flavor.
+                    scheduler = str(
+                        self.additional_context["slurm"].get("scheduler", "") or ""
+                    ).lower()
+                    target = "spur" if scheduler == "spur" else "slurm"
                 elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
                     target = "k8s"
                 else:
