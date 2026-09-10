@@ -494,3 +494,21 @@ class TestValidateClusterContext:
                 )
             )
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+class TestValidateDeployTarget:
+    """`deploy` names a target (e.g. "slurm"), so it must validate as a string."""
+
+    @pytest.mark.parametrize("target", ["slurm", "k8s", "kubernetes"])
+    def test_deploy_string_accepted(self, target):
+        ctx = json.dumps(
+            {"gpu_vendor": "AMD", "guest_os": "UBUNTU", "deploy": target}
+        )
+        result = validate_additional_context(additional_context=ctx)
+        assert result["deploy"] == target
+
+    def test_deploy_rejects_non_string(self):
+        bad = json.dumps({"gpu_vendor": "AMD", "guest_os": "UBUNTU", "deploy": {}})
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=bad)
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS

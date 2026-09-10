@@ -158,10 +158,14 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
         "vllm",
         "cluster",
         "deployment_config",
-        "deploy",
     ):
         if nest in context and not isinstance(context[nest], dict):
             _fail_structure(nest, "an object")
+
+    # "deploy" is an explicit target name (e.g. "slurm", "k8s"), not a config
+    # object; ConfigLoader lowercases it and checks it against the config present.
+    if "deploy" in context and not isinstance(context["deploy"], str):
+        _fail_structure("deploy", "a string")
 
     if "docker_gpus" in context and not isinstance(context["docker_gpus"], str):
         _fail_structure("docker_gpus", "a string")
