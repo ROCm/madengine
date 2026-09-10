@@ -35,7 +35,6 @@ from typing import Any, Dict, List
 from .base import DeploymentConfig, DeploymentResult, DeploymentStatus
 from .slurm import SlurmDeployment
 
-
 # Seconds a non-zero rank waits for rank 0 to publish MASTER_ADDR. A job array
 # carries no gang-scheduling guarantee, so tasks can start minutes apart (and
 # with --exclusive they may even start serially); override per site with
@@ -67,8 +66,8 @@ def render_rendezvous_block(rendezvous_dir: str, timeout: int) -> List[str]:
         f'_MAD_REND_DIR="{rendezvous_dir}/${{SLURM_ARRAY_JOB_ID:-${{SLURM_JOB_ID}}}}"',
         'mkdir -p "$_MAD_REND_DIR" 2>/dev/null || true',
         '_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"',
-        "_MAD_MY_IP=\"$(ip -4 -o addr show \"$_MAD_IFACE\" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)\"",
-        "[ -z \"$_MAD_MY_IP\" ] && _MAD_MY_IP=\"$(hostname -I | awk '{print $1}')\"",
+        '_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk \'{print $4}\' | cut -d/ -f1 | head -n1)"',
+        '[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk \'{print $1}\')"',
         'if [ "${SLURM_PROCID}" = "0" ]; then',
         '    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"',
         '    export MASTER_ADDR="$_MAD_MY_IP"',
@@ -206,6 +205,14 @@ class SpurDeployment(SlurmDeployment):
     # arrive; ~poll interval (30s) times this many => ~10 minutes.
     _SPUR_UNKNOWN_POLLS = 20
 
+    # Number of consecutive polls with an empty queue BEFORE the tasks were ever
+    # seen alive. This bounds the startup grace window above: an array that fails
+    # before squeue ever lists it (bad partition, node failure, scheduler reject)
+    # writes no marker and never shows up, and the caller polls monitor() without
+    # a timeout. ~poll interval (30s) times this many => ~10 minutes, well past
+    # spur's ~1-2 min registration lag.
+    _SPUR_STARTUP_POLLS = 20
+
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """Marker-based completion detection for the spur job array.
 
@@ -230,7 +237,9 @@ class SpurDeployment(SlurmDeployment):
 
         if len(codes) >= n:
             failed = {r: c for r, c in codes.items() if c != 0}
-            self._report_logs(deployment_id, success=not failed, live_output=live_output)
+            self._report_logs(
+                deployment_id, success=not failed, live_output=live_output
+            )
             if not failed:
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
@@ -252,6 +261,7 @@ class SpurDeployment(SlurmDeployment):
             self._spur_seen_live = True
             self._spur_empty_polls = 0
             self._spur_unknown_polls = 0
+            self._spur_startup_polls = 0
         elif live == 0 and getattr(self, "_spur_seen_live", False) and len(codes) < n:
             # Tasks were running earlier and now none are queued and not all
             # ranks reported: a transient empty squeue is possible, so require
@@ -285,9 +295,23 @@ class SpurDeployment(SlurmDeployment):
                     ),
                 )
         else:
-            # Still in the startup grace window (tasks not yet registered).
+            # Still in the startup grace window (tasks not yet registered), which
+            # is bounded so a job that dies before squeue ever lists it does not
+            # poll forever.
             self._spur_empty_polls = 0
             self._spur_unknown_polls = 0
+            self._spur_startup_polls = getattr(self, "_spur_startup_polls", 0) + 1
+            if self._spur_startup_polls >= self._SPUR_STARTUP_POLLS:
+                self._report_logs(deployment_id, success=False, live_output=live_output)
+                return DeploymentResult(
+                    status=DeploymentStatus.FAILED,
+                    deployment_id=deployment_id,
+                    message=(
+                        f"No array task for job {deployment_id} was ever seen in the "
+                        f"queue over {self._spur_startup_polls} polls and only "
+                        f"{len(codes)}/{n} ranks reported completion"
+                    ),
+                )
 
         if live_output:
             self._stream_job_output(deployment_id)
@@ -298,7 +322,9 @@ class SpurDeployment(SlurmDeployment):
             message=f"{len(codes)}/{n} ranks done (live tasks: {live})",
         )
 
-    def _report_logs(self, deployment_id: str, success: bool, live_output: bool) -> None:
+    def _report_logs(
+        self, deployment_id: str, success: bool, live_output: bool
+    ) -> None:
         """Emit final logs the same way SlurmDeployment.monitor() does.
 
         Args:

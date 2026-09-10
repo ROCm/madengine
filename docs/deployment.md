@@ -285,6 +285,10 @@ fails the run with a diagnostic rather than starting with an empty
 `slurm.output_dir` must be on a filesystem shared by every node - it holds the
 rendezvous files.
 
+The `srun`-based node health preflight (`enable_node_check`) is skipped on spur:
+`srun -w <node>` does not run on the requested node there, and the `--nodelist`
+it would pin conflicts with the job array, whose tasks each request one node.
+
 ### Multi-Node Training
 
 For distributed training across SLURM nodes:
