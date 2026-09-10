@@ -639,7 +639,11 @@ class TestK8sRequirePinnedImage:
 class TestK8sPodLogContainerParam:
     """Job pods have an extract-scripts init container alongside the main workload
     container, so read_namespaced_pod_log() must be given an explicit container name
-    (the raw API has no defaulting behavior, unlike `kubectl logs`)."""
+    (the raw API has no defaulting behavior, unlike `kubectl logs`). It must also be
+    called with _preload_content=False and the response manually decoded: on this
+    client/cluster combination, the default _preload_content=True path returns the
+    raw response body stringified (literal "b'...'"), not decoded UTF-8 text, which
+    corrupts newline-sensitive performance-log parsing."""
 
     def _deployment(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -669,29 +673,43 @@ class TestK8sPodLogContainerParam:
         pod.status.container_statuses = []
         return pod
 
-    def test_collect_results_passes_main_container_name(self, tmp_path, monkeypatch):
-        deployment = self._deployment(tmp_path, monkeypatch)
-        pod = self._fake_pod("job-0", "main-container")
+    def _fake_log_response(self, text):
+        response = MagicMock()
+        response.data = text.encode("utf-8")
+        return response
 
-        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
-        deployment.core_v1.read_namespaced_pod_log.return_value = "log output"
-        deployment.core_v1.read_namespaced_pod.return_value = pod
-
-        deployment.collect_results("job")
-
-        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
-        assert kwargs["container"] == "main-container"
-
-    def test_print_pod_logs_on_failure_passes_main_container_name(
+    def test_collect_results_passes_main_container_name_and_decodes(
         self, tmp_path, monkeypatch
     ):
         deployment = self._deployment(tmp_path, monkeypatch)
         pod = self._fake_pod("job-0", "main-container")
 
         deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
-        deployment.core_v1.read_namespaced_pod_log.return_value = "log output"
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "log output"
+        )
+        deployment.core_v1.read_namespaced_pod.return_value = pod
+
+        results = deployment.collect_results("job")
+
+        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs["container"] == "main-container"
+        assert kwargs["_preload_content"] is False
+        assert results["logs"][0]["log"] == "log output"
+
+    def test_print_pod_logs_on_failure_passes_main_container_name_and_decodes(
+        self, tmp_path, monkeypatch
+    ):
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "log output"
+        )
 
         deployment._print_pod_logs_on_failure("job")
 
         _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
         assert kwargs["container"] == "main-container"
+        assert kwargs["_preload_content"] is False

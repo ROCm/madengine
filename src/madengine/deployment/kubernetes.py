@@ -614,12 +614,15 @@ class KubernetesDeployment(
                 if pod_name:
                     try:
                         # Get logs from current position
+                        # _preload_content=False + manual decode: see collect_results()
+                        # in k8s_results.py for why (default returns stringified bytes).
                         logs = self.core_v1.read_namespaced_pod_log(
                             name=pod_name,
                             namespace=self.namespace,
                             container=container_name,
-                            tail_lines=100 if log_position == 0 else None
-                        )
+                            tail_lines=100 if log_position == 0 else None,
+                            _preload_content=False,
+                        ).data.decode("utf-8", errors="replace")
 
                         # Print new log lines and trigger artifact collection
                         if logs:
@@ -685,8 +688,9 @@ class KubernetesDeployment(
                         name=pod_name,
                         namespace=self.namespace,
                         container=primary_container,
-                        tail_lines=50
-                    )
+                        tail_lines=50,
+                        _preload_content=False,
+                    ).data.decode("utf-8", errors="replace")
                     self.console.print(f"[dim]Pod: {pod_name}[/dim]")
                     print(logs)
                     print()
