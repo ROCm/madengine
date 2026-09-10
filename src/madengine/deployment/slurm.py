@@ -58,7 +58,8 @@ class SlurmDeployment(BaseDeployment):
     """
 
     DEPLOYMENT_TYPE = "slurm"
-    REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
+    REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol", "sinfo"]  # Must be available locally
+    GCM_REQUIRED_TOOLS = ["srun"]  # Additionally required when cluster.gcm is enabled
     GCM_ALLOWED_HEALTH_CHECKS = {"check-hca", "check-ibstat"}
     GCM_ALLOWED_COLLECTORS = {"slurm_job_monitor"}
 
@@ -313,8 +314,13 @@ class SlurmDeployment(BaseDeployment):
 
     def validate(self) -> bool:
         """Validate SLURM commands are available locally."""
-        # Check required SLURM CLI tools
-        for tool in self.REQUIRED_TOOLS:
+        # Check required SLURM CLI tools. GCM preflight health checks shell out to
+        # srun, so require it up front rather than failing mid-submission.
+        required_tools = list(self.REQUIRED_TOOLS)
+        if self._gcm_enabled():
+            required_tools.extend(self.GCM_REQUIRED_TOOLS)
+
+        for tool in required_tools:
             result = subprocess.run(
                 ["which", tool], capture_output=True, timeout=5
             )
@@ -2560,7 +2566,9 @@ export MASTER_PORT={master_port}
 
         collector_cmd = collector_cfg.get("command", "slurm_job_monitor")
         timeout_sec = int(collector_cfg.get("timeout_sec", 120))
-        max_retries = int(collector_cfg.get("max_retries", 1))
+        # Clamp to >= 1: a 0/negative value would skip the loop entirely and report
+        # a failure pointing at a collector output file that was never written.
+        max_retries = max(1, int(collector_cfg.get("max_retries", 1)))
         best_effort = bool(collector_cfg.get("best_effort", True))
         sink = collector_cfg.get("sink", "file")
         once_enabled = bool(collector_cfg.get("once", True))

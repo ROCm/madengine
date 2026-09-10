@@ -24,7 +24,7 @@ examples/run-smoke.sh verify-k8s
 ## 0) Set shared variables
 
 ```bash
-cd /home/ysha/amd/madengine
+cd <repo-root>
 export MODEL_DIR="<path-to-your-model-dir>"
 export MODEL_TAG="<your-model-tag>"
 ```

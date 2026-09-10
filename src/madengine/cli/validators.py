@@ -284,10 +284,16 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
                     ):
                         _fail_structure(f"cluster.gcm.collector.{bool_key}", "a boolean")
                 for int_key in ("timeout_sec", "max_retries"):
-                    if int_key in collector and not isinstance(collector[int_key], int):
-                        _fail_structure(
-                            f"cluster.gcm.collector.{int_key}", "an integer"
-                        )
+                    if int_key in collector:
+                        if not isinstance(collector[int_key], int):
+                            _fail_structure(
+                                f"cluster.gcm.collector.{int_key}", "an integer"
+                            )
+                        # 0/negative would make the collector loop never run
+                        if collector[int_key] < 1:
+                            _fail_value(
+                                f"cluster.gcm.collector.{int_key}", "must be >= 1"
+                            )
                 if "command" in collector and not isinstance(collector["command"], str):
                     _fail_structure("cluster.gcm.collector.command", "a string")
                 if "sink" in collector and not isinstance(collector["sink"], str):

@@ -331,40 +331,8 @@ echo "  ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-not set}"
 echo "  Node: ${SLURM_NODEID}/${SLURM_NNODES} (Rank ${SLURM_PROCID}/${SLURM_NTASKS})"
 
 {% if rdma_enabled and nodes == 1 %}
-# Native RDMA recommender (submission node / single-node path)
-echo ""
-echo "Running RDMA recommender..."
-RDMA_ARTIFACT="${WORKSPACE}/{{ rdma_artifact_name }}"
-RDMA_ENV_FILE="${WORKSPACE}/rdma_env.list"
-if [ "{{ rdma_strict }}" = "True" ]; then
-  python3 -m madengine.deployment.rdma_recommender \
-    --output "${RDMA_ARTIFACT}" \
-    --env-file "${RDMA_ENV_FILE}" \
-    --strict
-else
-  python3 -m madengine.deployment.rdma_recommender \
-    --output "${RDMA_ARTIFACT}" \
-    --env-file "${RDMA_ENV_FILE}"
-fi
-RDMA_EXIT=$?
-if [ ${RDMA_EXIT} -ne 0 ]; then
-  echo "RDMA recommender failed with exit code ${RDMA_EXIT}"
-  {% if rdma_strict %}
-  echo "RDMA strict mode enabled; stopping job."
-  exit ${RDMA_EXIT}
-  {% else %}
-  echo "Continuing (strict=false)."
-  {% endif %}
-fi
-if [ "{{ rdma_apply_env }}" = "True" ] && [ -f "${RDMA_ENV_FILE}" ]; then
-  while IFS='=' read -r key value; do
-    [ -z "${key}" ] && continue
-    if [ "{{ rdma_mode }}" = "enforce" ] || [ -z "${!key+x}" ]; then
-      export "${key}=${value}"
-    fi
-  done < "${RDMA_ENV_FILE}"
-  echo "Applied RDMA environment variables (mode={{ rdma_mode }})."
-fi
+# Single-node RDMA recommender runs later, in the single-node execution section.
+# Running it here too would duplicate the work and overwrite the artifact/env file.
 {% endif %}
 
 # Set deployment environment flags

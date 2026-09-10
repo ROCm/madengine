@@ -311,3 +311,186 @@ class TestValidateAdditionalContext:
         with pytest.raises(typer.Exit) as exc_info:
             validate_additional_context(additional_context=bad)
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+def _cluster_context(cluster):
+    """Build a minimal valid context carrying the given cluster block."""
+    return json.dumps(
+        {"gpu_vendor": "AMD", "guest_os": "UBUNTU", "cluster": cluster}
+    )
+
+
+class TestValidateClusterContext:
+    """Test suite for additional_context.cluster schema validation"""
+
+    def test_cluster_must_be_object(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(additional_context=_cluster_context("oops"))
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_full_cluster_config_accepted(self):
+        cluster = {
+            "rdma": {
+                "enabled": True,
+                "strict": False,
+                "mode": "enforce",
+                "apply_env": True,
+                "artifact_name": "rdma_recommendation.json",
+            },
+            "gcm": {
+                "enabled": True,
+                "strict": False,
+                "enabled_platforms": ["slurm"],
+                "health_checks": ["check-hca", "check-ibstat"],
+                "source": {
+                    "repo": "https://github.com/coketaste/gcm",
+                    "ref": "9fed02cd0721d3937f8749672951185f31955bd4",
+                },
+                "collector": {
+                    "enabled": True,
+                    "command": "slurm_job_monitor",
+                    "once": True,
+                    "sink": "file",
+                    "timeout_sec": 120,
+                    "max_retries": 1,
+                    "best_effort": True,
+                },
+                "artifacts": {
+                    "dir": "./slurm_results/cluster_artifacts",
+                    "files": {"health_raw_log": "gcm_health_raw.log"},
+                },
+            },
+        }
+        result = validate_additional_context(
+            additional_context=_cluster_context(cluster)
+        )
+        assert result["cluster"] == cluster
+
+    def test_empty_cluster_accepted(self):
+        result = validate_additional_context(additional_context=_cluster_context({}))
+        assert result["cluster"] == {}
+
+    # --- cluster.rdma ---------------------------------------------------
+
+    def test_rdma_must_be_object(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"rdma": "yes"})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("key", ["enabled", "strict", "apply_env"])
+    def test_rdma_bool_keys_reject_non_bool(self, key):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"rdma": {key: "true"}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_rdma_artifact_name_rejects_non_string(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"rdma": {"artifact_name": 5}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("mode", ["recommend", "enforce"])
+    def test_rdma_mode_enum_accepted(self, mode):
+        result = validate_additional_context(
+            additional_context=_cluster_context({"rdma": {"mode": mode}})
+        )
+        assert result["cluster"]["rdma"]["mode"] == mode
+
+    def test_rdma_mode_enum_rejects_unknown_value(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"rdma": {"mode": "force"}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    # --- cluster.gcm ----------------------------------------------------
+
+    def test_gcm_must_be_object(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"gcm": []})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("key", ["enabled", "strict"])
+    def test_gcm_bool_keys_reject_non_bool(self, key):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"gcm": {key: 1}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_gcm_enabled_platforms_rejects_non_string_element(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context(
+                    {"gcm": {"enabled_platforms": ["slurm", 2]}}
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_gcm_health_checks_allowlist_rejects_unknown_check(self):
+        """Only check-hca / check-ibstat are permitted in this phase."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context(
+                    {"gcm": {"health_checks": ["check-hca", "rm -rf /"]}}
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_gcm_health_checks_allowlist_accepts_known_checks(self):
+        result = validate_additional_context(
+            additional_context=_cluster_context(
+                {"gcm": {"health_checks": ["check-ibstat"]}}
+            )
+        )
+        assert result["cluster"]["gcm"]["health_checks"] == ["check-ibstat"]
+
+    def test_gcm_source_rejects_non_string_ref(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"gcm": {"source": {"ref": 42}}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_gcm_collector_command_allowlist_rejects_unknown_command(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context(
+                    {"gcm": {"collector": {"command": "curl evil.example"}}}
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("key", ["timeout_sec", "max_retries"])
+    def test_gcm_collector_int_keys_reject_non_int(self, key):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"gcm": {"collector": {key: "5"}}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("key", ["timeout_sec", "max_retries"])
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_gcm_collector_int_keys_reject_below_minimum(self, key, value):
+        """0/negative would make the collector loop never run."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context({"gcm": {"collector": {key: value}}})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_gcm_artifacts_files_rejects_non_string_value(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=_cluster_context(
+                    {"gcm": {"artifacts": {"files": {"health_raw_log": 1}}}}
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
