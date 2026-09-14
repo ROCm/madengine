@@ -192,7 +192,7 @@ class LlmdDeployment(KubernetesDeployment):
         chart still needs ``model.uri``/``hf_repo`` to know which weights to
         load into that image.
 
-        Roles that take this default are recorded in
+        Enabled roles that take this default are recorded in
         ``_roles_using_client_image`` so ``_validate_managed_prerequisites`` can
         warn about it: the default is only correct when the image both serves
         and benchmarks, which a purpose-built slim client image does not.
@@ -218,7 +218,14 @@ class LlmdDeployment(KubernetesDeployment):
             # Same semantics as setdefault: an explicit image always wins.
             if "image" not in role_config:
                 role_config["image"] = resolved_image
-                self._roles_using_client_image.append(role)
+                # Only warn about roles that will actually exist. A role with
+                # replicas 0 is disabled entirely (LlmdStack._role_values emits
+                # create: false), so warning that it will serve with the wrong
+                # image describes a pod that is never created — which is every
+                # aggregated-serving config, prefill.replicas 0 being the
+                # documented way to write one.
+                if int(role_config.get("replicas", 0)) > 0:
+                    self._roles_using_client_image.append(role)
 
     def _ensure_model_pvc(self) -> None:
         """Create the shared-data PVC an explicit ``model.uri`` names, if it is

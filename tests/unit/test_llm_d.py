@@ -1106,6 +1106,26 @@ class TestResolveModelImages:
         assert "prefill, decode" in printed
         assert "client:latest" in printed
 
+    def test_a_disabled_role_is_not_tracked_for_the_warning(self, tmp_path):
+        """replicas 0 means the chart never creates the role, so warning that it
+        will serve with the wrong image describes a pod that does not exist."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                **ATTACH_CONTEXT,
+                "llm_d": {
+                    **ATTACH_CONTEXT["llm_d"],
+                    "prefill": {"replicas": 0},
+                    "decode": {"replicas": 1, "image": "vllm/decode:pinned"},
+                },
+            },
+        )
+        deployment.console = MagicMock()
+
+        assert deployment._roles_using_client_image == []
+        deployment._warn_if_serving_with_the_client_image()
+        deployment.console.print.assert_not_called()
+
     def test_no_warning_when_both_roles_name_their_image(self, tmp_path):
         deployment = _build_deployment(
             tmp_path,
