@@ -784,12 +784,26 @@ class RunOrchestrator:
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
         if result.metrics:
-            return {
+            summary = {
                 "successful_runs": result.metrics.get("successful_runs", []),
                 "failed_runs": result.metrics.get("failed_runs", []),
             }
         else:
-            return {"successful_runs": [], "failed_runs": []}
+            summary = {"successful_runs": [], "failed_runs": []}
+
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            summary["failed_runs"] = [
+                {
+                    "model": getattr(self.args, "model_name", None) or manifest_file or target,
+                    "status": "FAILURE",
+                    "error": result.message or f"Deployment to {target} failed",
+                }
+            ]
+
+        return summary
 
     def _show_node_info(self):
         """Show node ROCm information."""
