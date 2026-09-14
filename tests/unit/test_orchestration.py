@@ -630,3 +630,54 @@ class TestRequirePinnedImageContext:
 
         written = json.loads(manifest_path.read_text())
         assert written["context"]["require_pinned_image"] is True
+
+
+class TestDistributedDeploymentFailureIsReported:
+    """A failed scheduler deployment must reach the caller as a failure.
+
+    The CLI derives its exit code from ``len(failed_runs)``, so a summary with
+    empty lists reads as a clean run: a SLURM job that failed was reported as
+    "All model executions completed successfully" and exited 0.
+    """
+
+    @staticmethod
+    def _orchestrator(tmp_path):
+        args = MagicMock()
+        args.additional_context = None
+        args.live_output = True
+        args.require_pinned_image = False
+        args.model_name = "llama-3.1-70b"
+        args.timeout = -1
+        with patch("madengine.orchestration.run_orchestrator.Context"):
+            return RunOrchestrator(args)
+
+    def _deploy(self, tmp_path, *, is_success, metrics=None, message="Job 34462 failed"):
+        orchestrator = self._orchestrator(tmp_path)
+        orchestrator.rich_console = MagicMock()
+        result = MagicMock()
+        result.is_success = is_success
+        result.metrics = metrics
+        result.message = message
+        result.deployment_id = "34462"
+        result.logs_path = None
+        with patch("madengine.deployment.factory.DeploymentFactory") as factory:
+            factory.create.return_value.execute.return_value = result
+            return orchestrator._execute_distributed("slurm", str(tmp_path / "m.json"))
+
+    def test_failure_without_metrics_is_not_silently_successful(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert summary["failed_runs"], "a failed deployment reported no failures"
+        assert summary["successful_runs"] == []
+
+    def test_failure_carries_the_scheduler_message(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert "34462" in summary["failed_runs"][0]["error"]
+
+    def test_success_is_left_alone(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=True, metrics=None)
+        assert summary["failed_runs"] == []
+
+    def test_reported_failures_are_not_duplicated(self, tmp_path):
+        metrics = {"successful_runs": [], "failed_runs": [{"model": "m", "error": "boom"}]}
+        summary = self._deploy(tmp_path, is_success=False, metrics=metrics)
+        assert summary["failed_runs"] == metrics["failed_runs"]
