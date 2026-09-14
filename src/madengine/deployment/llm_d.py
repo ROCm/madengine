@@ -384,11 +384,24 @@ class LlmdDeployment(KubernetesDeployment):
                     name=job_name, namespace=self.namespace
                 )
             except ApiException as e:
-                # Most likely the Job was deleted out from under us (404), or
-                # RBAC forbids reading it. Either way the download's outcome is
-                # unknowable, and continuing would mount a PVC that may hold
-                # nothing — so report it as the configuration problem it is
-                # rather than letting a raw ApiException escape.
+                # A 5xx is the apiserver having a bad moment — a control-plane
+                # upgrade, a leader election, plain overload. This loop can
+                # legitimately run for hours against a multi-TB download, so
+                # aborting on one of those would throw away a nearly-complete
+                # transfer for a condition that resolves itself. Retry until the
+                # deadline instead.
+                if e.status and e.status >= 500 and time.monotonic() < deadline:
+                    self.console.print(
+                        f"[yellow]⚠ Transient error reading model-cache Job "
+                        f"'{job_name}' ({e.status}); retrying[/yellow]"
+                    )
+                    time.sleep(_READINESS_POLL_INTERVAL)
+                    continue
+                # Anything else is permanent: the Job was deleted out from under
+                # us (404), or RBAC forbids reading it (403). Either way the
+                # download's outcome is unknowable, and continuing would mount a
+                # PVC that may hold nothing — so report it as the configuration
+                # problem it is rather than letting a raw ApiException escape.
                 raise ConfigurationError(
                     f"Could not read the status of model-cache download Job "
                     f"'{job_name}': {e}. Populate the PVC out-of-band and set "

@@ -1432,6 +1432,34 @@ class TestPopulateModelCache:
         # nothing -- Background propagation would have taken the pods too.
         assert deployment.batch_v1.delete_namespaced_job.call_count == 1
 
+    def test_a_transient_apiserver_error_is_retried(self, tmp_path):
+        """A 5xx is the apiserver having a bad moment. This loop can run for
+        hours against a multi-TB download; one blip must not discard it."""
+        from kubernetes.client.rest import ApiException
+
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-32B",
+                        "cache_pvc": "madengine-shared-data",
+                        "name": "Qwen3-32B",
+                    }
+                },
+            },
+        )
+        deployment.batch_v1.read_namespaced_job_status.side_effect = [
+            ApiException(status=503, reason="Service Unavailable"),
+            _succeeded_job(),
+        ]
+
+        with patch("madengine.deployment.llm_d.time.sleep"):
+            deployment._populate_model_cache()
+
+        assert deployment.batch_v1.read_namespaced_job_status.call_count == 2
+
     def test_an_unreadable_job_becomes_a_configuration_error(self, tmp_path):
         """RBAC or a vanished Job makes the download's outcome unknowable."""
         from kubernetes.client.rest import ApiException
