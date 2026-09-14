@@ -263,7 +263,14 @@ class ConfigLoader:
         # "the user asked for GPUs" from "a profile defaulted them" — an
         # explicit k8s.gpu_count still wins, as do the runtime overrides
         # resolve_runtime_gpus reads straight off additional_context.
-        user_k8s = user_config.get("k8s") or user_config.get("kubernetes") or {}
+        #
+        # Only the "k8s" key is read here, not the "kubernetes" alias, because
+        # "k8s" is the only key written below — and the only one that is read
+        # downstream, since KubernetesDeployment and resolve_runtime_gpus both
+        # fall back to "kubernetes" only when "k8s" is empty, which it never is
+        # once k8s/defaults.json has merged. Honouring the alias here alone
+        # produced neither the value the user asked for nor the 0 this wants.
+        user_k8s = user_config.get("k8s") or {}
         if "gpu_count" not in user_k8s:
             merged.setdefault("k8s", {})["gpu_count"] = 0
 
