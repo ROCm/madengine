@@ -1406,7 +1406,7 @@ class TestPopulateModelCache:
         for _, kwargs in deployment.batch_v1.delete_namespaced_job.call_args_list:
             assert kwargs["name"] == expected_name
 
-    def test_a_failed_job_raises_and_is_still_deleted(self, tmp_path):
+    def test_a_failed_job_raises_and_is_left_for_inspection(self, tmp_path):
         from madengine.core.errors import ConfigurationError
 
         deployment = _build_deployment(
@@ -1424,10 +1424,13 @@ class TestPopulateModelCache:
         )
         deployment.batch_v1.read_namespaced_job_status.return_value = _failed_job()
 
-        with pytest.raises(ConfigurationError):
+        with pytest.raises(ConfigurationError, match="logs job/"):
             deployment._populate_model_cache()
 
-        assert deployment.batch_v1.delete_namespaced_job.call_count == 2
+        # Only the stale-Job sweep at the start. The failed Job survives, or the
+        # 'kubectl logs job/...' the error just told the user to run finds
+        # nothing -- Background propagation would have taken the pods too.
+        assert deployment.batch_v1.delete_namespaced_job.call_count == 1
 
     def test_an_unreadable_job_becomes_a_configuration_error(self, tmp_path):
         """RBAC or a vanished Job makes the download's outcome unknowable."""
@@ -1455,8 +1458,8 @@ class TestPopulateModelCache:
         with pytest.raises(ConfigurationError, match="Could not read the status"):
             deployment._populate_model_cache()
 
-        # Still cleaned up: the raw ApiException must not escape the finally.
-        assert deployment.batch_v1.delete_namespaced_job.call_count == 2
+        # Only the stale-Job sweep at the start; the Job is left for inspection.
+        assert deployment.batch_v1.delete_namespaced_job.call_count == 1
 
     def test_a_failed_download_unwinds_via_prepare(self, tmp_path):
         """End-to-end: a failed cache population propagates into prepare()'s

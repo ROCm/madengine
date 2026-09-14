@@ -281,13 +281,14 @@ class LlmdDeployment(KubernetesDeployment):
             namespace=self.namespace,
             body=self._cache_job_manifest(job_name, cache_pvc, hf_repo, model, timeout),
         )
-        try:
-            self._wait_for_cache_job(job_name, timeout)
-            self.console.print(
-                f"[green]✓ '{hf_repo}' cached on PVC '{cache_pvc}'[/green]"
-            )
-        finally:
-            self._delete_cache_job(job_name)
+        self._wait_for_cache_job(job_name, timeout)
+        self.console.print(f"[green]✓ '{hf_repo}' cached on PVC '{cache_pvc}'[/green]")
+        # Deleted only on success. A failed or timed-out Job is left in place:
+        # the error raised above tells the user to read its logs, and deleting
+        # it (with Background propagation, taking the pods) is exactly what
+        # would make that impossible. The next run deletes the stale Job before
+        # creating a fresh one, so leaving it costs nothing but the Job object.
+        self._delete_cache_job(job_name)
 
     def _cache_job_manifest(
         self,
