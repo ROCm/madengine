@@ -98,7 +98,7 @@ through an external gateway instead of inside the benchmark container.
 madengine run --tags my_llm_d_benchmark --additional-context '{
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
-    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "hf_token_secret": "hf-token"},
+    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "size": "80Gi", "hf_token_secret": "hf-token"},
     "gateway": "agentgateway",
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode":  {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
@@ -258,7 +258,7 @@ config, so you only specify what differs.
 | `model.cache_job_image` | `null` | Image for the cache-population Job. Defaults to `python:3.11-slim` |
 | `model.name` | `null` | Model name in requests and `perf.csv`. **Required in both modes** |
 | `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token (key `HF_TOKEN`). Also used by the cache-population Job |
-| `model.size` | `null` | Size of the model-artifact volume |
+| `model.size` | `null` | Size of the model-artifact volume. **Required when `uri` uses the `hf://` scheme** — the chart sizes an emptyDir download volume from it, and its own default (`5Mi`) is unusable. Set it comfortably above the model's on-disk size |
 | `prefill.replicas` | `1` | `0` disables the prefill role (aggregated serving) |
 | `prefill.tensor_parallel` | `1` | `--tensor-parallel-size` |
 | `prefill.gpu_count` | `1` | GPUs per prefill pod |

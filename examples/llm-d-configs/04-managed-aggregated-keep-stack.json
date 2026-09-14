@@ -8,6 +8,7 @@
     "model": {
       "uri": "hf://meta-llama/Llama-3.1-8B-Instruct",
       "name": "Llama-3.1-8B-Instruct",
+      "size": "30Gi",
       "hf_token_secret": "hf-token"
     },
     "prefill": { "replicas": 0 },

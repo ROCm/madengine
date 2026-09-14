@@ -487,6 +487,75 @@ class TestValidate:
         ):
             assert deployment.validate() is False
 
+    def test_managed_mode_requires_a_model_size_for_hf_uris(self, tmp_path):
+        """The chart sizes an emptyDir download volume from model.size, and its
+        own default (5Mi) cannot hold a model. Caught here rather than from
+        inside prepare(), after validate() has already reported success."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {"name": "Qwen3-32B", "uri": "hf://Qwen/Qwen3-32B"},
+                    "charts": {
+                        "infra": {"version": "1.0.0"},
+                        "gaie": {"version": "1.0.0"},
+                        "modelservice": {"version": "1.0.0"},
+                    },
+                },
+            },
+        )
+        deployment.console = MagicMock()
+
+        with (
+            patch(
+                "madengine.deployment.kubernetes.KubernetesDeployment.validate",
+                return_value=True,
+            ),
+            patch(
+                "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
+            ),
+            patch.object(deployment, "_validate_crds", return_value=True) as crds,
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
+        ):
+            assert deployment.validate() is False
+
+        assert "llm_d.model.size is required" in _printed(deployment)
+        crds.assert_not_called()
+
+    def test_a_pvc_uri_needs_no_model_size(self, tmp_path):
+        """pvc+hf:// mounts an existing PVC; there is no volume to size."""
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "name": "Qwen3-32B",
+                        "uri": "pvc+hf://madengine-shared-data/hf_hub_cache/Qwen/Qwen3-32B",
+                    },
+                    "charts": {
+                        "infra": {"version": "1.0.0"},
+                        "gaie": {"version": "1.0.0"},
+                        "modelservice": {"version": "1.0.0"},
+                    },
+                },
+            },
+        )
+
+        with (
+            patch(
+                "madengine.deployment.kubernetes.KubernetesDeployment.validate",
+                return_value=True,
+            ),
+            patch(
+                "madengine.deployment.llm_d.shutil.which", return_value="/usr/bin/helm"
+            ),
+            patch.object(deployment, "_validate_crds", return_value=True),
+            patch.object(deployment, "_validate_gateway_class", return_value=True),
+        ):
+            assert deployment.validate() is True
+
     def test_underscore_comment_keys_are_not_mistaken_for_charts(self, tmp_path):
         """_comment_* keys live alongside the charts and must be skipped."""
         deployment = _build_deployment(
@@ -494,7 +563,11 @@ class TestValidate:
             {
                 "k8s": {},
                 "llm_d": {
-                    "model": {"name": "Qwen3-32B", "uri": "hf://Qwen/Qwen3-32B"},
+                    "model": {
+                        "name": "Qwen3-32B",
+                        "uri": "hf://Qwen/Qwen3-32B",
+                        "size": "80Gi",
+                    },
                     "charts": {
                         "_comment": "not a chart",
                         "infra": {"version": "1.0.0"},

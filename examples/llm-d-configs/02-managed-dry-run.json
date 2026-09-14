@@ -10,6 +10,7 @@
     "model": {
       "uri": "hf://Qwen/Qwen3-32B",
       "name": "Qwen3-32B",
+      "size": "80Gi",
       "hf_token_secret": "hf-token"
     },
     "gateway": "agentgateway",

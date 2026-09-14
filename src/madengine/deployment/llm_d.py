@@ -554,7 +554,8 @@ class LlmdDeployment(KubernetesDeployment):
             )
             return False
 
-        model_uri = (self.llmd_config.get("model") or {}).get("uri")
+        model = self.llmd_config.get("model") or {}
+        model_uri = model.get("uri")
         if not model_uri:
             self.console.print(
                 "[red]✗ llm_d.model.uri is required in managed mode — it is the "
@@ -563,6 +564,19 @@ class LlmdDeployment(KubernetesDeployment):
                 "'hf://Qwen/Qwen3-32B' for you.[/red]\n"
                 "[yellow]  Set llm_d.endpoint_url instead to benchmark an existing "
                 "stack.[/yellow]"
+            )
+            return False
+
+        # Same requirement LlmdStack._modelservice_values enforces, checked here
+        # so it surfaces alongside the other config errors rather than from
+        # inside prepare(), after validate() has already reported success.
+        if model_uri.startswith("hf://") and not model.get("size"):
+            self.console.print(
+                "[red]✗ llm_d.model.size is required when the model URI uses the "
+                f"'hf://' scheme ('{model_uri}').[/red]\n"
+                "[yellow]  The chart sizes an emptyDir model-download volume from "
+                "it, and its own default (5Mi) is unusable for a real model. Set "
+                "it comfortably above the model's on-disk size, e.g. '80Gi'.[/yellow]"
             )
             return False
 
