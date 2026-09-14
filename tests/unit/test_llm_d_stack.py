@@ -370,6 +370,32 @@ class TestHelmCommands:
         assert command.startswith("helm template ")
         assert "--wait" not in command
 
+    def test_template_keeps_helm_stderr_out_of_the_manifests(self, tmp_path):
+        """Console.sh merges stderr into stdout, so a routine helm warning would
+        land inside the YAML and break the artifact the dry run exists for."""
+        stack = _stack()
+        stack.shell.sh.return_value = "kind: Deployment"
+
+        rendered = stack.template("modelservice", tmp_path / "v.yaml")
+
+        assert rendered == "kind: Deployment"
+        command = stack.shell.sh.call_args.args[0]
+        assert "2>" in command
+
+    def test_template_failure_reports_helm_stderr(self, tmp_path):
+        """Splitting stderr off must not hide it when helm fails."""
+        stack = _stack()
+
+        def _capture(command, **kwargs):
+            path = Path(command.rsplit("2>", 1)[1].strip().strip("'"))
+            path.write_text("Error: chart not found\n")
+            raise RuntimeError("exit 1")
+
+        stack.shell.sh.side_effect = _capture
+
+        with pytest.raises(LlmdStackError, match="chart not found"):
+            stack.template("modelservice", tmp_path / "v.yaml")
+
     def test_uninstall_tolerates_an_already_gone_release(self):
         stack = _stack()
         stack.uninstall("madengine-dummy-llm-d-infra")

@@ -28,6 +28,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -318,18 +319,45 @@ class LlmdStack:
         return release
 
     def template(self, component: str, values_path: Path) -> str:
-        """Render a component with ``helm template``. Contacts no cluster."""
+        """Render a component with ``helm template``. Contacts no cluster.
+
+        helm writes its diagnostics (``coalesce.go`` warnings, symlink notices)
+        to stderr, and ``Console.sh`` merges stderr into stdout — which would
+        put them inside the returned document and leave the dry run's whole
+        reason for existing, a manifest file that parses, unparseable. Redirect
+        stderr to a file so the return value is the manifests alone, and surface
+        it separately.
+        """
         release = self.release_name(component)
-        command = (
-            f"helm template {shlex.quote(release)} "
-            f"{self._chart_args(component)} "
-            f"--namespace {shlex.quote(self.namespace)} "
-            f"--values {shlex.quote(str(values_path))}"
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stderr_path = Path(tmpdir) / "helm-stderr.log"
+            command = (
+                f"helm template {shlex.quote(release)} "
+                f"{self._chart_args(component)} "
+                f"--namespace {shlex.quote(self.namespace)} "
+                f"--values {shlex.quote(str(values_path))} "
+                f"2>{shlex.quote(str(stderr_path))}"
+            )
+            try:
+                rendered = self.shell.sh(command, timeout=300)
+            except Exception as e:
+                diagnostics = self._read_if_present(stderr_path)
+                raise LlmdStackError(
+                    f"helm template of '{release}' failed: {e}\n{diagnostics}".rstrip()
+                ) from e
+            diagnostics = self._read_if_present(stderr_path)
+
+        if diagnostics:
+            print(f"helm template {release}:\n{diagnostics}", flush=True)
+        return rendered
+
+    @staticmethod
+    def _read_if_present(path: Path) -> str:
+        """Contents of ``path``, stripped; empty if it was never written."""
         try:
-            return self.shell.sh(command, timeout=300)
-        except Exception as e:
-            raise LlmdStackError(f"helm template of '{release}' failed: {e}") from e
+            return path.read_text().strip()
+        except OSError:
+            return ""
 
     def uninstall(self, release: str, timeout: int = 600) -> None:
         """Uninstall a release.
