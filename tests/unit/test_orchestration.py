@@ -658,9 +658,15 @@ class TestDistributedDeploymentFailureIsReported:
         metrics=None,
         message="Job 34462 failed",
         models=("llama-3.1-70b",),
+        manifest_data=None,
     ):
+        if manifest_data is None:
+            # Locally built models: keyed by image, logical name in "model".
+            manifest_data = {
+                "built_images": {f"ci-{name}": {"model": name} for name in models}
+            }
         manifest = tmp_path / "build_manifest.json"
-        manifest.write_text(json.dumps({"built_images": {name: {} for name in models}}))
+        manifest.write_text(json.dumps(manifest_data))
         orchestrator = self._orchestrator(tmp_path)
         orchestrator.rich_console = MagicMock()
         result = MagicMock()
@@ -702,6 +708,28 @@ class TestDistributedDeploymentFailureIsReported:
             "llama-3.1-70b",
             "mixtral-8x7b",
         ]
+
+    def test_image_keys_are_resolved_to_model_names(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=("model1",))
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_prebuilt_manifest_resolves_through_built_models(self, tmp_path):
+        # The --use-image path keys both maps by model name and omits "model".
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            manifest_data={
+                "built_images": {"model1": {"prebuilt": True}},
+                "built_models": {"model1": {"name": "model1"}},
+            },
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_key_is_used_when_the_manifest_carries_no_name(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, manifest_data={"built_images": {"model1": {}}}
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
 
     def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
         summary = self._deploy(tmp_path, is_success=False, models=())
