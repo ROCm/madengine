@@ -145,4 +145,122 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 	fi
 	;;
 
+dynolog)
+	# dynolog is the profiling daemon that lets us drive torch.profiler on an
+	# unmodified workload: PyTorch/Kineto registers with it when KINETO_USE_DAEMON=1,
+	# and `dyno gputrace` then configures the profiler over IPC.
+	# https://github.com/facebookincubator/dynolog/blob/main/docs/pytorch_profiler.md
+	if command -v dynolog >/dev/null 2>&1 && command -v dyno >/dev/null 2>&1; then
+		echo "dynolog: dynolog and dyno already on PATH, skipping install."
+		exit 0
+	fi
+
+	# Only x86_64 debian packages are published upstream.
+	_arch=$(uname -m)
+	if [ "$_arch" != "x86_64" ]; then
+		echo "Error: dynolog pre-script only supports x86_64 (found $_arch)." >&2
+		echo "Build dynolog from source and put dynolog/dyno on PATH, or use a" >&2
+		echo "model-side torch.profiler instead." >&2
+		exit 1
+	fi
+	if ! command -v dpkg >/dev/null 2>&1; then
+		echo "Error: dynolog pre-script needs dpkg (Debian/Ubuntu base image)." >&2
+		exit 1
+	fi
+
+	_DYNOLOG_PINNED_DEB='https://github.com/facebookincubator/dynolog/releases/download/v0.5.0/dynolog_0.5.0-0-amd64.deb'
+	_dynolog_deb="${DYNOLOG_DEB_URL:-$_DYNOLOG_PINNED_DEB}"
+	_dynolog_tmp="/tmp/dynolog.deb"
+
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL -o "$_dynolog_tmp" "$_dynolog_deb"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -O "$_dynolog_tmp" "$_dynolog_deb"
+	else
+		echo "Error: dynolog pre-script needs curl or wget to download the package." >&2
+		exit 1
+	fi
+
+	# The package ships a systemd unit; enabling it fails in a container, which is
+	# harmless because we run the daemon directly. Tolerate a non-zero dpkg exit
+	# and verify by checking for the binaries instead.
+	if [ "$(id -u)" -eq 0 ]; then
+		dpkg -i "$_dynolog_tmp" || apt-get install -f -y -qq || true
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo dpkg -i "$_dynolog_tmp" || sudo apt-get install -f -y -qq || true
+	else
+		echo "Error: dynolog pre-script needs root or sudo to install the package." >&2
+		exit 1
+	fi
+	rm -f "$_dynolog_tmp"
+
+	if ! command -v dynolog >/dev/null 2>&1 || ! command -v dyno >/dev/null 2>&1; then
+		echo "Error: dynolog package installed but dynolog/dyno are not on PATH." >&2
+		exit 1
+	fi
+	echo "dynolog: installed $(dynolog --help 2>&1 | head -1 || echo 'ok')"
+
+	# Kineto's daemon registration landed in torch 1.13; warn rather than fail so
+	# the tool stays usable for diagnosing the environment.
+	if ! python3 -c 'import torch' 2>/dev/null; then
+		echo "Warning: torch is not importable here; on-demand tracing needs a PyTorch workload." >&2
+	fi
+	;;
+
+tracelens)
+	# TraceLens pins protobuf>=6.31 and xprof, which routinely conflicts with a
+	# workload's own torch/tensorboard stack. Install it into a fully isolated
+	# venv (no --system-site-packages) so the model environment is untouched.
+	_tl_venv="${TRACELENS_VENV:-/opt/madengine-tracelens-venv}"
+	_TRACELENS_PINNED_REF='6f9bcdbf6cc9911eb650de57b345917ea4d31a17'
+	_tl_ref="${TRACELENS_GIT_REF:-$_TRACELENS_PINNED_REF}"
+	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
+
+	if [ -x "${_tl_venv}/bin/python3" ] && "${_tl_venv}/bin/python3" -c 'import TraceLens' 2>/dev/null; then
+		echo "TraceLens: already installed in ${_tl_venv}, skipping."
+		exit 0
+	fi
+
+	if ! python3 -m venv "$_tl_venv" 2>/dev/null; then
+		echo "python3 -m venv failed; attempting to install the venv module..." >&2
+		if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+		fi
+		if ! python3 -m venv "$_tl_venv"; then
+			echo "Error: could not create a virtualenv at ${_tl_venv}." >&2
+			echo "Install python3-venv, or set TRACELENS_VENV to an existing venv." >&2
+			exit 1
+		fi
+	fi
+
+	"${_tl_venv}/bin/python3" -m pip install --upgrade -q pip
+	# TRACELENS_PIP_SPEC may embed credentials for a private mirror; keep it out of
+	# the `set -x` trace and out of stderr.
+	_tl_restore_x=0
+	case $- in *x*) _tl_restore_x=1 ;; esac
+	set +x
+	if ! "${_tl_venv}/bin/python3" -m pip install -q "$_tl_spec"; then
+		echo "Error: pip could not install TraceLens (spec omitted from logs)." >&2
+		echo "Check network access, or override TRACELENS_PIP_SPEC / TRACELENS_GIT_REF." >&2
+		[ "$_tl_restore_x" -eq 1 ] && set -x
+		exit 1
+	fi
+	[ "$_tl_restore_x" -eq 1 ] && set -x
+	unset _tl_restore_x
+	"${_tl_venv}/bin/python3" -c 'import TraceLens; print("TraceLens import OK")'
+
+	# .pftrace input needs traceconv. TraceLens downloads it on demand, which fails
+	# in an air-gapped container, so pre-stage it here when we still have network.
+	if ! command -v traceconv >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+		if curl -fsSL -o /usr/local/bin/traceconv https://get.perfetto.dev/traceconv 2>/dev/null; then
+			chmod +x /usr/local/bin/traceconv
+			echo "TraceLens: pre-staged traceconv for .pftrace input."
+		else
+			echo "TraceLens: could not pre-stage traceconv (only needed for .pftrace input)."
+		fi
+	fi
+	;;
+
 esac
