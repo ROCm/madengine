@@ -630,3 +630,107 @@ class TestRequirePinnedImageContext:
 
         written = json.loads(manifest_path.read_text())
         assert written["context"]["require_pinned_image"] is True
+
+
+class TestDistributedDeploymentFailureIsReported:
+    """A failed scheduler deployment must reach the caller as a failure.
+
+    The CLI derives its exit code from ``len(failed_runs)``, so a summary with
+    empty lists reads as a clean run: a SLURM job that failed was reported as
+    "All model executions completed successfully" and exited 0.
+    """
+
+    @staticmethod
+    def _orchestrator(tmp_path):
+        args = MagicMock()
+        args.additional_context = None
+        args.live_output = True
+        args.require_pinned_image = False
+        args.timeout = -1
+        with patch("madengine.orchestration.run_orchestrator.Context"):
+            return RunOrchestrator(args)
+
+    def _deploy(
+        self,
+        tmp_path,
+        *,
+        is_success,
+        metrics=None,
+        message="Job 34462 failed",
+        models=("llama-3.1-70b",),
+        manifest_data=None,
+    ):
+        if manifest_data is None:
+            # Locally built models: keyed by image, logical name in "model".
+            manifest_data = {
+                "built_images": {f"ci-{name}": {"model": name} for name in models}
+            }
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(json.dumps(manifest_data))
+        orchestrator = self._orchestrator(tmp_path)
+        orchestrator.rich_console = MagicMock()
+        result = MagicMock()
+        result.is_success = is_success
+        result.metrics = metrics
+        result.message = message
+        result.deployment_id = "34462"
+        result.logs_path = None
+        with patch("madengine.deployment.factory.DeploymentFactory") as factory:
+            factory.create.return_value.execute.return_value = result
+            return orchestrator._execute_distributed("slurm", str(manifest))
+
+    def test_failure_without_metrics_is_not_silently_successful(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert summary["failed_runs"], "a failed deployment reported no failures"
+        assert summary["successful_runs"] == []
+
+    def test_failure_carries_the_scheduler_message(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert "34462" in summary["failed_runs"][0]["error"]
+
+    def test_success_is_left_alone(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=True, metrics=None)
+        assert summary["failed_runs"] == []
+
+    def test_reported_failures_are_not_duplicated(self, tmp_path):
+        metrics = {
+            "successful_runs": [],
+            "failed_runs": [{"model": "m", "error": "boom"}],
+        }
+        summary = self._deploy(tmp_path, is_success=False, metrics=metrics)
+        assert summary["failed_runs"] == metrics["failed_runs"]
+
+    def test_every_model_in_the_manifest_is_blamed(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, models=("llama-3.1-70b", "mixtral-8x7b")
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == [
+            "llama-3.1-70b",
+            "mixtral-8x7b",
+        ]
+
+    def test_image_keys_are_resolved_to_model_names(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=("model1",))
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_prebuilt_manifest_resolves_through_built_models(self, tmp_path):
+        # The --use-image path keys both maps by model name and omits "model".
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            manifest_data={
+                "built_images": {"model1": {"prebuilt": True}},
+                "built_models": {"model1": {"name": "model1"}},
+            },
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_key_is_used_when_the_manifest_carries_no_name(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, manifest_data={"built_images": {"model1": {}}}
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=())
+        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]

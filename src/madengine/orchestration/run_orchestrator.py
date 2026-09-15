@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -784,12 +784,54 @@ class RunOrchestrator:
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
         if result.metrics:
-            return {
+            summary = {
                 "successful_runs": result.metrics.get("successful_runs", []),
                 "failed_runs": result.metrics.get("failed_runs", []),
             }
         else:
-            return {"successful_runs": [], "failed_runs": []}
+            summary = {"successful_runs": [], "failed_runs": []}
+
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            successful_models = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if model not in successful_models
+            ]
+            summary["failed_runs"] = [
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
+            ]
+
+        return summary
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
+        try:
+            with open(manifest_file) as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            return []
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            names.append(name or key)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
