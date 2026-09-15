@@ -460,8 +460,14 @@ echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 echo ""
 
 # Setup workspace (SLURM_PROCID is now available)
+# The job id belongs in the path. A site can point SLURM_TMPDIR at persistent
+# node-local storage, and the workspace is never deleted, so without it two jobs
+# that place the same node rank on the same host share a directory: the later
+# one inherits the earlier one's files. A model that appends its results CSV to
+# the workspace root, as the Primus benchmark script does, then reports both
+# runs, and the stale rows reach perf_entry*.csv carrying this run's metadata.
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-    WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
+    WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
 else
     WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
 fi
