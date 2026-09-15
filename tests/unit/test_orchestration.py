@@ -646,12 +646,21 @@ class TestDistributedDeploymentFailureIsReported:
         args.additional_context = None
         args.live_output = True
         args.require_pinned_image = False
-        args.model_name = "llama-3.1-70b"
         args.timeout = -1
         with patch("madengine.orchestration.run_orchestrator.Context"):
             return RunOrchestrator(args)
 
-    def _deploy(self, tmp_path, *, is_success, metrics=None, message="Job 34462 failed"):
+    def _deploy(
+        self,
+        tmp_path,
+        *,
+        is_success,
+        metrics=None,
+        message="Job 34462 failed",
+        models=("llama-3.1-70b",),
+    ):
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(json.dumps({"built_images": {name: {} for name in models}}))
         orchestrator = self._orchestrator(tmp_path)
         orchestrator.rich_console = MagicMock()
         result = MagicMock()
@@ -662,7 +671,7 @@ class TestDistributedDeploymentFailureIsReported:
         result.logs_path = None
         with patch("madengine.deployment.factory.DeploymentFactory") as factory:
             factory.create.return_value.execute.return_value = result
-            return orchestrator._execute_distributed("slurm", str(tmp_path / "m.json"))
+            return orchestrator._execute_distributed("slurm", str(manifest))
 
     def test_failure_without_metrics_is_not_silently_successful(self, tmp_path):
         summary = self._deploy(tmp_path, is_success=False, metrics=None)
@@ -678,6 +687,22 @@ class TestDistributedDeploymentFailureIsReported:
         assert summary["failed_runs"] == []
 
     def test_reported_failures_are_not_duplicated(self, tmp_path):
-        metrics = {"successful_runs": [], "failed_runs": [{"model": "m", "error": "boom"}]}
+        metrics = {
+            "successful_runs": [],
+            "failed_runs": [{"model": "m", "error": "boom"}],
+        }
         summary = self._deploy(tmp_path, is_success=False, metrics=metrics)
         assert summary["failed_runs"] == metrics["failed_runs"]
+
+    def test_every_model_in_the_manifest_is_blamed(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, models=("llama-3.1-70b", "mixtral-8x7b")
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == [
+            "llama-3.1-70b",
+            "mixtral-8x7b",
+        ]
+
+    def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=())
+        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
