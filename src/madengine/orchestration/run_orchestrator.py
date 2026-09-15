@@ -810,9 +810,21 @@ class RunOrchestrator:
         """Models listed in the build manifest, empty if it cannot be read."""
         try:
             with open(manifest_file) as f:
-                return list(json.load(f).get("built_images", {}))
+                manifest = json.load(f)
         except (OSError, ValueError):
             return []
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            names.append(name or key)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
