@@ -4,10 +4,11 @@ Deploy madengine workloads to Kubernetes or SLURM clusters for distributed execu
 
 ## Overview
 
-madengine supports two deployment backends:
+madengine supports these deployment backends:
 
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **llm-d** - Benchmarking a Kubernetes-native distributed inference stack; see [llm-d.md](llm-d.md)
 
 Deployment is configured via `--additional-context` and happens automatically during the run phase.
 
@@ -20,6 +21,7 @@ flowchart LR
     B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
     M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
     D --> T{detect target}
+    T -->|llm_d| I[llm-d benchmark Job]
     T -->|k8s / kubernetes| K[K8s Job]
     T -->|slurm| S[SLURM script]
     T -->|neither| L[Local Docker]
@@ -32,10 +34,13 @@ No explicit `deploy` field is required — the target is inferred from the confi
 ```mermaid
 flowchart TD
     A[additional_context] --> Q{which key?}
+    Q -->|llm_d| I[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
+
+`llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
 
 ## Kubernetes Deployment
 
@@ -353,14 +358,14 @@ scancel -u $USER
 
 ## Deployment Comparison
 
-| Feature | Kubernetes | SLURM |
-|---------|-----------|-------|
-| **Environment** | Cloud, on-premise | HPC clusters |
-| **Orchestration** | Automatic | Job scheduler |
-| **Dependencies** | Python library (`kubernetes`) | CLI commands only |
-| **Multi-node Setup** | Headless service + DNS | SLURM env vars |
-| **Resource Management** | Declarative (YAML) | Batch script |
-| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers |
+| Feature | Kubernetes | SLURM | llm-d |
+|---------|-----------|-------|-------|
+| **Environment** | Cloud, on-premise | HPC clusters | Kubernetes |
+| **Orchestration** | Automatic | Job scheduler | Inference Gateway + helm |
+| **Dependencies** | Python library (`kubernetes`) | CLI commands only | `kubernetes` + `helm` (managed mode) |
+| **Multi-node Setup** | Headless service + DNS | SLURM env vars | `InferencePool` + Endpoint Picker |
+| **Resource Management** | Declarative (YAML) | Batch script | Helm charts |
+| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers | Benchmarking disaggregated serving |
 
 ## Configuration Examples
 
@@ -520,7 +525,9 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 ## Next Steps
 
 - [Launchers Guide](launchers.md) - Distributed training and inference launchers
+- [llm-d Guide](llm-d.md) - Benchmarking the llm-d distributed inference stack
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations
+- [llm-d Examples](../examples/llm-d-configs/) - Complete llm-d configurations
 - [Usage Guide](usage.md) - General usage instructions
 

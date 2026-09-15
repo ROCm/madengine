@@ -122,10 +122,13 @@ flowchart LR
 ```mermaid
 flowchart TD
     A[additional_context] --> Q{which key?}
+    Q -->|llm_d| D[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
+
+`llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
 
 ## 📋 Commands
 
@@ -177,6 +180,7 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
 | [Configuration](docs/configuration.md) | Advanced options, ROCm path, log error scan |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
+| [llm-d](docs/llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed frameworks + capability matrices |
 | [Profiling](docs/profiling.md) | Performance analysis tools |
@@ -196,6 +200,8 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | **SGLang Disagg** | ❌ | ✅ | ✅ | Inference | Disaggregated prefill/decode, Mooncake, 3+ nodes |
 
 All launchers support single-GPU, multi-GPU, and multi-node (where infrastructure allows). See the [Launchers Guide](docs/launchers.md) for the full **parallelism** and **infrastructure** capability matrices.
+
+**[llm-d](docs/llm-d.md)** is a deployment target rather than a launcher: madengine benchmarks a Kubernetes-native llm-d stack (vLLM servers behind an Inference Gateway) over HTTP, either attaching to one you already run or standing it up with `helm`.
 
 ## 📊 Profiling
 

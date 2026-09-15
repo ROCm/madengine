@@ -1,0 +1,26 @@
+{
+  "_comment": "Managed mode, prefill/decode disaggregated on MI300X: 2 prefill pods and 1 decode pod, 8 GPUs and TP=8 each. DeepSeek-R1-0528 is the same repo MAD's pyt_vllm_deepseek-r1 model benchmarks standalone; here it is served through llm-d instead, which is where disaggregation actually pays off for a model this size. At 1.5TiB, re-downloading from HF on every standup (the plain hf_repo shorthand) is impractical, so cache_pvc tells madengine to download it onto madengine-shared-data once, in a Job it runs before standup, and cache it there across runs. madengine stands the stack up, benchmarks it, and tears it back down.",
+  "k8s": {
+    "namespace": "llm-d-bench",
+    "gpu_count": 0,
+    "gpu_resource_name": "amd.com/gpu"
+  },
+  "llm_d": {
+    "model": {
+      "hf_repo": "deepseek-ai/DeepSeek-R1-0528",
+      "cache_pvc": "madengine-shared-data",
+      "cache_timeout": 21600,
+      "name": "DeepSeek-R1-0528",
+      "hf_token_secret": "hf-token"
+    },
+    "gateway": "agentgateway",
+    "prefill": { "replicas": 2, "tensor_parallel": 8, "gpu_count": 8 },
+    "decode": { "replicas": 1, "tensor_parallel": 8, "gpu_count": 8 },
+    "charts": {
+      "infra": { "version": "<pin>" },
+      "gaie": { "version": "<pin>" },
+      "modelservice": { "version": "<pin>" }
+    },
+    "readiness_timeout": 3600
+  }
+}

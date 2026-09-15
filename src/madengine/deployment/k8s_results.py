@@ -169,9 +169,23 @@ class KubernetesResultsMixin:
 
                 try:
                     # 1. Collect pod logs
-                    log = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name, namespace=self.namespace
+                    # Pods have an extract-scripts init container alongside the main
+                    # workload container, so the container must be named explicitly
+                    # (unlike `kubectl logs`, the API has no defaulting behavior).
+                    primary_container = (
+                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
                     )
+                    # _preload_content=False + manual decode: with the default
+                    # _preload_content=True, this cluster's client returns the raw
+                    # response body stringified (literal "b'...\n...'"), not decoded
+                    # UTF-8 text, which corrupts newline-sensitive performance-log
+                    # parsing below.
+                    log = self.core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self.namespace,
+                        container=primary_container,
+                        _preload_content=False,
+                    ).data.decode("utf-8", errors="replace")
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
                     results["logs"].append({
