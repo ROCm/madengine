@@ -6,6 +6,8 @@ Pure unit tests for Context class initialization and logic without external depe
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import json
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
@@ -189,3 +191,111 @@ class TestBuildContextGpuArchAutoDetect:
 
         mock_detect.assert_not_called()
         assert "MAD_SYSTEM_GPU_ARCHITECTURE" not in ctx.ctx.get("docker_build_arg", {})
+
+
+@pytest.mark.unit
+class TestWslDetection:
+    """Device-based WSL2 detection (ROCM-30980)."""
+
+    def _detect(self, existing_paths):
+        ctx = _make_build_only_ctx()
+        with patch("os.path.exists", side_effect=lambda p: p in existing_paths):
+            return ctx.get_is_wsl()
+
+    def test_dxg_without_kfd_is_wsl(self):
+        """WSL2 exposes /dev/dxg and has no KFD device."""
+        assert self._detect({"/dev/dxg"}) is True
+
+    def test_kfd_without_dxg_is_not_wsl(self):
+        """A native ROCm host has KFD and no DXG."""
+        assert self._detect({"/dev/kfd"}) is False
+
+    def test_both_present_is_not_wsl(self):
+        """When KFD works the native path is used regardless of /dev/dxg."""
+        assert self._detect({"/dev/dxg", "/dev/kfd"}) is False
+
+    def test_neither_present_is_not_wsl(self):
+        """A CPU-only host must not be misreported as WSL."""
+        assert self._detect(set()) is False
+
+    def test_user_supplied_is_wsl_is_not_overridden(self):
+        """is_wsl from --additional-context wins over detection."""
+        ctx = _make_build_only_ctx(additional_context="{'is_wsl': True}")
+
+        with patch.object(Context, "get_ctx_test", return_value="test"), \
+             patch.object(Context, "get_host_os", return_value="linux"), \
+             patch.object(Context, "get_numa_balancing", return_value=False), \
+             patch.object(Context, "get_is_wsl", return_value=False) as mock_detect:
+            ctx.init_system_context()
+
+        assert ctx.ctx["is_wsl"] is True
+        mock_detect.assert_not_called()
+
+
+@pytest.mark.unit
+class TestRenderDNodeDetection:
+    """get_gpu_renderD_nodes on hosts without DRM render nodes (ROCM-30980)."""
+
+    # amd-smi output as observed on WSL2/DXG: the GPU works (hip_id is set) but
+    # every KFD-derived field is the string 'N/A'.
+    WSL_AMD_SMI_ITEM = {
+        "gpu": 0,
+        "bdf": "0000:0c:00.0",
+        "kfd_id": "N/A",
+        "node_id": "N/A",
+        "render": "N/A",
+        "card": "N/A",
+        "hsa_id": "N/A",
+        "hip_id": 0,
+    }
+
+    def _context_for(self, amd_smi_items):
+        """Build a Context with the given amd-smi output and no KFD topology."""
+        ctx = _make_build_only_ctx()
+        ctx.ctx["docker_env_vars"] = {"MAD_GPU_VENDOR": "AMD"}
+
+        manager = MagicMock()
+        manager.get_rocm_version.return_value = (10, 1, 0)
+        ctx._gpu_tool_manager = manager
+
+        def fake_sh(cmd, *args, **kwargs):
+            if "drm_render_minor" in cmd:
+                # Mirrors WSL, where /sys/devices/virtual/kfd does not exist.
+                raise RuntimeError("grep: No such file or directory")
+            if "amd-smi" in cmd:
+                return json.dumps(amd_smi_items)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        ctx.console = MagicMock()
+        ctx.console.sh.side_effect = fake_sh
+        return ctx
+
+    def test_na_render_returns_none_instead_of_raising(self):
+        """The reported crash: int('N/A') must not escape as a ValueError."""
+        ctx = self._context_for([self.WSL_AMD_SMI_ITEM])
+
+        assert ctx.get_gpu_renderD_nodes() is None
+
+    def test_na_render_among_several_gpus_returns_none(self):
+        """No partial mapping: callers index the list by GPU id."""
+        good = {**self.WSL_AMD_SMI_ITEM, "gpu": 1, "render": "renderD128"}
+        ctx = self._context_for([self.WSL_AMD_SMI_ITEM, good])
+
+        assert ctx.get_gpu_renderD_nodes() is None
+
+    def test_numeric_render_still_parsed(self):
+        """Hosts that do report render nodes keep working."""
+        items = [
+            {**self.WSL_AMD_SMI_ITEM, "gpu": 1, "render": "renderD129"},
+            {**self.WSL_AMD_SMI_ITEM, "gpu": 0, "render": "renderD128"},
+        ]
+        ctx = self._context_for(items)
+
+        assert ctx.get_gpu_renderD_nodes() == [128, 129]
+
+    def test_non_amd_vendor_returns_none(self):
+        """Unchanged: renderD mapping is AMD-only."""
+        ctx = self._context_for([self.WSL_AMD_SMI_ITEM])
+        ctx.ctx["docker_env_vars"]["MAD_GPU_VENDOR"] = "NVIDIA"
+
+        assert ctx.get_gpu_renderD_nodes() is None

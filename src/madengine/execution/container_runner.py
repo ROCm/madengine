@@ -672,7 +672,10 @@ class ContainerRunner:
 
         # Create docker arg to assign requested GPUs
         if gpu_vendor.find("AMD") != -1:
-            gpu_arg = "--device=/dev/kfd "
+            if self.context.ctx.get("is_wsl"):
+                gpu_arg = self.get_wsl_gpu_arg()
+            else:
+                gpu_arg = "--device=/dev/kfd "
             gpu_renderDs = self.context.ctx["gpu_renderDs"]
             if gpu_renderDs is not None:
                 for idx in range(0, int(requested_gpus)):
@@ -689,6 +692,39 @@ class ContainerRunner:
             raise RuntimeError("Unable to determine gpu vendor.")
 
         print(f"GPU arguments: {gpu_arg}")
+        return gpu_arg
+
+    def get_wsl_gpu_arg(self) -> str:
+        """Get the GPU arguments for docker run on a WSL2 host.
+
+        Returns:
+            str: The docker device, mount and env arguments for /dev/dxg access.
+
+        Note:
+            WSL2 has no KFD device, so ROCm routes compute through the DXG driver
+            via libdxcore (host) and librocdxg (ROCm). Both must be visible inside
+            the container. See https://github.com/ROCm/librocdxg for the flags.
+        """
+        gpu_arg = "--device=/dev/dxg "
+
+        rocm_path = self.context.ctx.get("rocm_path") or "/opt/rocm"
+        dids_conf = os.path.join(rocm_path, "share", "rocdxg", "dids.conf")
+        wsl_lib_mounts = {
+            "/usr/lib/wsl/lib/libdxcore.so": "/usr/lib/libdxcore.so",
+            os.path.join(rocm_path, "lib", "librocdxg.so"): "/usr/lib/librocdxg.so",
+            dids_conf: "/usr/share/rocdxg/dids.conf",
+        }
+        for host_path, container_path in wsl_lib_mounts.items():
+            # Docker silently creates a directory when the mount source is
+            # missing, which would shadow any copy already in the image.
+            if os.path.isfile(host_path):
+                gpu_arg += f"-v {shlex.quote(host_path)}:{shlex.quote(container_path)} "
+            else:
+                print(f"Warning: WSL GPU library not found on host: {host_path}")
+
+        # Required by ROCm runtimes older than 7.13 to probe /dev/dxg; newer
+        # releases detect DXG automatically and ignore it.
+        gpu_arg += "--env HSA_ENABLE_DXG_DETECTION=1 "
         return gpu_arg
 
     def get_cpu_arg(self) -> str:

@@ -969,3 +969,90 @@ class TestSlurmEnvPassthrough:
             runner._merge_slurm_env_from_shell()
 
         assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestWslGpuArg:
+    """GPU argument generation on WSL2 hosts (ROCM-30980).
+
+    WSL2 exposes the GPU via /dev/dxg and has no KFD device, so passing
+    --device=/dev/kfd makes docker run fail with "no such file or directory".
+    """
+
+    def _runner(self, is_wsl, gpu_renderDs=None):
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "1"},
+            "docker_gpus": "0",
+            "gpu_renderDs": gpu_renderDs,
+            "rocm_path": "/opt/rocm",
+            "is_wsl": is_wsl,
+        }
+        return ContainerRunner(context)
+
+    def test_wsl_uses_dxg_not_kfd(self):
+        """On WSL the GPU is passed through /dev/dxg; /dev/kfd must not appear."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/dxg" in result
+        assert "/dev/kfd" not in result
+
+    def test_wsl_mounts_dxg_libraries_and_sets_detection_env(self):
+        """libdxcore/librocdxg/dids.conf are mounted into default lookup paths."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "-v /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so" in result
+        assert "-v /opt/rocm/lib/librocdxg.so:/usr/lib/librocdxg.so" in result
+        assert (
+            "-v /opt/rocm/share/rocdxg/dids.conf:/usr/share/rocdxg/dids.conf" in result
+        )
+        assert "--env HSA_ENABLE_DXG_DETECTION=1" in result
+
+    def test_wsl_skips_missing_host_libraries(self):
+        """Missing mount sources are skipped: docker would create a shadowing dir."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=False):
+            result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/dxg" in result
+        assert "-v" not in result
+
+    def test_wsl_omits_renderd_when_unavailable(self):
+        """gpu_renderDs is None on WSL, so no renderD devices are requested."""
+        runner = self._runner(is_wsl=True, gpu_renderDs=None)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "renderD" not in result
+
+    def test_native_linux_behaviour_unchanged(self):
+        """Non-WSL AMD hosts keep the existing /dev/kfd + renderD arguments."""
+        runner = self._runner(is_wsl=False, gpu_renderDs=[128])
+
+        result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/kfd" in result
+        assert "--device=/dev/dri/renderD128" in result
+        assert "/dev/dxg" not in result
+
+    def test_missing_is_wsl_key_defaults_to_kfd(self):
+        """A context without is_wsl (e.g. from an older manifest) is not WSL."""
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "1"},
+            "docker_gpus": "0",
+            "gpu_renderDs": [128],
+        }
+        runner = ContainerRunner(context)
+
+        result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/kfd" in result
+        assert "/dev/dxg" not in result
