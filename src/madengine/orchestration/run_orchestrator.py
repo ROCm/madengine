@@ -796,9 +796,16 @@ class RunOrchestrator:
         # this empty reports a failed SLURM job as a successful run.
         if not result.is_success and not summary["failed_runs"]:
             error = result.message or f"Deployment to {target} failed"
-            # The scheduler died before it could say which model it died on, so
-            # every model the manifest asked for is a casualty.
-            models = self._manifest_model_names(manifest_file)
+            successful_models = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if model not in successful_models
+            ]
             summary["failed_runs"] = [
                 {"model": model, "status": "FAILURE", "error": error}
                 for model in models or [f"{target} deployment"]
