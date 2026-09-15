@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -795,15 +795,24 @@ class RunOrchestrator:
         # failed. The CLI decides the exit code from len(failed_runs), so leaving
         # this empty reports a failed SLURM job as a successful run.
         if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            # The scheduler died before it could say which model it died on, so
+            # every model the manifest asked for is a casualty.
+            models = self._manifest_model_names(manifest_file)
             summary["failed_runs"] = [
-                {
-                    "model": getattr(self.args, "model_name", None) or manifest_file or target,
-                    "status": "FAILURE",
-                    "error": result.message or f"Deployment to {target} failed",
-                }
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
             ]
 
         return summary
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
+        try:
+            with open(manifest_file) as f:
+                return list(json.load(f).get("built_images", {}))
+        except (OSError, ValueError):
+            return []
 
     def _show_node_info(self):
         """Show node ROCm information."""
