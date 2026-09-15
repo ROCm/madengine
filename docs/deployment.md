@@ -143,7 +143,7 @@ This creates:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Megatron-LM training
+- `megatron-lm` - Megatron-LM training
 - `torchtitan` - LLM pre-training
 - `primus` - Primus unified pretrain (Megatron / TorchTitan / MaxText YAML)
 - `vllm` - LLM inference
