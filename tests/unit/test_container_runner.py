@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, mock_open, patch
@@ -969,3 +970,105 @@ class TestSlurmEnvPassthrough:
             runner._merge_slurm_env_from_shell()
 
         assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestStaleMultipleResultsIsDropped:
+    """run_container clears a results CSV an earlier run left at the workspace root.
+
+    `run_directory` is recreated per run; the directory above it is not. It is
+    the submission directory for a single-node SLURM job, a node-local
+    workspace that outlives the job on some clusters, and plain cwd for a local
+    run. Models write `multiple_results` there and append when the file is
+    already present, and `_resolve_multiple_results_path` reads that copy
+    before the one in `run_directory` -- so a leftover is reported as part of
+    this run, carrying this run's metadata.
+    """
+
+    MODEL_SCRIPT_CMD = "bash run.sh"
+
+    def _container_commands(self, tmp_path, monkeypatch, multiple_results):
+        """The commands run_container sends into the container, in order."""
+        monkeypatch.chdir(tmp_path)  # the live log is written to cwd
+
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "8"},
+            "docker_mounts": {},
+            "docker_gpus": "8",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_build_arg": {},
+        }
+        runner = ContainerRunner(context=context, console=MagicMock())
+        runner.rich_console = MagicMock()
+
+        model_info = {
+            "name": "m",
+            "url": "",
+            "scripts": "scripts/x/run.sh",
+            "n_gpus": "1",
+            "args": "",
+            "tags": [],
+        }
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        with patch(
+            "madengine.execution.container_runner.Docker"
+        ) as mock_docker_cls, patch(
+            "madengine.execution.container_runner._print_run_env_table"
+        ), patch(
+            "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
+            return_value="/opt/rocm",
+        ), patch.object(
+            runner, "_resolve_docker_image", return_value="img:latest"
+        ), patch.object(
+            runner, "get_gpu_arg", return_value=""
+        ):
+            docker = mock_docker_cls.return_value
+            docker.sh = MagicMock(return_value="")
+            runner.run_container(model_info=model_info, docker_image="img:latest")
+
+        return [call.args[0] for call in docker.sh.call_args_list]
+
+    @staticmethod
+    def _index_of(commands, needle):
+        for i, cmd in enumerate(commands):
+            if needle in cmd:
+                return i
+        return None
+
+    def test_the_file_is_deleted(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        assert self._index_of(commands, "rm -f -- perf_model.csv") is not None
+
+    def test_the_deletion_precedes_the_model_script(self, tmp_path, monkeypatch):
+        """Deleting after the model wrote its results would discard this run."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletion = self._index_of(commands, "rm -f -- perf_model.csv")
+        model_run = self._index_of(commands, self.MODEL_SCRIPT_CMD)
+        assert deletion is not None and model_run is not None
+        assert deletion < model_run
+
+    def test_nothing_is_deleted_without_multiple_results(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, None)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "   ")
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_path_is_quoted(self, tmp_path, monkeypatch):
+        """multiple_results comes from models.json and reaches bash -c."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf;rm -rf /.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        assert shlex.quote("perf;rm -rf /.csv") in deletions[0]
+
+    def test_a_failure_to_delete_does_not_fail_the_run(self, tmp_path, monkeypatch):
+        """The file belongs to container root; an unlink the caller cannot do
+        must not abort the run before the model has a chance to produce data."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        assert deletions[0].endswith("|| true")

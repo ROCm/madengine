@@ -437,3 +437,44 @@ class TestSglangDisaggNodeIps:
         # neither the docker bridge nor the management address may be published
         assert "172.17.0.1" not in out.stdout
         assert "192.168.1.5" not in out.stdout
+
+
+# ---------------------------------------------------------------------------
+# 7. The node-local workspace is scoped to the job
+
+class TestWorkspaceIsJobScoped:
+    """A node-local workspace must not be shared by consecutive jobs.
+
+    Nothing deletes these directories, and a site is free to point
+    SLURM_TMPDIR at storage that outlives the job. Without the job id in the
+    path, two jobs placing the same node rank on the same host get one
+    directory, and the second reads the first one's results CSV back as its
+    own (see the `multiple_results` cleanup in `container_runner`).
+    """
+
+    def test_multi_node_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert (
+            "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+        assert (
+            "WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+
+    def test_multi_node_workspace_is_not_shared_between_jobs(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "madengine_node_${SLURM_PROCID}" not in script
+
+    def test_single_node_local_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}" in script
+        # A bare SLURM_TMPDIR is the shared directory this guards against.
+        assert re.search(r"WORKSPACE=\$SLURM_TMPDIR\s*$", script, re.M) is None
