@@ -17,10 +17,10 @@
   },
   
   "distributed": {
-    "launcher": "megatron",
+    "launcher": "megatron-lm",
     "nnodes": 4,
     "nproc_per_node": 8,
-    "master_port": 29500
+    "port": 29500
   },
   
   "env_vars": {

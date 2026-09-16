@@ -149,7 +149,7 @@ spec:
             # - NVIDIA GPUs: Use ONLY CUDA_VISIBLE_DEVICES
             # Setting both HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES simultaneously
             # causes Ray error: "Inconsistent values found"
-            {% if launcher_type == "vllm" or launcher_type == "sglang" %}
+            {% if launcher_type in ['vllm', 'sglang', 'sglang-disagg'] %}
             # Ray-based launchers: Detect GPU vendor and set appropriate variable
             if command -v rocm-smi &> /dev/null || command -v rocminfo &> /dev/null; then
                 # AMD GPU detected - use HIP_VISIBLE_DEVICES ONLY
@@ -181,7 +181,7 @@ spec:
             export MAD_K8S_JOB=true
             export MAD_DEPLOYMENT_TYPE=kubernetes
             
-            {% if launcher_type == "torchrun" or launcher_type == "deepspeed" or launcher_type == "megatron" or launcher_type == "primus" or launcher_type == "torchtitan" %}
+            {% if launcher_type in ['torchrun', 'deepspeed', 'megatron-lm', 'primus', 'torchtitan'] %}
             # {{ launcher_type }} distributed environment (auto-configured from K8s)
             {% if nnodes > 1 %}
             # Multi-node {{ launcher_type }} (Indexed Job)
