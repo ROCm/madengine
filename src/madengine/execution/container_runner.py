@@ -2782,19 +2782,21 @@ class ContainerRunner:
 
     def _emit_commands_json(
         self,
-        built_images: typing.Dict,
         successful_runs: typing.List[typing.Dict],
         failed_runs: typing.List[typing.Dict],
         output_file: str = "commands.json",
     ) -> None:
-        """Write commands.json with Docker build/run commands for delivery capture.
+        """Write commands.json with the docker run command per model.
 
-        Emits the exact commands used during build and run so downstream tools
-        (model_runner) can store them in MongoDB for customer delivery packages.
+        Build info (docker_build_cmd, base_docker, docker_sha, dockerfile)
+        is already in build_manifest.json. This file captures only the
+        docker run command which is constructed at run time on the GPU node.
+        Downstream tools (model_runner) read both files to assemble the
+        full command set for customer delivery packages.
+
         Best-effort: failures are logged but never block the run.
 
         Args:
-            built_images: The built_images dict from the build manifest.
             successful_runs: List of successful run result dicts.
             failed_runs: List of failed run result dicts.
             output_file: Path to write commands.json.
@@ -2806,35 +2808,9 @@ class ContainerRunner:
 
             commands_per_model = []
             for run_info in all_runs:
-                model_name = run_info.get("model", "")
-                image_name = run_info.get("image", "")
-
-                build_info = None
-                for bimg, binfo in built_images.items():
-                    if binfo.get("model") == model_name or bimg == image_name:
-                        build_info = binfo
-                        break
-
-                base_docker_tag = ""
-                base_docker_digest = ""
-                docker_build_cmd = ""
-                dockerfile_path = ""
-                if build_info:
-                    base_docker_tag = build_info.get("base_docker", "")
-                    docker_sha = build_info.get("docker_sha", "")
-                    if base_docker_tag and docker_sha:
-                        registry_part = base_docker_tag.split(":")[0]
-                        base_docker_digest = f"{registry_part}@{docker_sha}"
-                    docker_build_cmd = build_info.get("build_command", "")
-                    dockerfile_path = build_info.get("dockerfile", "")
-
                 entry = {
-                    "model": model_name,
-                    "docker_build_cmd": docker_build_cmd,
+                    "model": run_info.get("model", ""),
                     "docker_run_cmd": run_info.get("docker_run_cmd", ""),
-                    "base_docker_tag": base_docker_tag,
-                    "base_docker_digest": base_docker_digest or None,
-                    "dockerfile_path": dockerfile_path,
                 }
                 commands_per_model.append(entry)
 
@@ -3064,7 +3040,7 @@ class ContainerRunner:
                     )
         
         # Emit commands.json alongside perf.csv (SRS-DL-001 DL-CAP-001)
-        self._emit_commands_json(built_images, successful_runs, failed_runs)
+        self._emit_commands_json(successful_runs, failed_runs)
 
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")
