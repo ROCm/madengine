@@ -2806,19 +2806,19 @@ class ContainerRunner:
             if not all_runs:
                 return
 
-            commands_per_model = []
+            docker_run_cmd = ""
             for run_info in all_runs:
-                entry = {
-                    "model": run_info.get("model", ""),
-                    "docker_run_cmd": run_info.get("docker_run_cmd", ""),
-                }
-                commands_per_model.append(entry)
+                cmd = run_info.get("docker_run_cmd", "")
+                if cmd:
+                    docker_run_cmd = cmd
+                    break
+
+            if not docker_run_cmd:
+                return
 
             with open(output_file, "w") as f:
-                json.dump(commands_per_model, f, indent=2)
-            self.rich_console.print(
-                f"[dim]Wrote {output_file} ({len(commands_per_model)} model(s))[/dim]"
-            )
+                json.dump({"docker_run_cmd": docker_run_cmd}, f, indent=2)
+            self.rich_console.print(f"[dim]Wrote {output_file}[/dim]")
         except Exception as e:
             self.rich_console.print(
                 f"[yellow]Warning: Could not write {output_file}: {e}[/yellow]"
