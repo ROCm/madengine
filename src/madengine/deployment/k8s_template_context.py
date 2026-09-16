@@ -438,6 +438,24 @@ class KubernetesTemplateContextMixin:
         # Load pre/post script contents for ConfigMap (since madengine not installed in container)
         pre_post_script_contents = self._load_common_scripts(pre_scripts + post_scripts)
 
+        rdma_enabled = bool(self.rdma_config.get("enabled", False))
+        rdma_strict = bool(self.rdma_config.get("strict", False))
+        rdma_mode = self.rdma_config.get("mode", "recommend")
+        rdma_apply_env = bool(self.rdma_config.get("apply_env", True))
+        rdma_artifact_name = self.rdma_config.get(
+            "artifact_name", "rdma_recommendation.json"
+        )
+        if rdma_enabled:
+            rdma_script = Path(__file__).parent / "rdma_recommender.py"
+            if rdma_script.exists():
+                pre_post_script_contents[
+                    "scripts/common/tools/rdma_recommender.py"
+                ] = rdma_script.read_text(encoding="utf-8")
+            else:
+                self.console.print(
+                    "[yellow]Warning: RDMA recommender module not found; runtime RDMA stage will be skipped.[/yellow]"
+                )
+
         merged_sec = merge_secrets_config(self.k8s_config)
         strategy = merged_sec.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
         cred_path = Path("credential.json")
@@ -589,6 +607,12 @@ class KubernetesTemplateContextMixin:
             "common_script_contents": pre_post_script_contents,
             # Multiple results file (e.g. perf_dummy.csv) - copied to PVC for K8s result collection
             "multiple_results": model_info.get("multiple_results") or "",
+            # Cluster RDMA feature
+            "rdma_enabled": rdma_enabled,
+            "rdma_strict": rdma_strict,
+            "rdma_mode": rdma_mode,
+            "rdma_apply_env": rdma_apply_env,
+            "rdma_artifact_name": rdma_artifact_name,
         }
 
         est = estimate_configmap_payload_bytes(context)

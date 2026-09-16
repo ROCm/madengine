@@ -16,6 +16,25 @@
 
 madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep Learning models across local and distributed environments. Built for the [MAD (Model Automation and Dashboarding)](https://github.com/ROCm/MAD) ecosystem, it provides seamless execution from single GPUs to multi-node clusters — with the same command working locally, on Kubernetes, and on SLURM.
 
+## 📖 Table of Contents
+
+- [Key Features](#-key-features)
+- [Quick Start](#-quick-start)
+- [Architecture](#️-architecture)
+- [Workflow](#-workflow)
+- [Smoke Testing](#-smoke-testing)
+- [Commands](#-commands)
+- [Usage Examples](#-usage-examples)
+- [Documentation](#-documentation)
+- [Supported Launchers](#-supported-launchers)
+- [Profiling](#-profiling)
+- [Installation](#-installation)
+- [Tips & Troubleshooting](#-tips--troubleshooting)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Links & Resources](#-links--resources)
+- [Migration Notice (v2.0.0+)](#️-migration-notice-v200)
+
 ## ✨ Key Features
 
 - **🚀 Modern CLI** — Rich terminal output with Typer and Rich
@@ -126,6 +145,31 @@ flowchart TD
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
+
+## 🧪 Smoke Testing
+
+Use the prebuilt smoke configs and wrapper script under `examples/` to quickly validate:
+
+- RDMA recommender on SLURM + Kubernetes
+- GCM preflight/collector on SLURM (phase-1 scope)
+
+```bash
+# SLURM smoke (build + run) + artifact verification
+examples/run-smoke.sh slurm MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-slurm
+
+# Kubernetes smoke (build + run) + artifact verification
+examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-k8s
+```
+
+Smoke assets:
+
+- `examples/run-smoke.sh`
+- `examples/Makefile.smoke`
+- `examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json`
+- `examples/k8s-configs/configs/smoke-rdma-k8s.json`
+- `examples/cluster-smoke-checklist.md`
 
 ## 📋 Commands
 
