@@ -1479,6 +1479,28 @@ class ContainerRunner:
                                 )
 
                         model_docker.sh(f"rm -rf {model_dir}", timeout=240)
+
+                        # run_directory above is recreated per run, but the
+                        # workspace root is not: it is the submission directory
+                        # for a single-node SLURM job, and plain cwd for a local
+                        # run. Several models write multiple_results there
+                        # (run_directory/..) and append when the file already
+                        # exists -- scripts/pytorch_train and
+                        # scripts/primus_megatron-lm both do -- so a leftover
+                        # from an earlier run is read back as part of this one,
+                        # and _resolve_multiple_results_path prefers it over
+                        # run_directory. Delete it from inside the container:
+                        # the file was written as root and the caller may not be
+                        # able to unlink it.
+                        stale_results = (
+                            model_info.get("multiple_results") or ""
+                        ).strip()
+                        if stale_results:
+                            model_docker.sh(
+                                f"rm -f -- {_bash_quote_path(stale_results)} "
+                                "2>/dev/null || true"
+                            )
+
                         model_docker.sh(
                             "git config --global --add safe.directory /myworkspace"
                         )
