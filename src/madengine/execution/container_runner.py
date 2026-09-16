@@ -2780,32 +2780,23 @@ class ContainerRunner:
         return targets
 
 
-    def _emit_commands_json(
+    def _update_manifest_with_run_cmd(
         self,
+        manifest_file: str,
         successful_runs: typing.List[typing.Dict],
         failed_runs: typing.List[typing.Dict],
-        output_file: str = "commands.json",
     ) -> None:
-        """Write commands.json with the docker run command per model.
+        """Append docker_run_cmd to build_manifest.json after the run.
 
-        Build info (docker_build_cmd, base_docker, docker_sha, dockerfile)
-        is already in build_manifest.json. This file captures only the
-        docker run command which is constructed at run time on the GPU node.
-        Downstream tools (model_runner) read both files to assemble the
-        full command set for customer delivery packages.
+        The manifest already contains build info (build_command, base_docker,
+        docker_sha, dockerfile). This adds the docker run command which is
+        only known at run time on the GPU node. Downstream tools
+        (model_runner) then have everything in one file.
 
         Best-effort: failures are logged but never block the run.
-
-        Args:
-            successful_runs: List of successful run result dicts.
-            failed_runs: List of failed run result dicts.
-            output_file: Path to write commands.json.
         """
         try:
             all_runs = successful_runs + failed_runs
-            if not all_runs:
-                return
-
             docker_run_cmd = ""
             for run_info in all_runs:
                 cmd = run_info.get("docker_run_cmd", "")
@@ -2816,12 +2807,20 @@ class ContainerRunner:
             if not docker_run_cmd:
                 return
 
-            with open(output_file, "w") as f:
-                json.dump({"docker_run_cmd": docker_run_cmd}, f, indent=2)
-            self.rich_console.print(f"[dim]Wrote {output_file}[/dim]")
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+
+            manifest["docker_run_cmd"] = docker_run_cmd
+
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f, indent=2)
+            self.rich_console.print(
+                f"[dim]Added docker_run_cmd to {manifest_file}[/dim]"
+            )
         except Exception as e:
             self.rich_console.print(
-                f"[yellow]Warning: Could not write {output_file}: {e}[/yellow]"
+                f"[yellow]Warning: Could not update {manifest_file} "
+                f"with docker_run_cmd: {e}[/yellow]"
             )
 
     def run_models_from_manifest(
@@ -3039,8 +3038,8 @@ class ContainerRunner:
                         f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
                     )
         
-        # Emit commands.json alongside perf.csv (SRS-DL-001 DL-CAP-001)
-        self._emit_commands_json(successful_runs, failed_runs)
+        # Append docker_run_cmd to manifest (SRS-DL-001 DL-CAP-001)
+        self._update_manifest_with_run_cmd(manifest_file, successful_runs, failed_runs)
 
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")
