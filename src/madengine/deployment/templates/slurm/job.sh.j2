@@ -171,7 +171,12 @@ if printf '%s' "$SUBMIT_FSTYPE" | grep -qE '^(nfs[0-9]*|lustre|gpfs|ceph|beegfs|
 else
     # Submission directory is local - use node scratch (rare case)
     if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-        WORKSPACE=$SLURM_TMPDIR
+        # Job-scoped for the same reason as the multi-node path below, and to
+        # match the /tmp fallback: a site can point SLURM_TMPDIR at persistent
+        # storage, and then a bare SLURM_TMPDIR is one workspace shared by every
+        # job that lands on the node.
+        WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}
+        mkdir -p $WORKSPACE
         WORKSPACE_TYPE="local-slurm"
     else
         WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID:-$$}
