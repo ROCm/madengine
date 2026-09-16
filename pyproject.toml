@@ -45,6 +45,14 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# Host-side trace analysis for `madengine report tracelens`. Kept optional
+# because TraceLens pins protobuf>=6.31 and xprof, which can conflict with other
+# packages in a shared environment.
+tracelens = [
+  "TraceLens @ git+https://github.com/AMD-AGI/TraceLens.git@6f9bcdbf6cc9911eb650de57b345917ea4d31a17",
+]
+
 [project.scripts]
 madengine = "madengine.cli.app:cli_main"
 
