@@ -113,6 +113,7 @@ class Docker:
         # Works reliably across all deployment types (local, k8s, slurm)
         # with fresh image pulls preventing corrupted layer issues
         command += "cat "
+        self.docker_run_cmd = command
         self.console.sh(command)
 
         # find container sha — use the same exact-match filter as the existence
