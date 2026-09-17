@@ -1127,9 +1127,18 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
         runner.additional_context = {}
         return runner
 
-    def _run(self, tmp_path, monkeypatch, multiple_results, on_script_start=None):
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        on_script_start=None,
+        script_subdir=None,
+    ):
         monkeypatch.chdir(tmp_path)
-        script = tmp_path / "run.sh"
+        script_dir = tmp_path / script_subdir if script_subdir else tmp_path
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script = script_dir / "run.sh"
         script.write_text("#!/bin/bash\nexit 0\n")
 
         model_info = {"name": "dummy", "scripts": str(script), "args": ""}
@@ -1168,6 +1177,20 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
         )
 
         assert seen == {"exists": False}
+
+    def test_the_copy_in_the_script_directory_goes_too(self, tmp_path, monkeypatch):
+        """The script is launched with cwd=script_dir, so a relative
+        multiple_results lands there rather than next to the manifest."""
+        beside_script = tmp_path / "scripts" / "perf_model.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nold,1\n")
+        in_cwd = tmp_path / "perf_model.csv"
+        in_cwd.write_text("model,perf\nold,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv", script_subdir="scripts")
+
+        assert not beside_script.exists()
+        assert not in_cwd.exists()
 
     def test_an_unrelated_file_is_left_alone(self, tmp_path, monkeypatch):
         """Only the file the model card names may be touched."""

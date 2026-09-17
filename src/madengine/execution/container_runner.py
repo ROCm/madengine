@@ -1031,7 +1031,12 @@ class ContainerRunner:
         # out: the script runs on the host here, appends when the file exists,
         # and slurm.collect_results falls back to this copy when no per-node CSV
         # was collected. Unlink it directly -- there is no container to do it.
+        # Both directories the run touches: the script is launched with
+        # cwd=script_dir below, so a relative multiple_results lands there,
+        # while the collector looks for it next to the manifest.
         self._drop_stale_results_file(model_info, cwd)
+        if script_dir != cwd:
+            self._drop_stale_results_file(model_info, script_dir)
 
         # Run script with logging
         test_start_time = time.time()
