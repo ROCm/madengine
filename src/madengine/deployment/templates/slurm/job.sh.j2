@@ -184,11 +184,30 @@ else
     # Job-scoped workspaces are never shared, so nothing reclaims them either.
     # This one holds the only copy of the run's output (a local submission
     # directory means the login node cannot read it back), so it is kept and
-    # the older ones are dropped instead. Runs before mkdir so a reused job id
-    # starts from an empty directory.
-    find "$(dirname "$WORKSPACE")" -maxdepth 1 -type d \
-         -name 'madengine_job_*' -mtime +7 \
-         -exec rm -rf {} + 2>/dev/null || true
+    # the older ones are dropped instead.
+    #
+    # What may be deleted is narrow on purpose: only directories this user
+    # owns, only job ids SLURM no longer reports (a run can outlive the
+    # window while the directory's own mtime stays put), and never the
+    # scratch root, which find reports as its own starting point unless
+    # -mindepth keeps it out. Without squeue there is no way to tell a live
+    # job from an abandoned one, so nothing is swept at all.
+    if command -v squeue >/dev/null 2>&1; then
+        find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
+             -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
+             -print 2>/dev/null |
+        while IFS= read -r STALE_WORKSPACE; do
+            STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
+            STALE_JOB=${STALE_JOB%%_node_*}
+            if [ -z "$(squeue -h -j "$STALE_JOB" -o %i 2>/dev/null)" ]; then
+                rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+                echo "Reclaimed abandoned workspace: $STALE_WORKSPACE"
+            fi
+        done
+    fi
+    # This job's own directory can only exist when an earlier job reused the
+    # id, which is exactly the inheritance the scoping is here to prevent.
+    rm -rf "$WORKSPACE" 2>/dev/null || true
     mkdir -p $WORKSPACE
     echo "Using local node workspace: $WORKSPACE"
 fi
@@ -485,10 +504,25 @@ else
 fi
 # A successful task deletes its workspace at the end of this script, so what
 # this sweep collects are the ones a failed task left behind for post-mortem.
-# Runs before mkdir so a reused job id starts from an empty directory.
-find "$(dirname "$WORKSPACE")" -maxdepth 1 -type d \
-     -name 'madengine_job_*' -mtime +7 \
-     -exec rm -rf {} + 2>/dev/null || true
+# Same guards as the single-node path: this user's directories only, only job
+# ids SLURM no longer reports, and -mindepth 1 so find's own starting point --
+# the scratch root -- can never be the thing that gets removed.
+if command -v squeue >/dev/null 2>&1; then
+    find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
+         -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
+         -print 2>/dev/null |
+    while IFS= read -r STALE_WORKSPACE; do
+        STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
+        STALE_JOB=${STALE_JOB%%_node_*}
+        if [ -z "$(squeue -h -j "$STALE_JOB" -o %i 2>/dev/null)" ]; then
+            rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+            echo "Node ${SLURM_PROCID}: reclaimed abandoned workspace $STALE_WORKSPACE"
+        fi
+    done
+fi
+# This job's own directory can only exist when an earlier job reused the id,
+# which is exactly the inheritance the scoping is here to prevent.
+rm -rf "$WORKSPACE" 2>/dev/null || true
 mkdir -p $WORKSPACE
 WORKSPACE_TYPE="local-multinode"
 echo "Multi-node: Node ${SLURM_PROCID} using local workspace: $WORKSPACE"
@@ -759,10 +793,16 @@ fi
 # SLURM_TMPDIR. The artifacts above are already in $NODE_COLLECTION_DIR, so
 # drop it -- but only on success: a failed task keeps its workspace so the
 # failure can still be inspected on the node.
+# Best-effort: this script runs under `set -e`, the model ran as root in the
+# container and can leave root-owned files in the bind mount, and a task that
+# already succeeded must not be reported as failed over an unlink.
 if [ $TASK_EXIT -eq 0 ]; then
     cd /
-    rm -rf "$WORKSPACE"
-    echo "Node ${SLURM_PROCID}: removed workspace $WORKSPACE"
+    if rm -rf "$WORKSPACE" 2>/dev/null; then
+        echo "Node ${SLURM_PROCID}: removed workspace $WORKSPACE"
+    else
+        echo "Node ${SLURM_PROCID}: could not remove workspace $WORKSPACE"
+    fi
 fi
 
 exit $TASK_EXIT
