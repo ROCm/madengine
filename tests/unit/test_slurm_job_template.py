@@ -478,3 +478,53 @@ class TestWorkspaceIsJobScoped:
         assert "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}" in script
         # A bare SLURM_TMPDIR is the shared directory this guards against.
         assert re.search(r"WORKSPACE=\$SLURM_TMPDIR\s*$", script, re.M) is None
+
+
+class TestJobScopedWorkspacesAreReclaimed:
+    """One directory per job replaces one directory per node rank, so the
+    template owes the node a way to get the space back."""
+
+    def test_a_successful_task_removes_its_workspace(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert 'rm -rf "$WORKSPACE"' in script
+
+    def test_the_removal_follows_the_artifact_copy(self, tmp_path):
+        """Removing before collection would throw away the run's results."""
+        script = _render(_build_deployment(tmp_path))
+        assert script.index("NODE_COLLECTION_DIR") < script.index(
+            'rm -rf "$WORKSPACE"'
+        )
+
+    def test_a_failed_task_keeps_its_workspace(self, tmp_path):
+        """Only the logs are copied out on failure, so the rest has to stay."""
+        script = _render(_build_deployment(tmp_path))
+        removal = script.index('rm -rf "$WORKSPACE"')
+        guard = script.rindex("if [ $TASK_EXIT -eq 0 ]; then", 0, removal)
+        assert "else" not in script[guard:removal]
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_leftovers_are_swept_before_the_workspace_is_created(
+        self, tmp_path, nodes
+    ):
+        """A failed task keeps its workspace; this is what collects it later."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        sweep = script.index("-name 'madengine_job_*' -mtime +7")
+        assert script.index("mkdir -p $WORKSPACE", sweep) > sweep
+
+    def test_the_single_node_workspace_is_not_removed_after_the_run(self, tmp_path):
+        """With a local submission directory it holds the only copy of the
+        output: the login node cannot read it back."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert 'rm -rf "$WORKSPACE"' not in script

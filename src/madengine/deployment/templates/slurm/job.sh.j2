@@ -176,13 +176,20 @@ else
         # storage, and then a bare SLURM_TMPDIR is one workspace shared by every
         # job that lands on the node.
         WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}
-        mkdir -p $WORKSPACE
         WORKSPACE_TYPE="local-slurm"
     else
         WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID:-$$}
-        mkdir -p $WORKSPACE
         WORKSPACE_TYPE="local-tmp"
     fi
+    # Job-scoped workspaces are never shared, so nothing reclaims them either.
+    # This one holds the only copy of the run's output (a local submission
+    # directory means the login node cannot read it back), so it is kept and
+    # the older ones are dropped instead. Runs before mkdir so a reused job id
+    # starts from an empty directory.
+    find "$(dirname "$WORKSPACE")" -maxdepth 1 -type d \
+         -name 'madengine_job_*' -mtime +7 \
+         -exec rm -rf {} + 2>/dev/null || true
+    mkdir -p $WORKSPACE
     echo "Using local node workspace: $WORKSPACE"
 fi
 {% endif %}
@@ -476,6 +483,12 @@ if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; t
 else
     WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
 fi
+# A successful task deletes its workspace at the end of this script, so what
+# this sweep collects are the ones a failed task left behind for post-mortem.
+# Runs before mkdir so a reused job id starts from an empty directory.
+find "$(dirname "$WORKSPACE")" -maxdepth 1 -type d \
+     -name 'madengine_job_*' -mtime +7 \
+     -exec rm -rf {} + 2>/dev/null || true
 mkdir -p $WORKSPACE
 WORKSPACE_TYPE="local-multinode"
 echo "Multi-node: Node ${SLURM_PROCID} using local workspace: $WORKSPACE"
@@ -739,6 +752,17 @@ else
     # Copy node logs so collect_results can still inspect them
     if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
     if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+fi
+
+# The workspace holds a full rsync of the project plus this node's outputs, and
+# it is job-scoped, so leaving it behind grows without bound on a persistent
+# SLURM_TMPDIR. The artifacts above are already in $NODE_COLLECTION_DIR, so
+# drop it -- but only on success: a failed task keeps its workspace so the
+# failure can still be inspected on the node.
+if [ $TASK_EXIT -eq 0 ]; then
+    cd /
+    rm -rf "$WORKSPACE"
+    echo "Node ${SLURM_PROCID}: removed workspace $WORKSPACE"
 fi
 
 exit $TASK_EXIT
