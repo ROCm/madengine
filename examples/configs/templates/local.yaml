@@ -1,0 +1,137 @@
+# ============================================================
+# madengine YAML Config Template — Local Docker
+# ============================================================
+# Copy this file, fill in your model details, and remove or
+# comment out any sections you don't need.
+#
+# Usage:
+#   madengine run --config local.yaml
+#   madengine run --config local.yaml --config docker.gpus=0,1
+#
+# Note: --config is mutually exclusive with --additional-context.
+# ============================================================
+
+# ------------------------------------
+# Model selection (pick one approach)
+# ------------------------------------
+model:
+  # Run by tag — discovers matching models from models.json
+  tags: [dummy]
+
+  # OR point at a pre-built manifest instead of discovering/building
+  # manifest_file: build_manifest.json
+
+  # OR use a specific container image directly (skips build step)
+  # container_image: myrepo/myimage:latest
+
+  # Skip the run step (only build)
+  skip_run: false
+
+  # Per-model timeout in seconds (overrides model's own timeout field)
+  # timeout: 3600
+
+# ------------------------------------
+# Docker options (local runs only)
+# ------------------------------------
+docker:
+  # Extra --build-arg values passed to docker build
+  build_args: {}
+  #   ROCM_VERSION: "6.2"
+  #   BASE_IMAGE: rocm/pytorch:latest
+
+  # Extra -e values passed to docker run
+  env_vars: {}
+  #   MY_VAR: my_value
+
+  # Volume mounts: { /path/in/container: /path/on/host }
+  mounts: {}
+  #   /data: /mnt/shared/datasets
+  #   /results: /home/user/results
+
+  # Override which GPUs to expose (comma-separated indices or "all")
+  # Defaults to all available GPUs on the host
+  # gpus: "0,1"
+
+  # Limit CPU cores (docker --cpus)
+  # cpus: "8"
+
+  # Append arbitrary docker run flags not covered by other options
+  # additional_run_options: "--shm-size=16g --ulimit memlock=-1"
+
+  # Keep container running after the script exits (useful for debugging)
+  keep_alive: false
+
+  # Remove Docker build cache before building
+  clean_cache: false
+
+# ------------------------------------
+# Distributed launcher (optional)
+# ------------------------------------
+# Remove this section entirely for single-GPU, non-distributed runs.
+# distributed:
+#   enabled: true
+#   launcher: torchrun   # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+#   backend: nccl        # nccl | gloo
+#   nnodes: 1
+#   nproc_per_node: 4    # GPUs per node
+#   master_port: 29500
+
+# ------------------------------------
+# Environment variables
+# ------------------------------------
+# Injected into the container at runtime (separate from docker.env_vars,
+# which are passed at docker run rather than derived from context).
+env_vars: {}
+#   OMP_NUM_THREADS: "8"
+#   NCCL_DEBUG: WARN
+
+# ------------------------------------
+# Hardware (defaults to AMD/Ubuntu)
+# ------------------------------------
+# gpu_vendor: AMD      # AMD | NVIDIA
+# guest_os: UBUNTU     # UBUNTU | CENTOS
+
+# ------------------------------------
+# Profiling tools (optional)
+# ------------------------------------
+# tools: []
+#   - name: rocprofv3_lightweight
+#   - name: gpu_info_power_profiler
+#     env_vars:
+#       POWER_DEVICE: all
+#       POWER_SAMPLING_RATE: "0.1"
+#   - name: gpu_info_vram_profiler
+#     env_vars:
+#       VRAM_DEVICE: all
+#       VRAM_SAMPLING_RATE: "0.1"
+#   - name: rocm_trace_lite
+#   - name: miopen_trace
+#   - name: rocblas_trace
+
+# ------------------------------------
+# Scripts (optional)
+# ------------------------------------
+# pre_scripts: []   # Run inside the container before the main script
+# post_scripts: []  # Run inside the container after the main script
+# encapsulate_script: null  # Wrap the main script (e.g. a profiler launcher)
+
+# ------------------------------------
+# Log error scanning (optional)
+# ------------------------------------
+log_error:
+  pattern_scan: true   # Scan container output for known error patterns
+  benign_patterns: []  # Regex patterns to ignore (false-positive suppression)
+  patterns: []         # Additional error patterns to flag as failures
+
+# ------------------------------------
+# Output (optional)
+# ------------------------------------
+output: perf.csv           # Where to write the results CSV
+# summary_output: null     # Optional JSON summary file
+# data_config: data.json   # Data provider config file
+
+# ------------------------------------
+# Misc
+# ------------------------------------
+debug: false         # Enable verbose debug logging
+live_output: false   # Stream container stdout/stderr in real time
