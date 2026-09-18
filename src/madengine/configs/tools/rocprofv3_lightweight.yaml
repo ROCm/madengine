@@ -1,0 +1,3 @@
+# @package _global_
+tools:
+  - name: rocprofv3_lightweight

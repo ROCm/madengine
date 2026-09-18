@@ -1,0 +1,13 @@
+# @package _global_
+distributed:
+  enabled: true
+  launcher: sglang-disagg
+  backend: nccl
+  nnodes: 3
+  nproc_per_node: 8
+  port: 29500
+
+sglang_disagg:
+  prefill_nodes: null
+  decode_nodes: null
+  transfer_backend: mooncake

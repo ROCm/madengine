@@ -1,0 +1,18 @@
+# @package _global_
+gpu_vendor: NVIDIA
+guest_os: UBUNTU
+gpu_type: h100
+gpu_memory_gb: 80
+gpus_per_node: 8
+
+runtime:
+  devices: []
+  capabilities: []
+  security_opts: []
+  network_mode: host
+  ipc: host
+  groups: []
+  use_gpu_flag: true
+
+distributed:
+  nproc_per_node: 8
