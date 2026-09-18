@@ -1,0 +1,48 @@
+defaults:
+  - platform: docker
+  - scheduler: local
+  - hardware: amd
+  - launcher: none
+  - _self_
+
+model:
+  tags: []
+  manifest_file: null
+  container_image: null
+  skip_run: false
+  timeout: null
+
+docker:
+  build_args: {}
+  env_vars: {}
+  mounts: {}
+  gpus: null
+  cpus: null
+  additional_run_options: null
+  keep_alive: false
+  clean_cache: false
+
+build:
+  registry: null
+  target_archs: []
+  manifest_output: build_manifest.json
+
+env_vars: {}
+
+debug: false
+live_output: false
+
+log_error:
+  pattern_scan: true
+  benign_patterns: []
+  patterns: []
+
+tools: []
+pre_scripts: []
+post_scripts: []
+encapsulate_script: null
+
+data_config: data.json
+
+output: perf.csv
+summary_output: null

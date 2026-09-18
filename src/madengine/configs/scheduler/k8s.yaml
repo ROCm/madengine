@@ -1,0 +1,31 @@
+# @package _global_
+k8s:
+  kubeconfig: ~/.kube/config
+  namespace: default
+  image_pull_policy: Always
+  backoff_limit: 3
+  ttl_seconds_after_finished: null
+  allow_privileged_profiling: null
+  gpu_count: null
+  gpu_resource_name: amd.com/gpu
+  memory: null
+  memory_limit: null
+  cpu: null
+  cpu_limit: null
+  host_ipc: true
+  node_selector: {}
+  tolerations: []
+  nfs_storage_class: nfs-banff
+  local_path_storage_class: local-path
+  data_storage_class: nfs-banff
+  recreate_shared_data_pvc: false
+  results_pvc: null
+  data_pvc: null
+  output_dir: null
+  secrets:
+    strategy: from_local_credentials
+    image_pull_secret_names: []
+    runtime_secret_name: null
+
+env_vars:
+  OMP_NUM_THREADS: "8"

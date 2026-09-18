@@ -1,0 +1,31 @@
+# SLURM — vLLM inference, data parallelism (2 nodes × 4 GPUs, one replica per node)
+# madengine run --config examples/configs/demo/slurm/vllm-inference.yaml
+
+model:
+  tags: [dummy_vllm]
+
+slurm:
+  partition: amd-rccl
+  nodes: 2
+  gpus_per_node: 4
+  time: "04:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+  enable_node_check: true
+
+distributed:
+  enabled: true
+  launcher: vllm
+  nnodes: 2
+  nproc_per_node: 4
+  backend: nccl
+  port: 29500
+
+env_vars:
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: spawn
+  VLLM_KV_CACHE_SIZE: "0.8"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  NCCL_TIMEOUT: "300"
+  NCCL_DEBUG: WARN
