@@ -190,19 +190,25 @@ else
     # owns, only job ids SLURM no longer reports (a run can outlive the
     # window while the directory's own mtime stays put), and never the
     # scratch root, which find reports as its own starting point unless
-    # -mindepth keeps it out. Without squeue there is no way to tell a live
-    # job from an abandoned one, so nothing is swept at all.
-    if command -v squeue >/dev/null 2>&1; then
+    # -mindepth keeps it out.
+    #
+    # The liveness question cannot be asked per id: `squeue -j <finished id>`
+    # and `squeue -j <id>` against an unreachable controller both answer with
+    # an empty listing and a non-zero status. One query for the whole queue
+    # separates the two -- it either succeeds and names every live job, or
+    # fails, and a failure (including squeue missing entirely) sweeps nothing.
+    if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then
         find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
              -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
              -print 2>/dev/null |
         while IFS= read -r STALE_WORKSPACE; do
             STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
             STALE_JOB=${STALE_JOB%%_node_*}
-            if [ -z "$(squeue -h -j "$STALE_JOB" -o %i 2>/dev/null)" ]; then
-                rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
-                echo "Reclaimed abandoned workspace: $STALE_WORKSPACE"
+            if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
+                continue
             fi
+            rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+            echo "Reclaimed abandoned workspace: $STALE_WORKSPACE"
         done
     fi
     # This job's own directory can only exist when an earlier job reused the
@@ -505,19 +511,22 @@ fi
 # A successful task deletes its workspace at the end of this script, so what
 # this sweep collects are the ones a failed task left behind for post-mortem.
 # Same guards as the single-node path: this user's directories only, only job
-# ids SLURM no longer reports, and -mindepth 1 so find's own starting point --
-# the scratch root -- can never be the thing that gets removed.
-if command -v squeue >/dev/null 2>&1; then
+# ids SLURM no longer reports, -mindepth 1 so find's own starting point -- the
+# scratch root -- can never be the thing that gets removed, and one query for
+# the whole queue, because a per-id query answers the same way for a finished
+# job and for a controller that cannot be reached.
+if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then
     find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
          -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
          -print 2>/dev/null |
     while IFS= read -r STALE_WORKSPACE; do
         STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
         STALE_JOB=${STALE_JOB%%_node_*}
-        if [ -z "$(squeue -h -j "$STALE_JOB" -o %i 2>/dev/null)" ]; then
-            rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
-            echo "Node ${SLURM_PROCID}: reclaimed abandoned workspace $STALE_WORKSPACE"
+        if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
+            continue
         fi
+        rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+        echo "Node ${SLURM_PROCID}: reclaimed abandoned workspace $STALE_WORKSPACE"
     done
 fi
 # This job's own directory can only exist when an earlier job reused the id,
@@ -758,24 +767,33 @@ JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_
 NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_${SLURM_PROCID}"
 mkdir -p "$NODE_COLLECTION_DIR"
 
+# A copy that fails here decides whether the workspace may be deleted below:
+# on a full or unreachable shared filesystem the node's own copy is then all
+# that is left of the run.
+COLLECTION_OK=1
+
 if [ $TASK_EXIT -eq 0 ]; then
     echo ""
     echo "========================================================================"
     echo "Node ${SLURM_PROCID}: Copying artifacts to ${NODE_COLLECTION_DIR}"
     echo "========================================================================"
     # Copy node stdout/stderr into node dir for collect_results
-    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
-    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || COLLECTION_OK=0; fi
+    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || COLLECTION_OK=0; fi
     # Copy env, logs, profiling, multi_results, etc. (not perf.csv/perf_entry/perf_super)
     for f in "$WORKSPACE"/*_env.csv "$WORKSPACE"/*.log "$WORKSPACE"/multi_results*.csv "$WORKSPACE"/results* "$WORKSPACE"/gpu_info_*.csv "$WORKSPACE"/library_trace.csv; do
-        if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+        if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     done
     {% if multiple_results %}
-    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
-    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
+    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     {% endif %}
-    if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
-    echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
+    if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
+    if [ $COLLECTION_OK -eq 1 ]; then
+        echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
+    else
+        echo "  ⚠ Node ${SLURM_PROCID}: some artifacts could not be copied"
+    fi
     echo "========================================================================"
 else
     echo ""
@@ -790,19 +808,23 @@ fi
 
 # The workspace holds a full rsync of the project plus this node's outputs, and
 # it is job-scoped, so leaving it behind grows without bound on a persistent
-# SLURM_TMPDIR. The artifacts above are already in $NODE_COLLECTION_DIR, so
-# drop it -- but only on success: a failed task keeps its workspace so the
-# failure can still be inspected on the node.
+# SLURM_TMPDIR. Drop it once the artifacts above are safely in
+# $NODE_COLLECTION_DIR -- but only then: a failed task, and a task whose
+# artifacts did not all copy out, keep the workspace, because at that point it
+# holds the only copy of the run. The sweep at the top of the next job on this
+# node collects what is left once SLURM no longer knows the job.
 # Best-effort: this script runs under `set -e`, the model ran as root in the
 # container and can leave root-owned files in the bind mount, and a task that
 # already succeeded must not be reported as failed over an unlink.
-if [ $TASK_EXIT -eq 0 ]; then
+if [ $TASK_EXIT -eq 0 ] && [ $COLLECTION_OK -eq 1 ]; then
     cd /
     if rm -rf "$WORKSPACE" 2>/dev/null; then
         echo "Node ${SLURM_PROCID}: removed workspace $WORKSPACE"
     else
         echo "Node ${SLURM_PROCID}: could not remove workspace $WORKSPACE"
     fi
+elif [ $TASK_EXIT -eq 0 ]; then
+    echo "Node ${SLURM_PROCID}: kept workspace $WORKSPACE, artifact collection was incomplete"
 fi
 
 exit $TASK_EXIT

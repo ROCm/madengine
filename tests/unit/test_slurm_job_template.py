@@ -503,8 +503,25 @@ class TestJobScopedWorkspacesAreReclaimed:
         """Only the logs are copied out on failure, so the rest has to stay."""
         script = _render(_build_deployment(tmp_path))
         removal = script.index(self.POST_RUN_REMOVAL)
-        guard = script.rindex("if [ $TASK_EXIT -eq 0 ]; then", 0, removal)
+        guard = script.rindex(
+            "if [ $TASK_EXIT -eq 0 ] && [ $COLLECTION_OK -eq 1 ]; then", 0, removal
+        )
         assert "else" not in script[guard:removal]
+
+    def test_a_workspace_whose_artifacts_did_not_copy_is_kept(self, tmp_path):
+        """Every `cp` here is best-effort, so a full or unreachable shared
+        filesystem would otherwise leave the run with no copy at all."""
+        script = _render(_build_deployment(tmp_path))
+        assert "|| COLLECTION_OK=0" in script
+        # The best-effort copies must feed the flag rather than swallow.
+        collection = script[
+            script.index("Copying artifacts to") : script.index(
+                "Task FAILED with exit code"
+            )
+        ]
+        assert "|| true" not in collection
+        assert "[ $COLLECTION_OK -eq 1 ]" in script
+        assert "artifact collection was incomplete" in script
 
     def test_the_removal_cannot_fail_the_task(self, tmp_path):
         """The task script runs under `set -e` and the container writes as
@@ -556,9 +573,24 @@ class TestJobScopedWorkspacesAreReclaimed:
             )
         )
         assert '-uid "$(id -u)"' in script
-        assert 'squeue -h -j "$STALE_JOB"' in script
+        assert 'grep -qx -- "$STALE_JOB"' in script
         # No way to tell a live job from an abandoned one without squeue.
-        assert script.index("command -v squeue") < script.index(self.SWEEP)
+        assert script.index("LIVE_JOBS=$(squeue -h -o %i") < script.index(self.SWEEP)
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_gives_up_when_squeue_does(self, tmp_path, nodes):
+        """`squeue -j <id>` answers the same way for a job that finished and
+        for a controller that cannot be reached, so it cannot be asked at all:
+        one query for the queue either succeeds or takes the sweep with it."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "squeue -h -j" not in script
+        assert "if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then" in script
 
     @pytest.mark.parametrize("nodes", [1, 2])
     def test_a_reused_job_id_starts_from_an_empty_directory(self, tmp_path, nodes):
