@@ -196,6 +196,11 @@ def _print_run_env_table(
     rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
+# Marker echoed by the container when the stale results file survives the
+# unlink; kept out of the command string so both sides cannot drift.
+_STALE_LEFT = "MAD_STALE_RESULTS_LEFT"
+
+
 def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
     """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
     if not multiple_results:
@@ -892,6 +897,31 @@ class ContainerRunner:
                 else:
                     print(f"  Note: Command '{cmd}' already added by another tool, skipping duplicate.")
 
+    def _drop_stale_results_file(
+        self, model_info: typing.Dict, directory: str
+    ) -> None:
+        """Delete a leftover ``multiple_results`` file from *directory*.
+
+        Args:
+            model_info: Model card; ``multiple_results`` names the file.
+            directory: Directory the model script appends the file in.
+        """
+        stale_results = (model_info.get("multiple_results") or "").strip()
+        if not stale_results:
+            return
+        stale_path = os.path.join(directory, stale_results)
+        try:
+            os.remove(stale_path)
+            print(f"🧹 Removed stale results file: {stale_path}")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(
+                f"⚠️  Could not delete the stale results file {stale_path}: "
+                f"{exc}; rows from an earlier run may be reported as this "
+                "run's."
+            )
+
     def _run_self_managed(
         self,
         model_info: typing.Dict,
@@ -996,7 +1026,18 @@ class ContainerRunner:
             for key, value in self.additional_context["env_vars"].items():
                 env[key] = str(value)
                 print(f"  ENV: {key}=<set>")
-        
+
+        # Same stale results file as in run_container, one directory further
+        # out: the script runs on the host here, appends when the file exists,
+        # and slurm.collect_results falls back to this copy when no per-node CSV
+        # was collected. Unlink it directly -- there is no container to do it.
+        # Both directories the run touches: the script is launched with
+        # cwd=script_dir below, so a relative multiple_results lands there,
+        # while the collector looks for it next to the manifest.
+        self._drop_stale_results_file(model_info, cwd)
+        if script_dir != cwd:
+            self._drop_stale_results_file(model_info, script_dir)
+
         # Run script with logging
         test_start_time = time.time()
         self.rich_console.print("\n[bold blue]Running script (self-managed launcher)...[/bold blue]")
@@ -1479,6 +1520,39 @@ class ContainerRunner:
                                 )
 
                         model_docker.sh(f"rm -rf {model_dir}", timeout=240)
+
+                        # run_directory above is recreated per run, but the
+                        # workspace root is not: it is the submission directory
+                        # for a single-node SLURM job, and plain cwd for a local
+                        # run. Several models write multiple_results there
+                        # (run_directory/..) and append when the file already
+                        # exists -- scripts/pytorch_train and
+                        # scripts/primus_megatron-lm both do -- so a leftover
+                        # from an earlier run is read back as part of this one,
+                        # and _resolve_multiple_results_path prefers it over
+                        # run_directory. Delete it from inside the container:
+                        # the file was written as root and the caller may not be
+                        # able to unlink it.
+                        stale_results = (
+                            model_info.get("multiple_results") or ""
+                        ).strip()
+                        if stale_results:
+                            # Keep a failed unlink non-fatal, but do not keep it
+                            # quiet: the file is still what
+                            # _resolve_multiple_results_path picks, so the run
+                            # would merge the old rows without a word.
+                            quoted = _bash_quote_path(stale_results)
+                            probe = model_docker.sh(
+                                f"rm -f -- {quoted} 2>/dev/null; "
+                                f"if [ -e {quoted} ]; then echo {_STALE_LEFT}; fi"
+                            )
+                            if _STALE_LEFT in (probe or ""):
+                                print(
+                                    "⚠️  Could not delete the stale results file "
+                                    f"{stale_results}; rows from an earlier run "
+                                    "may be reported as this run's."
+                                )
+
                         model_docker.sh(
                             "git config --global --add safe.directory /myworkspace"
                         )

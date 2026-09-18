@@ -254,6 +254,104 @@ class TestSlurmMultiPrepareScript:
         assert "exit $SCRIPT_EXIT_CODE" in script_text
 
 
+class TestSlurmMultiDropsStaleResults:
+    """The wrapper has to clear the results file itself.
+
+    `prepare()` dispatches to `_prepare_slurm_multi_script` before the standard
+    template path, so the model script here never passes through
+    ContainerRunner and never gets its cleanup. The script appends when the
+    file is already there, and `collect_results` falls back to the copies next
+    to the manifest and in the script's own directory, so a leftover from an
+    earlier run is reported as this run's.
+    """
+
+    MODEL_INVOCATION = "bash run_xPyD_models.slurm"
+
+    @pytest.fixture
+    def wrapper_script(self, tmp_path: Path):
+        def build(multiple_results="perf_Qwen3-32B.csv"):
+            entry = dict(PR186_MODEL_ENTRY)
+            if multiple_results is None:
+                entry.pop("multiple_results", None)
+            else:
+                entry["multiple_results"] = multiple_results
+
+            script_abs = tmp_path / entry["scripts"]
+            script_abs.parent.mkdir(parents=True, exist_ok=True)
+            script_abs.write_text("#!/bin/bash\n# placeholder model script\n")
+
+            image_key = entry["env_vars"]["DOCKER_IMAGE_NAME"]
+            manifest_path = tmp_path / "build_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "built_images": {image_key: {"image_name": image_key}},
+                        "built_models": {image_key: entry},
+                        "context": {
+                            "docker_env_vars": {},
+                            "docker_mounts": {},
+                            "docker_build_arg": {},
+                            "gpu_vendor": "AMD",
+                            "guest_os": "UBUNTU",
+                            "docker_gpus": "all",
+                        },
+                    }
+                )
+            )
+
+            deployment = SlurmDeployment(
+                DeploymentConfig(
+                    target="slurm",
+                    manifest_file=str(manifest_path),
+                    additional_context={
+                        "deploy": "slurm",
+                        "gpu_vendor": "AMD",
+                        "guest_os": "UBUNTU",
+                        "slurm": dict(
+                            entry["slurm"],
+                            output_dir=str(tmp_path / "slurm_results"),
+                        ),
+                        "distributed": entry["distributed"],
+                    },
+                )
+            )
+            assert deployment.prepare() is True
+            return Path(deployment.script_path).read_text()
+
+        return build
+
+    def test_the_file_is_dropped_before_the_model_runs(self, wrapper_script):
+        script = wrapper_script()
+        deletion = script.index("rm -f -- ")
+        assert script.index("cd ") < deletion
+        assert deletion < script.index(self.MODEL_INVOCATION)
+
+    def test_the_copy_next_to_the_manifest_goes_too(self, wrapper_script, tmp_path):
+        """That is the one collect_results falls back to."""
+        script = wrapper_script()
+        deletion = next(
+            line for line in script.splitlines() if line.startswith("rm -f -- ")
+        )
+        assert str(tmp_path / "perf_Qwen3-32B.csv") in deletion
+
+    def test_the_unlink_cannot_fail_the_job(self, wrapper_script):
+        """`set -e` is on here, and the file may belong to container root."""
+        deletion = next(
+            line
+            for line in wrapper_script().splitlines()
+            if line.startswith("rm -f -- ")
+        )
+        assert deletion.endswith("2>/dev/null || true")
+
+    def test_the_path_is_quoted(self, wrapper_script):
+        """multiple_results comes from the model card and reaches a host shell."""
+        script = wrapper_script("perf;rm -rf /.csv")
+        assert shlex.quote("perf;rm -rf /.csv") in script
+
+    def test_nothing_is_dropped_without_multiple_results(self, wrapper_script):
+        assert "rm -f -- " not in wrapper_script(None)
+
+
 # ---------------------------------------------------------------------------
 # 4. _execute_with_prebuilt_image manifest-shape contract (Copilot C2 + C3)
 
