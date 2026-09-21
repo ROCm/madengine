@@ -11,6 +11,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # built-in modules
 import os
 import json
+import subprocess
 import unittest.mock
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -463,6 +464,36 @@ class TestContainerRunner:
             call for call in mock_docker.sh.call_args_list if "cp -vLR" in str(call)
         ]
         assert len(copy_calls) == 2
+
+    def test_run_pre_post_script_aborts_on_nonzero_exit(self):
+        """A pre_script exiting non-zero (e.g. cvs_health_gate.sh) must abort the run."""
+        runner = ContainerRunner()
+
+        mock_docker = MagicMock()
+        # First call = `cp -vLR ...` (succeeds). Second call = the script
+        # execution itself, which raises like a real non-zero exit would via
+        # Docker.sh/Console.sh (canFail=False default).
+        mock_docker.sh = MagicMock(
+            side_effect=[
+                None,
+                subprocess.CalledProcessError(
+                    returncode=3, cmd="bash cvs_health_gate.sh monitor check_cluster_health"
+                ),
+            ]
+        )
+
+        scripts = [
+            {
+                "path": "/path/to/cvs_health_gate.sh",
+                "args": "monitor check_cluster_health --cluster_file cluster.json",
+            }
+        ]
+
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            runner.run_pre_post_script(mock_docker, "model_dir", scripts)
+
+        assert exc_info.value.returncode == 3
+        assert mock_docker.sh.call_count == 2
 
     def test_initialization_with_all_parameters(self):
         """Test ContainerRunner initialization with all parameters."""
