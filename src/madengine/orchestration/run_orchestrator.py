@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -796,15 +796,15 @@ class RunOrchestrator:
         # this empty reports a failed SLURM job as a successful run.
         if not result.is_success and not summary["failed_runs"]:
             error = result.message or f"Deployment to {target} failed"
-            successful_models = {
+            reported = {
                 run.get("model")
                 for run in summary["successful_runs"]
-                if isinstance(run, dict)
+                if isinstance(run, dict) and isinstance(run.get("model"), str)
             }
             models = [
                 model
                 for model in self._manifest_model_names(manifest_file)
-                if model not in successful_models
+                if not self._model_reported(model, reported)
             ]
             summary["failed_runs"] = [
                 {"model": model, "status": "FAILURE", "error": error}
@@ -812,6 +812,19 @@ class RunOrchestrator:
             ]
 
         return summary
+
+    @staticmethod
+    def _model_reported(model: str, reported: Set[str]) -> bool:
+        """Did this manifest model appear among the successful runs?
+
+        A model with a multiple-results CSV is reported once per row, under the
+        manifest name decorated with the row's own model: ``<model>_<row>`` in
+        both ``slurm.py`` and ``k8s_results.py``. Matching the name alone would
+        blame a model that did run.
+        """
+        return any(
+            name == model or name.startswith(f"{model}_") for name in reported
+        )
 
     def _manifest_model_names(self, manifest_file: str) -> List[str]:
         """Models listed in the build manifest, empty if it cannot be read."""

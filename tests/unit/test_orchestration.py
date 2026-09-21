@@ -757,6 +757,20 @@ class TestDistributedDeploymentFailureIsReported:
         )
         assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
 
+    def test_a_multiple_results_row_counts_as_the_model_reporting(self, tmp_path):
+        # slurm.py and k8s_results.py name each results row "<model>_<row>".
+        metrics = {
+            "successful_runs": [{"model": "model1_Llama-3.1-70B"}],
+            "failed_runs": [],
+        }
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            metrics=metrics,
+            models=("model1", "model2"),
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
+
     def test_empty_manifest_falls_back_to_the_target(self, tmp_path):
         summary = self._deploy(tmp_path, is_success=False, models=())
         assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
