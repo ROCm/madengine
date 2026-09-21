@@ -742,6 +742,41 @@ Run scripts before and after model execution:
 }
 ```
 
+### Gating a run on cvs cluster health
+
+madengine ships an example `pre_scripts` entry,
+`scripts/common/pre_scripts/cvs_health_gate.sh`, that wraps
+[cvs (Cluster Validation Suite)](https://github.com/ROCm/cvs) as a health
+gate: if the cvs check fails, the run aborts before the model script executes.
+
+```json
+{
+  "pre_scripts": [
+    {
+      "path": "scripts/common/pre_scripts/cvs_health_gate.sh",
+      "args": "monitor check_cluster_health --cluster_file /workspace/cluster.json"
+    }
+  ]
+}
+```
+
+Two things to know before using this:
+
+- **`pre_scripts` run inside the model's Docker container**, after the
+  container has already started, immediately before the model script runs.
+  This gate aborts the run before wasting GPU time on the model itself, but
+  it does not skip the cost of starting the container.
+- **`cvs` must already be installed inside the model's Docker image**, along
+  with any SSH credentials `cvs` needs to reach the target cluster nodes, and
+  the `cluster_file` passed via `args` must be readable from inside the
+  container (for example, by baking it into the image or mounting it via
+  whatever data-mount mechanism the model's `additional_context` already
+  uses). madengine does not install or provision `cvs` itself.
+
+Any non-zero exit code from `cvs` propagates through
+`cvs_health_gate.sh` and aborts the madengine run, the same as any other
+failing `pre_scripts` entry.
+
 ## Model Arguments
 
 Pass arguments to model execution script:
