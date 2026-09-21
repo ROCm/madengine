@@ -466,7 +466,7 @@ class TestContainerRunner:
         assert len(copy_calls) == 2
 
     def test_run_pre_post_script_aborts_on_nonzero_exit(self):
-        """A pre_script exiting non-zero (e.g. cvs_health_gate.sh) must abort the run."""
+        """A pre_script exiting non-zero (e.g. cvs_health_gate.sh) must abort."""
         runner = ContainerRunner()
 
         mock_docker = MagicMock()
@@ -477,7 +477,8 @@ class TestContainerRunner:
             side_effect=[
                 None,
                 subprocess.CalledProcessError(
-                    returncode=3, cmd="bash cvs_health_gate.sh monitor check_cluster_health"
+                    returncode=3,
+                    cmd="bash cvs_health_gate.sh monitor check_cluster_health",
                 ),
             ]
         )
