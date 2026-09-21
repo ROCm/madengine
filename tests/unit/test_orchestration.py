@@ -731,6 +731,47 @@ class TestDistributedDeploymentFailureIsReported:
         )
         assert summary["failed_runs"][0]["model"] == "model1"
 
-    def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
+    def test_a_model_built_into_several_images_is_blamed_once(self, tmp_path):
+        # Multi-arch and multi-Dockerfile builds give one model several images.
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            manifest_data={
+                "built_images": {
+                    "ci-model1-gfx942": {"model": "model1"},
+                    "ci-model1-gfx950": {"model": "model1"},
+                }
+            },
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model1"]
+
+    def test_models_that_did_report_success_are_not_blamed(self, tmp_path):
+        # A deployment can fail after some models reported metrics; those must
+        # not appear in both lists.
+        metrics = {"successful_runs": [{"model": "model1"}], "failed_runs": []}
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            metrics=metrics,
+            models=("model1", "model2"),
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
+
+    def test_empty_manifest_falls_back_to_the_target(self, tmp_path):
         summary = self._deploy(tmp_path, is_success=False, models=())
+        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
+
+    def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text("{ not json")
+        orchestrator = self._orchestrator(tmp_path)
+        orchestrator.rich_console = MagicMock()
+        result = MagicMock()
+        result.is_success = False
+        result.metrics = None
+        result.message = "Job 34462 failed"
+        result.logs_path = None
+        with patch("madengine.deployment.factory.DeploymentFactory") as factory:
+            factory.create.return_value.execute.return_value = result
+            summary = orchestrator._execute_distributed("slurm", str(manifest))
         assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]

@@ -830,7 +830,11 @@ class RunOrchestrator:
             if not name:
                 model_info = built_models.get(key)
                 name = model_info.get("name") if isinstance(model_info, dict) else None
-            names.append(name or key)
+            name = name or key
+            # One model can own several images (multi-arch, several Dockerfiles),
+            # and blaming it once per image would inflate the failure count.
+            if name not in names:
+                names.append(name)
         return names
 
     def _show_node_info(self):
