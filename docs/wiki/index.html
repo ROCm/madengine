@@ -655,15 +655,20 @@ pre-commit run --all-files</code></pre>
   --verbose / --no-verbose</code></pre>
 
 <h4>Timeout resolution</h4>
+<p>Precedence, lowest to highest: the 7200&nbsp;s default, then the model card's
+<code>timeout</code> field, then an explicit <code>--timeout</code>.</p>
 <table>
-<thead><tr><th>Value</th><th>Resolved timeout</th></tr></thead>
+<thead><tr><th><code>--timeout</code></th><th>Resolved timeout</th></tr></thead>
 <tbody>
-<tr><td><code>-1</code> (default)</td><td>7200 s (2 hours)</td></tr>
-<tr><td><code>0</code></td><td>Disabled (no timeout)</td></tr>
-<tr><td>model card <code>timeout</code> field</td><td>Used when CLI is default (-1)</td></tr>
-<tr><td>Explicit positive int</td><td>That many seconds, overrides model card</td></tr>
+<tr><td><code>-1</code> (default)</td><td>Not passed; falls through to the model card's <code>timeout</code>, or 7200&nbsp;s (2 hours) if the card has none</td></tr>
+<tr><td><code>0</code></td><td>Disabled (no timeout), overriding the model card</td></tr>
+<tr><td>Explicit positive int</td><td>That many seconds, overrides the model card — including <code>--timeout 7200</code>, which is distinguishable from not passing the flag</td></tr>
+<tr><td><code>&lt; -1</code></td><td>Rejected with exit code 4 (<code>INVALID_ARGS</code>)</td></tr>
 </tbody>
 </table>
+<p>A model card may also set <code>"timeout": 0</code> (or any non-positive value)
+to declare "no timeout". Resolution lives in
+<code>core/timeout.py</code> and is shared by local, SLURM, and K8s runs.</p>
 </section>
 
 <!-- CLI: REPORT / DATABASE -->
@@ -842,7 +847,7 @@ In Jenkins, use <code>madengine run … 2&gt;&amp;1 | tee madengine.log</code> w
 <thead><tr><th>Field</th><th>Notes</th></tr></thead>
 <tbody>
 <tr><td><code>n_gpus</code></td><td><code>"-1"</code> = use all GPUs on the host (<code>MAD_SYSTEM_NGPUS</code>). Positive int = that many GPUs. Used for perf CSV metadata.</td></tr>
-<tr><td><code>timeout</code></td><td>Used when CLI <code>--timeout=-1</code> (default). Explicit CLI value always wins.</td></tr>
+<tr><td><code>timeout</code></td><td>Seconds. Overrides the 7200&nbsp;s default; overridden in turn by an explicit <code>--timeout</code>. A non-positive value (<code>0</code>, <code>-1</code>) means "no timeout". Omit the field to take the default.</td></tr>
 <tr><td><code>skip_gpu_arch</code></td><td>Comma-separated GPU arch names (e.g. <code>"gfx908,A100"</code>). Model is skipped if detected arch matches. Disable with <code>--disable-skip-gpu-arch</code>.</td></tr>
 <tr><td><code>multiple_results</code></td><td>Path to CSV file (relative to model dir) with per-result rows that are appended to <code>perf.csv</code> individually.</td></tr>
 <tr><td><code>DOCKER_IMAGE_NAME</code> in <code>env_vars</code></td><td>Required for <code>slurm_multi</code>: specifies the registry image for parallel <code>srun docker pull</code> on compute nodes. Also set automatically by <code>DockerBuilder</code> after a successful push.</td></tr>

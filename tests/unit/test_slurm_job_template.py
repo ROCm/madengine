@@ -18,11 +18,13 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.slurm import SlurmDeployment
 
@@ -45,6 +47,8 @@ def _build_deployment(
     tmp_path: Path,
     slurm_overrides: dict = None,
     distributed_overrides: dict = None,
+    timeout: int = None,
+    cli_timeout: int = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
@@ -81,6 +85,9 @@ def _build_deployment(
     }
     distributed_config.update(distributed_overrides or {})
 
+    cfg_kwargs = {} if timeout is None else {"timeout": timeout}
+    if cli_timeout is not None:
+        cfg_kwargs["cli_timeout"] = cli_timeout
     cfg = DeploymentConfig(
         target="slurm",
         manifest_file=str(manifest_path),
@@ -91,6 +98,7 @@ def _build_deployment(
             "slurm": slurm_config,
             "distributed": distributed_config,
         },
+        **cfg_kwargs,
     )
     return SlurmDeployment(cfg)
 
@@ -199,3 +207,233 @@ class TestGpusPerNodeDirective:
     def test_directive_omitted_when_opted_out(self, tmp_path):
         script = _render(_build_deployment(tmp_path, {"skip_gpus_directive": True}))
         assert "--gpus-per-node" not in script
+
+
+# ---------------------------------------------------------------------------
+# 4. The --timeout the job script passes back to madengine
+
+class TestTimeoutForwarding:
+    """The rendered `madengine run --timeout N` must always carry a valid int.
+
+    The template used `{{ timeout | default(3600) }}`, but Jinja's default filter
+    only substitutes for *undefined* — a None slipped straight through and
+    rendered the literal `--timeout None`, which Typer then rejected.
+    """
+
+    @staticmethod
+    def _timeout_args(script: str) -> list:
+        return re.findall(r"--timeout (\S+)", script)
+
+    def test_no_timeout_renders_zero_not_none(self, tmp_path):
+        # --timeout 0 (no timeout) is the case that used to render "None".
+        script = _render(_build_deployment(tmp_path, cli_timeout=0))
+        args = self._timeout_args(script)
+        assert args, "job script does not forward --timeout at all"
+        assert all(a == "0" for a in args), args
+        assert "--timeout None" not in script
+
+    def test_explicit_timeout_forwarded(self, tmp_path):
+        script = _render(_build_deployment(tmp_path, cli_timeout=120))
+        assert all(a == "120" for a in self._timeout_args(script))
+
+    def test_unspecified_sentinel_forwarded_verbatim(self, tmp_path):
+        # -1 must survive to the inner CLI so it can apply model-card precedence
+        # there, rather than being flattened to a concrete default here.
+        script = _render(_build_deployment(tmp_path, cli_timeout=-1))
+        assert all(a == "-1" for a in self._timeout_args(script))
+
+    def test_resolved_process_cap_does_not_leak_into_the_job(self, tmp_path):
+        """config.timeout caps *this* process; only cli_timeout reaches the job.
+
+        Regression: the template read config.timeout, so a default run rendered
+        --timeout 7200 into the job script. The inner madengine cannot tell that
+        from a user-supplied --timeout 7200, so it outranked the model card and
+        a model declaring "timeout": 3600 silently ran with a 2h cap instead.
+        """
+        deployment = _build_deployment(
+            tmp_path, timeout=DEFAULT_RUN_TIMEOUT, cli_timeout=-1
+        )
+        assert all(a == "-1" for a in self._timeout_args(_render(deployment)))
+
+    def test_default_config_forwards_the_sentinel(self, tmp_path):
+        # A config built without an explicit CLI timeout forwards "unspecified",
+        # leaving the model card free to win inside the job.
+        script = _render(_build_deployment(tmp_path))
+        assert all(a == "-1" for a in self._timeout_args(script))
+
+
+# ---------------------------------------------------------------------------
+# 5. The timeout handed to subprocess on the in-allocation path
+
+class TestInAllocationTimeout:
+    """`_run_inside_existing_allocation` must not pass a sentinel to subprocess.
+
+    Regression: the call site read `self.config.timeout if ... > 0 else None`,
+    which raised TypeError once the CLI started sending None for "no timeout".
+    subprocess spells "no timeout" as None and reads 0 as "expire now", so
+    both sentinels have to be mapped, not compared inline.
+    """
+
+    def _invoke(self, tmp_path, timeout):
+        deployment = _build_deployment(tmp_path)
+        # Set on the config directly: None is one of the values under test, so
+        # it cannot be routed through _build_deployment's "omit the kwarg" flag.
+        deployment.config.timeout = timeout
+        deployment.inside_allocation = False  # skip the allocation-size check
+        deployment.script_path = tmp_path / "job.sh"
+        deployment.script_path.write_text("#!/bin/bash\nexit 0\n")
+        with patch(
+            "madengine.deployment.slurm.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as mock_run:
+            deployment._run_inside_existing_allocation()
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1, None])
+    def test_no_timeout_values_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120
+
+    def test_default_config_carries_the_shared_default(self, tmp_path):
+        assert _build_deployment(tmp_path).config.timeout == DEFAULT_RUN_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# 6. SGLang disaggregated peer list resolves to routable addresses
+
+class TestSglangDisaggNodeIps:
+    """Peers must never be published as loopback.
+
+    On Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+    `getent hosts` makes every node advertise itself as loopback and any
+    all-nodes barrier hangs.
+    """
+
+    @staticmethod
+    def _sglang_env(tmp_path) -> str:
+        deployment = _build_deployment(
+            tmp_path,
+            {"nodes": 4},
+            {"launcher": "sglang-disagg", "nnodes": 4},
+        )
+        return deployment._generate_sglang_disagg_command(
+            nnodes=4, nproc_per_node=8, master_port=29500
+        )
+
+    @staticmethod
+    def _code_lines(script: str) -> list:
+        """Executable lines only — the comments name the rejected commands."""
+        return [l for l in script.splitlines() if not l.lstrip().startswith("#")]
+
+    def test_uses_ahostsv4_and_skips_loopback(self, tmp_path):
+        script = self._sglang_env(tmp_path)
+        assert "getent ahostsv4" in script
+        assert "/^127\\./" in script
+        # the plain lookup is what returned the 127.0.1.1 self-mapping
+        assert not any("getent hosts" in l for l in self._code_lines(script))
+
+    def test_fallback_is_restricted_to_the_local_node(self, tmp_path):
+        """A peer that fails to resolve must not inherit this node's address."""
+        out = self._run_resolution(tmp_path, ["node1", "node4"])
+        assert out.returncode != 0, out.stdout + out.stderr
+        assert "node4" in out.stderr
+        # publishing our own address in the peer's slot is worse than no entry
+        assert "10.0.0.2" not in out.stdout
+
+    def test_local_node_is_identified_by_its_slurm_nodename(self, tmp_path):
+        """The list holds NodeName, which need not equal the machine hostname.
+
+        With NodeHostname configured the two differ, and matching on hostname
+        alone would treat the local entry as an unresolvable peer and abort a
+        job that has a perfectly good address to advertise.
+        """
+        out = self._run_resolution(tmp_path, ["node1", "node9"], nodename="node9")
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "RESULT=10.0.0.1,10.0.0.2" in out.stdout, out.stdout + out.stderr
+
+    def _run_resolution(self, tmp_path, nodes, ifname="fenic0", nodename=None):
+        """Execute the rendered resolution logic against stubbed system tools.
+
+        The simulated machine answers to hostname ``node2`` and holds a docker
+        bridge (172.17.0.1), a management address (192.168.1.5) and the cluster
+        interface (10.0.0.2). ``node1`` resolves normally, ``node2``/``node4``/
+        ``node9`` only to loopback and anything else not at all. ``nodename``
+        sets SLURMD_NODENAME, i.e. the identity SLURM gives the local node.
+        """
+        script = self._sglang_env(tmp_path)
+        start = script.index("# Address this node advertises")
+        snippet = script[start : script.index("export SGLANG_NODE_IPS", start)]
+
+        bin_dir = tmp_path / "stubbin"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "ip").write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            '  *"addr show dev fenic0"*) echo "3: fenic0 inet 10.0.0.2/24 scope global fenic0";;\n'
+            '  *"addr show dev docker0"*) echo "4: docker0 inet 172.17.0.1/16 scope global docker0";;\n'
+            '  *"route get"*) echo "1.1.1.1 via 192.168.1.1 dev mgmt0 src 192.168.1.5 uid 0";;\n'
+            "  *) exit 1;;\n"
+            "esac\n"
+        )
+        (bin_dir / "getent").write_text(
+            '#!/bin/bash\ncase "$2" in\n  node1) echo "10.0.0.1 node1";;\n'
+            '  node2|node4|node9) echo "127.0.1.1 $2";;\n  *) exit 2;;\nesac\n'
+        )
+        (bin_dir / "hostname").write_text(
+            '#!/bin/bash\ncase "$1" in\n  -s) echo node2;;\n  *) echo node2;;\nesac\n'
+        )
+        (bin_dir / "scontrol").write_text(
+            "#!/bin/bash\nexit 1\n"
+            if not nodes
+            else "#!/bin/bash\nprintf '%s\\n' " + " ".join(nodes) + "\n"
+        )
+        for f in bin_dir.iterdir():
+            f.chmod(0o755)
+
+        runner = tmp_path / "run.sh"
+        runner.write_text(snippet + '\necho "RESULT=$SLURM_NODE_IPS"\n')
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "NCCL_SOCKET_IFNAME": ifname,
+            "SLURM_JOB_NODELIST": "stub",
+        }
+        if nodename is not None:
+            env["SLURMD_NODENAME"] = nodename
+        return subprocess.run(
+            ["bash", str(runner)], capture_output=True, text=True, env=env
+        )
+
+    def test_empty_node_list_fails_the_job(self, tmp_path):
+        """A failing `scontrol` yields "" through the pipeline, not a marker.
+
+        Without an explicit check that falls straight past the UNRESOLVED case
+        and launches with no peers, which hangs the barrier just as loopback did.
+        """
+        out = self._run_resolution(tmp_path, [])
+        assert out.returncode != 0, out.stdout + out.stderr
+        assert "empty node list" in out.stderr
+        assert "RESULT=" not in out.stdout
+
+    def test_unresolvable_peer_fails_the_job(self, tmp_path):
+        """Failing fast is what prevents another allocation-length hang."""
+        out = self._run_resolution(tmp_path, ["node1", "node3"])
+        assert out.returncode != 0, out.stdout + out.stderr
+        # the operator needs to know which node could not be resolved
+        assert "node3" in out.stderr
+        assert "RESULT=" not in out.stdout
+
+    def test_local_address_comes_from_the_cluster_interface(self, tmp_path):
+        """`hostname -I` lists every interface unordered, so it is not used."""
+        script = self._sglang_env(tmp_path)
+        assert not any("hostname -I" in l for l in self._code_lines(script))
+        assert "NCCL_SOCKET_IFNAME" in script
+
+        out = self._run_resolution(tmp_path, ["node1", "node2"])
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "RESULT=10.0.0.1,10.0.0.2" in out.stdout, out.stdout + out.stderr
+        # neither the docker bridge nor the management address may be published
+        assert "172.17.0.1" not in out.stdout
+        assert "192.168.1.5" not in out.stdout

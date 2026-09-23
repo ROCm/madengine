@@ -23,7 +23,8 @@ from madengine.core.auth import login_to_registry
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.timeout import Timeout
+from madengine.core.image_digest import resolve_pinned_image
+from madengine.core.timeout import Timeout, subprocess_timeout
 from madengine.core.dataprovider import Data
 from madengine.utils.ops import PythonicTee, file_print
 from madengine.reporting.update_perf_csv import (
@@ -42,12 +43,37 @@ from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.deployment.common import is_self_managed_launcher
 from madengine.execution.container_runner_helpers import (
+    container_name_from_image_ref,
     log_text_has_error_pattern,
     make_run_log_file_path,
     resolve_log_error_scan_config,
     resolve_run_status,
     resolve_run_timeout,
 )
+
+
+# Shell environment variables forwarded into the container for SLURM jobs.
+# A launcher's variables must be listed here or they never reach the model
+# script, which then silently falls back to its single-node defaults.
+SLURM_PASSTHROUGH_ENV_VARS = [
+    'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+    'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+    'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+    'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+    # Primus launcher (config path and optional CLI extra args)
+    'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
+    # Rendezvous timeout so all nodes can join after pull
+    'TORCH_ELASTIC_RDZV_TIMEOUT',
+    # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
+    # CRITICAL: These must be passed to Docker for proper GPU device mapping
+    'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES',
+    # SGLang disaggregated topology and peer list, exported by the SLURM job
+    # script. Without them the model run.sh falls back to a single-node default
+    # (xP=1/yD=1, IPADDRS=localhost) and multi-node bring-up silently degrades.
+    'SGLANG_DISAGG_MODE', 'SGLANG_DISAGG_PREFILL_NODES',
+    'SGLANG_DISAGG_DECODE_NODES', 'SGLANG_DISAGG_TOTAL_NODES',
+    'SGLANG_NODE_IPS', 'SGLANG_NODE_RANK', 'SGLANG_TP_SIZE',
+]
 
 
 def _print_run_env_table(
@@ -212,6 +238,16 @@ def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
 
 class ContainerRunner:
     """Class responsible for running Docker containers with models."""
+
+    def _merge_slurm_env_from_shell(self) -> int:
+        """Copy the allowlisted SLURM/launcher variables from the shell into
+        ``docker_env_vars``. Returns how many were found."""
+        merged = 0
+        for var_name in SLURM_PASSTHROUGH_ENV_VARS:
+            if var_name in os.environ:
+                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged += 1
+        return merged
 
     def __init__(
         self,
@@ -985,7 +1021,7 @@ class ContainerRunner:
                         shell=True,
                         cwd=script_dir,
                         env=env,
-                        timeout=timeout if timeout > 0 else None,
+                        timeout=subprocess_timeout(timeout),
                     )
                     
                     run_results["test_duration"] = time.time() - test_start_time
@@ -1100,7 +1136,7 @@ class ContainerRunner:
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,
-        timeout: int = 7200,
+        timeout: int = -1,
         tools_json_file: str = "scripts/common/tools.json",
         phase_suffix: str = "",
         generate_sys_env_details: bool = True,
@@ -1114,7 +1150,8 @@ class ContainerRunner:
             keep_alive: Whether to keep container alive after execution
             keep_model_dir: Whether to keep model directory after execution
             skip_model_run: Whether to skip the model script invocation
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
             tools_json_file: Path to tools configuration file
             phase_suffix: Suffix for log file name (e.g., ".run" or "")
             generate_sys_env_details: Whether to collect system environment details
@@ -1227,27 +1264,8 @@ class ContainerRunner:
                     except ValueError:
                         pass
         
-        # List of environment variables to pass from shell to Docker (for SLURM jobs)
-        slurm_env_vars = [
-            'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
-            'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
-            'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
-            'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
-            # Primus launcher (config path and optional CLI extra args)
-            'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
-            # Rendezvous timeout so all nodes can join after pull
-            'TORCH_ELASTIC_RDZV_TIMEOUT',
-            # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
-            # CRITICAL: These must be passed to Docker for proper GPU device mapping
-            'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES'
-        ]
-        
         # Check shell environment and add to docker_env_vars
-        merged_from_env = 0
-        for var_name in slurm_env_vars:
-            if var_name in os.environ:
-                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
-                merged_from_env += 1
+        merged_from_env = self._merge_slurm_env_from_shell()
         
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
@@ -1359,10 +1377,10 @@ class ContainerRunner:
         docker_options += self.get_mount_arg(mount_datapaths, excluded_container_targets=excluded_mount_targets)
         docker_options += f" {additional_opts}"
 
-        # Generate container name
-        base_container_name = "container_" + re.sub(
-            ".*:", "", docker_image.replace("/", "_").replace(":", "_")
-        )
+        # Generate container name. docker_image may be digest-pinned
+        # (repo@sha256:...) under require_pinned_image, and "@" is not a legal
+        # container-name character, so this must not use the raw reference.
+        base_container_name = container_name_from_image_ref(docker_image)
         
         # For multi-node SLURM jobs, add node rank to avoid name conflicts
         node_rank = os.environ.get("SLURM_PROCID") or os.environ.get("RANK")
@@ -1600,11 +1618,12 @@ class ContainerRunner:
                         else:
                             self.rich_console.print("[bold blue]Running model...[/bold blue]")
                             # Use the container timeout (default 7200s) for script execution
-                            # to prevent indefinite hangs
+                            # to prevent indefinite hangs. A resolved timeout of 0 means
+                            # "no timeout", which communicate() spells as None.
                             try:
                                 model_output = model_docker.sh(
                                     f"cd {model_dir} && {script_name} {model_args}",
-                                    timeout=timeout,
+                                    timeout=subprocess_timeout(timeout),
                                 )
                             except RuntimeError as run_err:
                                 # On script failure, collect lightweight diagnostics from the
@@ -2764,7 +2783,7 @@ class ContainerRunner:
         self,
         manifest_file: str,
         registry: str = None,
-        timeout: int = 7200,
+        timeout: int = -1,
         keep_alive: bool = False,
         keep_model_dir: bool = False,
         skip_model_run: bool = False,
@@ -2777,7 +2796,8 @@ class ContainerRunner:
         Args:
             manifest_file: Path to build_manifest.json
             registry: Optional registry override
-            timeout: Execution timeout per model in seconds
+            timeout: Execution timeout per model in seconds; -1 (unspecified)
+                defers to each model card, then to DEFAULT_RUN_TIMEOUT
             keep_alive: Whether to keep containers alive after execution
             keep_model_dir: Whether to keep model directory after execution
             skip_model_run: Whether to skip the model script invocation
@@ -2836,7 +2856,21 @@ class ContainerRunner:
                     # Local image mode (MAD_CONTAINER_IMAGE): Use the provided image directly
                     run_image = build_info.get("docker_image")
                     self.rich_console.print(f"[yellow]🏠 Using local image: {run_image}[/yellow]")
-                    
+
+                    # This branch also covers build-on-compute-node manifests,
+                    # whose docker_image is a registry reference. Enforce here
+                    # too, otherwise those manifests would silently bypass the
+                    # flag by never reaching the registry branch below.
+                    run_image = resolve_pinned_image(
+                        run_image,
+                        build_info.get("image_digest"),
+                        bool(
+                            (self.additional_context or {}).get("require_pinned_image")
+                        ),
+                        model_name=model_info.get("name", ""),
+                    )
+
+
                     # Ensure the local image is available on this node. In a
                     # multi-node SLURM run only the primary may have the
                     # locally-built image; the shared-tar cache
@@ -2849,12 +2883,29 @@ class ContainerRunner:
                     )
                 
                 elif build_info.get("registry_image"):
-                    # Registry image: Pull from registry
+                    # Registry image: Pull from registry. Under
+                    # require_pinned_image this resolves to repo@sha256:... and
+                    # raises (outside the pull try/except, so there is no tag
+                    # fallback) when the manifest recorded no digest.
+                    pull_target = resolve_pinned_image(
+                        build_info["registry_image"],
+                        build_info.get("image_digest"),
+                        bool((self.additional_context or {}).get("require_pinned_image")),
+                        model_name=model_info.get("name", ""),
+                    )
                     try:
-                        self.pull_image(build_info["registry_image"])
+                        self.pull_image(pull_target)
                         # Update docker_image to use registry image
-                        run_image = build_info["registry_image"]
+                        run_image = pull_target
                     except Exception as pull_error:
+                        if (self.additional_context or {}).get("require_pinned_image"):
+                            # The local tag is mutable too, so falling back to it
+                            # would break the very guarantee the flag exists for.
+                            raise RuntimeError(
+                                f"require_pinned_image: failed to pull "
+                                f"{pull_target} for model "
+                                f"{model_info.get('name', image_name)}: {pull_error}"
+                            ) from pull_error
                         self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
                         run_image = image_name
                 else:

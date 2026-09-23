@@ -223,13 +223,14 @@ madengine run [OPTIONS]
 | `--tags` | `-t` | TEXT | `[]` | Model tags to run (can specify multiple) |
 | `--manifest-file` | `-m` | TEXT | `""` | Build manifest file path (for pre-built images) |
 | `--registry` | `-r` | TEXT | `None` | Docker registry URL |
-| `--timeout` | | INT | `-1` | Timeout in seconds (-1=default 7200s, 0=no timeout) |
+| `--timeout` | | INT | `-1` | Timeout in seconds. `-1` means "not passed" and falls through to the model card's `timeout`, or 7200s if it has none; `0` disables the timeout; a positive value overrides the model card. See [Usage — Custom Timeouts](usage.md#custom-timeouts). |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
 | `--skip-model-run` | | FLAG | `False` | Skip the model script inside each container. The container still starts and `pre_scripts` still run; only the model script invocation is skipped (status reported as `SKIPPED`, exit code `0`). Combine with `--keep-alive` to leave a live container for manual exec. Ignored with a warning on SLURM/K8s targets. See [Usage — Skip model run](usage.md#skip-model-run-after-build). |
+| `--require-pinned-image` | | FLAG | `False` | Pull registry images by the `sha256` digest recorded in the build manifest (`repo@sha256:...`) instead of by tag, so a tag that moved between build and run fails loudly instead of silently running a different image. Fails immediately — with no tag fallback — if the manifest has no digest for an image. Equivalent to the `require_pinned_image` additional-context key. See [Configuration — Pinned image digests](configuration.md#pinned-image-digests). |
 | `--manifest-output` | | TEXT | `build_manifest.json` | Output file for build manifest (full workflow) |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for summary JSON |
 | `--live-output` | `-l` | FLAG | `False` | Print output in real-time |
