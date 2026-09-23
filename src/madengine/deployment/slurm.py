@@ -594,7 +594,17 @@ class SlurmDeployment(BaseDeployment):
         nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
         if nodelist:
             script_lines.append(f"#SBATCH --nodelist={nodelist}")
-        
+
+        # Accounting directives, same as job.sh.j2. Sites that bill jobs reject a
+        # submission without them, so a model card declaring qos/account has to be
+        # honoured here too or the self-managed path silently drops it.
+        qos = self.slurm_config.get("qos")
+        if qos:
+            script_lines.append(f"#SBATCH --qos={qos}")
+        account = self.slurm_config.get("account")
+        if account:
+            script_lines.append(f"#SBATCH --account={account}")
+
         script_lines.extend([
             "",
             f"# slurm_multi launcher script for {model_info['name']}",
@@ -602,9 +612,19 @@ class SlurmDeployment(BaseDeployment):
             "",
             "set -e",
             "",
-            "# Environment variables",
         ])
-        
+
+        # `module load` before anything else runs, matching job.sh.j2: these bring
+        # the site's docker/rocm/mpi into PATH for the model's own srun calls.
+        modules = self.slurm_config.get("modules", []) or []
+        if modules:
+            script_lines.append("# Load required modules")
+            for module in modules:
+                script_lines.append(f"module load {shlex.quote(str(module))}")
+            script_lines.append("")
+
+        script_lines.append("# Environment variables")
+
         for key, value in env_vars.items():
             script_lines.append(f"export {key}={shlex.quote(str(value))}")
         
