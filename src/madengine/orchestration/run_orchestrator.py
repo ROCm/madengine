@@ -508,6 +508,18 @@ class RunOrchestrator:
                 for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
+                # "_explicit_slurm_keys" describes the slurm block it was recorded
+                # against. Replacing that block above makes the build-time
+                # provenance stale: a manifest built with an explicit slurm.nodes
+                # would keep "nodes" marked explicit even though the runtime slurm
+                # block never sets it, so SlurmDeployment would treat its own
+                # default nodes=1 as deliberate and ignore distributed.nnodes.
+                # RunOrchestrator does not run --additional-context through
+                # ConfigLoader, so the runtime keys are exactly what the user set.
+                if "slurm" in self.additional_context:
+                    stored_config["_explicit_slurm_keys"] = sorted(
+                        self.additional_context.get("slurm") or {}
+                    )
                 manifest["deployment_config"] = stored_config
             
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)

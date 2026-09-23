@@ -865,15 +865,30 @@ class BuildOrchestrator:
         # All models are built in a single sbatch job, so one SLURM config applies to all.
         first_model = models[0]
         model_slurm_config = first_model.get("slurm", {})
+        # self.additional_context is post-ConfigLoader, so it carries preset defaults
+        # (e.g. nodes=1) alongside anything the user actually passed. Only the keys
+        # captured before defaulting may outrank the model card — otherwise a preset
+        # default silently beats a declared slurm.* field. Same precedence rule as
+        # _merge_model_config_into_manifest.
         context_slurm_config = self.additional_context.get("slurm", {})
-        slurm_config = {**model_slurm_config, **context_slurm_config}
+        slurm_config = {
+            **context_slurm_config,
+            **{
+                key: value
+                for key, value in model_slurm_config.items()
+                if key not in self._original_user_slurm_keys
+            },
+        }
 
         self.rich_console.print(f"[green]✓ Found {len(models)} model(s)[/green]\n")
         self.rich_console.print("[bold cyan]📋 SLURM Configuration (merged):[/bold cyan]")
         if model_slurm_config:
             self.rich_console.print(f"  [dim]From model card:[/dim] {list(model_slurm_config.keys())}")
-        if context_slurm_config:
-            self.rich_console.print(f"  [dim]From --additional-context (overrides):[/dim] {list(context_slurm_config.keys())}")
+        if self._original_user_slurm_keys:
+            self.rich_console.print(
+                f"  [dim]From --additional-context (overrides):[/dim] "
+                f"{sorted(self._original_user_slurm_keys)}"
+            )
 
         # Validate required fields
         partition = slurm_config.get("partition")
@@ -1221,6 +1236,10 @@ exit 0
                     "data": m.get("data", ""),
                     "n_gpus": m.get("n_gpus", "8"),
                     "tags": m.get("tags", []),
+                    # Same field set as _execute_with_prebuilt_image: without this a
+                    # model card's declared results CSV is lost, and the run falls
+                    # back to log scraping with nothing to scrape.
+                    "multiple_results": m.get("multiple_results", ""),
                     "slurm": slurm_config,
                     "distributed": m.get("distributed", {}),
                     "env_vars": {**m.get("env_vars", {}), "DOCKER_IMAGE_NAME": rim},
@@ -1247,6 +1266,14 @@ exit 0
 
             with open(manifest_output, "w") as f:
                 json.dump(manifest, f, indent=2)
+
+            # Route this path through the same model-field/provenance handling as the
+            # other build paths, so a model card's distributed.* lands in
+            # deployment_config and "_explicit_slurm_keys" records which slurm.* keys
+            # were really set (vs. a ConfigLoader preset default). Without it, run
+            # would infer explicitness from the persisted keys and let a default
+            # nodes=1 outrank the card's distributed.nnodes.
+            self._merge_model_config_into_manifest(manifest_output, models)
 
             self.rich_console.print(f"[green]✓ Build completed on compute node[/green]")
             for pmd in per_model_data:
@@ -1302,8 +1329,19 @@ exit 0
         if not models:
             return
 
-        with open(manifest_output, "r") as f:
-            saved_manifest = json.load(f)
+        try:
+            with open(manifest_output, "r") as f:
+                saved_manifest = json.load(f)
+        except Exception as e:
+            # Best-effort, same as the _save_build_summary/_save_deployment_config
+            # steps that run just before this one: export_build_manifest() may have
+            # written nothing (no manifest, or an unreadable one). That is already
+            # surfaced by those steps' warnings, so don't escalate it to a BuildError
+            # and lose the build results.
+            self.rich_console.print(
+                f"[yellow]Warning: Could not merge model config into manifest: {e}[/yellow]"
+            )
+            return
 
         if "deployment_config" not in saved_manifest:
             saved_manifest["deployment_config"] = {}
