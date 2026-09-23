@@ -238,8 +238,14 @@ class RunOrchestrator:
             if not self.additional_context:
                 self.additional_context = {}
             
-            # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # "_explicit_slurm_keys" carries provenance for slurm.* fields (user/model-card
+            # explicit vs. ConfigLoader preset default) captured at build time — see
+            # BuildOrchestrator._merge_model_config_into_manifest.
+            for key in [
+                "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars",
+                "debug", "_explicit_slurm_keys",
+            ]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             

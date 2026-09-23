@@ -691,6 +691,59 @@ class TestResolveLauncherFromSources:
         assert resolve_launcher_from_sources(deployment, card) == expected
 
 
+class TestExplicitSlurmKeysManifestProvenance:
+    """A manifest's slurm dict is written *after* ConfigLoader applies preset
+    defaults, so inferring "explicit" from which keys are present in the manifest
+    would treat a persisted default (e.g. nodes=1) as if the user or model card had
+    set it. BuildOrchestrator records real provenance as "_explicit_slurm_keys" in
+    deployment_config; SlurmDeployment must prefer that over inferring from keys.
+    """
+
+    def _deployment(self, tmp_path: Path, additional_context: dict) -> SlurmDeployment:
+        manifest = {"built_images": {}, "built_models": {}, "context": {}}
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context=additional_context,
+        )
+        return SlurmDeployment(cfg)
+
+    def test_persisted_default_is_not_treated_as_explicit(self, tmp_path):
+        """Regression: slurm.nodes=1 came from a ConfigLoader preset default at build
+        time, not from the user or model card, so distributed.nnodes must still win."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 1, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+            "_explicit_slurm_keys": ["output_dir"],
+        })
+        assert "nodes" not in d._explicit_slurm_keys
+        assert d.nodes == 4
+
+    def test_manifest_provenance_respects_real_explicit_conflict(self, tmp_path):
+        """When the manifest says slurm.nodes really was explicit, an explicit
+        conflict with distributed.nnodes must still win (with a warning)."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+            "_explicit_slurm_keys": ["nodes", "output_dir"],
+        })
+        assert "nodes" in d._explicit_slurm_keys
+        assert d.nodes == 6
+
+    def test_falls_back_to_key_inference_without_manifest_provenance(self, tmp_path):
+        """Direct --additional-context (no manifest round trip) has no
+        "_explicit_slurm_keys" key; behavior falls back to inferring from the
+        slurm dict's own keys, as before this fix."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+        })
+        assert d._explicit_slurm_keys == {"nodes", "output_dir"}
+        assert d.nodes == 6
+
+
 class TestSlurmMultiDeclaredResultsCsv:
     """A slurm_multi card's `multiple_results` names its own results CSV."""
 

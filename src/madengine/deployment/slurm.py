@@ -74,7 +74,22 @@ class SlurmDeployment(BaseDeployment):
         # deployment_config) BEFORE ConfigLoader layers its presets on top. Once the
         # defaults are applied every key looks "set", and nodes=1 from a preset is
         # indistinguishable from nodes=1 the user asked for.
-        self._explicit_slurm_keys = set((config.additional_context or {}).get("slurm") or {})
+        #
+        # A build_manifest.json persists the slurm dict *after* BuildOrchestrator's
+        # own ConfigLoader defaulting, so inferring explicitness from present keys
+        # here would treat a persisted preset default (e.g. nodes=1) as explicit.
+        # Prefer the "_explicit_slurm_keys" provenance BuildOrchestrator recorded at
+        # build time when present; only fall back to inferring from dict keys for a
+        # config that never went through a manifest (e.g. direct --additional-context).
+        explicit_keys_from_manifest = (config.additional_context or {}).get(
+            "_explicit_slurm_keys"
+        )
+        if explicit_keys_from_manifest is not None:
+            self._explicit_slurm_keys = set(explicit_keys_from_manifest)
+        else:
+            self._explicit_slurm_keys = set(
+                (config.additional_context or {}).get("slurm") or {}
+            )
 
         apply_deployment_config(config, ConfigLoader.load_slurm_config)
         super().__init__(config)
