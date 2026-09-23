@@ -639,6 +639,18 @@ class TestResolveNodeCount:
         if bad != "":
             assert note is not None
 
+    @pytest.mark.parametrize("bad", [0, -1, "0", "-1"])
+    def test_non_positive_nnodes_falls_back(self, bad):
+        """sbatch cannot schedule --nodes=0; reject it here, not at submit time."""
+        nodes, note = resolve_node_count(2, bad, nodes_explicitly_set=False)
+        assert nodes == 2
+        assert note and ">= 1" in note
+
+    def test_non_positive_nnodes_does_not_override_explicit_nodes(self):
+        nodes, note = resolve_node_count(4, 0, nodes_explicitly_set=True)
+        assert nodes == 4
+        assert note is not None
+
     def test_idempotent_across_repeated_resolution(self):
         """deploy() re-runs prepare() after preflight; resolution must not ratchet."""
         nodes, _ = resolve_node_count(1, 4, nodes_explicitly_set=False)
@@ -658,15 +670,25 @@ class TestResolveLauncherFromSources:
     def test_default_when_neither_declared(self):
         assert resolve_launcher_from_sources(None, None) == "torchrun"
 
-    def test_dispatch_and_env_block_cannot_disagree(self):
+    @pytest.mark.parametrize("deployment,card,expected", [
+        (None, "vllm", "vllm"),
+        ("sglang", "vllm", "sglang"),
+        (None, None, "torchrun"),
+        ("sglang", None, "sglang"),
+        ("slurm_multi", "torchrun", "slurm_multi"),
+        # A falsy deployment value is "not declared", not "declared as empty":
+        # ConfigLoader materializes distributed.launcher as "" when the preset
+        # carries the key but neither the user nor the card filled it in.
+        ("", "slurm_multi", "slurm_multi"),
+        ("", None, "torchrun"),
+    ])
+    def test_dispatch_and_env_block_cannot_disagree(self, deployment, card, expected):
         """
         prepare() used to read the card while _prepare_template_context() read the
         deployment config, so a card-declared launcher could pick one path and emit
         another path's env block. Both now call this, so they agree by construction.
         """
-        for deployment, card in [(None, "vllm"), ("sglang", "vllm"), (None, None)]:
-            assert resolve_launcher_from_sources(deployment, card) == \
-                   resolve_launcher_from_sources(deployment, card)
+        assert resolve_launcher_from_sources(deployment, card) == expected
 
 
 class TestSlurmMultiDeclaredResultsCsv:

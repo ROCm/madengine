@@ -662,7 +662,7 @@ fields are honoured identically on both paths:
 | Field | Effect |
 |-------|--------|
 | `distributed.launcher` | Selects the path. Resolved deployment-config-first, model-card-second — the same resolution used to emit the launcher env block, so the two can never disagree. |
-| `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. |
+| `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. Non-numeric or non-positive values are ignored with a warning — `slurm.nodes` is used instead. |
 | `slurm.*` | `partition`, `time`, `gpus_per_node`, `exclusive`, `reservation`, `nodelist`, … |
 | `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. |
 
