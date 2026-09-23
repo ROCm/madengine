@@ -175,6 +175,15 @@ def resolve_node_count(
             f"using slurm.nodes={configured_nodes}."
         )
 
+    if requested is not None and requested < 1:
+        # An allocation of zero or fewer nodes is not a thing sbatch can schedule;
+        # passing it through would fail at submit time with a scheduler error that
+        # says nothing about the model card that caused it.
+        return configured_nodes, (
+            f"Ignoring distributed.nnodes={requested} (must be >= 1); "
+            f"using slurm.nodes={configured_nodes}."
+        )
+
     if requested is None or requested == configured_nodes:
         return configured_nodes, None
 
