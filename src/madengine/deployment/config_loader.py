@@ -294,13 +294,23 @@ class ConfigLoader:
         """
         has_k8s = "k8s" in user_config or "kubernetes" in user_config
         has_slurm = "slurm" in user_config
+        has_llm_d = "llm_d" in user_config
         explicit_deploy = user_config.get("deploy", "").lower()
-        
+
         # Validation Rule 1: Can't have both k8s and slurm configs
         if has_k8s and has_slurm:
             raise ValueError(
                 "Conflicting deployment configuration: Both 'k8s' and 'slurm' fields present. "
                 "Please specify only one deployment target."
+            )
+
+        # Validation Rule 1b: llm-d is a Kubernetes-native stack; can't combine with slurm.
+        # Mirrors the same check in LlmdDeployment.validate(), but here at build time,
+        # before SLURM defaults get merged into the build context.
+        if has_llm_d and has_slurm:
+            raise ValueError(
+                "Conflicting deployment configuration: both 'llm_d' and 'slurm' present. "
+                "llm-d is a Kubernetes-native stack; remove the 'slurm' block."
             )
         
         # Validation Rule 2: If explicit deploy set, it must match config presence
