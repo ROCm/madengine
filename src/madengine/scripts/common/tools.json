@@ -7,7 +7,7 @@
           "args": "rpd"
         }
       ],
-      "cmd": "LD_LIBRARY_PATH=\"./rocmProfileData/rpd_tracer:${ROCM_PATH:-/opt/rocm}/lib:${LD_LIBRARY_PATH}\" ./rocmProfileData/rpd_tracer/runTracer.sh",
+      "cmd": "LD_LIBRARY_PATH=\"./rocmProfileData/rpd_tracer:/usr/local/lib:${ROCM_PATH:-/opt/rocm}/lib:${LD_LIBRARY_PATH}\" ./rocmProfileData/rpd_tracer/runTracer.sh",
       "env_vars": {},
       "post_scripts": [
         {
