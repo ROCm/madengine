@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Docs
+## [2.2.1] - 2026-09-24
 
-- **README rewritten as a concise landing page** (#161): Trimmed the root README from 707 to 258 lines by moving deep reference material (profiling tables, extended config/usage recipes, tips) into `docs/` and linking out. Replaced the stale ASCII architecture block and unreferenced `docs/img` PNGs with accurate inline Mermaid diagrams for the layered architecture, build→run→report pipeline, and deployment-target inference; added matching diagrams to `docs/deployment.md` and `docs/README.md`. Also corrects numerous stale references across docs: `--csv-file` → `--csv-file-path`/`--file`, missing `database` command flags (`--unique-key`/`-k`, `--batch-size`, `--no-upsert`, `--no-index`, `--dry-run`, `MONGO_AUTH_SOURCE`/`MONGO_TIMEOUT_MS`), wrong `run --output`/`--tools-config` defaults, `megatron` → `megatron-lm` launcher name, fabricated `timeout_multiplier`/`service_account` config keys, missing Kubernetes/SLURM `additional_context` keys, `DOCKER_CONFIG`/`MAD_SKIP_DOCKER_LOGIN` documentation, and corrected SGLang Disaggregated minimum node counts/split formula for SLURM vs. Kubernetes.
+### Added
+
+- **`madengine discover --full`** (renamed from `--all`): Outputs complete model cards (all tags and metadata) for every discovered model without needing to pass `--tags` — for programmatic/CI consumption of the full model catalog.
+
+- **`madengine discover --json`**: Emits plain JSON only, with no status panel or formatting, for piping directly into other tools or CI/CD pipelines.
+
+### Fixed
+
+- **SLURM multi-node jobs hung when a node's own hostname resolved to loopback** (#179): The generated job script resolved peer node IPs with `getent hosts`, which on Ubuntu returns a node's `/etc/hosts` self-mapping (`127.0.1.1`) before its real address, so every node published *itself* as loopback in the peer list every other node was waiting to connect to — collapsing multi-node rendezvous (e.g. the sglang-disaggregated socket barrier) until the job hit the SLURM time limit. Node IPs are now resolved via `getent ahostsv4`, ignoring `127.*` entries, with the local node's address taken from the configured cluster interface (`NCCL_SOCKET_IFNAME`) or the kernel's outbound-routing source address instead of `hostname -I` (which can return a Docker bridge or management address). The resolved `SGLANG_*` environment variables are now also forwarded into the container, which previously only had an allowlist that didn't include them.
+
+- **`madengine run` misreported scheduler and multi-image/multiple-results failures** (#187): A SLURM/Kubernetes deployment that failed before any model reported metrics (e.g. the job itself died) returned empty result lists, so the CLI's exit code read it as a clean run; a failed deployment with no per-model results now synthesizes a failure from the scheduler's own error. Failure attribution also resolved manifest keys to the underlying Docker image tag instead of the model's logical name, blamed a model once per build image instead of once overall (multi-arch/multi-Dockerfile models), and did not recognize a `multiple_results` row (reported as `<model>_<row>`) as that model succeeding — each is now corrected so failures are attributed to the right model exactly once, and models that already reported success are excluded from the failure list.
+
+- **rpd profiling tool failed with `librlog.so: cannot open shared object file`**: The rpd pre-script builds `rlog` and `cmake --install`s `librlog.so` into `/usr/local/lib`, but the container's `ld.so` cache was never refreshed afterward, so `runTracer.sh`'s `LD_PRELOAD` of `librpd_tracer.so` (which links `-lrlog`) aborted before the profiled command could start. `trace.sh` now runs `ldconfig /usr/local/lib` after building `rlog`/`rpd`, and the rpd tool's `LD_LIBRARY_PATH` in `tools.json` includes `/usr/local/lib` as a fallback in case `ldconfig` is unavailable.
 
 ## [2.2.0] - 2026-08-12
 
@@ -56,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A failing or timed-out K8s model discarded its own results**: The pod script runs under `set -e` and copies artifacts to the results PVC only after the model returns, so a non-zero model exit aborted the container before its post-scripts, `perf.csv`, and logs were published — the runs most worth diagnosing were the ones that left nothing behind. Both invocation branches in `job.yaml.j2` now capture the exit code and defer to the single `exit ${MODEL_EXIT_CODE:-0}` at the end of the script. Pre-existing on the unbounded path; the timeout wrapper added above would otherwise have extended it to timeouts.
 
 - **Programmatically omitting `timeout` overrode model cards**: `RunOrchestrator.execute()`, `ContainerRunner.run_container()`, and `ContainerRunner.run_models_from_manifest()` each defaulted the parameter to `DEFAULT_RUN_TIMEOUT`, but `resolve_run_timeout()` reads any non-negative value as an explicit `--timeout`. A caller that omitted the argument therefore forced 7200s over every model card, contradicting the documented precedence. All three now default to the `-1` sentinel, which still resolves to 7200s when no card specifies one. The CLI was unaffected — it always passes a value.
+
+### Docs
+
+- **README rewritten as a concise landing page** (#161): Trimmed the root README from 707 to 258 lines by moving deep reference material (profiling tables, extended config/usage recipes, tips) into `docs/` and linking out. Replaced the stale ASCII architecture block and unreferenced `docs/img` PNGs with accurate inline Mermaid diagrams for the layered architecture, build→run→report pipeline, and deployment-target inference; added matching diagrams to `docs/deployment.md` and `docs/README.md`. Also corrects numerous stale references across docs: `--csv-file` → `--csv-file-path`/`--file`, missing `database` command flags (`--unique-key`/`-k`, `--batch-size`, `--no-upsert`, `--no-index`, `--dry-run`, `MONGO_AUTH_SOURCE`/`MONGO_TIMEOUT_MS`), wrong `run --output`/`--tools-config` defaults, `megatron` → `megatron-lm` launcher name, fabricated `timeout_multiplier`/`service_account` config keys, missing Kubernetes/SLURM `additional_context` keys, `DOCKER_CONFIG`/`MAD_SKIP_DOCKER_LOGIN` documentation, and corrected SGLang Disaggregated minimum node counts/split formula for SLURM vs. Kubernetes.
 
 ## [2.1.3] - 2026-07-15
 
