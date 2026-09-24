@@ -168,8 +168,12 @@ def resolve_node_count(
         ``(nodes, note)`` where ``note`` is a human-readable string to log, or None.
     """
     try:
+        if isinstance(nnodes, bool) or (
+            isinstance(nnodes, float) and not nnodes.is_integer()
+        ):
+            raise ValueError
         requested = int(nnodes) if nnodes is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return configured_nodes, (
             f"Ignoring non-numeric distributed.nnodes={nnodes!r}; "
             f"using slurm.nodes={configured_nodes}."
