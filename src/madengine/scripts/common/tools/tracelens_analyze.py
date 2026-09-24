@@ -207,6 +207,8 @@ def _build_command(python: str, script_name: str, args: Sequence[str]) -> List[s
 
     Prefers the installed console script (clearer logs, honours the package's
     own entry-point wiring) and falls back to importing the module's ``main``.
+    The fallback exits with ``main()``'s return value, the same way the console
+    scripts pip generates do, so a report failure is not silently swallowed.
     """
     bindir = os.path.dirname(os.path.abspath(python))
     candidate = os.path.join(bindir, script_name)
@@ -216,7 +218,12 @@ def _build_command(python: str, script_name: str, args: Sequence[str]) -> List[s
     if on_path:
         return [on_path, *args]
     module = _ENTRY_POINTS[script_name]
-    return [python, "-c", f"from {module} import main; main()", *args]
+    return [
+        python,
+        "-c",
+        f"import sys; from {module} import main; sys.exit(main())",
+        *args,
+    ]
 
 
 def _run(command: Sequence[str], cwd: Optional[str] = None) -> Tuple[int, str]:
@@ -461,9 +468,9 @@ def analyze(
         code, output = _run(_build_command(interpreter, tool, args))
         results.append(
             {
-                "trace_file": os.path.relpath(trace, root)
-                if os.path.exists(trace)
-                else trace,
+                "trace_file": (
+                    os.path.relpath(trace, root) if os.path.exists(trace) else trace
+                ),
                 "kind": kind,
                 "tracelens_tool": tool,
                 "status": "SUCCESS" if code == 0 else "FAILURE",
@@ -605,9 +612,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         failed = summary["status"] != "SUCCESS"
     elif args.discover_only:
-        traces, unsupported = discover_traces(
-            args.root, exclude_dirs=[args.output_dir]
-        )
+        traces, unsupported = discover_traces(args.root, exclude_dirs=[args.output_dir])
         for kind, paths in sorted(traces.items()):
             for path in paths:
                 print(f"{kind}\t{path}")

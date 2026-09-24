@@ -22,6 +22,24 @@ if [ ! -f "$DYNOLOG_START_FILE" ]; then
     exit 0
 fi
 
+# Both processes are started in the background by the pre-script, so once it exits
+# they are reparented to PID 1, which in a container is the model command rather
+# than an init that reaps children. A terminated process therefore lingers as a
+# zombie and `kill -0` keeps succeeding, so the process state has to be checked as
+# well, or every stop would burn the full grace period below.
+is_running() {
+    local pid=$1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/$pid/stat" ]; then
+        # State is the field after the command name, which itself may contain
+        # spaces and is always parenthesised.
+        local state
+        state=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)
+        [ "$state" = "Z" ] && return 1
+    fi
+    return 0
+}
+
 stop_pid() {
     local name=$1
     local pid_file=$2
@@ -31,14 +49,14 @@ stop_pid() {
     fi
     local pid
     pid=$(cat "$pid_file")
-    if kill -0 "$pid" 2>/dev/null; then
+    if is_running "$pid"; then
         kill -TERM "$pid" 2>/dev/null || true
         local waited=0
-        while kill -0 "$pid" 2>/dev/null && [ $waited -lt 20 ]; do
+        while is_running "$pid" && [ $waited -lt 20 ]; do
             sleep 0.5
             waited=$((waited + 1))
         done
-        if kill -0 "$pid" 2>/dev/null; then
+        if is_running "$pid"; then
             echo "⚠️  $name did not stop gracefully, force killing..."
             kill -9 "$pid" 2>/dev/null || true
         fi
