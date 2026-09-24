@@ -28,22 +28,22 @@ rpd)
 			apt-get update -qq
 			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
-				git build-essential pkg-config xxd
+				git build-essential pkg-config xxd cmake
 		elif command -v sudo >/dev/null 2>&1; then
 			sudo apt-get update -qq
 			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
-				git build-essential pkg-config xxd
+				git build-essential pkg-config xxd cmake
 		else
 			echo 'RPD pre-script: need root or sudo for apt-get' >&2
 			exit 1
 		fi
 	elif [ "$os" == 'centos' ]; then
 		if [ "$(id -u)" -eq 0 ]; then
-			yum install -y gcc gcc-c++ make git \
+			yum install -y gcc gcc-c++ make git cmake \
 				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
 		elif command -v sudo >/dev/null 2>&1; then
-			sudo yum install -y gcc gcc-c++ make git \
+			sudo yum install -y gcc gcc-c++ make git cmake \
 				libsqlite3x-devel.x86_64 fmt-devel python3-pip json-devel vim-common
 		else
 			echo 'RPD pre-script: need root or sudo for yum' >&2
@@ -65,14 +65,25 @@ rpd)
 	
 	# Build RPD tracer locally without system install
 	cd ./rocmProfileData
+	# rpd_tracer/Utility.h includes "rlog/client.h" unconditionally, and the Makefile
+	# enables rlog on `wildcard ../rlog` — which a plain clone satisfies with an empty
+	# submodule directory. Initialize it (also covers a pre-existing checkout above).
+	git submodule update --init rlog
 	# Workaround for upstream rocmProfileData Makefile typo: UStringTable.o -> StringTable.o
 	if [ -f rpd_tracer/Makefile ]; then
 		sed -i 's/UStringTable\.o/StringTable.o/g' rpd_tracer/Makefile
 	fi
-	make rpd
+	# `rlog` builds and installs librlog into /usr/local; rpd_tracer links -lrlog.
+	make rlog rpd
 	if [ $? -ne 0 ]; then
 		echo "Error: Failed to build RPD tracer"
 		exit 1
+	fi
+	# `cmake --install` drops librlog.so into /usr/local/lib but leaves the image's
+	# ld.so cache stale, so LD_PRELOAD of librpd_tracer.so aborts with
+	# "librlog.so: cannot open shared object file". Refresh the cache.
+	if command -v ldconfig >/dev/null 2>&1; then
+		ldconfig /usr/local/lib || true
 	fi
 	
 	# Install rocpd Python module locally

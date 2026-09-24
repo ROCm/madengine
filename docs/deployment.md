@@ -13,24 +13,28 @@ Deployment is configured via `--additional-context` and happens automatically du
 
 ## Deployment Workflow
 
+Build once, then deploy the resulting manifest to any target:
+
+```mermaid
+flowchart LR
+    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
+    M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
+    D --> T{detect target}
+    T -->|k8s / kubernetes| K[K8s Job]
+    T -->|slurm| S[SLURM script]
+    T -->|neither| L[Local Docker]
 ```
-┌─────────────────────────────────────────────┐
-│  1. Build Phase (Local or CI/CD)           │
-│     madengine build --tags model       │
-│     → Creates Docker image                  │
-│     → Pushes to registry                    │
-│     → Generates build_manifest.json         │
-└─────────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────┐
-│  2. Deploy Phase (Run with Context)         │
-│     madengine run                       │
-│       --manifest-file build_manifest.json   │
-│       --additional-context '{"deploy":...}' │
-│     → Detects deployment target             │
-│     → Creates K8s Job or SLURM script       │
-│     → Submits and monitors execution        │
-└─────────────────────────────────────────────┘
+
+### Deployment Target Inference
+
+No explicit `deploy` field is required — the target is inferred from the config structure (Convention over Configuration):
+
+```mermaid
+flowchart TD
+    A[additional_context] --> Q{which key?}
+    Q -->|k8s / kubernetes| K[Kubernetes deployment]
+    Q -->|slurm| S[SLURM deployment]
+    Q -->|neither| L[Local Docker execution]
 ```
 
 ## Kubernetes Deployment
@@ -90,11 +94,12 @@ The deployment target is automatically detected from the `k8s` key in the config
 }
 ```
 
-**Configuration Priority:**
-1. User config (`--additional-context-file`)
-2. Profile presets (single-gpu/multi-gpu)
-3. GPU vendor presets (AMD/NVIDIA)
-4. Base defaults
+**Configuration Priority (lowest to highest precedence):**
+1. Base defaults
+2. GPU vendor preset (AMD/NVIDIA)
+3. GPU vendor multi-GPU preset (AMD only, for multi-GPU/multi-node)
+4. Profile preset (single-gpu/multi-gpu/multi-node)
+5. User config (`--additional-context-file`) — highest precedence, applied last
 
 See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
@@ -229,9 +234,7 @@ The deployment target is automatically detected from the `slurm` key in the conf
     "qos": "normal",
     "gpus_per_node": 8,
     "nodes": 1,
-    "time": "24:00:00",
-    "mail_user": "user@example.com",
-    "mail_type": "ALL"
+    "time": "24:00:00"
   }
 }
 ```
@@ -245,10 +248,7 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `nodelist`: Comma-separated node names to run on (e.g. `"node01,node02"`); when set, job runs only on these nodes and node health preflight is skipped
 - `reservation`: SLURM reservation name; forwarded to srun health/cleanup commands
 - `time`: Wall time limit (HH:MM:SS)
-- `mem`: Memory per node (e.g., "64G")
 - `exclusive`: Exclusive node access (default: `true`)
-- `mail_user`: Email for job notifications
-- `mail_type`: Notification types (BEGIN, END, FAIL, ALL)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
 

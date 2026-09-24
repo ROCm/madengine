@@ -39,6 +39,9 @@ class TestCustomTimeoutsFunctionality:
             ("dummy_timeout", "dummy_timeout_dummy", "360", ""),
             ("dummy", "dummy_dummy", "120", "--timeout 120"),
             ("dummy_timeout", "dummy_timeout_dummy", "120", "--timeout 120"),
+            # An explicit --timeout that happens to equal the default still
+            # beats the model card: the sentinel, not the value, marks "unset".
+            ("dummy_timeout", "dummy_timeout_dummy", "7200", "--timeout 7200"),
         ],
     )
     def test_timeout_value_in_log(

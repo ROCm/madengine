@@ -101,6 +101,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Local agent planning artifacts
+docs/superpowers/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

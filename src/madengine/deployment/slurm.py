@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -28,6 +29,9 @@ from .common import (
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
+from madengine.core.errors import ConfigurationError
+from madengine.core.image_digest import resolve_pinned_image
+from madengine.core.timeout import subprocess_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
@@ -77,6 +81,8 @@ class SlurmDeployment(BaseDeployment):
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
         self.reservation = self.slurm_config.get("reservation", None)
+        # Some clusters expose no GPU GRES, so sbatch rejects --gpus-per-node.
+        self.skip_gpus_directive = self.slurm_config.get("skip_gpus_directive", False)
 
         # Setup Jinja2 template engine
         template_dir = Path(__file__).parent / "templates" / "slurm"
@@ -226,6 +232,22 @@ class SlurmDeployment(BaseDeployment):
         self.console.print("[green]✓ SLURM environment validated[/green]")
         return True
 
+    @staticmethod
+    def _submission_bin_dir() -> Optional[str]:
+        """
+        Directory the madengine console script was resolved from at submission time.
+
+        A batch job is not guaranteed to inherit the submitter's PATH: a site can
+        default sbatch to --export=NONE, and `module load` can rewrite PATH before
+        the job body runs. Passing the directory into the job script lets it put
+        the same madengine back on PATH instead of relying on inheritance.
+
+        Returns:
+            Optional[str]: absolute directory, or None if madengine is not on PATH
+        """
+        cli_path = shutil.which("madengine")
+        return str(Path(cli_path).resolve().parent) if cli_path else None
+
     def _validate_cli_availability(self) -> bool:
         """
         Validate madengine is available before job submission.
@@ -241,7 +263,9 @@ class SlurmDeployment(BaseDeployment):
                 ["madengine", "--version"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # A cold import off shared/NFS storage can take far longer than a
+                # local one, so this only guards against a hung interpreter.
+                timeout=600,
                 check=False
             )
             if result.returncode == 0:
@@ -315,6 +339,11 @@ class SlurmDeployment(BaseDeployment):
                     return self._prepare_slurm_multi_script(
                         model_info_peek, docker_image_name=model_keys_peek[0]
                     )
+        except ConfigurationError:
+            # Enforcement failures (e.g. --require-pinned-image with no recorded
+            # digest) are deliberate aborts, not peek errors. Falling through to
+            # the standard path here would silently generate an unpinned script.
+            raise
         except Exception:
             # Fall through to develop's standard flow on any peek error
             pass
@@ -432,7 +461,29 @@ class SlurmDeployment(BaseDeployment):
             built_image = model_info["image"]
             self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
             env_vars["DOCKER_IMAGE_NAME"] = built_image
-        
+
+        # Under require_pinned_image, pin DOCKER_IMAGE_NAME to the digest recorded
+        # at build time. slurm_multi runs the model's own script (no nested
+        # `madengine run` on the compute nodes), so enforcement has to happen here.
+        # Pinning the variable covers both the parallel `srun docker pull` below,
+        # which interpolates it, and the `docker run` inside the model script.
+        require_pinned = bool(
+            self.config.additional_context.get("require_pinned_image")
+        )
+        if require_pinned and env_vars.get("DOCKER_IMAGE_NAME"):
+            image_entry = (self.manifest.get("built_images") or {}).get(
+                docker_image_name, {}
+            )
+            env_vars["DOCKER_IMAGE_NAME"] = resolve_pinned_image(
+                env_vars["DOCKER_IMAGE_NAME"],
+                image_entry.get("image_digest"),
+                True,
+                model_name=model_info.get("name", ""),
+            )
+            self.console.print(
+                f"[cyan]Pinned Docker image: {env_vars['DOCKER_IMAGE_NAME']}[/cyan]"
+            )
+
         # Get model args. The wrapper script below is executed by bash, so the
         # script name and free-form args string must be shell-quoted to prevent
         # embedded metacharacters ($(), backticks, ;, etc.) from being evaluated
@@ -456,7 +507,10 @@ class SlurmDeployment(BaseDeployment):
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.nodes}",
-            f"#SBATCH --gpus-per-node={self.gpus_per_node}",
+        ]
+        if not self.skip_gpus_directive:
+            script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
+        script_lines += [
             f"#SBATCH --time={self.time_limit}",
         ]
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
@@ -669,6 +723,7 @@ class SlurmDeployment(BaseDeployment):
             "partition": self.partition,
             "nodes": self.nodes,
             "gpus_per_node": resolved_gpus_per_node,  # Use resolved GPU count
+            "skip_gpus_directive": self.skip_gpus_directive,
             "time_limit": self.time_limit,
             "output_dir": str(self.output_dir),
             "master_port": master_port,
@@ -682,11 +737,14 @@ class SlurmDeployment(BaseDeployment):
             "qos": self.slurm_config.get("qos"),
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
+            "submission_bin_dir": self._submission_bin_dir(),
             "env_vars": self.config.additional_context.get("env_vars", {}),
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
             "results_dir": self.slurm_config.get("results_dir"),
-            "timeout": self.config.timeout,
+            # The sentinel, not config.timeout: the job script re-invokes
+            # madengine, and that run applies model-card precedence itself.
+            "timeout": self.config.cli_timeout,
             "live_output": self.config.additional_context.get("live_output", False),
             "tags": " ".join(model_info.get("tags", [])),
             "multiple_results": model_info.get("multiple_results"),
@@ -925,10 +983,58 @@ export SGLANG_TP_SIZE={nproc_per_node}
 # Master coordination
 export MASTER_PORT={master_port}
 
-# Build node IP list from SLURM
+# Build node IP list from SLURM. Each node must resolve to a real (non-loopback)
+# address: on Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+# `getent hosts "$node"` returns the loopback for whichever node runs this loop.
+# Every node then publishes its own entry as 127.0.1.1, which poisons downstream
+# rendezvous/barrier peer lists — an all-nodes barrier can never be satisfied.
+# Skip 127.* and fall back to the primary non-loopback interface for the local node.
+# Address this node advertises when its own hostname only maps to loopback.
+# Prefer the configured cluster interface, else the source address the kernel
+# would use for outbound traffic. Deliberately not `hostname -I`: it lists every
+# interface in unspecified order and is not IPv4-only, so it can hand back a
+# docker bridge or management address that peers cannot reach.
+_MAD_LOCAL_IP=""
+if [ -n "${{NCCL_SOCKET_IFNAME:-}}" ]; then
+    _MAD_LOCAL_IP=$(ip -4 -o addr show dev "${{NCCL_SOCKET_IFNAME%%,*}}" 2>/dev/null \\
+        | awk '{{print $4}}' | cut -d/ -f1 | grep -vE '^127\\.' | head -n1)
+fi
+if [ -z "$_MAD_LOCAL_IP" ]; then
+    _MAD_LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null \\
+        | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
+fi
+
 SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
-    getent hosts "$node" | awk '{{print $1}}'
+    node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
+    # Only the local node may fall back to its own address; doing this for a peer
+    # would publish this node's IP in that peer's slot. The list holds NodeName
+    # values, which may differ from the machine's hostname when the config sets
+    # NodeHostname, so ask SLURM first and keep the hostnames for when it is unset.
+    if [ -z "$node_ip" ] && {{ [ "$node" = "${{SLURMD_NODENAME:-}}" ] \\
+        || [ "$node" = "$(hostname -s)" ] || [ "$node" = "$(hostname)" ]; }}; then
+        node_ip="$_MAD_LOCAL_IP"
+    fi
+    if [ -z "$node_ip" ]; then
+        echo "UNRESOLVED:$node"
+    else
+        echo "$node_ip"
+    fi
 done | tr '\\n' ',' | sed 's/,$//')
+
+# A peer we cannot resolve must fail the job, not silently corrupt the peer list.
+# Empty first: the list is built through a pipeline, so a failing `scontrol`
+# yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
+# the barrier exactly like the loopback one did.
+if [ -z "$SLURM_NODE_IPS" ]; then
+    echo "ERROR: empty node list from 'scontrol show hostname ${{SLURM_JOB_NODELIST}}'" >&2
+    exit 1
+fi
+case "$SLURM_NODE_IPS" in
+    *UNRESOLVED:*)
+        echo "ERROR: no non-loopback address for node(s): $(echo "$SLURM_NODE_IPS" | tr ',' '\\n' | grep '^UNRESOLVED:' | cut -d: -f2 | tr '\\n' ' ')" >&2
+        exit 1
+        ;;
+esac
 
 export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
 export SGLANG_NODE_RANK=${{SLURM_PROCID}}
@@ -1262,7 +1368,7 @@ export MASTER_PORT={master_port}
             # Don't capture output - let it stream directly to console
             result = subprocess.run(
                 ["bash", str(self.script_path)],
-                timeout=self.config.timeout if self.config.timeout > 0 else None,
+                timeout=subprocess_timeout(self.config.timeout),
             )
             
             if result.returncode == 0:

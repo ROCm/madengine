@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -25,6 +25,7 @@ from madengine.core.console import Console
 from madengine.core.auth import load_credentials
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
+from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
@@ -83,6 +84,13 @@ class RunOrchestrator:
             merged_context.update(additional_context)
 
         self.additional_context = merged_context
+
+        # The CLI flag and the require_pinned_image context key are equivalent;
+        # the key lets CI pipelines that drive madengine through
+        # --additional-context opt in the same way as for k8s/slurm/tools.
+        if getattr(args, "require_pinned_image", False):
+            self.additional_context["require_pinned_image"] = True
+
         keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
         self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
 
@@ -132,7 +140,7 @@ class RunOrchestrator:
         manifest_file: Optional[str] = None,
         tags: Optional[list] = None,
         registry: Optional[str] = None,
-        timeout: int = 3600,
+        timeout: int = -1,
     ) -> Dict:
         """
         Execute run workflow.
@@ -149,7 +157,8 @@ class RunOrchestrator:
             manifest_file: Path to build_manifest.json
             tags: Model tags to build (triggers build phase if no manifest)
             registry: Optional registry override
-            timeout: Execution timeout in seconds
+            timeout: Execution timeout in seconds; -1 (unspecified) defers to
+                the model card, then to DEFAULT_RUN_TIMEOUT
 
         Returns:
             Execution results dict
@@ -453,12 +462,15 @@ class RunOrchestrator:
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
-                "timeout": model.get("timeout", None),  # Optional timeout override
+                # None (JSON null) = the card specified none; a card's -1 is a
+                # real value meaning "no timeout", so it cannot double as filler.
+                "timeout": model.get("timeout"),
                 "data": data_str,
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+                "multiple_results": model.get("multiple_results", ""),
             }
         
         # Write manifest to file
@@ -495,7 +507,15 @@ class RunOrchestrator:
             if "context" not in manifest:
                 manifest["context"] = {}
             
-            merge_keys = ["tools", "pre_scripts", "post_scripts", "encapsulate_script"]
+            merge_keys = [
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                # Persisted so nested runs on SLURM compute nodes (which re-enter
+                # `madengine run --manifest-file`) inherit the enforcement setting.
+                "require_pinned_image",
+            ]
             context_updated = False
             for key in merge_keys:
                 if key in self.additional_context:
@@ -729,7 +749,19 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            timeout=getattr(self.args, "timeout", 3600),
+            # Two different values, deliberately. `timeout` caps this process's
+            # own wait on the deployment, so the sentinel has to be resolved
+            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
+            # in-allocation path runs unbounded. `cli_timeout` is what the
+            # generated job script forwards to the madengine it re-invokes, and
+            # must stay verbatim: that inner run resolves against the model card
+            # itself, and a concrete value here would read as an explicit
+            # --timeout and outrank the card. No model card is consulted at this
+            # level, hence the empty dict.
+            timeout=resolve_run_timeout(
+                {}, getattr(self.args, "timeout", -1)
+            ),
+            cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
         )
@@ -752,26 +784,88 @@ class RunOrchestrator:
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
         if result.metrics:
-            return {
+            summary = {
                 "successful_runs": result.metrics.get("successful_runs", []),
                 "failed_runs": result.metrics.get("failed_runs", []),
             }
         else:
-            return {"successful_runs": [], "failed_runs": []}
+            summary = {"successful_runs": [], "failed_runs": []}
+
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            reported = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict) and isinstance(run.get("model"), str)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if not self._model_reported(model, reported)
+            ]
+            summary["failed_runs"] = [
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
+            ]
+
+        return summary
+
+    @staticmethod
+    def _model_reported(model: str, reported: Set[str]) -> bool:
+        """Did this manifest model appear among the successful runs?
+
+        A model with a multiple-results CSV is reported once per row, under the
+        manifest name decorated with the row's own model: ``<model>_<row>`` in
+        both ``slurm.py`` and ``k8s_results.py``. Matching the name alone would
+        blame a model that did run.
+        """
+        return any(
+            name == model or name.startswith(f"{model}_") for name in reported
+        )
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
+        try:
+            with open(manifest_file) as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            return []
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            name = name or key
+            # One model can own several images (multi-arch, several Dockerfiles),
+            # and blaming it once per image would inflate the failure count.
+            if name not in names:
+                names.append(name)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
         self.console.sh("echo 'MAD Run Models'")
 
         host_os = self.context.ctx.get("host_os", "")
+        # This is purely informational, but a package manager can block forever on
+        # an interactive prompt (e.g. yum asking to import a repo GPG key) with no
+        # tty to answer it, so every query is capped.
         if "HOST_UBUNTU" in host_os:
-            print(self.console.sh("apt show rocm-libs -a", canFail=True))
+            print(self.console.sh("timeout 10 apt show rocm-libs -a", canFail=True))
         elif "HOST_CENTOS" in host_os:
-            print(self.console.sh("yum info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 yum info rocm-libs", canFail=True))
         elif "HOST_SLES" in host_os:
-            print(self.console.sh("zypper info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 zypper info rocm-libs", canFail=True))
         elif "HOST_AZURE" in host_os:
-            print(self.console.sh("tdnf info rocm-libs", canFail=True))
+            print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
             self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
 
