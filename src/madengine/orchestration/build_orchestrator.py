@@ -1408,7 +1408,7 @@ exit 0
         # card) as opposed to ConfigLoader preset defaults, so a later `run
         # --manifest-file` can tell a real distributed.nnodes-vs-slurm.nodes
         # conflict apart from a preset default silently outranking the model card.
-        if explicit_slurm_keys:
+        if "slurm" in saved_manifest["deployment_config"] or explicit_slurm_keys:
             saved_manifest["deployment_config"]["_explicit_slurm_keys"] = sorted(
                 explicit_slurm_keys
             )
