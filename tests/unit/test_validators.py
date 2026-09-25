@@ -311,3 +311,71 @@ class TestValidateAdditionalContext:
         with pytest.raises(typer.Exit) as exc_info:
             validate_additional_context(additional_context=bad)
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+class TestValidateLauncherContext:
+    """Launcher validation at the CLI boundary.
+
+    A launcher madengine did not recognize used to run the model as a plain
+    single-process job and still report SUCCESS, so the benchmark number was
+    wrong with nothing to indicate it. These lock in loud failure instead.
+    """
+
+    @staticmethod
+    def _context(**extra):
+        return json.dumps({"gpu_vendor": "AMD", "guest_os": "UBUNTU", **extra})
+
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "sglang-disagg"])
+    def test_valid_launcher_is_accepted(self, launcher):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": launcher})
+        )
+        assert result["distributed"]["launcher"] == launcher
+
+    @pytest.mark.parametrize("bad", ["megatron", "megatron_lm", "sglang_disagg"])
+    def test_rejected_spellings_exit_with_invalid_args(self, bad, capsys):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(distributed={"launcher": bad})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("sentinel", ["docker", "native"])
+    def test_reporting_sentinels_are_rejected_at_the_cli_boundary(self, sentinel):
+        """These are perf.csv output values with no dispatch arm. Accepting one
+        here would let it fall through to the unknown-launcher default at
+        dispatch time — the silent single-process run this validation exists
+        to prevent."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(distributed={"launcher": sentinel})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_documented_slurm_multi_alias_is_accepted_and_canonicalized(self):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": "slurm-multi"})
+        )
+        assert result["distributed"]["launcher"] == "slurm_multi"
+
+    def test_case_is_folded(self):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": "Torchrun"})
+        )
+        assert result["distributed"]["launcher"] == "torchrun"
+
+    def test_launcher_type_key_is_validated_too(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(launcher={"type": "megatron"})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_bare_string_launcher_is_a_clean_error_not_an_attributeerror(self):
+        """{"launcher": "torchrun"} is a natural mistake; it used to crash deep in
+        the K8s template context with AttributeError."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(launcher="torchrun")
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
