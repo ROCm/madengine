@@ -443,6 +443,86 @@ madengine report to-email --directory ./results --verbose
 
 ---
 
+##### `report tracelens` - Analyze GPU Traces
+
+Generate [TraceLens](https://github.com/AMD-AGI/TraceLens) performance reports from the trace artifacts a run left behind (`torch_profiler_output/`, `rocprof_output/`, `slurm_results/`, `k8s_results/`).
+
+Requires TraceLens: `pip install 'madengine[tracelens]'`. `--discover-only` works without it.
+
+**Usage:**
+
+```bash
+madengine report tracelens [OPTIONS]
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--root` | TEXT | `"."` | Directory searched recursively for traces |
+| `--output-dir` | TEXT | `tracelens_output` | Directory for generated reports |
+| `--mode` | TEXT | `auto` | `auto`, `pytorch`, `rocprof`, `pftrace`, or `collective` |
+| `--python` | TEXT | | Interpreter that has TraceLens installed |
+| `--gpu-arch` | TEXT | | GPU arch (e.g. `MI300X`) enabling roofline bound classification |
+| `--world-size` | INTEGER | trace count | Rank count for the collective report |
+| `--max-traces` | INTEGER | `0` | Cap traces analyzed per kind (`0` means no cap) |
+| `--discover-only` | FLAG | `False` | List discovered traces without running TraceLens |
+| `--verbose` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Analyze every trace found under the current directory
+madengine report tracelens
+
+# See what would be analyzed first
+madengine report tracelens --discover-only
+
+# Enable roofline bound classification
+madengine report tracelens --gpu-arch MI300X
+
+# Multi-rank collective analysis of a distributed run
+madengine report tracelens --root slurm_results --mode collective --world-size 8
+```
+
+**Output:** Per-trace reports in `--output-dir`, plus `tracelens_summary.csv` and `tracelens_summary.json`.
+
+See the [Profiling Guide](profiling.md#tracelens---tracelens-trace-analysis) for which trace formats map to which report.
+
+---
+
+##### `report tracelens-compare` - Diff TraceLens Reports
+
+Compare two or more TraceLens reports into a single diff workbook. The first report is the baseline; every metric gains `_diff` and `_pct` columns relative to it.
+
+**Usage:**
+
+```bash
+madengine report tracelens-compare REPORT... [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--output` | `-o` | TEXT | `tracelens_comparison.xlsx` | Output comparison workbook |
+| `--names` | | TEXT | | Display tag per report (repeat the flag) |
+| `--python` | | TEXT | | Interpreter that has TraceLens installed |
+| `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Compare a baseline against a candidate run
+madengine report tracelens-compare baseline.xlsx candidate.xlsx
+
+# Label each report and choose the output path
+madengine report tracelens-compare a.xlsx b.xlsx \
+  --names before --names after -o diff.xlsx
+```
+
+---
+
 ### `database` - Upload to MongoDB
 
 Upload CSV or JSON performance data to MongoDB (format is auto-detected).
