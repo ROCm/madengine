@@ -574,6 +574,161 @@ class TestCreateManifestFromLocalImage:
         assert built_model["multiple_results"] == ""
 
 
+class TestPlaceholderImageRejection:
+    """Model cards ship DOCKER_IMAGE_NAME as a "<supply-your-image>" marker.
+
+    The implicit --use-image path used to accept any single distinct card value, so
+    the placeholder became the image name and every compute node failed on
+    `docker pull <supply-your-image>` instead of the user getting told at submit time.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "<supply-your-image>",
+        "<your-image-here>",
+        "  <supply-your-image>  ",
+        "",
+        None,
+    ])
+    def test_placeholders_detected(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "rocm/vllm:latest",
+        "docker.io/myorg/img:tag",
+        "ci-pyt_vllm_kimi_k3_mi300x",
+        "localhost:5000/img",
+    ])
+    def test_real_images_accepted(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is False
+
+    def test_reject_raises_configuration_error(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        with pytest.raises(ConfigurationError) as exc:
+            orchestrator._reject_placeholder_image("<supply-your-image>", ["m1"])
+        assert "placeholder" in str(exc.value).lower()
+
+    def test_reject_passes_through_real_image(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        orchestrator._reject_placeholder_image("rocm/vllm:latest", ["m1"])
+
+
+class TestSelfManagedLauncherImpliesSlurm:
+    """A slurm_multi model card without a `slurm` block still deploys to SLURM.
+
+    Target inference keys on the presence of a `slurm`/`k8s` block. Model cards
+    routinely declare only `distributed.launcher: slurm_multi`, which inferred
+    "local" and handed the job to the container runner — so the slurm_multi path
+    was never reached and the model's .slurm script was run as a local workload.
+    """
+
+    @pytest.mark.parametrize("config,expected", [
+        ({}, "local"),
+        ({"slurm": {}}, "slurm"),
+        ({"k8s": {}}, "k8s"),
+        ({"distributed": {"launcher": "slurm_multi"}}, "slurm"),
+        ({"distributed": {"launcher": "slurm-multi"}}, "slurm"),
+        ({"distributed": {"launcher": "torchrun"}}, "local"),
+        ({"distributed": {"launcher": "vllm"}}, "local"),
+        ({"distributed": {}}, "local"),
+        # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
+        # but the explicit target is the user's stated intent.
+        ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
+    ])
+    def test_inference(self, config, expected):
+        assert RunOrchestrator._infer_deployment_target(None, config) == expected
+
+
+@pytest.mark.unit
+class TestMergeModelConfigIntoManifest:
+    """BuildOrchestrator._merge_model_config_into_manifest is shared by every build
+    path (normal Docker build, prebuilt-image, implicit DOCKER_IMAGE_NAME), so a model
+    card's distributed/slurm declarations reach deployment_config no matter how the
+    image was built.
+    """
+
+    @patch("madengine.orchestration.build_orchestrator.Context")
+    @patch("os.path.exists", return_value=False)
+    def _make_orchestrator(self, mock_exists, mock_context, additional_context=None):
+        mock_args = MagicMock()
+        mock_args.additional_context = additional_context
+        mock_args.additional_context_file = None
+        mock_args.live_output = True
+        return BuildOrchestrator(mock_args)
+
+    def test_normal_build_path_persists_model_card_launcher(self, tmp_path):
+        """Regression: only the prebuilt-image path used to copy distributed.launcher
+        into deployment_config, so a normal Docker build of a slurm_multi model card
+        left deployment_config without a launcher and `run` inferred "local"."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {}}))
+
+        models = [{"name": "m1", "distributed": {"launcher": "slurm_multi"}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved = json.loads(manifest_file.read_text())
+        assert saved["deployment_config"]["distributed"]["launcher"] == "slurm_multi"
+
+    def test_expanded_slurm_whitelist_promotes_all_documented_fields(self, tmp_path):
+        """docs/launchers.md documents these slurm.* fields as part of the model-card
+        contract; the merge whitelist must actually promote every one of them."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {}}))
+
+        model_slurm = {
+            "partition": "gpu",
+            "nodes": 4,
+            "gpus_per_node": 8,
+            "time": "12:00:00",
+            "exclusive": True,
+            "reservation": "myres",
+            "output_dir": "./out",
+            "nodelist": "node[1-4]",
+            "account": "myaccount",
+            "qos": "high",
+            "modules": ["rocm/6.0"],
+            "skip_gpus_directive": True,
+            "results_dir": "./results",
+        }
+        models = [{"name": "m1", "slurm": model_slurm}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved_slurm = json.loads(manifest_file.read_text())["deployment_config"]["slurm"]
+        for key, value in model_slurm.items():
+            assert saved_slurm[key] == value
+
+    def test_explicit_slurm_keys_provenance_distinguishes_model_card_from_default(
+        self, tmp_path
+    ):
+        """Regression: a manifest's slurm dict is written *after* ConfigLoader applies
+        preset defaults, so a persisted nodes=1 default was indistinguishable from a
+        real user/model-card setting on a later `run --manifest-file`. The merge must
+        record which keys were actually explicit (user additional-context or model
+        card) as opposed to a preset default."""
+        orchestrator = self._make_orchestrator(
+            additional_context='{"slurm": {"partition": "gpu"}}'
+        )
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {}}))
+
+        # Model card declares nnodes-sizing via slurm.nodes; "time" here simulates a
+        # ConfigLoader-applied preset default already present in additional_context,
+        # which must NOT be treated as explicit.
+        models = [{"name": "m1", "slurm": {"nodes": 4}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        explicit_keys = set(
+            json.loads(manifest_file.read_text())["deployment_config"][
+                "_explicit_slurm_keys"
+            ]
+        )
+        assert "partition" in explicit_keys  # from --additional-context
+        assert "nodes" in explicit_keys  # copied from the model card
+        assert "time" not in explicit_keys  # never declared by user or model card
+
+
+@pytest.mark.unit
 class TestRequirePinnedImageContext:
     """--require-pinned-image and require_pinned_image both reach additional_context."""
 

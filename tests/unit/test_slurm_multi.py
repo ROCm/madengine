@@ -598,6 +598,264 @@ class TestSglangDisaggDefaultSplit:
             )
 
 
+# ---------------------------------------------------------------------------
+# 6. Path-parity contract: the model card drives the allocation and the launcher
+#
+# slurm_multi is an escape hatch, not a second product. These lock in the pieces
+# of the model-card contract that the templated path already honoured and the
+# self-managed path silently dropped.
+
+from madengine.deployment.common import (  # noqa: E402
+    resolve_launcher_from_sources,
+    resolve_node_count,
+)
+
+
+class TestResolveNodeCount:
+    """slurm.nodes and distributed.nnodes reconcile into one allocation size."""
+
+    def test_nnodes_absent_keeps_configured(self):
+        assert resolve_node_count(1, None, False) == (1, None)
+
+    def test_nnodes_sizes_allocation_when_nodes_defaulted(self):
+        """The bug this fixes: a card declaring only nnodes ran on the nodes=1 default."""
+        nodes, note = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        assert nodes == 4
+        assert note and "distributed.nnodes=4" in note
+
+    def test_agreement_is_silent(self):
+        assert resolve_node_count(4, 4, nodes_explicitly_set=True) == (4, None)
+
+    def test_explicit_nodes_wins_conflict_but_warns(self):
+        """Never silently allocate more nodes than the user asked to be billed for."""
+        nodes, note = resolve_node_count(6, 4, nodes_explicitly_set=True)
+        assert nodes == 6
+        assert note and "conflicts" in note
+
+    @pytest.mark.parametrize("bad", ["bad", "", [], {}])
+    def test_non_numeric_nnodes_falls_back(self, bad):
+        nodes, note = resolve_node_count(2, bad, nodes_explicitly_set=False)
+        assert nodes == 2
+        if bad != "":
+            assert note is not None
+
+    @pytest.mark.parametrize("bad", [0, -1, "0", "-1"])
+    def test_non_positive_nnodes_falls_back(self, bad):
+        """sbatch cannot schedule --nodes=0; reject it here, not at submit time."""
+        nodes, note = resolve_node_count(2, bad, nodes_explicitly_set=False)
+        assert nodes == 2
+        assert note and ">= 1" in note
+
+    def test_non_positive_nnodes_does_not_override_explicit_nodes(self):
+        nodes, note = resolve_node_count(4, 0, nodes_explicitly_set=True)
+        assert nodes == 4
+        assert note is not None
+
+    def test_idempotent_across_repeated_resolution(self):
+        """deploy() re-runs prepare() after preflight; resolution must not ratchet."""
+        nodes, _ = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        again, _ = resolve_node_count(1, 4, nodes_explicitly_set=False)
+        assert nodes == again == 4
+
+
+class TestResolveLauncherFromSources:
+    """One resolver for both dispatch sites, deployment config first."""
+
+    def test_deployment_config_wins(self):
+        assert resolve_launcher_from_sources("vllm", "slurm_multi") == "vllm"
+
+    def test_falls_back_to_model_card(self):
+        assert resolve_launcher_from_sources(None, "slurm_multi") == "slurm_multi"
+
+    def test_default_when_neither_declared(self):
+        assert resolve_launcher_from_sources(None, None) == "torchrun"
+
+    @pytest.mark.parametrize("deployment,card,expected", [
+        (None, "vllm", "vllm"),
+        ("sglang", "vllm", "sglang"),
+        (None, None, "torchrun"),
+        ("sglang", None, "sglang"),
+        ("slurm_multi", "torchrun", "slurm_multi"),
+        # A falsy deployment value is "not declared", not "declared as empty":
+        # ConfigLoader materializes distributed.launcher as "" when the preset
+        # carries the key but neither the user nor the card filled it in.
+        ("", "slurm_multi", "slurm_multi"),
+        ("", None, "torchrun"),
+    ])
+    def test_dispatch_and_env_block_cannot_disagree(self, deployment, card, expected):
+        """
+        prepare() used to read the card while _prepare_template_context() read the
+        deployment config, so a card-declared launcher could pick one path and emit
+        another path's env block. Both now call this, so they agree by construction.
+        """
+        assert resolve_launcher_from_sources(deployment, card) == expected
+
+
+class TestExplicitSlurmKeysManifestProvenance:
+    """A manifest's slurm dict is written *after* ConfigLoader applies preset
+    defaults, so inferring "explicit" from which keys are present in the manifest
+    would treat a persisted default (e.g. nodes=1) as if the user or model card had
+    set it. BuildOrchestrator records real provenance as "_explicit_slurm_keys" in
+    deployment_config; SlurmDeployment must prefer that over inferring from keys.
+    """
+
+    def _deployment(self, tmp_path: Path, additional_context: dict) -> SlurmDeployment:
+        manifest = {"built_images": {}, "built_models": {}, "context": {}}
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context=additional_context,
+        )
+        return SlurmDeployment(cfg)
+
+    def test_persisted_default_is_not_treated_as_explicit(self, tmp_path):
+        """Regression: slurm.nodes=1 came from a ConfigLoader preset default at build
+        time, not from the user or model card, so distributed.nnodes must still win."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 1, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+            "_explicit_slurm_keys": ["output_dir"],
+        })
+        assert "nodes" not in d._explicit_slurm_keys
+        assert d.nodes == 4
+
+    def test_manifest_provenance_respects_real_explicit_conflict(self, tmp_path):
+        """When the manifest says slurm.nodes really was explicit, an explicit
+        conflict with distributed.nnodes must still win (with a warning)."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+            "_explicit_slurm_keys": ["nodes", "output_dir"],
+        })
+        assert "nodes" in d._explicit_slurm_keys
+        assert d.nodes == 6
+
+    def test_falls_back_to_key_inference_without_manifest_provenance(self, tmp_path):
+        """Direct --additional-context (no manifest round trip) has no
+        "_explicit_slurm_keys" key; behavior falls back to inferring from the
+        slurm dict's own keys, as before this fix."""
+        d = self._deployment(tmp_path, {
+            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+            "distributed": {"nnodes": 4},
+        })
+        assert d._explicit_slurm_keys == {"nodes", "output_dir"}
+        assert d.nodes == 6
+
+
+class TestSlurmMultiDeclaredResultsCsv:
+    """A slurm_multi card's `multiple_results` names its own results CSV."""
+
+    @pytest.fixture
+    def deployment(self, tmp_path: Path) -> SlurmDeployment:
+        script_rel = "scripts/wl/run.slurm"
+        script_abs = tmp_path / script_rel
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text("#!/bin/bash\n")
+
+        model = {
+            "name": "wl",
+            "scripts": script_rel,
+            "multiple_results": "perf_WL.csv",
+            "distributed": {"launcher": "slurm_multi"},
+        }
+        manifest = {
+            "built_images": {},
+            "built_models": {"img:tag": model},
+            "context": {},
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "slurm": {"output_dir": str(tmp_path / "slurm_results")},
+                "distributed": {"launcher": "slurm_multi"},
+            },
+        )
+        d = SlurmDeployment(cfg)
+        d._model_for_test = model
+        d._script_dir_for_test = script_abs.parent
+        return d
+
+    def test_finds_csv_next_to_model_script(self, deployment):
+        """The wrapper cd's to the script dir, so $(pwd) writes land there."""
+        target = deployment._script_dir_for_test / "perf_WL.csv"
+        target.write_text("model,performance,metric\nwl,1.0,tok/s\n")
+        found = deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        )
+        assert found == target
+
+    def test_ignores_empty_file(self, deployment):
+        (deployment._script_dir_for_test / "perf_WL.csv").write_text("")
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) is None
+
+    def test_returns_none_without_declaration(self, deployment):
+        assert deployment._slurm_multi_declared_result_csv({"name": "wl"}, "12345") is None
+
+    def test_returns_none_when_model_info_missing(self, deployment):
+        assert deployment._slurm_multi_declared_result_csv(None, "12345") is None
+
+
+class TestSlurmMultiPerfAggregation:
+    """Aggregating the per-job CSV into cwd/perf.csv must not append it to itself."""
+
+    @pytest.fixture
+    def deployment(self, tmp_path: Path) -> SlurmDeployment:
+        manifest = {"built_images": {}, "built_models": {}, "context": {}}
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={"slurm": {"output_dir": str(tmp_path / "slurm_results")}},
+        )
+        d = SlurmDeployment(cfg)
+        d.output_dir.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_cwd_perf_source_is_not_duplicated(self, deployment, tmp_path, monkeypatch):
+        """
+        The <cwd>/perf.csv fallback (and a card declaring multiple_results:
+        "perf.csv") makes source and destination the same file. Appending it to
+        itself would double every row on each collection.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = "model,performance,metric,status\nwl,1.0,tok/s,SUCCESS\n"
+        Path("perf.csv").write_text(rows)
+
+        deployment._collect_slurm_multi_results(
+            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+        )
+
+        assert Path("perf.csv").read_text() == rows
+
+    def test_distinct_source_is_appended(self, deployment, tmp_path, monkeypatch):
+        """A genuinely separate per-job CSV still aggregates, minus its header."""
+        monkeypatch.chdir(tmp_path)
+        Path("perf.csv").write_text("model,performance,metric,status\nold,1.0,tok/s,SUCCESS\n")
+        job_csv = tmp_path / "job" / "perf.csv"
+        job_csv.parent.mkdir()
+        job_csv.write_text("model,performance,metric,status\nnew,2.0,tok/s,SUCCESS\n")
+        deployment.slurm_config["results_dir"] = str(job_csv.parent)
+
+        deployment._collect_slurm_multi_results(
+            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+        )
+
+        text = Path("perf.csv").read_text()
+        assert "old,1.0" in text and "new,2.0" in text
+        assert text.count("model,performance") == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. require_pinned_image on the slurm_multi wrapper
+
 DIGEST = "sha256:" + "df36ef7e" * 8
 
 
@@ -683,3 +941,287 @@ class TestSlurmMultiRequirePinnedImage:
         dep = self._deployment(tmp_path, require_pinned=True, image_digest=None)
         with pytest.raises(ConfigurationError):
             dep.prepare()
+
+
+# ---------------------------------------------------------------------------
+# 13. Accounting directives and module loads on the self-managed path
+# ---------------------------------------------------------------------------
+class TestSlurmMultiAccountingDirectives:
+    """`qos`, `account` and `modules` are part of the declared parity set, so the
+    slurm_multi wrapper must emit them like job.sh.j2 does. Before this, they were
+    promoted into deployment_config and then silently dropped: a card declaring
+    them produced a wrapper with no `#SBATCH --account/--qos` and no `module load`,
+    which a billing-enforced site rejects outright.
+    """
+
+    def _deployment(self, tmp_path: Path, **slurm_overrides) -> SlurmDeployment:
+        script_rel = PR186_MODEL_ENTRY["scripts"]
+        script_abs = tmp_path / script_rel
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text("#!/bin/bash\n")
+
+        image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
+        manifest = {
+            "built_images": {image_key: {"docker_image": image_key}},
+            "built_models": {image_key: PR186_MODEL_ENTRY},
+            "context": {},
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        slurm = dict(
+            PR186_MODEL_ENTRY["slurm"],
+            output_dir=str(tmp_path / "slurm_results"),
+            **slurm_overrides,
+        )
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "deploy": "slurm",
+                "slurm": slurm,
+                "distributed": PR186_MODEL_ENTRY["distributed"],
+            },
+        )
+        return SlurmDeployment(cfg)
+
+    def _script(self, dep: SlurmDeployment) -> str:
+        assert dep.prepare() is True
+        return Path(dep.script_path).read_text()
+
+    def test_qos_and_account_emitted(self, tmp_path):
+        text = self._script(self._deployment(tmp_path, qos="high", account="amd-ml"))
+        assert "#SBATCH --qos=high" in text
+        assert "#SBATCH --account=amd-ml" in text
+
+    def test_modules_loaded(self, tmp_path):
+        text = self._script(
+            self._deployment(tmp_path, modules=["rocm/6.2", "openmpi"])
+        )
+        assert "module load rocm/6.2" in text
+        assert "module load openmpi" in text
+
+    def test_modules_load_before_model_script(self, tmp_path):
+        """`module load` has to run before the model script, or the site's
+        docker/rocm binaries are missing from PATH for its internal srun calls."""
+        text = self._script(self._deployment(tmp_path, modules=["rocm/6.2"]))
+        lines = text.splitlines()
+        module_idx = next(i for i, l in enumerate(lines) if l == "module load rocm/6.2")
+        script_idx = next(
+            i for i, l in enumerate(lines) if "run_xPyD_models.slurm" in l and l.startswith("bash ")
+        )
+        assert module_idx < script_idx
+
+    def test_sbatch_directives_stay_in_header_block(self, tmp_path):
+        """sbatch stops parsing directives at the first non-comment line, so
+        --qos/--account must precede the `set -e` body."""
+        text = self._script(self._deployment(tmp_path, qos="high", account="amd-ml"))
+        lines = text.splitlines()
+        first_body = next(
+            i for i, l in enumerate(lines)
+            if l.strip() and not l.startswith("#") and not l.startswith("#!")
+        )
+        for directive in ("#SBATCH --qos=high", "#SBATCH --account=amd-ml"):
+            assert lines.index(directive) < first_body
+
+    def test_absent_fields_emit_nothing(self, tmp_path):
+        """No declaration must not produce an empty directive that sbatch rejects."""
+        text = self._script(self._deployment(tmp_path))
+        assert "--qos" not in text
+        assert "--account" not in text
+        assert "module load" not in text
+
+
+# ---------------------------------------------------------------------------
+# 14. build-on-compute parity with the other build paths
+# ---------------------------------------------------------------------------
+class TestBuildOnComputeModelFieldParity:
+    """--build-on-compute writes its own manifest and returns, so it used to skip
+    _merge_model_config_into_manifest entirely. That lost the model card's declared
+    results CSV, recorded no "_explicit_slurm_keys" provenance, and let the
+    post-ConfigLoader preset defaults in --additional-context outrank the card.
+    """
+
+    CARD = {
+        "name": "model_a",
+        "dockerfile": "docker/model_a",
+        "scripts": "scripts/model_a/run.slurm",
+        "n_gpus": "8",
+        "tags": ["model_a"],
+        "multiple_results": "perf_model_a.csv",
+        "slurm": {"partition": "amd-rccl", "nodes": 4, "time": "01:00:00"},
+        "distributed": {"launcher": "slurm_multi", "nnodes": 4},
+        "env_vars": {},
+    }
+
+    def _run_build_on_compute(self, tmp_path: Path, card: dict, context_slurm: dict,
+                              user_slurm_keys: set) -> dict:
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock()
+        orch.console = MagicMock()
+        orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = {}
+        # Post-ConfigLoader: carries preset defaults alongside the user's own keys.
+        orch.additional_context = {"slurm": context_slurm}
+        orch._original_user_slurm_keys = set(user_slurm_keys)
+        orch.credentials = {}
+
+        df = tmp_path / f"{card['dockerfile']}.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text("FROM scratch\n")
+
+        manifest_path = tmp_path / "build_manifest.json"
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+                mock_dm.return_value.run.return_value = [card]
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(
+                        registry="localhost:5000/myrepo",
+                        manifest_output=str(manifest_path),
+                    )
+        finally:
+            os.chdir(orig_cwd)
+        return json.loads(manifest_path.read_text())
+
+    def test_declared_results_csv_is_persisted(self, tmp_path):
+        """Without multiple_results the run has no declared CSV to collect and
+        falls back to log scraping, which a slurm_multi model produces nothing for."""
+        manifest = self._run_build_on_compute(
+            tmp_path, self.CARD,
+            context_slurm={"partition": "amd-rccl", "nodes": 1},
+            user_slurm_keys={"partition"},
+        )
+        assert manifest["built_models"]["model_a"]["multiple_results"] == "perf_model_a.csv"
+
+    def test_preset_default_does_not_outrank_model_card(self, tmp_path):
+        """nodes=1 is a ConfigLoader preset default, not a user choice, so the
+        card's nodes=4 must survive into the persisted slurm config."""
+        manifest = self._run_build_on_compute(
+            tmp_path, self.CARD,
+            context_slurm={"partition": "amd-rccl", "nodes": 1, "time": "24:00:00"},
+            user_slurm_keys={"partition"},
+        )
+        slurm = manifest["deployment_config"]["slurm"]
+        assert slurm["nodes"] == 4
+        assert slurm["time"] == "01:00:00"
+
+    def test_user_explicit_key_still_wins_over_model_card(self, tmp_path):
+        manifest = self._run_build_on_compute(
+            tmp_path, self.CARD,
+            context_slurm={"partition": "amd-rccl", "nodes": 2},
+            user_slurm_keys={"partition", "nodes"},
+        )
+        assert manifest["deployment_config"]["slurm"]["nodes"] == 2
+
+    def test_explicit_slurm_keys_provenance_is_recorded(self, tmp_path):
+        manifest = self._run_build_on_compute(
+            tmp_path, self.CARD,
+            context_slurm={"partition": "amd-rccl", "nodes": 1, "time": "24:00:00"},
+            user_slurm_keys={"partition"},
+        )
+        explicit = set(manifest["deployment_config"]["_explicit_slurm_keys"])
+        # partition: user. nodes/time: declared by the card.
+        assert {"partition", "nodes", "time"} <= explicit
+
+    def test_undeclared_preset_default_is_not_marked_explicit(self, tmp_path):
+        """The card says nothing about nodes, so the persisted nodes=1 is a preset
+        default and distributed.nnodes must still be free to size the allocation."""
+        card = dict(self.CARD, slurm={"partition": "amd-rccl"})
+        manifest = self._run_build_on_compute(
+            tmp_path, card,
+            context_slurm={"partition": "amd-rccl", "nodes": 1},
+            user_slurm_keys={"partition"},
+        )
+        assert "nodes" not in set(manifest["deployment_config"]["_explicit_slurm_keys"])
+
+    def test_model_card_distributed_reaches_deployment_config(self, tmp_path):
+        """run --manifest-file infers the SLURM target from deployment_config."""
+        manifest = self._run_build_on_compute(
+            tmp_path, self.CARD,
+            context_slurm={"partition": "amd-rccl", "nodes": 1},
+            user_slurm_keys={"partition"},
+        )
+        assert manifest["deployment_config"]["distributed"]["launcher"] == "slurm_multi"
+
+
+# ---------------------------------------------------------------------------
+# 15. Runtime slurm override must not inherit stale provenance
+# ---------------------------------------------------------------------------
+class TestRuntimeSlurmOverrideProvenance:
+    """_load_and_merge_manifest replaces the manifest's slurm block with the
+    runtime one but used to leave "_explicit_slurm_keys" describing the *old*
+    block, so a build-time explicit nodes marked the runtime default nodes=1 as
+    deliberate and silently suppressed distributed.nnodes.
+    """
+
+    def _merge(self, tmp_path: Path, stored: dict, runtime: dict) -> dict:
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        orch = RunOrchestrator.__new__(RunOrchestrator)
+        orch.rich_console = MagicMock()
+        orch.additional_context = runtime
+
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps({
+            "built_images": {}, "built_models": {}, "context": {},
+            "deployment_config": stored,
+        }))
+        orch._load_and_merge_manifest(str(manifest_path))
+        return json.loads(manifest_path.read_text())["deployment_config"]
+
+    def test_runtime_slurm_recomputes_provenance(self, tmp_path):
+        cfg = self._merge(
+            tmp_path,
+            stored={
+                "slurm": {"partition": "old", "nodes": 2},
+                "_explicit_slurm_keys": ["nodes", "partition"],
+                "distributed": {"nnodes": 4},
+            },
+            runtime={"slurm": {"partition": "new"}},
+        )
+        assert cfg["_explicit_slurm_keys"] == ["partition"]
+
+    def test_stale_provenance_no_longer_suppresses_nnodes(self, tmp_path):
+        """End of the chain: the recomputed provenance must let SlurmDeployment
+        size the allocation from distributed.nnodes."""
+        cfg = self._merge(
+            tmp_path,
+            stored={
+                "slurm": {"partition": "old", "nodes": 2},
+                "_explicit_slurm_keys": ["nodes", "partition"],
+            },
+            runtime={"slurm": {"partition": "new"}, "distributed": {"nnodes": 4}},
+        )
+        manifest_path = tmp_path / "m.json"
+        manifest_path.write_text(json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+        dep = SlurmDeployment(DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "slurm": dict(cfg["slurm"], output_dir=str(tmp_path / "out")),
+                "distributed": cfg["distributed"],
+                "_explicit_slurm_keys": cfg["_explicit_slurm_keys"],
+            },
+        ))
+        assert "nodes" not in dep._explicit_slurm_keys
+        assert dep.nodes == 4
+
+    def test_provenance_untouched_without_runtime_slurm(self, tmp_path):
+        """A plain `run --manifest-file` must keep the build-time provenance."""
+        cfg = self._merge(
+            tmp_path,
+            stored={
+                "slurm": {"partition": "old", "nodes": 2},
+                "_explicit_slurm_keys": ["nodes", "partition"],
+            },
+            runtime={"env_vars": {"FOO": "1"}},
+        )
+        assert cfg["_explicit_slurm_keys"] == ["nodes", "partition"]
+        assert cfg["slurm"]["nodes"] == 2
