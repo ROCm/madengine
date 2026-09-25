@@ -152,6 +152,8 @@ class KubernetesDeployment(
 
         self.namespace = self.k8s_config.get("namespace", "default")
         self.gpu_resource_name = self.k8s_config.get("gpu_resource_name", "amd.com/gpu")
+        self.cluster_config = config.additional_context.get("cluster", {})
+        self.rdma_config = self.cluster_config.get("rdma", {})
 
         # Setup Jinja2 template environment
         template_dir = Path(__file__).parent / "templates" / "kubernetes"
