@@ -437,3 +437,185 @@ class TestSglangDisaggNodeIps:
         # neither the docker bridge nor the management address may be published
         assert "172.17.0.1" not in out.stdout
         assert "192.168.1.5" not in out.stdout
+
+
+# ---------------------------------------------------------------------------
+# 7. The node-local workspace is scoped to the job
+
+class TestWorkspaceIsJobScoped:
+    """A node-local workspace must not be shared by consecutive jobs.
+
+    Nothing deletes these directories, and a site is free to point
+    SLURM_TMPDIR at storage that outlives the job. Without the job id in the
+    path, two jobs placing the same node rank on the same host get one
+    directory, and the second reads the first one's results CSV back as its
+    own (see the `multiple_results` cleanup in `container_runner`).
+    """
+
+    def test_multi_node_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert (
+            "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+        assert (
+            "WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+
+    def test_multi_node_workspace_is_not_shared_between_jobs(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "madengine_node_${SLURM_PROCID}" not in script
+
+    def test_single_node_local_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}" in script
+        # A bare SLURM_TMPDIR is the shared directory this guards against.
+        assert re.search(r"WORKSPACE=\$SLURM_TMPDIR\s*$", script, re.M) is None
+
+
+class TestJobScopedWorkspacesAreReclaimed:
+    """One directory per job replaces one directory per node rank, so the
+    template owes the node a way to get the space back."""
+
+    POST_RUN_REMOVAL = 'if rm -rf "$WORKSPACE" 2>/dev/null; then'
+    RESET = 'rm -rf "$WORKSPACE" 2>/dev/null || true'
+    SWEEP = "-name 'madengine_job_*' -uid"
+
+    def test_a_successful_task_removes_its_workspace(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert self.POST_RUN_REMOVAL in script
+
+    def test_the_removal_follows_the_artifact_copy(self, tmp_path):
+        """Removing before collection would throw away the run's results."""
+        script = _render(_build_deployment(tmp_path))
+        assert script.index("NODE_COLLECTION_DIR") < script.index(
+            self.POST_RUN_REMOVAL
+        )
+
+    def test_a_failed_task_keeps_its_workspace(self, tmp_path):
+        """Only the logs are copied out on failure, so the rest has to stay."""
+        script = _render(_build_deployment(tmp_path))
+        removal = script.index(self.POST_RUN_REMOVAL)
+        guard = script.rindex(
+            "if [ $TASK_EXIT -eq 0 ] && [ $COLLECTION_OK -eq 1 ]; then", 0, removal
+        )
+        assert "else" not in script[guard:removal]
+
+    def test_a_workspace_whose_artifacts_did_not_copy_is_kept(self, tmp_path):
+        """Every `cp` here is best-effort, so a full or unreachable shared
+        filesystem would otherwise leave the run with no copy at all."""
+        script = _render(_build_deployment(tmp_path))
+        assert "|| COLLECTION_OK=0" in script
+        # The best-effort copies must feed the flag rather than swallow.
+        collection = script[
+            script.index("Copying artifacts to") : script.index(
+                "Task FAILED with exit code"
+            )
+        ]
+        assert "|| true" not in collection
+        assert "[ $COLLECTION_OK -eq 1 ]" in script
+        assert "artifact collection was incomplete" in script
+
+    def test_the_removal_cannot_fail_the_task(self, tmp_path):
+        """The task script runs under `set -e` and the container writes as
+        root, so a bare `rm -rf` would report a successful run as failed."""
+        script = _render(_build_deployment(tmp_path))
+        assert re.search(r'^\s*rm -rf "\$WORKSPACE"\s*$', script, re.M) is None
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_leftovers_are_swept_before_the_workspace_is_created(
+        self, tmp_path, nodes
+    ):
+        """A failed task keeps its workspace; this is what collects it later."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        sweep = script.index(self.SWEEP)
+        assert script.index("mkdir -p $WORKSPACE", sweep) > sweep
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_spares_the_directory_it_starts_from(self, tmp_path, nodes):
+        """find reports its starting point too, so a scratch root that happens
+        to match the glob would be handed to `rm -rf` whole."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "-mindepth 1 -maxdepth 1 -type d" in script
+        # No sweep may reach find without it.
+        assert script.count("-mindepth 1 -maxdepth 1 -type d") == script.count(
+            "-maxdepth 1 -type d"
+        )
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_spares_live_and_foreign_workspaces(self, tmp_path, nodes):
+        """A run can outlive the retention window while its directory's own
+        mtime stays put, and a shared scratch root holds other users' work."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert '-uid "$(id -u)"' in script
+        assert 'grep -qx -- "$STALE_JOB"' in script
+        # No way to tell a live job from an abandoned one without squeue.
+        assert script.index("LIVE_JOBS=$(squeue -h -o %i") < script.index(self.SWEEP)
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_gives_up_when_squeue_does(self, tmp_path, nodes):
+        """`squeue -j <id>` answers the same way for a job that finished and
+        for a controller that cannot be reached, so it cannot be asked at all:
+        one query for the queue either succeeds or takes the sweep with it."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "squeue -h -j" not in script
+        assert "if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then" in script
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_a_reused_job_id_starts_from_an_empty_directory(self, tmp_path, nodes):
+        """The sweep keeps live job ids, and a reused id reads as live -- the
+        current job's own directory has to be reset on its own account."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        reset = script.index(self.RESET)
+        assert script.index("mkdir -p $WORKSPACE", reset) > reset
+
+    def test_the_single_node_workspace_is_not_removed_after_the_run(self, tmp_path):
+        """With a local submission directory it holds the only copy of the
+        output: the login node cannot read it back."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert self.POST_RUN_REMOVAL not in script
+        # The one removal left is the reset that precedes mkdir.
+        assert script.count('rm -rf "$WORKSPACE"') == 1

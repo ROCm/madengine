@@ -8,7 +8,7 @@ Integration/e2e tests stay in their own modules.
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -614,7 +614,10 @@ class TestK8sRequirePinnedImage:
             manifest_file="build_manifest.json",
             additional_context=additional_context,
         )
-        deployment = KubernetesDeployment(cfg)
+        # __init__ loads a real kubeconfig and fails without one, which has
+        # nothing to do with how the pod spec picks an image reference.
+        with patch("madengine.deployment.kubernetes.k8s_config.load_kube_config"):
+            deployment = KubernetesDeployment(cfg)
         return deployment._prepare_template_context(model_info, image_info)
 
     def test_default_uses_tag(self, tmp_path, monkeypatch):
