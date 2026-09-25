@@ -1,0 +1,23 @@
+# Kubernetes — DeepSpeed ZeRO distributed training
+# madengine run --config examples/configs/demo/k8s/deepspeed.yaml
+
+model:
+  tags: [dummy_deepspeed]
+
+k8s:
+  namespace: default
+  gpu_count: 4
+  memory: 128Gi
+  memory_limit: 256Gi
+  cpu: "32"
+  cpu_limit: "64"
+  host_ipc: true
+
+distributed:
+  enabled: true
+  launcher: deepspeed
+  nnodes: 1
+  nproc_per_node: 4
+
+env_vars:
+  OMP_NUM_THREADS: "8"

@@ -1,0 +1,165 @@
+# ============================================================
+# madengine YAML Config Template — SLURM
+# ============================================================
+# Copy this file, fill in your model and cluster details, and
+# remove or comment out any sections you don't need.
+#
+# Usage:
+#   madengine run --config slurm.yaml
+#   madengine run --config slurm.yaml --config distributed.nnodes=4
+#
+# Target is inferred automatically from the presence of the
+# 'slurm' key — no explicit deploy field is needed.
+# ============================================================
+
+# ------------------------------------
+# Model selection
+# ------------------------------------
+model:
+  # Run by tag — discovers matching models from models.json
+  tags: [dummy_torchrun]
+
+  # OR point at a pre-built manifest
+  # manifest_file: build_manifest.json
+
+  # OR use a specific container image directly
+  # container_image: myrepo/myimage:latest
+
+  skip_run: false
+  # timeout: 86400
+
+# ------------------------------------
+# SLURM job settings
+# ------------------------------------
+slurm:
+  partition: amd-rccl       # SLURM partition name (required)
+  nodes: 2                  # Number of nodes to allocate
+  gpus_per_node: 8          # GPUs per node
+  time: "24:00:00"          # Wall-clock time limit (HH:MM:SS)
+  output_dir: ./slurm_results  # Where SLURM stdout/stderr logs are written
+  exclusive: true           # Request exclusive node access (no sharing)
+
+  # Optional: restrict to a specific set of nodes (disables node health check)
+  # nodelist: node01,node02
+
+  # Optional: exclude specific nodes
+  # exclude: node03,node04
+
+  # Optional: hardware constraint (e.g. GPU architecture label)
+  # constraint: MI300X
+
+  # Optional: SLURM account and QoS
+  # account: my-project
+  # qos: high
+
+  # Optional: memory limit per node (e.g. "256G")
+  # mem: 256G
+
+  # Optional: environment modules to load before the job starts
+  # modules:
+  #   - rocm/6.2.0
+  #   - gcc/11.2.0
+
+  # Optional: shared filesystem paths (accessible from all nodes)
+  # shared_workspace: /lustre/shared/workspace
+  # results_dir: /lustre/shared/results
+
+  # Optional: network interface for NCCL/RCCL (override auto-detection)
+  # network_interface: ib0
+
+  # Optional: node health preflight (GPU memory check before job starts)
+  enable_node_check: true
+  auto_cleanup_nodes: false
+  verbose_node_check: false
+
+# ------------------------------------
+# Distributed launcher
+# ------------------------------------
+distributed:
+  launcher: torchrun    # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+  backend: nccl         # nccl | gloo
+  nnodes: 2             # Must match slurm.nodes
+  nproc_per_node: 8     # Must match slurm.gpus_per_node
+  port: 29500           # Master port for distributed rendezvous
+
+  # SGLang disaggregated only: override default prefill/decode split
+  # sglang_disagg:
+  #   prefill_nodes: 2
+  #   decode_nodes: 2
+
+# ------------------------------------
+# Environment variables
+# ------------------------------------
+env_vars:
+  OMP_NUM_THREADS: "8"
+  NCCL_DEBUG: WARN
+  NCCL_DEBUG_SUBSYS: "INIT,NET"
+  NCCL_TIMEOUT: "600"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
+  TORCH_NCCL_HIGH_PRIORITY: "1"
+  GPU_MAX_HW_QUEUES: "2"
+  HSA_ENABLE_SDMA: "0"
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"
+  MIOPEN_FIND_MODE: "1"
+  MIOPEN_USER_DB_PATH: /tmp/.miopen
+  RCCL_ENABLE_HIPGRAPH: "0"
+
+  # InfiniBand (uncomment when using IB interconnect)
+  # NCCL_IB_DISABLE: "0"
+  # NCCL_IB_HCA: "mlx5_0:1,mlx5_1:1"
+  # NCCL_SOCKET_IFNAME: ib0
+
+  # Ethernet (uncomment when using Ethernet interconnect)
+  # NCCL_IB_DISABLE: "1"
+  # NCCL_SOCKET_IFNAME: eth0
+
+# ------------------------------------
+# Hardware (defaults to AMD/Ubuntu)
+# ------------------------------------
+# gpu_vendor: AMD      # AMD | NVIDIA
+# guest_os: UBUNTU     # UBUNTU | CENTOS
+
+# ------------------------------------
+# Profiling tools (optional)
+# ------------------------------------
+# tools: []
+#   - name: rocprofv3_lightweight
+#   - name: rocprofv3_communication
+#     env_vars:
+#       RCCL_DEBUG: INFO
+#   - name: gpu_info_power_profiler
+#     env_vars:
+#       POWER_DEVICE: all
+#       POWER_SAMPLING_RATE: "0.1"
+#   - name: gpu_info_vram_profiler
+#     env_vars:
+#       VRAM_DEVICE: all
+#       VRAM_SAMPLING_RATE: "0.1"
+
+# ------------------------------------
+# Scripts (optional)
+# ------------------------------------
+# pre_scripts: []
+# post_scripts: []
+# encapsulate_script: null
+
+# ------------------------------------
+# Log error scanning (optional)
+# ------------------------------------
+log_error:
+  pattern_scan: true
+  benign_patterns: []
+  patterns: []
+
+# ------------------------------------
+# Output (optional)
+# ------------------------------------
+output: perf.csv
+# summary_output: null
+# data_config: data.json
+
+# ------------------------------------
+# Misc
+# ------------------------------------
+debug: false
+live_output: false

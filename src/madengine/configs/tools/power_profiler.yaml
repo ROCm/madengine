@@ -1,0 +1,9 @@
+# @package _global_
+tools:
+  - name: gpu_info_power_profiler
+    env_vars:
+      POWER_DEVICE: all
+      POWER_SAMPLING_RATE: "0.1"
+      POWER_MODE: power
+      POWER_DUAL_GCD: "false"
+      POWER_OUTPUT_FILE: gpu_info_power_profiler_output.csv
