@@ -34,6 +34,14 @@ from madengine.execution.dockerfile_utils import (
 from madengine.utils.ops import PythonicTee
 
 
+
+def _is_prefix_variant(prefix: str, path: str) -> bool:
+    """Whether path is <prefix>.Dockerfile or <prefix>.<os>.<vendor>.Dockerfile."""
+    if not path.startswith(prefix + "."):
+        return False
+    rest = path[len(prefix) + 1:]
+    return re.fullmatch(r"(?:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)?Dockerfile", rest) is not None
+
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
 
@@ -803,6 +811,18 @@ class DockerBuilder:
             # Quote the dockerfile path to prevent shell injection
             dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
+            # A card's dockerfile is a prefix for its OS/vendor variants:
+            # <prefix>.Dockerfile or <prefix>.<os>.<vendor>.Dockerfile, the two names
+            # BuildOrchestrator resolves. `ls <prefix>.*` also matched model-specific
+            # siblings that share the prefix: every card on
+            # docker/vllm_disagg_inference also built vllm_disagg_inference.glmv5.1
+            # and .kimik3, and ran in the GLM-5.1 image (builds 119, 121, 140), while a
+            # network error on the Kimi one failed the build. Only the card's own
+            # variants are kept.
+            all_dockerfiles = [
+                f for f in all_dockerfiles
+                if _is_prefix_variant(model_info["dockerfile"], f.strip())
+            ]
 
             dockerfiles = {}
             for cur_docker_file in all_dockerfiles:
