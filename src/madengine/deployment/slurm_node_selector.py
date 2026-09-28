@@ -16,7 +16,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.table import Table
@@ -34,6 +34,33 @@ def parse_gpu_arch(output: Optional[str]) -> Optional[str]:
         return None
     match = _GFX_ARCH_RE.search(output)
     return match.group(0) if match else None
+
+
+def parse_node_resources(section: Optional[str]) -> Dict[str, object]:
+    """Parse the ===RESOURCES=== block of the health probe.
+
+    Lines are ``VRAM <used_bytes> <total_bytes>`` (one per GPU, from the amdgpu
+    driver's sysfs), ``DOCKER_AVAIL <bytes>`` and ``IMAGE_PRESENT``. Anything else
+    is ignored, so a node without docker or without amdgpu sysfs simply reports
+    less rather than failing the check.
+    """
+    vram: List[Tuple[int, int]] = []
+    docker_avail: Optional[int] = None
+    image_present = False
+    for line in (section or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            if parts[0] == "VRAM" and len(parts) == 3:
+                vram.append((int(parts[1]), int(parts[2])))
+            elif parts[0] == "DOCKER_AVAIL" and len(parts) == 2:
+                docker_avail = int(parts[1])
+            elif parts[0] == "IMAGE_PRESENT":
+                image_present = True
+        except ValueError:
+            continue
+    return {"vram": vram, "docker_avail": docker_avail, "image_present": image_present}
 
 
 def _first_plain_node(nodelist: Optional[str]) -> Optional[str]:
@@ -68,6 +95,7 @@ class NodeStatus:
     gpu_memory_total_gb: float
     process_count: int
     error_message: Optional[str] = None
+    docker_avail_gb: Optional[float] = None
 
     @property
     def memory_free_gb(self) -> float:
@@ -103,6 +131,8 @@ class SlurmNodeSelector:
         verbose: bool = False,
         timeout: int = 120,
         reservation: Optional[str] = None,
+        image: Optional[str] = None,
+        image_size_bytes: Optional[int] = None,
     ):
         """
         Initialize node selector.
@@ -116,6 +146,12 @@ class SlurmNodeSelector:
                 a slot, so the value has to cover how long that takes on a busy
                 cluster. Override with slurm.node_check_timeout.
             reservation: SLURM reservation name (passed through to srun health/cleanup)
+            image: The image the job will pull on each node. A node that already has
+                it needs no disk for the pull.
+            image_size_bytes: Its size. A node without the image needs at least this
+                much free on its docker data root, or the pull fails with "no space
+                left on device" after the job has started (builds 119, 129, 135, 136
+                all died that way on the same node, which this check had passed).
         """
         self.console = console or Console()
         # Set when select_nodes runs. The probe below needs it: a login node with no
@@ -126,6 +162,8 @@ class SlurmNodeSelector:
         self.verbose = verbose
         self.timeout = timeout
         self.reservation = reservation
+        self.image = image
+        self.image_size_bytes = image_size_bytes
 
     # Max candidates to check (avoids excessive checks on large clusters)
     MAX_CANDIDATES_CAP = 100
@@ -243,7 +281,29 @@ echo "===END_GPU_INFO==="
 echo "===PROCESSES==="
 ps aux | grep -E "(ray::|RayWorkerWrapper|raylet|vllm)" | grep -v grep || echo "NO_PROCESSES"
 echo "===END_PROCESSES==="
+
+# Measured facts, not the process-name estimate above. Per-GPU VRAM comes from the
+# amdgpu driver's sysfs, which a step that holds no GPU can still read (a GPU-less
+# step may not be allowed to open the devices amd-smi needs). Docker's free space
+# is measured on its data root, where a pull lands.
+echo "===RESOURCES==="
+for d in /sys/class/drm/card*/device; do
+    [ -r "$d/mem_info_vram_used" ] && [ -r "$d/mem_info_vram_total" ] || continue
+    echo "VRAM $(cat "$d/mem_info_vram_used") $(cat "$d/mem_info_vram_total")"
+done
+DR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+if [ -n "$DR" ]; then
+    echo "DOCKER_AVAIL $(df -B1 --output=avail "$DR" 2>/dev/null | tail -1 | tr -d ' ')"
+fi
+if [ -n "__MAD_CHECK_IMAGE__" ] && docker image inspect "__MAD_CHECK_IMAGE__" >/dev/null 2>&1; then
+    echo "IMAGE_PRESENT"
+fi
+echo "===END_RESOURCES==="
 """
+        # The image name goes into the script as a literal; refuse anything that is
+        # not a plain image reference rather than quote it into shell.
+        image = self.image if self.image and re.fullmatch(r"[A-Za-z0-9._/:@-]+", self.image) else ""
+        check_script = check_script.replace("__MAD_CHECK_IMAGE__", image)
         srun_cmd = [
             "srun",
             f"--nodelist={node}",
@@ -294,33 +354,62 @@ echo "===END_PROCESSES==="
                 output, "===PROCESSES===", "===END_PROCESSES==="
             )
 
-            # Parse GPU memory (simplified - in production would parse actual output)
-            # For MI300X: typically 192GB per GPU
-            total_memory_gb = 192.0 * 4  # Assume 4 GPUs
+            resources = parse_node_resources(
+                self._extract_section(output, "===RESOURCES===", "===END_RESOURCES===")
+            )
 
             # Count processes
             process_count = 0
             if processes and "NO_PROCESSES" not in processes:
                 process_count = len([l for l in processes.split("\n") if l.strip()])
 
-            # Estimate memory usage
-            # Rough heuristic: each process uses ~45GB (observed from Job 2437)
-            used_memory_gb = process_count * 45.0
-
-            # Determine health
-            if process_count == 0:
-                health = NodeHealth.CLEAN
-            elif used_memory_gb > self.MEMORY_THRESHOLD_GB:
-                health = NodeHealth.DIRTY
+            gib = float(1 << 30)
+            reasons: List[str] = []
+            vram = resources["vram"]
+            if vram:
+                # Measured. The amd-smi output above used to be collected and never
+                # read; memory was estimated as 45 GB per process whose name matched
+                # ray/vllm, so a node whose GPUs were held by anything else -- the
+                # SGLang servers that broke build 138 with "memory capacity is
+                # unbalanced" -- counted as empty. Judged per GPU against the same
+                # threshold, because one occupied GPU is enough to break a job.
+                used_memory_gb = sum(u for u, _ in vram) / gib
+                total_memory_gb = sum(t for _, t in vram) / gib
+                busy = [(i, u / gib) for i, (u, _) in enumerate(vram) if u / gib > self.MEMORY_THRESHOLD_GB]
+                if busy:
+                    reasons.append(
+                        "GPU memory in use: "
+                        + ", ".join(f"GPU{i} {g:.0f} GB" for i, g in busy)
+                    )
             else:
-                health = NodeHealth.CLEAN  # Minor processes, should be OK
+                # No amdgpu sysfs on this node: keep the old estimate.
+                # For MI300X: typically 192GB per GPU
+                total_memory_gb = 192.0 * 4  # Assume 4 GPUs
+                # Rough heuristic: each process uses ~45GB (observed from Job 2437)
+                used_memory_gb = process_count * 45.0
+                if process_count and used_memory_gb > self.MEMORY_THRESHOLD_GB:
+                    reasons.append(f"{process_count} stale Ray/vLLM process(es)")
+
+            docker_avail = resources["docker_avail"]
+            if (
+                self.image_size_bytes
+                and docker_avail is not None
+                and not resources["image_present"]
+                and docker_avail < self.image_size_bytes
+            ):
+                reasons.append(
+                    f"docker has {docker_avail / gib:.0f} GB free, "
+                    f"the image needs {self.image_size_bytes / gib:.0f} GB"
+                )
 
             return NodeStatus(
                 node=node,
-                health=health,
+                health=NodeHealth.DIRTY if reasons else NodeHealth.CLEAN,
                 gpu_memory_used_gb=used_memory_gb,
                 gpu_memory_total_gb=total_memory_gb,
                 process_count=process_count,
+                error_message="; ".join(reasons) or None,
+                docker_avail_gb=None if docker_avail is None else docker_avail / gib,
             )
 
         except subprocess.TimeoutExpired:
@@ -606,8 +695,9 @@ echo "CLEANUP_OK"
         # Handle dirty nodes (optional auto-cleanup)
         if dirty_nodes:
             self.console.print(
-                f"\n[yellow]⚠ Found {len(dirty_nodes)} dirty node(s) "
-                f"with stale Ray/vLLM processes[/yellow]"
+                f"\n[yellow]⚠ Found {len(dirty_nodes)} node(s) not fit for this job: "
+                + "; ".join(f"{d.node} ({d.error_message})" for d in dirty_nodes)
+                + "[/yellow]"
             )
             if self.auto_cleanup:
                 self.console.print("[yellow]Running automatic cleanup...[/yellow]\n")

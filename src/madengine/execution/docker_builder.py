@@ -114,6 +114,16 @@ class DockerBuilder:
 
         return build_args
 
+    def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
+        """Size of a local image in bytes, or None when docker cannot say."""
+        try:
+            out = self.console.sh(
+                f"docker image inspect -f '{{{{.Size}}}}' {shlex.quote(image)}", canFail=True
+            )
+            return int(str(out).strip().splitlines()[-1])
+        except Exception:
+            return None
+
     def _resolve_base_docker(self, dockerfile: str) -> str:
         """Resolve the base image the Dockerfile builds ``FROM``.
 
@@ -360,6 +370,12 @@ class DockerBuilder:
             "log_file": log_file_path,
             "gpu_vendor": gpu_vendor,  # Add GPU vendor for filtering
         }
+
+        # How much disk a node needs to pull this image. The SLURM node health check
+        # compares it with each candidate's free space on its docker data root.
+        image_size = self._local_image_size_bytes(docker_image)
+        if image_size:
+            build_info["image_size_bytes"] = image_size
 
         # Store built image info
         self.built_images[docker_image] = build_info

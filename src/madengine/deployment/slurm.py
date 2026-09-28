@@ -1556,12 +1556,15 @@ export MASTER_PORT={master_port}
                 # 120s by default, and configurable, because the right value is a
                 # property of the cluster's queue and no single number fits both a
                 # quiet cluster and a full one.
+                pull_image, pull_size = self._largest_pull_image()
                 selector = SlurmNodeSelector(
                     console=self.console,
                     auto_cleanup=auto_cleanup,
                     verbose=self.slurm_config.get("verbose_node_check", False),
                     reservation=self.reservation,
                     timeout=int(self.slurm_config.get("node_check_timeout", 120)),
+                    image=pull_image,
+                    image_size_bytes=pull_size,
                 )
                 clean_nodes, updated_exclude = selector.select_nodes(
                     partition=self.partition,
@@ -2749,6 +2752,21 @@ export MASTER_PORT={master_port}
                     results["failed_runs"].append(run_data)
         except Exception as e:
             self.console.print(f"[yellow]⚠ Could not parse perf.csv: {e}[/yellow]")
+
+    def _largest_pull_image(self):
+        """(name, size in bytes) of the largest image this deployment's nodes will pull.
+
+        The name is the one a node pulls (the registry reference when the image was
+        pushed); the size is what madengine build measured. (None, None) when the
+        manifest does not record a size, in which case the disk check is skipped.
+        """
+        best_name, best_size = None, None
+        for key, info in (self.manifest.get("built_images") or {}).items():
+            size = info.get("image_size_bytes")
+            if isinstance(size, int) and size > 0 and (best_size is None or size > best_size):
+                best_name = info.get("registry_image") or info.get("docker_image") or key
+                best_size = size
+        return best_name, best_size
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
