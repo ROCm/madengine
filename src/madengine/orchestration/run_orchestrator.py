@@ -818,13 +818,47 @@ class RunOrchestrator:
 
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
-        if result.metrics:
-            return {
-                "successful_runs": skipped_runs + result.metrics.get("successful_runs", []),
-                "failed_runs": result.metrics.get("failed_runs", []),
-            }
-        else:
-            return {"successful_runs": skipped_runs, "failed_runs": []}
+        metrics = result.metrics or {}
+        successful_runs = skipped_runs + metrics.get("successful_runs", [])
+        failed_runs = list(metrics.get("failed_runs", []))
+
+        # The CLI's exit code is "any failed_runs?", and failed_runs only ever held
+        # rows parsed from a perf CSV. A job that died before writing one -- FAILED,
+        # TIMEOUT, a docker pull that ran out of disk -- therefore reported no
+        # failures, printed "All model executions completed successfully", and
+        # exited 0 after "Deployment to slurm failed". A failed deployment is a
+        # failure of every model it submitted unless a row already says so.
+        if not result.is_success and not failed_runs:
+            failed_runs = [
+                {
+                    "model": name,
+                    "status": "FAILURE",
+                    "performance": None,
+                    "duration": None,
+                    "error": result.message,
+                }
+                for name in self._submitted_model_names(manifest_file)
+            ] or [
+                {
+                    "model": f"deployment {result.deployment_id or target}",
+                    "status": "FAILURE",
+                    "performance": None,
+                    "duration": None,
+                    "error": result.message,
+                }
+            ]
+
+        return {"successful_runs": successful_runs, "failed_runs": failed_runs}
+
+    @staticmethod
+    def _submitted_model_names(manifest_file: str) -> List[str]:
+        """Names of the models a deployment was handed (after skip_gpu_arch filtering)."""
+        try:
+            with open(manifest_file, "r") as f:
+                built_models = json.load(f).get("built_models", {}) or {}
+        except (OSError, ValueError):
+            return []
+        return [m.get("name") or key for key, m in built_models.items()]
 
     def _show_node_info(self):
         """Show node ROCm information."""

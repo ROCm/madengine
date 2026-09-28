@@ -253,3 +253,55 @@ class TestExecuteDistributedSlurm:
         deployment.execute.assert_called_once()
         submitted = json.loads(manifest.read_text())
         assert list(submitted["built_models"]) == ["m1"]
+
+
+class TestFailedDeploymentIsAFailure:
+    """Builds 119, 121 and 129: SLURM said FAILED / TIMEOUT, madengine printed
+    "Deployment to slurm failed", then "All model executions completed
+    successfully" and exited 0, because failed_runs only held perf-CSV rows and
+    the job died before writing any."""
+
+    def _run(self, tmp_path, result):
+        manifest = _manifest(tmp_path, [("m1", None)])
+        orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
+        deployment = MagicMock()
+        deployment.execute.return_value = result
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create", return_value=deployment
+        ):
+            return orch._execute_distributed("slurm", str(manifest))
+
+    def test_failed_job_without_perf_rows_fails_every_submitted_model(self, tmp_path):
+        summary = self._run(
+            tmp_path,
+            MagicMock(is_success=False, metrics={"successful_runs": [], "failed_runs": []},
+                      message="Job 441903 failed: FAILED", deployment_id="441903"),
+        )
+        assert [(r["model"], r["status"]) for r in summary["failed_runs"]] == [("m1", "FAILURE")]
+        assert summary["failed_runs"][0]["error"] == "Job 441903 failed: FAILED"
+
+    def test_failed_job_with_no_metrics_at_all_still_fails(self, tmp_path):
+        summary = self._run(
+            tmp_path,
+            MagicMock(is_success=False, metrics=None, message="Job 441934 failed: TIMEOUT",
+                      deployment_id="441934"),
+        )
+        assert [r["status"] for r in summary["failed_runs"]] == ["FAILURE"]
+
+    def test_existing_failure_rows_are_not_duplicated(self, tmp_path):
+        row = {"model": "m1", "status": "FAILURE", "performance": None, "duration": None}
+        summary = self._run(
+            tmp_path,
+            MagicMock(is_success=False, metrics={"successful_runs": [], "failed_runs": [row]},
+                      message="x", deployment_id="1"),
+        )
+        assert summary["failed_runs"] == [row]
+
+    def test_successful_deployment_is_unchanged(self, tmp_path):
+        ok = {"model": "m1", "status": "SUCCESS", "performance": "1", "duration": "2"}
+        summary = self._run(
+            tmp_path,
+            MagicMock(is_success=True, metrics={"successful_runs": [ok], "failed_runs": []},
+                      message="", deployment_id="1"),
+        )
+        assert summary == {"successful_runs": [ok], "failed_runs": []}
