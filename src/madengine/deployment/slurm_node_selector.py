@@ -96,6 +96,7 @@ class NodeStatus:
     process_count: int
     error_message: Optional[str] = None
     docker_avail_gb: Optional[float] = None
+    image_present: bool = False
 
     @property
     def memory_free_gb(self) -> float:
@@ -410,6 +411,7 @@ echo "===END_RESOURCES==="
                 process_count=process_count,
                 error_message="; ".join(reasons) or None,
                 docker_avail_gb=None if docker_avail is None else docker_avail / gib,
+                image_present=bool(resources["image_present"]),
             )
 
         except subprocess.TimeoutExpired:
@@ -802,12 +804,21 @@ echo "CLEANUP_OK"
 
     def _display_status_table(self, statuses: List[NodeStatus]):
         """Display node status in a table."""
-        table = Table(title="Node Health Status")
+        # The table is the evidence for which nodes the job may use, so it shows what
+        # the decision was made on: build 139 passed useocpm2m-097-040 with an empty
+        # Notes column, and nothing said whether its disk was fine or unmeasured.
+        if self.image_size_bytes:
+            caption = (f"Disk judged against {self.image or 'the image'} "
+                       f"({self.image_size_bytes / float(1 << 30):.0f} GB)")
+        else:
+            caption = "Disk not checked: the manifest records no image size"
+        table = Table(title="Node Health Status", caption=caption)
 
         table.add_column("Node", style="cyan", no_wrap=True)
         table.add_column("Health", style="bold")
         table.add_column("Memory Used", justify="right")
         table.add_column("Processes", justify="right")
+        table.add_column("Docker free", justify="right")
         table.add_column("Notes", style="dim")
 
         for status in statuses:
@@ -834,12 +845,19 @@ echo "CLEANUP_OK"
                 str(status.process_count) if status.process_count > 0 else "-"
             )
             notes = status.error_message if status.error_message else ""
+            if status.docker_avail_gb is None:
+                disk_text = "?"
+            else:
+                disk_text = f"{status.docker_avail_gb:.0f} GB"
+            if status.image_present:
+                disk_text += " (image present)"
 
             table.add_row(
                 status.node,
                 f"[{health_style}]{health_text}[/{health_style}]",
                 memory_text,
                 processes_text,
+                disk_text,
                 notes,
             )
 

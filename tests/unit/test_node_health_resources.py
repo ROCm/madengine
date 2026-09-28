@@ -171,3 +171,31 @@ class TestLargestPullImage:
         assert dep._largest_pull_image() == ("b", 30)
         dep.manifest = {"built_images": {"c": {"docker_image": "c"}}}
         assert dep._largest_pull_image() == (None, None)
+
+
+class TestTableShowsTheEvidence:
+    """Build 139 passed useocpm2m-097-040 with an empty Notes column; the log could
+    not say whether its disk was fine, the image was already there, or the free
+    space was never read."""
+
+    def _render(self, sel, statuses):
+        buf = io.StringIO()
+        sel.console = RichConsole(file=buf, width=200)
+        sel._display_status_table(statuses)
+        return buf.getvalue()
+
+    def test_free_space_image_presence_and_what_it_was_judged_against(self):
+        sel = _selector(image="rocm/mad-private:x", image_size_bytes=27 * GIB)
+        ok, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {300 * GIB}")
+        present, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {1 * GIB}\nIMAGE_PRESENT")
+        unread, _ = _health(sel, _vram(0.3))
+        out = self._render(sel, [ok, present, unread])
+        assert "300 GB" in out
+        assert "1 GB (image present)" in out
+        assert "?" in out
+        assert "Disk judged against rocm/mad-private:x (27 GB)" in out
+
+    def test_says_when_the_disk_was_not_checked(self):
+        sel = _selector()
+        st, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {5 * GIB}")
+        assert "Disk not checked: the manifest records no image size" in self._render(sel, [st])
