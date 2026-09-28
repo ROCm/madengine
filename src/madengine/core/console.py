@@ -50,6 +50,25 @@ def redact_secrets(text: typing.Optional[str]) -> typing.Optional[str]:
     return text
 
 
+def manifest_safe_context(ctx: typing.Optional[dict]) -> dict:
+    """A copy of a Context dict fit to write into a manifest: no MAD_SECRETS_* values.
+
+    Context copies every MAD_SECRETS_* environment variable into docker_env_vars
+    and docker_build_arg, and the manifest used to carry the whole context -- so
+    the Hugging Face token sat in plain text in build_manifest.json, which CI
+    archives on every build. The run phase does not need it from the manifest:
+    Context reads MAD_SECRETS_* from the environment again at run time, and those
+    values win over the manifest's. The keys are dropped rather than masked, so a
+    run without the variable set behaves like any fresh run instead of passing a
+    redaction marker as a token.
+    """
+    safe = dict(ctx or {})
+    for key in ("docker_env_vars", "docker_build_arg"):
+        if isinstance(safe.get(key), dict):
+            safe[key] = {k: v for k, v in safe[key].items() if "MAD_SECRETS" not in k}
+    return safe
+
+
 class Console:
     """Class to run console commands.
 

@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from rich.console import Console as RichConsole
 from rich.panel import Panel
 
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context
 from madengine.core.context import Context
 from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.auth import has_ambient_docker_auth, load_credentials
@@ -521,7 +521,7 @@ class BuildOrchestrator:
                 # same pre-built use_image) so multi-model --use-image runs work.
                 "built_images": {},
                 "built_models": {},
-                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "credentials_required": [],
                 "summary": {
                     "successful_builds": [],
@@ -1244,7 +1244,7 @@ exit 0
             manifest = {
                 "built_images": built_images,
                 "built_models": built_models,
-                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "deployment_config": {
                     "slurm": slurm_config,
                     "distributed": first_model.get("distributed", {}),

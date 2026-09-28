@@ -24,7 +24,7 @@ from madengine.core.auth import (
     has_ambient_docker_auth,
     login_to_registry,
 )
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context, redact_secrets
 from madengine.core.context import Context
 from madengine.core.image_digest import parse_push_digest, parse_repo_digest
 from madengine.execution.dockerfile_utils import (
@@ -353,7 +353,10 @@ class DockerBuilder:
             "base_docker": base_docker,
             "docker_sha": docker_sha,
             "build_duration": build_duration,
-            "build_command": build_command,
+            # Kept for the record only (nothing re-executes it), so it is stored with
+            # MAD_SECRETS_* build-arg values masked: it lands in build_manifest.json and
+            # build_summary.json, which CI archives.
+            "build_command": redact_secrets(build_command),
             "log_file": log_file_path,
             "gpu_vendor": gpu_vendor,  # Add GPU vendor for filtering
         }
@@ -565,9 +568,12 @@ class DockerBuilder:
             "built_images": self.built_images,
             "built_models": self.built_models,
             "context": {
-                "docker_env_vars": self.context.ctx.get("docker_env_vars", {}),
+                # MAD_SECRETS_* stay out of the manifest; see manifest_safe_context.
+                "docker_env_vars": manifest_safe_context(self.context.ctx)["docker_env_vars"]
+                if "docker_env_vars" in self.context.ctx else {},
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
-                "docker_build_arg": self.context.ctx.get("docker_build_arg", {}),
+                "docker_build_arg": manifest_safe_context(self.context.ctx)["docker_build_arg"]
+                if "docker_build_arg" in self.context.ctx else {},
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
                 "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
