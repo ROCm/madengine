@@ -39,6 +39,55 @@ from madengine.orchestration.image_filtering import (
 )
 
 
+
+# The perf CSV the SLURM and k8s deployments append to. It is also what an
+# in-allocation madengine writes on a shared workspace, which is why the
+# deployment layer keeps it rather than following --output.
+DEPLOYMENT_PERF_CSV = "perf.csv"
+
+
+def _csv_data_row_count(path: str) -> int:
+    """Data rows (excluding the header) in a CSV, 0 if it does not exist."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return max(sum(1 for line in f if line.strip()) - 1, 0)
+    except OSError:
+        return 0
+
+
+def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
+    """
+    Append the rows src gained since start_row to dst, so --output holds this run.
+
+    No-op when dst is unset or is src. dst keeps its own column order when it
+    already exists; columns it lacks are dropped rather than shifting the row.
+    Returns the number of rows written.
+    """
+    import csv
+
+    if not dst or not os.path.exists(src):
+        return 0
+    if os.path.abspath(dst) == os.path.abspath(src):
+        return 0
+    with open(src, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames or []
+        rows = list(reader)[start_row:]
+    if not rows:
+        return 0
+    if os.path.exists(dst) and os.path.getsize(dst) > 0:
+        with open(dst, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            dst_fields = csv.DictReader(f).fieldnames or fields
+        with open(dst, "a", encoding="utf-8", newline="") as f:
+            csv.DictWriter(f, fieldnames=dst_fields, extrasaction="ignore").writerows(rows)
+    else:
+        with open(dst, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+    return len(rows)
+
+
 class RunOrchestrator:
     """
     Orchestrates the run workflow.
@@ -774,10 +823,17 @@ class RunOrchestrator:
         if "live_output" not in self.additional_context:
             self.additional_context["live_output"] = getattr(self.args, "live_output", False)
         
-        # Pass session_start_row for result filtering in collect_results
-        session_start_row = self.session_tracker.session_start_row
+        # The deployment layer writes its rows to the working perf.csv (the file the
+        # in-allocation madengine also writes on a shared workspace), whatever --output
+        # says. The session tracker counts rows in --output, so its start row described a
+        # different file: with -o perf_<arch>.csv it was 0, and collect_results sliced
+        # the cumulative perf.csv from row 0 -- every earlier build's rows counted as this
+        # run's -- while the file --output named was never written at all. Measure the
+        # file the deployment actually appends to, and hand this session's rows to
+        # --output afterwards (_export_session_rows).
+        working_start = _csv_data_row_count(DEPLOYMENT_PERF_CSV)
         if "session_start_row" not in self.additional_context:
-            self.additional_context["session_start_row"] = session_start_row
+            self.additional_context["session_start_row"] = working_start
 
         # Create deployment configuration
         deployment_config = DeploymentConfig(
@@ -803,7 +859,12 @@ class RunOrchestrator:
 
         # Create and execute deployment
         deployment = DeploymentFactory.create(deployment_config)
-        result = deployment.execute()
+        try:
+            result = deployment.execute()
+        finally:
+            _export_session_rows(
+                DEPLOYMENT_PERF_CSV, working_start, getattr(self.args, "output", None)
+            )
 
         if result.is_success:
             self.rich_console.print(f"[green]✓ Deployment to {target} complete[/green]")

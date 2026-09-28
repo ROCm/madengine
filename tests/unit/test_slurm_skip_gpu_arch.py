@@ -305,3 +305,72 @@ class TestFailedDeploymentIsAFailure:
                       message="", deployment_id="1"),
         )
         assert summary == {"successful_runs": [ok], "failed_runs": []}
+
+
+class TestOutputHoldsThisRun:
+    """The pipeline runs `madengine run -o perf_oci-64.csv`. The SLURM deployment
+    appended to a cumulative perf.csv instead, sliced it from a start row counted
+    in the -o file (0, since it did not exist yet), and never wrote the -o file:
+    no build's numbers were ever archived."""
+
+    HEADER = "model,status,performance\n"
+
+    def test_only_this_runs_rows_reach_output_and_start_row_is_the_working_files(self, tmp_path):
+        from madengine.orchestration import run_orchestrator as ro
+
+        (tmp_path / "perf.csv").write_text(self.HEADER + "old1,SUCCESS,1\nold2,SUCCESS,2\n")
+        manifest = _manifest(tmp_path, [("m1", None)])
+        out = tmp_path / "perf_oci-64.csv"
+        orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
+        orch.args.output = str(out)
+
+        seen = {}
+
+        def execute():
+            seen["start"] = orch.additional_context["session_start_row"]
+            with open("perf.csv", "a") as f:
+                f.write("m1,SUCCESS,42\n")
+            return MagicMock(is_success=True, metrics=None, message="", deployment_id="1")
+
+        deployment = MagicMock()
+        deployment.execute.side_effect = execute
+        with patch("madengine.deployment.factory.DeploymentFactory.create", return_value=deployment):
+            orch._execute_distributed("slurm", str(manifest))
+
+        assert seen["start"] == 2
+        assert out.read_text() == self.HEADER + "m1,SUCCESS,42\n"
+        assert ro._csv_data_row_count(str(tmp_path / "perf.csv")) == 3
+
+    def test_rows_are_exported_even_when_the_deployment_raises(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m1", None)])
+        out = tmp_path / "perf_oci-64.csv"
+        orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
+        orch.args.output = str(out)
+
+        def execute():
+            with open("perf.csv", "w") as f:
+                f.write(self.HEADER + "m1,FAILURE,\n")
+            raise RuntimeError("monitor lost the job")
+
+        deployment = MagicMock()
+        deployment.execute.side_effect = execute
+        with patch("madengine.deployment.factory.DeploymentFactory.create", return_value=deployment):
+            with pytest.raises(RuntimeError):
+                orch._execute_distributed("slurm", str(manifest))
+        assert out.read_text() == self.HEADER + "m1,FAILURE,\n"
+
+    def test_export_is_a_noop_when_output_is_the_working_file(self, tmp_path):
+        from madengine.orchestration.run_orchestrator import _export_session_rows
+
+        (tmp_path / "perf.csv").write_text(self.HEADER + "a,SUCCESS,1\n")
+        assert _export_session_rows("perf.csv", 0, str(tmp_path / "perf.csv")) == 0
+        assert _export_session_rows("perf.csv", 0, None) == 0
+
+    def test_existing_output_keeps_its_columns(self, tmp_path):
+        from madengine.orchestration.run_orchestrator import _export_session_rows
+
+        (tmp_path / "perf.csv").write_text(self.HEADER + "a,SUCCESS,1\n")
+        out = tmp_path / "o.csv"
+        out.write_text("status,model\nSKIPPED,s\n")
+        assert _export_session_rows("perf.csv", 0, str(out)) == 1
+        assert out.read_text().splitlines() == ["status,model", "SKIPPED,s", "SUCCESS,a"]
