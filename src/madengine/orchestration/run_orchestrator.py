@@ -809,6 +809,23 @@ class RunOrchestrator:
                 {"model": name, "status": "SKIPPED", "performance": None, "duration": None}
                 for name in skipped
             ]
+            if not remaining and not skipped:
+                # Nothing was skipped because there was nothing to run: the build
+                # produced no images. Build 142 reported this as "All models skipped by
+                # skip_gpu_arch", an empty results table, and exit 0.
+                self.rich_console.print(
+                    f"[red]✗ {manifest_file} has no built images; nothing to submit.[/red]\n"
+                )
+                return {
+                    "successful_runs": [],
+                    "failed_runs": [{
+                        "model": f"build manifest {os.path.basename(manifest_file)}",
+                        "status": "FAILURE",
+                        "performance": None,
+                        "duration": None,
+                        "error": "the manifest has no built images",
+                    }],
+                }
             if not remaining:
                 self.rich_console.print(
                     "[yellow]All models skipped by skip_gpu_arch; nothing to submit.[/yellow]\n"

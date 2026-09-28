@@ -414,3 +414,28 @@ class TestProbeReadsKfdTopology:
         out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                              env={"PATH": "/usr/bin:/bin"}).stdout
         assert parse_gpu_arch(out) is None
+
+
+class TestEmptyManifestIsAFailure:
+    """Build 142: every image failed to build, the run phase got a manifest with no
+    built images, printed "All models skipped by skip_gpu_arch" and exited 0."""
+
+    def test_no_built_images_fails_and_submits_nothing(self, tmp_path):
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+        orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as create:
+            summary = orch._execute_distributed("slurm", str(manifest))
+        create.assert_not_called()
+        assert summary["successful_runs"] == []
+        assert [r["status"] for r in summary["failed_runs"]] == ["FAILURE"]
+        assert "no built images" in _printed(orch)
+        assert "skipped by skip_gpu_arch" not in _printed(orch)
+
+    def test_genuinely_skipped_cards_are_still_a_skip(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m1", "gfx950")])
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        with patch("madengine.deployment.factory.DeploymentFactory.create"):
+            summary = orch._execute_distributed("slurm", str(manifest))
+        assert summary["failed_runs"] == []
+        assert [r["status"] for r in summary["successful_runs"]] == ["SKIPPED"]
