@@ -374,3 +374,43 @@ class TestOutputHoldsThisRun:
         out.write_text("status,model\nSKIPPED,s\n")
         assert _export_session_rows("perf.csv", 0, str(out)) == 1
         assert out.read_text().splitlines() == ["status,model", "SKIPPED,s", "SUCCESS,a"]
+
+
+class TestProbeReadsKfdTopology:
+    """Build 133: the rocminfo probe came back empty from a GPU-less srun step,
+    so a gfx942-excluded card was submitted to gfx942 nodes. The probe now reads
+    the KFD topology in sysfs first, which needs no device access."""
+
+    def _script(self, topo_dir):
+        sel = SlurmNodeSelector(console=RichConsole(file=io.StringIO()), timeout=5)
+        with patch(SELECTOR_RUN) as run:
+            run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            with patch.object(SlurmNodeSelector, "cancel_health_check_jobs"):
+                sel.probe_gpu_arch(partition="p")
+        script = run.call_args[0][0][-1]
+        return script.replace("/sys/class/kfd/kfd/topology/nodes", str(topo_dir))
+
+    def _topology(self, tmp_path, versions):
+        for i, v in enumerate(versions):
+            (tmp_path / "topo" / str(i)).mkdir(parents=True)
+            (tmp_path / "topo" / str(i) / "properties").write_text(
+                "cpu_cores_count 0\ngfx_target_version %d\n" % v
+            )
+        return tmp_path / "topo"
+
+    @pytest.mark.parametrize(
+        "versions,want",
+        [([0, 90402, 90402], "gfx942"), ([0, 90500], "gfx950"), ([90010], "gfx90a")],
+    )
+    def test_kfd_topology_decodes_the_gpu(self, tmp_path, versions, want):
+        script = self._script(self._topology(tmp_path, versions))
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             env={"PATH": "/usr/bin:/bin"}).stdout
+        assert parse_gpu_arch(out) == want
+
+    def test_cpu_only_topology_falls_through_to_rocminfo(self, tmp_path):
+        script = self._script(self._topology(tmp_path, [0]))
+        assert script.rstrip().endswith('rocminfo 2>/dev/null')
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             env={"PATH": "/usr/bin:/bin"}).stdout
+        assert parse_gpu_arch(out) is None

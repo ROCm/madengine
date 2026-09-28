@@ -365,9 +365,23 @@ echo "===END_PROCESSES==="
             printed no gfx agent. None means UNKNOWN, never "not this arch".
         """
         job_name = f"madengine_archprobe_{os.getpid()}_{int(time.time())}"
+        # The KFD topology in sysfs first, rocminfo only as a fallback. This step
+        # asks for no GPUs, and where SLURM constrains devices a GPU-less step
+        # cannot open /dev/kfd: rocminfo then lists no GPU agent and the probe
+        # came back empty in 1.5s (build 133), so a gfx942-excluded card was
+        # submitted to gfx942 nodes. The topology files need no device access.
+        # Same decode as MAD's scripts/common/cluster.sh, which reports
+        # "GPU arch: gfx942" on these nodes from inside the job.
         # rocminfo is often not on a non-login PATH; /opt/rocm/bin is where ROCm
         # installs it.
-        probe_script = 'PATH="$PATH:/opt/rocm/bin" rocminfo 2>/dev/null'
+        probe_script = (
+            'for p in /sys/class/kfd/kfd/topology/nodes/*/properties; do '
+            'v=$(awk \'$1=="gfx_target_version"{print $2}\' "$p" 2>/dev/null); '
+            '[ -n "$v" ] && [ "$v" != 0 ] && '
+            '{ printf "gfx%d%x%x\\n" $((v/10000)) $(((v/100)%100)) $((v%100)); exit 0; }; '
+            'done; '
+            'PATH="$PATH:/opt/rocm/bin" rocminfo 2>/dev/null'
+        )
         srun_cmd = [
             "srun",
             "--nodes=1",
