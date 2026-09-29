@@ -372,7 +372,7 @@ class SlurmDeployment(BaseDeployment):
             pass
 
         # Generation runs OUTSIDE the peek's except, which was swallowing real
-        # failures. In build 62 the self-managed generator raised while writing
+        # failures. In one run the self-managed generator raised while writing
         # its script; `except Exception: pass` caught it, execution fell through
         # to the templated flow, and that path then reported
         #     Warning: Unknown launcher type 'slurm_multi'
@@ -440,14 +440,14 @@ class SlurmDeployment(BaseDeployment):
         indistinguishable from what the user asked for. The templated launchers
         rely on them. A slurm_multi card does not: it runs its own launcher
         script, which owns its environment, and the same card submitted without
-        madengine (Jenkins STANDALONE, `sbatch --export=ALL` of the card script)
+        madengine (plain `sbatch --export=ALL` of the card script)
         never receives them. Exporting them anyway makes the madengine run a
         different experiment from the standalone one.
 
         It is not hypothetical. MAD's run_xPyD_models.slurm sources a connector
         env that sets HSA_ENABLE_SDMA=1 but forwards `-e K=${K:-default}`, so the
         multi-node profile's HSA_ENABLE_SDMA=0 won: SDMA was off under madengine
-        and on under STANDALONE. The same profile's NCCL_SOCKET_IFNAME=eth0
+        and on under plain sbatch. The same profile's NCCL_SOCKET_IFNAME=eth0
         preempts the card's own fabric detection (eno0 on AINIC, fenic0 on
         Thor2), and NCCL_IB_DISABLE=1 would push NCCL onto TCP in any launcher
         that forwards it.
@@ -618,7 +618,7 @@ class SlurmDeployment(BaseDeployment):
         # This block used to overwrite it with the manifest KEY, which is the LOCAL
         # build name (ci-<model>_<dockerfile>) -- build_info["docker_image"] is set
         # before the push and never updated, while build_info["registry_image"] is
-        # what the push records. So builds 98 and 99 pushed
+        # what the push records. So runs pushed
         #     rocm/mad-private:ci-vllm_multinode_..._kimi_k3_mi300x.ubuntu.amd
         # and then ran the ci- name, and the nodes got "pull access denied" for an
         # image that was already in the registry.
@@ -705,7 +705,7 @@ class SlurmDeployment(BaseDeployment):
             # sbatch to --export=NONE -- this file's own PATH comment says so -- and the
             # registry credentials live in that environment and nowhere else. They are
             # never written into this script: only variable NAMES appear below, and the
-            # values travel the same way the STANDALONE wrapper sends them.
+            # values travel the same way an sbatch wrapper outside madengine sends them.
             "#SBATCH --export=ALL",
         ]
         if not self.skip_gpus_directive:
@@ -739,8 +739,8 @@ class SlurmDeployment(BaseDeployment):
                 "#     srun: error: Invalid --exclusive specification",
                 "# The allocation is already exclusive -- that was granted at job level and",
                 "# nothing here gives it up. The steps running inside it simply do not need",
-                "# to ask for it again. Build 92 failed every srun in the job this way,",
-                "# including the image pull, and the STANDALONE path does not hit it because",
+                "# to ask for it again. A run failed every srun in the job this way,",
+                "# including the image pull, and plain sbatch of the card does not hit it because",
                 "# it carries the card's own directives, which do not set --exclusive.",
                 "unset SLURM_EXCLUSIVE",
                 "",
@@ -768,7 +768,7 @@ class SlurmDeployment(BaseDeployment):
                 "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
                 "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
                 "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
-                "# with loopback FOR ITSELF -- build 90 published",
+                "# with loopback FOR ITSELF -- one run published",
                 "#     Node IPs: 127.0.1.1,10.158.213.181",
                 "# and rank 0 was unreachable from its peer. Ask the node itself when that",
                 "# happens: hostname -I on the node cannot return anyone else's loopback.",
@@ -807,7 +807,7 @@ class SlurmDeployment(BaseDeployment):
         docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
 
         # A local ci-* image exists only on the machine that built it. One node can
-        # run it; the others have nothing to run. Build 97 spent 35 minutes building
+        # run it; the others have nothing to run. One run spent 35 minutes building
         # the image, failed to push it, carried on with the local name, and the job
         # then failed on nodes that had never seen it -- a multi-node run with a
         # local-only image cannot succeed, so say so here rather than after an
@@ -837,12 +837,12 @@ class SlurmDeployment(BaseDeployment):
             #
             # madengine already knows these names: core/auth.py reads MAD_DOCKERHUB_USER
             # and MAD_DOCKERHUB_PASSWORD from the environment. MAD_DOCKER_USER /
-            # MAD_DOCKER_TOKEN are accepted as well because that is what the Jenkins
-            # STANDALONE wrapper binds, and a card should not need different credential
+            # MAD_DOCKER_TOKEN are accepted as well because that is what an sbatch
+            # wrapper outside madengine binds, and a card should not need different credential
             # names depending on which path runs it.
             #
             # Only the NAMES are written here. The values arrive through --export=ALL from
-            # the submitting shell, exactly as the STANDALONE wrapper receives them, so this
+            # the submitting shell, exactly as an sbatch wrapper outside madengine receives them, so this
             # script stays safe to archive as a build artifact.
             #
             # Absent credentials are not an error: a public image pulls fine without them,
@@ -850,13 +850,13 @@ class SlurmDeployment(BaseDeployment):
             script_lines.extend(
                 [
                     "",
-                    "# Image staging, in the shape the STANDALONE path already proves on this",
-                    "# cluster (Jenkinsfile renderStandaloneWrapper): build the body in a",
+                    "# Image staging, in the shape plain sbatch of the card script already proves",
+                    "# on this cluster: build the body in a",
                     "# SINGLE-QUOTED variable and hand it to bash -c by expansion. Nothing needs",
                     "# escaping, the $ signs expand on the compute node where the credentials",
                     "# actually live, and there are no apostrophes to close the string early.",
                     '# The previous form here nested escaped quotes inside bash -c "..." and had',
-                    "# never once executed -- build 90 died at the login above it.",
+                    "# never once executed -- a run died at the login above it.",
                     "#",
                     "# --ntasks-per-node=1 is what the working path uses. Without it nothing",
                     "# guarantees one task per node, and a node that never ran this step has no",
@@ -880,7 +880,7 @@ class SlurmDeployment(BaseDeployment):
                     "# set +e around the call, because `PULL_EXIT=$?` is unreachable without",
                     "# it: the script runs under `set -e`, so a non-zero srun exits here and",
                     "# the diagnosis below never prints -- dead exactly when it is needed.",
-                    "# Build 91 stopped dead after the node IPs for this reason, with the real",
+                    "# A run stopped dead after the node IPs for this reason, with the real",
                     "# message going to stderr and the collected stdout showing nothing.",
                     "set +e",
                     'srun --ntasks="${SLURM_NNODES}" --ntasks-per-node=1 bash -c "$MAD_FETCH"',
@@ -1044,7 +1044,7 @@ class SlurmDeployment(BaseDeployment):
             # nested models.json -- "sglang/pyt_sglang_kimi-k3" -- and the raw name sent
             # --output at slurm_results/madengine-sglang/pyt_..._%j_%t.out, a directory
             # nobody creates. sbatch cannot write there, so the job ends in seconds with
-            # no output at all: build 130 reported COMPLETED in 33s, madengine marked the
+            # no output at all: a run reported COMPLETED in 33s, madengine marked the
             # model Failed, and the console carried nothing to explain either.
             #
             # The same fix was applied to the self-managed path's directives; this is the
@@ -1821,7 +1821,7 @@ export MASTER_PORT={master_port}
             self._output_positions = {}
 
         # Stream BOTH streams. Only *.out was read here, so a job whose diagnosis
-        # went to stderr showed nothing at all: build 91 stopped after the node IPs
+        # went to stderr showed nothing at all: a run stopped after the node IPs
         # with an empty-looking log, while the message naming the failure sat in the
         # .err file nobody opened. Errors are the reason anyone reads this.
         #

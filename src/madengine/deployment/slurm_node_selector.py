@@ -151,8 +151,8 @@ class SlurmNodeSelector:
                 it needs no disk for the pull.
             image_size_bytes: Its size. A node without the image needs at least this
                 much free on its docker data root, or the pull fails with "no space
-                left on device" after the job has started (builds 119, 129, 135, 136
-                all died that way on the same node, which this check had passed).
+                left on device" after the job has started (several runs died that way on
+                the same node, which this check had passed).
         """
         self.console = console or Console()
         # Set when select_nodes runs. The probe below needs it: a login node with no
@@ -371,7 +371,7 @@ echo "===END_RESOURCES==="
                 # Measured. The amd-smi output above used to be collected and never
                 # read; memory was estimated as 45 GB per process whose name matched
                 # ray/vllm, so a node whose GPUs were held by anything else -- the
-                # SGLang servers that broke build 138 with "memory capacity is
+                # SGLang servers that broke a run with "memory capacity is
                 # unbalanced" -- counted as empty. Judged per GPU against the same
                 # threshold, because one occupied GPU is enough to break a job.
                 used_memory_gb = sum(u for u, _ in vram) / gib
@@ -459,7 +459,7 @@ echo "===END_RESOURCES==="
         # The KFD topology in sysfs first, rocminfo only as a fallback. This step
         # asks for no GPUs, and where SLURM constrains devices a GPU-less step
         # cannot open /dev/kfd: rocminfo then lists no GPU agent and the probe
-        # came back empty in 1.5s (build 133), so a gfx942-excluded card was
+        # came back empty in 1.5s, so a gfx942-excluded card was
         # submitted to gfx942 nodes. The topology files need no device access.
         # Same decode as MAD's scripts/common/cluster.sh, which reports
         # "GPU arch: gfx942" on these nodes from inside the job.
@@ -542,7 +542,7 @@ echo "===END_RESOURCES==="
 # the job that started it: scancel kills the job's shell, but the container
 # belongs to the docker daemon and keeps its GPU memory. That is how a node ends
 # up occupied with no SLURM job on it, and why killing host processes alone left
-# build 93 looking at busy GPUs.
+# a run looking at busy GPUs.
 if command -v docker >/dev/null 2>&1; then
     docker ps -q | xargs --no-run-if-empty docker stop --time 10 2>/dev/null || true
 fi
@@ -775,7 +775,7 @@ echo "CLEANUP_OK"
         if examined and examined.issubset(set(existing_exclude)):
             # Flag it for the caller as well. Dropping the exclude list alone is half a
             # stand-down: the caller also gates submission on len(clean_nodes), which is
-            # zero for exactly the same reason the exclude list named everything. Build 87
+            # zero for exactly the same reason the exclude list named everything. One run
             # cleared the exclusion and then failed anyway on "Not enough clean nodes:
             # need 2, found 0" -- the check still deciding the outcome after announcing it
             # had nothing to say.
@@ -805,7 +805,7 @@ echo "CLEANUP_OK"
     def _display_status_table(self, statuses: List[NodeStatus]):
         """Display node status in a table."""
         # The table is the evidence for which nodes the job may use, so it shows what
-        # the decision was made on: build 139 passed useocpm2m-097-040 with an empty
+        # the decision was made on: a run passed a node with an empty
         # Notes column, and nothing said whether its disk was fine or unmeasured.
         if self.image_size_bytes:
             caption = (f"Disk judged against {self.image or 'the image'} "

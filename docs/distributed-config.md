@@ -100,10 +100,10 @@ configurations that are genuinely ambiguous.
 | consumer | treats `args` as |
 |---|---|
 | madengine (`deployment/slurm.py`) | arguments to the model script — `bash <script> <args>` |
-| the STANDALONE Jenkins pipeline | arguments to `sbatch` |
+| a plain `sbatch` submission of the card script | arguments to `sbatch` |
 
 So a distributed card with `args: "-N 2 -n 2"` hands those flags to the batch script
-under madengine, and to `sbatch` under STANDALONE. madengine warns when it sees this:
+under madengine, and to `sbatch` when the card script is submitted with plain sbatch. madengine warns when it sees this:
 
 ```
 ⚠ pyt_large_ep_bench_2n: args='-N 2 -n 2' contains sbatch flag(s) ['-N', '-n'].
@@ -246,8 +246,8 @@ environments.
 
 ### Scope
 
-`mad-config.yaml` is resolved by madengine, so it is available on the madengine path. The
-STANDALONE Jenkins pipeline deliberately runs without installing madengine, so cards
+`mad-config.yaml` is resolved by madengine, so it is available on the madengine path. Submitting
+the card script with plain sbatch deliberately runs without installing madengine, so cards
 run that way should use the other three formats.
 
 ---

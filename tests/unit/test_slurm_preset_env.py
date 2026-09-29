@@ -5,7 +5,7 @@ load_slurm_config merges profiles/multi-node.json's env_vars whenever nodes > 1,
 and once merged they looked exactly like the user's. _prepare_slurm_multi_script
 then exported them all into the wrapper, so a card run under madengine got
 HSA_ENABLE_SDMA=0, NCCL_IB_DISABLE=1 and NCCL_SOCKET_IFNAME=eth0 that the same
-card submitted STANDALONE never saw -- and MAD's run_xPyD_models.slurm forwards
+card submitted with plain sbatch never saw -- and MAD's run_xPyD_models.slurm forwards
 `-e K=${K:-default}`, so the preset beat the card's own SDMA=1.
 """
 

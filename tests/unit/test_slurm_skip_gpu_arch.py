@@ -256,7 +256,7 @@ class TestExecuteDistributedSlurm:
 
 
 class TestFailedDeploymentIsAFailure:
-    """Builds 119, 121 and 129: SLURM said FAILED / TIMEOUT, madengine printed
+    """SLURM said FAILED / TIMEOUT, madengine printed
     "Deployment to slurm failed", then "All model executions completed
     successfully" and exited 0, because failed_runs only held perf-CSV rows and
     the job died before writing any."""
@@ -275,16 +275,16 @@ class TestFailedDeploymentIsAFailure:
         summary = self._run(
             tmp_path,
             MagicMock(is_success=False, metrics={"successful_runs": [], "failed_runs": []},
-                      message="Job 441903 failed: FAILED", deployment_id="441903"),
+                      message="Job 123456 failed: FAILED", deployment_id="123456"),
         )
         assert [(r["model"], r["status"]) for r in summary["failed_runs"]] == [("m1", "FAILURE")]
-        assert summary["failed_runs"][0]["error"] == "Job 441903 failed: FAILED"
+        assert summary["failed_runs"][0]["error"] == "Job 123456 failed: FAILED"
 
     def test_failed_job_with_no_metrics_at_all_still_fails(self, tmp_path):
         summary = self._run(
             tmp_path,
-            MagicMock(is_success=False, metrics=None, message="Job 441934 failed: TIMEOUT",
-                      deployment_id="441934"),
+            MagicMock(is_success=False, metrics=None, message="Job 123457 failed: TIMEOUT",
+                      deployment_id="123457"),
         )
         assert [r["status"] for r in summary["failed_runs"]] == ["FAILURE"]
 
@@ -377,7 +377,7 @@ class TestOutputHoldsThisRun:
 
 
 class TestProbeReadsKfdTopology:
-    """Build 133: the rocminfo probe came back empty from a GPU-less srun step,
+    """The rocminfo probe came back empty from a GPU-less srun step,
     so a gfx942-excluded card was submitted to gfx942 nodes. The probe now reads
     the KFD topology in sysfs first, which needs no device access."""
 
@@ -417,7 +417,7 @@ class TestProbeReadsKfdTopology:
 
 
 class TestEmptyManifestIsAFailure:
-    """Build 142: every image failed to build, the run phase got a manifest with no
+    """Every image failed to build, the run phase got a manifest with no
     built images, printed "All models skipped by skip_gpu_arch" and exited 0."""
 
     def test_no_built_images_fails_and_submits_nothing(self, tmp_path):

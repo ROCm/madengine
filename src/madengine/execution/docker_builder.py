@@ -816,7 +816,7 @@ class DockerBuilder:
             # BuildOrchestrator resolves. `ls <prefix>.*` also matched model-specific
             # siblings that share the prefix: every card on
             # docker/vllm_disagg_inference also built vllm_disagg_inference.glmv5.1
-            # and .kimik3, and ran in the GLM-5.1 image (builds 119, 121, 140), while a
+            # and .kimik3, and ran in the GLM-5.1 image, while a
             # network error on the Kimi one failed the build. Only the card's own
             # variants are kept.
             all_dockerfiles = [

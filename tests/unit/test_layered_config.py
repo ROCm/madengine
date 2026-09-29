@@ -544,7 +544,7 @@ class TestNamespacedModelNamesReachDisk:
     Discovery names a card found in a nested models.json after its directory, so
     `vllm_multinode/pyt_vllm_kimi-k3_mi300x_pp2xtp8` is the normal shape for MAD.
     Interpolated into a filename, that slash is a directory separator and the
-    write fails on a parent nobody created. Builds 62 and 63 both died this way,
+    write fails on a parent nobody created. Runs died this way,
     on stock madengine as well as this branch.
     """
 
@@ -606,10 +606,10 @@ class TestInconclusiveHealthCheckGatesNothing:
     """A probe that sees nothing must not decide the outcome.
 
     On OCI amd-rccl every node comes back "Unreachable / srun failed" when probed
-    from the login node -- 46 of 46 in build 87. That is a fact about the probe.
+    from the login node -- 46 of 46 in one run. That is a fact about the probe.
     Standing down has to be complete: the exclude list, the submission gate and the
     nodelist pin all read the same empty result, and clearing only the first left
-    build 87 failing on "Not enough clean nodes: need 2, found 0" from a check that
+    that run failing on "Not enough clean nodes: need 2, found 0" from a check that
     had just announced it had nothing to say.
     """
 
@@ -661,8 +661,8 @@ class TestInconclusiveHealthCheckGatesNothing:
 class TestComputeNodesCanPullAPrivateImage:
     """The generated job must be able to fetch the image it was told to run.
 
-    STANDALONE's wrapper does docker login on every node before pulling
-    (Jenkinsfile:2351). madengine's slurm_multi path pulled anonymously, so a
+    An sbatch wrapper outside madengine does docker login on every node before
+    pulling. madengine's slurm_multi path pulled anonymously, so a
     private repository answered "not found" for an image that was plainly there.
     """
 
@@ -680,7 +680,7 @@ class TestComputeNodesCanPullAPrivateImage:
 
         src = inspect.getsource(mod)
         i = src.index(
-            '"# Image staging, in the shape the STANDALONE path already proves'
+            '"# Image staging, in the shape plain sbatch of the card script already proves'
         )
         j = src.index('"",\n', src.index('"PULL_EXIT=$?",', i))
         lines = eval(  # noqa: S307 - our own source, one bound name
@@ -695,7 +695,7 @@ class TestComputeNodesCanPullAPrivateImage:
         assert "--password-stdin" in block
 
     def test_it_accepts_both_credential_spellings(self):
-        """madengine's own names, and the ones the Jenkins wrapper binds."""
+        """madengine's own names, and the ones an sbatch wrapper outside madengine binds."""
         block = self._emitted_login_block()
         for name in (
             "MAD_DOCKERHUB_USER",
@@ -749,7 +749,7 @@ class TestComputeNodesCanPullAPrivateImage:
 
 
 class TestNodeIPsAndLoginCannotBreakTheJob:
-    """Two defects build 90 exposed in the generated slurm_multi script.
+    """Two defects a run exposed in the generated slurm_multi script.
 
         │ Node IPs: 127.0.1.1,10.158.213.181
         │ Logging in to the registry on all nodes
@@ -808,7 +808,7 @@ class TestNodeIPsAndLoginCannotBreakTheJob:
 
 
 class TestFailuresAreVisibleInTheLog:
-    """Build 91's log ended after the node IPs and said nothing else.
+    """A run's log ended after the node IPs and said nothing else.
 
     Two independent reasons, both of which hide a failure rather than cause one.
     """
@@ -850,14 +850,14 @@ class TestFailuresAreVisibleInTheLog:
 
 
 class TestExclusiveDoesNotBreakEverySrun:
-    """Build 92's stderr, visible for the first time, named the cause:
+    """A run's stderr, visible for the first time, named the cause:
 
         │ Docker pull failed on one or more nodes
         ┇ srun: error: Invalid --exclusive specification
 
     sbatch --exclusive exports SLURM_EXCLUSIVE; srun re-parses it as a step
     request and rejects it. Every srun in the job fails, the pull included.
-    STANDALONE never hits this: it carries the card's own directives, which set
+    Plain sbatch of the card script never hits this: it carries the card's own directives, which set
     -N, -n, --ntasks-per-node and --switches, but not --exclusive.
     """
 
@@ -893,7 +893,7 @@ class TestExclusiveDoesNotBreakEverySrun:
 
 
 class TestTheHealthProbeCanActuallyReachANode:
-    """Build 93 died on the condition this check exists to prevent:
+    """A run died on the condition this check exists to prevent:
 
         RuntimeError: The memory capacity is unbalanced.
                       Some GPUs may be occupied by other processes.
@@ -941,7 +941,7 @@ class TestCleanupCanActuallyCleanTheseNodes:
     These workloads run in docker. `docker run` is attached here, but the
     container belongs to the daemon, not to the job: scancel kills the job's
     shell and the container keeps its GPU memory. The next allocation then finds
-    busy GPUs, which is what build 93 reported.
+    busy GPUs, which is what a run reported.
     """
 
     @staticmethod
@@ -977,7 +977,7 @@ class TestCleanupCanActuallyCleanTheseNodes:
 class TestALocalImageCannotRunMultinode:
     """A ci-* image exists only on the machine that built it.
 
-    One node can run it; the others have nothing to run. Build 97 built for 35
+    One node can run it; the others have nothing to run. One run built for 35
     minutes, failed to push, carried on with the local name, and the job then
     failed on nodes that had never seen it.
 
@@ -1013,7 +1013,7 @@ class TestALocalImageCannotRunMultinode:
 
 
 class TestAPushedImageIsTheOneThatRuns:
-    """Builds 98 and 99 pushed an image and then ran a name the nodes could not pull.
+    """Runs pushed an image and then ran a name the nodes could not pull.
 
         Successfully pushed: rocm/mad-private:ci-vllm_multinode_..._kimi_k3...
         Using built Docker image: ci-vllm_multinode_..._kimi_k3...
@@ -1073,7 +1073,7 @@ class TestAPushedImageIsTheOneThatRuns:
 
 
 class TestHydraConfigParityForThisPipeline:
-    """Whether --config can replace --additional-context for the Jenkins pipeline.
+    """Whether --config can replace --additional-context for this pipeline.
 
     Inert until ROCm/madengine#121 merges; active from the moment it does.
 
@@ -1126,7 +1126,7 @@ class TestHydraConfigParityForThisPipeline:
 
 
 class TestTheProbeWaitsLongEnoughToLearnSomething:
-    """Build 105's health check reported every node "Unreachable / Timeout".
+    """A run's health check reported every node "Unreachable / Timeout".
 
     The --exclusive leak was fixed, so the probe finally ran -- and then hit a
     30-second ceiling. That ceiling is not a command runtime: the probe srun has
@@ -1157,10 +1157,10 @@ class TestTheProbeWaitsLongEnoughToLearnSomething:
 
 
 class TestTheTemplatedPathAlsoNeedsOnePathSegment:
-    """Build 130 reported COMPLETED in 33 seconds and produced nothing.
+    """A run reported COMPLETED in 33 seconds and produced nothing.
 
-        ✓ Submitted SLURM job: 441865
-        SLURM job 441865 final status: COMPLETED
+        ✓ Submitted SLURM job: 123456
+        SLURM job 123456 final status: COMPLETED
         │ 1 │ ❌ Failed │ sglang/pyt_sglang_kimi-k3 │
 
     job.sh.j2 interpolates model_name straight into #SBATCH --output, and the

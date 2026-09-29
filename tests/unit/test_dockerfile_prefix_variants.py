@@ -3,7 +3,7 @@ that starts with it.
 
 `ls <prefix>.*` also matched model-specific siblings: every card on
 docker/vllm_disagg_inference built vllm_disagg_inference.glmv5.1 and .kimik3 as
-well, and ran in the GLM-5.1 image (builds 119, 121, 140).
+well, and ran in the GLM-5.1 image.
 """
 
 from unittest.mock import MagicMock

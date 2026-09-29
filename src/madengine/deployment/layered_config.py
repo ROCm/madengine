@@ -122,7 +122,7 @@ def find_config(
 
     Deliberately NOT read from the card's `args`: that field already means two
     different things to the two consumers (madengine passes it to the script,
-    the STANDALONE Jenkins pipeline passes it to sbatch), so putting a third
+    a plain sbatch submission passes it to sbatch), so putting a third
     meaning in it would make the ambiguity worse.
     """
     explicit = (model_info.get("env_vars") or {}).get("MAD_CONFIG")
@@ -277,8 +277,8 @@ def validate_card(model_info: Dict[str, Any]) -> List[str]:
     name = model_info.get("name", "<unnamed>")
 
     # `args` means different things to the two consumers: madengine hands it to
-    # the script (bash <script> <args>), while the STANDALONE Jenkins pipeline
-    # hands it to sbatch. A distributed card carrying sbatch flags therefore
+    # the script (bash <script> <args>), while submitting the card
+    # script with plain sbatch hands it to sbatch. A distributed card carrying sbatch flags therefore
     # behaves differently depending on who runs it.
     if "distributed" in model_info and args:
         sbatch_like = {"-N", "-n", "--nodes", "--ntasks", "--ntasks-per-node", "--gres"}

@@ -1,10 +1,10 @@
 """The SLURM node health check judges what a job actually needs from a node.
 
 It used to collect `amd-smi list`, never read it, and estimate GPU memory as
-45 GB per process whose name matched ray/vllm. It passed useocpm2m-097-040 four
-times while its docker disk was full (builds 119, 129, 135, 136: "no space
-left on device" during the pull), and useocpm2m-097-041 while other processes
-held GPU memory (build 138: "The memory capacity is unbalanced").
+45 GB per process whose name matched ray/vllm. It passed one node four
+times while its docker disk was full ("no space left on device" during the
+pull), and another while other processes held GPU memory ("The memory
+capacity is unbalanced").
 """
 
 import io
@@ -74,7 +74,7 @@ class TestGpuMemory:
         assert "GPU1 120 GB" in status.error_message
 
     def test_occupied_by_a_process_the_name_filter_misses(self):
-        # Build 138: SGLang held the memory; no ray/vllm process was running.
+        # SGLang held the memory; no ray/vllm process was running.
         status, _ = _health(_selector(), _vram(80, 80, 80, 80), processes="NO_PROCESSES")
         assert status.health == NodeHealth.DIRTY
 
@@ -174,7 +174,7 @@ class TestLargestPullImage:
 
 
 class TestTableShowsTheEvidence:
-    """Build 139 passed useocpm2m-097-040 with an empty Notes column; the log could
+    """A run passed a node with an empty Notes column; the log could
     not say whether its disk was fine, the image was already there, or the free
     space was never read."""
 
