@@ -65,7 +65,11 @@ def merge_additional_context_from_sources(
     additional_context_file: Optional[str],
 ) -> Tuple[Dict[str, Any], bool]:
     """
-    Load file first, then overlay CLI string (CLI wins).
+    Load file first, then overlay CLI string (CLI wins, key by key).
+
+    Deep-merged, the way ConfigLoader layers the same two sources: a file that sets
+    slurm.partition and a CLI string that sets slurm.nodes give both, rather than the CLI's
+    `slurm` object replacing the file's whole.
 
     Returns:
         (merged dict, loaded_from_cli_non_empty) for messaging.
@@ -89,8 +93,10 @@ def merge_additional_context_from_sources(
 
     cli_non_empty = bool(additional_context and additional_context.strip() != "{}")
     if cli_non_empty:
+        from madengine.deployment.config_loader import ConfigLoader
+
         string_context = parse_additional_context_cli_string(additional_context)
-        context.update(string_context)
+        context = ConfigLoader.deep_merge(context, string_context)
         console.print("✅ Loaded additional context from command line")
 
     return context, cli_non_empty

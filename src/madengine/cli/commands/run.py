@@ -79,7 +79,7 @@ def run(
         typer.Option(
             "--additional-context-file",
             "-f",
-            help="File containing additional context JSON",
+            help="File containing additional context JSON; --additional-context is deep-merged over it",
         ),
     ] = None,
     keep_alive: Annotated[
