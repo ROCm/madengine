@@ -101,7 +101,7 @@ madengine build [OPTIONS]
 | `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
-| `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
+| `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
 | `--manifest-output` | `-m` | TEXT | `build_manifest.json` | Output file for build manifest |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for build summary JSON |
@@ -225,7 +225,7 @@ madengine run [OPTIONS]
 | `--registry` | `-r` | TEXT | `None` | Docker registry URL |
 | `--timeout` | | INT | `-1` | Timeout in seconds. `-1` means "not passed" and falls through to the model card's `timeout`, or 7200s if it has none; `0` disables the timeout; a positive value overrides the model card. See [Usage — Custom Timeouts](usage.md#custom-timeouts). |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
-| `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON |
+| `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |

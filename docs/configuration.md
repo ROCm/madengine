@@ -848,6 +848,20 @@ For Kubernetes/SLURM deployments:
 6. Environment variables
 7. Built-in fallbacks - Lowest
 
+Layers merge key by key: a nested object in a higher layer overrides only the keys it names.
+So a file that describes a cluster and a command-line string that describes one run combine
+into both:
+
+```bash
+# cluster.json: {"slurm": {"partition": "amd-rccl", "gpus_per_node": 8, "exclusive": true}}
+madengine run --tags model --additional-context-file cluster.json \
+    --additional-context '{"slurm": {"nodes": 4, "time": "06:00:00"}}'
+# -> slurm: partition amd-rccl, gpus_per_node 8, exclusive, nodes 4, time 06:00:00
+```
+
+`madengine build` and `madengine run` accept the two options together and combine them the
+same way.
+
 ## Complete Examples
 
 ### Local GPU Development
