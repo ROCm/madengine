@@ -769,7 +769,7 @@ class SlurmDeployment(BaseDeployment):
                 "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
                 "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
                 "# with loopback FOR ITSELF -- one run published",
-                "#     Node IPs: 127.0.1.1,10.158.213.181",
+                "#     Node IPs: 127.0.1.1,10.0.0.2",
                 "# and rank 0 was unreachable from its peer. Ask the node itself when that",
                 "# happens: hostname -I on the node cannot return anyone else's loopback.",
                 'MAD_NODE_IPS=$(scontrol show hostname "$SLURM_JOB_NODELIST" 2>/dev/null | while read -r _n; do',

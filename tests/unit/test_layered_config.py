@@ -751,7 +751,7 @@ class TestComputeNodesCanPullAPrivateImage:
 class TestNodeIPsAndLoginCannotBreakTheJob:
     """Two defects a run exposed in the generated slurm_multi script.
 
-        │ Node IPs: 127.0.1.1,10.158.213.181
+        │ Node IPs: 127.0.1.1,10.0.0.2
         │ Logging in to the registry on all nodes
         <job FAILED, log ends here>
 
