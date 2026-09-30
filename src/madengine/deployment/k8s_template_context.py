@@ -488,7 +488,7 @@ class KubernetesTemplateContextMixin:
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
         resolved_image = resolve_pinned_image(
-            image_info["registry_image"],
+            image_info.get("registry_image") or image_info["docker_image"],
             image_info.get("image_digest"),
             bool(additional_context.get("require_pinned_image")),
             model_name=model_name,
