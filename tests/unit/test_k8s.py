@@ -292,14 +292,20 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 
 
 def _k8s_template_context(
-    model_timeout=None, cli_timeout=-1, tmp_path=None, launcher_type=None
+    model_timeout=None,
+    cli_timeout=-1,
+    tmp_path=None,
+    launcher_type=None,
+    model_args="",
+    tools=None,
 ):
     """Template context for a minimal single-node job, without touching a cluster.
 
     Builds the context off the same mixin the deployment uses, so the timeout
     the template sees is the one a real render would get. Pass ``launcher_type``
     (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
-    instead of the direct-script branch.
+    instead of the direct-script branch. ``model_args`` is the model card's
+    ``args`` string; ``tools`` is a list of tool configs for the tool chain.
     """
     from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
     from madengine.deployment.k8s_template_context import (
@@ -315,7 +321,7 @@ def _k8s_template_context(
     model_info = {
         "name": "dummy",
         "scripts": "scripts/dummy/run.sh",
-        "args": "",
+        "args": model_args,
         "n_gpus": "1",
     }
     if model_timeout is not None:
@@ -331,6 +337,8 @@ def _k8s_template_context(
 
     k8s_config = {"namespace": "ns"}
     additional_context = {"k8s": k8s_config}
+    if tools is not None:
+        additional_context["tools"] = tools
     if launcher_type is not None:
         additional_context["launcher"] = {
             "type": launcher_type,
@@ -376,6 +384,91 @@ def _render_k8s_job_script(context):
     )
     job = list(yaml.safe_load_all(rendered))[0]
     return job["spec"]["template"]["spec"]["containers"][0]["args"][0]
+
+
+class TestK8sJobScriptModelArgs:
+    """Model card ``args`` are arguments to the script, not part of its path."""
+
+    @staticmethod
+    def _render(tmp_path, model_args, tools=None):
+        ctx = _k8s_template_context(
+            model_args=model_args, tools=tools, tmp_path=tmp_path
+        )
+        return _render_k8s_job_script(ctx)
+
+    @staticmethod
+    def _command_file_body(script):
+        """The non-blank lines between the MODEL_EOF heredoc markers."""
+        lines = [l.strip() for l in script.splitlines()]
+        start = next(i for i, l in enumerate(lines) if "<< 'MODEL_EOF'" in l)
+        end = lines.index("MODEL_EOF", start)
+        return [l for l in lines[start + 1 : end] if l]
+
+    def test_existence_check_uses_the_bare_script_path(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+        assert 'scripts/dummy/run.sh --foo bar"' not in script
+
+    def test_command_passes_args_to_the_script(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert self._command_file_body(script) == [
+            "bash scripts/dummy/run.sh --foo bar"
+        ]
+
+    def test_not_found_error_names_only_the_path(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert 'echo "ERROR: Script not found: scripts/dummy/run.sh"' in script
+
+    def test_tool_chain_keeps_the_args(self, tmp_path):
+        tools = [{"name": "demo_tool", "cmd": "demo-wrap --flag"}]
+        script = self._render(tmp_path, "--foo bar", tools=tools)
+        assert self._command_file_body(script) == [
+            "demo-wrap --flag bash scripts/dummy/run.sh --foo bar"
+        ]
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+
+    @pytest.mark.parametrize(
+        "model_args, expected",
+        [
+            ("--name 'two words'", "--name 'two words'"),
+            ('--msg "a b" --n 3', "--msg 'a b' --n 3"),
+            ("--x $(id)", "--x '$(id)'"),
+            ("--x a;b", "--x 'a;b'"),
+        ],
+    )
+    def test_args_are_shell_quoted_like_local_and_slurm(
+        self, model_args, expected, tmp_path
+    ):
+        script = self._render(tmp_path, model_args)
+        assert self._command_file_body(script) == [
+            f"bash scripts/dummy/run.sh {expected}"
+        ]
+
+    def test_quoted_args_reach_the_script_intact(self, tmp_path):
+        """Run the generated command file and check the script's argv."""
+        script = self._render(tmp_path, "--name 'two words' --n 3")
+        body = "\n".join(self._command_file_body(script))
+        target = tmp_path / "scripts" / "dummy"
+        target.mkdir(parents=True)
+        (target / "run.sh").write_text('printf "<%s>" "$@"\n')
+        result = subprocess.run(
+            ["bash", "-c", body], cwd=tmp_path, capture_output=True, text=True
+        )
+        assert result.stdout == "<--name><two words><--n><3>", result.stderr
+
+    @pytest.mark.parametrize("model_args", ["", "   "])
+    def test_empty_args_render_as_before(self, model_args, tmp_path):
+        script = self._render(tmp_path, model_args)
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+        assert self._command_file_body(script) == ["bash scripts/dummy/run.sh"]
+        assert 'echo "ERROR: Script not found: scripts/dummy/run.sh"' in script
+
+    def test_empty_args_tool_chain_is_unchanged(self, tmp_path):
+        tools = [{"name": "demo_tool", "cmd": "demo-wrap --flag"}]
+        script = self._render(tmp_path, "", tools=tools)
+        assert self._command_file_body(script) == [
+            "demo-wrap --flag bash scripts/dummy/run.sh"
+        ]
 
 
 class TestK8sRunTimeoutResolution:

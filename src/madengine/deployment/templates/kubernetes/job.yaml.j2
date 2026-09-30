@@ -513,10 +513,10 @@ spec:
                 # terminator sits at the block scalar's own indent so that it
                 # lands in column 0 of the rendered shell script.
                 cat > /tmp/run_model.sh << 'MODEL_EOF'
-                {% if direct_script_tool_chain and direct_script_tool_chain != "bash " ~ model_script %}
+                {% if direct_script_tool_chain and direct_script_tool_chain != model_command %}
                 {{ direct_script_tool_chain }}
                 {% else %}
-                bash {{ model_script }}
+                {{ model_command }}
                 {% endif %}
             MODEL_EOF
                 MODEL_START_TIME=$(date +%s.%N)
