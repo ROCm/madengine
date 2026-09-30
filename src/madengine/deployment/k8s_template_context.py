@@ -10,6 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -550,7 +551,8 @@ class KubernetesTemplateContextMixin:
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
-            "model_script": f"{model_info.get('scripts', 'run.sh')} {model_info.get('args', '')}".strip(),
+            "model_script": model_info.get("scripts", "run.sh"),
+            "model_command": self._build_model_command(model_info),
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
             "nnodes": nnodes,
@@ -580,7 +582,7 @@ class KubernetesTemplateContextMixin:
                 self._get_tools_config(), "bash /tmp/run_launcher.sh"
             ) if launcher_command else None,
             "direct_script_tool_chain": self._build_tool_command_chain(
-                self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
+                self._get_tools_config(), self._build_model_command(model_info)
             ),
             # Pre/Post scripts - includes rocEnvTool and any user-defined scripts
             "pre_scripts": pre_scripts,
@@ -663,6 +665,20 @@ class KubernetesTemplateContextMixin:
         # Cache the result for subsequent calls
         self._cached_tools_config = result
         return result
+
+    @staticmethod
+    def _build_model_command(model_info: Dict) -> str:
+        """
+        Build the ``bash <script> <args>`` command for the direct-script branch.
+
+        The card's ``args`` are shell-quoted one word at a time, as the local and
+        SLURM paths do, so an arg with spaces or shell metacharacters reaches the
+        script as a single argument and is never evaluated.
+        """
+        script = model_info.get("scripts", "run.sh")
+        args = model_info.get("args", "")
+        args_q = " ".join(shlex.quote(a) for a in shlex.split(args)) if args else ""
+        return f"bash {script} {args_q}".rstrip()
 
     def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
         """
