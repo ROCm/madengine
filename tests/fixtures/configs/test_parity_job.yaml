@@ -1,0 +1,21 @@
+# additional-context-shaped job YAML (not a Hydra defaults list)
+slurm:
+  partition: gpu
+  reservation: myres
+  time: "02:00:00"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+
+env_vars:
+  NCCL_DEBUG: INFO
+
+docker:
+  build_args:
+    MAD_SYSTEM_GPU_ARCHITECTURE: gfx942
+
+require_pinned_image: true
+live_output: true
