@@ -7,6 +7,7 @@ aggregating multi-node results, and writing to perf.csv / perf_super.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -41,8 +42,15 @@ def _pod_job_name_label_selector(deployment_id: str) -> str:
 
 
 def collector_pod_name(deployment_id: str) -> str:
-    """Consistent name for the temporary PVC collector pod."""
-    return f"collector-{deployment_id[:15]}"
+    """Consistent, valid, unique name for the temporary PVC collector pod.
+
+    ``collector-<readable prefix>-<8 hex of sha256(deployment_id)>``: RFC 1123,
+    at most 63 chars (the pod name is also its hostname).
+    """
+    digest = hashlib.sha256(deployment_id.encode("utf-8")).hexdigest()[:8]
+    # 63 = len("collector-") + head + len("-") + len(digest)
+    head = re.sub(r"[^a-z0-9]+", "-", deployment_id.lower())[:44].strip("-")
+    return f"collector-{head}-{digest}" if head else f"collector-{digest}"
 
 
 class KubernetesResultsMixin:
