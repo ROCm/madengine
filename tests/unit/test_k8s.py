@@ -6,6 +6,7 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,6 +21,7 @@ from madengine.deployment.k8s_names import (
     sanitize_k8s_label_value,
     sanitize_k8s_object_name,
 )
+from madengine.deployment.k8s_results import collector_pod_name
 from madengine.deployment.k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_EXISTING,
@@ -241,6 +243,42 @@ class TestSanitizeK8sContainerName:
         long_hint = "a" * 200
         c = sanitize_k8s_container_name(long_hint)
         assert len(c) <= 63
+
+
+@pytest.mark.unit
+class TestCollectorPodName:
+    _RFC1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+    @pytest.mark.parametrize(
+        "deployment_id",
+        [
+            "madengine-vllm-pyt-vllm-qwen3-8b",
+            "madengine-dummy-dummy-multi",
+            "madengine-" + "a" * 200,
+            "madengine-primus-pretrain-torchtitan-mi300x-qwen3-1.7b-pretrain",
+            "Model_With Odd/Chars",
+            "",
+        ],
+    )
+    def test_valid_rfc1123_name_within_63_chars(self, deployment_id):
+        name = collector_pod_name(deployment_id)
+        assert self._RFC1123.match(name), name
+        assert len(name) <= 63
+
+    def test_shared_prefix_ids_get_distinct_names(self):
+        a = "madengine-dummy-dummy-multi-node-a"
+        b = "madengine-dummy-dummy-multi-node-b"
+        assert a[:15] == b[:15]
+        assert collector_pod_name(a) != collector_pod_name(b)
+
+    def test_shared_long_prefix_ids_get_distinct_names(self):
+        a = "madengine-" + "x" * 100 + "-a"
+        b = "madengine-" + "x" * 100 + "-b"
+        assert collector_pod_name(a) != collector_pod_name(b)
+
+    def test_deterministic(self):
+        job = "madengine-vllm-pyt-vllm-qwen3-8b"
+        assert collector_pod_name(job) == collector_pod_name(job)
 
 
 class TestGatherSystemEnvDetailsK8sRocenvMode:
