@@ -2009,21 +2009,39 @@ export MASTER_PORT={master_port}
         sacct can transiently return non-zero immediately after a job leaves
         the queue because SLURM's accounting database may not yet be updated.
         Retry up to _SACCT_RETRIES times with _SACCT_RETRY_DELAY seconds
-        between attempts before declaring the status UNKNOWN.
+        between attempts before declaring the status UNKNOWN. An empty answer
+        is retried too: the job's row can lag the queue, and "" is not a state.
+
+        Spur (a SLURM-compatible scheduler) rejects -X as an unknown argument.
+        It records no step rows, so without -X its one row is the job's; on a
+        scheduler that does list steps, the job's own row comes first.
         """
         _SACCT_RETRIES = 3
         _SACCT_RETRY_DELAY = 5  # seconds
 
         try:
             result = None
+            sacct_cmd = ["sacct", "-j", job_id, "-n", "-X", "-o", "State"]
             for attempt in range(1, _SACCT_RETRIES + 1):
                 result = subprocess.run(
-                    ["sacct", "-j", job_id, "-n", "-X", "-o", "State"],
+                    sacct_cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,
                 )
-                if result.returncode == 0:
+                if (
+                    result.returncode != 0
+                    and "-X" in sacct_cmd
+                    and "-X" in (result.stderr or "")
+                    and "argument" in (result.stderr or "").lower()
+                ):
+                    sacct_cmd = [a for a in sacct_cmd if a != "-X"]
+                    self.console.print(
+                        "[dim]sacct does not accept -X here; reading the job's "
+                        "own row without it[/dim]"
+                    )
+                    continue
+                if result.returncode == 0 and result.stdout.strip():
                     break
                 if attempt < _SACCT_RETRIES:
                     self.console.print(
@@ -2033,8 +2051,8 @@ export MASTER_PORT={master_port}
                     )
                     time.sleep(_SACCT_RETRY_DELAY)
 
-            if result.returncode == 0:
-                status = result.stdout.strip().upper()
+            if result.returncode == 0 and result.stdout.strip():
+                status = result.stdout.strip().splitlines()[0].strip().upper()
                 self.console.print(
                     f"[dim]SLURM job {job_id} final status: {status}[/dim]"
                 )
@@ -2065,15 +2083,21 @@ export MASTER_PORT={master_port}
                         message=f"Job {job_id} failed: {status}",
                     )
 
-            # sacct returned non-zero — status unknown, do not assume success
+            # sacct returned non-zero, or no row for the job — status unknown,
+            # do not assume success
+            why = (
+                f"sacct exited with code {result.returncode}"
+                if result.returncode != 0
+                else "sacct has no record of the job"
+            )
             self.console.print(
-                f"[yellow]Warning: sacct returned non-zero for job {job_id} "
-                f"(exit code {result.returncode}). Status cannot be verified.[/yellow]"
+                f"[yellow]Warning: {why} for job {job_id}. "
+                f"Status cannot be verified.[/yellow]"
             )
             return DeploymentResult(
                 status=DeploymentStatus.UNKNOWN,
                 deployment_id=job_id,
-                message=f"Job {job_id} status unknown: sacct exited with code {result.returncode}",
+                message=f"Job {job_id} status unknown: {why}",
             )
 
         except Exception as e:
