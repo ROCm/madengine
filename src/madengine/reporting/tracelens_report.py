@@ -164,7 +164,9 @@ def generate_tracelens_reports(
     return _run_analyzer(args, summary_path)
 
 
-def discover_traces(root: str = ".", output_dir: str = "tracelens_output") -> Dict[str, object]:
+def discover_traces(
+    root: str = ".", output_dir: str = "tracelens_output"
+) -> Dict[str, object]:
     """List the trace artifacts under ``root`` without running TraceLens.
 
     Unlike :func:`generate_tracelens_reports`, this does not require TraceLens to
