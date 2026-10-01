@@ -146,6 +146,24 @@ MODEL_DIR=tests/fixtures/dummy madengine run \
   --live-output
 ```
 
+## 🧪 Cluster Feature Smoke Config (RDMA)
+
+Use this phase-1 smoke config to validate RDMA recommender behavior on Kubernetes.
+(`cluster.gcm` remains SLURM-only in this phase.)
+
+Config file:
+
+- `examples/k8s-configs/configs/smoke-rdma-k8s.json`
+
+One-line runner:
+
+```bash
+examples/run-smoke.sh k8s MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-k8s
+```
+
+For full command-by-command verification, see `examples/cluster-smoke-checklist.md`.
+
 ---
 
 ## 📁 Available Configurations

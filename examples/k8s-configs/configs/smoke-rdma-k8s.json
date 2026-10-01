@@ -1,0 +1,21 @@
+{
+  "_comment": "Phase-1 smoke config: RDMA on Kubernetes (GCM remains SLURM-only).",
+  "k8s": {
+    "gpu_count": 1,
+    "namespace": "default"
+  },
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 1,
+    "nproc_per_node": 1
+  },
+  "cluster": {
+    "rdma": {
+      "enabled": true,
+      "strict": false,
+      "mode": "recommend",
+      "apply_env": true,
+      "artifact_name": "rdma_recommendation.json"
+    }
+  }
+}

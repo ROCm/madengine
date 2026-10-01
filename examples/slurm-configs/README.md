@@ -170,6 +170,26 @@ madengine run --tags model_tag \
   --additional-context '{"slurm": {"nodes": 4, "time": "48:00:00"}}'
 ```
 
+## 🧪 Cluster Feature Smoke Config (RDMA + GCM)
+
+Use this phase-1 smoke config to validate:
+
+- RDMA recommender in runtime path
+- GCM health preflight + one-shot collector (SLURM only)
+
+Config file:
+
+- `examples/slurm-configs/configs/smoke-rdma-gcm-slurm.json`
+
+One-line runner:
+
+```bash
+examples/run-smoke.sh slurm MODEL_DIR=/path/to/model MODEL_TAG=your_tag
+examples/run-smoke.sh verify-slurm
+```
+
+For full command-by-command verification, see `examples/cluster-smoke-checklist.md`.
+
 ## 🔄 Distributed Workload Support
 
 The SLURM deployment **automatically configures distributed execution** for multi-node and multi-GPU setups (training with torchrun/deepspeed or inference with vLLM/SGLang):

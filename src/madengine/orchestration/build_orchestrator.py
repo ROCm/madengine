@@ -1339,6 +1339,7 @@ exit 0
                 "kubernetes": self.additional_context.get("kubernetes"),
                 "distributed": self.additional_context.get("distributed"),
                 "vllm": self.additional_context.get("vllm"),
+                "cluster": self.additional_context.get("cluster"),
                 "env_vars": env_vars,
                 "debug": self.additional_context.get("debug", False),
             }

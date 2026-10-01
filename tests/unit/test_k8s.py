@@ -354,6 +354,7 @@ def _k8s_template_context(
     harness.configmap_name = "cm"
     harness.service_name = "s"
     harness.gpu_resource_name = "amd.com/gpu"
+    harness.rdma_config = {}
     harness.data = None
 
     return harness._prepare_template_context(

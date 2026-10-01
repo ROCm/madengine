@@ -81,6 +81,7 @@ class KubernetesResultsMixin:
             "artifacts": [],
             "successful_runs": [],
             "failed_runs": [],
+            "cluster_features": {},
         }
 
         # Create results directory for this deployment
@@ -464,6 +465,31 @@ class KubernetesResultsMixin:
                     )
 
             # 4. Generate summary
+            rdma_cfg = self.config.additional_context.get("cluster", {}).get("rdma", {})
+            if rdma_cfg.get("enabled", False):
+                artifact_name = rdma_cfg.get(
+                    "artifact_name", "rdma_recommendation.json"
+                )
+                rdma_files = sorted(results_dir.glob(f"**/{artifact_name}"))
+                rdma_entries = []
+                for artifact in rdma_files:
+                    try:
+                        payload = json.loads(artifact.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload = {"status": "invalid_json"}
+                    rdma_entries.append(
+                        {
+                            "artifact": str(artifact),
+                            "status": payload.get("status", "unknown"),
+                            "recommended_env": payload.get("recommended_env", {}),
+                        }
+                    )
+                if rdma_entries:
+                    results["cluster_features"]["rdma"] = {
+                        "artifact_name": artifact_name,
+                        "entries": rdma_entries,
+                    }
+
             self._generate_results_summary(results, results_dir)
 
         except Exception as e:
