@@ -572,7 +572,9 @@ class TestK8sRequirePinnedImage:
 
     DIGEST = "sha256:" + "df36ef7e" * 8
 
-    def _template_context(self, tmp_path, monkeypatch, require_pinned, image_digest):
+    def _template_context(
+        self, tmp_path, monkeypatch, require_pinned, image_digest, image_info=None
+    ):
         """Build a real template context, the way prepare() does.
 
         _prepare_template_context reads the manifest and the model's scripts
@@ -583,7 +585,8 @@ class TestK8sRequirePinnedImage:
         (tmp_path / "scripts" / "dummy").mkdir(parents=True)
         (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")
 
-        image_info = {"registry_image": "myorg/ci:m"}
+        if image_info is None:
+            image_info = {"registry_image": "myorg/ci:m"}
         if image_digest:
             image_info["image_digest"] = image_digest
         model_info = {
@@ -634,3 +637,50 @@ class TestK8sRequirePinnedImage:
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
             )
+
+    def test_docker_image_only_manifest_uses_docker_image(self, tmp_path, monkeypatch):
+        """--use-image manifests carry docker_image but no registry_image."""
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={"docker_image": "myorg/ci:m"},
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_none_registry_image_falls_back_to_docker_image(
+        self, tmp_path, monkeypatch
+    ):
+        """A local-image manifest sets registry_image to an explicit None."""
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={"docker_image": "myorg/ci:m", "registry_image": None},
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_docker_image_only_pinned_reference(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=True,
+            image_digest=self.DIGEST,
+            image_info={"docker_image": "myorg/ci:m"},
+        )
+        assert ctx["image"] == f"myorg/ci@{self.DIGEST}"
+
+    def test_registry_image_wins_over_docker_image(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={
+                "docker_image": "local/ci:m",
+                "registry_image": "myorg/ci:m",
+            },
+        )
+        assert ctx["image"] == "myorg/ci:m"
