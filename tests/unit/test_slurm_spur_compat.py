@@ -116,3 +116,15 @@ class TestSbatchRetry:
         assert len(calls) == 1
         assert result.status == DeploymentStatus.FAILED
 
+
+class TestSlurmMultiQosAccount:
+    def test_qos_and_account_reach_the_wrapper(self, tmp_path):
+        d = _deployment(tmp_path)
+        d.slurm_config.update({"qos": "burst", "account": "acct"})
+        script = _wrapper(d)
+        assert "#SBATCH --qos=burst" in script
+        assert "#SBATCH --account=acct" in script
+
+    def test_absent_by_default(self, tmp_path):
+        script = _wrapper(_deployment(tmp_path))
+        assert "--qos" not in script and "--account" not in script

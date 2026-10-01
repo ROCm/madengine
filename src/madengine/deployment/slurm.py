@@ -746,6 +746,14 @@ class SlurmDeployment(BaseDeployment):
         if self.reservation:
             script_lines.append(f"#SBATCH --reservation={self.reservation}")
 
+        # qos and account, as the standard job template already honours them.
+        # Without them a slurm_multi job ran under the user's defaults, so a site
+        # whose default QOS was at its group node limit left it pending.
+        if self.slurm_config.get("qos"):
+            script_lines.append(f"#SBATCH --qos={self.slurm_config['qos']}")
+        if self.slurm_config.get("account"):
+            script_lines.append(f"#SBATCH --account={self.slurm_config['account']}")
+
         # Add nodelist if specified (from model card or --additional-context)
         nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
         if nodelist:
