@@ -895,6 +895,8 @@ class TestPlaceholderImageRejection:
         "<your-image-here>",
         "  <supply-your-image>  ",
         "",
+        "   ",
+        "\t\n",
         None,
     ])
     def test_placeholders_detected(self, value):

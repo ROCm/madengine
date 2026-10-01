@@ -628,9 +628,9 @@ class BuildOrchestrator:
     @staticmethod
     def _is_placeholder_image(image: Optional[str]) -> bool:
         """Return True if the value is a fill-me-in marker rather than an image ref."""
-        if not image:
+        candidate = (image or "").strip()
+        if not candidate:
             return True
-        candidate = image.strip()
         return candidate.startswith("<") or candidate.endswith(">")
 
     def _reject_placeholder_image(self, image: str, model_names: List[str]) -> None:
