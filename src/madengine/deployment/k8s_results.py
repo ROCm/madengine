@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import normalize_launcher
+from .common import is_per_replica_launcher, launcher_for_reporting
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -129,9 +129,9 @@ class KubernetesResultsMixin:
             )
 
             # Normalize launcher based on deployment type and validity
-            launcher_type = normalize_launcher(launcher_type, "kubernetes")
+            launcher_type = launcher_for_reporting(launcher_type, "kubernetes")
 
-            is_ray_launcher = launcher_type in ["vllm", "sglang"]
+            is_per_replica = is_per_replica_launcher(launcher_type)
 
             # Sort pods by name to ensure consistent ordering (pod-0 is master)
             sorted_pods = sorted(pods.items, key=lambda p: p.metadata.name)
@@ -146,9 +146,9 @@ class KubernetesResultsMixin:
             per_node_metrics = []  # Store performance from each node
             results["nodes"] = []  # Store per-node details for display
 
-            # Special handling for Ray-based launchers (vLLM, SGLang)
+            # Special handling for data-parallel launchers (vLLM, SGLang)
             # These report per-replica metrics, need scaling
-            if is_multinode and is_ray_launcher:
+            if is_multinode and is_per_replica:
                 self.console.print(
                     f"[cyan]Multi-node Ray deployment: {nnodes} nodes (Data Parallel mode)[/cyan]"
                 )
@@ -207,7 +207,7 @@ class KubernetesResultsMixin:
 
                     if perf_data:
                         # For Ray launchers, this is per-replica metric
-                        if is_multinode and is_ray_launcher:
+                        if is_multinode and is_per_replica:
                             perf_data["is_per_replica"] = True
                         per_node_metrics.append(perf_data)
                         self.console.print(
@@ -259,7 +259,7 @@ class KubernetesResultsMixin:
             # ========================================================================
             if per_node_metrics:
                 # Special handling for Ray launchers - multiply by nnodes
-                if is_multinode and is_ray_launcher:
+                if is_multinode and is_per_replica:
                     original_perf = per_node_metrics[0]["performance"]
                     aggregated_perf = original_perf * nnodes
                     self.console.print(
@@ -920,7 +920,7 @@ class KubernetesResultsMixin:
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
 
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
@@ -996,7 +996,7 @@ class KubernetesResultsMixin:
         nproc_per_node = distributed_config.get("nproc_per_node")
         if nproc_per_node is None:
             nproc_per_node = int(model_info.get("n_gpus", 1))
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1063,7 +1063,7 @@ class KubernetesResultsMixin:
         gpus_per_node = str(nproc_per_node)
         nnodes_str = str(nnodes)
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         result = {
             "n_gpus": str(total_gpus),
             "nnodes": nnodes_str,
@@ -1113,7 +1113,7 @@ class KubernetesResultsMixin:
             nproc_per_node = int(model_info.get("n_gpus", 1))
 
         # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
         result = {
             "model": item.get("model", model_info.get("name", "")),
             "n_gpus": str(nnodes * nproc_per_node),
