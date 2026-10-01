@@ -9,6 +9,7 @@ import csv
 import importlib.util
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -195,6 +196,32 @@ class TestReportStem:
         a = analyzer._report_stem(str(tmp_path / "node_0" / "trace.json"), str(tmp_path))
         b = analyzer._report_stem(str(tmp_path / "node_1" / "trace.json"), str(tmp_path))
         assert a != b
+
+
+class TestSanitizedTrace:
+    """Sanitized copies must not collide across ranks or directories."""
+
+    def test_same_basename_in_different_directories_do_not_overwrite(
+        self, analyzer, tmp_path
+    ):
+        rank0 = _write(tmp_path, "rank0/trace.json", b'{"rank": 0, "bad": "\xff"}')
+        rank1 = _write(tmp_path, "rank1/trace.json", b'{"rank": 1, "bad": "\xfe"}')
+        workspace = [None]
+        try:
+            copy0 = analyzer._sanitized_trace(
+                str(rank0), analyzer.KIND_ROCPROF_JSON, workspace
+            )
+            copy1 = analyzer._sanitized_trace(
+                str(rank1), analyzer.KIND_ROCPROF_JSON, workspace
+            )
+
+            assert copy0 != copy1
+            assert os.path.basename(copy0) == os.path.basename(copy1) == "trace.json"
+            assert '"rank": 0' in Path(copy0).read_text(encoding="utf-8")
+            assert '"rank": 1' in Path(copy1).read_text(encoding="utf-8")
+        finally:
+            if workspace[0]:
+                shutil.rmtree(workspace[0], ignore_errors=True)
 
 
 class TestAnalyze:
