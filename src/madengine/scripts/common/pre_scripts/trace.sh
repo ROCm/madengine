@@ -186,9 +186,9 @@ dynolog)
 	# harmless because we run the daemon directly. Tolerate a non-zero dpkg exit
 	# and verify by checking for the binaries instead.
 	if [ "$(id -u)" -eq 0 ]; then
-		dpkg -i "$_dynolog_tmp" || apt-get install -f -y -qq || true
+		dpkg -i "$_dynolog_tmp" || { apt-get update -qq && apt-get install -f -y -qq; } || true
 	elif command -v sudo >/dev/null 2>&1; then
-		sudo dpkg -i "$_dynolog_tmp" || sudo apt-get install -f -y -qq || true
+		sudo dpkg -i "$_dynolog_tmp" || { sudo apt-get update -qq && sudo apt-get install -f -y -qq; } || true
 	else
 		echo "Error: dynolog pre-script needs root or sudo to install the package." >&2
 		exit 1
