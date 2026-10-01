@@ -1343,6 +1343,21 @@ exit 0
             )
             return
 
+        # `models` is the full discovery list, but the manifest's built_models only
+        # holds models whose build succeeded. Take deployment metadata from those
+        # alone, so a failed model that happens to be discovered first cannot
+        # decide the launcher / allocation for a run of the models that did build.
+        built_names = {
+            bm.get("name") for bm in (saved_manifest.get("built_models") or {}).values()
+        }
+        models = [m for m in models if m.get("name") in built_names]
+        if not models:
+            self.rich_console.print(
+                "[yellow]Warning: none of the discovered models were built; "
+                "not merging model config into deployment_config.[/yellow]"
+            )
+            return
+
         if "deployment_config" not in saved_manifest:
             saved_manifest["deployment_config"] = {}
 

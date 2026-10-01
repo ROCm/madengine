@@ -597,7 +597,7 @@ class TestMergeModelConfigIntoManifest:
         left deployment_config without a launcher and `run` inferred "local"."""
         orchestrator = self._make_orchestrator()
         manifest_file = tmp_path / "build_manifest.json"
-        manifest_file.write_text(json.dumps({"built_models": {}}))
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
 
         models = [{"name": "m1", "distributed": {"launcher": "slurm_multi"}}]
         orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
@@ -610,7 +610,7 @@ class TestMergeModelConfigIntoManifest:
         contract; the merge whitelist must actually promote every one of them."""
         orchestrator = self._make_orchestrator()
         manifest_file = tmp_path / "build_manifest.json"
-        manifest_file.write_text(json.dumps({"built_models": {}}))
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
 
         model_slurm = {
             "partition": "gpu",
@@ -646,7 +646,7 @@ class TestMergeModelConfigIntoManifest:
             additional_context='{"slurm": {"partition": "gpu"}}'
         )
         manifest_file = tmp_path / "build_manifest.json"
-        manifest_file.write_text(json.dumps({"built_models": {}}))
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
 
         # Model card declares nnodes-sizing via slurm.nodes; "time" here simulates a
         # ConfigLoader-applied preset default already present in additional_context,
@@ -662,6 +662,64 @@ class TestMergeModelConfigIntoManifest:
         assert "partition" in explicit_keys  # from --additional-context
         assert "nodes" in explicit_keys  # copied from the model card
         assert "time" not in explicit_keys  # never declared by user or model card
+
+    def test_failed_first_model_does_not_supply_deployment_metadata(self, tmp_path):
+        """`models` is the full discovery list, but built_models only holds models
+        whose build succeeded. If the first discovered model failed, its
+        distributed/slurm settings must not be persisted: `run` would infer the
+        target and allocation from a model that is not runnable."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img-ok": {"name": "ok"}}}))
+
+        models = [
+            {
+                "name": "failed",
+                "distributed": {"launcher": "slurm_multi", "nnodes": 8},
+                "slurm": {"nodes": 8, "partition": "failed-part"},
+            },
+            {
+                "name": "ok",
+                "distributed": {"launcher": "torchrun", "nnodes": 2},
+                "slurm": {"nodes": 2, "partition": "ok-part"},
+            },
+        ]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        deployment_config = json.loads(manifest_file.read_text())["deployment_config"]
+        assert deployment_config["distributed"]["launcher"] == "torchrun"
+        assert deployment_config["distributed"]["nnodes"] == 2
+        assert deployment_config["slurm"]["nodes"] == 2
+        assert deployment_config["slurm"]["partition"] == "ok-part"
+
+    def test_no_built_models_persists_no_model_card_metadata(self, tmp_path):
+        """When every build failed there is no runnable model to take metadata from."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {}}))
+
+        models = [{"name": "failed", "distributed": {"launcher": "slurm_multi"}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved = json.loads(manifest_file.read_text())
+        assert "distributed" not in saved.get("deployment_config", {})
+
+    def test_differing_config_warning_ignores_unbuilt_models(self, tmp_path):
+        """Only built models can be the source, so an unbuilt model's differing
+        config is not a conflict worth warning about."""
+        orchestrator = self._make_orchestrator()
+        orchestrator.rich_console = MagicMock()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "ok"}}}))
+
+        models = [
+            {"name": "failed", "distributed": {"launcher": "slurm_multi"}},
+            {"name": "ok", "distributed": {"launcher": "torchrun"}},
+        ]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        printed = " ".join(str(c) for c in orchestrator.rich_console.print.call_args_list)
+        assert "differing" not in printed
 
 
 @pytest.mark.unit
