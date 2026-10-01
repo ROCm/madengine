@@ -639,6 +639,71 @@ class TestSelfManagedLauncherImpliesSlurm:
     def test_inference(self, config, expected):
         assert RunOrchestrator._infer_deployment_target(None, config) == expected
 
+    # A runtime `--additional-context` replaces the whole `distributed` block, so a
+    # partial override like {"distributed": {"nnodes": 4}} drops the launcher that
+    # the build stored. Inference must still see the model card's launcher, resolved
+    # the same way SlurmDeployment._resolve_launcher does (deployment first, card
+    # second), or the run is handed to the local container runner.
+    @pytest.mark.parametrize("config,card_launcher,expected", [
+        ({"distributed": {"nnodes": 4}}, "slurm_multi", "slurm"),
+        ({}, "slurm_multi", "slurm"),
+        ({"distributed": {"launcher": ""}}, "slurm_multi", "slurm"),
+        # An explicit deployment launcher outranks the card, as in the deployment.
+        ({"distributed": {"launcher": "torchrun"}}, "slurm_multi", "local"),
+        ({"distributed": {"launcher": "slurm_multi"}}, "torchrun", "slurm"),
+        ({"distributed": {"nnodes": 4}}, "torchrun", "local"),
+        ({"distributed": {"nnodes": 4}}, None, "local"),
+        # An explicit k8s/slurm block still decides first.
+        ({"k8s": {}}, "slurm_multi", "k8s"),
+    ])
+    def test_inference_uses_model_card_launcher(self, config, card_launcher, expected):
+        model_info = {"distributed": {"launcher": card_launcher}} if card_launcher else {}
+        assert (
+            RunOrchestrator._infer_deployment_target(None, config, model_info) == expected
+        )
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_execute_routes_partial_distributed_override_to_slurm(
+        self, mock_cleanup, tmp_path
+    ):
+        """End to end through the real manifest merge: the stored deployment launcher
+        is replaced by the runtime `distributed` block, yet the card's slurm_multi
+        launcher must still route the run to the SLURM deployment."""
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"distributed": {"launcher": "slurm_multi"}},
+                    "context": {},
+                    "built_images": {},
+                    "built_models": {
+                        "img": {
+                            "name": "m1",
+                            "distributed": {"launcher": "slurm_multi"},
+                        }
+                    },
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {"distributed": {"nnodes": 4}}
+
+        summary = {"successful_runs": [], "failed_runs": []}
+        with patch.object(
+            RunOrchestrator, "_execute_distributed", return_value=summary
+        ) as mock_dist, patch.object(
+            RunOrchestrator, "_execute_local", return_value=summary
+        ) as mock_local:
+            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_not_called()
+        assert mock_dist.call_args.args[0] == "slurm"
+
 
 @pytest.mark.unit
 class TestMergeModelConfigIntoManifest:
