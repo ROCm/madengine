@@ -20,6 +20,7 @@ import codecs
 import csv
 import glob
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -309,13 +310,18 @@ def _sanitized_trace(trace: str, kind: str, workspace: List[Optional[str]]) -> s
 
     if workspace[0] is None:
         workspace[0] = tempfile.mkdtemp(prefix="madengine-tracelens-")
-    destination = os.path.join(workspace[0], os.path.basename(trace))
+    # One subdirectory per trace keeps the basename (TraceLens reads it) while
+    # stopping same-named traces from different ranks overwriting each other.
+    digest = hashlib.sha1(os.path.abspath(trace).encode("utf-8")).hexdigest()[:12]
+    scratch = os.path.join(workspace[0], digest)
+    destination = os.path.join(scratch, os.path.basename(trace))
     print(
         f"[tracelens] {trace} is not valid UTF-8 (rocprofv3 writes raw pointer "
         "bytes for some HIP API string arguments); analyzing a sanitized copy",
         flush=True,
     )
     try:
+        os.makedirs(scratch, exist_ok=True)
         _write_sanitized_copy(trace, destination)
     except OSError as exc:
         print(f"[tracelens] could not sanitize {trace}: {exc}", flush=True)
