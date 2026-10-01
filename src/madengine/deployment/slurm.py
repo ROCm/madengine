@@ -62,6 +62,10 @@ class SlurmDeployment(BaseDeployment):
     DEPLOYMENT_TYPE = "slurm"
     REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
 
+    # Result-file mtimes are stamped by the compute node / shared filesystem while
+    # the submit time comes from the login node, so allow for clock skew.
+    _DECLARED_CSV_MTIME_SLACK_S = 30
+
     def __init__(self, config: DeploymentConfig):
         """
         Initialize SLURM deployment.
@@ -107,6 +111,9 @@ class SlurmDeployment(BaseDeployment):
         # deploy() re-runs after node preflight, stays idempotent.
         self._configured_nodes = self.nodes
         self._resolve_nodes()
+        # Set by deploy(); lets collection tell this job's results from files a
+        # previous run left in a preserved directory.
+        self._job_submitted_at: Optional[float] = None
         self.gpus_per_node = self.slurm_config.get("gpus_per_node", 8)
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
@@ -1313,6 +1320,8 @@ export MASTER_PORT={master_port}
                 message="Script not generated. Run prepare() first.",
             )
 
+        self._job_submitted_at = time.time()
+
         # slurm_multi inside an existing salloc allocation: run the generated script
         # directly with bash instead of nesting another sbatch. Non-slurm_multi launchers
         # always fall through to the standard sbatch flow (preserves develop behavior).
@@ -2302,6 +2311,21 @@ export MASTER_PORT={master_port}
             candidate = directory / declared
             try:
                 if candidate.is_file() and candidate.stat().st_size > 0:
+                    # Script directories (and cwd, for a declared "perf.csv") are
+                    # preserved between runs, so a CSV from an earlier job would
+                    # otherwise be reported as this job's result when it fails
+                    # before writing. Not deleted up front: the declared file may
+                    # be the cumulative cwd perf.csv.
+                    if (
+                        self._job_submitted_at is not None
+                        and candidate.stat().st_mtime
+                        < self._job_submitted_at - self._DECLARED_CSV_MTIME_SLACK_S
+                    ):
+                        self.console.print(
+                            f"[yellow]  Ignoring stale declared multiple_results CSV "
+                            f"(older than this job): {candidate}[/yellow]"
+                        )
+                        continue
                     self.console.print(
                         f"[dim]  Using declared multiple_results CSV: {candidate}[/dim]"
                     )

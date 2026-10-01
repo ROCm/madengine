@@ -19,7 +19,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import os
 import shlex
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -888,6 +890,73 @@ class TestSlurmMultiDeclaredResultsCsv:
 
     def test_returns_none_when_model_info_missing(self, deployment):
         assert deployment._slurm_multi_declared_result_csv(None, "12345") is None
+
+    # Script directories persist between runs, so a CSV left by a previous job must
+    # not be reported as this job's result.
+    def _write_csv_with_mtime(self, path: Path, mtime: float) -> None:
+        path.write_text("model,performance,metric\nwl,1.0,tok/s\n")
+        os.utime(path, (mtime, mtime))
+
+    def test_ignores_csv_older_than_this_job(self, deployment):
+        """A stale CSV from a previous run is skipped once the job has been submitted."""
+        deployment._job_submitted_at = 1_000_000.0
+        self._write_csv_with_mtime(
+            deployment._script_dir_for_test / "perf_WL.csv", 1_000_000.0 - 3600
+        )
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) is None
+
+    def test_accepts_csv_written_after_submission(self, deployment):
+        deployment._job_submitted_at = 1_000_000.0
+        target = deployment._script_dir_for_test / "perf_WL.csv"
+        self._write_csv_with_mtime(target, 1_000_000.0 + 600)
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) == target
+
+    def test_tolerates_small_clock_skew_with_shared_filesystem(self, deployment):
+        """File mtimes come from the compute node / NFS server, not the login node."""
+        deployment._job_submitted_at = 1_000_000.0
+        target = deployment._script_dir_for_test / "perf_WL.csv"
+        self._write_csv_with_mtime(target, 1_000_000.0 - 5)
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) == target
+
+    def test_stale_csv_in_one_dir_does_not_hide_fresh_one_in_another(self, deployment):
+        """Only the stale candidate is skipped; later search dirs are still tried."""
+        deployment._job_submitted_at = 1_000_000.0
+        self._write_csv_with_mtime(
+            deployment._script_dir_for_test / "perf_WL.csv", 1_000_000.0 - 3600
+        )
+        fresh_dir = deployment.output_dir / "12345"
+        fresh_dir.mkdir(parents=True, exist_ok=True)
+        fresh = fresh_dir / "perf_WL.csv"
+        self._write_csv_with_mtime(fresh, 1_000_000.0 + 60)
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) == fresh
+
+    def test_no_freshness_filter_before_submission(self, deployment):
+        """Without a recorded submit time there is nothing to compare against."""
+        assert deployment._job_submitted_at is None
+        target = deployment._script_dir_for_test / "perf_WL.csv"
+        self._write_csv_with_mtime(target, 1.0)
+        assert deployment._slurm_multi_declared_result_csv(
+            deployment._model_for_test, "12345"
+        ) == target
+
+    def test_deploy_records_submission_time(self, deployment, monkeypatch):
+        """deploy() stamps the submit time that collection later compares against."""
+        deployment.script_path = deployment._script_dir_for_test / "run.slurm"
+        deployment.slurm_config["enable_node_check"] = False
+        completed = MagicMock(returncode=0, stdout="Submitted batch job 12345\n", stderr="")
+        monkeypatch.setattr("madengine.deployment.slurm.subprocess.run", lambda *a, **k: completed)
+        before = time.time()
+        result = deployment.deploy()
+        assert result.deployment_id == "12345"
+        assert before <= deployment._job_submitted_at <= time.time()
 
 
 class TestSlurmMultiPerfAggregation:
