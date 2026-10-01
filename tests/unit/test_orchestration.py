@@ -704,6 +704,51 @@ class TestSelfManagedLauncherImpliesSlurm:
         mock_local.assert_not_called()
         assert mock_dist.call_args.args[0] == "slurm"
 
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_stored_local_target_does_not_override_slurm_multi(
+        self, mock_cleanup, tmp_path
+    ):
+        """_save_deployment_config stores `target: "local"` for a build-time
+        `distributed` block without a `slurm` block. execute()'s legacy fallback to
+        the stored target only applies when inference itself returned "local", so
+        it must not demote a slurm_multi model card to the local container runner."""
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {
+                        "target": "local",
+                        "distributed": {"nnodes": 4},
+                    },
+                    "context": {},
+                    "built_images": {},
+                    "built_models": {
+                        "img": {
+                            "name": "m1",
+                            "distributed": {"launcher": "slurm_multi"},
+                        }
+                    },
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        orchestrator = RunOrchestrator(mock_args)
+
+        summary = {"successful_runs": [], "failed_runs": []}
+        with patch.object(
+            RunOrchestrator, "_execute_distributed", return_value=summary
+        ) as mock_dist, patch.object(
+            RunOrchestrator, "_execute_local", return_value=summary
+        ) as mock_local:
+            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_not_called()
+        assert mock_dist.call_args.args[0] == "slurm"
+
 
 @pytest.mark.unit
 class TestMergeModelConfigIntoManifest:
