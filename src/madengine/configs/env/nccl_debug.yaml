@@ -1,0 +1,5 @@
+# @package _global_
+env_vars:
+  NCCL_DEBUG: INFO
+  NCCL_DEBUG_SUBSYS: "INIT,NET,GRAPH"
+  TORCH_DISTRIBUTED_DEBUG: DETAIL
