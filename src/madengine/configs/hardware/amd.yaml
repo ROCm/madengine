@@ -1,0 +1,18 @@
+# @package _global_
+gpu_vendor: AMD
+guest_os: UBUNTU
+
+runtime:
+  devices:
+    - /dev/kfd
+    - /dev/dri
+    - /dev/infiniband
+  capabilities:
+    - SYS_PTRACE
+  security_opts:
+    - seccomp=unconfined
+  network_mode: host
+  ipc: host
+  groups:
+    - video
+  use_gpu_flag: false

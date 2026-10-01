@@ -1444,6 +1444,7 @@ class ContainerRunner:
                             keep_alive=keep_alive,
                             console=self.console,
                         )
+                        run_results["docker_run_cmd"] = model_docker.docker_run_cmd
 
                         # Check user
                         whoami = model_docker.sh("whoami")
@@ -2779,6 +2780,49 @@ class ContainerRunner:
         return targets
 
 
+    def _update_manifest_with_run_cmd(
+        self,
+        manifest_file: str,
+        successful_runs: typing.List[typing.Dict],
+        failed_runs: typing.List[typing.Dict],
+    ) -> None:
+        """Append docker_run_cmd to build_manifest.json after the run.
+
+        The manifest already contains build info (build_command, base_docker,
+        docker_sha, dockerfile). This adds the docker run command which is
+        only known at run time on the GPU node. Downstream tools
+        (model_runner) then have everything in one file.
+
+        Best-effort: failures are logged but never block the run.
+        """
+        try:
+            all_runs = successful_runs + failed_runs
+            docker_run_cmd = ""
+            for run_info in all_runs:
+                cmd = run_info.get("docker_run_cmd", "")
+                if cmd:
+                    docker_run_cmd = cmd
+                    break
+
+            if not docker_run_cmd:
+                return
+
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+
+            manifest["docker_run_cmd"] = docker_run_cmd
+
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f, indent=2)
+            self.rich_console.print(
+                f"[dim]Added docker_run_cmd to {manifest_file}[/dim]"
+            )
+        except Exception as e:
+            self.rich_console.print(
+                f"[yellow]Warning: Could not update {manifest_file} "
+                f"with docker_run_cmd: {e}[/yellow]"
+            )
+
     def run_models_from_manifest(
         self,
         manifest_file: str,
@@ -2933,6 +2977,7 @@ class ContainerRunner:
                         "status": status,
                         "performance": run_results.get("performance"),
                         "duration": run_results.get("test_duration"),
+                        "docker_run_cmd": run_results.get("docker_run_cmd", ""),
                     })
                 elif status == "SKIPPED":
                     successful_runs.append({
@@ -2993,11 +3038,14 @@ class ContainerRunner:
                         f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
                     )
         
+        # Append docker_run_cmd to manifest (SRS-DL-001 DL-CAP-001)
+        self._update_manifest_with_run_cmd(manifest_file, successful_runs, failed_runs)
+
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")
         self.rich_console.print(f"  [green]✓ Successful:[/green] {len(successful_runs)}")
         self.rich_console.print(f"  [red]✗ Failed:[/red] {len(failed_runs)}")
-        
+
         return {
             "successful_runs": successful_runs,
             "failed_runs": failed_runs,

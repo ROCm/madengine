@@ -63,18 +63,16 @@ rpd)
 		echo "rocmProfileData directory already exists, skipping clone"
 	fi
 	
-	# Build RPD tracer locally without system install
+	# Build RPD tracer via upstream's CMake build (the repo replaced its old
+	# per-directory Makefiles / `make rlog rpd` targets with this).
 	cd ./rocmProfileData
-	# rpd_tracer/Utility.h includes "rlog/client.h" unconditionally, and the Makefile
-	# enables rlog on `wildcard ../rlog` — which a plain clone satisfies with an empty
-	# submodule directory. Initialize it (also covers a pre-existing checkout above).
+	# rpd_tracer links against rlog; it's vendored as a self-referencing git
+	# submodule (same repo, "rlog" branch) rather than an external project.
 	git submodule update --init rlog
-	# Workaround for upstream rocmProfileData Makefile typo: UStringTable.o -> StringTable.o
-	if [ -f rpd_tracer/Makefile ]; then
-		sed -i 's/UStringTable\.o/StringTable.o/g' rpd_tracer/Makefile
-	fi
-	# `rlog` builds and installs librlog into /usr/local; rpd_tracer links -lrlog.
-	make rlog rpd
+	# `make install` configures+builds via CMake and installs rlog, rpd_tracer,
+	# and rocpd_python (via pip) into /usr/local. Skip the remote helper and
+	# web viewer — neither was built by the old make-based flow.
+	make install CMAKE_ARGS="-DRPD_BUILD_REMOTE=OFF -DRPD_BUILD_VIEWER=OFF"
 	if [ $? -ne 0 ]; then
 		echo "Error: Failed to build RPD tracer"
 		exit 1
@@ -85,15 +83,7 @@ rpd)
 	if command -v ldconfig >/dev/null 2>&1; then
 		ldconfig /usr/local/lib || true
 	fi
-	
-	# Install rocpd Python module locally
-	cd rocpd_python
-	python3 setup.py install
-	if [ $? -ne 0 ]; then
-		echo "Error: Failed to install rocpd Python module"
-		exit 1
-	fi
-	cd ../..
+	cd ..
 	
 	echo "RPD setup completed successfully"
 	;;

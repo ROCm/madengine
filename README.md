@@ -19,6 +19,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 ## ✨ Key Features
 
 - **🚀 Modern CLI** — Rich terminal output with Typer and Rich
+- **📝 YAML Config** — Composable [Hydra-based YAML configs](docs/configuration.md#yaml-configuration-config) with config groups, hardware profiles, and CLI overrides — alternative to `--additional-context` JSON
 - **🎯 Simple Deployment** — Run locally or deploy to Kubernetes/SLURM by adding a config key; no code changes
 - **🔧 Distributed Launchers** — torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** — Docker-based execution with GPU support (ROCm, CUDA)
@@ -39,9 +40,13 @@ madengine discover --tags dummy
 
 # Run locally (discover → build → run, as configured by the model)
 madengine run --tags dummy
+
+# Or with YAML config (Hydra-based, composable)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note:** For build operations `gpu_vendor` defaults to `AMD` and `guest_os` to `UBUNTU`. For non-AMD/Ubuntu environments, set them explicitly, e.g. `--additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'`.
+> **Note:** `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. For build operations `gpu_vendor` defaults to `AMD` and `guest_os` to `UBUNTU`. For non-AMD/Ubuntu environments, set them explicitly, e.g. `--additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'`.
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`), created automatically if missing. Failed runs are recorded with status `FAILURE` so every attempted model appears. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI usage. If ROCm isn't auto-detected, set `MAD_ROCM_PATH` — see [Configuration](docs/configuration.md#rocm-path-run-only).
 
@@ -175,7 +180,7 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | [Installation](docs/installation.md) | Complete installation instructions |
 | [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
-| [Configuration](docs/configuration.md) | Advanced options, ROCm path, log error scan |
+| [Configuration](docs/configuration.md) | Advanced options; [YAML config (`--config`)](docs/configuration.md#yaml-configuration-config); ROCm path; log error scan |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed frameworks + capability matrices |
@@ -219,6 +224,115 @@ cd madengine && pip install -e .
 ```
 
 See the [Installation Guide](docs/installation.md) for details.
+
+## 📝 YAML Configuration (`--config`)
+
+The `--config` flag is a YAML spelling of the same `additional_context` dict as `--additional-context`. It is available on both `run` and `build`.
+
+> **Note**: `--config` is **mutually exclusive** with `--additional-context` and `--additional-context-file`. Using them together produces an error. Job YAML uses JSON-shaped keys (`slurm`, `distributed`, `env_vars`); it is not a Hydra `defaults:` list.
+
+### Basic Usage
+
+```bash
+# Use a config group override
+madengine run --tags dummy --config scheduler=slurm
+
+# Combine multiple overrides
+madengine run --tags dummy \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# Use a user YAML file
+madengine run --config my_job.yaml
+
+# User YAML file with overrides
+madengine run --config my_job.yaml --config distributed.nnodes=8
+
+# Append optional config groups with '+' prefix
+madengine run --tags dummy \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug \
+  --config +tools=rocprofv3_lightweight
+```
+
+### Config Groups
+
+madengine ships with pre-built config groups that compose together:
+
+| Group | Default | Options | Description |
+|-------|---------|---------|-------------|
+| `platform` | `docker` | docker (only supported) | Execution platform |
+| `scheduler` | `local` | local, slurm, k8s | Job scheduler (adds root `slurm:` / `k8s:` like JSON) |
+| `hardware` | `amd` | amd, nvidia, cpu | Sets `gpu_vendor` / `guest_os` |
+| `launcher` | `none` | none, torchrun, deepspeed, megatron / megatron-lm, torchtitan, vllm, sglang, sglang_disagg, primus, native, slurm_multi | Distributed launcher |
+| `+profile` | *(none)* | mi300x_8gpu, mi300x_single, mi250x_4gpu, h100_8gpu, a100_8gpu | Hardware profiles (append-only) |
+| `+env` | *(none)* | nccl_debug, nccl_tuned, infiniband, miopen_defaults | Environment presets (append-only) |
+| `+tools` | *(none)* | rocprofv3_lightweight, rocprofv3_comprehensive, power_profiler, vram_profiler, rocm_trace_lite | Profiling tools (append-only) |
+| `+data` | *(none)* | local, s3, minio, nas | Data source config (append-only) |
+| `+build` | *(none)* | default, ci, multi_arch | `ci` = `--clean-docker-cache`; `multi_arch` = `--target-archs gfx90a gfx942` |
+
+Groups with `+` prefix are append-only — they are not loaded by default and must be explicitly added.
+
+### User YAML Files
+
+Create a YAML file for your job and pass it via `--config`:
+
+```yaml
+# my_job.yaml
+model:
+  tags: [dummy]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  MY_VAR: test_value
+  NCCL_DEBUG: INFO
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+
+slurm:
+  partition: gpu
+  time: "02:00:00"
+```
+
+```bash
+madengine run --config my_job.yaml
+```
+
+User YAML is merged over the base config groups. Additional `--config key=value` overrides are applied last and win over the YAML file.
+
+### Examples
+
+```bash
+# SLURM multi-node with torchrun
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# MI300x 8-GPU profile with NCCL debug
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# NVIDIA hardware with profiling
+madengine run --tags model \
+  --config hardware=nvidia \
+  --config +tools=rocprofv3_lightweight
+
+# Build with CI preset
+madengine build --tags model \
+  --config +build=ci \
+  --registry docker.io/myorg
+```
+
+See [Configuration Guide](docs/configuration.md#yaml-configuration-config) for full details, and [`examples/configs/`](examples/configs/) for annotated templates and ready-to-run demo files.
 
 ## 💡 Tips & Troubleshooting
 

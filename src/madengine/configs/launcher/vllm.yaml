@@ -1,0 +1,11 @@
+# @package _global_
+distributed:
+  enabled: true
+  launcher: vllm
+  nnodes: 1
+  nproc_per_node: 4
+
+vllm:
+  kv_cache_size: 0.7
+  max_model_len: null
+  tensor_parallel_size: null
