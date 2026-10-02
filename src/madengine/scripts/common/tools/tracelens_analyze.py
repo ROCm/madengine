@@ -16,15 +16,18 @@ and ``xprof`` cannot disturb the workload's own Python environment.
 """
 
 import argparse
+import codecs
 import csv
 import glob
 import gzip
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # Trace kinds, in discovery precedence order. The first pattern set that claims a
@@ -91,6 +94,9 @@ _ENTRY_POINTS = {
     "TraceLens_generate_multi_rank_collective_report_pytorch": "TraceLens.Reporting.generate_multi_rank_collective_report_pytorch",
     "TraceLens_compare_perf_reports_pytorch": "TraceLens.Reporting.compare_perf_reports_pytorch",
 }
+
+# Read size used when checking a trace for undecodable bytes and rewriting it.
+_SANITIZE_CHUNK_BYTES = 1 << 20
 
 SUMMARY_CSV_FIELDS = (
     "trace_file",
@@ -205,18 +211,20 @@ def _resolve_python(python: Optional[str]) -> str:
 def _build_command(python: str, script_name: str, args: Sequence[str]) -> List[str]:
     """Return argv invoking a TraceLens entry point with ``args``.
 
-    Prefers the installed console script (clearer logs, honours the package's
-    own entry-point wiring) and falls back to importing the module's ``main``.
-    The fallback exits with ``main()``'s return value, the same way the console
-    scripts pip generates do, so a report failure is not silently swallowed.
+    Prefers the console script installed alongside ``python`` (clearer logs,
+    honours the package's own entry-point wiring) and falls back to importing the
+    module's ``main`` with that same interpreter. The fallback exits with
+    ``main()``'s return value, the same way the console scripts pip generates do,
+    so a report failure is not silently swallowed.
+
+    Both forms stay inside the environment the caller asked for. Searching PATH
+    instead would defeat the isolation ``--python`` exists to provide: TraceLens
+    pins protobuf and xprof, and is installed in a venv of its own.
     """
     bindir = os.path.dirname(os.path.abspath(python))
     candidate = os.path.join(bindir, script_name)
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return [candidate, *args]
-    on_path = shutil.which(script_name)
-    if on_path:
-        return [on_path, *args]
     module = _ENTRY_POINTS[script_name]
     return [
         python,
@@ -245,6 +253,116 @@ def _run(command: Sequence[str], cwd: Optional[str] = None) -> Tuple[int, str]:
         for line in output.splitlines():
             print(f"    {line}", flush=True)
     return completed.returncode, output
+
+
+def _has_invalid_utf8(path: str) -> bool:
+    """Return True when ``path`` is not decodable as UTF-8."""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    try:
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(_SANITIZE_CHUNK_BYTES)
+                if not chunk:
+                    decoder.decode(b"", final=True)
+                    return False
+                decoder.decode(chunk)
+    except UnicodeDecodeError:
+        return True
+    except OSError:
+        return False
+
+
+def _write_sanitized_copy(path: str, destination: str) -> None:
+    """Copy ``path`` to ``destination`` with undecodable bytes replaced."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    with open(path, "rb") as source:
+        with open(destination, "w", encoding="utf-8") as target:
+            while True:
+                chunk = source.read(_SANITIZE_CHUNK_BYTES)
+                if not chunk:
+                    target.write(decoder.decode(b"", final=True))
+                    return
+                target.write(decoder.decode(chunk))
+
+
+def _path_digest(path: str) -> str:
+    """Return a short, stable name for ``path`` that is unique per trace."""
+    return hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:12]
+
+
+def _scratch_root(workspace: List[Optional[str]]) -> str:
+    """Return the scratch directory, creating it on first use."""
+    if workspace[0] is None:
+        workspace[0] = tempfile.mkdtemp(prefix="madengine-tracelens-")
+    return workspace[0]
+
+
+def _stage_for_collective(traces: Sequence[str], workspace: List[Optional[str]]) -> str:
+    """Gather the per-rank traces into one directory for the collective report.
+
+    TraceLens takes a glob rather than a list, and the traces of a multi-node run
+    sit in separate directories whose only common ancestor is the whole job. Each
+    trace gets its own hash-named subdirectory so the basename, which carries the
+    rank, survives and same-named traces from different nodes do not collide.
+
+    Args:
+        traces: The readable per-rank traces, sanitized copies where needed.
+        workspace: Single-element list caching the scratch directory.
+
+    Returns:
+        The directory holding exactly the traces passed in.
+    """
+    staged = os.path.join(_scratch_root(workspace), "collective")
+    for trace in traces:
+        scratch = os.path.join(staged, _path_digest(trace))
+        os.makedirs(scratch, exist_ok=True)
+        link = os.path.join(scratch, os.path.basename(trace))
+        try:
+            os.symlink(os.path.abspath(trace), link)
+        except OSError:
+            shutil.copy2(trace, link)
+    return staged
+
+
+def _sanitized_trace(trace: str, kind: str, workspace: List[Optional[str]]) -> str:
+    """Return a trace path TraceLens can load, sanitizing bytes if it must.
+
+    rocprofv3 copies HIP API ``const char *`` arguments into its JSON verbatim, so
+    arguments that do not point at a string (``fname``, ``kname``) leave raw bytes
+    in the trace. TraceLens loads traces with orjson, which rejects the whole file
+    when any byte is not valid UTF-8, so a single stray pointer costs the entire
+    report. Analyzing a sanitized copy keeps the original trace untouched.
+
+    Args:
+        trace: Path to the discovered trace.
+        kind: Discovered trace kind.
+        workspace: Single-element list caching the scratch directory, so it is
+            created only once and only when a trace actually needs sanitizing.
+
+    Returns:
+        The path to analyze: ``trace`` itself, or a sanitized copy of it.
+    """
+    if kind not in (KIND_PYTORCH, KIND_ROCPROF_JSON) or not trace.endswith(".json"):
+        return trace
+    if not _has_invalid_utf8(trace):
+        return trace
+
+    # One subdirectory per trace keeps the basename (TraceLens reads it) while
+    # stopping same-named traces from different ranks overwriting each other.
+    scratch = os.path.join(_scratch_root(workspace), _path_digest(trace))
+    destination = os.path.join(scratch, os.path.basename(trace))
+    print(
+        f"[tracelens] {trace} is not valid UTF-8 (rocprofv3 writes raw pointer "
+        "bytes for some HIP API string arguments); analyzing a sanitized copy",
+        flush=True,
+    )
+    try:
+        os.makedirs(scratch, exist_ok=True)
+        _write_sanitized_copy(trace, destination)
+    except OSError as exc:
+        print(f"[tracelens] could not sanitize {trace}: {exc}", flush=True)
+        return trace
+    return destination
 
 
 def _failure_detail(returncode: int, output: str) -> str:
@@ -340,21 +458,29 @@ def _pftrace_jobs(
 
 
 def _rank_regex() -> str:
-    """Return the rank-extraction regex covering madengine trace filenames.
+    """Return the rank-extraction regex covering rank-labelled trace filenames.
 
-    Matches dynolog output (``libkineto_trace_<pid>.json``, where madengine
-    renames per rank), torch.profiler defaults (``..._rank0_...``), and the
-    ``rank[N]`` form used by ``tensorboard_trace_handler``.
+    Matches the torch.profiler default (``..._rank0_...``) and the ``rank[N]``
+    form written by ``tensorboard_trace_handler``. Traces captured on demand
+    through dynolog are named after the process id instead, and carry no rank.
     """
     return r"rank[\[\-_/]?(?P<rank>\d+)"
 
 
+def _is_rank_labelled(trace: str) -> bool:
+    """Return True when the rank of ``trace`` can be read from its filename."""
+    return re.search(_rank_regex(), os.path.basename(trace)) is not None
+
+
 def _collective_args(
-    root: str, out_base: str, world_size: int, extra: Sequence[str]
+    trace_dir: str, out_base: str, world_size: int, extra: Sequence[str]
 ) -> List[str]:
+    # TraceLens takes a glob rather than a list of traces, so it is pointed at a
+    # directory holding only the per-rank traces; anything wider sweeps up
+    # unrelated JSON, and rocprofv3 results are hundreds of megabytes each.
     return [
         "--trace_glob",
-        os.path.join(root, "**", "*.json*"),
+        os.path.join(trace_dir, "**", "*.json*"),
         "--rank_regex",
         _rank_regex(),
         "--world_size",
@@ -415,6 +541,10 @@ def analyze(
         "auto": {KIND_PYTORCH, KIND_ROCPROF_JSON, KIND_PFTRACE},
     }[mode]
 
+    # Scratch directory for sanitized trace copies, created on first need.
+    sanitize_workspace: List[Optional[str]] = [None]
+
+    readable_pytorch: Dict[str, str] = {}
     jobs: List[Tuple[str, str, str, List[str]]] = []
     for kind, paths in sorted(traces.items()):
         if kind not in wanted:
@@ -422,13 +552,16 @@ def analyze(
         for trace in paths:
             stem = _report_stem(trace, root)
             out_base = os.path.join(output_dir, stem)
+            readable = _sanitized_trace(trace, kind, sanitize_workspace)
+            if kind == KIND_PYTORCH:
+                readable_pytorch[trace] = readable
             if kind == KIND_PYTORCH and mode != "collective":
                 jobs.append(
                     (
                         trace,
                         kind,
                         "TraceLens_generate_perf_report_pytorch",
-                        _pytorch_args(trace, out_base, gpu_arch, extra_args),
+                        _pytorch_args(readable, out_base, gpu_arch, extra_args),
                     )
                 )
             elif kind == KIND_ROCPROF_JSON:
@@ -437,30 +570,50 @@ def analyze(
                         trace,
                         kind,
                         "TraceLens_generate_perf_report_rocprof",
-                        _rocprof_args(trace, out_base, extra_args),
+                        _rocprof_args(readable, out_base, extra_args),
                     )
                 )
             elif kind == KIND_PFTRACE:
-                for tool, args in _pftrace_jobs(trace, out_base, extra_args):
+                for tool, args in _pftrace_jobs(readable, out_base, extra_args):
                     jobs.append((trace, kind, tool, args))
 
-    # A multi-rank collective report needs at least two per-rank PyTorch traces.
+    # A multi-rank collective report needs at least two per-rank PyTorch traces,
+    # and TraceLens reads each trace's rank from its filename.
     pytorch_traces = traces.get(KIND_PYTORCH, [])
-    ranks = world_size or len(pytorch_traces)
-    if mode in ("auto", "collective") and len(pytorch_traces) > 1 and ranks > 1:
+    ranked = [trace for trace in pytorch_traces if _is_rank_labelled(trace)]
+    unrankable: List[Tuple[str, str]] = []
+    ranks = world_size or len(ranked)
+    if mode in ("auto", "collective") and len(ranked) > 1 and ranks > 1:
         jobs.append(
             (
-                f"{len(pytorch_traces)} per-rank traces",
+                f"{len(ranked)} per-rank traces",
                 KIND_PYTORCH,
                 "TraceLens_generate_multi_rank_collective_report_pytorch",
                 _collective_args(
-                    root,
+                    _stage_for_collective(
+                        [readable_pytorch[trace] for trace in ranked],
+                        sanitize_workspace,
+                    ),
                     os.path.join(output_dir, "multi_rank_collective"),
                     ranks,
                     extra_args,
                 ),
             )
         )
+    elif mode in ("auto", "collective") and len(pytorch_traces) > 1:
+        if len(ranked) > 1:
+            reason = (
+                f"--world-size is {ranks}, but a collective report needs at "
+                "least 2 ranks."
+            )
+        else:
+            reason = (
+                "the collective report needs the rank in each trace's filename, "
+                f"and only {len(ranked)} of {len(pytorch_traces)} carry one. "
+                "Traces captured on demand through dynolog are named after the "
+                "process id."
+            )
+        unrankable.append((f"{len(pytorch_traces)} PyTorch traces", reason))
 
     results: List[Dict[str, str]] = []
     for trace, kind, tool, args in jobs:
@@ -479,6 +632,9 @@ def analyze(
             }
         )
 
+    if sanitize_workspace[0] is not None:
+        shutil.rmtree(sanitize_workspace[0], ignore_errors=True)
+
     for path, reason in unsupported:
         print(f"[tracelens] skipping {path}: {reason}", flush=True)
         results.append(
@@ -486,6 +642,21 @@ def analyze(
                 "trace_file": os.path.relpath(path, root),
                 "kind": KIND_UNSUPPORTED,
                 "tracelens_tool": "",
+                "status": "SKIPPED",
+                "output": "",
+                "detail": reason,
+            }
+        )
+
+    for label, reason in unrankable:
+        print(f"[tracelens] skipping the collective report: {reason}", flush=True)
+        results.append(
+            {
+                "trace_file": label,
+                "kind": KIND_PYTORCH,
+                "tracelens_tool": (
+                    "TraceLens_generate_multi_rank_collective_report_pytorch"
+                ),
                 "status": "SKIPPED",
                 "output": "",
                 "detail": reason,
