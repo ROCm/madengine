@@ -469,6 +469,7 @@ class TestRunContainerSkipModelRun:
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
              patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
              patch.object(Docker, "sh",
                           side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
              patch.object(Docker, "__del__", return_value=None), \
@@ -606,6 +607,7 @@ class TestRunContainerDefaultTimeoutIsSentinel:
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
              patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
              patch.object(Docker, "sh",
                           side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
                               (cmd, kw.get("timeout"))
