@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, mock_open, patch
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.execution import container_runner
 from madengine.execution.container_runner import ContainerRunner
 
 
@@ -969,3 +971,254 @@ class TestSlurmEnvPassthrough:
             runner._merge_slurm_env_from_shell()
 
         assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestStaleMultipleResultsIsDropped:
+    """run_container clears a results CSV an earlier run left at the workspace root.
+
+    `run_directory` is recreated per run; the directory above it is not. It is
+    the submission directory for a single-node SLURM job, a node-local
+    workspace that outlives the job on some clusters, and plain cwd for a local
+    run. Models write `multiple_results` there and append when the file is
+    already present, and `_resolve_multiple_results_path` reads that copy
+    before the one in `run_directory` -- so a leftover is reported as part of
+    this run, carrying this run's metadata.
+    """
+
+    MODEL_SCRIPT_CMD = "bash run.sh"
+
+    def _container_commands(self, tmp_path, monkeypatch, multiple_results, sh=None):
+        """The commands run_container sends into the container, in order.
+
+        ``sh`` optionally stands in for the container shell, so a test can
+        decide what a command reports back.
+        """
+        monkeypatch.chdir(tmp_path)  # the live log is written to cwd
+
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "8"},
+            "docker_mounts": {},
+            "docker_gpus": "8",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_build_arg": {},
+        }
+        runner = ContainerRunner(context=context, console=MagicMock())
+        runner.rich_console = MagicMock()
+
+        model_info = {
+            "name": "m",
+            "url": "",
+            "scripts": "scripts/x/run.sh",
+            "n_gpus": "1",
+            "args": "",
+            "tags": [],
+        }
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        with patch(
+            "madengine.execution.container_runner.Docker"
+        ) as mock_docker_cls, patch(
+            "madengine.execution.container_runner._print_run_env_table"
+        ), patch(
+            "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
+            return_value="/opt/rocm",
+        ), patch.object(
+            runner, "_resolve_docker_image", return_value="img:latest"
+        ), patch.object(
+            runner, "get_gpu_arg", return_value=""
+        ):
+            docker = mock_docker_cls.return_value
+            docker.sh = MagicMock(side_effect=sh) if sh else MagicMock(return_value="")
+            runner.run_container(model_info=model_info, docker_image="img:latest")
+
+        return [call.args[0] for call in docker.sh.call_args_list]
+
+    @staticmethod
+    def _index_of(commands, needle):
+        for i, cmd in enumerate(commands):
+            if needle in cmd:
+                return i
+        return None
+
+    def test_the_file_is_deleted(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        assert self._index_of(commands, "rm -f -- perf_model.csv") is not None
+
+    def test_the_deletion_precedes_the_model_script(self, tmp_path, monkeypatch):
+        """Deleting after the model wrote its results would discard this run."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletion = self._index_of(commands, "rm -f -- perf_model.csv")
+        model_run = self._index_of(commands, self.MODEL_SCRIPT_CMD)
+        assert deletion is not None and model_run is not None
+        assert deletion < model_run
+
+    def test_nothing_is_deleted_without_multiple_results(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, None)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "   ")
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_path_is_quoted(self, tmp_path, monkeypatch):
+        """multiple_results comes from models.json and reaches bash -c."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf;rm -rf /.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        assert shlex.quote("perf;rm -rf /.csv") in deletions[0]
+
+    def test_a_failure_to_delete_does_not_fail_the_run(self, tmp_path, monkeypatch):
+        """The file belongs to container root; an unlink the caller cannot do
+        must not abort the run before the model has a chance to produce data."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        # rm's own failure is discarded and the trailing `if` exits 0 whatever
+        # rm did, so Console.sh sees a success and the run carries on.
+        assert "2>/dev/null" in deletions[0]
+        assert deletions[0].rstrip().endswith("fi")
+
+    def test_a_file_that_survives_the_deletion_is_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """Failing quietly would merge the old rows into this run's results:
+        the file is still what _resolve_multiple_results_path picks."""
+
+        def container_shell(command, *args, **kwargs):
+            if command.startswith("rm -f --"):
+                return container_runner._STALE_LEFT
+            return ""
+
+        self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", sh=container_shell
+        )
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" in logs
+
+    def test_a_deleted_file_is_not_reported(self, tmp_path, monkeypatch):
+        """The warning has to mean something, so it must stay off the happy path."""
+        self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" not in logs
+
+
+class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
+    """A self-managed launcher needs the same cleanup, one layer out.
+
+    `run_container` returns into `_run_self_managed` before it reaches the
+    container-side deletion, so `slurm_multi` never got it. There the script
+    runs on the host in the submission directory -- reused by every run -- and
+    `slurm.collect_results` falls back to that copy when no per-node CSV was
+    collected, so a leftover is reported as this run's.
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        return runner
+
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        on_script_start=None,
+        script_subdir=None,
+    ):
+        monkeypatch.chdir(tmp_path)
+        script_dir = tmp_path / script_subdir if script_subdir else tmp_path
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script = script_dir / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+
+        model_info = {"name": "dummy", "scripts": str(script), "args": ""}
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        def script_run(*args, **kwargs):
+            if on_script_start:
+                on_script_start()
+            return subprocess.CompletedProcess("", 0)
+
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            side_effect=script_run,
+        ):
+            self._make_runner()._run_self_managed(
+                model_info=model_info,
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=60,
+                run_results={},
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+
+    def test_the_file_is_gone_before_the_script_starts(self, tmp_path, monkeypatch):
+        stale = tmp_path / "perf_model.csv"
+        stale.write_text("model,perf\nold,1\n")
+        seen = {}
+
+        self._run(
+            tmp_path,
+            monkeypatch,
+            "perf_model.csv",
+            on_script_start=lambda: seen.update(exists=stale.exists()),
+        )
+
+        assert seen == {"exists": False}
+
+    def test_the_copy_in_the_script_directory_goes_too(self, tmp_path, monkeypatch):
+        """The script is launched with cwd=script_dir, so a relative
+        multiple_results lands there rather than next to the manifest."""
+        beside_script = tmp_path / "scripts" / "perf_model.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nold,1\n")
+        in_cwd = tmp_path / "perf_model.csv"
+        in_cwd.write_text("model,perf\nold,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv", script_subdir="scripts")
+
+        assert not beside_script.exists()
+        assert not in_cwd.exists()
+
+    def test_an_unrelated_file_is_left_alone(self, tmp_path, monkeypatch):
+        """Only the file the model card names may be touched."""
+        other = tmp_path / "perf_other.csv"
+        other.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert other.exists()
+
+    def test_nothing_happens_without_multiple_results(self, tmp_path, monkeypatch):
+        leftover = tmp_path / "perf_model.csv"
+        leftover.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, None)
+
+        assert leftover.exists()
+
+    def test_a_file_that_cannot_be_deleted_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Same reason as in the container: the stale copy still wins."""
+        (tmp_path / "perf_model.csv").write_text("model,perf\nold,1\n")
+
+        with patch(
+            "madengine.execution.container_runner.os.remove",
+            side_effect=PermissionError("read-only"),
+        ):
+            self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert "Could not delete the stale results file" in capsys.readouterr().out

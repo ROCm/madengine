@@ -611,6 +611,27 @@ class SlurmDeployment(BaseDeployment):
             "",
             "# Change to script directory",
             f"cd {model_script_path.parent}",
+        ])
+
+        # Drop a results file an earlier run left behind. This wrapper bypasses
+        # ContainerRunner, so the cleanup in run_container/_run_self_managed
+        # never reaches it: the model script appends when the file is already
+        # there, and collect_results falls back to these copies when no
+        # per-node CSV was collected. Best-effort -- `set -e` is still on here
+        # and a file the caller cannot unlink must not abort the job.
+        multiple_results = (model_info.get("multiple_results") or "").strip()
+        if multiple_results:
+            stale_paths = [shlex.quote(multiple_results)]
+            manifest_copy = str(manifest_dir / multiple_results)
+            if manifest_copy != multiple_results:
+                stale_paths.append(shlex.quote(manifest_copy))
+            script_lines.extend([
+                "",
+                "# Drop a results file an earlier run left behind",
+                f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
+            ])
+
+        script_lines.extend([
             "",
             "# Run the model script directly on the host (with -e disabled so we",
             "# can capture the exit code and write the completion marker even on failure).",
