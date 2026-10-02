@@ -6,6 +6,7 @@ the host, so it is loaded here by path rather than imported as a module.
 """
 
 import csv
+import glob
 import importlib.util
 import json
 import os
@@ -177,18 +178,13 @@ class TestCommandConstruction:
             assert args[:2] == ["--trace_path", "t.pftrace"]
 
     def test_collective_args_carry_rank_regex_and_world_size(self, analyzer):
-        traces = [
-            "/root/torch_profiler_output/libkineto_trace_rank0_1.json",
-            "/root/torch_profiler_output/libkineto_trace_rank1_2.json",
-        ]
-        args = analyzer._collective_args(traces, "/out/coll", 8, [])
+        args = analyzer._collective_args("/scratch/collective", "/out/coll", 8, [])
         assert args[args.index("--world_size") + 1] == "8"
         assert "rank" in args[args.index("--rank_regex") + 1]
-        # Scoped to the traces' own directory: a wider glob sweeps up unrelated
+        # Scoped to the staged per-rank traces: a wider glob sweeps up unrelated
         # JSON, and rocprofv3 results are hundreds of megabytes each.
         trace_glob = args[args.index("--trace_glob") + 1]
-        assert "torch_profiler_output" in trace_glob
-        assert trace_glob.endswith(os.path.join("**", "*.json*"))
+        assert trace_glob == os.path.join("/scratch/collective", "**", "*.json*")
 
     def test_extra_args_are_forwarded(self, analyzer):
         args = analyzer._pytorch_args("t.json", "/out/t", None, ["--detect_recompute"])
@@ -234,6 +230,87 @@ class TestSanitizedTrace:
         finally:
             if workspace[0]:
                 shutil.rmtree(workspace[0], ignore_errors=True)
+
+
+class TestCollectiveInputs:
+    """The collective report must read exactly the per-rank traces, readably."""
+
+    @staticmethod
+    def _collective_inputs(analyzer, root, monkeypatch):
+        """Run analyze() and return what the collective job's glob matched."""
+        seen = {}
+
+        def fake_run(command, cwd=None):
+            command = list(command)
+            if any("multi_rank" in part for part in command):
+                pattern = command[command.index("--trace_glob") + 1]
+                matches = sorted(glob.glob(pattern, recursive=True))
+                seen["matches"] = matches
+                seen["bytes"] = [Path(m).read_bytes() for m in matches]
+            return 0, ""
+
+        monkeypatch.setattr(analyzer, "_run", fake_run)
+        analyzer.analyze(
+            root=str(root), output_dir=str(root / "out"), python=sys.executable
+        )
+        return seen
+
+    def test_multi_node_glob_does_not_sweep_up_unrelated_json(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+        _write(tmp_path, "node_0/rocprof_output/9999_results.json", b"{}")
+        _write(tmp_path, "manifest.json", b"{}")
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert sorted(os.path.basename(m) for m in seen["matches"]) == [
+            "libkineto_trace_rank0_1.json",
+            "libkineto_trace_rank1_2.json",
+        ]
+
+    def test_same_basename_on_different_nodes_are_both_included(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert len(seen["matches"]) == 2
+
+    def test_undecodable_traces_reach_the_collective_report_sanitized(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(
+            tmp_path,
+            "torch_profiler_output/libkineto_trace_rank0_1.json",
+            b'{"traceEvents": [], "bad": "\xff"}',
+        )
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert len(seen["bytes"]) == 2
+        for payload in seen["bytes"]:
+            payload.decode("utf-8")
+
+    def test_skip_reason_counts_how_many_traces_carry_a_rank(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_724.json", CHROME_TRACE)
+        monkeypatch.setattr(analyzer, "_run", lambda command, cwd=None: (0, ""))
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+
+        skipped = [r for r in summary["results"] if r["status"] == "SKIPPED"]
+        assert len(skipped) == 1
+        assert "1 of 2" in skipped[0]["detail"]
+        assert "none of these" not in skipped[0]["detail"]
 
 
 class TestAnalyze:
