@@ -170,9 +170,14 @@ dynolog)
 	fi
 
 	_DYNOLOG_PINNED_DEB='https://github.com/facebookincubator/dynolog/releases/download/v0.5.0/dynolog_0.5.0-0-amd64.deb'
-	_dynolog_deb="${DYNOLOG_DEB_URL:-$_DYNOLOG_PINNED_DEB}"
 	_dynolog_tmp="/tmp/dynolog.deb"
 
+	# DYNOLOG_DEB_URL may embed credentials for a private mirror; keep it out of
+	# the `set -x` trace, both where it is read and where it is used.
+	_dynolog_restore_x=0
+	case $- in *x*) _dynolog_restore_x=1 ;; esac
+	set +x
+	_dynolog_deb="${DYNOLOG_DEB_URL:-$_DYNOLOG_PINNED_DEB}"
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL -o "$_dynolog_tmp" "$_dynolog_deb"
 	elif command -v wget >/dev/null 2>&1; then
@@ -181,6 +186,8 @@ dynolog)
 		echo "Error: dynolog pre-script needs curl or wget to download the package." >&2
 		exit 1
 	fi
+	[ "$_dynolog_restore_x" -eq 1 ] && set -x
+	unset _dynolog_restore_x _dynolog_deb
 
 	# The package ships a systemd unit; enabling it fails in a container, which is
 	# harmless because we run the daemon directly. Tolerate a non-zero dpkg exit
@@ -215,7 +222,6 @@ tracelens)
 	_tl_venv="${TRACELENS_VENV:-/opt/madengine-tracelens-venv}"
 	_TRACELENS_PINNED_REF='6f9bcdbf6cc9911eb650de57b345917ea4d31a17'
 	_tl_ref="${TRACELENS_GIT_REF:-$_TRACELENS_PINNED_REF}"
-	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
 
 	if [ -x "${_tl_venv}/bin/python3" ] && "${_tl_venv}/bin/python3" -c 'import TraceLens' 2>/dev/null; then
 		echo "TraceLens: already installed in ${_tl_venv}, skipping."
@@ -242,6 +248,7 @@ tracelens)
 	_tl_restore_x=0
 	case $- in *x*) _tl_restore_x=1 ;; esac
 	set +x
+	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
 	if ! "${_tl_venv}/bin/python3" -m pip install -q "$_tl_spec"; then
 		echo "Error: pip could not install TraceLens (spec omitted from logs)." >&2
 		echo "Check network access, or override TRACELENS_PIP_SPEC / TRACELENS_GIT_REF." >&2
@@ -249,7 +256,7 @@ tracelens)
 		exit 1
 	fi
 	[ "$_tl_restore_x" -eq 1 ] && set -x
-	unset _tl_restore_x
+	unset _tl_restore_x _tl_spec
 	"${_tl_venv}/bin/python3" -c 'import TraceLens; print("TraceLens import OK")'
 
 	# .pftrace input needs traceconv. TraceLens downloads it on demand, which fails
