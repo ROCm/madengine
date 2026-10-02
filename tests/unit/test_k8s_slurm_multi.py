@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -152,3 +153,20 @@ def test_other_launchers_keep_the_template_path(tmp_path, monkeypatch):
     assert d.prepare() is True
     assert d._slurm_multi is False
     assert "madengine-launcher" not in d.job_yaml
+
+
+class TestResultsPvcAccessMode:
+    def _mode(self, tmp_path, monkeypatch, nnodes, k8s=None):
+        d = _deployment(tmp_path, monkeypatch, k8s=k8s)
+        d.job_name = "madengine-x"
+        seen = {}
+        d.core_v1 = SimpleNamespace(create_namespaced_persistent_volume_claim=lambda namespace, body: seen.update(body))
+        d._create_results_pvc(nnodes=nnodes)
+        return seen["spec"]["accessModes"]
+
+    def test_default_rwx_for_multi_node_rwo_for_one(self, tmp_path, monkeypatch):
+        assert self._mode(tmp_path / "a", monkeypatch, 2) == ["ReadWriteMany"]
+        assert self._mode(tmp_path / "b", monkeypatch, 1) == ["ReadWriteOnce"]
+
+    def test_override_for_a_cluster_without_rwx(self, tmp_path, monkeypatch):
+        assert self._mode(tmp_path, monkeypatch, 2, k8s={"results_access_mode": "ReadWriteOnce"}) == ["ReadWriteOnce"]

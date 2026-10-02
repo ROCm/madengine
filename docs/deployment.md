@@ -186,6 +186,7 @@ What the script needs from the cluster is pod-spec configuration, never a card c
 | `shm_size` | `/dev/shm` size (default `64Gi`) |
 | `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
 | `image_pull_policy` | `IfNotPresent` for images imported into the cluster |
+| `results_access_mode` | results PVC access mode (default `ReadWriteMany` for multi-node). `ReadWriteOnce` works when every pod lands on one node, e.g. a cluster with only `local-path` storage |
 
 Host-level `docker run` options in the script (`--device`, `--network host`,
 `--privileged`, `--ulimit`, `--shm-size`, ...) are ignored; the keys above are where
