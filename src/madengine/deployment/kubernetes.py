@@ -47,6 +47,7 @@ from .k8s_secrets import (
     delete_job_secrets_if_exist,
     merge_secrets_config,
 )
+from .k8s_slurm_multi import KubernetesSlurmMultiMixin, is_slurm_multi
 from .k8s_template_context import KubernetesTemplateContextMixin
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 
@@ -95,6 +96,7 @@ def assign_pvc_subdirs_to_pods(pod_dirs: List[str], pod_names: List[str]) -> Dic
 
 
 class KubernetesDeployment(
+    KubernetesSlurmMultiMixin,
     KubernetesLauncherMixin,
     KubernetesResultsMixin,
     KubernetesTemplateContextMixin,
@@ -366,6 +368,25 @@ class KubernetesDeployment(
                     f"[dim]Pod container name (DNS label, no dots): {self.main_container_name}[/dim]"
                 )
             self.configmap_name = f"{self.job_name}-config"
+
+            # A slurm_multi card runs its own SLURM launcher, unchanged, across one
+            # pod per node (k8s_slurm_multi.py); it has its own manifests.
+            self._slurm_multi = is_slurm_multi(
+                model_info, self.config.additional_context.get("distributed") or {}
+            )
+            if self._slurm_multi:
+                built = self._prepare_slurm_multi(model_key, model_info, image_info)
+                self.configmap_yaml = yaml.safe_dump(built["configmap"], sort_keys=False)
+                self.job_yaml = yaml.safe_dump(built["job"], sort_keys=False)
+                self.service_yaml = yaml.safe_dump(built["service"], sort_keys=False)
+                self._nnodes = built["nnodes"]
+                if self.config.additional_context.get("debug", False):
+                    self._save_debug_manifests()
+                self.console.print(
+                    f"[green]✓ Prepared K8s manifests: {self.job_name} (slurm_multi: "
+                    f"{built['nnodes']} pod(s) x {built['gpus']} GPU(s), image {built['image']})[/green]"
+                )
+                return True
 
             # Prepare template context
             context = self._prepare_template_context(model_info, image_info)

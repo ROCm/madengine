@@ -186,8 +186,17 @@ class ConfigLoader:
             config = cls.deep_merge(config, profile_preset)
         
         # Layer 5: User configuration (highest priority)
+        preset_env = dict(config.get("env_vars") or {})
         config = cls.deep_merge(config, user_config)
-        
+        # As load_slurm_config does: record which env_vars keys ONLY a preset set,
+        # so a self-managed (slurm_multi) card, which owns its environment, is not
+        # handed them -- e.g. amd-multi-gpu's NCCL_IB_DISABLE=1, NCCL_SOCKET_IFNAME=eth0.
+        user_env = user_config.get("env_vars") or {}
+        carried = set(user_config.get(PRESET_ENV_KEYS) or [])
+        config[PRESET_ENV_KEYS] = sorted(
+            k for k in preset_env if k not in user_env or k in carried
+        )
+
         return config
     
     @classmethod

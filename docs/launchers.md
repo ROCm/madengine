@@ -24,7 +24,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
-| **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
+| **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ✅ (see [deployment](deployment.md#slurm_multi-cards-on-kubernetes)) | ✅ | ✅ |
 
 ---
 

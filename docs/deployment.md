@@ -149,9 +149,49 @@ This creates:
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 - `sglang-disagg` - Disaggregated SGLang (multi-node)
-- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only, escape hatch)
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (escape hatch; on Kubernetes see [slurm_multi cards on Kubernetes](#slurm_multi-cards-on-kubernetes))
 
 See [Launchers Guide](launchers.md) for details.
+
+### slurm_multi cards on Kubernetes
+
+A `slurm_multi` card ships its own SLURM batch script, which fans out with `srun` and
+starts one container per node with `docker run`. On Kubernetes madengine runs that
+script **unchanged**:
+
+- one pod per node of the card: an Indexed Job (`completions = nnodes`, one attempt)
+  with a headless Service, so pods reach each other by hostname (`<job>-0`, `<job>-1`, ...);
+- every pod runs the card's image; pod 0 runs the card's script with the `SLURM_*`
+  variables a batch script sees, and with stand-ins for `srun`, `docker` and
+  `scontrol` first on `PATH`. `srun` sends each task to the named pod; `docker run`
+  runs its command in the pod itself (the pod is the container), applying `-e` and
+  `-v`; `docker stop/rm/ps/pull/image inspect` act on those processes and the pod's
+  image; `scontrol show hostnames` expands the node list. Any other form fails with a
+  message naming it, rather than being guessed at;
+- the card's script directory and its sibling `common` directory travel in a
+  ConfigMap (compressed, under 1 MiB);
+- results: `LOG_PATH` defaults to `/results/logs` on the run's results volume, which
+  every pod mounts (ReadWriteMany for multi-node). Pod 0 publishes the card's
+  `multiple_results` file, else `$LOG_PATH/$SLURM_JOB_ID/perf.csv`, and madengine reads
+  its rows the way the SLURM path does: each row's `status` decides success or failure.
+
+What the script needs from the cluster is pod-spec configuration, never a card change:
+
+| `k8s` key | Purpose |
+|---|---|
+| `gpu_count` | GPUs per pod (default: the card's `slurm.gpus_per_node`) |
+| `volumes` | `[{name, mount_path, host_path \| pvc \| nfs: {server, path}, read_only}]` — weights, caches |
+| `extra_resources` | other device-plugin resources, e.g. `{"rdma/hca": 1}` |
+| `security_context` | container `securityContext`, e.g. `{"capabilities": {"add": ["IPC_LOCK"]}}` for RDMA |
+| `shm_size` | `/dev/shm` size (default `64Gi`) |
+| `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
+| `image_pull_policy` | `IfNotPresent` for images imported into the cluster |
+
+Host-level `docker run` options in the script (`--device`, `--network host`,
+`--privileged`, `--ulimit`, `--shm-size`, ...) are ignored; the keys above are where
+the pod gets those capabilities. Preset env vars (for example the AMD multi-GPU
+preset's `NCCL_IB_DISABLE=1`) are not passed to the card, as on SLURM; set them
+under `env_vars` to pass them.
 
 ### Monitoring
 

@@ -83,6 +83,9 @@ class KubernetesResultsMixin:
             "failed_runs": [],
         }
 
+        if getattr(self, "_slurm_multi", False):
+            return self._collect_slurm_multi_results(deployment_id, results)
+
         # Create results directory for this deployment
         results_dir = Path(f"./k8s_results/{deployment_id}")
         results_dir.mkdir(parents=True, exist_ok=True)
