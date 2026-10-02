@@ -156,12 +156,27 @@ class DummyDynolog:
             line for line in self.log.read_text(encoding="utf-8").splitlines() if line
         ]
 
+    def _owns(self, pid: int) -> bool:
+        """Return True only for processes started from this test's directory.
+
+        The handoff files live at fixed global paths, so a stale one can name a
+        PID the OS has since reused for something unrelated.
+        """
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return False
+        root = str(self.bin_dir.parent)
+        return os.path.commonpath([cwd, root]) == root
+
     def cleanup(self) -> None:
         """Kill anything left running and clear the handoff files."""
         for pid_file in (TRIGGER_PID_FILE, DYNOLOG_PID_FILE):
             if pid_file.is_file():
                 with contextlib.suppress(ValueError, OSError):
-                    os.kill(int(pid_file.read_text().strip()), signal.SIGKILL)
+                    pid = int(pid_file.read_text().strip())
+                    if self._owns(pid):
+                        os.kill(pid, signal.SIGKILL)
         for path in HANDOFF_FILES:
             with contextlib.suppress(OSError):
                 path.unlink()
@@ -214,6 +229,24 @@ def wait_until(predicate, timeout: float = 10.0) -> bool:
             return True
         time.sleep(0.2)
     return predicate()
+
+
+class TestCleanupSafety:
+    """The fixture's cleanup must not signal processes the test did not start."""
+
+    def test_cleanup_spares_an_unrelated_process_named_by_a_stale_pid_file(
+        self, dummy_dynolog
+    ):
+        bystander = subprocess.Popen(["sleep", "30"], cwd="/")
+        try:
+            DYNOLOG_PID_FILE.write_text(str(bystander.pid), encoding="utf-8")
+
+            dummy_dynolog.cleanup()
+
+            assert bystander.poll() is None
+        finally:
+            bystander.kill()
+            bystander.wait()
 
 
 class TestDaemonLifecycle:

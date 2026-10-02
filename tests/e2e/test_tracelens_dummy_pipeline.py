@@ -106,6 +106,12 @@ class DummyTraceLens:
             "DUMMY_TRACELENS_LOG": str(self.log),
             "TRACELENS_VENV": str(root),
         }
+        if not console_scripts:
+            # Keep a TraceLens installed on the runner from being found instead
+            # of the module fallback under test.
+            empty_path = root / "empty-path"
+            empty_path.mkdir()
+            self._vars["PATH"] = str(empty_path)
 
     @staticmethod
     def _write_executable(path: Path, text: str) -> None:
@@ -514,12 +520,23 @@ class TestAnalyzerWithDummyTraceLens:
         record = only(dummy_tracelens.invocations(), PYTORCH_REPORT)
         assert record["argv0"] == str(dummy_tracelens.root / "bin" / PYTORCH_REPORT)
 
-    def test_module_fallback_still_reports_failures(self, tmp_path, profiled_run):
+    def test_module_fallback_still_reports_failures(
+        self, tmp_path, profiled_run, monkeypatch
+    ):
         """Without console scripts we import the module, and still see its exit code.
 
         The fallback runs ``main()`` in a fresh interpreter; if its return value
         were dropped, every failed report would be recorded as a success.
         """
+        decoy_dir = tmp_path / "decoy-on-path"
+        decoy_dir.mkdir()
+        decoy = decoy_dir / PYTORCH_REPORT
+        decoy.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+        decoy.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", f"{decoy_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        )
+
         dummy = DummyTraceLens(tmp_path / "no-console-scripts", console_scripts=False)
         dummy.fail(PYTORCH_REPORT)
 
