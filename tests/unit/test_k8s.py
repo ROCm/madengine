@@ -601,8 +601,17 @@ class TestK8sRequirePinnedImage:
         }
         (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
 
+        # A kubeconfig of its own, so the test does not depend on the machine
+        # having one (loading it opens no connection).
+        kubeconfig = tmp_path / "kubeconfig"
+        kubeconfig.write_text(
+            "apiVersion: v1\nkind: Config\ncurrent-context: t\n"
+            "clusters: [{name: t, cluster: {server: 'https://127.0.0.1:1'}}]\n"
+            "users: [{name: t, user: {token: x}}]\n"
+            "contexts: [{name: t, context: {cluster: t, user: t}}]\n"
+        )
         additional_context = {
-            "k8s": {"namespace": "default"},
+            "k8s": {"namespace": "default", "kubeconfig": str(kubeconfig)},
             "gpu_vendor": "AMD",
             "guest_os": "UBUNTU",
         }

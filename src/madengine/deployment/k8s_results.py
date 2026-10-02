@@ -549,11 +549,11 @@ class KubernetesResultsMixin:
 
                     for filename in specific_files:
                         local_path = dest_dir / filename
-                        cp_cmd = [
-                            "kubectl", "cp",
+                        cp_cmd = self.kubectl_cmd(
+                            "cp",
                             f"{self.namespace}/{pod_name}:/workspace/{filename}",
                             str(local_path)
-                        ]
+                        )
 
                         cp_result = subprocess.run(
                             cp_cmd, capture_output=True, text=True, timeout=30
@@ -578,11 +578,11 @@ class KubernetesResultsMixin:
                 else:
                     # Direct file - try to copy it
                     local_path = dest_dir / pattern
-                    cp_cmd = [
-                        "kubectl", "cp",
+                    cp_cmd = self.kubectl_cmd(
+                        "cp",
                         f"{self.namespace}/{pod_name}:/workspace/{pattern}",
                         str(local_path)
-                    ]
+                    )
 
                     cp_result = subprocess.run(
                         cp_cmd, capture_output=True, text=True, timeout=30
@@ -615,11 +615,11 @@ class KubernetesResultsMixin:
         for dir_name in output_directories:
             try:
                 local_dir = dest_dir / dir_name
-                cp_cmd = [
-                    "kubectl", "cp",
+                cp_cmd = self.kubectl_cmd(
+                    "cp",
                     f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
                     str(local_dir)
-                ]
+                )
 
                 cp_result = subprocess.run(
                     cp_cmd, capture_output=True, text=True, timeout=60
@@ -698,7 +698,7 @@ class KubernetesResultsMixin:
             collector_pod_spec = {
                 "apiVersion": "v1",
                 "kind": "Pod",
-                "metadata": {"name": coll_pod_name, "namespace": self.namespace},
+                "metadata": {"name": coll_pod_name, "namespace": self.namespace, "labels": {"app": "madengine", "madengine-collector": "true"}},
                 "spec": collector_spec,
             }
 
@@ -735,8 +735,7 @@ class KubernetesResultsMixin:
             time.sleep(2)
 
             # List pod result directories in PVC (retry: NFS can lag right after Job completion)
-            list_cmd = [
-                "kubectl",
+            list_cmd = self.kubectl_cmd(
                 "exec",
                 coll_pod_name,
                 "-n",
@@ -747,7 +746,7 @@ class KubernetesResultsMixin:
                 "ls",
                 "-1",
                 "/results/",
-            ]
+            )
             list_result = subprocess.CompletedProcess(
                 args=list_cmd, returncode=-1, stdout="", stderr=""
             )
@@ -791,14 +790,13 @@ class KubernetesResultsMixin:
 
                     local_pod_dir.mkdir(parents=True, exist_ok=True)
 
-                    cp_cmd = [
-                        "kubectl",
+                    cp_cmd = self.kubectl_cmd(
                         "cp",
                         "-c",
                         "collector",
                         f"{self.namespace}/{coll_pod_name}:/results/{pod_dir_name}",
                         str(local_pod_dir),
-                    ]
+                    )
 
                     cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
 

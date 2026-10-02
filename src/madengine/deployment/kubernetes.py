@@ -9,6 +9,7 @@ Requires a GPU device plugin matching the configured resource name (AMD or NVIDI
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,6 +41,7 @@ from .k8s_pvc import KubernetesPVCMixin
 from .k8s_results import KubernetesResultsMixin, collector_pod_name
 from .k8s_scripts import KubernetesScriptsMixin
 from .k8s_secrets import (
+    job_secret_names,
     SECRETS_STRATEGY_FROM_LOCAL,
     create_or_update_secrets_from_credentials,
     delete_job_secrets_if_exist,
@@ -161,18 +163,22 @@ class KubernetesDeployment(
         self.data = None
         self.context_for_data = None
 
-        # Load Kubernetes configuration
-        kubeconfig_path = self.k8s_config.get("kubeconfig")
+        # Load Kubernetes configuration. One kubeconfig file and one context are
+        # resolved here and used by BOTH the Python client and every kubectl call
+        # (see kubectl_cmd). They used to be chosen separately -- the client read
+        # k8s.kubeconfig (default ~/.kube/config) at that file's current context,
+        # while kubectl followed $KUBECONFIG and its own current context -- so on a
+        # machine that can reach two clusters, a run could deploy to one and
+        # copy results from, or exec into, the other.
+        self.kubeconfig_path, self.kube_context = self._resolve_kube_target()
         try:
-            if kubeconfig_path:
-                k8s_config.load_kube_config(config_file=kubeconfig_path)
+            if self.kubeconfig_path or self.kube_context:
+                k8s_config.load_kube_config(
+                    config_file=self.kubeconfig_path, context=self.kube_context
+                )
             else:
-                # Try in-cluster first, then default kubeconfig
-                try:
-                    k8s_config.load_incluster_config()
-                except (k8s_config.ConfigException, FileNotFoundError):
-                    # Not running in-cluster, try default kubeconfig
-                    k8s_config.load_kube_config()
+                # No kubeconfig anywhere: running in-cluster on a service account.
+                k8s_config.load_incluster_config()
         except Exception as e:
             raise RuntimeError(f"Failed to load Kubernetes config: {e}")
 
@@ -190,6 +196,77 @@ class KubernetesDeployment(
         self.job_yaml = None
         self.service_yaml = None
 
+    def _resolve_kube_target(self):
+        """(kubeconfig file, context) this deployment talks to.
+
+        File: k8s.kubeconfig if set, else $KUBECONFIG, else ~/.kube/config; None
+        when none exists, which means in-cluster. Context: k8s.context if set --
+        and it must exist in that file, or this refuses rather than fall back to
+        whatever the file's current context is -- else the file's current context,
+        pinned here so kubectl cannot drift from it.
+        """
+        path = self.k8s_config.get("kubeconfig") or os.environ.get("KUBECONFIG") or ""
+        if not path and Path("~/.kube/config").expanduser().exists():
+            path = "~/.kube/config"
+        # $KUBECONFIG may list several files; the client and kubectl both merge them.
+        path = os.pathsep.join(str(Path(p).expanduser()) for p in path.split(os.pathsep) if p)
+        requested = self.k8s_config.get("context")
+        if not path:
+            if requested:
+                raise RuntimeError(
+                    f"k8s.context is '{requested}' but no kubeconfig was found "
+                    "(k8s.kubeconfig, $KUBECONFIG, ~/.kube/config)."
+                )
+            return None, None
+        single = None if os.pathsep in path else path
+        try:
+            contexts, current = k8s_config.list_kube_config_contexts(config_file=single)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read kubeconfig {path}: {e}")
+        names = [c["name"] for c in contexts or []]
+        if requested:
+            if requested not in names:
+                raise RuntimeError(
+                    f"k8s.context '{requested}' is not in {path}; it has: "
+                    f"{', '.join(names) or '(none)'}. Refusing to fall back to another context."
+                )
+            return single, requested
+        return single, (current or {}).get("name")
+
+    def kubectl_cmd(self, *args: str) -> List[str]:
+        """A kubectl command line pinned to this deployment's kubeconfig and context."""
+        cmd = ["kubectl"]
+        if self.kubeconfig_path:
+            cmd += ["--kubeconfig", self.kubeconfig_path]
+        if self.kube_context:
+            cmd += ["--context", self.kube_context]
+        return cmd + list(args)
+
+    def _delete_if_ours(self, kind: str, name: str, read, delete, legacy_unlabelled: bool = False) -> bool:
+        """Delete a same-named leftover from an earlier run, only if madengine made it.
+
+        Everything madengine creates carries app=madengine. An object of the same
+        name without it belongs to someone else sharing the namespace: stop with
+        the reason instead of deleting it. legacy_unlabelled accepts objects of
+        the two kinds older madengine created without the label (Secrets and the
+        collector pod, both under madengine's own job-derived names).
+        """
+        try:
+            obj = read()
+        except ApiException as e:
+            if e.status == 404:
+                return False
+            raise
+        labels = (obj.metadata.labels or {}) if obj.metadata else {}
+        if labels.get("app") != "madengine" and not (legacy_unlabelled and not labels):
+            raise RuntimeError(
+                f"{kind} '{name}' already exists in namespace '{self.namespace}' and was not "
+                "created by madengine (no app=madengine label). Refusing to delete it: use "
+                "another k8s.namespace, or remove it yourself if it is yours."
+            )
+        delete()
+        return True
+
     def validate(self) -> bool:
         """Validate Kubernetes cluster access and configuration."""
         try:
@@ -197,6 +274,11 @@ class KubernetesDeployment(
             version = client.VersionApi().get_code()
             self.console.print(
                 f"[green]✓ Connected to K8s cluster (v{version.major}.{version.minor})[/green]"
+            )
+            self.console.print(
+                f"  context: {self.kube_context or '(in-cluster)'}"
+                f"  kubeconfig: {self.kubeconfig_path or '(in-cluster)'}"
+                f"  namespace: {self.namespace}"
             )
 
             # Check if namespace exists
@@ -339,97 +421,76 @@ class KubernetesDeployment(
 
 
     def _cleanup_existing_resources(self):
-        """Delete existing Job, ConfigMap, and Service if they exist."""
-        # Delete existing Job
-        try:
-            self.batch_v1.delete_namespaced_job(
-                name=self.job_name,
-                namespace=self.namespace,
-                propagation_policy="Background"
-            )
+        """Delete this job's leftovers from an earlier run -- only what madengine created.
+
+        Names are deterministic (madengine-<model>), so a rerun replaces its own
+        Job, ConfigMap, Service, Secrets, collector pod and results PVC. An object
+        with the same name that madengine did not create stops the deploy (see
+        _delete_if_ours) instead of being deleted.
+        """
+        ns = self.namespace
+        if self._delete_if_ours(
+            "Job", self.job_name,
+            lambda: self.batch_v1.read_namespaced_job(self.job_name, ns),
+            lambda: self.batch_v1.delete_namespaced_job(
+                name=self.job_name, namespace=ns, propagation_policy="Background"),
+        ):
             self.console.print(f"[dim]Deleted existing Job: {self.job_name}[/dim]")
-        except ApiException as e:
-            if e.status != 404:  # Ignore not found
-                pass
 
-        try:
-            delete_job_secrets_if_exist(self.core_v1, self.namespace, self.job_name)
-            self.console.print(
-                f"[dim]Removed job-scoped Secrets for {self.job_name} (if present)[/dim]"
-            )
-        except ApiException:
-            pass
+        for secret in job_secret_names(self.job_name):
+            if self._delete_if_ours(
+                "Secret", secret,
+                lambda secret=secret: self.core_v1.read_namespaced_secret(secret, ns),
+                lambda secret=secret: self.core_v1.delete_namespaced_secret(name=secret, namespace=ns),
+                legacy_unlabelled=True,
+            ):
+                self.console.print(f"[dim]Deleted existing Secret: {secret}[/dim]")
 
-        # Delete existing ConfigMap
-        try:
-            self.core_v1.delete_namespaced_config_map(
-                name=self.configmap_name,
-                namespace=self.namespace
-            )
+        if self._delete_if_ours(
+            "ConfigMap", self.configmap_name,
+            lambda: self.core_v1.read_namespaced_config_map(self.configmap_name, ns),
+            lambda: self.core_v1.delete_namespaced_config_map(name=self.configmap_name, namespace=ns),
+        ):
             self.console.print(f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]")
-        except ApiException as e:
-            if e.status != 404:
-                pass
 
-        # Delete existing Service
-        if hasattr(self, 'service_yaml') and self.service_yaml:
-            try:
-                self.core_v1.delete_namespaced_service(
-                    name=self.service_name,
-                    namespace=self.namespace
-                )
+        if getattr(self, "service_yaml", None):
+            if self._delete_if_ours(
+                "Service", self.service_name,
+                lambda: self.core_v1.read_namespaced_service(self.service_name, ns),
+                lambda: self.core_v1.delete_namespaced_service(name=self.service_name, namespace=ns),
+            ):
                 self.console.print(f"[dim]Deleted existing Service: {self.service_name}[/dim]")
-            except ApiException as e:
-                if e.status != 404:
-                    pass
 
-        # Delete existing collector pod (must be done before PVC to allow PVC deletion)
+        # The collector pod goes before the PVC it mounts, so the PVC can be released.
         coll_pod_name = collector_pod_name(self.job_name)
-        try:
-            self.core_v1.delete_namespaced_pod(
-                name=coll_pod_name,
-                namespace=self.namespace,
-                grace_period_seconds=0
-            )
+        if self._delete_if_ours(
+            "Pod", coll_pod_name,
+            lambda: self.core_v1.read_namespaced_pod(coll_pod_name, ns),
+            lambda: self.core_v1.delete_namespaced_pod(
+                name=coll_pod_name, namespace=ns, grace_period_seconds=0),
+            legacy_unlabelled=True,
+        ):
             self.console.print(f"[dim]Deleted existing collector pod: {coll_pod_name}[/dim]")
-            # Wait a moment for pod to release the PVC
             time.sleep(2)
-        except ApiException as e:
-            if e.status != 404:
-                pass
 
-        # Delete existing PVC
         pvc_name = f"{self.job_name}-results"
-        try:
-            self.core_v1.delete_namespaced_persistent_volume_claim(
-                name=pvc_name,
-                namespace=self.namespace
-            )
+        if self._delete_if_ours(
+            "PersistentVolumeClaim", pvc_name,
+            lambda: self.core_v1.read_namespaced_persistent_volume_claim(pvc_name, ns),
+            lambda: self.core_v1.delete_namespaced_persistent_volume_claim(name=pvc_name, namespace=ns),
+        ):
             self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
-
-            # Wait for PVC to be fully deleted (not just marked for deletion)
-            max_wait = 90  # Maximum 90 seconds (PV can take time to detach)
-            wait_interval = 1  # Check every 1 second
-            for i in range(max_wait):
+            # Wait for it to be gone, not just marked for deletion (a PV can take time to detach).
+            for i in range(90):
                 try:
-                    self.core_v1.read_namespaced_persistent_volume_claim(
-                        name=pvc_name,
-                        namespace=self.namespace
-                    )
-                    if i > 0 and i % 10 == 0:
-                        self.console.print(
-                            f"[dim]Waiting for PVC {pvc_name} to be removed... ({i}s)[/dim]"
-                        )
-                    time.sleep(wait_interval)
+                    self.core_v1.read_namespaced_persistent_volume_claim(name=pvc_name, namespace=ns)
                 except ApiException as e:
                     if e.status == 404:
-                        # PVC is fully deleted
                         break
-        except ApiException as e:
-            if e.status != 404:
-                pass
+                if i > 0 and i % 10 == 0:
+                    self.console.print(f"[dim]Waiting for PVC {pvc_name} to be removed... ({i}s)[/dim]")
+                time.sleep(1)
 
-        # Wait a moment for other resources to be deleted
         time.sleep(1)
 
     def deploy(self) -> DeploymentResult:

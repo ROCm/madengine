@@ -495,7 +495,8 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 **Cluster and scheduling keys:**
-- `kubeconfig` - Path to kubeconfig (default: `~/.kube/config`)
+- `kubeconfig` - Path to kubeconfig (default: `$KUBECONFIG`, else `~/.kube/config`; in-cluster when neither exists)
+- `context` - kubeconfig context to deploy to (default: the file's current context). Must exist in the file; madengine refuses rather than fall back to another. The Python client and every `kubectl` call madengine makes use this same file and context.
 - `gpu_resource_name` - GPU resource name (default: `amd.com/gpu`; use `nvidia.com/gpu` for NVIDIA)
 - `node_selector` - Label selectors for pod placement (default: `{}`)
 - `tolerations` - Tolerations for tainted nodes (default: `[]`)

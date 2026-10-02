@@ -110,7 +110,7 @@ def create_or_update_secrets_from_credentials(
     if reg_data:
         reg_name = f"{job_name}-registry-pull"
         reg_body = client.V1Secret(
-            metadata=client.V1ObjectMeta(name=reg_name, namespace=namespace),
+            metadata=client.V1ObjectMeta(name=reg_name, namespace=namespace, labels=dict(MADENGINE_LABELS)),
             type="kubernetes.io/dockerconfigjson",
             data={".dockerconfigjson": base64.b64encode(reg_data).decode("ascii")},
         )
@@ -119,13 +119,21 @@ def create_or_update_secrets_from_credentials(
 
     runtime_name = f"{job_name}-runtime"
     runtime_body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=runtime_name, namespace=namespace),
+        metadata=client.V1ObjectMeta(name=runtime_name, namespace=namespace, labels=dict(MADENGINE_LABELS)),
         type="Opaque",
         string_data={"credential.json": raw},
     )
     replace_namespaced_secret(core_v1, namespace, runtime_name, runtime_body)
 
     return pull_names, runtime_name
+
+
+def job_secret_names(job_name: str) -> List[str]:
+    """Names of the Secrets create_or_update_secrets_from_credentials makes for a job."""
+    return [f"{job_name}-registry-pull", f"{job_name}-runtime"]
+
+
+MADENGINE_LABELS = {"app": "madengine"}
 
 
 def delete_job_secrets_if_exist(
