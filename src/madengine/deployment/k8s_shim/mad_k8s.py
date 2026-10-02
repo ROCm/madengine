@@ -222,7 +222,7 @@ def wait_peers_main(args):
 
 
 def shutdown_peers_main(args):
-    me = socket.gethostname()
+    me = os.environ.get("MAD_K8S_SELF") or socket.gethostname()
     for host in args or _job_nodes():
         if host.split(".")[0] == me:
             continue

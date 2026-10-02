@@ -186,11 +186,21 @@ What the script needs from the cluster is pod-spec configuration, never a card c
 | `shm_size` | `/dev/shm` size (default `64Gi`) |
 | `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
 | `image_pull_policy` | `IfNotPresent` for images imported into the cluster |
+| `host_network` | pods on the node's network, so RoCE uses the node's NICs; one pod per node (the card's servers bind fixed ports) |
+| `pod_annotations` | e.g. `{"k8s.v1.cni.cncf.io/networks": "rdma-net"}`: a Multus secondary network giving each pod its own RDMA interface |
 | `results_access_mode` | results PVC access mode (default `ReadWriteMany` for multi-node). `ReadWriteOnce` works when every pod lands on one node, e.g. a cluster with only `local-path` storage |
 
 Host-level `docker run` options in the script (`--device`, `--network host`,
 `--privileged`, `--ulimit`, `--shm-size`, ...) are ignored; the keys above are where
-the pod gets those capabilities. Preset env vars (for example the AMD multi-GPU
+the pod gets those capabilities.
+
+RDMA for a card's KV transfer takes three things from the cluster: RDMA devices in
+the pod (an RDMA device plugin; request its resource with `extra_resources` and add
+`IPC_LOCK` with `security_context` -- not `privileged`, which also exposes every GPU
+on the node and defeats the GPU device plugin's isolation), a network the RDMA
+traffic can use (`host_network`, or a Multus/SR-IOV network via `pod_annotations`),
+and GPU memory the NIC can register (a GPU peer-memory driver or dma-buf support on
+the node, outside Kubernetes). Preset env vars (for example the AMD multi-GPU
 preset's `NCCL_IB_DISABLE=1`) are not passed to the card, as on SLURM; set them
 under `env_vars` to pass them.
 

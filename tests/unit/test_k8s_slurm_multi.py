@@ -189,3 +189,22 @@ class TestPodHostnames:
         b = pod_hostname_base("madengine-" + "x" * 60 + "-b", 2)
         assert a != b and len(a) <= 61 and len(b) <= 61
         assert pod_hostname_base("madengine-qwen3", 2) == "madengine-qwen3"
+
+
+class TestRdmaNetworking:
+    def test_host_network_puts_one_pod_per_node(self, tmp_path, monkeypatch):
+        d, _, pod, _ = _prepared(tmp_path, monkeypatch, k8s={"host_network": True})
+        assert pod["hostNetwork"] is True and pod["dnsPolicy"] == "ClusterFirstWithHostNet"
+        term = pod["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0]
+        assert term["labelSelector"]["matchLabels"] == {"job-name": d.job_label}
+        assert term["topologyKey"] == "kubernetes.io/hostname"
+
+    def test_pod_annotations_for_a_secondary_rdma_network(self, tmp_path, monkeypatch):
+        _, job, _, _ = _prepared(tmp_path, monkeypatch, k8s={
+            "pod_annotations": {"k8s.v1.cni.cncf.io/networks": "rdma-net"}})
+        assert job["spec"]["template"]["metadata"]["annotations"] == {"k8s.v1.cni.cncf.io/networks": "rdma-net"}
+
+    def test_defaults_are_the_pod_network(self, tmp_path, monkeypatch):
+        _, job, pod, _ = _prepared(tmp_path, monkeypatch)
+        assert "hostNetwork" not in pod and "affinity" not in pod
+        assert "annotations" not in job["spec"]["template"]["metadata"]

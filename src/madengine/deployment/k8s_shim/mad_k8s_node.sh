@@ -29,6 +29,9 @@ done
 export PATH="$SHIM/bin:$PATH"
 
 idx="${JOB_COMPLETION_INDEX:-0}"
+# This pod's node name, as the other pods address it. Not `hostname`: with host
+# networking that is the Kubernetes node's name.
+export MAD_K8S_SELF="${MAD_K8S_NODE_PREFIX}-${idx}"
 nodes=""
 for i in $(seq 0 $(( MAD_K8S_NNODES - 1 ))); do
     nodes="${nodes:+$nodes,}${MAD_K8S_NODE_PREFIX}-${i}"
@@ -46,7 +49,7 @@ export USER="${USER:-$(id -un 2>/dev/null || echo root)}"
 export MAD_DEPLOYMENT_TYPE=kubernetes
 
 if [ "$idx" != "0" ]; then
-    echo "[mad-k8s] node ${idx} ($(hostname)): serving tasks for ${MAD_K8S_NODE_PREFIX}-0"
+    echo "[mad-k8s] node ${idx} (${MAD_K8S_SELF} on $(hostname)): serving tasks for ${MAD_K8S_NODE_PREFIX}-0"
     exec python3 "$SHIM/mad_k8s.py" agent
 fi
 
@@ -73,7 +76,7 @@ echo "[mad-k8s] $(basename "$script") exited ${rc}"
 # Publish the run's results where madengine's collector reads them: what the card
 # declares (multiple_results), else the launcher's per-job perf.csv under LOG_PATH
 # -- the same places the SLURM path looks.
-out="/results/$(hostname)"
+out="/results/${MAD_K8S_SELF}"
 mkdir -p "$out"
 published=""
 if [ -n "${MAD_K8S_MULTIPLE_RESULTS:-}" ]; then

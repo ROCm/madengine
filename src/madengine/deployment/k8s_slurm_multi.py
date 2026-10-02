@@ -19,6 +19,11 @@ the k8s config, never in the card:
   k8s.shm_size                 /dev/shm size (default 64Gi)
   k8s.include_script_dirs      directories shipped with the card's (default: the
                                sibling "common" directory, when there is one)
+  k8s.host_network             pods on the node's network (RoCE on the node's NICs);
+                               implies one pod per node -- the launchers bind fixed
+                               ports
+  k8s.pod_annotations          e.g. a Multus `k8s.v1.cni.cncf.io/networks` entry, to
+                               give each pod its own RDMA interface instead
 """
 
 import base64
@@ -268,6 +273,15 @@ class KubernetesSlurmMultiMixin:
                 *vols,
             ],
         }
+        if k8s.get("host_network"):
+            # The node's NICs (and their RoCE GIDs) instead of the pod network. The
+            # card's servers bind fixed ports, so two pods of the run cannot share a
+            # node: require one per node rather than let the second fail to bind.
+            pod_spec["hostNetwork"] = True
+            pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+            pod_spec["affinity"] = {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
+                {"labelSelector": {"matchLabels": {"job-name": self.job_label}},
+                 "topologyKey": "kubernetes.io/hostname"}]}}
         if k8s.get("node_selector"):
             pod_spec["nodeSelector"] = k8s["node_selector"]
         if k8s.get("tolerations"):
@@ -282,7 +296,9 @@ class KubernetesSlurmMultiMixin:
             # One attempt: pod 0 is the batch host; rerunning one pod of a multi-node
             # run is not a retry of the run.
             "backoffLimit": 0,
-            "template": {"metadata": {"labels": pod_labels}, "spec": pod_spec},
+            "template": {"metadata": {"labels": pod_labels, **(
+                {"annotations": {str(k): str(v) for k, v in k8s["pod_annotations"].items()}}
+                if k8s.get("pod_annotations") else {})}, "spec": pod_spec},
         }
         timeout = resolve_run_timeout(model_info, self.config.cli_timeout)
         if timeout and timeout > 0:
