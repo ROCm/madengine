@@ -96,6 +96,13 @@ class TestGenerateReports:
         assert summary["succeeded"] == 2
         assert summary["exit_code"] == 0
 
+    def test_analyzer_crash_without_a_summary_raises(self, tmp_path):
+        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
+            tlr.subprocess, "run", return_value=MagicMock(returncode=2)
+        ):
+            with pytest.raises(RuntimeError, match="exited with code 2"):
+                tlr.generate_tracelens_reports(root=str(tmp_path))
+
     def test_omits_unset_options(self, tmp_path):
         captured = {}
 
@@ -236,6 +243,16 @@ class TestReportTraceLensCli:
             result = runner.invoke(report_app, ["tracelens", "--root", str(tmp_path)])
         assert result.exit_code != 0
         assert "1 failed" in result.output
+
+    def test_analyzer_crash_is_not_reported_as_an_empty_run(
+        self, runner, report_app, tmp_path
+    ):
+        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
+            tlr.subprocess, "run", return_value=MagicMock(returncode=2)
+        ):
+            result = runner.invoke(report_app, ["tracelens", "--root", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "TraceLens analysis failed" in result.output
 
     def test_guides_the_user_when_no_traces_exist(self, runner, report_app, tmp_path):
         with patch(
