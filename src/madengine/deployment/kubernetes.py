@@ -594,6 +594,29 @@ class KubernetesDeployment(
         else:
             return self._monitor_status_only(deployment_id)
 
+    @staticmethod
+    def _job_outcome(job) -> Optional[str]:
+        """'succeeded', 'failed', or None while the Job is still running.
+
+        Read from the Job's own conditions, not its pod counters: `succeeded` is
+        non-zero as soon as ONE pod finishes (a multi-node Job is not done then),
+        and `failed` is non-zero while retries under backoffLimit are still to
+        come. Counter fallback for an API server that sets no conditions.
+        """
+        st = job.status
+        for c in (st.conditions or []) if st else []:
+            if c.status == "True" and c.type in ("Complete", "SuccessCriteriaMet"):
+                return "succeeded"
+            if c.status == "True" and c.type in ("Failed", "FailureTarget"):
+                return "failed"
+        completions = (job.spec.completions if job.spec and job.spec.completions else 1)
+        if st and (st.succeeded or 0) >= completions:
+            return "succeeded"
+        backoff = job.spec.backoff_limit if job.spec and job.spec.backoff_limit is not None else 6
+        if st and (st.failed or 0) > backoff:
+            return "failed"
+        return None
+
     def _monitor_status_only(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job status without streaming logs."""
         try:
@@ -601,15 +624,15 @@ class KubernetesDeployment(
                 name=deployment_id, namespace=self.namespace
             )
 
-            # Check job conditions
-            if job.status.succeeded:
+            outcome = self._job_outcome(job)
+            if outcome == "succeeded":
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
                     deployment_id=deployment_id,
                     message=f"Job {deployment_id} completed successfully",
                 )
 
-            if job.status.failed:
+            if outcome == "failed":
                 # Get pod logs to show error
                 self._print_pod_logs_on_failure(deployment_id)
                 return DeploymentResult(
@@ -688,7 +711,8 @@ class KubernetesDeployment(
                             pass
 
                 # Check if job completed
-                if job.status.succeeded:
+                outcome = self._job_outcome(job)
+                if outcome == "succeeded":
                     self.console.print(f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n")
                     return DeploymentResult(
                         status=DeploymentStatus.SUCCESS,
@@ -696,7 +720,7 @@ class KubernetesDeployment(
                         message=f"Job {deployment_id} completed successfully",
                     )
 
-                if job.status.failed:
+                if outcome == "failed":
                     self.console.print(f"\n[red]✗ Job {deployment_id} failed[/red]\n")
                     # Print final logs
                     if pod_name:
