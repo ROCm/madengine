@@ -285,6 +285,45 @@ def _write_sanitized_copy(path: str, destination: str) -> None:
                 target.write(decoder.decode(chunk))
 
 
+def _path_digest(path: str) -> str:
+    """Return a short, stable name for ``path`` that is unique per trace."""
+    return hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:12]
+
+
+def _scratch_root(workspace: List[Optional[str]]) -> str:
+    """Return the scratch directory, creating it on first use."""
+    if workspace[0] is None:
+        workspace[0] = tempfile.mkdtemp(prefix="madengine-tracelens-")
+    return workspace[0]
+
+
+def _stage_for_collective(traces: Sequence[str], workspace: List[Optional[str]]) -> str:
+    """Gather the per-rank traces into one directory for the collective report.
+
+    TraceLens takes a glob rather than a list, and the traces of a multi-node run
+    sit in separate directories whose only common ancestor is the whole job. Each
+    trace gets its own hash-named subdirectory so the basename, which carries the
+    rank, survives and same-named traces from different nodes do not collide.
+
+    Args:
+        traces: The readable per-rank traces, sanitized copies where needed.
+        workspace: Single-element list caching the scratch directory.
+
+    Returns:
+        The directory holding exactly the traces passed in.
+    """
+    staged = os.path.join(_scratch_root(workspace), "collective")
+    for trace in traces:
+        scratch = os.path.join(staged, _path_digest(trace))
+        os.makedirs(scratch, exist_ok=True)
+        link = os.path.join(scratch, os.path.basename(trace))
+        try:
+            os.symlink(os.path.abspath(trace), link)
+        except OSError:
+            shutil.copy2(trace, link)
+    return staged
+
+
 def _sanitized_trace(trace: str, kind: str, workspace: List[Optional[str]]) -> str:
     """Return a trace path TraceLens can load, sanitizing bytes if it must.
 
@@ -308,12 +347,9 @@ def _sanitized_trace(trace: str, kind: str, workspace: List[Optional[str]]) -> s
     if not _has_invalid_utf8(trace):
         return trace
 
-    if workspace[0] is None:
-        workspace[0] = tempfile.mkdtemp(prefix="madengine-tracelens-")
     # One subdirectory per trace keeps the basename (TraceLens reads it) while
     # stopping same-named traces from different ranks overwriting each other.
-    digest = hashlib.sha1(os.path.abspath(trace).encode("utf-8")).hexdigest()[:12]
-    scratch = os.path.join(workspace[0], digest)
+    scratch = os.path.join(_scratch_root(workspace), _path_digest(trace))
     destination = os.path.join(scratch, os.path.basename(trace))
     print(
         f"[tracelens] {trace} is not valid UTF-8 (rocprofv3 writes raw pointer "
@@ -437,15 +473,14 @@ def _is_rank_labelled(trace: str) -> bool:
 
 
 def _collective_args(
-    traces: Sequence[str], out_base: str, world_size: int, extra: Sequence[str]
+    trace_dir: str, out_base: str, world_size: int, extra: Sequence[str]
 ) -> List[str]:
-    # TraceLens takes a glob rather than a list of traces, so scope it to the tree
-    # the per-rank traces were found in; a wider one sweeps up unrelated JSON, and
-    # rocprofv3 results are hundreds of megabytes each.
-    directory = os.path.commonpath([os.path.dirname(t) for t in traces])
+    # TraceLens takes a glob rather than a list of traces, so it is pointed at a
+    # directory holding only the per-rank traces; anything wider sweeps up
+    # unrelated JSON, and rocprofv3 results are hundreds of megabytes each.
     return [
         "--trace_glob",
-        os.path.join(directory, "**", "*.json*"),
+        os.path.join(trace_dir, "**", "*.json*"),
         "--rank_regex",
         _rank_regex(),
         "--world_size",
@@ -509,6 +544,7 @@ def analyze(
     # Scratch directory for sanitized trace copies, created on first need.
     sanitize_workspace: List[Optional[str]] = [None]
 
+    readable_pytorch: Dict[str, str] = {}
     jobs: List[Tuple[str, str, str, List[str]]] = []
     for kind, paths in sorted(traces.items()):
         if kind not in wanted:
@@ -517,6 +553,8 @@ def analyze(
             stem = _report_stem(trace, root)
             out_base = os.path.join(output_dir, stem)
             readable = _sanitized_trace(trace, kind, sanitize_workspace)
+            if kind == KIND_PYTORCH:
+                readable_pytorch[trace] = readable
             if kind == KIND_PYTORCH and mode != "collective":
                 jobs.append(
                     (
@@ -552,7 +590,10 @@ def analyze(
                 KIND_PYTORCH,
                 "TraceLens_generate_multi_rank_collective_report_pytorch",
                 _collective_args(
-                    ranked,
+                    _stage_for_collective(
+                        [readable_pytorch[trace] for trace in ranked],
+                        sanitize_workspace,
+                    ),
                     os.path.join(output_dir, "multi_rank_collective"),
                     ranks,
                     extra_args,
@@ -560,14 +601,19 @@ def analyze(
             )
         )
     elif mode in ("auto", "collective") and len(pytorch_traces) > 1:
-        unrankable.append(
-            (
-                f"{len(pytorch_traces)} PyTorch traces",
-                "the collective report needs the rank in each trace's filename, "
-                "and none of these carry one. Traces captured on demand through "
-                "dynolog are named after the process id.",
+        if len(ranked) > 1:
+            reason = (
+                f"--world-size is {ranks}, but a collective report needs at "
+                "least 2 ranks."
             )
-        )
+        else:
+            reason = (
+                "the collective report needs the rank in each trace's filename, "
+                f"and only {len(ranked)} of {len(pytorch_traces)} carry one. "
+                "Traces captured on demand through dynolog are named after the "
+                "process id."
+            )
+        unrankable.append((f"{len(pytorch_traces)} PyTorch traces", reason))
 
     results: List[Dict[str, str]] = []
     for trace, kind, tool, args in jobs:
