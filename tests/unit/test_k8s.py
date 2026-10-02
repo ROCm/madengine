@@ -6,6 +6,7 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -634,3 +635,122 @@ class TestK8sRequirePinnedImage:
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
             )
+
+
+class TestK8sResultsKubectlKubeconfig:
+    """kubectl calls in result collection must honor ``k8s.kubeconfig``.
+
+    Job creation uses the Python client, which reads ``k8s.kubeconfig``; the
+    collection path shells out to kubectl, which otherwise falls back to
+    localhost:8080 when KUBECONFIG is unset.
+    """
+
+    KUBECONFIG = "~/.kube/custom-config"
+
+    def _deployment(self, monkeypatch, tmp_path, kubeconfig):
+        (tmp_path / "build_manifest.json").write_text(
+            json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+            lambda *args, **kwargs: None,
+        )
+        k8s = {"namespace": "ns1"}
+        if kubeconfig:
+            k8s["kubeconfig"] = kubeconfig
+        cfg = DeploymentConfig(
+            target="k8s",
+            manifest_file="build_manifest.json",
+            additional_context={"k8s": k8s, "gpu_vendor": "AMD", "guest_os": "UBUNTU"},
+        )
+        return KubernetesDeployment(cfg)
+
+    def test_kubectl_cmd_adds_expanded_kubeconfig(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        assert d._kubectl_cmd("cp", "a", "b") == [
+            "kubectl",
+            "--kubeconfig",
+            os.path.expanduser(self.KUBECONFIG),
+            "cp",
+            "a",
+            "b",
+        ]
+        assert "~" not in d._kubectl_cmd("get")[2]
+
+    def test_kubectl_cmd_without_kubeconfig_adds_no_flag(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, None)
+        # The preset default fills in kubeconfig; drop it to model "unset".
+        d.k8s_config.pop("kubeconfig", None)
+        assert d._kubectl_cmd("cp", "a", "b") == ["kubectl", "cp", "a", "b"]
+
+    def test_collect_from_pvc_passes_kubeconfig_to_kubectl(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        d.console = MagicMock()
+        d.core_v1 = MagicMock()
+        d.core_v1.read_namespaced_pod_status.return_value.status.phase = "Running"
+        monkeypatch.setattr(
+            "madengine.deployment.k8s_results.time.sleep", lambda s: None
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            stdout = "pod-a\n" if "exec" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("madengine.deployment.k8s_results.subprocess.run", fake_run)
+
+        d._collect_from_pvc("job1", tmp_path, {"artifacts": []})
+
+        assert len(calls) == 2
+        assert "exec" in calls[0] and "cp" in calls[1]
+        expanded = os.path.expanduser(self.KUBECONFIG)
+        for cmd in calls:
+            assert cmd[:3] == ["kubectl", "--kubeconfig", expanded]
+        assert "ns1" in calls[0] and "ns1/collector-job1:/results/pod-a" in calls[1]
+
+    def test_collect_pod_artifacts_passes_kubeconfig_to_kubectl(
+        self, tmp_path, monkeypatch
+    ):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        d.console = MagicMock()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr("madengine.deployment.k8s_results.subprocess.run", fake_run)
+
+        d._collect_pod_artifacts("pod-a", tmp_path)
+
+        assert calls
+        expanded = os.path.expanduser(self.KUBECONFIG)
+        for cmd in calls:
+            assert cmd[:4] == ["kubectl", "--kubeconfig", expanded, "cp"]
+
+    def test_no_kubectl_command_is_built_outside_the_helper(self):
+        import ast
+        import madengine.deployment.k8s_results as mod
+
+        tree = ast.parse(Path(mod.__file__).read_text())
+        helper = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_kubectl_cmd"
+            ),
+            None,
+        )
+        assert helper is not None, "_kubectl_cmd helper is missing"
+        inside = {id(n) for n in ast.walk(helper)}
+        stray = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant)
+            and n.value == "kubectl"
+            and id(n) not in inside
+        ]
+        assert stray == [], f"kubectl built without _kubectl_cmd at lines {stray}"
