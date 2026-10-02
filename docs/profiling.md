@@ -403,7 +403,7 @@ For a short-lived workload, shorten the warmup so the request lands while the mo
 
 **Trace produced but empty?** Iteration-based capture waits for the workload's next `optimizer.step()`, so the request has to land after training has actually started. A request that arrives while the model is still being built (or while MIOpen is autotuning the first convolution) yields a trace with no GPU activity. The warmup must cover startup, not just process launch.
 
-Every process that registers with dynolog is traced, including the `torchrun` launcher, which supervises its children and runs no kernels itself. An `N`-rank job therefore produces `N + 1` traces, and the launcher's holds nothing to report.
+Every process that registers with dynolog is traced, including the `torchrun` launcher, which supervises its children and runs no kernels itself. An `N`-rank job therefore produces `N + 1` traces, and the launcher holds nothing to report.
 
 ### tracelens - TraceLens Trace Analysis
 

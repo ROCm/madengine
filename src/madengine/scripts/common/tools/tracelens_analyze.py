@@ -101,9 +101,10 @@ _SANITIZE_CHUNK_BYTES = 1 << 20
 # What TraceLens says when a trace holds no GPU activity for it to report on.
 _NO_GPU_EVENTS_ERROR = "No GPU events found in the trace"
 _NO_GPU_EVENTS_REASON = (
-    "the trace holds no GPU activity, so there is nothing to report. dynolog "
-    "configures every process that registered with it, which for a torchrun job "
-    "includes the launcher: it only supervises its children and runs no kernels."
+    "the trace holds no GPU activity, so there is nothing to report. One common "
+    "cause: dynolog configures every process that registered with it, which for "
+    "a torchrun job includes the launcher, and the launcher only supervises its "
+    "children and runs no kernels."
 )
 
 SUMMARY_CSV_FIELDS = (
@@ -401,8 +402,9 @@ def _pytorch_args(
     # sheets have MultiIndex columns, and TraceLens writes every sheet with
     # `index=False`, which pandas refuses: "Writing to Excel with MultiIndex
     # columns and no index ('index'=False) is not yet implemented". That loses the
-    # whole workbook after the CSVs are already written. Pass it back through the
-    # analyzer's trailing extra args if you want those sheets.
+    # whole workbook after the CSVs are already written. To get those sheets, pass
+    # it through the trailing extra args with `--mode pytorch`: in other modes the
+    # extra args reach every TraceLens command, including ones that reject it.
     # https://github.com/AMD-AGI/TraceLens/issues/938
     args = [
         "--profile_json_path",
