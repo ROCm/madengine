@@ -97,6 +97,11 @@ def _run_analyzer(args: Sequence[str], summary_path: Path) -> Dict[str, object]:
     if summary_path.is_file():
         with open(summary_path, encoding="utf-8") as handle:
             summary = json.load(handle)
+    elif completed.returncode != 0:
+        raise RuntimeError(
+            f"trace analyzer exited with code {completed.returncode} "
+            "before writing a summary"
+        )
     summary["exit_code"] = completed.returncode
     return summary
 
