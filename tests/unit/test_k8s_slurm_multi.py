@@ -170,3 +170,22 @@ class TestResultsPvcAccessMode:
 
     def test_override_for_a_cluster_without_rwx(self, tmp_path, monkeypatch):
         assert self._mode(tmp_path, monkeypatch, 2, k8s={"results_access_mode": "ReadWriteOnce"}) == ["ReadWriteOnce"]
+
+
+class TestPodHostnames:
+    def test_dotted_long_card_names_make_valid_hostnames(self, tmp_path, monkeypatch):
+        card = json.loads(json.dumps(CARD))
+        card["name"] = "sglang_disagg/pyt_sglang_disagg_mooncake_llama-3.1-8b"
+        d, job, pod, env = _prepared(tmp_path, monkeypatch, card=card)
+        name = job["metadata"]["name"]
+        assert "." not in name and len(f"{name}-1") <= 63
+        assert env["MAD_K8S_NODE_PREFIX"] == name == pod["subdomain"] == d.service_name
+        assert yaml.safe_load(d.configmap_yaml)["metadata"]["name"] == f"{name}-config"
+        assert pod["volumes"][1]["persistentVolumeClaim"]["claimName"] == f"{name}-results"
+
+    def test_long_names_stay_distinct(self):
+        from madengine.deployment.k8s_slurm_multi import pod_hostname_base
+        a = pod_hostname_base("madengine-" + "x" * 60 + "-a", 2)
+        b = pod_hostname_base("madengine-" + "x" * 60 + "-b", 2)
+        assert a != b and len(a) <= 61 and len(b) <= 61
+        assert pod_hostname_base("madengine-qwen3", 2) == "madengine-qwen3"

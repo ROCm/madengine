@@ -86,6 +86,24 @@ def build_scripts_bundle(script_path: str, include_dirs: List[str]) -> Tuple[byt
     return data, names
 
 
+def pod_hostname_base(job_name: str, nnodes: int) -> str:
+    """A run name whose pods' hostnames ("<name>-<index>") are valid DNS labels.
+
+    The card's script addresses nodes by those hostnames. Card names carry dots
+    (llama-3.1-8b) and can fill all 63 characters; dots become dashes, and a name
+    still too long is cut and given a short hash of the full name, so two cards
+    that share a long prefix stay distinct.
+    """
+    import hashlib
+
+    name = re.sub(r"[^a-z0-9-]", "-", job_name.lower()).strip("-")
+    room = 63 - len(f"-{max(nnodes - 1, 0)}")
+    if len(name) > room:
+        digest = hashlib.sha1(job_name.encode()).hexdigest()[:6]
+        name = f"{name[: room - 7].rstrip('-')}-{digest}"
+    return name
+
+
 def default_include_dirs(script_path: str) -> List[str]:
     """The sibling `common` directory of the card's script directory, if any:
     the shared helpers MAD's launchers source as ${SCRIPT_DIR}/../common."""
@@ -169,6 +187,10 @@ class KubernetesSlurmMultiMixin:
     def _prepare_slurm_multi(self, model_key: str, model_info: Dict, image_info: Dict) -> Dict[str, Any]:
         """Build the ConfigMap, headless Service and Indexed Job; return them as dicts."""
         nnodes = self._slurm_multi_nnodes(model_info)
+        # Every name this run creates derives from one that makes valid hostnames.
+        self.job_name = pod_hostname_base(self.job_name, nnodes)
+        self.job_label = self.service_name = self.main_container_name = self.job_name
+        self.configmap_name = f"{self.job_name}-config"
         gpus = self._slurm_multi_gpus(model_info)
         image = self._slurm_multi_image(model_info, image_info, model_key)
         script = model_info.get("scripts") or ""
