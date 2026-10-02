@@ -123,9 +123,9 @@ def _check_gpu_events(path: str) -> Optional[int]:
     try:
         with opener(path, "rt", encoding="utf-8") as handle:
             payload = json.load(handle)
-    except (OSError, ValueError):
-        # Unreadable input is what the other checks are for.
-        return None
+    except (OSError, EOFError, ValueError) as exc:
+        # Real TraceLens fails on a trace it cannot read, gzipped or not.
+        return _fail(f"could not read {path}: {type(exc).__name__}: {exc}")
     events = payload.get("traceEvents", []) if isinstance(payload, dict) else []
     for event in events:
         if isinstance(event, dict) and event.get("cat") in _GPU_ACTIVITY_CATEGORIES:

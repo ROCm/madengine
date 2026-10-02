@@ -548,6 +548,30 @@ class TestAnalyzerWithDummyTraceLens:
         assert [r["status"] for r in pytorch_rows] == ["FAILURE"]
         assert "forced failure" in pytorch_rows[0]["detail"]
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"not gzip data",
+            gzip.compress(b'{"traceEvents": [{"cat": "kernel"}]}')[:-8],
+            gzip.compress(b'{"traceEvents": ['),
+        ],
+        ids=["not-gzip", "truncated-gzip", "invalid-json"],
+    )
+    def test_unreadable_gzipped_trace_fails_like_real_tracelens(
+        self, tmp_path, dummy_tracelens, payload
+    ):
+        work = tmp_path / "corrupt"
+        trace = work / "torch_profiler_output" / "libkineto_trace_1.json.gz"
+        trace.parent.mkdir(parents=True)
+        trace.write_bytes(payload)
+
+        result = run_analyzer(work, dummy_tracelens)
+
+        assert result.returncode != 0, result.stdout
+        rows = [r for r in summary_rows(work) if r["kind"] == "pytorch"]
+        assert [r["status"] for r in rows] == ["FAILURE"]
+        assert "dummy TraceLens: could not read" in rows[0]["detail"]
+
     def test_one_failed_report_does_not_hide_the_others(
         self, profiled_run, dummy_tracelens
     ):
