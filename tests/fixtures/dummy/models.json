@@ -265,6 +265,19 @@
     "args": ""
   },
   {
+    "name": "dummy_profiling",
+    "dockerfile": "docker/dummy_torchrun",
+    "scripts": "scripts/dummy_profiling/run.sh",
+    "n_gpus": "-1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "bf16",
+    "tags": [
+      "dummies",
+      "dummy_profiling"
+    ],
+    "args": ""
+  },
+  {
     "name": "dummy_torchrun_multi",
     "dockerfile": "docker/dummy_torchrun",
     "scripts": "scripts/dummy_torchrun/run_multi.sh",

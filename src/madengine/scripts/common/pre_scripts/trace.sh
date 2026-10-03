@@ -223,6 +223,22 @@ tracelens)
 	_TRACELENS_PINNED_REF='6f9bcdbf6cc9911eb650de57b345917ea4d31a17'
 	_tl_ref="${TRACELENS_GIT_REF:-$_TRACELENS_PINNED_REF}"
 
+	# TraceLens's pftrace reports convert with Perfetto's traceconv, a launcher that
+	# downloads its binary with curl on first use. Slim framework images (e.g.
+	# rocm/primus) ship without curl, which fails every pftrace report.
+	if ! command -v curl >/dev/null 2>&1; then
+		echo "TraceLens: curl not found; installing it for traceconv (pftrace reports)..."
+		if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl
+		elif [ "$(id -u)" -eq 0 ] && command -v yum >/dev/null 2>&1; then
+			yum install -y -q curl
+		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl
+		fi
+		command -v curl >/dev/null 2>&1 || \
+			echo "Warning: curl unavailable; TraceLens pftrace reports will fail (traceconv download)." >&2
+	fi
+
 	if [ -x "${_tl_venv}/bin/python3" ] && "${_tl_venv}/bin/python3" -c 'import TraceLens' 2>/dev/null; then
 		echo "TraceLens: already installed in ${_tl_venv}, skipping."
 		exit 0
