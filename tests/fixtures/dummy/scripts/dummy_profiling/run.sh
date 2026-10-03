@@ -4,6 +4,8 @@
 # Like real framework launchers (e.g. Primus run.sh), it changes directory before
 # starting the workload, so tools that write relative paths are exercised under a
 # cwd other than run_directory. Set DUMMY_PROF_STAY_IN_RUN_DIR=1 to launch in place.
+# DUMMY_PROF_EXIT_CODE makes the run fail after training, to check that profiler
+# post-scripts still collect and analyze the traces of a failed run.
 set -e
 
 RUN_DIR="$(pwd)"
@@ -19,3 +21,4 @@ if [[ "${DUMMY_PROF_STAY_IN_RUN_DIR:-0}" != "1" ]]; then
 fi
 echo "dummy_profiling: cwd=$(pwd) runner=$RUNNER"
 $RUNNER "$SCRIPT"
+exit "${DUMMY_PROF_EXIT_CODE:-0}"
