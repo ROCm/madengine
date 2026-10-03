@@ -306,7 +306,11 @@ def _scratch_root(workspace: List[Optional[str]]) -> str:
     return workspace[0]
 
 
-def _stage_for_collective(traces: Sequence[str], workspace: List[Optional[str]]) -> str:
+def _stage_for_collective(
+    traces: Sequence[str],
+    workspace: List[Optional[str]],
+    names: Optional[Sequence[str]] = None,
+) -> str:
     """Gather the per-rank traces into one directory for the collective report.
 
     TraceLens takes a glob rather than a list, and the traces of a multi-node run
@@ -317,15 +321,16 @@ def _stage_for_collective(traces: Sequence[str], workspace: List[Optional[str]])
     Args:
         traces: The readable per-rank traces, sanitized copies where needed.
         workspace: Single-element list caching the scratch directory.
+        names: Rank-bearing filename per trace; defaults to each basename.
 
     Returns:
         The directory holding exactly the traces passed in.
     """
     staged = os.path.join(_scratch_root(workspace), "collective")
-    for trace in traces:
+    for i, trace in enumerate(traces):
         scratch = os.path.join(staged, _path_digest(trace))
         os.makedirs(scratch, exist_ok=True)
-        link = os.path.join(scratch, os.path.basename(trace))
+        link = os.path.join(scratch, names[i] if names else os.path.basename(trace))
         try:
             os.symlink(os.path.abspath(trace), link)
         except OSError:
@@ -497,6 +502,35 @@ def _is_rank_labelled(trace: str) -> bool:
     return re.search(_rank_regex(), os.path.basename(trace)) is not None
 
 
+_DISTRIBUTED_RANK = re.compile(rb'"distributedInfo"\s*:\s*\{[^}]*?"rank"\s*:\s*(\d+)')
+
+
+def _embedded_rank(trace: str) -> Optional[int]:
+    """Return the rank Kineto records in the trace's ``distributedInfo``, if any.
+
+    Traces written without a rank-bearing name (e.g. ``tensorboard_trace_handler``
+    without ``worker_name``, as Megatron-Bridge does, or dynolog captures) still
+    carry the rank near the top of the file.
+    """
+    try:
+        opener = gzip.open if trace.endswith(".gz") else open
+        with opener(trace, "rb") as handle:
+            head = handle.read(1 << 20)
+    except OSError:
+        return None
+    match = _DISTRIBUTED_RANK.search(head)
+    return int(match.group(1)) if match else None
+
+
+def _collective_name(trace: str) -> Optional[str]:
+    """Return a filename for ``trace`` from which TraceLens can read the rank."""
+    name = os.path.basename(trace)
+    if _is_rank_labelled(trace):
+        return name
+    rank = _embedded_rank(trace)
+    return None if rank is None else f"rank{rank}_{name}"
+
+
 def _collective_args(
     trace_dir: str, out_base: str, world_size: int, extra: Sequence[str]
 ) -> List[str]:
@@ -603,9 +637,15 @@ def analyze(
                     jobs.append((trace, kind, tool, args))
 
     # A multi-rank collective report needs at least two per-rank PyTorch traces,
-    # and TraceLens reads each trace's rank from its filename.
+    # and TraceLens reads each trace's rank from its filename; traces whose name
+    # lacks it are staged under a name built from their embedded distributedInfo.
     pytorch_traces = traces.get(KIND_PYTORCH, [])
-    ranked = [trace for trace in pytorch_traces if _is_rank_labelled(trace)]
+    collective_names = (
+        {trace: _collective_name(trace) for trace in pytorch_traces}
+        if mode in ("auto", "collective")
+        else {}
+    )
+    ranked = [trace for trace in pytorch_traces if collective_names.get(trace)]
     unrankable: List[Tuple[str, str]] = []
     ranks = world_size or len(ranked)
     if mode in ("auto", "collective") and len(ranked) > 1 and ranks > 1:
@@ -618,6 +658,7 @@ def analyze(
                     _stage_for_collective(
                         [readable_pytorch[trace] for trace in ranked],
                         sanitize_workspace,
+                        [collective_names[trace] for trace in ranked],
                     ),
                     os.path.join(output_dir, "multi_rank_collective"),
                     ranks,
@@ -633,10 +674,10 @@ def analyze(
             )
         else:
             reason = (
-                "the collective report needs the rank in each trace's filename, "
-                f"and only {len(ranked)} of {len(pytorch_traces)} carry one. "
-                "Traces captured on demand through dynolog are named after the "
-                "process id."
+                "the collective report needs each trace's rank, from its filename "
+                "or its distributedInfo, and only "
+                f"{len(ranked)} of {len(pytorch_traces)} carry one. Traces captured "
+                "on demand through dynolog are named after the process id."
             )
         unrankable.append((f"{len(pytorch_traces)} PyTorch traces", reason))
 
