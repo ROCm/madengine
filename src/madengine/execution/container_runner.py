@@ -1054,7 +1054,11 @@ class ContainerRunner:
     def run_pre_post_script(
         self, model_docker: Docker, model_dir: str, pre_post: typing.List
     ) -> None:
-        """Run pre/post scripts in the container."""
+        """Run pre/post scripts in the container.
+
+        A script entry may set "timeout" in seconds (default 600; 0 means none),
+        e.g. for trace analysis whose runtime grows with trace size.
+        """
         for script in pre_post:
             script_path = script["path"].strip()
             model_docker.sh(
@@ -1065,7 +1069,8 @@ class ContainerRunner:
             if "args" in script:
                 script_args = script["args"].strip()
             model_docker.sh(
-                f"cd {model_dir} && bash {script_name} {script_args}", timeout=600
+                f"cd {model_dir} && bash {script_name} {script_args}",
+                timeout=subprocess_timeout(int(script.get("timeout", 600))),
             )
 
     def gather_system_env_details(
@@ -1676,6 +1681,18 @@ class ContainerRunner:
                                         )
                                     except Exception:
                                         pass
+                                # Profiler post-scripts collect and analyze traces; a failed
+                                # run's profile is still needed to diagnose it. Best-effort:
+                                # the run stays failed either way.
+                                if pre_encapsulate_post_scripts["post_scripts"]:
+                                    try:
+                                        self.run_pre_post_script(
+                                            model_docker,
+                                            model_dir,
+                                            pre_encapsulate_post_scripts["post_scripts"],
+                                        )
+                                    except Exception as post_err:
+                                        print(f"Post-scripts after failed run also failed: {post_err}")
                                 raise
                             # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
                             if not self.live_output:

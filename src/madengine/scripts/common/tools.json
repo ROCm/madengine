@@ -262,7 +262,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -285,7 +286,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -308,7 +310,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -331,7 +334,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -354,7 +358,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
