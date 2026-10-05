@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **slurm_multi cards on Kubernetes**: a card's own SLURM launcher runs unchanged across one pod per node (an Indexed Job with a headless Service). Pod 0 runs the script with the `SLURM_*` variables and stand-ins for `srun`, `docker` and `scontrol` (`deployment/k8s_shim/`); results are read from the `perf.csv` pod 0 publishes, as on SLURM. New `k8s` keys: `gpu_count` (default: the card's `slurm.gpus_per_node`), `volumes`, `extra_resources`, `security_context`, `shm_size`, `include_script_dirs`, `host_network`, `pod_annotations`, `results_access_mode`, `context`.
+- **SLURM-compatible schedulers (Spur)**: node lists are expanded without `scontrol show hostnames`, the final state is read when `sacct` rejects `-X`, `sbatch` is retried through Raft leader elections, and the `slurm_multi` wrapper honours `slurm.account` / `slurm.qos`.
+
+### Fixed
+
+- **Kubernetes target pinning**: the Python client and `kubectl` used different kubeconfig/context resolution and could reach different clusters. Both now use one kubeconfig (`k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`) and one context (`k8s.context`, which must exist, else the file's current context). The preset no longer hardcodes `~/.kube/config`.
+- **Kubernetes cleanup in shared namespaces**: a rerun deleted same-named objects by name; it now deletes only objects labelled `app=madengine` and stops otherwise.
+- **Kubernetes Job outcome**: a multi-pod Job was reported SUCCESS when its first pod finished and FAILED while retries remained. The outcome now comes from the Job's `Complete` / `Failed` conditions.
+- **Kubernetes results collector name**: it was the first 15 characters of the job name, invalid when that ended in a dash (no results collected) and shared by every job with the same prefix.
+
 ### Docs
 
 - **README rewritten as a concise landing page** (#161): Trimmed the root README from 707 to 258 lines by moving deep reference material (profiling tables, extended config/usage recipes, tips) into `docs/` and linking out. Replaced the stale ASCII architecture block and unreferenced `docs/img` PNGs with accurate inline Mermaid diagrams for the layered architecture, build→run→report pipeline, and deployment-target inference; added matching diagrams to `docs/deployment.md` and `docs/README.md`. Also corrects numerous stale references across docs: `--csv-file` → `--csv-file-path`/`--file`, missing `database` command flags (`--unique-key`/`-k`, `--batch-size`, `--no-upsert`, `--no-index`, `--dry-run`, `MONGO_AUTH_SOURCE`/`MONGO_TIMEOUT_MS`), wrong `run --output`/`--tools-config` defaults, `megatron` → `megatron-lm` launcher name, fabricated `timeout_multiplier`/`service_account` config keys, missing Kubernetes/SLURM `additional_context` keys, `DOCKER_CONFIG`/`MAD_SKIP_DOCKER_LOGIN` documentation, and corrected SGLang Disaggregated minimum node counts/split formula for SLURM vs. Kubernetes.
