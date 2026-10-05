@@ -128,3 +128,44 @@ class TestRtlWrapperEmptyTrace:
     def test_workload_failure_propagates(self, tmp_path, bin_dir):
         res, _ = self._run_rtl(tmp_path, bin_dir, ["KernelExecution"], cmd=("bash", "-c", "exit 7"))
         assert res.returncode == 7
+
+    def test_hsa_tools_lib_reaches_workers(self, tmp_path, bin_dir):
+        seen = tmp_path / "seen"
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"],
+            cmd=("bash", "-c", 'printf "%s\\n%s\\n" "$HSA_TOOLS_LIB" "$HSA_TOOLS_DISABLE_REGISTER" > "$SEEN"'),
+            HSA_TOOLS_LIB="/opt/librtl.so", SEEN=str(seen),
+        )
+        assert res.returncode == 0, res.stderr
+        lib, disabled = seen.read_text().splitlines()
+        assert lib == "/opt/librtl.so"
+        assert disabled == "1"
+
+    def test_keep_register_does_not_disable_it(self, tmp_path, bin_dir):
+        seen = tmp_path / "seen"
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"],
+            cmd=("bash", "-c", 'printf "%s\\n" "${HSA_TOOLS_DISABLE_REGISTER-unset}" > "$SEEN"'),
+            HSA_TOOLS_LIB="/opt/librtl.so", RTL_WRAPPER_KEEP_REGISTER="1", SEEN=str(seen),
+        )
+        assert res.returncode == 0, res.stderr
+        assert seen.read_text().strip() == "unset"
+
+    def test_per_process_db_counts_as_gpu_ops(self, tmp_path, bin_dir):
+        # Workers write trace_<pid>.db. The merged trace.db may be absent.
+        writer = tmp_path / "write_trace.py"
+        writer.write_text(
+            "import os, sqlite3\n"
+            "from pathlib import Path\n"
+            "path = Path(os.environ['RTL_OUTPUT'].replace('%p', '42'))\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "con = sqlite3.connect(path)\n"
+            "con.execute('create table rocpd_string (id integer primary key, string text)')\n"
+            "con.execute('create table rocpd_op (id integer primary key, gpuId int, opType_id int)')\n"
+            "con.execute(\"insert into rocpd_string values (1, 'KernelExecution')\")\n"
+            "con.execute('insert into rocpd_op (gpuId, opType_id) values (0, 1)')\n"
+            "con.commit()\n"
+        )
+        res, run_dir = self._run_rtl(tmp_path, bin_dir, None, cmd=("python3", str(writer)))
+        assert res.returncode == 0, res.stderr
+        assert (run_dir / "rocm_trace_lite_output" / "trace_42.db").exists()

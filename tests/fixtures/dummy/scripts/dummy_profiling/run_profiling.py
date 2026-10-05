@@ -4,11 +4,18 @@
 Each step runs bf16 GEMMs (an MLP forward/backward) and a DDP gradient all-reduce, so
 every collector has compute kernels and RCCL kernels to find within seconds.
 
+The Kineto window follows the PyTorch profiler schedule: skipped steps, one warmup
+step (recorded then discarded), then the active steps. Shapes and stacks stay off
+unless asked for; they dominate trace size and are not required to see kernels or
+collectives. Every rank is profiled so the collective report has a rank per trace.
+The launcher names each trace rank<N>, which TraceLens reads directly.
+
 Environment:
-    DUMMY_PROF_STEPS        training steps (default 30)
-    DUMMY_TORCH_PROFILE=1   capture a torch.profiler (Kineto) window, like a framework's
-                            built-in profiler; traces go to $DUMMY_TORCH_PROFILE_DIR
-    DUMMY_TORCH_PROFILE_DIR output dir for *.pt.trace.json (default ./torch_profiler_output)
+    DUMMY_PROF_STEPS            training steps (default 30)
+    DUMMY_TORCH_PROFILE=1       capture a torch.profiler (Kineto) window
+    DUMMY_TORCH_PROFILE_DIR     output dir for *.pt.trace.json (default ./torch_profiler_output)
+    DUMMY_TORCH_PROFILE_SHAPES=1  record tensor shapes (off by default)
+    DUMMY_PROF_WAIT / _WARMUP / _ACTIVE   schedule lengths (default 9 / 1 / 3)
 """
 
 import os
@@ -22,7 +29,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 STEPS = int(os.environ.get("DUMMY_PROF_STEPS", "30"))
 PROFILE = os.environ.get("DUMMY_TORCH_PROFILE") == "1"
 PROFILE_DIR = os.environ.get("DUMMY_TORCH_PROFILE_DIR", "torch_profiler_output")
-PROFILE_START, PROFILE_STEPS = 10, 3
+PROFILE_WAIT = int(os.environ.get("DUMMY_PROF_WAIT", "9"))
+PROFILE_WARMUP = int(os.environ.get("DUMMY_PROF_WARMUP", "1"))
+PROFILE_ACTIVE = int(os.environ.get("DUMMY_PROF_ACTIVE", "3"))
+RECORD_SHAPES = os.environ.get("DUMMY_TORCH_PROFILE_SHAPES") == "1"
 BATCH, HIDDEN = 64, 4096
 
 
@@ -45,11 +55,19 @@ def main():
     prof = None
     if PROFILE:
         os.makedirs(PROFILE_DIR, exist_ok=True)
+        window = PROFILE_WAIT + PROFILE_WARMUP + PROFILE_ACTIVE
+        if window > STEPS:
+            raise SystemExit(
+                f"dummy_profiling: profiler window is {window} steps but DUMMY_PROF_STEPS is {STEPS}"
+            )
         prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=PROFILE_START, warmup=0, active=PROFILE_STEPS, repeat=1),
+            schedule=torch.profiler.schedule(
+                wait=PROFILE_WAIT, warmup=PROFILE_WARMUP, active=PROFILE_ACTIVE, repeat=1
+            ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(PROFILE_DIR, worker_name=f"rank{rank}"),
-            record_shapes=True,
+            record_shapes=RECORD_SHAPES,
+            with_stack=False,
         )
         prof.start()
 

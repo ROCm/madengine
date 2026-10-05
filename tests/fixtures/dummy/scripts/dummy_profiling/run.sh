@@ -6,6 +6,10 @@
 # cwd other than run_directory. Set DUMMY_PROF_STAY_IN_RUN_DIR=1 to launch in place.
 # DUMMY_PROF_EXIT_CODE makes the run fail after training, to check that profiler
 # post-scripts still collect and analyze the traces of a failed run.
+#
+# The environment is passed through to torchrun unchanged. Profiler attachment
+# (HSA_TOOLS_LIB, RTL_OUTPUT, rocprof output paths) has to be set on this process;
+# clearing the environment here would drop it for every GPU worker.
 set -e
 
 RUN_DIR="$(pwd)"
