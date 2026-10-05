@@ -208,3 +208,32 @@ class TestRdmaNetworking:
         _, job, pod, _ = _prepared(tmp_path, monkeypatch)
         assert "hostNetwork" not in pod and "affinity" not in pod
         assert "annotations" not in job["spec"]["template"]["metadata"]
+
+
+class TestCollectOnlyThisRun:
+    HEADER = "model,performance,metric,status,test_duration,gpu_architecture,deployment_type,machine_name\n"
+
+    def _collect(self, tmp_path, monkeypatch, publish):
+        d, _, _, _ = _prepared(tmp_path, monkeypatch)
+        # An earlier run of the same card left its results in the shared job directory.
+        old = tmp_path / "k8s_results" / d.job_name / "run-1" / f"{d.job_name}-0"
+        old.mkdir(parents=True)
+        (old / "perf.csv").write_text(self.HEADER + "M,999.0,tok/s (con=8),SUCCESS,,,,\n")
+
+        def fake_pvc(deployment_id, results_dir, results):
+            if publish is not None:
+                pod0 = results_dir / f"{d.job_name}-0"
+                pod0.mkdir(parents=True)
+                (pod0 / "perf.csv").write_text(self.HEADER + publish)
+
+        monkeypatch.setattr(d, "_collect_from_pvc", fake_pvc)
+        res = {"successful_runs": [], "failed_runs": [], "logs": [], "artifacts": []}
+        return d._collect_slurm_multi_results(d.job_name, res)
+
+    def test_this_runs_rows_not_an_earlier_runs(self, tmp_path, monkeypatch):
+        res = self._collect(tmp_path, monkeypatch, "M,123.0,tok/s (con=8),SUCCESS,,,,\n")
+        assert [r["performance"] for r in res["successful_runs"]] == ["123.0"]
+
+    def test_nothing_published_is_a_failure_not_an_old_success(self, tmp_path, monkeypatch):
+        res = self._collect(tmp_path, monkeypatch, None)
+        assert res["successful_runs"] == [] and res["failed_runs"][0]["status"] == "FAILURE"

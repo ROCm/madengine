@@ -218,9 +218,11 @@ class KubernetesSlurmMultiMixin:
         )
 
         env = self._slurm_multi_env(model_info, image)
+        # One id per run: SLURM_JOB_ID in the pods, and the run's own results directory.
+        self._slurm_multi_run_id = str(int(time.time()) % 100000000)
         env.update({
             "MAD_K8S_NNODES": str(nnodes), "MAD_K8S_NODE_PREFIX": prefix,
-            "MAD_K8S_JOB_ID": str(int(time.time()) % 100000000), "MAD_K8S_IMAGE": image,
+            "MAD_K8S_JOB_ID": self._slurm_multi_run_id, "MAD_K8S_IMAGE": image,
             "MAD_K8S_SCRIPT": script, "MAD_K8S_ARGS": model_info.get("args") or "",
             "MAD_K8S_AGENT_PORT": str(AGENT_PORT),
         })
@@ -326,10 +328,17 @@ class KubernetesSlurmMultiMixin:
         """
         import csv
 
-        results_dir = Path(f"./k8s_results/{deployment_id}")
+        # This run's own directory. k8s_results/<job>/ is shared by every run of the
+        # card, so searching it found an EARLIER run's perf.csv: a 4-node run was
+        # reported with the 2-node run's numbers, and a run that published nothing
+        # would have been reported with a previous run's success.
+        run_id = getattr(self, "_slurm_multi_run_id", None) or str(int(time.time()))
+        results_dir = Path(f"./k8s_results/{deployment_id}/run-{run_id}")
         results_dir.mkdir(parents=True, exist_ok=True)
         self._collect_from_pvc(deployment_id, results_dir, results)
-        found = sorted(p for p in results_dir.rglob("perf.csv") if p.stat().st_size > 0)
+        # Exactly the file pod 0 published for this run (mad_k8s_node.sh).
+        published = results_dir / f"{self.job_name}-0" / "perf.csv"
+        found = [published] if published.is_file() and published.stat().st_size > 0 else []
         model_name = next(iter((self.manifest.get("built_models") or {}).values()), {}).get("name", deployment_id)
         if not found:
             results["failed_runs"].append({
