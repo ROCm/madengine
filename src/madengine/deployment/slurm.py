@@ -133,7 +133,24 @@ class SlurmDeployment(BaseDeployment):
         self.inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         self.existing_job_id = os.environ.get("SLURM_JOB_ID", "")
         self.allocation_nodes = self._get_allocation_node_count()
-        
+
+        # Everything the job script writes -- node workspaces, per-node logs, the
+        # task script, the collection directory -- is keyed on the job id, and so
+        # is collect_results() on this side. That is unique per sbatch, but every
+        # run inside one allocation shares a single SLURM_JOB_ID, so a second run
+        # would land on the first one's paths. Add a per-run discriminator there,
+        # and only there: outside an allocation the tag is the bare job id and the
+        # rendered script is unchanged.
+        if self.inside_allocation:
+            stamp = time.strftime("%Y%m%d%H%M%S")
+            self.job_tag = "${SLURM_JOB_ID}_" + stamp
+            # What job_tag expands to once the script runs, which is what
+            # collect_results() needs to find this run's artifacts.
+            self.run_id = f"{self.existing_job_id}_{stamp}"
+        else:
+            self.job_tag = "${SLURM_JOB_ID}"
+            self.run_id = self.existing_job_id
+
         if self.inside_allocation:
             self.console.print(
                 f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
@@ -817,6 +834,8 @@ class SlurmDeployment(BaseDeployment):
         
         return {
             "model_name": model_info["name"],
+            "job_tag": self.job_tag,
+            "inside_allocation": self.inside_allocation,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
@@ -1322,10 +1341,19 @@ export MASTER_PORT={master_port}
 
         self._job_submitted_at = time.time()
 
-        # slurm_multi inside an existing salloc allocation: run the generated script
-        # directly with bash instead of nesting another sbatch. Non-slurm_multi launchers
-        # always fall through to the standard sbatch flow (preserves develop behavior).
-        if self.inside_allocation and getattr(self, "_is_slurm_multi", False):
+        # Inside an existing salloc allocation, run the generated script directly
+        # with bash instead of nesting another sbatch, which would queue for new
+        # nodes and defeat the point of holding the allocation.
+        #
+        # Multi-node only, besides slurm_multi: the templated multi-node script
+        # dispatches the workload with srun, so it lands on the allocated nodes,
+        # while the single-node branch invokes madengine inline. Under sbatch that
+        # is the compute node; under bash in an allocation it is wherever the
+        # caller's shell is, typically a login node. Submitting a fresh sbatch is
+        # the right answer there.
+        if self.inside_allocation and (
+            getattr(self, "_is_slurm_multi", False) or self.nodes > 1
+        ):
             return self._run_inside_existing_allocation()
 
         # ==================== PREFLIGHT NODE SELECTION ====================
@@ -1445,12 +1473,20 @@ export MASTER_PORT={master_port}
         The script will use the nodes already allocated to the current job.
         SLURM environment variables (SLURM_NODELIST, etc.) are inherited.
         """
+        # slurm_multi runs the model's own script, which builds its paths from the
+        # raw SLURM_JOB_ID, so only the templated flow carries the per-run tag.
+        run_id = (
+            self.existing_job_id
+            if getattr(self, "_is_slurm_multi", False)
+            else self.run_id
+        )
+
         # Validate node count before running
         is_valid, error_msg = self._validate_allocation_nodes()
         if not is_valid:
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=error_msg,
             )
         
@@ -1458,6 +1494,8 @@ export MASTER_PORT={master_port}
             f"\n[bold cyan]Running inside existing SLURM allocation[/bold cyan]"
         )
         self.console.print(f"  Job ID: {self.existing_job_id}")
+        if run_id != self.existing_job_id:
+            self.console.print(f"  Run ID: {run_id}")
         self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
         self.console.print(f"  GPUs per node: {self.gpus_per_node}")
         self.console.print(f"  Script: {self.script_path}")
@@ -1477,7 +1515,7 @@ export MASTER_PORT={master_port}
                 )
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
-                    deployment_id=self.existing_job_id,
+                    deployment_id=run_id,
                     message=f"Completed inside existing allocation {self.existing_job_id}",
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously, no need to poll
@@ -1488,7 +1526,7 @@ export MASTER_PORT={master_port}
                 )
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
-                    deployment_id=self.existing_job_id,
+                    deployment_id=run_id,
                     message=f"Script failed with exit code {result.returncode}",
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
@@ -1500,14 +1538,14 @@ export MASTER_PORT={master_port}
             )
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=f"Script timed out after {self.config.timeout}s",
             )
         except Exception as e:
             self.console.print(f"\n[red]✗ Execution error: {e}[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=f"Execution error: {str(e)}",
             )
 

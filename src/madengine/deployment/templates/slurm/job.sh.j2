@@ -403,7 +403,7 @@ export TORCH_ELASTIC_RDZV_TIMEOUT=3600
 
 # Use submission directory (shared filesystem) for task script
 # /tmp is local to each node and won't be accessible by srun on other nodes
-TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}.sh"
+TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_{{ job_tag }}.sh"
 
 cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
 #!/bin/bash
@@ -463,7 +463,7 @@ echo ""
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
     WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
 else
-    WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
+    WORKSPACE=/tmp/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 fi
 mkdir -p $WORKSPACE
 WORKSPACE_TYPE="local-multinode"
@@ -498,8 +498,8 @@ echo ""
 # Debug: set node log paths early and trap EXIT so we always see which node failed
 # =============================================================================
 RESULTS_DIR="$SUBMISSION_DIR"
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.err"
 echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script started" >> "${NODE_LOG_ERR}"
 trap 'ec=$?; echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script exiting with code $ec" >> "${NODE_LOG_ERR}"' EXIT
 
@@ -654,8 +654,8 @@ echo ""
 
 # Create node-specific log files in results directory
 RESULTS_DIR={{ manifest_file | dirname }}
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.err"
 
 echo "Node ${SLURM_PROCID} logs:"
 echo "  stdout: ${NODE_LOG_OUT}"
@@ -696,7 +696,7 @@ echo "Task completed with exit code: $TASK_EXIT"
 # =============================================================================
 
 SUBMISSION_DIR={{ manifest_file | dirname }}
-JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/{{ job_tag }}"
 NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_${SLURM_PROCID}"
 mkdir -p "$NODE_COLLECTION_DIR"
 
@@ -738,7 +738,10 @@ TASK_SCRIPT_EOF
 chmod +x "$TASK_SCRIPT"
 
 echo "Launching tasks on {{ nodes }} nodes..."
-srun bash "$TASK_SCRIPT"
+{# Under sbatch the #SBATCH directives above already shape the step. Inside an
+   existing allocation they are inert comments, and a bare srun would spread the
+   run over every node the allocation holds rather than the ones it asked for. -#}
+srun {% if inside_allocation %}-N {{ nodes }} -n {{ nodes }} {% endif %}bash "$TASK_SCRIPT"
 EXIT_CODE=$?
 
 # Cleanup task script
@@ -778,7 +781,7 @@ EXIT_CODE=$?
 {% if multiple_results %}
 if [ $EXIT_CODE -eq 0 ]; then
     SUBMISSION_DIR={{ manifest_file | dirname }}
-    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${SLURM_JOB_ID}"
+    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/{{ job_tag }}"
     NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_0"
     mkdir -p "$NODE_COLLECTION_DIR"
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
@@ -810,8 +813,8 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "  📋 Individual Node Logs ({{ nodes }} nodes):"
     echo "  ─────────────────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.err"
         if [ -f "$NODE_OUT" ]; then
             OUT_SIZE=$(du -h "$NODE_OUT" 2>/dev/null | cut -f1)
             ERR_SIZE=$(du -h "$NODE_ERR" 2>/dev/null | cut -f1)
@@ -833,14 +836,14 @@ else
     echo "  📋 Check Individual Node Logs:"
     echo "  ─────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.err"
         if [ -f "$NODE_OUT" ] || [ -f "$NODE_ERR" ]; then
             echo "  Node $i: ${NODE_OUT}"
         fi
     done
     {% else %}
-    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_${SLURM_JOB_ID}_*.out"
+    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_*.out"
     {% endif %}
     echo "========================================================================"
 fi

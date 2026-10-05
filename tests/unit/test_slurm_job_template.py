@@ -437,3 +437,94 @@ class TestSglangDisaggNodeIps:
         # neither the docker bridge nor the management address may be published
         assert "172.17.0.1" not in out.stdout
         assert "192.168.1.5" not in out.stdout
+
+
+# ---------------------------------------------------------------------------
+# 4. Running inside an existing allocation
+
+class TestInsideExistingAllocation:
+    """A second run in one allocation must not land on the first one's paths.
+
+    Everything the job script writes is keyed on the job id, which is unique per
+    sbatch but shared by every run inside one `salloc`. These lock in that the
+    tag carries a per-run discriminator there, and nowhere else: the sbatch
+    script every cluster already depends on must render exactly as before.
+    """
+
+    @staticmethod
+    def _inside(tmp_path, nodes=2, job_id="99999"):
+        with patch.dict("os.environ", {"SLURM_JOB_ID": job_id}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=nodes
+        ):
+            dep = _build_deployment(tmp_path, slurm_overrides={"nodes": nodes})
+            return dep, _render(dep)
+
+    def test_paths_are_untagged_outside_an_allocation(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "madengine_task_${SLURM_JOB_ID}.sh" in script
+        assert not re.search(r"\$\{SLURM_JOB_ID\}_\d{14}", script)
+
+    def test_srun_is_unconstrained_outside_an_allocation(self, tmp_path):
+        """The #SBATCH directives already shape the step; do not duplicate them."""
+        assert 'srun bash "$TASK_SCRIPT"' in _render(_build_deployment(tmp_path))
+
+    def test_every_written_path_is_run_scoped_inside_an_allocation(self, tmp_path):
+        dep, script = self._inside(tmp_path)
+        tag = dep.job_tag
+        assert re.fullmatch(r"\$\{SLURM_JOB_ID\}_\d{14}", tag), tag
+        for path in (
+            f"madengine_task_{tag}.sh",
+            f"WORKSPACE=/tmp/madengine_job_{tag}_node_",
+            f"_{tag}_node_${{SLURM_PROCID}}.out",
+            f"/dummy_torchrun_multinode/{tag}",
+        ):
+            assert path in script, path
+        # No path may keep the bare id, or the two runs collide there instead.
+        assert not re.search(r"madengine[-_][\w{}$]*\$\{SLURM_JOB_ID\}(?!_\d)", script)
+
+    def test_run_id_matches_what_the_script_expands_to(self, tmp_path):
+        """collect_results() looks under the expanded tag, so they must agree."""
+        dep, _ = self._inside(tmp_path, job_id="12345")
+        assert dep.run_id == dep.job_tag.replace("${SLURM_JOB_ID}", "12345")
+
+    def test_srun_is_held_to_the_requested_nodes_inside_an_allocation(self, tmp_path):
+        """#SBATCH is inert here, so a bare srun would take the whole allocation."""
+        _, script = self._inside(tmp_path, nodes=2)
+        assert 'srun -N 2 -n 2 bash "$TASK_SCRIPT"' in script
+
+    def test_multi_node_runs_in_place(self, tmp_path):
+        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=2
+        ):
+            dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
+            dep.script_path = tmp_path / "job.sh"
+            dep.script_path.write_text("#!/bin/bash\nexit 0\n")
+            with patch.object(
+                SlurmDeployment, "_run_inside_existing_allocation"
+            ) as in_place:
+                dep.deploy()
+        in_place.assert_called_once()
+
+    def test_single_node_still_submits_an_sbatch(self, tmp_path):
+        """The single-node branch runs madengine inline, which under `bash` in an
+        allocation means the submitting host -- usually a login node."""
+        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=1
+        ):
+            dep = _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+            dep.script_path = tmp_path / "job.sh"
+            dep.script_path.write_text("#!/bin/bash\nexit 0\n")
+            with patch.object(
+                SlurmDeployment, "_run_inside_existing_allocation"
+            ) as in_place, patch.object(
+                SlurmDeployment, "_submit_sbatch", create=True
+            ):
+                try:
+                    dep.deploy()
+                except Exception:
+                    pass  # the sbatch path needs a cluster; only the branch matters
+        in_place.assert_not_called()
