@@ -237,3 +237,32 @@ class TestCollectOnlyThisRun:
     def test_nothing_published_is_a_failure_not_an_old_success(self, tmp_path, monkeypatch):
         res = self._collect(tmp_path, monkeypatch, None)
         assert res["successful_runs"] == [] and res["failed_runs"][0]["status"] == "FAILURE"
+
+
+class TestPresetsDoNotSizeTheCard:
+    """A run config that states no gpu_count / distributed block gets madengine's
+    single-gpu profile (gpu_count 1, cpu 8, memory 16Gi). A slurm_multi card sizes
+    its own pods; only what the run sets overrides it."""
+
+    def _bare(self, tmp_path, monkeypatch, k8s=None):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        d = _deployment(tmp_path, monkeypatch, k8s=k8s)
+        d.config.additional_context.pop("distributed", None)
+        user = {"gpu_vendor": "AMD", "guest_os": "UBUNTU",
+                "k8s": {"kubeconfig": _kubeconfig(tmp_path), "namespace": "lab", **(k8s or {})}}
+        d.config.additional_context.clear()
+        d.config.additional_context.update(ConfigLoader.load_k8s_config(user))
+        d.k8s_config = d.config.additional_context["k8s"]
+        assert d.k8s_config.get("gpu_count") == (k8s or {}).get("gpu_count", 1)  # the profile's guess
+        assert d.prepare() is True
+        return yaml.safe_load(d.job_yaml)["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    def test_card_gpus_win_over_the_profile_guess(self, tmp_path, monkeypatch):
+        res = self._bare(tmp_path, monkeypatch)
+        assert res["limits"]["amd.com/gpu"] == "8"
+        assert "cpu" not in res["requests"] and "memory" not in res["requests"]
+
+    def test_what_the_run_sets_wins(self, tmp_path, monkeypatch):
+        res = self._bare(tmp_path, monkeypatch, k8s={"gpu_count": 4, "cpu": "16", "memory": "64Gi"})
+        assert res["limits"]["amd.com/gpu"] == "4"
+        assert (res["requests"]["cpu"], res["requests"]["memory"]) == ("16", "64Gi")

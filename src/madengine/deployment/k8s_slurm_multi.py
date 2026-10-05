@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from madengine.core.timeout import resolve_run_timeout
 
 from .common import is_self_managed_launcher
-from .config_loader import PRESET_ENV_KEYS
+from .config_loader import PRESET_ENV_KEYS, PRESET_K8S_KEYS
 
 SHIM_DIR = Path(__file__).parent / "k8s_shim"
 AGENT_PORT = 29711
@@ -145,9 +145,18 @@ class KubernetesSlurmMultiMixin:
                 return str(ref)
         return model_key
 
+    def _user_k8s(self, key: str):
+        """k8s.<key> if the run set it; None if only a preset did.
+
+        Presets size a pod from a profile guessed from the run config (single-gpu when
+        it states no gpu_count or distributed block). A slurm_multi card sizes itself.
+        """
+        if key in set(self.config.additional_context.get(PRESET_K8S_KEYS) or []):
+            return None
+        return self.k8s_config.get(key)
+
     def _slurm_multi_gpus(self, model_info: Dict) -> int:
-        k8s = self.k8s_config
-        for v in (k8s.get("gpu_count"), (model_info.get("slurm") or {}).get("gpus_per_node"),
+        for v in (self._user_k8s("gpu_count"), (model_info.get("slurm") or {}).get("gpus_per_node"),
                   model_info.get("n_gpus")):
             try:
                 if v is not None and int(v) > 0:
@@ -234,10 +243,9 @@ class KubernetesSlurmMultiMixin:
         gpu_res = {self.gpu_resource_name: str(gpus)}
         extra = {k: str(v) for k, v in (k8s.get("extra_resources") or {}).items()}
         requests = {**gpu_res, **extra}
-        if k8s.get("cpu"):
-            requests["cpu"] = str(k8s["cpu"])
-        if k8s.get("memory"):
-            requests["memory"] = str(k8s["memory"])
+        for key in ("cpu", "memory"):
+            if self._user_k8s(key):
+                requests[key] = str(self._user_k8s(key))
         vols, mounts = self._slurm_multi_volumes()
 
         container = {
