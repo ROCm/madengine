@@ -41,8 +41,19 @@ def _pod_job_name_label_selector(deployment_id: str) -> str:
 
 
 def collector_pod_name(deployment_id: str) -> str:
-    """Consistent name for the temporary PVC collector pod."""
-    return f"collector-{deployment_id[:15]}"
+    """Consistent name for the temporary PVC collector pod.
+
+    A readable prefix of the job name plus a hash of all of it. The first 15
+    characters alone collided across jobs that share a prefix (every
+    "madengine-vllm-..." run got the same collector) and were an invalid name
+    when the cut landed on a dash ("collector-madengine-vllm-": the API
+    rejects it, and no results were collected).
+    """
+    import hashlib
+
+    prefix = re.sub(r"[^a-z0-9-]", "-", deployment_id.lower())[:40].strip("-")
+    digest = hashlib.sha1(deployment_id.encode()).hexdigest()[:6]
+    return f"collector-{prefix}-{digest}" if prefix else f"collector-{digest}"
 
 
 class KubernetesResultsMixin:

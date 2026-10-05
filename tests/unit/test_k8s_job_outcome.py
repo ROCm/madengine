@@ -27,3 +27,16 @@ class TestJobOutcome:
     def test_failure_within_retries_is_still_running(self):
         assert KubernetesDeployment._job_outcome(self._job(failed=1, backoff=3)) is None
         assert KubernetesDeployment._job_outcome(self._job(failed=4, backoff=3)) == "failed"
+
+
+def test_collector_pod_names_are_valid_and_distinct():
+    import re
+
+    from madengine.deployment.k8s_results import collector_pod_name
+
+    a = collector_pod_name("madengine-vllm-multinode-pyt-vllm-kimi-k3-mi300x-pp2xtp8")
+    b = collector_pod_name("madengine-vllm-disagg-pyt-vllm-disagg-mori-deepseek-v3")
+    for n in (a, b, collector_pod_name("madengine-x.y")):
+        assert re.match(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", n) and len(n) <= 63, n
+    assert a != b
+    assert collector_pod_name("madengine-m") == collector_pod_name("madengine-m")
