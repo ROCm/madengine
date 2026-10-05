@@ -136,6 +136,64 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 	fi
 	[ "$_rocm_trace_lite_restore_x" -eq 1 ] && set -x
 	unset _rocm_trace_lite_restore_x
+
+	# The release wheel's librtl.so is built against one ROCm's HSA headers. On a
+	# TheRock image there is no /opt/rocm, and that .so records 0 GPU ops (the
+	# queue-intercept function is at a different offset). Rebuild against this
+	# image's headers. /opt/rocm images keep the wheel.
+	if [ ! -f /opt/rocm/include/hsa/hsa.h ] && [ "${ROCM_TRACE_LITE_SKIP_NATIVE_BUILD:-0}" != "1" ]; then
+		_rtl_hdr=""
+		for _root in ${ROCM_PATH:-} /opt/rocm; do
+			if [ -n "$_root" ] && [ -f "$_root/include/hsa/hsa.h" ]; then
+				_rtl_hdr="$_root"
+				break
+			fi
+		done
+		if [ -z "$_rtl_hdr" ]; then
+			echo "Warning: no HSA headers found; keeping the prebuilt librtl.so." >&2
+		else
+			_rtl_ref="${ROCM_TRACE_LITE_GIT_REF:-v0.3.3}"
+			_rtl_stamp=/usr/local/lib/librtl.so.madengine-ref
+			if [ -f /usr/local/lib/librtl.so ] && [ "$(cat "$_rtl_stamp" 2>/dev/null || true)" = "$_rtl_ref" ]; then
+				echo "rocm-trace-lite: native librtl.so for ${_rtl_ref} already installed."
+			else
+				_rtl_libdir=$(find "$(dirname "$_rtl_hdr")" -maxdepth 4 -name 'libhsa-runtime64.so' -printf '%h\n' -quit 2>/dev/null || true)
+				if [ -z "$_rtl_libdir" ]; then
+					echo "Error: HSA headers at ${_rtl_hdr} but libhsa-runtime64.so was not found nearby." >&2
+					echo "The prebuilt librtl.so will not record kernel dispatches on this runtime." >&2
+					exit 1
+				fi
+				if [ ! -f /usr/include/sqlite3.h ] || ! command -v g++ >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+					if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+						apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
+					elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+						sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
+					fi
+				fi
+				if ! command -v g++ >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || [ ! -f /usr/include/sqlite3.h ]; then
+					echo "Error: building librtl.so needs g++, git, and sqlite3.h." >&2
+					exit 1
+				fi
+				_rtl_src=/opt/madengine-rocm-trace-lite
+				rm -rf "$_rtl_src"
+				git clone --depth 1 --branch "$_rtl_ref" https://github.com/sunway513/rocm-trace-lite.git "$_rtl_src"
+				_rtl_stage=/tmp/rtl-rocm-prefix
+				rm -rf "$_rtl_stage"
+				mkdir -p "$_rtl_stage"
+				ln -sfn "$_rtl_hdr/include" "$_rtl_stage/include"
+				ln -sfn "$_rtl_libdir" "$_rtl_stage/lib"
+				make -C "$_rtl_src" -j"$(nproc 2>/dev/null || echo 2)" HIP_PATH="$_rtl_stage"
+				install -d /usr/local/lib
+				install -m 755 "$_rtl_src/librtl.so" /usr/local/lib/librtl.so
+				echo "$_rtl_ref" > "$_rtl_stamp"
+				if command -v ldconfig >/dev/null 2>&1; then
+					ldconfig /usr/local/lib || true
+				fi
+				echo "rocm-trace-lite: built librtl.so against ${_rtl_hdr} (libhsa ${_rtl_libdir})."
+			fi
+		fi
+	fi
+
 	if command -v rtl >/dev/null 2>&1; then
 		echo "rocm-trace-lite: rtl is on PATH."
 	elif python3 -c 'import rocm_trace_lite' 2>/dev/null; then
