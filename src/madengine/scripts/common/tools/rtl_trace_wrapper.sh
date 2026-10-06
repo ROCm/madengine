@@ -101,13 +101,17 @@ if [[ $rc -ne 0 ]]; then
 fi
 
 # Count captured GPU operations across the merged db and per-process dbs.
-# roctx UserMarker ranges are CPU-side annotations.
-gpu_ops=$(python3 - "${RTL_OUT_DIR}" <<'EOF'
+# RTL_WRAPPER_TRACE_DB may sit outside RTL_OUT_DIR or use another basename,
+# so include that path explicitly. roctx UserMarker ranges are CPU-side annotations.
+gpu_ops=$(python3 - "${RTL_OUT_DIR}" "${RTL_DB}" <<'EOF'
 import glob, os, sqlite3, sys
-root = sys.argv[1]
+root, configured = sys.argv[1], sys.argv[2]
+paths = set(glob.glob(os.path.join(root, "trace*.db")))
+if configured:
+    paths.add(configured)
 total = 0
-for db in sorted(set(glob.glob(os.path.join(root, "trace*.db")))):
-    if os.path.getsize(db) == 0:
+for db in sorted(paths):
+    if not os.path.isfile(db) or os.path.getsize(db) == 0:
         continue
     try:
         con = sqlite3.connect(db)
@@ -122,7 +126,7 @@ EOF
 )
 
 if [[ "${gpu_ops}" -eq 0 ]]; then
-	echo "Error: rocm-trace-lite captured no GPU operations (trace dir: ${RTL_OUT_DIR})." >&2
+	echo "Error: rocm-trace-lite captured no GPU operations (trace dir: ${RTL_OUT_DIR}, db: ${RTL_DB})." >&2
 	echo "  The workload ran, but RTL did not intercept any kernel dispatch." >&2
 	echo "  HSA_TOOLS_LIB=${HSA_TOOLS_LIB:-unset}" >&2
 	echo "  On TheRock images the prebuilt wheel's librtl.so does not match the" >&2

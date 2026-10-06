@@ -24,6 +24,38 @@ if [ "${1:-}" = "--publish-native-librtl" ]; then
 	exit 0
 fi
 
+# Git tag for the native librtl.so rebuild. An explicit ref wins. Otherwise
+# use the release tag of the wheel just installed, so FOLLOW_LATEST / WHEEL_URL
+# are not overwritten by sources from the pinned default. Fall back to that pin
+# when the package version cannot be read.
+_rtl_native_git_ref() {
+	if [ -n "${ROCM_TRACE_LITE_GIT_REF:-}" ]; then
+		printf '%s\n' "${ROCM_TRACE_LITE_GIT_REF}"
+		return 0
+	fi
+	_rtl_ver=$(python3 -c '
+from importlib.metadata import PackageNotFoundError, version
+for name in ("rocm-trace-lite", "rocm_trace_lite"):
+    try:
+        print(version(name))
+        break
+    except PackageNotFoundError:
+        pass
+' 2>/dev/null || true)
+	# 0.3.7, 0.3.7.post1, 0.3.7+local -> tag v0.3.7
+	_rtl_ver="${_rtl_ver%%+*}"
+	_rtl_ver="${_rtl_ver%.post*}"
+	_rtl_ver="${_rtl_ver%.dev*}"
+	case "${_rtl_ver}" in
+		[0-9]*) printf 'v%s\n' "${_rtl_ver}" ;;
+		*) printf '%s\n' 'v0.3.3' ;;
+	esac
+}
+if [ "${1:-}" = "--print-native-git-ref" ]; then
+	_rtl_native_git_ref
+	exit 0
+fi
+
 tool=$1
 
 case "$tool" in
@@ -169,7 +201,7 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 		if [ -z "$_rtl_hdr" ]; then
 			echo "Warning: no HSA headers found; keeping the prebuilt librtl.so." >&2
 		else
-			_rtl_ref="${ROCM_TRACE_LITE_GIT_REF:-v0.3.3}"
+			_rtl_ref="$(_rtl_native_git_ref)"
 			# amdq1 hooks hsa_amd_queue_create. HIP 7.15 does not use hsa_queue_create.
 			_rtl_build_id="${_rtl_ref}+amdq1"
 			_rtl_stamp=/usr/local/lib/librtl.so.madengine-ref
@@ -416,12 +448,15 @@ tracelens)
 	# rocm/primus) ship without curl, which fails every pftrace report.
 	if ! command -v curl >/dev/null 2>&1; then
 		echo "TraceLens: curl not found; installing it for traceconv (pftrace reports)..."
+		# set -e is on. A package-manager failure must not abort setup; cached
+		# TraceLens and non-pftrace analysis still work, and the check below
+		# reports the limitation.
 		if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
-			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl
+			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl || true
 		elif [ "$(id -u)" -eq 0 ] && command -v yum >/dev/null 2>&1; then
-			yum install -y -q curl
+			yum install -y -q curl || true
 		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl
+			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl || true
 		fi
 		command -v curl >/dev/null 2>&1 || \
 			echo "Warning: curl unavailable; TraceLens pftrace reports will fail (traceconv download)." >&2
