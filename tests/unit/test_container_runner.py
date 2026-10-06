@@ -989,7 +989,9 @@ class TestStaleMultipleResultsIsDropped:
 
     MODEL_SCRIPT_CMD = "bash run.sh"
 
-    def _container_commands(self, tmp_path, monkeypatch, multiple_results, sh=None):
+    def _container_commands(
+        self, tmp_path, monkeypatch, multiple_results, sh=None, perf_csv="perf.csv"
+    ):
         """The commands run_container sends into the container, in order.
 
         ``sh`` optionally stands in for the container shell, so a test can
@@ -1008,6 +1010,7 @@ class TestStaleMultipleResultsIsDropped:
         }
         runner = ContainerRunner(context=context, console=MagicMock())
         runner.rich_console = MagicMock()
+        runner.perf_csv_path = perf_csv
 
         model_info = {
             "name": "m",
@@ -1063,6 +1066,22 @@ class TestStaleMultipleResultsIsDropped:
 
     def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
         commands = self._container_commands(tmp_path, monkeypatch, "   ")
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    @pytest.mark.parametrize(
+        "multiple_results",
+        ["perf.csv", "./perf.csv", "perf_super.csv", "perf_super.json"],
+    )
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch, multiple_results):
+        """The workspace root is cwd, where madengine keeps every run's rows."""
+        commands = self._container_commands(tmp_path, monkeypatch, multiple_results)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_output_csv_is_kept(self, tmp_path, monkeypatch):
+        """`--output results.csv` makes results.csv the cumulative report."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "results.csv", perf_csv="results.csv"
+        )
         assert [c for c in commands if c.startswith("rm -f --")] == []
 
     def test_the_path_is_quoted(self, tmp_path, monkeypatch):
@@ -1127,6 +1146,7 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
         runner.rich_console = MagicMock()
         runner.live_output = False
         runner.additional_context = {}
+        runner.perf_csv_path = "perf.csv"
         return runner
 
     def _run(
@@ -1210,6 +1230,19 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
         self._run(tmp_path, monkeypatch, None)
 
         assert leftover.exists()
+
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch):
+        """cwd/perf.csv holds every earlier run's rows."""
+        in_cwd = tmp_path / "perf.csv"
+        in_cwd.write_text("model,perf\nkeep,1\n")
+        beside_script = tmp_path / "scripts" / "perf.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf.csv", script_subdir="scripts")
+
+        assert in_cwd.exists()
+        assert beside_script.exists()
 
     def test_a_file_that_cannot_be_deleted_is_reported(
         self, tmp_path, monkeypatch, capsys

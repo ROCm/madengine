@@ -24,6 +24,7 @@ from .primus_backend import infer_primus_backend_from_model_name, merged_primus_
 from .common import (
     canonicalize_distributed_launcher,
     configure_multi_node_profiling,
+    is_cumulative_report,
     is_self_managed_launcher,
     normalize_launcher,
     resolve_launcher_from_sources,
@@ -716,7 +717,7 @@ class SlurmDeployment(BaseDeployment):
         # per-node CSV was collected. Best-effort -- `set -e` is still on here
         # and a file the caller cannot unlink must not abort the job.
         multiple_results = (model_info.get("multiple_results") or "").strip()
-        if multiple_results:
+        if multiple_results and not is_cumulative_report(multiple_results):
             stale_paths = [shlex.quote(multiple_results)]
             manifest_copy = str(manifest_dir / multiple_results)
             if manifest_copy != multiple_results:

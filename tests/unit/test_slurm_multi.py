@@ -353,6 +353,10 @@ class TestSlurmMultiDropsStaleResults:
     def test_nothing_is_dropped_without_multiple_results(self, wrapper_script):
         assert "rm -f -- " not in wrapper_script(None)
 
+    def test_a_cumulative_report_is_not_dropped(self, wrapper_script):
+        """The copy next to the manifest is the project's cumulative perf.csv."""
+        assert "rm -f -- " not in wrapper_script("perf.csv")
+
 
 # ---------------------------------------------------------------------------
 # 4. _execute_with_prebuilt_image manifest-shape contract (Copilot C2 + C3)
