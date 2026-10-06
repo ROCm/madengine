@@ -81,6 +81,18 @@ fi
 if [[ -z "${RTL_OUTPUT:-}" ]]; then
 	export RTL_OUTPUT="${RTL_OUT_DIR}/trace_%p.db"
 fi
+# rtl trace overwrites HSA_TOOLS_LIB with get_lib_path(), which prefers the wheel
+# copy. The pre-script's native library is what matches this image's HSA.
+if [[ -f /usr/local/lib/librtl.so ]]; then
+	_rtl_pkg=$(python3 -c 'from rocm_trace_lite import get_lib_path; print(get_lib_path())' 2>/dev/null || true)
+	if [[ -n "${_rtl_pkg}" && "${_rtl_pkg}" != /usr/local/lib/librtl.so && -f "${_rtl_pkg}" ]]; then
+		if ! cmp -s /usr/local/lib/librtl.so "${_rtl_pkg}"; then
+			install -m 755 /usr/local/lib/librtl.so "${_rtl_pkg}"
+			echo "rocm-trace-lite: replaced ${_rtl_pkg} with the library built for this image." >&2
+		fi
+	fi
+	echo "rocm-trace-lite: librtl $(sha256sum /usr/local/lib/librtl.so | awk '{print $1}')" >&2
+fi
 
 rc=0
 "${RTL_CLI[@]}" -o "${RTL_DB}" "$@" || rc=$?

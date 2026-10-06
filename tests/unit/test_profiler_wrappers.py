@@ -18,6 +18,7 @@ import pytest
 from madengine.utils.path_utils import get_madengine_root
 
 TOOLS = get_madengine_root() / "scripts" / "common" / "tools"
+PRE_SCRIPTS = get_madengine_root() / "scripts" / "common" / "pre_scripts"
 
 
 def _stub(bin_dir: Path, name: str, body: str) -> None:
@@ -169,3 +170,36 @@ class TestRtlWrapperEmptyTrace:
         res, run_dir = self._run_rtl(tmp_path, bin_dir, None, cmd=("python3", str(writer)))
         assert res.returncode == 0, res.stderr
         assert (run_dir / "rocm_trace_lite_output" / "trace_42.db").exists()
+
+
+class TestNativeLibrtlReplacesWheelCopy:
+    """rtl trace forces HSA_TOOLS_LIB to get_lib_path(), which prefers the wheel."""
+
+    def test_publish_overwrites_the_wheel_file(self, tmp_path, bin_dir):
+        wheel = tmp_path / "site-packages" / "rocm_trace_lite" / "lib" / "librtl.so"
+        wheel.parent.mkdir(parents=True)
+        wheel.write_bytes(b"WHEEL")
+        built = tmp_path / "native" / "librtl.so"
+        built.parent.mkdir()
+        built.write_bytes(b"NATIVE")
+        _stub(bin_dir, "python3", f'printf "%s\\n" "{wheel}"\n')
+        res = subprocess.run(
+            ["bash", str(PRE_SCRIPTS / "trace.sh"), "--publish-native-librtl", str(built)],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        assert wheel.read_bytes() == b"NATIVE"
+
+    def test_publish_allows_a_missing_package_library(self, tmp_path, bin_dir):
+        built = tmp_path / "native" / "librtl.so"
+        built.parent.mkdir()
+        built.write_bytes(b"NATIVE")
+        _stub(bin_dir, "python3", 'exit 1\n')
+        res = subprocess.run(
+            ["bash", str(PRE_SCRIPTS / "trace.sh"), "--publish-native-librtl", str(built)],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        assert built.read_bytes() == b"NATIVE"
