@@ -7,6 +7,23 @@
 set -e
 set -x
 
+# rtl trace (v0.3.3) sets HSA_TOOLS_LIB and LD_PRELOAD to get_lib_path(), which
+# prefers the wheel's lib/librtl.so over /usr/local/lib. A native rebuild that
+# only lands in /usr/local/lib is never the library that traces. Replace the
+# wheel copy with the library built for this image.
+_rtl_publish_native() {
+	_built="$1"
+	_pkg=$(python3 -c 'from rocm_trace_lite import get_lib_path; print(get_lib_path())' 2>/dev/null || true)
+	if [ -n "$_pkg" ] && [ "$_pkg" != "$_built" ] && [ -f "$_pkg" ]; then
+		install -m 755 "$_built" "$_pkg"
+		echo "rocm-trace-lite: replaced ${_pkg} with the library built for this image."
+	fi
+}
+if [ "${1:-}" = "--publish-native-librtl" ]; then
+	_rtl_publish_native "${2:?built librtl.so}"
+	exit 0
+fi
+
 tool=$1
 
 case "$tool" in
@@ -153,9 +170,12 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 			echo "Warning: no HSA headers found; keeping the prebuilt librtl.so." >&2
 		else
 			_rtl_ref="${ROCM_TRACE_LITE_GIT_REF:-v0.3.3}"
+			# amdq1 hooks hsa_amd_queue_create. HIP 7.15 does not use hsa_queue_create.
+			_rtl_build_id="${_rtl_ref}+amdq1"
 			_rtl_stamp=/usr/local/lib/librtl.so.madengine-ref
-			if [ -f /usr/local/lib/librtl.so ] && [ "$(cat "$_rtl_stamp" 2>/dev/null || true)" = "$_rtl_ref" ]; then
+			if [ -f /usr/local/lib/librtl.so ] && [ "$(cat "$_rtl_stamp" 2>/dev/null || true)" = "$_rtl_build_id" ]; then
 				echo "rocm-trace-lite: native librtl.so for ${_rtl_ref} already installed."
+				_rtl_publish_native /usr/local/lib/librtl.so
 			else
 				_rtl_libdir=$(find "$(dirname "$_rtl_hdr")" -maxdepth 4 -name 'libhsa-runtime64.so' -printf '%h\n' -quit 2>/dev/null || true)
 				if [ -z "$_rtl_libdir" ]; then
@@ -177,6 +197,115 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 				_rtl_src=/opt/madengine-rocm-trace-lite
 				rm -rf "$_rtl_src"
 				git clone --depth 1 --branch "$_rtl_ref" https://github.com/sunway513/rocm-trace-lite.git "$_rtl_src"
+				cat > /tmp/rtl-amd-queue-create.patch << 'ENDPATCH'
+diff --git a/src/hsa_intercept.cpp b/src/hsa_intercept.cpp
+index 18f055b..fa5f4da 100644
+--- a/src/hsa_intercept.cpp
++++ b/src/hsa_intercept.cpp
+@@ -521,6 +521,81 @@ static void queue_intercept_cb(const void* in_packets, uint64_t count,
+ 
+ // ---- HSA API table replacement ----
+ 
++// HIP 7.15 creates compute queues through hsa_amd_queue_create. The export
++// jumps through amdExtTable, so replacing only hsa_queue_create never sees them.
++static hsa_status_t my_hsa_amd_queue_create(
++    hsa_agent_t agent, hsa_amd_queue_create_desc_t* descs, uint32_t num_descs) {
++
++    if (!g_intercept_available || descs == nullptr || num_descs != 1 ||
++        descs[0].engine_type != 0 || descs[0].flags != 0) {
++        return g_orig_ext.hsa_amd_queue_create_fn(agent, descs, num_descs);
++    }
++
++    hsa_amd_queue_create_desc_t& d = descs[0];
++    static std::atomic<int> logged_amd{0};
++    if (logged_amd.exchange(1) == 0) {
++        fprintf(stderr, "rtl: hsa_amd_queue_create bytes=%u priv=%u\n",
++                d.queue_size_bytes, d.engine.compute.private_segment_size);
++    }
++
++    uint32_t packets = d.queue_size_bytes / 64;
++    if (packets < 2) {
++        packets = 64;
++    }
++    uint32_t priv = d.engine.compute.private_segment_size;
++    if (priv == UINT32_MAX) {
++        priv = 0;
++    }
++    hsa_queue_t* queue = nullptr;
++    hsa_status_t status = g_orig_ext.hsa_amd_queue_intercept_create_fn(
++        agent, packets, d.engine.compute.type, d.callback, d.callback_data,
++        priv, 0, &queue);
++    if (status != HSA_STATUS_SUCCESS || queue == nullptr) {
++        fprintf(stderr,
++                "rtl: amd intercept_create failed (0x%x), using runtime queue\n",
++                (unsigned)status);
++        return g_orig_ext.hsa_amd_queue_create_fn(agent, descs, num_descs);
++    }
++    d.queue = queue;
++
++    if (g_orig_ext.hsa_amd_profiling_set_profiler_enabled_fn != nullptr) {
++        hsa_status_t prof_status =
++            g_orig_ext.hsa_amd_profiling_set_profiler_enabled_fn(queue, true);
++        if (prof_status != HSA_STATUS_SUCCESS) {
++            fprintf(stderr,
++                    "rtl: warning: failed to enable profiling on amd queue (status=%d)\n",
++                    (int)prof_status);
++        }
++    }
++    if (g_orig_ext.hsa_amd_queue_set_priority_fn != nullptr) {
++        g_orig_ext.hsa_amd_queue_set_priority_fn(queue, d.priority);
++    }
++    if (d.engine.compute.cu_mask_count != 0 && d.engine.compute.cu_mask != nullptr &&
++        g_orig_ext.hsa_amd_queue_cu_set_mask_fn != nullptr) {
++        g_orig_ext.hsa_amd_queue_cu_set_mask_fn(
++            queue, d.engine.compute.cu_mask_count, d.engine.compute.cu_mask);
++    }
++
++    auto* qi = new QueueInfo;
++    qi->device_id = 0;
++    qi->queue_handle = (uint64_t)queue;
++    {
++        std::lock_guard<std::mutex> lock(g_agent_mutex);
++        for (size_t i = 0; i < g_gpu_agents.size(); i++) {
++            if (g_gpu_agents[i].handle == agent.handle) {
++                qi->device_id = (int)i;
++                break;
++            }
++        }
++    }
++    {
++        std::lock_guard<std::mutex> lock(g_queue_mutex);
++        g_queue_map[(uint64_t)queue] = *qi;
++    }
++    g_orig_ext.hsa_amd_queue_intercept_register_fn(queue, queue_intercept_cb, qi);
++    return HSA_STATUS_SUCCESS;
++}
++
+ static hsa_status_t my_hsa_queue_create(
+     hsa_agent_t agent, uint32_t size, hsa_queue_type32_t type,
+     void (*callback)(hsa_status_t, hsa_queue_t*, void*),
+@@ -707,7 +782,6 @@ extern "C" bool OnLoad(void* pTable,
+     // Replace queue creation and executable freeze
+     table->core_->hsa_queue_create_fn = my_hsa_queue_create;
+     table->core_->hsa_executable_freeze_fn = my_hsa_executable_freeze;
+-
+     // Discover GPU agents (immutable after this point)
+     hsa_iterate_agents(agent_iterate_cb, nullptr);
+     fprintf(stderr, "rtl: found %zu GPU agent(s)\n", g_gpu_agents.size());
+@@ -746,6 +820,11 @@ extern "C" bool OnLoad(void* pTable,
+         }
+     }
+ 
++    if (g_intercept_available && table->amd_ext_->hsa_amd_queue_create_fn != nullptr) {
++        table->amd_ext_->hsa_amd_queue_create_fn = my_hsa_amd_queue_create;
++        fprintf(stderr, "rtl: hooked hsa_amd_queue_create\n");
++    }
++
+     // Initialize lock-free ring buffer (full reset for re-load safety)
+     g_central_head.store(0, std::memory_order_relaxed);
+     g_central_tail.store(0, std::memory_order_relaxed);
+ENDPATCH
+				git -C "$_rtl_src" apply /tmp/rtl-amd-queue-create.patch
 				_rtl_stage=/tmp/rtl-rocm-prefix
 				rm -rf "$_rtl_stage"
 				mkdir -p "$_rtl_stage"
@@ -185,7 +314,8 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 				make -C "$_rtl_src" -j"$(nproc 2>/dev/null || echo 2)" HIP_PATH="$_rtl_stage"
 				install -d /usr/local/lib
 				install -m 755 "$_rtl_src/librtl.so" /usr/local/lib/librtl.so
-				echo "$_rtl_ref" > "$_rtl_stamp"
+				echo "$_rtl_build_id" > "$_rtl_stamp"
+				_rtl_publish_native /usr/local/lib/librtl.so
 				if command -v ldconfig >/dev/null 2>&1; then
 					ldconfig /usr/local/lib || true
 				fi
