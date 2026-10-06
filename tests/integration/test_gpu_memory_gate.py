@@ -127,7 +127,7 @@ class TestCheckGpuMemoryFree:
             {"gpu": 1, "used_mb": 100, "total_mb": 294896},
         ]
 
-        check_gpu_memory_free(manager)
+        check_gpu_memory_free(manager, timeout_s=30)
 
     def test_fails_fast_when_busy(self):
         manager = Mock()

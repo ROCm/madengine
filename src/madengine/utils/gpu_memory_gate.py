@@ -16,7 +16,6 @@ from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
 DEFAULT_THRESHOLD_MB = 512
 DEFAULT_POLL_INTERVAL_S = 1
-DEFAULT_WAIT_TIMEOUT_S = 30
 
 
 def _busy_gpus(tool_manager: BaseGPUToolManager, threshold_mb: int) -> list:
@@ -27,7 +26,7 @@ def _busy_gpus(tool_manager: BaseGPUToolManager, threshold_mb: int) -> list:
 
 def check_gpu_memory_free(
     tool_manager: BaseGPUToolManager,
-    timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
+    timeout_s: int,
 ) -> None:
     """Verify all GPUs have free memory before allowing a run to proceed.
 
