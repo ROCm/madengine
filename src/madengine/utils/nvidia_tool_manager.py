@@ -18,7 +18,7 @@ Future enhancements could include:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-from typing import Optional
+from typing import Dict, List, Optional
 
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
@@ -275,7 +275,13 @@ class NvidiaToolManager(BaseGPUToolManager):
                 f"Error: {e}\n"
                 f"Ensure GPU {gpu_id} exists: nvidia-smi -L"
             )
-    
+
+    def get_gpu_memory_usage_mb(self) -> List[Dict[str, int]]:
+        """Get per-GPU memory usage in MB."""
+        raise NotImplementedError(
+            "get_gpu_memory_usage_mb is not implemented for NVIDIA GPUs"
+        )
+
     def get_gpu_architecture(self, gpu_id: int = 0) -> str:
         """Get GPU architecture/compute capability.
         

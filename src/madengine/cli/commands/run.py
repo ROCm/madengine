@@ -176,6 +176,15 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
+    wait_for_gpu_memory: Annotated[
+        Optional[int],
+        typer.Option(
+            "--wait-for-gpu-memory",
+            help="Refuse to run (local execution) unless all GPUs report free memory. "
+            "Pass 0 to check once and fail immediately if busy, or a number of "
+            "seconds to poll until memory frees up or the timeout elapses",
+        ),
+    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -309,6 +318,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=True,
             )
 
@@ -420,6 +430,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 

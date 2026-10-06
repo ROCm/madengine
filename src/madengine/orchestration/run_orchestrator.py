@@ -722,6 +722,16 @@ class RunOrchestrator:
         # For full workflow, logs are combined later by _combine_build_and_run_logs()
         phase_suffix = ".run"
 
+        wait_for_gpu_memory = getattr(self.args, "wait_for_gpu_memory", None)
+        if wait_for_gpu_memory is not None:
+            from madengine.utils.gpu_memory_gate import check_gpu_memory_free
+            from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+
+            check_gpu_memory_free(
+                get_gpu_tool_manager(),
+                timeout_s=wait_for_gpu_memory,
+            )
+
         # Run models
         results = runner.run_models_from_manifest(
             manifest_file=manifest_file,
