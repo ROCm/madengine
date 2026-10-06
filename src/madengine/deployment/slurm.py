@@ -1224,10 +1224,10 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
         else:
             return f'''# DeepSpeed multi-node setup
 # Generate hostfile dynamically from SLURM
-cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
+cat > /tmp/deepspeed_hostfile_{self.job_tag}.txt << EOF
 $(scontrol show hostnames ${self._launch_nodelist_var} | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
 EOF
-export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_{self.job_tag}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
     def _generate_megatron_command(
         self, nnodes: int, nproc_per_node: int, master_port: int

@@ -333,7 +333,7 @@ Unlike templated launchers, slurm_multi runs the model's `.slurm` script directl
 
 ### Running Inside salloc
 
-When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` even inside `salloc`.
+When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated launchers do the same for multi-node runs: the job script runs in place and starts its tasks with `srun` on the first `nodes` hosts of the allocation (or on `slurm.nodelist`, when set). Each run gets its own paths, so several runs can share one allocation. Single-node runs still submit their own `sbatch`, because in place their script would run on the submitting host.
 
 ```bash
 salloc --nodes=3 --gpus-per-node=8 --partition=gpu

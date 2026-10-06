@@ -576,6 +576,17 @@ class TestInsideExistingAllocation:
         assert "SLURM_JOB_NODELIST" in cmd
         assert "SLURM_STEP_NODELIST" not in cmd
 
+    def test_deepspeed_hostfile_is_run_scoped(self, tmp_path):
+        """Two in-place runs on the same hosts would share /tmp otherwise."""
+        dep, _ = self._inside(tmp_path)
+        cmd = dep._generate_deepspeed_command(2, 8, 29500)
+        assert cmd.count(f"/tmp/deepspeed_hostfile_{dep.job_tag}.txt") == 2
+
+    def test_deepspeed_hostfile_keeps_the_job_id_under_sbatch(self, tmp_path):
+        dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
+        cmd = dep._generate_deepspeed_command(2, 8, 29500)
+        assert cmd.count("/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt") == 2
+
     def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
         script = _render(_build_deployment(tmp_path))
         assert "STEP_NODELIST" not in script
