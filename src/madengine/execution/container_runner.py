@@ -42,6 +42,7 @@ from madengine.utils.therock_markers import is_therock_tree
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.deployment.common import (
     canonicalize_distributed_launcher,
+    is_cumulative_report,
     is_self_managed_launcher,
 )
 from madengine.execution.container_runner_helpers import (
@@ -933,7 +934,9 @@ class ContainerRunner:
             directory: Directory the model script appends the file in.
         """
         stale_results = (model_info.get("multiple_results") or "").strip()
-        if not stale_results:
+        if not stale_results or is_cumulative_report(
+            stale_results, self.perf_csv_path
+        ):
             return
         stale_path = os.path.join(directory, stale_results)
         try:
@@ -1578,7 +1581,9 @@ class ContainerRunner:
                         stale_results = (
                             model_info.get("multiple_results") or ""
                         ).strip()
-                        if stale_results:
+                        if stale_results and not is_cumulative_report(
+                            stale_results, self.perf_csv_path
+                        ):
                             # Keep a failed unlink non-fatal, but do not keep it
                             # quiet: the file is still what
                             # _resolve_multiple_results_path picks, so the run
