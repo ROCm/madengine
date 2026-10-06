@@ -644,7 +644,7 @@ madengine build --tags my_model --build-on-compute --registry docker.io/myorg
 
 **Run Phase — salloc support**:
 
-When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` inside `salloc` (no behavior change).
+When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated multi-node launchers also run in place inside `salloc`, while single-node runs still submit `sbatch`; see [Running Inside salloc](deployment.md#running-inside-salloc).
 
 ```bash
 # Inside salloc: runs synchronously with bash
