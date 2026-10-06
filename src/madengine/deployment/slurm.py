@@ -140,22 +140,12 @@ class SlurmDeployment(BaseDeployment):
         # is collect_results() on this side. That is unique per sbatch, but every
         # run inside one allocation shares a single SLURM_JOB_ID, so a second run
         # would land on the first one's paths. Add a per-run discriminator there,
-        # and only there: outside an allocation the tag is the bare job id and the
-        # rendered script is unchanged.
-        # One discriminator, three renderings: job_tag for the paths that are
-        # keyed on the job id, run_suffix on its own for the node workspace
-        # under SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR
-        # is already per-job and so collides between runs sharing one -- and
-        # run_id for what those expand to once the script runs, which is what
-        # collect_results() needs to find this run's artifacts. The random part
-        # keeps two runs started within the same second apart.
-        self.run_suffix = (
+        # and only there: a run that gets its own sbatch keeps the bare job id
+        # and the rendered script is unchanged. The random part keeps two runs
+        # started within the same second apart.
+        self._run_discriminator = (
             f"_{time.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
-            if self.inside_allocation
-            else ""
         )
-        self.job_tag = "${SLURM_JOB_ID}" + self.run_suffix
-        self.run_id = self.existing_job_id + self.run_suffix
 
         if self.inside_allocation:
             self.console.print(
@@ -164,6 +154,42 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(
                 f"  Allocation has {self.allocation_nodes} nodes available"
             )
+
+    # Evaluated on use rather than in __init__: prepare() may still change
+    # self.nodes from the model card.
+    @property
+    def runs_in_place(self) -> bool:
+        """True if deploy() runs the templated script inside this allocation.
+
+        Only a multi-node run does; a single-node one submits its own sbatch.
+        """
+        return self.inside_allocation and self.nodes > 1
+
+    # One discriminator, three renderings: job_tag for the paths that are keyed
+    # on the job id, run_suffix on its own for the node workspace under
+    # SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR is already
+    # per-job and so collides between runs sharing one -- and run_id for what
+    # those expand to once the script runs, which is what collect_results()
+    # needs to find this run's artifacts.
+    @property
+    def run_suffix(self) -> str:
+        return self._run_discriminator if self.runs_in_place else ""
+
+    @property
+    def job_tag(self) -> str:
+        return "${SLURM_JOB_ID}" + self.run_suffix
+
+    @property
+    def run_id(self) -> str:
+        return self.existing_job_id + self.run_suffix
+
+    @property
+    def _launch_nodelist_var(self) -> str:
+        """Variable a launcher reads its hosts from inside the srun step.
+
+        An in-place step may cover only part of the allocation.
+        """
+        return "SLURM_STEP_NODELIST" if self.runs_in_place else "SLURM_JOB_NODELIST"
 
     def _get_allocation_node_count(self) -> int:
         """
@@ -842,7 +868,7 @@ class SlurmDeployment(BaseDeployment):
             "model_name": model_info["name"],
             "job_tag": self.job_tag,
             "run_suffix": self.run_suffix,
-            "inside_allocation": self.inside_allocation,
+            "in_place": self.runs_in_place,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
@@ -1128,7 +1154,7 @@ if [ -z "$_MAD_LOCAL_IP" ]; then
         | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
 fi
 
-SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
+SLURM_NODE_IPS=$(scontrol show hostname ${{{self._launch_nodelist_var}}} | while read node; do
     node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
     # Only the local node may fall back to its own address; doing this for a peer
     # would publish this node's IP in that peer's slot. The list holds NodeName
@@ -1150,7 +1176,7 @@ done | tr '\\n' ',' | sed 's/,$//')
 # yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
 # the barrier exactly like the loopback one did.
 if [ -z "$SLURM_NODE_IPS" ]; then
-    echo "ERROR: empty node list from 'scontrol show hostname ${{SLURM_JOB_NODELIST}}'" >&2
+    echo "ERROR: empty node list from 'scontrol show hostname ${{{self._launch_nodelist_var}}}'" >&2
     exit 1
 fi
 case "$SLURM_NODE_IPS" in
@@ -1199,7 +1225,7 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
             return f'''# DeepSpeed multi-node setup
 # Generate hostfile dynamically from SLURM
 cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
-$(scontrol show hostnames $SLURM_JOB_NODELIST | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+$(scontrol show hostnames ${self._launch_nodelist_var} | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
 EOF
 export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
@@ -1358,8 +1384,8 @@ export MASTER_PORT={master_port}
         # is the compute node; under bash in an allocation it is wherever the
         # caller's shell is, typically a login node. Submitting a fresh sbatch is
         # the right answer there.
-        if self.inside_allocation and (
-            getattr(self, "_is_slurm_multi", False) or self.nodes > 1
+        if self.runs_in_place or (
+            self.inside_allocation and getattr(self, "_is_slurm_multi", False)
         ):
             return self._run_inside_existing_allocation()
 

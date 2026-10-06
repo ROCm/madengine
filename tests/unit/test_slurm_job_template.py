@@ -452,11 +452,13 @@ class TestInsideExistingAllocation:
     """
 
     @staticmethod
-    def _inside(tmp_path, nodes=2, job_id="99999"):
+    def _inside(tmp_path, nodes=2, job_id="99999", **slurm_overrides):
         with patch.dict("os.environ", {"SLURM_JOB_ID": job_id}), patch.object(
             SlurmDeployment, "_get_allocation_node_count", return_value=nodes
         ):
-            dep = _build_deployment(tmp_path, slurm_overrides={"nodes": nodes})
+            dep = _build_deployment(
+                tmp_path, slurm_overrides={"nodes": nodes, **slurm_overrides}
+            )
             return dep, _render(dep)
 
     def test_paths_are_untagged_outside_an_allocation(self, tmp_path):
@@ -504,16 +506,26 @@ class TestInsideExistingAllocation:
         _, script = self._inside(tmp_path, nodes=2)
         assert 'srun -N 2 -n 2 --nodelist "$STEP_NODELIST" bash "$TASK_SCRIPT"' in script
 
-    def test_rendezvous_comes_from_the_step_hosts(self, tmp_path):
+    @pytest.mark.parametrize(
+        "overrides, expected",
+        [({}, ["h1,h2", "h1"]), ({"nodelist": "h3,h4"}, ["h3,h4", "h3"])],
+    )
+    def test_rendezvous_comes_from_the_step_hosts(self, tmp_path, overrides, expected):
         """In a larger allocation the step must contain MASTER_ADDR, and
-        WORLD_SIZE must match its task count rather than the allocation's."""
-        _, script = self._inside(tmp_path, nodes=2)
+        WORLD_SIZE must match its task count rather than the allocation's. An
+        explicit slurm.nodelist picks the hosts, as it does under sbatch."""
+        _, script = self._inside(tmp_path, nodes=2, **overrides)
         lines = script.splitlines()
         start = next(i for i, l in enumerate(lines) if l.startswith("STEP_NODELIST="))
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         scontrol = bin_dir / "scontrol"
-        scontrol.write_text("#!/bin/bash\nprintf 'h1\\nh2\\nh3\\nh4\\n'\n")
+        # Expands whatever list it is given, as scontrol does.
+        scontrol.write_text(
+            "#!/bin/bash\n"
+            'case "$3" in h3,h4) printf "h3\\nh4\\n" ;; '
+            '*) printf "h1\\nh2\\nh3\\nh4\\n" ;; esac\n'
+        )
         scontrol.chmod(0o755)
         snippet = "\n".join(
             ["export SLURM_NTASKS=4"]
@@ -527,7 +539,42 @@ class TestInsideExistingAllocation:
             text=True,
             check=True,
         ).stdout.split()
-        assert out == ["h1,h2", "h1", "2"]
+        assert out == expected + ["2"]
+
+    def test_a_single_node_run_keeps_the_standard_script(self, tmp_path):
+        """It submits its own sbatch, so its paths and the id deploy() returns
+        must be the bare job id that collect_results() looks under."""
+        dep, script = self._inside(tmp_path, nodes=1)
+        assert dep.job_tag == "${SLURM_JOB_ID}"
+        assert dep.run_id == "99999"
+        assert script == _render(_build_deployment(tmp_path, slurm_overrides={"nodes": 1}))
+
+    def test_the_tag_follows_a_node_count_resolved_later(self, tmp_path):
+        """prepare() may still raise the node count from the model card."""
+        dep, _ = self._inside(tmp_path, nodes=1)
+        dep.nodes = 2
+        assert dep.run_suffix and dep.job_tag.endswith(dep.run_suffix)
+
+    @pytest.mark.parametrize(
+        "generator, nnodes",
+        [("_generate_deepspeed_command", 2), ("_generate_sglang_disagg_command", 3)],
+    )
+    def test_launchers_read_the_step_hosts_in_place(self, tmp_path, generator, nnodes):
+        """They run inside the step; the allocation may hold more hosts."""
+        dep, _ = self._inside(tmp_path, nodes=nnodes)
+        cmd = getattr(dep, generator)(nnodes, 8, 29500)
+        assert "SLURM_STEP_NODELIST" in cmd
+        assert "SLURM_JOB_NODELIST" not in cmd
+
+    @pytest.mark.parametrize(
+        "generator, nnodes",
+        [("_generate_deepspeed_command", 2), ("_generate_sglang_disagg_command", 3)],
+    )
+    def test_launchers_read_the_job_hosts_under_sbatch(self, tmp_path, generator, nnodes):
+        dep = _build_deployment(tmp_path, slurm_overrides={"nodes": nnodes})
+        cmd = getattr(dep, generator)(nnodes, 8, 29500)
+        assert "SLURM_JOB_NODELIST" in cmd
+        assert "SLURM_STEP_NODELIST" not in cmd
 
     def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
         script = _render(_build_deployment(tmp_path))
