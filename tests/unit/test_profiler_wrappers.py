@@ -152,6 +152,17 @@ class TestRtlWrapperEmptyTrace:
         assert res.returncode == 0, res.stderr
         assert seen.read_text().strip() == "unset"
 
+    def test_configured_trace_db_outside_output_dir(self, tmp_path, bin_dir):
+        custom = tmp_path / "custom" / "foo.db"
+        custom.parent.mkdir()
+        res, run_dir = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"],
+            RTL_WRAPPER_TRACE_DB=str(custom),
+        )
+        assert res.returncode == 0, res.stderr
+        assert custom.exists()
+        assert not (run_dir / "rocm_trace_lite_output" / "trace.db").exists()
+
     def test_per_process_db_counts_as_gpu_ops(self, tmp_path, bin_dir):
         # Workers write trace_<pid>.db. The merged trace.db may be absent.
         writer = tmp_path / "write_trace.py"
@@ -203,3 +214,52 @@ class TestNativeLibrtlReplacesWheelCopy:
         )
         assert res.returncode == 0, res.stderr
         assert built.read_bytes() == b"NATIVE"
+
+
+class TestNativeGitRef:
+    def _ref(self, bin_dir, python_body, **env):
+        _stub(bin_dir, "python3", python_body)
+        res = subprocess.run(
+            ["bash", str(PRE_SCRIPTS / "trace.sh"), "--print-native-git-ref"],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **env},
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        return res.stdout.strip()
+
+    def test_installed_version_becomes_the_tag(self, bin_dir):
+        assert self._ref(bin_dir, 'printf "%s\\n" "0.3.7.post1"\n') == "v0.3.7"
+
+    def test_local_version_suffix_is_stripped(self, bin_dir):
+        assert self._ref(bin_dir, 'printf "%s\\n" "0.3.7+local"\n') == "v0.3.7"
+
+    def test_explicit_ref_overrides_the_package(self, bin_dir):
+        assert self._ref(
+            bin_dir, 'printf "%s\\n" "0.3.3"\n', ROCM_TRACE_LITE_GIT_REF="v0.9.1"
+        ) == "v0.9.1"
+
+    def test_unreadable_version_falls_back_to_the_pin(self, bin_dir):
+        assert self._ref(bin_dir, "exit 1\n") == "v0.3.3"
+
+
+class TestTracelensCurlInstall:
+    def test_package_manager_failure_does_not_abort_setup(self, tmp_path, bin_dir):
+        venv_bin = tmp_path / "tl-venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        py = venv_bin / "python3"
+        py.write_text("#!/bin/sh\nexit 0\n")
+        py.chmod(py.stat().st_mode | stat.S_IEXEC)
+        _stub(bin_dir, "id", 'printf "%s\\n" 0\n')
+        _stub(bin_dir, "apt-get", 'echo "apt failed" >&2\nexit 1\n')
+        res = subprocess.run(
+            ["/bin/bash", str(PRE_SCRIPTS / "trace.sh"), "tracelens"],
+            env={
+                **os.environ,
+                "PATH": str(bin_dir),
+                "TRACELENS_VENV": str(tmp_path / "tl-venv"),
+            },
+            capture_output=True, text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        assert "curl unavailable" in res.stderr
+        assert "already installed" in res.stdout
