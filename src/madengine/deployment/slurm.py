@@ -15,6 +15,7 @@ import os
 import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -1536,12 +1537,21 @@ export MASTER_PORT={master_port}
         
         try:
             # Run script directly with bash (synchronous, blocks until done)
-            # Don't capture output - let it stream directly to console
-            result = subprocess.run(
-                ["bash", str(self.script_path)],
-                timeout=subprocess_timeout(self.config.timeout),
+            # Don't capture output - let it stream directly to console.
+            # Own process group, so a timeout or Ctrl-C can stop the srun step
+            # under bash too: killing bash alone leaves the step's tasks
+            # running in the caller's allocation, and cleanup() must not
+            # cancel the allocation itself.
+            proc = subprocess.Popen(
+                ["bash", str(self.script_path)], start_new_session=True
             )
-            
+            try:
+                proc.wait(timeout=subprocess_timeout(self.config.timeout))
+            except BaseException:
+                self._stop_process_group(proc)
+                raise
+            result = subprocess.CompletedProcess(proc.args, proc.returncode)
+
             if result.returncode == 0:
                 self.console.print(
                     f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
@@ -1581,6 +1591,27 @@ export MASTER_PORT={master_port}
                 deployment_id=run_id,
                 message=f"Execution error: {str(e)}",
             )
+
+    @staticmethod
+    def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:
+        """Stop *proc* and everything in its process group.
+
+        srun relays SIGTERM to the step's tasks; SIGKILL follows for whatever
+        outlives *grace* seconds.
+        """
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 5.0)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline:
+                proc.poll()  # reap bash, or its zombie keeps the group alive
+                try:
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    return
+                time.sleep(0.2)
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """Check SLURM job status (locally)."""

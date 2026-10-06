@@ -17,8 +17,11 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import os
 import re
+import signal
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -282,13 +285,11 @@ class TestInAllocationTimeout:
         deployment.inside_allocation = False  # skip the allocation-size check
         deployment.script_path = tmp_path / "job.sh"
         deployment.script_path.write_text("#!/bin/bash\nexit 0\n")
-        with patch(
-            "madengine.deployment.slurm.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 0),
-        ) as mock_run:
+        with patch("madengine.deployment.slurm.subprocess.Popen") as mock_popen:
+            mock_popen.return_value.returncode = 0
             deployment._run_inside_existing_allocation()
-        mock_run.assert_called_once()
-        return mock_run.call_args.kwargs["timeout"]
+        mock_popen.assert_called_once()
+        return mock_popen.return_value.wait.call_args.kwargs["timeout"]
 
     @pytest.mark.parametrize("timeout", [0, -1, None])
     def test_no_timeout_values_become_none(self, tmp_path, timeout):
@@ -586,6 +587,31 @@ class TestInsideExistingAllocation:
         dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
         cmd = dep._generate_deepspeed_command(2, 8, 29500)
         assert cmd.count("/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt") == 2
+
+    def test_a_timeout_stops_the_step_under_bash(self, tmp_path):
+        """Killing bash alone would leave its foreground srun -- here a
+        stand-in -- running in the caller's allocation."""
+        dep, _ = self._inside(tmp_path)
+        pid_file = tmp_path / "step.pid"
+        dep.script_path = tmp_path / "job.sh"
+        dep.script_path.write_text(
+            f"#!/bin/bash\nbash -c 'echo $$ > {pid_file}; exec sleep 300'\n"
+        )
+        dep.config.timeout = 1
+
+        result = dep._run_inside_existing_allocation()
+
+        assert result.status is DeploymentStatus.FAILED
+        step = int(pid_file.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(step, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(step, signal.SIGKILL)
+        pytest.fail("the step outlived the timeout")
 
     def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
         script = _render(_build_deployment(tmp_path))
