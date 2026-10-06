@@ -774,15 +774,13 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            # Two different values, deliberately. `timeout` caps this process's
-            # own wait on the deployment, so the sentinel has to be resolved
-            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
-            # in-allocation path runs unbounded. `cli_timeout` is what the
-            # generated job script forwards to the madengine it re-invokes, and
-            # must stay verbatim: that inner run resolves against the model card
-            # itself, and a concrete value here would read as an explicit
-            # --timeout and outrank the card. No model card is consulted at this
-            # level, hence the empty dict.
+            # Two different values, deliberately. `timeout` is the CLI value
+            # resolved against the default, for consumers that see no model
+            # card, hence the empty dict. `cli_timeout` is what the generated
+            # job script forwards to the madengine it re-invokes, and must stay
+            # verbatim: that inner run resolves against the model card itself,
+            # and a concrete value here would read as an explicit --timeout and
+            # outrank the card.
             timeout=resolve_run_timeout(
                 {}, getattr(self.args, "timeout", -1)
             ),
