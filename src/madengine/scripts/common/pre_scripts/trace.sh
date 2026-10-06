@@ -63,18 +63,16 @@ rpd)
 		echo "rocmProfileData directory already exists, skipping clone"
 	fi
 	
-	# Build RPD tracer locally without system install
+	# Build RPD tracer via upstream's CMake build (the repo replaced its old
+	# per-directory Makefiles / `make rlog rpd` targets with this).
 	cd ./rocmProfileData
-	# rpd_tracer/Utility.h includes "rlog/client.h" unconditionally, and the Makefile
-	# enables rlog on `wildcard ../rlog` — which a plain clone satisfies with an empty
-	# submodule directory. Initialize it (also covers a pre-existing checkout above).
+	# rpd_tracer links against rlog; it's vendored as a self-referencing git
+	# submodule (same repo, "rlog" branch) rather than an external project.
 	git submodule update --init rlog
-	# Workaround for upstream rocmProfileData Makefile typo: UStringTable.o -> StringTable.o
-	if [ -f rpd_tracer/Makefile ]; then
-		sed -i 's/UStringTable\.o/StringTable.o/g' rpd_tracer/Makefile
-	fi
-	# `rlog` builds and installs librlog into /usr/local; rpd_tracer links -lrlog.
-	make rlog rpd
+	# `make install` configures+builds via CMake and installs rlog, rpd_tracer,
+	# and rocpd_python (via pip) into /usr/local. Skip the remote helper and
+	# web viewer — neither was built by the old make-based flow.
+	make install CMAKE_ARGS="-DRPD_BUILD_REMOTE=OFF -DRPD_BUILD_VIEWER=OFF"
 	if [ $? -ne 0 ]; then
 		echo "Error: Failed to build RPD tracer"
 		exit 1
@@ -85,15 +83,7 @@ rpd)
 	if command -v ldconfig >/dev/null 2>&1; then
 		ldconfig /usr/local/lib || true
 	fi
-	
-	# Install rocpd Python module locally
-	cd rocpd_python
-	python3 setup.py install
-	if [ $? -ne 0 ]; then
-		echo "Error: Failed to install rocpd Python module"
-		exit 1
-	fi
-	cd ../..
+	cd ..
 	
 	echo "RPD setup completed successfully"
 	;;
@@ -153,6 +143,131 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 	else
 		echo "Error: rocm-trace-lite wheel installed but neither 'rtl' nor import rocm_trace_lite works." >&2
 		exit 1
+	fi
+	;;
+
+dynolog)
+	# dynolog is the profiling daemon that lets us drive torch.profiler on an
+	# unmodified workload: PyTorch/Kineto registers with it when KINETO_USE_DAEMON=1,
+	# and `dyno gputrace` then configures the profiler over IPC.
+	# https://github.com/facebookincubator/dynolog/blob/main/docs/pytorch_profiler.md
+	if command -v dynolog >/dev/null 2>&1 && command -v dyno >/dev/null 2>&1; then
+		echo "dynolog: dynolog and dyno already on PATH, skipping install."
+		exit 0
+	fi
+
+	# Only x86_64 debian packages are published upstream.
+	_arch=$(uname -m)
+	if [ "$_arch" != "x86_64" ]; then
+		echo "Error: dynolog pre-script only supports x86_64 (found $_arch)." >&2
+		echo "Build dynolog from source and put dynolog/dyno on PATH, or use a" >&2
+		echo "model-side torch.profiler instead." >&2
+		exit 1
+	fi
+	if ! command -v dpkg >/dev/null 2>&1; then
+		echo "Error: dynolog pre-script needs dpkg (Debian/Ubuntu base image)." >&2
+		exit 1
+	fi
+
+	_DYNOLOG_PINNED_DEB='https://github.com/facebookincubator/dynolog/releases/download/v0.5.0/dynolog_0.5.0-0-amd64.deb'
+	_dynolog_tmp="/tmp/dynolog.deb"
+
+	# DYNOLOG_DEB_URL may embed credentials for a private mirror; keep it out of
+	# the `set -x` trace, both where it is read and where it is used.
+	_dynolog_restore_x=0
+	case $- in *x*) _dynolog_restore_x=1 ;; esac
+	set +x
+	_dynolog_deb="${DYNOLOG_DEB_URL:-$_DYNOLOG_PINNED_DEB}"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL -o "$_dynolog_tmp" "$_dynolog_deb"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -O "$_dynolog_tmp" "$_dynolog_deb"
+	else
+		echo "Error: dynolog pre-script needs curl or wget to download the package." >&2
+		exit 1
+	fi
+	[ "$_dynolog_restore_x" -eq 1 ] && set -x
+	unset _dynolog_restore_x _dynolog_deb
+
+	# The package ships a systemd unit; enabling it fails in a container, which is
+	# harmless because we run the daemon directly. Tolerate a non-zero dpkg exit
+	# and verify by checking for the binaries instead.
+	if [ "$(id -u)" -eq 0 ]; then
+		dpkg -i "$_dynolog_tmp" || { apt-get update -qq && apt-get install -f -y -qq; } || true
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo dpkg -i "$_dynolog_tmp" || { sudo apt-get update -qq && sudo apt-get install -f -y -qq; } || true
+	else
+		echo "Error: dynolog pre-script needs root or sudo to install the package." >&2
+		exit 1
+	fi
+	rm -f "$_dynolog_tmp"
+
+	if ! command -v dynolog >/dev/null 2>&1 || ! command -v dyno >/dev/null 2>&1; then
+		echo "Error: dynolog package installed but dynolog/dyno are not on PATH." >&2
+		exit 1
+	fi
+	echo "dynolog: installed $(dynolog --help 2>&1 | head -1 || echo 'ok')"
+
+	# Kineto's daemon registration landed in torch 1.13; warn rather than fail so
+	# the tool stays usable for diagnosing the environment.
+	if ! python3 -c 'import torch' 2>/dev/null; then
+		echo "Warning: torch is not importable here; on-demand tracing needs a PyTorch workload." >&2
+	fi
+	;;
+
+tracelens)
+	# TraceLens pins protobuf>=6.31 and xprof, which routinely conflicts with a
+	# workload's own torch/tensorboard stack. Install it into a fully isolated
+	# venv (no --system-site-packages) so the model environment is untouched.
+	_tl_venv="${TRACELENS_VENV:-/opt/madengine-tracelens-venv}"
+	_TRACELENS_PINNED_REF='6f9bcdbf6cc9911eb650de57b345917ea4d31a17'
+	_tl_ref="${TRACELENS_GIT_REF:-$_TRACELENS_PINNED_REF}"
+
+	if [ -x "${_tl_venv}/bin/python3" ] && "${_tl_venv}/bin/python3" -c 'import TraceLens' 2>/dev/null; then
+		echo "TraceLens: already installed in ${_tl_venv}, skipping."
+		exit 0
+	fi
+
+	if ! python3 -m venv "$_tl_venv" 2>/dev/null; then
+		echo "python3 -m venv failed; attempting to install the venv module..." >&2
+		if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+		fi
+		if ! python3 -m venv "$_tl_venv"; then
+			echo "Error: could not create a virtualenv at ${_tl_venv}." >&2
+			echo "Install python3-venv, or set TRACELENS_VENV to an existing venv." >&2
+			exit 1
+		fi
+	fi
+
+	"${_tl_venv}/bin/python3" -m pip install --upgrade -q pip
+	# TRACELENS_PIP_SPEC may embed credentials for a private mirror; keep it out of
+	# the `set -x` trace and out of stderr.
+	_tl_restore_x=0
+	case $- in *x*) _tl_restore_x=1 ;; esac
+	set +x
+	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
+	if ! "${_tl_venv}/bin/python3" -m pip install -q "$_tl_spec"; then
+		echo "Error: pip could not install TraceLens (spec omitted from logs)." >&2
+		echo "Check network access, or override TRACELENS_PIP_SPEC / TRACELENS_GIT_REF." >&2
+		[ "$_tl_restore_x" -eq 1 ] && set -x
+		exit 1
+	fi
+	[ "$_tl_restore_x" -eq 1 ] && set -x
+	unset _tl_restore_x _tl_spec
+	"${_tl_venv}/bin/python3" -c 'import TraceLens; print("TraceLens import OK")'
+
+	# .pftrace input needs traceconv. TraceLens downloads it on demand, which fails
+	# in an air-gapped container, so pre-stage it here when we still have network.
+	if ! command -v traceconv >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+		if curl -fsSL -o /usr/local/bin/traceconv https://get.perfetto.dev/traceconv 2>/dev/null; then
+			chmod +x /usr/local/bin/traceconv
+			echo "TraceLens: pre-staged traceconv for .pftrace input."
+		else
+			echo "TraceLens: could not pre-stage traceconv (only needed for .pftrace input)."
+		fi
 	fi
 	;;
 

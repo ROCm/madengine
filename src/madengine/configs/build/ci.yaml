@@ -1,0 +1,4 @@
+# @package _global_
+# CI preset: rebuild without Docker layer cache (same as --clean-docker-cache).
+docker:
+  clean_cache: true
