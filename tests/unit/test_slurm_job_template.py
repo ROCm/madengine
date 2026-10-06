@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
-from madengine.deployment.base import DeploymentConfig
+from madengine.deployment.base import DeploymentConfig, DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
 
 
@@ -462,6 +462,7 @@ class TestInsideExistingAllocation:
     def test_paths_are_untagged_outside_an_allocation(self, tmp_path):
         script = _render(_build_deployment(tmp_path))
         assert "madengine_task_${SLURM_JOB_ID}.sh" in script
+        assert "WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}\n" in script
         assert not re.search(r"\$\{SLURM_JOB_ID\}_\d{14}", script)
 
     def test_srun_is_unconstrained_outside_an_allocation(self, tmp_path):
@@ -477,6 +478,9 @@ class TestInsideExistingAllocation:
             f"WORKSPACE=/tmp/madengine_job_{tag}_node_",
             f"_{tag}_node_${{SLURM_PROCID}}.out",
             f"/dummy_torchrun_multinode/{tag}",
+            # SLURM_TMPDIR is itself per-job, so this path carries no job id and
+            # the suffix is the only thing separating two runs that share one.
+            f"WORKSPACE=$SLURM_TMPDIR/madengine_node_${{SLURM_PROCID}}{dep.run_suffix}",
         ):
             assert path in script, path
         # No path may keep the bare id, or the two runs collide there instead.
@@ -507,24 +511,31 @@ class TestInsideExistingAllocation:
 
     def test_single_node_still_submits_an_sbatch(self, tmp_path):
         """The single-node branch runs madengine inline, which under `bash` in an
-        allocation means the submitting host -- usually a login node."""
+        allocation means the submitting host -- usually a login node. Submitting
+        a fresh sbatch is the right answer there."""
+        submitted = subprocess.CompletedProcess(
+            args=["sbatch"], returncode=0, stdout="Submitted batch job 12345\n", stderr=""
+        )
         with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
             SlurmDeployment, "_get_allocation_node_count", return_value=1
         ):
             dep = _build_deployment(
                 tmp_path,
-                slurm_overrides={"nodes": 1},
+                # Preflight shells out to the scheduler; this test is about the
+                # branch taken, not node selection.
+                slurm_overrides={"nodes": 1, "enable_node_check": False},
                 distributed_overrides={"nnodes": 1},
             )
             dep.script_path = tmp_path / "job.sh"
             dep.script_path.write_text("#!/bin/bash\nexit 0\n")
             with patch.object(
                 SlurmDeployment, "_run_inside_existing_allocation"
-            ) as in_place, patch.object(
-                SlurmDeployment, "_submit_sbatch", create=True
-            ):
-                try:
-                    dep.deploy()
-                except Exception:
-                    pass  # the sbatch path needs a cluster; only the branch matters
+            ) as in_place, patch(
+                "madengine.deployment.slurm.subprocess.run", return_value=submitted
+            ) as run:
+                result = dep.deploy()
+
         in_place.assert_not_called()
+        assert run.call_args.args[0] == ["sbatch", str(dep.script_path)]
+        assert result.status is DeploymentStatus.SUCCESS
+        assert result.deployment_id == "12345"

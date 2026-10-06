@@ -461,7 +461,7 @@ echo ""
 
 # Setup workspace (SLURM_PROCID is now available)
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-    WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
+    WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}{{ run_suffix }}
 else
     WORKSPACE=/tmp/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 fi

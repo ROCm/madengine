@@ -141,15 +141,17 @@ class SlurmDeployment(BaseDeployment):
         # would land on the first one's paths. Add a per-run discriminator there,
         # and only there: outside an allocation the tag is the bare job id and the
         # rendered script is unchanged.
-        if self.inside_allocation:
-            stamp = time.strftime("%Y%m%d%H%M%S")
-            self.job_tag = "${SLURM_JOB_ID}_" + stamp
-            # What job_tag expands to once the script runs, which is what
-            # collect_results() needs to find this run's artifacts.
-            self.run_id = f"{self.existing_job_id}_{stamp}"
-        else:
-            self.job_tag = "${SLURM_JOB_ID}"
-            self.run_id = self.existing_job_id
+        # One discriminator, three renderings: job_tag for the paths that are
+        # keyed on the job id, run_suffix on its own for the node workspace
+        # under SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR
+        # is already per-job and so collides between runs sharing one -- and
+        # run_id for what those expand to once the script runs, which is what
+        # collect_results() needs to find this run's artifacts.
+        self.run_suffix = (
+            "_" + time.strftime("%Y%m%d%H%M%S") if self.inside_allocation else ""
+        )
+        self.job_tag = "${SLURM_JOB_ID}" + self.run_suffix
+        self.run_id = self.existing_job_id + self.run_suffix
 
         if self.inside_allocation:
             self.console.print(
@@ -835,6 +837,7 @@ class SlurmDeployment(BaseDeployment):
         return {
             "model_name": model_info["name"],
             "job_tag": self.job_tag,
+            "run_suffix": self.run_suffix,
             "inside_allocation": self.inside_allocation,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
