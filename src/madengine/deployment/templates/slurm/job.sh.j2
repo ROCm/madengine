@@ -68,6 +68,13 @@ export WORLD_SIZE=$SLURM_NTASKS
 export LOCAL_RANK=$SLURM_LOCALID
 export NNODES={{ nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+{%- if inside_allocation %}
+# The step launched below may cover only part of this allocation, so the
+# rendezvous host and world size come from the hosts it is pinned to.
+STEP_NODELIST=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n {{ nodes }} | paste -sd, -)
+export MASTER_ADDR=${STEP_NODELIST%%,*}
+export WORLD_SIZE={{ nodes }}
+{%- endif %}
 
 # GPU visibility (ROCm/CUDA)
 # IMPORTANT: Ray (vLLM, SGLang) requires HIP_VISIBLE_DEVICES for AMD GPUs
@@ -741,7 +748,7 @@ echo "Launching tasks on {{ nodes }} nodes..."
 {# Under sbatch the #SBATCH directives above already shape the step. Inside an
    existing allocation they are inert comments, and a bare srun would spread the
    run over every node the allocation holds rather than the ones it asked for. -#}
-srun {% if inside_allocation %}-N {{ nodes }} -n {{ nodes }} {% endif %}bash "$TASK_SCRIPT"
+srun {% if inside_allocation %}-N {{ nodes }} -n {{ nodes }} --nodelist "$STEP_NODELIST" {% endif %}bash "$TASK_SCRIPT"
 EXIT_CODE=$?
 
 # Cleanup task script

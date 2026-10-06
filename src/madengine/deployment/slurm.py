@@ -12,6 +12,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -146,9 +147,12 @@ class SlurmDeployment(BaseDeployment):
         # under SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR
         # is already per-job and so collides between runs sharing one -- and
         # run_id for what those expand to once the script runs, which is what
-        # collect_results() needs to find this run's artifacts.
+        # collect_results() needs to find this run's artifacts. The random part
+        # keeps two runs started within the same second apart.
         self.run_suffix = (
-            "_" + time.strftime("%Y%m%d%H%M%S") if self.inside_allocation else ""
+            f"_{time.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
+            if self.inside_allocation
+            else ""
         )
         self.job_tag = "${SLURM_JOB_ID}" + self.run_suffix
         self.run_id = self.existing_job_id + self.run_suffix
@@ -2530,6 +2534,18 @@ export MASTER_PORT={master_port}
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
+        # An in-place run has no job of its own: its id is the caller's
+        # allocation or a tag derived from it, and cancelling the allocation
+        # would end every later run that shares it.
+        if self.inside_allocation and deployment_id in (
+            self.existing_job_id,
+            self.run_id,
+        ):
+            self.console.print(
+                f"[yellow]Not cancelling allocation {self.existing_job_id}: "
+                "it belongs to the caller[/yellow]"
+            )
+            return True
         try:
             subprocess.run(
                 ["scancel", deployment_id], capture_output=True, timeout=10

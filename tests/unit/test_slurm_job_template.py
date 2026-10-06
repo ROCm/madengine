@@ -472,7 +472,7 @@ class TestInsideExistingAllocation:
     def test_every_written_path_is_run_scoped_inside_an_allocation(self, tmp_path):
         dep, script = self._inside(tmp_path)
         tag = dep.job_tag
-        assert re.fullmatch(r"\$\{SLURM_JOB_ID\}_\d{14}", tag), tag
+        assert re.fullmatch(r"\$\{SLURM_JOB_ID\}_\d{14}_[0-9a-f]{6}", tag), tag
         for path in (
             f"madengine_task_{tag}.sh",
             f"WORKSPACE=/tmp/madengine_job_{tag}_node_",
@@ -491,10 +491,64 @@ class TestInsideExistingAllocation:
         dep, _ = self._inside(tmp_path, job_id="12345")
         assert dep.run_id == dep.job_tag.replace("${SLURM_JOB_ID}", "12345")
 
+    def test_two_runs_in_the_same_second_get_distinct_tags(self, tmp_path):
+        with patch(
+            "madengine.deployment.slurm.time.strftime", return_value="20261006120000"
+        ):
+            first, _ = self._inside(tmp_path)
+            second, _ = self._inside(tmp_path)
+        assert first.job_tag != second.job_tag
+
     def test_srun_is_held_to_the_requested_nodes_inside_an_allocation(self, tmp_path):
         """#SBATCH is inert here, so a bare srun would take the whole allocation."""
         _, script = self._inside(tmp_path, nodes=2)
-        assert 'srun -N 2 -n 2 bash "$TASK_SCRIPT"' in script
+        assert 'srun -N 2 -n 2 --nodelist "$STEP_NODELIST" bash "$TASK_SCRIPT"' in script
+
+    def test_rendezvous_comes_from_the_step_hosts(self, tmp_path):
+        """In a larger allocation the step must contain MASTER_ADDR, and
+        WORLD_SIZE must match its task count rather than the allocation's."""
+        _, script = self._inside(tmp_path, nodes=2)
+        lines = script.splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("STEP_NODELIST="))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        scontrol = bin_dir / "scontrol"
+        scontrol.write_text("#!/bin/bash\nprintf 'h1\\nh2\\nh3\\nh4\\n'\n")
+        scontrol.chmod(0o755)
+        snippet = "\n".join(
+            ["export SLURM_NTASKS=4"]
+            + lines[start : start + 3]
+            + ['echo "$STEP_NODELIST $MASTER_ADDR $WORLD_SIZE"']
+        )
+        out = subprocess.run(
+            ["bash", "-c", snippet],
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "SLURM_JOB_NODELIST": "h[1-4]"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        assert out == ["h1,h2", "h1", "2"]
+
+    def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "STEP_NODELIST" not in script
+        assert "export GPUS_PER_NODE=8\n\n# GPU visibility" in script
+
+    @pytest.mark.parametrize("own_id", ["99999", "run_id"])
+    def test_cleanup_leaves_the_callers_allocation_alone(self, tmp_path, own_id):
+        """A failed in-place run reaches cleanup(); scancel on the allocation
+        would end every later run that shares it."""
+        dep, _ = self._inside(tmp_path)
+        with patch("madengine.deployment.slurm.subprocess.run") as run:
+            assert dep.cleanup(dep.run_id if own_id == "run_id" else own_id)
+        run.assert_not_called()
+
+    def test_cleanup_still_cancels_a_job_this_run_submitted(self, tmp_path):
+        """A single-node run in an allocation submits its own sbatch."""
+        dep, _ = self._inside(tmp_path)
+        with patch("madengine.deployment.slurm.subprocess.run") as run:
+            dep.cleanup("12345")
+        assert run.call_args.args[0] == ["scancel", "12345"]
 
     def test_multi_node_runs_in_place(self, tmp_path):
         with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
