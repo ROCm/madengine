@@ -35,7 +35,7 @@ from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
-from madengine.core.timeout import subprocess_timeout
+from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
@@ -1542,11 +1542,12 @@ export MASTER_PORT={master_port}
             # under bash too: killing bash alone leaves the step's tasks
             # running in the caller's allocation, and cleanup() must not
             # cancel the allocation itself.
+            timeout = self._in_place_timeout()
             proc = subprocess.Popen(
                 ["bash", str(self.script_path)], start_new_session=True
             )
             try:
-                proc.wait(timeout=subprocess_timeout(self.config.timeout))
+                proc.wait(timeout=subprocess_timeout(timeout))
             except BaseException:
                 self._stop_process_group(proc)
                 raise
@@ -1577,12 +1578,12 @@ export MASTER_PORT={master_port}
                 
         except subprocess.TimeoutExpired:
             self.console.print(
-                f"\n[red]✗ Script timed out after {self.config.timeout}s[/red]"
+                f"\n[red]✗ Script timed out after {timeout}s[/red]"
             )
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
                 deployment_id=run_id,
-                message=f"Script timed out after {self.config.timeout}s",
+                message=f"Script timed out after {timeout}s",
             )
         except Exception as e:
             self.console.print(f"\n[red]✗ Execution error: {e}[/red]")
@@ -1591,6 +1592,17 @@ export MASTER_PORT={master_port}
                 deployment_id=run_id,
                 message=f"Execution error: {str(e)}",
             )
+
+    def _in_place_timeout(self) -> int:
+        """Timeout for the in-place wait, resolved as the job's madengine does.
+
+        config.timeout was resolved without the model card, so it would cut a
+        run the card allows longer -- or unbounded -- off at the default, which
+        the same script under sbatch is not.
+        """
+        models = (self.manifest or {}).get("built_models") or {}
+        model_info = next(iter(models.values()), {})
+        return resolve_run_timeout(model_info, self.config.cli_timeout)
 
     @staticmethod
     def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:

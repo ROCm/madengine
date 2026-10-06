@@ -275,13 +275,15 @@ class TestInAllocationTimeout:
     which raised TypeError once the CLI started sending None for "no timeout".
     subprocess spells "no timeout" as None and reads 0 as "expire now", so
     both sentinels have to be mapped, not compared inline.
+
+    The cap is resolved as the job script's own madengine resolves it --
+    default, then model card, then an explicit --timeout -- or a run the card
+    allows longer would be cut off at the default, unlike under sbatch.
     """
 
-    def _invoke(self, tmp_path, timeout):
-        deployment = _build_deployment(tmp_path)
-        # Set on the config directly: None is one of the values under test, so
-        # it cannot be routed through _build_deployment's "omit the kwarg" flag.
-        deployment.config.timeout = timeout
+    def _invoke(self, tmp_path, cli_timeout, model_timeout):
+        deployment = _build_deployment(tmp_path, cli_timeout=cli_timeout)
+        deployment.manifest["built_models"]["dummy-image"]["timeout"] = model_timeout
         deployment.inside_allocation = False  # skip the allocation-size check
         deployment.script_path = tmp_path / "job.sh"
         deployment.script_path.write_text("#!/bin/bash\nexit 0\n")
@@ -291,12 +293,21 @@ class TestInAllocationTimeout:
         mock_popen.assert_called_once()
         return mock_popen.return_value.wait.call_args.kwargs["timeout"]
 
-    @pytest.mark.parametrize("timeout", [0, -1, None])
-    def test_no_timeout_values_become_none(self, tmp_path, timeout):
-        assert self._invoke(tmp_path, timeout) is None
-
-    def test_positive_timeout_passed_through(self, tmp_path):
-        assert self._invoke(tmp_path, 120) == 120
+    @pytest.mark.parametrize(
+        "cli_timeout, model_timeout, expected",
+        [
+            (-1, None, DEFAULT_RUN_TIMEOUT),  # neither level sets one
+            (-1, 36000, 36000),  # the card allows longer than the default
+            (-1, 0, None),  # the card asks for no timeout
+            (-1, -1, None),
+            (120, 36000, 120),  # an explicit --timeout outranks the card
+            (0, 36000, None),  # and an explicit 0 means none
+        ],
+    )
+    def test_the_wait_resolves_like_the_job_script(
+        self, tmp_path, cli_timeout, model_timeout, expected
+    ):
+        assert self._invoke(tmp_path, cli_timeout, model_timeout) == expected
 
     def test_default_config_carries_the_shared_default(self, tmp_path):
         assert _build_deployment(tmp_path).config.timeout == DEFAULT_RUN_TIMEOUT
@@ -597,7 +608,7 @@ class TestInsideExistingAllocation:
         dep.script_path.write_text(
             f"#!/bin/bash\nbash -c 'echo $$ > {pid_file}; exec sleep 300'\n"
         )
-        dep.config.timeout = 1
+        dep.config.cli_timeout = 1
 
         result = dep._run_inside_existing_allocation()
 
