@@ -505,7 +505,7 @@ echo ""
 # the workspace root, as the Primus benchmark script does, then reports both
 # runs, and the stale rows reach perf_entry*.csv carrying this run's metadata.
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-    WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}
+    WORKSPACE=$SLURM_TMPDIR/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 else
     WORKSPACE=/tmp/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 fi
