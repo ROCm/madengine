@@ -352,6 +352,16 @@ class TestValidateLauncherContext:
             )
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
 
+    def test_slurm_multi_is_rejected_on_an_explicit_kubernetes_target(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(
+                    k8s={"namespace": "default"},
+                    distributed={"launcher": "slurm_multi"},
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
     def test_documented_slurm_multi_alias_is_accepted_and_canonicalized(self):
         result = validate_additional_context(
             additional_context=self._context(distributed={"launcher": "slurm-multi"})

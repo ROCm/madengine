@@ -94,7 +94,7 @@ k8s:
 # ------------------------------------
 distributed:
   enabled: true
-  launcher: torchrun    # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+  launcher: torchrun    # torchrun | deepspeed | megatron-lm | torchtitan | vllm | sglang | sglang-disagg | primus
   backend: nccl         # nccl | gloo
   nnodes: 2             # Number of pods (each runs one replica of the job)
   nproc_per_node: 8     # Must match k8s.gpu_count

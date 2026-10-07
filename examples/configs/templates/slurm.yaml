@@ -76,7 +76,7 @@ slurm:
 # Distributed launcher
 # ------------------------------------
 distributed:
-  launcher: torchrun    # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+  launcher: torchrun    # torchrun | deepspeed | megatron-lm | torchtitan | vllm | sglang | sglang-disagg | primus | slurm_multi
   backend: nccl         # nccl | gloo
   nnodes: 2             # Must match slurm.nodes
   nproc_per_node: 8     # Must match slurm.gpus_per_node

@@ -331,3 +331,13 @@ class TestBaseDeploymentValidatesLaunchers:
     def test_the_documented_alias_is_canonicalized_in_place(self, tmp_path):
         deployment = _slurm_deployment(tmp_path, "slurm-multi")
         assert deployment.config.additional_context["distributed"]["launcher"] == "slurm_multi"
+
+    def test_kubernetes_rejects_the_slurm_only_launcher(self, tmp_path):
+        """slurm_multi has no Kubernetes dispatch arm. An explicit k8s block
+        wins target inference, so accepting it here rendered a job with no
+        launcher command."""
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            _k8s_deployment(tmp_path, "slurm-multi")
+        assert "SLURM" in str(exc_info.value)

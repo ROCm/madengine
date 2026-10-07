@@ -6,6 +6,11 @@ from omegaconf import DictConfig, OmegaConf
 
 from madengine.deployment.common import canonicalize_distributed_launcher
 
+# perf.csv values, not launchers. Drop them so a Hydra group such as
+# launcher=native does not fail validation; omitting the key is how a run
+# with no distributed launcher is configured.
+_REPORTING_SENTINELS = frozenset({"docker", "native"})
+
 
 class ConfigTranslator:
     """Maps YAML config keys to internal additional_context dict format."""
@@ -106,8 +111,15 @@ class ConfigTranslator:
 
         dist = context.get("distributed")
         if isinstance(dist, dict) and dist.get("launcher"):
-            dist["launcher"] = (
-                canonicalize_distributed_launcher(dist["launcher"]) or dist["launcher"]
-            )
+            launcher = dist["launcher"]
+            if (
+                isinstance(launcher, str)
+                and launcher.strip().lower() in _REPORTING_SENTINELS
+            ):
+                dist.pop("launcher")
+            else:
+                dist["launcher"] = (
+                    canonicalize_distributed_launcher(launcher) or launcher
+                )
 
         return context, metadata
