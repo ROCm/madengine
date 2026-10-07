@@ -1,6 +1,7 @@
 # @package _global_
 # Single-process run. `native` is a perf.csv value, not a launcher.
-# ConfigTranslator drops it before validation; do not copy it into JSON.
+# The translator clears enabled and sets launcher to null so a Kubernetes
+# profile cannot inject torchrun. Do not copy this group into JSON.
 distributed:
   enabled: true
   launcher: native
