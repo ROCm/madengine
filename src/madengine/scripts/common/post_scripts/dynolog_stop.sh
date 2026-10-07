@@ -85,6 +85,15 @@ stop_pid "dynolog trace trigger" "$TRIGGER_PID_FILE"
 stop_pid "dynolog daemon" "$DYNOLOG_PID_FILE"
 rm -f "$DYNOLOG_START_FILE"
 
+# The trigger asks Kineto to write on the container's own disk. Copy the
+# finished files into the collected directory. See dynolog_trigger.sh.
+KINETO_DIR=${TORCH_PROFILE_KINETO_DIR:-/tmp/madengine_kineto}
+if [ -d "$KINETO_DIR" ]; then
+    mkdir -p "$OUTPUT_DIR"
+    find "$KINETO_DIR" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.gz' \) \
+        -exec cp -a {} "$OUTPUT_DIR"/ \;
+fi
+
 # Kineto appends the process id to the requested filename, so a multi-rank run
 # produces one file per rank.
 trace_count=0

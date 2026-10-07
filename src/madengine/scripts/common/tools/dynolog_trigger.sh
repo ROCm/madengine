@@ -50,7 +50,71 @@ else
 fi
 
 mkdir -p "$OUTPUT_DIR"
-LOG_FILE="$(cd "$OUTPUT_DIR" && pwd)/${LOG_NAME}"
+# Kineto renames a temporary file onto the log path when the window ends.
+# That rename leaves no file when the path is on the workspace bind mount, so
+# the trace is written on the container's own disk. dynolog_stop.sh copies it
+# into OUTPUT_DIR, which is what gets collected.
+KINETO_DIR=${TORCH_PROFILE_KINETO_DIR:-/tmp/madengine_kineto}
+if [ "$KINETO_DIR" = "/tmp/madengine_kineto" ]; then
+    rm -rf "$KINETO_DIR"
+fi
+mkdir -p "$KINETO_DIR"
+LOG_FILE="${KINETO_DIR}/${LOG_NAME}"
+
+# The daemon remembers every process that registered, including pre-scripts
+# that imported torch and exited, and the torchrun launcher, which never calls
+# optimizer.step(). A gputrace that names either is reported as installed and
+# then never finalizes the worker's trace. Ask only for processes that are
+# still running and are not that launcher. Zombies count as dead: kill -0
+# still succeeds for them. A script path that merely contains "torchrun"
+# (run_torchrun.py) is the workload and must stay. Only the first pid on each
+# registration line registered; the rest are ancestors. Requesting an ancestor
+# makes dynolog trace the launcher again.
+live_registered_pids() {
+    local log=/tmp/madengine_dynolog.log
+    if [ ! -f "$log" ]; then
+        return 0
+    fi
+    local raw pid state cmd live=""
+    raw=$(
+        grep "Registered process" "$log" 2>/dev/null \
+            | sed -n 's/.*Registered process (\([0-9][0-9]*\).*/\1/p' \
+            || true
+    )
+    if [ -z "$raw" ]; then
+        return 0
+    fi
+    for pid in $raw; do
+        kill -0 "$pid" 2>/dev/null || continue
+        if [ -r "/proc/$pid/stat" ]; then
+            state=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)
+            [ "$state" = "Z" ] && continue
+        fi
+        if [ -r "/proc/$pid/cmdline" ]; then
+            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+            case "$cmd" in
+                *torch.distributed.run*|*torch.distributed.elastic*)
+                    continue
+                    ;;
+                *torch/distributed/run.py*)
+                    continue
+                    ;;
+            esac
+            if printf '%s\n' "$cmd" | grep -Eq '(^|[[:space:]/])torchrun([[:space:]]|$)'; then
+                continue
+            fi
+        fi
+        case ",${live}," in
+            *",${pid},"*) continue ;;
+        esac
+        if [ -n "$live" ]; then
+            live="${live},${pid}"
+        else
+            live=$pid
+        fi
+    done
+    printf '%s\n' "$live"
+}
 
 echo "[dynolog-trigger] waiting ${WARMUP_S}s for the workload to reach steady state"
 sleep "$WARMUP_S"
@@ -58,11 +122,22 @@ sleep "$WARMUP_S"
 attempt=0
 while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
     attempt=$((attempt + 1))
+    pid_args=()
+    live_pids=$(live_registered_pids || true)
+    if [ -n "$live_pids" ]; then
+        pid_args=(--pids "$live_pids")
+        echo "[dynolog-trigger] attempt ${attempt}/${MAX_ATTEMPTS}: live pids ${live_pids}"
+    elif [ -f /tmp/madengine_dynolog.log ] && grep -q "Registered process" /tmp/madengine_dynolog.log 2>/dev/null; then
+        echo "[dynolog-trigger] attempt ${attempt}/${MAX_ATTEMPTS}: no runnable workload process yet; retrying in ${RETRY_INTERVAL_S}s"
+        sleep "$RETRY_INTERVAL_S"
+        continue
+    fi
     echo "[dynolog-trigger] attempt ${attempt}/${MAX_ATTEMPTS}: requesting trace -> ${LOG_FILE}"
     response=$(dyno --port "$PORT" gputrace \
         --job-id "$JOB_ID" \
         --log-file "$LOG_FILE" \
         --process-limit "$PROCESS_LIMIT" \
+        "${pid_args[@]}" \
         "${OPTS[@]}" 2>&1)
     echo "$response"
 

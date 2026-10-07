@@ -371,6 +371,73 @@ class TestTraceRequest:
         assert "accepted on attempt 3" in result.stdout
         assert RESULT_FILE.read_text().strip() == "accepted"
 
+    def test_trigger_asks_only_for_pids_that_are_still_running(
+        self, workdir, dummy_dynolog
+    ):
+        """Pre-scripts that import torch stay in the daemon list after they exit.
+
+        A request that names them is reported as installed and then writes
+        nothing. The trigger has to pass only the processes that are still alive.
+        """
+        live = subprocess.Popen(["sleep", "30"])
+        log = Path("/tmp/madengine_dynolog.log")
+        try:
+            log.write_text(
+                "I Registered process (999999) for job 0.\n"
+                "I Registered process ({0}, 999999) for job 0.\n".format(live.pid),
+                encoding="utf-8",
+            )
+            result = self.run_trigger(workdir, dummy_dynolog)
+        finally:
+            live.kill()
+            live.wait()
+            log.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stdout
+        request = dummy_dynolog.requests()[0]
+        assert f"--pids {live.pid}" in request, request
+        assert "999999" not in request
+
+    def test_trigger_skips_the_torchrun_launcher(self, workdir, dummy_dynolog):
+        """The launcher registers and never calls optimizer.step().
+
+        Naming it in the same request as the worker leaves the worker's trace
+        unfinalized. A script whose name contains "torchrun" is the workload.
+        """
+        worker = subprocess.Popen(
+            ["bash", "-c", "exec -a /tmp/run_torchrun.py sleep 30"]
+        )
+        launcher = subprocess.Popen(
+            ["bash", "-c", "exec -a /usr/local/bin/torchrun sleep 30"]
+        )
+        log = Path("/tmp/madengine_dynolog.log")
+        try:
+            time.sleep(0.2)
+            log.write_text(
+                "I Registered process ({0}) for job 0.\n"
+                "I Registered process ({1}, {0}) for job 0.\n".format(
+                    launcher.pid, worker.pid
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_trigger(
+                workdir,
+                dummy_dynolog,
+                TORCH_PROFILE_WARMUP_S="0",
+                TORCH_PROFILE_RETRY_INTERVAL_S="0",
+                TORCH_PROFILE_MAX_ATTEMPTS="3",
+            )
+        finally:
+            for proc in (worker, launcher):
+                proc.kill()
+                proc.wait()
+            log.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stdout
+        request = dummy_dynolog.requests()[0]
+        assert f"--pids {worker.pid}" in request, request
+        assert str(launcher.pid) not in request
+
     def test_an_option_dyno_rejects_fails_fast_and_says_so(
         self, workdir, dummy_dynolog
     ):
@@ -411,11 +478,9 @@ class TestTraceRequest:
             "--process-limit 64",
         ):
             assert flag in request, request
-        # An absolute path, because the workload's working directory is its own.
-        assert (
-            f"--log-file {workdir}/torch_profiler_output/libkineto_trace.json"
-            in request
-        )
+        # On the container's own disk. A path on the workspace bind mount is
+        # accepted and then never becomes a file. dynolog_stop.sh copies it out.
+        assert "--log-file /tmp/madengine_kineto/libkineto_trace.json" in request
 
     def test_disabling_iterations_switches_to_a_timed_capture(
         self, workdir, dummy_dynolog
