@@ -366,7 +366,7 @@ Capture `torch.profiler` (Kineto) traces from a running PyTorch workload without
 **Requirements:**
 
 - The workload must be PyTorch >= 1.13. Nothing is captured from non-PyTorch models.
-- Iteration-based capture counts `optimizer.step()` calls. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
+- Iteration-based capture counts `optimizer.step()` calls. PyTorch registers that hook only after `torch.profiler` is imported, so the tool imports it for the run; the model script stays unchanged. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
 - The pre-script downloads the dynolog `.deb` from GitHub, so the container needs outbound HTTPS on the first run (x86_64 Debian/Ubuntu base image). Set `DYNOLOG_DEB_URL` to use a mirror, or bake `dynolog` and `dyno` into the image to skip the download entirely.
 
 **Environment Variables:**

@@ -474,6 +474,12 @@ tracelens)
 		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
 			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
 		fi
+		# A failed ensurepip leaves a partial tree, and the next venv refuses it.
+		# Only the tool's own default path is removed; a user-supplied
+		# TRACELENS_VENV is left in place.
+		if [ "$_tl_venv" = "/opt/madengine-tracelens-venv" ]; then
+			rm -rf "$_tl_venv"
+		fi
 		if ! python3 -m venv "$_tl_venv"; then
 			echo "Error: could not create a virtualenv at ${_tl_venv}." >&2
 			echo "Install python3-venv, or set TRACELENS_VENV to an existing venv." >&2
@@ -488,6 +494,27 @@ tracelens)
 	case $- in *x*) _tl_restore_x=1 ;; esac
 	set +x
 	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
+	# TheRock images ship neither git nor ensurepip. A git+ spec cannot be
+	# fetched without git; images that already have it skip this install.
+	case "$_tl_spec" in
+	git+*)
+		if ! command -v git >/dev/null 2>&1; then
+			echo "TraceLens: git not found; installing it to fetch the pinned revision..." >&2
+			if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+				apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git || true
+			elif [ "$(id -u)" -eq 0 ] && command -v yum >/dev/null 2>&1; then
+				yum install -y -q git || true
+			elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+				sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git || true
+			fi
+			if ! command -v git >/dev/null 2>&1; then
+				echo "Error: a git+ TraceLens spec needs git, and it could not be installed." >&2
+				[ "$_tl_restore_x" -eq 1 ] && set -x
+				exit 1
+			fi
+		fi
+		;;
+	esac
 	if ! "${_tl_venv}/bin/python3" -m pip install -q "$_tl_spec"; then
 		echo "Error: pip could not install TraceLens (spec omitted from logs)." >&2
 		echo "Check network access, or override TRACELENS_PIP_SPEC / TRACELENS_GIT_REF." >&2

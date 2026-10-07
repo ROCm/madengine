@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MIOpen, TraceLens, and dynolog traces on TheRock images**: TheRock's MIOpen logs `MIOpen:` rather than `MIOpen(HIP):`, so the library-trace parser recorded no driver command. The same images have no `git` and no `ensurepip`, so the TraceLens pre-script could not create its venv or fetch the pinned revision and never wrote a summary. Dynolog matched the PyTorch processes, but iteration capture never finished because `optimizer.step()` is counted only after `torch.profiler` is imported, which an unmodified workload does not do. The parser accepts both MIOpen prefixes, the TraceLens pre-script installs `git` and recreates a partial venv, and the dynolog start script imports `torch.profiler` for the run.
+
 - **Container runs no longer require git, and a truncated gzip trace is reported**: TheRock images do not ship `git` or a `python` command. The unconditional `git config --global --add safe.directory` aborted every run before the model script, and `dummy_prof` exited before any GPU work. The safe-directory config now runs only when `git` is installed, and the dummy profiler script uses `python3` when `python` is absent. A gzip trace missing its trailer raises `EOFError`, which is not an `OSError`; the analyzer treats that as unreadable and still writes the summary.
 
 - **rocm-trace-lite sees HIP 7.15 compute queues**: On TheRock, `libamdhip64` creates the compute queue with `hsa_amd_queue_create`. `librtl.so` v0.3.3 only replaces `hsa_queue_create`, so it loads, reports "queue intercept available", and still records 0 dispatches. The native rebuild now also replaces `hsa_amd_queue_create` with an intercept queue for a single compute descriptor.
