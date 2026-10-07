@@ -265,7 +265,7 @@ madengine ships with pre-built config groups that compose together:
 | `platform` | `docker` | docker (only supported) | Execution platform |
 | `scheduler` | `local` | local, slurm, k8s | Job scheduler (adds root `slurm:` / `k8s:` like JSON) |
 | `hardware` | `amd` | amd, nvidia, cpu | Sets `gpu_vendor` / `guest_os` |
-| `launcher` | `none` | none, torchrun, deepspeed, megatron / megatron-lm, torchtitan, vllm, sglang, sglang_disagg, primus, native, slurm_multi | Distributed launcher |
+| `launcher` | `none` | none, torchrun, deepspeed, megatron / megatron-lm, torchtitan, vllm, sglang, sglang_disagg, primus, native (omits the launcher), slurm_multi | Distributed launcher |
 | `+profile` | *(none)* | mi300x_8gpu, mi300x_single, mi250x_4gpu, h100_8gpu, a100_8gpu | Hardware profiles (append-only) |
 | `+env` | *(none)* | nccl_debug, nccl_tuned, infiniband, miopen_defaults | Environment presets (append-only) |
 | `+tools` | *(none)* | rocprofv3_lightweight, rocprofv3_comprehensive, power_profiler, vram_profiler, rocm_trace_lite | Profiling tools (append-only) |

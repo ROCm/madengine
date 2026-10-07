@@ -110,6 +110,37 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     )
 
 
+def ensure_launcher_allowed(
+    launcher: Optional[str], deployment_type: str, *, source: str
+) -> None:
+    """Reject a launcher that has no dispatch arm on this deployment.
+
+    ``slurm_multi`` runs the model's own ``.slurm`` script through sbatch. An
+    explicit Kubernetes config wins target inference, and the Kubernetes
+    template has no arm for it, so the job would render with no launcher
+    command and still look successful.
+    """
+    if launcher != "slurm_multi" or deployment_type not in ("k8s", "kubernetes"):
+        return
+    raise ConfigurationError(
+        f"Launcher 'slurm_multi' in {source} only runs on SLURM",
+        context=create_error_context(
+            operation="ensure_launcher_allowed",
+            component="deployment.common",
+            additional_info={
+                "launcher": launcher,
+                "deployment_type": deployment_type,
+                "source": source,
+            },
+        ),
+        suggestions=[
+            "Drop the k8s/kubernetes block so this job is submitted to SLURM",
+            "Or pick a Kubernetes launcher such as torchrun, megatron-lm, "
+            "vllm, or sglang",
+        ],
+    )
+
+
 def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
     """Normalize alternate launcher spellings to their canonical form.
 

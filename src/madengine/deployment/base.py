@@ -153,14 +153,21 @@ class BaseDeployment(ABC):
         # would make base.py part of that chain for every deployment consumer.
         from madengine.core.errors import ConfigurationError, create_error_context
 
-        from .common import validate_launcher
+        from .common import ensure_launcher_allowed, validate_launcher
 
         context = self.config.additional_context or {}
 
+        def _accept(value: Optional[str], source: str) -> Optional[str]:
+            canonical = validate_launcher(value, source=source)
+            ensure_launcher_allowed(
+                canonical, self.DEPLOYMENT_TYPE, source=source
+            )
+            return canonical
+
         distributed = context.get("distributed")
         if isinstance(distributed, dict) and "launcher" in distributed:
-            distributed["launcher"] = validate_launcher(
-                distributed["launcher"], source="additional_context.distributed.launcher"
+            distributed["launcher"] = _accept(
+                distributed["launcher"], "additional_context.distributed.launcher"
             )
 
         launcher_cfg = context.get("launcher")
@@ -182,17 +189,17 @@ class BaseDeployment(ABC):
                 ],
             )
         if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
-            launcher_cfg["type"] = validate_launcher(
-                launcher_cfg["type"], source="additional_context.launcher.type"
+            launcher_cfg["type"] = _accept(
+                launcher_cfg["type"], "additional_context.launcher.type"
             )
 
         deployment_config = self.manifest.get("deployment_config")
         if isinstance(deployment_config, dict):
             manifest_distributed = deployment_config.get("distributed")
             if isinstance(manifest_distributed, dict) and "launcher" in manifest_distributed:
-                manifest_distributed["launcher"] = validate_launcher(
+                manifest_distributed["launcher"] = _accept(
                     manifest_distributed["launcher"],
-                    source="build_manifest.json deployment_config.distributed.launcher",
+                    "build_manifest.json deployment_config.distributed.launcher",
                 )
 
         for model_name, model_info in (self.manifest.get("built_models") or {}).items():
@@ -200,9 +207,9 @@ class BaseDeployment(ABC):
                 continue
             model_distributed = model_info.get("distributed")
             if isinstance(model_distributed, dict) and "launcher" in model_distributed:
-                model_distributed["launcher"] = validate_launcher(
+                model_distributed["launcher"] = _accept(
                     model_distributed["launcher"],
-                    source=f"model '{model_name}' distributed.launcher",
+                    f"model '{model_name}' distributed.launcher",
                 )
 
     def _load_manifest(self, manifest_file: str) -> Dict:

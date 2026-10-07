@@ -1,4 +1,6 @@
 # @package _global_
+# Single-process run. `native` is a perf.csv value, not a launcher.
+# ConfigTranslator drops it before validation; do not copy it into JSON.
 distributed:
   enabled: true
   launcher: native

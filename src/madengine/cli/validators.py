@@ -258,7 +258,7 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     so the benchmark number was wrong with nothing to indicate it.
     """
     from madengine.core.errors import ConfigurationError
-    from madengine.deployment.common import validate_launcher
+    from madengine.deployment.common import ensure_launcher_allowed, validate_launcher
 
     launcher_cfg = context.get("launcher")
     if launcher_cfg is not None and not isinstance(launcher_cfg, dict):
@@ -281,9 +281,17 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
         targets.append((launcher_cfg, "type"))
 
+    # An explicit k8s block wins target inference over slurm_multi, and
+    # Kubernetes has no dispatch arm for that launcher.
+    deployment_type = (
+        "k8s" if ("k8s" in context or "kubernetes" in context) else "slurm"
+    )
     for holder, key in targets:
         try:
             holder[key] = validate_launcher(holder[key], source="additional_context")
+            ensure_launcher_allowed(
+                holder[key], deployment_type, source="additional_context"
+            )
         except ConfigurationError as exc:
             console.print(f"❌ Invalid launcher: [red]{holder[key]!r}[/red]")
             for suggestion in exc.suggestions or []:

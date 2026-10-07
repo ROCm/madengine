@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for ConfigTranslator."""
 
+import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from madengine.config.translator import ConfigTranslator
@@ -169,6 +170,15 @@ class TestPassthroughKeys:
         cfg = make_cfg({"distributed": {"enabled": True, "launcher": "torchrun"}})
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["distributed"]["launcher"] == "torchrun"
+
+    @pytest.mark.parametrize("sentinel", ["native", "docker", " Native "])
+    def test_reporting_sentinel_is_omitted(self, sentinel):
+        """launcher=native is a Hydra group. The value is a perf.csv sentinel,
+        so the translator drops it instead of handing it to validate_launcher."""
+        cfg = make_cfg({"distributed": {"enabled": True, "launcher": sentinel}})
+        ctx, _meta = ConfigTranslator.to_additional_context(cfg)
+        assert "launcher" not in ctx["distributed"]
+        assert ctx["distributed"]["enabled"] is True
 
     def test_launcher_alias_canonicalized(self):
         # Delegates to the same canonicalizer the engine uses for
