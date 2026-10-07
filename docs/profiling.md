@@ -361,12 +361,12 @@ Capture `torch.profiler` (Kineto) traces from a running PyTorch workload without
 }
 ```
 
-**Output:** `torch_profiler_output/libkineto_trace_<pid>.json` (one file per rank)
+**Output:** `torch_profiler_output/libkineto_trace_<pid>.json` (one file per rank). Kineto writes the file on the container's own disk; the stop script copies it into this directory. A log path on the workspace bind mount is accepted and then never becomes a file.
 
 **Requirements:**
 
 - The workload must be PyTorch >= 1.13. Nothing is captured from non-PyTorch models.
-- Iteration-based capture counts `optimizer.step()` calls. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
+- Iteration-based capture counts `optimizer.step()` calls. PyTorch registers that hook only after `torch.profiler` is imported, so the tool imports it for the run; the model script stays unchanged. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
 - The pre-script downloads the dynolog `.deb` from GitHub, so the container needs outbound HTTPS on the first run (x86_64 Debian/Ubuntu base image). Set `DYNOLOG_DEB_URL` to use a mirror, or bake `dynolog` and `dyno` into the image to skip the download entirely.
 
 **Environment Variables:**
@@ -405,7 +405,7 @@ For a short-lived workload, shorten the warmup so the request lands while the mo
 
 **Trace produced but empty?** Iteration-based capture waits for the workload's next `optimizer.step()`, so the request has to land after training has actually started. A request that arrives while the model is still being built (or while MIOpen is autotuning the first convolution) yields a trace with no GPU activity. The warmup must cover startup, not just process launch.
 
-Every process that registers with dynolog is traced, including the `torchrun` launcher, which supervises its children and runs no kernels itself. An `N`-rank job therefore produces `N + 1` traces, and the launcher holds nothing to report.
+The trace request names processes that are still running and skips the `torchrun` launcher. The launcher never calls `optimizer.step()`, and a launcher that has registered with dynolog keeps the workers from flushing their traces, so the tool turns the daemon off in that process only. An `N`-rank job produces one trace per rank.
 
 ### tracelens - TraceLens Trace Analysis
 
@@ -422,7 +422,7 @@ Each trace format is routed to the matching TraceLens report:
 
 **Unreadable formats:** TraceLens cannot read rocprofv3's default SQLite (`*_results.db`) or RPD (`.rpd`) databases. Those are listed in the summary as `SKIPPED` with a pointer at a preset that works — use `rocprofv3_lightweight` for JSON or `rocprofv3_perfetto` for `.pftrace`. For `rpd`, point TraceLens at the `trace.json` its post-script writes alongside the database.
 
-**Traces with nothing to analyze:** a trace that holds no GPU activity is also reported as `SKIPPED` rather than as a failure. The usual source is the `torchrun` launcher process, which dynolog traces along with the ranks that do the work.
+**Traces with nothing to analyze:** a trace that holds no GPU activity is also reported as `SKIPPED` rather than as a failure. The usual source is a request that lands while the model is still starting, before any kernels run.
 
 #### Analyzing on the Host (Recommended)
 

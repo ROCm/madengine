@@ -227,6 +227,21 @@ def _bash_quote_path(path: str) -> str:
     return shlex.quote(os.path.normpath((path or "").replace("\\", "/")))
 
 
+def git_safe_directory_command(path: str) -> str:
+    """Return a shell command that marks ``path`` as a git safe.directory.
+
+    TheRock images do not ship git. Skipping the config when git is absent
+    keeps the run going. When git is installed, a failing ``git config``
+    still fails the command.
+    """
+    quoted = _bash_quote_path(path)
+    return (
+        "if command -v git >/dev/null 2>&1; then "
+        f"git config --global --add safe.directory {quoted}; "
+        "fi"
+    )
+
+
 def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
     """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
     rel = (relative_path or "").strip()
@@ -1502,9 +1517,7 @@ class ContainerRunner:
                                 )
 
                         model_docker.sh(f"rm -rf {model_dir}", timeout=240)
-                        model_docker.sh(
-                            "git config --global --add safe.directory /myworkspace"
-                        )
+                        model_docker.sh(git_safe_directory_command("/myworkspace"))
 
                         # Clone model repo if needed
                         if "url" in model_info and model_info["url"] != "":
@@ -1537,7 +1550,7 @@ class ContainerRunner:
                                 )
 
                             model_docker.sh(
-                                f"git config --global --add safe.directory /myworkspace/{model_dir}"
+                                git_safe_directory_command(f"/myworkspace/{model_dir}")
                             )
                             run_results["git_commit"] = model_docker.sh(
                                 f"cd {model_dir} && git rev-parse HEAD"
