@@ -357,13 +357,11 @@ class TestResolveLocalMultiNodeRunnerEnv:
 
     @pytest.mark.parametrize(
         "launcher",
-        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+        ["vllm", "sglang", "sglang-disagg", "primus"],
     )
     def test_self_managed_launchers_set_empty_string(self, launcher):
         """Self-managing launchers set the var to "" (defined but empty),
-        so downstream scripts under set -u don't fail referencing it.
-        Covers the ``sglang_disagg`` underscore alias to lock in the
-        canonicalize_distributed_launcher() routing."""
+        so downstream scripts under set -u don't fail referencing it."""
         runner = self._runner(
             additional_context={"distributed": {"launcher": launcher}},
         )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for ConfigTranslator."""
 
+import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from madengine.config.translator import ConfigTranslator
@@ -169,6 +170,43 @@ class TestPassthroughKeys:
         cfg = make_cfg({"distributed": {"enabled": True, "launcher": "torchrun"}})
         ctx, meta = ConfigTranslator.to_additional_context(cfg)
         assert ctx["distributed"]["launcher"] == "torchrun"
+
+    @pytest.mark.parametrize("sentinel", ["native", "docker", " Native "])
+    def test_reporting_sentinel_becomes_explicit_no_launcher(self, sentinel):
+        """launcher=native must stay single-process.
+
+        Dropping only the sentinel would leave enabled=true, and a Kubernetes
+        profile would then inject torchrun. An explicit null overrides that.
+        """
+        cfg = make_cfg(
+            {
+                "distributed": {
+                    "enabled": True,
+                    "launcher": sentinel,
+                    "nproc_per_node": 8,
+                },
+                "k8s": {"gpu_count": 8},
+            }
+        )
+        ctx, _meta = ConfigTranslator.to_additional_context(cfg)
+        assert ctx["distributed"]["enabled"] is False
+        assert ctx["distributed"]["launcher"] is None
+
+        from madengine.deployment.config_loader import ConfigLoader
+
+        merged = ConfigLoader.load_k8s_config(ctx)
+        assert merged["distributed"].get("launcher") is None
+
+    def test_object_launcher_settings_are_kept(self):
+        """A YAML launcher mapping is Kubernetes settings, not a group name."""
+        cfg = make_cfg({"launcher": {"master_port": 29500, "type": "megatron-lm"}})
+        ctx, _meta = ConfigTranslator.to_additional_context(cfg)
+        assert ctx["launcher"] == {"master_port": 29500, "type": "megatron-lm"}
+
+    def test_string_launcher_selector_is_omitted(self):
+        cfg = make_cfg({"launcher": "native"})
+        ctx, _meta = ConfigTranslator.to_additional_context(cfg)
+        assert "launcher" not in ctx
 
     def test_launcher_alias_canonicalized(self):
         # Delegates to the same canonicalizer the engine uses for
