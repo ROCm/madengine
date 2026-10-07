@@ -9,6 +9,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import functools
+import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -123,6 +124,28 @@ def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
     if not launcher_type:
         return False
     return normalize_launcher(launcher_type, "slurm") in _SELF_MANAGED_LAUNCHERS
+
+
+# Reports madengine appends to on every run.
+_CUMULATIVE_REPORTS: frozenset = frozenset(
+    {"perf.csv", "perf_super.csv", "perf_super.json"}
+)
+
+
+def is_cumulative_report(results_file: str, perf_csv: str = "perf.csv") -> bool:
+    """Return True if *results_file* names a report kept across runs.
+
+    A model card may declare one of madengine's own reports as its
+    ``multiple_results``; deleting it as a stale leftover would wipe earlier
+    runs' rows. Compared by basename, so a same-named file in a subdirectory
+    is spared too -- a missed cleanup is cheaper than lost history.
+
+    Args:
+        results_file: The model card's ``multiple_results``.
+        perf_csv: The run's ``--output`` CSV.
+    """
+    name = os.path.basename(os.path.normpath(results_file))
+    return name in _CUMULATIVE_REPORTS or name == os.path.basename(perf_csv)
 
 
 def resolve_launcher_from_sources(
