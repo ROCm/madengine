@@ -739,7 +739,7 @@ class ContainerRunner:
         Docker local path.
 
         Args:
-            launcher_type: Distributed launcher (torchrun, megatron, deepspeed, etc.)
+            launcher_type: Distributed launcher (torchrun, megatron-lm, deepspeed, etc.)
             nproc_per_node: Number of GPUs (processes) per node.
 
         Returns:

@@ -2,7 +2,7 @@
 """
 Shared deployment utilities used by both SLURM and Kubernetes deployments.
 
-Provides launcher normalization, ROCm profiling checks, and multi-node
+Provides launcher validation, ROCm profiling checks, and multi-node
 profiling configuration so logic is not duplicated across deployment modules.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
@@ -29,11 +29,13 @@ VALID_LAUNCHERS = [
     "slurm_multi",
 ]
 
-# The one accepted alternate spelling, kept because docs/launchers.md advertises
-# it. Deliberately a named entry rather than a blanket "-" → "_" rewrite, which
-# would silently accept hyphen variants of every other launcher too.
-_DOCUMENTED_ALIASES: Dict[str, str] = {
+# Named aliases only. A blanket "-" → "_" rewrite would silently accept a
+# hyphen variant of every launcher. slurm-multi is advertised in
+# docs/launchers.md. sglang_disagg is the underscore spelling the config
+# translator already accepts.
+_LAUNCHER_ALIASES: Dict[str, str] = {
     "slurm-multi": "slurm_multi",
+    "sglang_disagg": "sglang-disagg",
 }
 
 # Deployment-mode sentinels meaning "no distributed launcher". They are produced
@@ -81,7 +83,6 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     normalized = launcher.strip().lower()
     if not normalized:
         return None
-    normalized = _DOCUMENTED_ALIASES.get(normalized, normalized)
     normalized = _LAUNCHER_ALIASES.get(normalized, normalized)
     if normalized in VALID_LAUNCHERS:
         return normalized
@@ -107,13 +108,6 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
         ),
         suggestions=suggestions,
     )
-
-
-# Exact-match aliases that predate the one-spelling rule. Kept as named entries
-# so config files and the translator accept the same spelling the engine does.
-_LAUNCHER_ALIASES: Dict[str, str] = {
-    "sglang_disagg": "sglang-disagg",
-}
 
 
 def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
@@ -211,7 +205,7 @@ def is_self_managed_launcher(launcher_type: Optional[str]) -> bool:
     if not launcher_type or not isinstance(launcher_type, str):
         return False
     normalized = launcher_type.strip().lower()
-    normalized = _DOCUMENTED_ALIASES.get(normalized, normalized)
+    normalized = _LAUNCHER_ALIASES.get(normalized, normalized)
     return normalized in _SELF_MANAGED_LAUNCHERS
 
 
