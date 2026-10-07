@@ -17,6 +17,19 @@ RESULT_FILE="/tmp/madengine_dynolog_trigger.result"
 
 OUTPUT_DIR=${TORCH_PROFILE_OUTPUT_DIR:-torch_profiler_output}
 
+# Drop the site hook dynolog_start.sh installed. Do this even when the daemon
+# never started, so a partial start cannot leave the hook behind.
+remove_kineto_hook() {
+    local site_file="/tmp/madengine_kineto_hook.site"
+    if [ ! -f "$site_file" ]; then
+        return 0
+    fi
+    local site
+    site=$(cat "$site_file")
+    rm -f "${site}/madengine_kineto_hook.py" "${site}/madengine_kineto_hook.pth" "$site_file"
+}
+remove_kineto_hook
+
 if [ ! -f "$DYNOLOG_START_FILE" ]; then
     echo "⚠️  Warning: dynolog was not started - skipping"
     exit 0

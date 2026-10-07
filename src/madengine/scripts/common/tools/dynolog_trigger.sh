@@ -40,8 +40,9 @@ OPTS=()
 [ "${TORCH_PROFILE_WITH_FLOPS:-0}" = "1" ] && OPTS+=(--with-flops)
 [ "${TORCH_PROFILE_PROFILE_MEMORY:-0}" = "1" ] && OPTS+=(--profile-memory)
 
-# Iteration-based capture needs an optimizer step hook; PyTorch falls back to a
-# duration-based trace on its own when it cannot count iterations.
+# Iteration-based capture counts optimizer.step(). That hook is registered only
+# when torch.profiler is imported; dynolog_start.sh installs it for the run.
+# Workloads with no optimizer step need TORCH_PROFILE_ITERATIONS=0.
 if [ "$ITERATIONS" -gt 0 ] 2>/dev/null; then
     OPTS+=(--iterations "$ITERATIONS")
 else
