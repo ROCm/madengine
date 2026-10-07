@@ -128,7 +128,7 @@ class KubernetesResultsMixin:
                 else distributed_config.get("launcher")
             )
 
-            # Normalize launcher based on deployment type and validity
+            # Reporting sentinel only. Validation already ran in BaseDeployment.
             launcher_type = launcher_for_reporting(launcher_type, "kubernetes")
 
             is_per_replica = is_per_replica_launcher(launcher_type)
