@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Container runs no longer require git, and a truncated gzip trace is reported**: TheRock images do not ship `git` or a `python` command. The unconditional `git config --global --add safe.directory` aborted every run before the model script, and `dummy_prof` exited before any GPU work. The safe-directory config now runs only when `git` is installed, and the dummy profiler script uses `python3` when `python` is absent. A gzip trace missing its trailer raises `EOFError`, which is not an `OSError`; the analyzer treats that as unreadable and still writes the summary.
+
 - **rocm-trace-lite sees HIP 7.15 compute queues**: On TheRock, `libamdhip64` creates the compute queue with `hsa_amd_queue_create`. `librtl.so` v0.3.3 only replaces `hsa_queue_create`, so it loads, reports "queue intercept available", and still records 0 dispatches. The native rebuild now also replaces `hsa_amd_queue_create` with an intercept queue for a single compute descriptor.
 - **rocm-trace-lite native build is the library `rtl trace` loads**: `rtl trace` v0.3.3 overwrites `HSA_TOOLS_LIB` and `LD_PRELOAD` with `get_lib_path()`, which prefers the wheel's `lib/librtl.so` over `/usr/local/lib`. The TheRock rebuild was installed only to `/usr/local/lib`, so the wheel copy still traced and recorded roctx `UserMarker` rows with `gpuId` −1 and no kernel dispatches. The pre-script now copies the rebuilt `librtl.so` onto that wheel path.
 

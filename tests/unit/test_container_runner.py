@@ -1036,3 +1036,38 @@ class TestSlurmEnvPassthrough:
             runner._merge_slurm_env_from_shell()
 
         assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestGitSafeDirectory:
+    """A container without git must still run. A present git that fails must not."""
+
+    def test_missing_git_does_not_fail(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_git_config_failure_still_fails(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        git = tmp_path / "git"
+        git.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        git.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 3
+
+    def test_path_with_a_space_is_quoted(self):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        command = git_safe_directory_command("/my workspace")
+        assert "safe.directory '/my workspace'" in command
