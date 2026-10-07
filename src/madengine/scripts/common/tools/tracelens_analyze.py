@@ -123,7 +123,8 @@ def _read_head(path: str, size: int = 4096) -> str:
     try:
         with opener(path, "rb") as handle:  # type: ignore[operator]
             return handle.read(size).decode("utf-8", errors="replace")
-    except OSError:
+    except (OSError, EOFError):
+        # Truncated gzip raises EOFError, which is not an OSError.
         return ""
 
 
@@ -516,7 +517,7 @@ def _embedded_rank(trace: str) -> Optional[int]:
         opener = gzip.open if trace.endswith(".gz") else open
         with opener(trace, "rb") as handle:
             head = handle.read(1 << 20)
-    except OSError:
+    except (OSError, EOFError):
         return None
     match = _DISTRIBUTED_RANK.search(head)
     return int(match.group(1)) if match else None
