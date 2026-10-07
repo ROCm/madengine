@@ -739,14 +739,14 @@ class ContainerRunner:
         Docker local path.
 
         Args:
-            launcher_type: Distributed launcher (torchrun, megatron-lm, deepspeed, etc.)
+            launcher_type: Distributed launcher (torchrun, megatron, deepspeed, etc.)
             nproc_per_node: Number of GPUs (processes) per node.
 
         Returns:
             Launcher command string, or empty string for launchers that
             manage their own process spawning (vllm, sglang).
         """
-        if launcher_type in ("torchrun", "megatron-lm", "torchtitan"):
+        if launcher_type in ("torchrun", "megatron", "megatron-lm", "torchtitan"):
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
         elif launcher_type == "deepspeed":
             return f"deepspeed --num_gpus={nproc_per_node}"
@@ -776,7 +776,7 @@ class ContainerRunner:
             self._resolve_launcher(model_info)
         ) or ""
         valid_local_launchers = (
-            "torchrun", "megatron-lm", "torchtitan",
+            "torchrun", "megatron", "megatron-lm", "torchtitan",
             "deepspeed", "vllm", "sglang", "sglang-disagg", "primus",
         )
         if launcher in valid_local_launchers:

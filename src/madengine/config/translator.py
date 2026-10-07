@@ -41,7 +41,6 @@ class ConfigTranslator:
         "defaults",
         "scheduler",
         "hardware",
-        "launcher",
     }
 
     @classmethod
@@ -93,6 +92,12 @@ class ConfigTranslator:
                 # gpu_vendor; keep metadata only so YAML does not invent a
                 # runtime key that --additional-context never used.
                 metadata["runtime"] = value
+            elif key == "launcher":
+                # A string is the Hydra group selector. An object carries
+                # settings Kubernetes reads (type, master_port).
+                if isinstance(value, dict) and value:
+                    context["launcher"] = value
+                continue
             elif key in cls.OMIT_FROM_CONTEXT:
                 continue
             else:
@@ -116,7 +121,11 @@ class ConfigTranslator:
                 isinstance(launcher, str)
                 and launcher.strip().lower() in _REPORTING_SENTINELS
             ):
-                dist.pop("launcher")
+                # Leave an explicit no-launcher state. enabled: true alone
+                # makes Kubernetes profile selection inject torchrun, and a
+                # missing key would not override that injected value.
+                dist["enabled"] = False
+                dist["launcher"] = None
             else:
                 dist["launcher"] = (
                     canonicalize_distributed_launcher(launcher) or launcher
