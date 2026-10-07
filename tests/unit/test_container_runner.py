@@ -438,7 +438,9 @@ class TestRunContainerSkipModelRun:
         runner.perf_csv_path = "/tmp/test_perf.csv"
         return runner
 
-    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+    def _run_container_with_mocks(
+        self, runner, model_info, docker_sh_calls, sh_side_effect=None, **kwargs
+    ):
         """Call run_container with all the infrastructure mocked away.
 
         Patches:
@@ -458,6 +460,10 @@ class TestRunContainerSkipModelRun:
         def noop_timeout(_):
             yield
 
+        def _record_sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            return "ok"
+
         with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
              patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
              patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
@@ -468,10 +474,12 @@ class TestRunContainerSkipModelRun:
              patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch("madengine.execution.container_runner.update_perf_csv"), \
+             patch("madengine.execution.container_runner.update_perf_super_json"), \
+             patch("madengine.execution.container_runner.update_perf_super_csv"), \
              patch.object(Docker, "__init__", return_value=None), \
              patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
-             patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+             patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
              patch.object(Docker, "__del__", return_value=None), \
              patch("builtins.open", mock_open(read_data="")):
             return runner.run_container(
@@ -524,6 +532,63 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestPostScriptsAfterWorkloadFailure:
+    """A failed model still runs every post-script, and the run stays failed."""
+
+    def _failed_model(self, fail_scripts):
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        runner.context.ctx["post_scripts"] = [
+            {"path": "scripts/common/post_scripts/collect.sh"},
+            {"path": "scripts/common/post_scripts/analyze.sh"},
+        ]
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        docker_sh_calls = []
+
+        def sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            if "bash run.sh" in cmd:
+                raise RuntimeError("model failed: extractor exit 1")
+            script = next(
+                (name for name in fail_scripts if f"bash {name}" in cmd), None
+            )
+            if script:
+                raise RuntimeError(f"{script} failed")
+            return "ok"
+
+        result = harness._run_container_with_mocks(
+            runner, model_info, docker_sh_calls, sh_side_effect=sh
+        )
+        ran = [
+            c
+            for c in docker_sh_calls
+            if "bash collect.sh" in c or "bash analyze.sh" in c
+        ]
+        return result, ran
+
+    def test_successful_post_scripts_keep_the_model_failure(self):
+        result, ran = self._failed_model(fail_scripts=())
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
+
+    def test_one_failing_post_script_does_not_skip_the_next(self):
+        result, ran = self._failed_model(fail_scripts=("collect.sh",))
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
 
 
 class TestRunModelsFromManifestDefaultTimeoutIsSentinel:

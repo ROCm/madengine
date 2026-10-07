@@ -1052,21 +1052,43 @@ class ContainerRunner:
         return run_results
 
     def run_pre_post_script(
-        self, model_docker: Docker, model_dir: str, pre_post: typing.List
+        self,
+        model_docker: Docker,
+        model_dir: str,
+        pre_post: typing.List,
+        best_effort: bool = False,
     ) -> None:
-        """Run pre/post scripts in the container."""
+        """Run pre/post scripts in the container.
+
+        A script entry may set "timeout" in seconds (default 600; 0 means none),
+        e.g. for trace analysis whose runtime grows with trace size.
+
+        When ``best_effort`` is true, a failing script is logged and later
+        scripts still run. The failed-model path uses this so one collector
+        cannot skip the remaining trace scripts; the model failure stays the
+        run result.
+        """
         for script in pre_post:
-            script_path = script["path"].strip()
-            model_docker.sh(
-                f"cp -vLR --preserve=all {script_path} {model_dir}", timeout=600
-            )
-            script_name = os.path.basename(script_path)
-            script_args = ""
-            if "args" in script:
-                script_args = script["args"].strip()
-            model_docker.sh(
-                f"cd {model_dir} && bash {script_name} {script_args}", timeout=600
-            )
+            try:
+                script_path = script["path"].strip()
+                model_docker.sh(
+                    f"cp -vLR --preserve=all {script_path} {model_dir}", timeout=600
+                )
+                script_name = os.path.basename(script_path)
+                script_args = ""
+                if "args" in script:
+                    script_args = script["args"].strip()
+                model_docker.sh(
+                    f"cd {model_dir} && bash {script_name} {script_args}",
+                    timeout=subprocess_timeout(int(script.get("timeout", 600))),
+                )
+            except Exception as script_err:
+                if not best_effort:
+                    raise
+                print(
+                    f"Script {script.get('path', script)} failed after the model "
+                    f"failed; continuing with the remaining scripts: {script_err}"
+                )
 
     def gather_system_env_details(
         self, pre_encapsulate_post_scripts: typing.Dict, model_name: str
@@ -1676,6 +1698,17 @@ class ContainerRunner:
                                         )
                                     except Exception:
                                         pass
+                                # Profiler post-scripts collect and analyze traces; a failed
+                                # run's profile is still needed to diagnose it. Each script
+                                # is best-effort so one failure cannot skip the rest. The
+                                # model error is re-raised and the run stays failed.
+                                if pre_encapsulate_post_scripts["post_scripts"]:
+                                    self.run_pre_post_script(
+                                        model_docker,
+                                        model_dir,
+                                        pre_encapsulate_post_scripts["post_scripts"],
+                                        best_effort=True,
+                                    )
                                 raise
                             # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
                             if not self.live_output:
