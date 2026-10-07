@@ -21,7 +21,7 @@
     "launcher": "megatron-lm",
     "nnodes": 4,
     "nproc_per_node": 8,
-    "port": 29500
+    "master_port": 29500
   },
   
   "env_vars": {
