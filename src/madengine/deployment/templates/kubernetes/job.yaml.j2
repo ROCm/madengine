@@ -436,7 +436,25 @@ spec:
             fi
             
             echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
-            
+
+            # Container logs stay available through the API after the pod
+            # finishes. A per-pod local-path volume does not.
+            echo ""
+            echo "=== Emitting performance CSVs to the container log ==="
+            _emitted=" "
+            for csvf in /results/${HOSTNAME}/perf.csv /results/${HOSTNAME}/perf_*.csv{% if multiple_results %} "/results/${HOSTNAME}/{{ multiple_results | basename }}"{% endif %}; do
+                [ -f "$csvf" ] || continue
+                _base=$(basename "$csvf")
+                case "$_emitted" in
+                    *" $_base "*) continue ;;
+                esac
+                _emitted="$_emitted$_base "
+                echo "MADENGINE_PERF_CSV_BEGIN ${_base}"
+                cat "$csvf"
+                echo ""
+                echo "MADENGINE_PERF_CSV_END ${_base}"
+            done
+
             echo "=== Benchmark job completed with exit code $MODEL_EXIT_CODE ==="
             exit $MODEL_EXIT_CODE
             {% else %}
@@ -664,7 +682,25 @@ spec:
             fi
             
             echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
-            
+
+            # Container logs stay available through the API after the pod
+            # finishes. A per-pod local-path volume does not.
+            echo ""
+            echo "=== Emitting performance CSVs to the container log ==="
+            _emitted=" "
+            for csvf in /results/${HOSTNAME}/perf.csv /results/${HOSTNAME}/perf_*.csv{% if multiple_results %} "/results/${HOSTNAME}/{{ multiple_results | basename }}"{% endif %}; do
+                [ -f "$csvf" ] || continue
+                _base=$(basename "$csvf")
+                case "$_emitted" in
+                    *" $_base "*) continue ;;
+                esac
+                _emitted="$_emitted$_base "
+                echo "MADENGINE_PERF_CSV_BEGIN ${_base}"
+                cat "$csvf"
+                echo ""
+                echo "MADENGINE_PERF_CSV_END ${_base}"
+            done
+
             echo ""
             echo "=== Benchmark job completed with exit code ${MODEL_EXIT_CODE:-0} ==="
             exit ${MODEL_EXIT_CODE:-0}
