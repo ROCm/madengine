@@ -752,8 +752,21 @@ spec:
           medium: Memory
           sizeLimit: 16Gi  # Increased for Ray/vLLM (should be >30% of RAM, recommended 16Gi+)
       - name: results
+        {% if results_per_pod %}
+        ephemeral:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              {% if results_storage_class %}
+              storageClassName: {{ results_storage_class }}
+              {% endif %}
+              resources:
+                requests:
+                  storage: {{ results_storage_size }}
+        {% else %}
         persistentVolumeClaim:
           claimName: {{ results_pvc }}
+        {% endif %}
       {% if data_pvc %}
       - name: data
         persistentVolumeClaim:

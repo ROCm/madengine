@@ -44,7 +44,7 @@ from madengine.deployment.base import DeploymentConfig
 def test_merge_secrets_config_defaults():
     merged = merge_secrets_config({})
     assert merged["strategy"] == SECRETS_STRATEGY_FROM_LOCAL
-    assert merged["image_pull_secret_names"] == []
+    assert merged["image_pull_secret_names"] == ["dockerhub-rocm"]
 
 
 def test_resolve_image_pull_from_local_with_preview():
@@ -54,6 +54,101 @@ def test_resolve_image_pull_from_local_with_preview():
         ["job-reg"],
     )
     assert refs == [{"name": "job-reg"}, {"name": "extra"}]
+
+
+def test_resolve_image_pull_from_local_includes_dockerhub_rocm():
+    refs = resolve_image_pull_secret_refs(
+        SECRETS_STRATEGY_FROM_LOCAL,
+        merge_secrets_config({}),
+        ["job-reg"],
+    )
+    assert refs == [{"name": "job-reg"}, {"name": "dockerhub-rocm"}]
+
+
+def test_results_layout_auto_uses_per_pod_when_rwx_class_is_missing():
+    from madengine.deployment.k8s_pvc import resolve_results_layout
+
+    assert resolve_results_layout("auto", 2, False) == "per_pod"
+    assert resolve_results_layout("auto", 2, True) == "shared"
+    assert resolve_results_layout("shared", 2, False) == "shared"
+    assert resolve_results_layout("per_pod", 2, True) == "per_pod"
+    assert resolve_results_layout("auto", 1, False) == "shared"
+
+
+def test_parallel_job_is_not_finished_when_only_some_pods_succeed():
+    from types import SimpleNamespace
+
+    from madengine.deployment.kubernetes import (
+        job_finished_failed,
+        job_finished_successfully,
+    )
+
+    def job(succeeded, completions, conditions=None):
+        return SimpleNamespace(
+            spec=SimpleNamespace(completions=completions),
+            status=SimpleNamespace(succeeded=succeeded, conditions=conditions or []),
+        )
+
+    partial = job(2, 4)
+    assert job_finished_successfully(partial) is False
+    assert job_finished_failed(partial) is False
+
+    done = job(
+        4,
+        4,
+        [SimpleNamespace(type="Complete", status="True")],
+    )
+    assert job_finished_successfully(done) is True
+
+    one_pod_failed = job(1, 4, [SimpleNamespace(type="Failed", status="False")])
+    assert job_finished_failed(one_pod_failed) is False
+    given_up = job(1, 4, [SimpleNamespace(type="Failed", status="True")])
+    assert job_finished_failed(given_up) is True
+
+
+def test_single_node_results_pvc_uses_local_path():
+    from madengine.deployment.config_loader import ConfigLoader
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    mixin = KubernetesPVCMixin()
+    mixin.k8s_config = cfg["k8s"]
+    assert mixin._k8s_results_storage_class(1) == "local-path"
+
+
+def test_k8s_preset_defaults_to_dockerhub_rocm():
+    from madengine.deployment.config_loader import ConfigLoader
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    assert cfg["k8s"]["secrets"]["image_pull_secret_names"] == ["dockerhub-rocm"]
+
+
+def test_missing_registry_image_is_a_configuration_error(tmp_path):
+    with pytest.raises(ConfigurationError, match="registry image"):
+        _k8s_template_context(tmp_path=tmp_path, image_info={"push_failed": True})
+
+
+def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    assert "dockerhub-rocm" in [s["name"] for s in ctx["image_pull_secrets"]]
+
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = (
+        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    )
+    job = list(yaml.safe_load_all(rendered))[0]
+    pull_names = [
+        s["name"]
+        for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
+    ]
+    assert pull_names[-1] == "dockerhub-rocm"
 
 
 def test_resolve_image_pull_existing():
@@ -292,7 +387,11 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 
 
 def _k8s_template_context(
-    model_timeout=None, cli_timeout=-1, tmp_path=None, launcher_type=None
+    model_timeout=None,
+    cli_timeout=-1,
+    tmp_path=None,
+    launcher_type=None,
+    image_info=None,
 ):
     """Template context for a minimal single-node job, without touching a cluster.
 
@@ -301,6 +400,7 @@ def _k8s_template_context(
     (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
     instead of the direct-script branch.
     """
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
     from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
     from madengine.deployment.k8s_template_context import (
         KubernetesTemplateContextMixin,
@@ -308,7 +408,10 @@ def _k8s_template_context(
     from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
 
     class _Harness(
-        KubernetesTemplateContextMixin, KubernetesScriptsMixin, KubernetesLauncherMixin
+        KubernetesTemplateContextMixin,
+        KubernetesScriptsMixin,
+        KubernetesLauncherMixin,
+        KubernetesPVCMixin,
     ):
         pass
 
@@ -357,7 +460,7 @@ def _k8s_template_context(
     harness.data = None
 
     return harness._prepare_template_context(
-        model_info, {"registry_image": "dummy:latest"}
+        model_info, image_info or {"registry_image": "dummy:latest"}
     )
 
 

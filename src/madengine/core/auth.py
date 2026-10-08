@@ -11,6 +11,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import os
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -161,6 +162,82 @@ def has_ambient_docker_auth(registry: Optional[str]) -> bool:
     return False
 
 
+# Template values shipped in docs and credential.json examples. These are not
+# registries a push can succeed against.
+_PLACEHOLDER_REPOSITORIES = frozenset(
+    {
+        "your-repository",
+        "your-org",
+        "your-org/your-repo",
+        "your_org/your_repo",
+        "your_repository",
+    }
+)
+
+# Repo name used when credential.json has no real dockerhub.repository and the
+# machine is already logged in. Tags are {username}/mad-private:{local image}.
+DEFAULT_DOCKERHUB_REPO_NAME = "mad-private"
+
+
+def is_placeholder_repository(repository: Optional[str]) -> bool:
+    """Return True when ``repository`` is a template value, not a real repo."""
+    if repository is None:
+        return False
+    value = str(repository).strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    return lowered in _PLACEHOLDER_REPOSITORIES or lowered.startswith(
+        ("your-", "your_")
+    )
+
+
+def docker_cli_username() -> Optional[str]:
+    """Return the Docker CLI's logged-in Hub username, if ``docker info`` has one.
+
+    Docker 27 prints ``Username:`` in the text report but does not expose that
+    field on the ``docker info --format`` Go struct, so the text line is parsed.
+    """
+    try:
+        out = subprocess.check_output(
+            ["docker", "info"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("username:"):
+            username = stripped.split(":", 1)[1].strip()
+            return username or None
+    return None
+
+
+def resolve_dockerhub_repository(credentials: Optional[Dict]) -> Optional[str]:
+    """Return the Docker Hub repository path to tag images into.
+
+    A configured ``dockerhub.repository`` wins unless it is a template value
+    such as ``your-org/your-repo``. In that case, and when nothing is
+    configured, use ``{docker username}/mad-private`` when the Docker CLI is
+    already logged in.
+    """
+    repo = None
+    if isinstance(credentials, dict):
+        entry = credentials.get("dockerhub")
+        if isinstance(entry, dict):
+            candidate = entry.get("repository")
+            if candidate and not is_placeholder_repository(str(candidate)):
+                repo = str(candidate).strip()
+    if repo:
+        return repo
+    username = docker_cli_username()
+    if username:
+        return f"{username}/{DEFAULT_DOCKERHUB_REPO_NAME}"
+    return None
+
+
 def _usable_credentials(creds: object) -> bool:
     """Report whether a credential entry carries a non-blank username and password.
 
@@ -289,7 +366,9 @@ def login_to_registry(
     Precedence: explicit credentials (``credential.json`` / ``MAD_DOCKERHUB_*``)
     win when they carry a non-blank username and password. Otherwise an existing
     ``docker login`` on this machine is reused and no login is attempted, so a
-    placeholder credential entry never overrides or breaks working ambient auth.
+    blank placeholder credential entry never overrides working ambient auth.
+    If those explicit credentials are rejected and this machine already has a
+    docker login, that login is used instead of failing the push.
     Set ``MAD_SKIP_DOCKER_LOGIN=1`` to always defer to ambient credentials.
     """
     if os.environ.get("MAD_SKIP_DOCKER_LOGIN") == "1":
@@ -382,6 +461,13 @@ def login_to_registry(
             f"{registry or 'DockerHub'}[/green]"
         )
     except Exception as e:
+        if has_ambient_docker_auth(registry):
+            rich_console.print(
+                "[yellow]Docker login with the configured credentials was rejected. "
+                f"Using the existing docker login for {registry or 'DockerHub'} "
+                "instead.[/yellow]"
+            )
+            return
         rich_console.print(
             f"[red]Failed to login to registry {registry}: {e}[/red]"
         )

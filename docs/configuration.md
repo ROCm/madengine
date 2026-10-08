@@ -649,7 +649,7 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
 - `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
 - `secrets.strategy` - `from_local_credentials` (default): create `Secret` objects from local `credential.json` at deploy time; `existing`: only reference pre-created Secrets; `omit`: no runtime Secret from client
-- `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
+- `secrets.image_pull_secret_names` - Pull secret names referenced on the pod (`imagePullSecrets`). Default is `["dockerhub-rocm"]` (the Docker Hub secret in the `default` namespace). Merged with any secret created from `credential.json` when using `from_local_credentials`. Replace the list to use different secrets.
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 **Cluster and scheduling keys:**

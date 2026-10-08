@@ -28,6 +28,33 @@ except ImportError:
     YAML_AVAILABLE = False
 
 
+RESULTS_LAYOUT_AUTO = "auto"
+RESULTS_LAYOUT_SHARED = "shared"
+RESULTS_LAYOUT_PER_POD = "per_pod"
+
+
+def resolve_results_layout(
+    layout: Optional[str], nnodes: int, rwx_storage_class_exists: bool
+) -> str:
+    """Choose how multi-pod results are stored.
+
+    ``shared`` is one ReadWriteMany claim (NFS). ``per_pod`` is a
+    ReadWriteOnce claim created with each pod (local-path). ``auto`` uses
+    ``shared`` when the configured multi-node StorageClass exists, and
+    ``per_pod`` when it does not. A single pod always uses one claim.
+    """
+    if nnodes <= 1:
+        return RESULTS_LAYOUT_SHARED
+    mode = (layout or RESULTS_LAYOUT_AUTO).strip().lower()
+    if mode == RESULTS_LAYOUT_SHARED:
+        return RESULTS_LAYOUT_SHARED
+    if mode == RESULTS_LAYOUT_PER_POD:
+        return RESULTS_LAYOUT_PER_POD
+    if rwx_storage_class_exists:
+        return RESULTS_LAYOUT_SHARED
+    return RESULTS_LAYOUT_PER_POD
+
+
 class KubernetesPVCMixin:
     """PVC lifecycle management for Kubernetes deployments."""
 
@@ -56,6 +83,46 @@ class KubernetesPVCMixin:
             or self.k8s_config.get("local_path_storage_class")
             or self.k8s_config.get("storage_class")
         )
+
+    def _k8s_local_results_storage_class(self) -> Optional[str]:
+        """ReadWriteOnce class for one results volume per pod."""
+        return (
+            self.k8s_config.get("local_path_storage_class")
+            or self.k8s_config.get("single_node_results_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _storage_class_exists(self, name: Optional[str]) -> bool:
+        """True when ``name`` is a StorageClass on the connected cluster.
+
+        Unit tests that render manifests without an API client keep the shared
+        layout.
+        """
+        if not name:
+            return False
+        storage_v1 = getattr(self, "storage_v1", None)
+        if storage_v1 is None:
+            return True
+        try:
+            storage_v1.read_storage_class(name=name)
+            return True
+        except ApiException as e:
+            if getattr(e, "status", None) == 404:
+                return False
+            raise
+
+    def _select_results_layout(self, nnodes: int) -> str:
+        rwx_class = self._k8s_results_storage_class(max(nnodes, 2))
+        return resolve_results_layout(
+            self.k8s_config.get("results_layout"),
+            nnodes,
+            self._storage_class_exists(rwx_class),
+        )
+
+    def _results_use_per_pod(self, nnodes: int) -> bool:
+        layout = self._select_results_layout(nnodes)
+        self._results_layout = layout
+        return layout == RESULTS_LAYOUT_PER_POD
 
     def _create_results_pvc(self, nnodes: int = 1) -> str:
         """

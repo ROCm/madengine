@@ -466,10 +466,26 @@ class KubernetesTemplateContextMixin:
         # including vLLM and SGLang. Without it, pod-0 DNS does not resolve.
         subdomain_val = self.service_name if create_headless_service else None
 
+        # A failed registry push leaves this key unset. Kubernetes nodes cannot
+        # see the local Docker image, so fail here instead of KeyError.
+        registry_image = image_info.get("registry_image")
+        if not registry_image or image_info.get("push_failed"):
+            detail = image_info.get("push_error") or "the image was not pushed"
+            raise ConfigurationError(
+                f"Kubernetes requires a registry image for model '{model_name}', "
+                f"but none is available: {detail}",
+                suggestions=[
+                    "Fix Docker Hub credentials, or use an existing `docker login`",
+                    "Set dockerhub.repository to a real namespace/repo; "
+                    "template values such as your-org/your-repo are ignored",
+                    "Re-run after the image push succeeds",
+                ],
+            )
+
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
         resolved_image = resolve_pinned_image(
-            image_info["registry_image"],
+            registry_image,
             image_info.get("image_digest"),
             bool(additional_context.get("require_pinned_image")),
             model_name=model_name,
@@ -545,8 +561,11 @@ class KubernetesTemplateContextMixin:
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
             # Volumes
-            "results_pvc": f"{self.job_name}-results",  # Always create a PVC for results
+            "results_pvc": f"{self.job_name}-results",  # Shared results PVC when layout is shared
             "pvc_name": f"{self.job_name}-results",      # PVC name for template
+            "results_per_pod": self._results_use_per_pod(nnodes),
+            "results_storage_class": self._k8s_local_results_storage_class(),
+            "results_storage_size": self.k8s_config.get("results_storage_size", "10Gi"),
             "data_pvc": self.k8s_config.get("data_pvc"),
             # Multi-node
             "create_headless_service": create_headless_service,
