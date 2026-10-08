@@ -1,0 +1,22 @@
+{
+  "_comment": "Primus pretrain across MULTIPLE pods (Indexed Job). Each pod uses k8s.gpu_count GPUs; nnodes matches pod count. Same file as single-node for any Primus backend: set primus.config_path; BACKEND inferred from model name (primus_pretrain/<launcher>_...) unless primus.backend is set. Usage: madengine build/run ... --additional-context-file examples/k8s-configs/basic/primus-multi-node.json",
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "docker_env_vars": {"HF_TOKEN": "YOUR_HF_TOKEN_OR_USE_RUNTIME_SECRET"},
+  "k8s": {
+    "namespace": "default",
+    "gpu_resource_name": "amd.com/gpu",
+    "gpu_count": 8
+  },
+  "distributed": {
+    "enabled": true,
+    "launcher": "primus",
+    "nnodes": 2,
+    "nproc_per_node": 8,
+    "master_port": 1234,
+    "primus": {
+      "config_path": "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml",
+      "cli_extra": ""
+    }
+  }
+}
