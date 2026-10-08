@@ -37,7 +37,7 @@ from .k8s_names import (
     sanitize_k8s_object_name,
 )
 from .k8s_pvc import KubernetesPVCMixin
-from .k8s_results import KubernetesResultsMixin, collector_pod_name
+from .k8s_results import KubernetesResultsMixin, collector_pod_name, decode_pod_log
 from .k8s_scripts import KubernetesScriptsMixin
 from .k8s_secrets import (
     SECRETS_STRATEGY_FROM_LOCAL,
@@ -652,10 +652,12 @@ class KubernetesDeployment(
                 if pod_name:
                     try:
                         # Get logs from current position
-                        logs = self.core_v1.read_namespaced_pod_log(
-                            name=pod_name,
-                            namespace=self.namespace,
-                            tail_lines=100 if log_position == 0 else None
+                        logs = decode_pod_log(
+                            self.core_v1.read_namespaced_pod_log(
+                                name=pod_name,
+                                namespace=self.namespace,
+                                tail_lines=100 if log_position == 0 else None,
+                            )
                         )
 
                         # Print new log lines and trigger artifact collection
@@ -725,10 +727,12 @@ class KubernetesDeployment(
             for pod in pods.items:
                 pod_name = pod.metadata.name
                 try:
-                    logs = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name,
-                        namespace=self.namespace,
-                        tail_lines=50
+                    logs = decode_pod_log(
+                        self.core_v1.read_namespaced_pod_log(
+                            name=pod_name,
+                            namespace=self.namespace,
+                            tail_lines=50,
+                        )
                     )
                     self.console.print(f"[dim]Pod: {pod_name}[/dim]")
                     print(logs)

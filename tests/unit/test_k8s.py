@@ -6,6 +6,7 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,6 +31,13 @@ from madengine.deployment.k8s_secrets import (
     resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
     build_registry_secret_data,
+)
+from madengine.deployment.k8s_results import (
+    collector_pod_name,
+    decode_pod_log,
+    extract_perf_csv_blocks,
+    materialize_perf_csvs_from_logs,
+    perf_csv_artifact_sources,
 )
 from madengine.deployment.kubernetes import (
     KubernetesDeployment,
@@ -737,3 +745,94 @@ class TestK8sRequirePinnedImage:
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
             )
+
+
+def test_shared_volume_csvs_are_used_instead_of_log_copies(tmp_path):
+    """nfs-banff keeps one ReadWriteMany results volume. That copy wins."""
+    pvc = tmp_path / "pvc"
+    pvc.mkdir()
+    (pvc / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,10,throughput_tot\n"
+    )
+    log_dir = tmp_path / "log"
+    log_dir.mkdir()
+    (log_dir / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,999,throughput_tot\n"
+    )
+    chosen = perf_csv_artifact_sources(
+        [
+            {"type": "pvc_collection", "local_path": str(pvc)},
+            {"type": "log_csv", "local_path": str(log_dir)},
+        ]
+    )
+    assert [art["type"] for art in chosen] == ["pvc_collection"]
+
+    local_only = perf_csv_artifact_sources(
+        [{"type": "log_csv", "local_path": str(log_dir)}]
+    )
+    assert [art["type"] for art in local_only] == ["log_csv"]
+
+
+def test_multiline_log_is_not_decoded_as_a_bytes_repr():
+    text = "b'not a kubernetes bytes repr\nsecond line'"
+    assert decode_pod_log(text) == text
+
+
+def test_bytes_repr_pod_log_is_decoded_before_csv_recovery(tmp_path):
+    """The k8s client returns str(log_bytes), which hides every newline."""
+    csv_body = "model,performance,metric\nQwen3-8B,158.33,throughput_tot\n"
+    text = (
+        "serving done\n"
+        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
+        f"{csv_body}"
+        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
+    )
+    wrapped = str(text.encode("utf-8"))
+    assert "\n" not in wrapped
+    decoded = decode_pod_log(wrapped)
+    assert decoded == text
+    assert decode_pod_log(text.encode("utf-8")) == text
+
+    results = {"logs": [{"pod": "job-0", "log": decoded}], "artifacts": []}
+    assert materialize_perf_csvs_from_logs(tmp_path, results) == 1
+    saved = (tmp_path / "job-0" / "log_csv" / "perf_Qwen3-8B.csv").read_text()
+    assert "158.33" in saved
+
+
+def test_collector_pod_name_is_a_dns_label():
+    """A sliced job name used to end with a hyphen and Kubernetes rejected it."""
+    name = collector_pod_name("madengine-vllm-pyt-vllm-qwen3-8b")
+    assert name == "collector-madengine-vllm-pyt-vllm-qwen3-8b"
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name)
+
+
+def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
+    """local-path pods delete their disks on exit; the log is the durable copy."""
+    csv_body = "model,performance,metric\nQwen3-8B,158.33,tokens_per_second\n"
+    log = (
+        "serving done\n"
+        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
+        f"{csv_body}"
+        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
+    )
+    assert extract_perf_csv_blocks(log) == [("perf_Qwen3-8B.csv", csv_body.rstrip("\n"))]
+
+    results = {
+        "logs": [
+            {"pod": "job-0-abc", "log": log},
+            {"pod": "job-1-def", "log": log.replace("158.33", "160.00")},
+        ],
+        "artifacts": [],
+    }
+    written = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert written == 2
+    assert (tmp_path / "job-0-abc" / "log_csv" / "perf_Qwen3-8B.csv").is_file()
+    assert (tmp_path / "job-1-def" / "log_csv" / "perf_Qwen3-8B.csv").read_text().startswith(
+        "model,performance,metric"
+    )
+    assert results["artifacts"][0]["type"] == "log_csv"
+
+    # A shared-volume copy already on disk is left alone.
+    again = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert again == 0
+    assert len(results["artifacts"]) == 2
