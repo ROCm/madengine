@@ -54,6 +54,43 @@ def _pod_job_name_label_selector(deployment_id: str) -> str:
     return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
+def _job_condition_true(job: Any, condition_type: str) -> bool:
+    status = getattr(job, "status", None)
+    for condition in getattr(status, "conditions", None) or []:
+        if getattr(condition, "type", None) == condition_type and getattr(condition, "status", None) == "True":
+            return True
+    return False
+
+
+def job_finished_successfully(job: Any) -> bool:
+    """True when every parallel pod has succeeded.
+
+    ``status.succeeded`` is a count. On an Indexed Job it becomes non-zero as
+    soon as the first pod finishes, while the others may still be pulling an
+    image. The Job is finished only when the Complete condition is set, or the
+    succeeded count has reached ``spec.completions``.
+    """
+    if _job_condition_true(job, "Complete"):
+        return True
+    status = getattr(job, "status", None)
+    completions = getattr(getattr(job, "spec", None), "completions", None)
+    succeeded = getattr(status, "succeeded", None) or 0
+    return bool(completions) and succeeded >= completions
+
+
+def job_finished_failed(job: Any) -> bool:
+    """True when the Job controller has given up, not when one pod has failed."""
+    return _job_condition_true(job, "Failed")
+
+
+def job_pod_progress(job: Any) -> tuple:
+    """Return ``(succeeded, completions)`` for a running parallel Job."""
+    status = getattr(job, "status", None)
+    completions = getattr(getattr(job, "spec", None), "completions", None) or 1
+    succeeded = getattr(status, "succeeded", None) or 0
+    return succeeded, completions
+
+
 def match_pvc_subdir_to_k8s_pod(
     pvc_subdir: str,
     pod_names: List[str],
@@ -179,6 +216,7 @@ class KubernetesDeployment(
         # Initialize API clients
         self.batch_v1 = client.BatchV1Api()
         self.core_v1 = client.CoreV1Api()
+        self.storage_v1 = client.StorageV1Api()
 
         # Generated resources (see prepare(): K8s uses different constraints per field)
         self.job_name = None
@@ -438,11 +476,16 @@ class KubernetesDeployment(
             # Clean up any existing resources first
             self._cleanup_existing_resources()
 
-            # 1. Create PVC for results storage
-            self.console.print("[blue]Creating PVC for results storage...[/blue]")
+            # 1. Create PVC for results storage, unless each pod has its own volume.
             nnodes_deploy = getattr(self, "_nnodes", 1)
-            pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
-            self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
+            if getattr(self, "_results_layout", "shared") == "per_pod":
+                self.console.print(
+                    "[blue]Using a local ReadWriteOnce results volume on each pod[/blue]"
+                )
+            else:
+                self.console.print("[blue]Creating PVC for results storage...[/blue]")
+                pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
+                self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
 
             # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
             if hasattr(self, '_data_config') and self._data_config:
@@ -540,16 +583,9 @@ class KubernetesDeployment(
                 name=deployment_id, namespace=self.namespace
             )
 
-            # Check job conditions
-            if job.status.succeeded:
-                return DeploymentResult(
-                    status=DeploymentStatus.SUCCESS,
-                    deployment_id=deployment_id,
-                    message=f"Job {deployment_id} completed successfully",
-                )
-
-            if job.status.failed:
-                # Get pod logs to show error
+            # Complete / Failed are terminal. A non-zero succeeded count is not:
+            # parallel pods finish at different times while others are still pulling.
+            if job_finished_failed(job):
                 self._print_pod_logs_on_failure(deployment_id)
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
@@ -557,11 +593,19 @@ class KubernetesDeployment(
                     message=f"Job {deployment_id} failed",
                 )
 
-            if job.status.active:
+            succeeded, completions = job_pod_progress(job)
+            if job_finished_successfully(job):
+                return DeploymentResult(
+                    status=DeploymentStatus.SUCCESS,
+                    deployment_id=deployment_id,
+                    message=f"Job {deployment_id} completed successfully ({succeeded}/{completions} pods)",
+                )
+
+            if job.status.active or succeeded:
                 return DeploymentResult(
                     status=DeploymentStatus.RUNNING,
                     deployment_id=deployment_id,
-                    message=f"Job {deployment_id} running ({job.status.active} active pods)",
+                    message=f"Job {deployment_id} running ({succeeded}/{completions} pods succeeded)",
                 )
 
             return DeploymentResult(
@@ -585,6 +629,7 @@ class KubernetesDeployment(
 
         pod_name = None
         log_position = 0
+        reported_succeeded = None
 
         while True:
             try:
@@ -626,24 +671,34 @@ class KubernetesDeployment(
                         if e.status != 400:  # Ignore "container not ready" errors
                             pass
 
-                # Check if job completed
-                if job.status.succeeded:
-                    self.console.print(f"\n[green]✓ Job {deployment_id} completed successfully[/green]\n")
-                    return DeploymentResult(
-                        status=DeploymentStatus.SUCCESS,
-                        deployment_id=deployment_id,
-                        message=f"Job {deployment_id} completed successfully",
-                    )
-
-                if job.status.failed:
+                # Wait until every indexed pod has finished. status.succeeded
+                # is 1 after the first pod, while the others are still starting.
+                if job_finished_failed(job):
                     self.console.print(f"\n[red]✗ Job {deployment_id} failed[/red]\n")
-                    # Print final logs
                     if pod_name:
                         self._print_pod_logs_on_failure(deployment_id)
                     return DeploymentResult(
                         status=DeploymentStatus.FAILED,
                         deployment_id=deployment_id,
                         message=f"Job {deployment_id} failed",
+                    )
+
+                succeeded, completions = job_pod_progress(job)
+                if succeeded != reported_succeeded:
+                    self.console.print(
+                        f"[dim]Job progress: {succeeded}/{completions} pods succeeded[/dim]"
+                    )
+                    reported_succeeded = succeeded
+
+                if job_finished_successfully(job):
+                    self.console.print(
+                        f"\n[green]✓ Job {deployment_id} completed successfully "
+                        f"({succeeded}/{completions} pods)[/green]\n"
+                    )
+                    return DeploymentResult(
+                        status=DeploymentStatus.SUCCESS,
+                        deployment_id=deployment_id,
+                        message=f"Job {deployment_id} completed successfully",
                     )
 
                 time.sleep(2)  # Poll every 2 seconds

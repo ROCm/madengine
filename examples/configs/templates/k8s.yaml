@@ -83,7 +83,8 @@ k8s:
   # Secrets (image pull and runtime credentials)
   secrets:
     strategy: from_local_credentials   # from_local_credentials | from_secret
-    image_pull_secret_names: []
+    image_pull_secret_names:
+      - dockerhub-rocm
     # runtime_secret_name: my-runtime-secret
 
   # Allow privileged containers for profiling tools (e.g. rocprofv3)

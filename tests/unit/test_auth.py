@@ -236,6 +236,15 @@ class TestLoginToRegistryWithAmbientAuth:
         console.sh.assert_not_called()
 
     @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
+    def test_rejected_explicit_login_falls_back_to_ambient_auth(self, mock_ambient):
+        """A rejected credential.json login must not block an existing docker login."""
+        console, rich_console = self._mocks()
+        console.sh.side_effect = RuntimeError("unauthorized")
+        credentials = {"dockerhub": {"username": "user", "password": "pass"}}
+        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        console.sh.assert_called_once()
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
     def test_explicit_credentials_win_over_ambient_auth(self, mock_ambient):
         """Usable explicit credentials still trigger a login (explicit wins)."""
         console, rich_console = self._mocks()
@@ -264,6 +273,21 @@ class TestSkipDockerLogin:
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
         login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
         console.sh.assert_not_called()
+
+
+class TestDockerCliUsername:
+    @patch("madengine.core.auth.subprocess.check_output")
+    def test_parses_username_line(self, mock_check):
+        from madengine.core.auth import docker_cli_username
+
+        mock_check.return_value = "Server Version: 27.3.1\n Username: rocm\n"
+        assert docker_cli_username() == "rocm"
+
+    @patch("madengine.core.auth.subprocess.check_output", side_effect=OSError("no docker"))
+    def test_missing_docker_returns_none(self, _mock_check):
+        from madengine.core.auth import docker_cli_username
+
+        assert docker_cli_username() is None
 
 
 class TestHasAmbientDockerAuth:

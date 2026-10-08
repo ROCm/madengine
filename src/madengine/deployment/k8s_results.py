@@ -681,6 +681,13 @@ class KubernetesResultsMixin:
         """
         from .kubernetes import assign_pvc_subdirs_to_pods
 
+        if getattr(self, "_results_layout", "shared") == "per_pod":
+            self.console.print(
+                "[dim]Per-pod local results volumes; pod logs were collected. "
+                "No shared ReadWriteMany volume to copy.[/dim]"
+            )
+            return
+
         pvc_name = f"{deployment_id}-results"
 
         try:
