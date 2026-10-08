@@ -410,7 +410,63 @@ class ROCmToolManager(BaseGPUToolManager):
                 return "No AMD GPUs detected"
         except Exception as e:
             return f"Unable to detect AMD GPU vendor: {e}"
-    
+
+    def get_gpu_memory_usage_mb(self) -> List[Dict[str, int]]:
+        """Get per-GPU VRAM usage in MB.
+
+        Returns:
+            List of dicts: [{"gpu": 0, "used_mb": int, "total_mb": int}, ...]
+
+        Raises:
+            RuntimeError: If memory usage cannot be determined with any tool
+        """
+        if self.is_tool_available(self.AMD_SMI_PATH):
+            try:
+                output = self.execute_command(
+                    f"{self.AMD_SMI_PATH} metric --mem-usage --json"
+                )
+                data = json.loads(output)
+                usage = []
+                for entry in data.get("gpu_data", []):
+                    mem = entry.get("mem_usage", {})
+                    usage.append(
+                        {
+                            "gpu": entry.get("gpu"),
+                            "used_mb": int(mem["used_vram"]["value"]),
+                            "total_mb": int(mem["total_vram"]["value"]),
+                        }
+                    )
+                if usage:
+                    return usage
+            except Exception as e:
+                self._log_warning(
+                    f"amd-smi mem-usage query failed, trying rocm-smi: {e}"
+                )
+
+        try:
+            output = self.execute_command(
+                f"{self.ROCM_SMI_PATH} --showmeminfo vram --json"
+            )
+            data = json.loads(output)
+            usage = []
+            for card_name, card_info in sorted(data.items()):
+                gpu_id = int(re.search(r"\d+", card_name).group())
+                total_bytes = int(card_info["VRAM Total Memory (B)"])
+                used_bytes = int(card_info["VRAM Total Used Memory (B)"])
+                usage.append(
+                    {
+                        "gpu": gpu_id,
+                        "used_mb": used_bytes // (1024 * 1024),
+                        "total_mb": total_bytes // (1024 * 1024),
+                    }
+                )
+            return usage
+        except Exception as e:
+            raise RuntimeError(
+                f"Unable to determine GPU memory usage.\n"
+                f"Error: {e}\n"
+            )
+
     def list_gpus_json(self) -> List[Dict]:
         """List all GPUs with detailed information in JSON format.
         
