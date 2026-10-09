@@ -180,6 +180,14 @@ class DummyDynolog:
         for path in HANDOFF_FILES:
             with contextlib.suppress(OSError):
                 path.unlink()
+        site_file = Path("/tmp/madengine_kineto_hook.site")
+        if site_file.is_file():
+            site = Path(site_file.read_text(encoding="utf-8").strip())
+            for name in ("madengine_kineto_hook.py", "madengine_kineto_hook.pth"):
+                with contextlib.suppress(OSError):
+                    (site / name).unlink()
+            with contextlib.suppress(OSError):
+                site_file.unlink()
 
 
 @pytest.fixture
@@ -270,6 +278,40 @@ class TestDaemonLifecycle:
         # Kineto writes into this directory itself, so it must exist up front.
         assert (workdir / "torch_profiler_output").is_dir()
 
+    def test_start_installs_the_optimizer_hook_and_stop_removes_it(
+        self, workdir, dummy_dynolog
+    ):
+        """Unmodified workloads never import torch.profiler, so the start script does.
+
+        The hook lands in site-packages because the model is a later process.
+        Stop removes it so the install does not outlive the profiled run.
+        """
+        fake = workdir / "fake-torch"
+        (fake / "torch").mkdir(parents=True)
+        (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
+        env = dummy_dynolog.environ(TORCH_PROFILE_WARMUP_S="30")
+        env["PYTHONPATH"] = str(fake) + os.pathsep + env.get("PYTHONPATH", "")
+
+        started = run_script(START_SCRIPT, workdir, env)
+
+        assert started.returncode == 0, started.stdout
+        site_file = Path("/tmp/madengine_kineto_hook.site")
+        assert site_file.is_file(), started.stdout
+        site = Path(site_file.read_text(encoding="utf-8").strip())
+        assert (site / "madengine_kineto_hook.pth").read_text(encoding="utf-8").strip() == (
+            "import madengine_kineto_hook"
+        )
+        assert "optimizer.step" in (site / "madengine_kineto_hook.py").read_text(
+            encoding="utf-8"
+        )
+
+        stopped = run_script(STOP_SCRIPT, workdir, env)
+
+        assert stopped.returncode == 0, stopped.stdout
+        assert not (site / "madengine_kineto_hook.pth").exists()
+        assert not (site / "madengine_kineto_hook.py").exists()
+        assert not site_file.exists()
+
     def test_start_without_the_daemon_installed_fails(self, workdir, dummy_dynolog):
         """Without the pre-script's install step there is nothing to start."""
         result = run_script(START_SCRIPT, workdir, dummy_dynolog.environ(on_path=False))
@@ -329,6 +371,73 @@ class TestTraceRequest:
         assert "accepted on attempt 3" in result.stdout
         assert RESULT_FILE.read_text().strip() == "accepted"
 
+    def test_trigger_asks_only_for_pids_that_are_still_running(
+        self, workdir, dummy_dynolog
+    ):
+        """Pre-scripts that import torch stay in the daemon list after they exit.
+
+        A request that names them is reported as installed and then writes
+        nothing. The trigger has to pass only the processes that are still alive.
+        """
+        live = subprocess.Popen(["sleep", "30"])
+        log = Path("/tmp/madengine_dynolog.log")
+        try:
+            log.write_text(
+                "I Registered process (999999) for job 0.\n"
+                "I Registered process ({0}, 999999) for job 0.\n".format(live.pid),
+                encoding="utf-8",
+            )
+            result = self.run_trigger(workdir, dummy_dynolog)
+        finally:
+            live.kill()
+            live.wait()
+            log.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stdout
+        request = dummy_dynolog.requests()[0]
+        assert f"--pids {live.pid}" in request, request
+        assert "999999" not in request
+
+    def test_trigger_skips_the_torchrun_launcher(self, workdir, dummy_dynolog):
+        """The launcher registers and never calls optimizer.step().
+
+        Naming it in the same request as the worker leaves the worker's trace
+        unfinalized. A script whose name contains "torchrun" is the workload.
+        """
+        worker = subprocess.Popen(
+            ["bash", "-c", "exec -a /tmp/run_torchrun.py sleep 30"]
+        )
+        launcher = subprocess.Popen(
+            ["bash", "-c", "exec -a /usr/local/bin/torchrun sleep 30"]
+        )
+        log = Path("/tmp/madengine_dynolog.log")
+        try:
+            time.sleep(0.2)
+            log.write_text(
+                "I Registered process ({0}) for job 0.\n"
+                "I Registered process ({1}, {0}) for job 0.\n".format(
+                    launcher.pid, worker.pid
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_trigger(
+                workdir,
+                dummy_dynolog,
+                TORCH_PROFILE_WARMUP_S="0",
+                TORCH_PROFILE_RETRY_INTERVAL_S="0",
+                TORCH_PROFILE_MAX_ATTEMPTS="3",
+            )
+        finally:
+            for proc in (worker, launcher):
+                proc.kill()
+                proc.wait()
+            log.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stdout
+        request = dummy_dynolog.requests()[0]
+        assert f"--pids {worker.pid}" in request, request
+        assert str(launcher.pid) not in request
+
     def test_an_option_dyno_rejects_fails_fast_and_says_so(
         self, workdir, dummy_dynolog
     ):
@@ -369,11 +478,9 @@ class TestTraceRequest:
             "--process-limit 64",
         ):
             assert flag in request, request
-        # An absolute path, because the workload's working directory is its own.
-        assert (
-            f"--log-file {workdir}/torch_profiler_output/libkineto_trace.json"
-            in request
-        )
+        # On the container's own disk. A path on the workspace bind mount is
+        # accepted and then never becomes a file. dynolog_stop.sh copies it out.
+        assert "--log-file /tmp/madengine_kineto/libkineto_trace.json" in request
 
     def test_disabling_iterations_switches_to_a_timed_capture(
         self, workdir, dummy_dynolog

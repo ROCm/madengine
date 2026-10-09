@@ -70,7 +70,7 @@ docker:
 # Remove this section entirely for single-GPU, non-distributed runs.
 # distributed:
 #   enabled: true
-#   launcher: torchrun   # torchrun | deepspeed | megatron | torchtitan | vllm | sglang | sglang-disagg | primus | native
+#   launcher: torchrun   # torchrun | deepspeed | megatron-lm | torchtitan | vllm | sglang | sglang-disagg | primus
 #   backend: nccl        # nccl | gloo
 #   nnodes: 1
 #   nproc_per_node: 4    # GPUs per node

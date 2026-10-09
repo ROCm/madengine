@@ -412,7 +412,7 @@ madengine uses intelligent multi-layer configuration merging:
 ```json
 {
   "distributed": {
-    "launcher": "torchrun",    // Launcher type: torchrun, vllm, sglang, deepspeed, megatron, slurm_multi
+    "launcher": "torchrun",    // Launcher type: torchrun, vllm, sglang, deepspeed, megatron-lm, slurm_multi
     "backend": "nccl",         // Communication backend (nccl/gloo)
     "port": 29500,             // Master node port
     "nnodes": 2,               // Number of nodes (overrides slurm.nodes if set)
@@ -426,12 +426,12 @@ madengine uses intelligent multi-layer configuration merging:
 - `vllm`: vLLM inference engine (TP/PP parallelism)
 - `sglang`: SGLang inference engine
 - `deepspeed`: DeepSpeed training framework
-- `megatron`: Megatron-LM large model training
+- `megatron-lm`: Megatron-LM large model training
 - `slurm_multi` / `slurm-multi`: Self-managed multi-container topologies (escape hatch)
 - Custom: Set environment variables, model script handles launcher
 
 **Note**: For vLLM and SGLang, the model script handles process spawning directly.
-For torchrun/deepspeed/megatron, use `$MAD_MULTI_NODE_RUNNER` in your model script.
+For torchrun/deepspeed/megatron-lm, use `$MAD_MULTI_NODE_RUNNER` in your model script.
 For slurm_multi, the model's `.slurm` script runs on baremetal and manages Docker containers via `srun` internally.
 
 ### Environment Variables

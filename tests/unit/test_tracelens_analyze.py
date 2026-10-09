@@ -7,6 +7,7 @@ the host, so it is loaded here by path rather than imported as a module.
 
 import csv
 import glob
+import gzip
 import importlib.util
 import json
 import os
@@ -312,6 +313,37 @@ class TestCollectiveInputs:
         assert "1 of 2" in skipped[0]["detail"]
         assert "none of these" not in skipped[0]["detail"]
 
+    @staticmethod
+    def _kineto(rank: int) -> bytes:
+        return (
+            b'{"schemaVersion": 1, "distributedInfo": {"backend": "nccl", "rank": %d, '
+            b'"world_size": 2}, "traceEvents": []}' % rank
+        )
+
+    def test_rank_read_from_distributed_info_when_filename_lacks_it(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        # tensorboard_trace_handler without worker_name names traces <host>_<pid>.
+        _write(tmp_path, "tensorboard/host_1043.17909.pt.trace.json", self._kineto(1))
+        _write(tmp_path, "tensorboard/host_1044.17910.pt.trace.json", self._kineto(0))
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert sorted(os.path.basename(m) for m in seen["matches"]) == [
+            "rank0_host_1044.17910.pt.trace.json",
+            "rank1_host_1043.17909.pt.trace.json",
+        ]
+
+    def test_rank_read_from_gzipped_trace(self, analyzer, tmp_path):
+        path = _write(tmp_path, "t/host_1.pt.trace.json.gz", gzip.compress(self._kineto(3)))
+        assert analyzer._collective_name(str(path)) == "rank3_host_1.pt.trace.json.gz"
+
+    def test_filename_rank_wins_and_unknown_rank_is_none(self, analyzer, tmp_path):
+        named = _write(tmp_path, "a/libkineto_trace_rank5_1.json", self._kineto(2))
+        bare = _write(tmp_path, "a/libkineto_trace_9.json", CHROME_TRACE)
+        assert analyzer._collective_name(str(named)) == "libkineto_trace_rank5_1.json"
+        assert analyzer._collective_name(str(bare)) is None
+
 
 class TestAnalyze:
     """The analyze() driver must schedule one job per trace and record outcomes."""
@@ -488,6 +520,40 @@ class TestAnalyze:
         )
         assert summary["results"] == []
         assert summary["succeeded"] == 0
+
+    def test_truncated_gzip_is_reported_instead_of_aborting(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """A gzip missing its trailer raises EOFError, which is not an OSError.
+
+        That used to leave analyze() before the summary existed. The trace is
+        still handed to TraceLens, and the failure is recorded.
+        """
+        payload = gzip.compress(b'{"traceEvents": [{"cat": "kernel"}]}')[:-8]
+        trace = _write(
+            tmp_path, "torch_profiler_output/libkineto_trace_1.json.gz", payload
+        )
+        assert analyzer._read_head(str(trace)) == ""
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (
+                calls.append(list(command)),
+                (1, "dummy TraceLens: could not read truncated gzip"),
+            )[1],
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path),
+            output_dir=str(tmp_path / "out"),
+            python=sys.executable,
+        )
+
+        assert calls
+        assert summary["failed"] == 1
+        assert summary["results"][0]["status"] == "FAILURE"
+        assert "could not read" in summary["results"][0]["detail"]
 
 
 class TestCli:
