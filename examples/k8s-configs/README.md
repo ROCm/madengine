@@ -403,9 +403,9 @@ madengine separates **per-job results** from **long-lived shared data**:
 | Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
 |--------|-------------|----------------------------|----------------------------|
 | **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** — `multi_node_results_storage_class` → `nfs_storage_class` → `storage_class` (e.g. `nfs-banff`) |
-| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
+| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** when that StorageClass can serve ReadWriteMany; otherwise one local disk per pod | Same rule |
 
-**Built-in defaults** are in `presets/k8s/defaults.json`: single-node results use `local_path_storage_class` / `storage_class` → `local-path`. Shared data and multi-node results still use `nfs_storage_class` / `data_storage_class` → `nfs-banff` (RWX). Override those when the cluster has a different NFS class.
+**Built-in defaults** are in `presets/k8s/defaults.json`: `results_layout` and `data_layout` are `auto`. Multi-node results and the dataset cache use `nfs_storage_class` / `data_storage_class` (`nfs-banff`) only when that StorageClass exists and its provisioner is a shared filesystem, or a PersistentVolume of that class is already ReadWriteMany. Otherwise each pod gets a ReadWriteOnce volume on `local-path`. Set `results_layout` or `data_layout` to `shared` or `per_pod` to override. A dataset claim that already exists and is not ReadWriteMany is left in place and not mounted.
 
 Example override for a different cluster:
 
@@ -564,6 +564,8 @@ To use an existing PVC instead of auto-creation:
 | `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
 | `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` |
 | `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
+| `results_layout` | string | **`auto`** | `auto` uses a shared results volume when the multi-node class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
+| `data_layout` | string | **`auto`** | `auto` uses `madengine-shared-data` when that class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
 | `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (falls back to `local_path_storage_class`, then `storage_class`) |
 | `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
 | `results_storage_size` | string | `"10Gi"` | Size of the per-job `{job}-results` PVC |

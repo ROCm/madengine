@@ -15,6 +15,7 @@
     "local_path_storage_class": "local-path",
     "storage_class": "local-path",
     "results_layout": "auto",
+    "data_layout": "auto",
     "data_storage_class": "nfs-banff",
     "recreate_shared_data_pvc": false,
     "secrets": {

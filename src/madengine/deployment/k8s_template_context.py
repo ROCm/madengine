@@ -19,6 +19,7 @@ from .common import (
     resolve_distributed_launch,
 )
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_label_value
+from .k8s_pvc import RESULTS_LAYOUT_PER_POD, SHARED_DATA_PVC_NAME
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_FROM_LOCAL,
@@ -134,25 +135,41 @@ class KubernetesTemplateContextMixin:
         # Store for use in deploy() method
         self._data_config = data_config
 
-        # K8s best practice: Auto-create shared data PVC if needed
-        # K8s philosophy: Separate compute (pods) from storage (PVC)
-        if data_config and not self.k8s_config.get("data_pvc"):
-            # PVC will be auto-created during deployment
-            # Use consistent name for reusability across training runs
-            self.console.print(
-                f"[cyan]📦 Data provider detected: Will auto-create shared data PVC[/cyan]"
+        # A data provider needs /data. Use the shared claim only when it is
+        # ReadWriteMany. Otherwise each pod gets its own local disk.
+        data_per_pod = False
+        self._data_layout = None
+        if data_config:
+            explicit_pvc = self.k8s_config.get("data_pvc")
+            mode = (self.k8s_config.get("data_layout") or "auto").strip().lower()
+            named_other_claim = (
+                explicit_pvc
+                and explicit_pvc != SHARED_DATA_PVC_NAME
+                and mode != RESULTS_LAYOUT_PER_POD
             )
-            self.console.print(
-                f"[dim]   PVC name: madengine-shared-data (reusable across runs)[/dim]"
-            )
-            self.console.print(
-                f"[dim]   Access mode: RWO for single-node, RWX for multi-node (auto-selected)[/dim]"
-            )
-            self.console.print(
-                f"[dim]   To use existing PVC, add 'data_pvc' to your K8s config[/dim]"
-            )
-            # Set PVC name now so templates are rendered with correct value
-            self.k8s_config["data_pvc"] = "madengine-shared-data"
+            if named_other_claim:
+                self._data_layout = "shared"
+            else:
+                self._data_layout = self._select_data_layout()
+                if self._data_layout == RESULTS_LAYOUT_PER_POD:
+                    data_per_pod = True
+                    self.console.print(
+                        "[cyan]Data provider detected: each pod gets a local "
+                        "/data volume[/cyan]"
+                    )
+                    self.console.print(
+                        "[dim]   madengine-shared-data is not created. An existing "
+                        "claim that is not ReadWriteMany is left unmounted.[/dim]"
+                    )
+                else:
+                    self.console.print(
+                        "[cyan]Data provider detected: using shared data PVC[/cyan]"
+                    )
+                    self.console.print(
+                        "[dim]   PVC name: madengine-shared-data "
+                        "(reusable across runs)[/dim]"
+                    )
+                    self.k8s_config["data_pvc"] = SHARED_DATA_PVC_NAME
 
         # Determine data provider script if model needs data
         data_provider_script = None
@@ -566,7 +583,10 @@ class KubernetesTemplateContextMixin:
             "results_per_pod": self._results_use_per_pod(nnodes),
             "results_storage_class": self._k8s_local_results_storage_class(),
             "results_storage_size": self.k8s_config.get("results_storage_size", "10Gi"),
-            "data_pvc": self.k8s_config.get("data_pvc"),
+            "data_pvc": None if data_per_pod else self.k8s_config.get("data_pvc"),
+            "data_per_pod": data_per_pod,
+            "data_storage_class": self._k8s_local_results_storage_class(),
+            "data_storage_size": self.k8s_config.get("data_storage_size", "100Gi"),
             # Multi-node
             "create_headless_service": create_headless_service,
             "service_name": self.service_name,
