@@ -124,7 +124,7 @@ Collect comprehensive ROCm profiling data:
 
 **Output:** ROCm profiler data files (e.g. `rpd_output/trace.rpd`).
 
-**Note:** The rpd pre-script installs build dependencies in the container (e.g. `nlohmann-json3-dev` on Ubuntu) so the rocmProfileData tracer can compile; the first run may take longer while packages are installed. It also builds and installs `rlog` (required by the tracer) into `/usr/local` and refreshes `ldconfig` so `librlog.so` is resolvable when the tracer is `LD_PRELOAD`ed; this requires root or `sudo` in the container.
+**Note:** The rpd pre-script installs build dependencies in the container (e.g. `nlohmann-json3-dev` on Ubuntu) so the rocmProfileData tracer can compile; the first run may take longer while packages are installed. Upstream builds with CMake behind `make install` (`CMAKE_ARGS` leave out the remote helper and the web viewer). That installs `rlog` into `/usr/local`, and the script refreshes `ldconfig` so `librlog.so` is resolvable when the tracer is `LD_PRELOAD`ed. This requires root or `sudo` in the container. If `apt-get update` reports a signed Ubuntu archive as unsigned, the script marks those archives trusted and retries the update once.
 
 ### rocm-trace-lite (RTL) — lightweight kernel dispatch trace
 

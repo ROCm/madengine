@@ -430,7 +430,6 @@ Use configuration files for complex settings:
 {
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0"
@@ -661,8 +660,11 @@ Configure distributed training:
 - `deepspeed` - ZeRO optimization
 - `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated prefill/decode
+- `slurm_multi` - Self-managed per-node containers (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 
@@ -684,6 +686,7 @@ my_model,125.3,98.5,15.2,...
 - Model configurations
 - Deployment configuration
 - Build timestamp
+- After a local run, `docker_run_cmd`: the `docker run` command for that invocation (best-effort; a missing write does not fail the run)
 
 Use this manifest to run pre-built images:
 
@@ -769,7 +772,6 @@ cat > config.json << 'EOF'
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "distributed": {
     "launcher": "torchrun",
     "nproc_per_node": 4

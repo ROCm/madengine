@@ -141,17 +141,6 @@ class BuildOrchestrator:
         # Load credentials if available
         self.credentials = load_credentials()
 
-    def _copy_scripts(self):
-        """[DEPRECATED] Copy common scripts to model directories.
-        
-        This method is no longer called during build phase as it's not needed.
-        Build phase only creates Docker images - script execution happens in run phase.
-        Scripts are copied by run_orchestrator._copy_scripts() for local execution.
-        K8s and Slurm deployments have their own script management mechanisms.
-        """
-        # No-op: This method is deprecated and should not be called
-        pass
-
     def _warn_if_mad_arch_unresolved_for_dockerfiles(
         self, models: List[Dict], builder: DockerBuilder
     ) -> None:

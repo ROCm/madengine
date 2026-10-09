@@ -184,6 +184,7 @@ madengine validates the composed config and reports errors for:
 - Conflicting scheduler selections (e.g., both `slurm` and `k8s` sections present)
 - `distributed.enabled: true` without a `distributed.launcher`
 - Invalid `distributed.nnodes` (must be a positive integer)
+- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is Kubernetes. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
 - Unsupported `platform.type` (currently only `docker` is supported)
 - Unknown top-level config keys (catches typos)
 
@@ -664,13 +665,12 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `data_pvc` - Name of an existing PVC to use for data, skipping auto-creation
 - `storage_class` - Broad fallback StorageClass for both the shared-data PVC and the single-node results PVC
 - `nfs_storage_class` / `data_storage_class` - RWX class for shared data and multi-node results
-- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the legacy single-node fallback)
+- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the ReadWriteOnce class for a single-node claim and for a per-pod volume)
+- `results_layout` / `data_layout` - `auto` (default), `shared`, or `per_pod`. `auto` uses one ReadWriteMany claim when that StorageClass can serve it, and a ReadWriteOnce volume on each pod when it cannot. An existing `madengine-shared-data` claim that is not ReadWriteMany is left in the cluster and not mounted.
 - `results_storage_size` / `data_storage_size` - PVC sizes (defaults: `10Gi` / `100Gi`)
 - `recreate_shared_data_pvc` - Delete and recreate `madengine-shared-data` before use. **Destroys existing data** — back up first; intended for migrating an RWO PVC to RWX
 
-Multi-node jobs require an RWX results StorageClass; madengine warns when one is
-not set. The full key reference, PVC access-mode matrix, and preset defaults are
-in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
+With `results_layout: auto`, a multi-node job does not require ReadWriteMany storage. When the shared class cannot serve the job, each pod uses a local disk and performance rows are copied from pod logs. A shared-volume copy is preferred when it is present. The full key reference, PVC access-mode matrix, and preset defaults are in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
 
 ### Multi-Node Kubernetes
 
@@ -790,7 +790,7 @@ See [`examples/configs/templates/slurm.yaml`](../examples/configs/templates/slur
 - `launcher` - Framework name (required)
 - `nnodes` - Number of nodes
 - `nproc_per_node` - Processes/GPUs per node
-- `master_port` - Master communication port (default: 29500)
+- `master_port` - Master communication port (default: 29500). SLURM also reads `port`; when both are set, `port` wins. Kubernetes reads `launcher.master_port`, then `distributed.master_port`, then `distributed.port`.
 
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
