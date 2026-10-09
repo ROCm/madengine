@@ -146,7 +146,9 @@ Use **`rocm_trace_lite`** for RTL **`lite`** mode (lower overhead; skips some di
 
 **Installing `rocm-trace-lite` in the container:** Upstream distributes **wheels on [GitHub Releases](https://github.com/sunway513/rocm-trace-lite/releases)**, not on PyPI. The trace **pre-script** (`scripts/common/pre_scripts/trace.sh` with args `rocm_trace_lite`) installs via `pip` from a **pinned** `linux_x86_64` wheel URL by default (reproducible; bump the pin in that script when you intentionally upgrade RTL). To follow upstream’s latest release instead, set **`ROCM_TRACE_LITE_FOLLOW_LATEST=1`** (uses the GitHub API; needs `curl`). For a specific wheel, set **`ROCM_TRACE_LITE_WHEEL_URL`** to the full URL of a `.whl` file (or bake the package into the image). You need **outbound HTTPS to `github.com`** for the default or latest path unless the wheel is already present. Published wheels target **linux x86_64**; other architectures require a compatible wheel and the env override.
 
-**Output:** `rocm_trace_lite_output/trace.db` under the model workspace (and optionally `trace.json.gz`, `trace_summary.txt`, etc., depending on RTL version). The trace **post-script** copies `rocm_trace_lite_output/` to `/myworkspace/` like other profiling tools.
+On a TheRock image (no `/opt/rocm`), that prebuilt `librtl.so` does not match the image's HSA headers and records no kernel dispatches. The same pre-script then clones the release tag of the installed package (override with **`ROCM_TRACE_LITE_GIT_REF`**; the fallback pin is `v0.3.3`) and builds `librtl.so` against `$ROCM_PATH`. `rtl trace` overwrites `HSA_TOOLS_LIB` with `get_lib_path()`, which prefers the wheel copy, so the pre-script and the wrapper both replace that file with the rebuilt library. The rebuild also hooks `hsa_amd_queue_create`, which is how HIP 7.15 creates compute queues; replacing only `hsa_queue_create` records no dispatches on that runtime. Set **`ROCM_TRACE_LITE_SKIP_NATIVE_BUILD=1`** to keep the wheel library. The wrapper exports `HSA_TOOLS_LIB` and `RTL_OUTPUT=…/trace_%p.db` so each `torchrun` worker writes its own database. `rtl trace` merges those files into `trace.db` and does not keep them. It also sets `HSA_TOOLS_DISABLE_REGISTER=1` so rocprofiler-register does not ignore `HSA_TOOLS_LIB`. Set **`RTL_WRAPPER_KEEP_REGISTER=1`** to leave the register enabled.
+
+**Output:** `rocm_trace_lite_output/trace.db` under the model workspace (and optionally `trace.json.gz`, `trace_summary.txt`, etc., depending on RTL version). Per-process `trace_<pid>.db` files are transient merge inputs: a single process database is moved to `trace.db`, and several are merged and then deleted. The trace **post-script** copies `rocm_trace_lite_output/` to `/myworkspace/` like other profiling tools.
 
 **RTL vs rocprofv3**
 
@@ -359,12 +361,12 @@ Capture `torch.profiler` (Kineto) traces from a running PyTorch workload without
 }
 ```
 
-**Output:** `torch_profiler_output/libkineto_trace_<pid>.json` (one file per rank)
+**Output:** `torch_profiler_output/libkineto_trace_<pid>.json` (one file per rank). Kineto writes the file on the container's own disk; the stop script copies it into this directory. A log path on the workspace bind mount is accepted and then never becomes a file.
 
 **Requirements:**
 
 - The workload must be PyTorch >= 1.13. Nothing is captured from non-PyTorch models.
-- Iteration-based capture counts `optimizer.step()` calls. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
+- Iteration-based capture counts `optimizer.step()` calls. PyTorch registers that hook only after `torch.profiler` is imported, so the tool imports it for the run; the model script stays unchanged. Workloads without an optimizer (pure inference) should set `TORCH_PROFILE_ITERATIONS` to `0` to fall back to duration-based capture.
 - The pre-script downloads the dynolog `.deb` from GitHub, so the container needs outbound HTTPS on the first run (x86_64 Debian/Ubuntu base image). Set `DYNOLOG_DEB_URL` to use a mirror, or bake `dynolog` and `dyno` into the image to skip the download entirely.
 
 **Environment Variables:**
@@ -403,7 +405,7 @@ For a short-lived workload, shorten the warmup so the request lands while the mo
 
 **Trace produced but empty?** Iteration-based capture waits for the workload's next `optimizer.step()`, so the request has to land after training has actually started. A request that arrives while the model is still being built (or while MIOpen is autotuning the first convolution) yields a trace with no GPU activity. The warmup must cover startup, not just process launch.
 
-Every process that registers with dynolog is traced, including the `torchrun` launcher, which supervises its children and runs no kernels itself. An `N`-rank job therefore produces `N + 1` traces, and the launcher holds nothing to report.
+The trace request names processes that are still running and skips the `torchrun` launcher. The launcher never calls `optimizer.step()`, and a launcher that has registered with dynolog keeps the workers from flushing their traces, so the tool turns the daemon off in that process only. An `N`-rank job produces one trace per rank.
 
 ### tracelens - TraceLens Trace Analysis
 
@@ -420,7 +422,7 @@ Each trace format is routed to the matching TraceLens report:
 
 **Unreadable formats:** TraceLens cannot read rocprofv3's default SQLite (`*_results.db`) or RPD (`.rpd`) databases. Those are listed in the summary as `SKIPPED` with a pointer at a preset that works — use `rocprofv3_lightweight` for JSON or `rocprofv3_perfetto` for `.pftrace`. For `rpd`, point TraceLens at the `trace.json` its post-script writes alongside the database.
 
-**Traces with nothing to analyze:** a trace that holds no GPU activity is also reported as `SKIPPED` rather than as a failure. The usual source is the `torchrun` launcher process, which dynolog traces along with the ranks that do the work.
+**Traces with nothing to analyze:** a trace that holds no GPU activity is also reported as `SKIPPED` rather than as a failure. The usual source is a request that lands while the model is still starting, before any kernels run.
 
 #### Analyzing on the Host (Recommended)
 
