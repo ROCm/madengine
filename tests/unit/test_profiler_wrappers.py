@@ -90,11 +90,16 @@ class TestRtlWrapperEmptyTrace:
     def _rtl(self, bin_dir, tmp_path):
         # Stub `rtl trace -o DB <cmd>`: run the workload, then copy a canned DB to -o.
         _stub(bin_dir, "rtl", """
+            if [ "${1:-}" = "trace" ] && [ "${2:-}" = "--help" ]; then
+                printf '%s\\n' "${RTL_HELP-}"
+                exit "${RTL_HELP_RC:-0}"
+            fi
+            printf '%s\\n' "$@" > "${RTL_ARGV:-/dev/null}"
             shift  # "trace"
-            while [ "$1" != "-o" ]; do shift; done
+            while [ $# -gt 0 ] && [ "$1" != "-o" ]; do shift; done
             db="$2"; shift 2
             "$@" || exit $?
-            [ -n "$CANNED_DB" ] && cp "$CANNED_DB" "$db"
+            [ -n "${CANNED_DB:-}" ] && cp "$CANNED_DB" "$db"
             exit 0
         """)
 
@@ -181,6 +186,54 @@ class TestRtlWrapperEmptyTrace:
         res, run_dir = self._run_rtl(tmp_path, bin_dir, None, cmd=("python3", str(writer)))
         assert res.returncode == 0, res.stderr
         assert (run_dir / "rocm_trace_lite_output" / "trace_42.db").exists()
+
+    def test_mode_passed_when_help_exits_nonzero(self, tmp_path, bin_dir):
+        argv = tmp_path / "argv.txt"
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"],
+            RTL_MODE="lite",
+            RTL_HELP="usage: rtl trace [-h] --mode {lite,default,full}",
+            RTL_HELP_RC="1",
+            RTL_ARGV=str(argv),
+        )
+        assert res.returncode == 0, res.stderr
+        assert "--mode" in argv.read_text().splitlines()
+        assert "lite" in argv.read_text().splitlines()
+        assert "does not support --mode" not in res.stderr
+
+    def test_mode_not_taken_from_model_flag(self, tmp_path, bin_dir):
+        argv = tmp_path / "argv.txt"
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"],
+            RTL_MODE="lite",
+            RTL_HELP="usage: rtl trace --model NAME",
+            RTL_ARGV=str(argv),
+        )
+        assert res.returncode == 0, res.stderr
+        assert "--mode" not in argv.read_text().splitlines()
+        assert "does not support --mode" in res.stderr
+
+    def test_stale_per_process_db_does_not_hide_empty_trace(self, tmp_path, bin_dir):
+        run_dir = tmp_path / "run_directory"
+        stale_dir = run_dir / "rocm_trace_lite_output"
+        stale_dir.mkdir(parents=True)
+        _write_rtl_db(stale_dir / "trace_99.db", ["KernelExecution"])
+        res, _ = self._run_rtl(tmp_path, bin_dir, ["UserMarker"])
+        assert res.returncode == 3
+        assert not (stale_dir / "trace_99.db").exists()
+        assert "captured no GPU operations" in res.stderr
+
+    def test_unreadable_db_reports_the_query_error(self, tmp_path, bin_dir):
+        canned = tmp_path / "canned.db"
+        canned.write_bytes(b"this is not a sqlite database")
+        run_dir = tmp_path / "run_directory"
+        run_dir.mkdir()
+        res = _run(
+            "rtl_trace_wrapper.sh", ["true"], run_dir, bin_dir, CANNED_DB=str(canned),
+        )
+        assert res.returncode == 3
+        assert "could not read GPU ops" in res.stderr
+        assert "captured no GPU operations" in res.stderr
 
 
 class TestNativeLibrtlReplacesWheelCopy:

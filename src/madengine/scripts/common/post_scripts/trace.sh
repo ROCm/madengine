@@ -153,7 +153,11 @@ rocm_trace_lite)
 		fi
 	done
 	if [ ! -f "${OUTPUT}/trace.db" ]; then
-		echo "WARNING: ${OUTPUT}/trace.db not found (rtl may have failed or used a different path)."
+		if compgen -G "${OUTPUT}/trace_*.db" > /dev/null; then
+			echo "Note: ${OUTPUT}/trace.db not found; per-process trace_*.db files are kept."
+		else
+			echo "WARNING: ${OUTPUT}/trace.db not found (rtl may have failed or used a different path)."
+		fi
 	fi
 	cp -vLR --preserve=all "$OUTPUT" "$SAVESPACE" || echo "Note: rocm_trace_lite output directory may be empty"
 	;;
