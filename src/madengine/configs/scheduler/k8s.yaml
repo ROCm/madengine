@@ -17,6 +17,9 @@ k8s:
   tolerations: []
   nfs_storage_class: nfs-banff
   local_path_storage_class: local-path
+  storage_class: local-path
+  results_layout: auto
+  data_layout: auto
   data_storage_class: nfs-banff
   recreate_shared_data_pvc: false
   results_pvc: null
@@ -24,7 +27,8 @@ k8s:
   output_dir: null
   secrets:
     strategy: from_local_credentials
-    image_pull_secret_names: []
+    image_pull_secret_names:
+      - dockerhub-rocm
     runtime_secret_name: null
 
 env_vars:

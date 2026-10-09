@@ -6,6 +6,7 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -31,6 +32,13 @@ from madengine.deployment.k8s_secrets import (
     resolve_runtime_secret_name,
     build_registry_secret_data,
 )
+from madengine.deployment.k8s_results import (
+    collector_pod_name,
+    decode_pod_log,
+    extract_perf_csv_blocks,
+    materialize_perf_csvs_from_logs,
+    perf_csv_artifact_sources,
+)
 from madengine.deployment.kubernetes import (
     KubernetesDeployment,
     _pod_job_name_label_selector,
@@ -44,7 +52,7 @@ from madengine.deployment.base import DeploymentConfig
 def test_merge_secrets_config_defaults():
     merged = merge_secrets_config({})
     assert merged["strategy"] == SECRETS_STRATEGY_FROM_LOCAL
-    assert merged["image_pull_secret_names"] == []
+    assert merged["image_pull_secret_names"] == ["dockerhub-rocm"]
 
 
 def test_resolve_image_pull_from_local_with_preview():
@@ -54,6 +62,216 @@ def test_resolve_image_pull_from_local_with_preview():
         ["job-reg"],
     )
     assert refs == [{"name": "job-reg"}, {"name": "extra"}]
+
+
+def test_resolve_image_pull_from_local_includes_dockerhub_rocm():
+    refs = resolve_image_pull_secret_refs(
+        SECRETS_STRATEGY_FROM_LOCAL,
+        merge_secrets_config({}),
+        ["job-reg"],
+    )
+    assert refs == [{"name": "job-reg"}, {"name": "dockerhub-rocm"}]
+
+
+def test_results_layout_auto_uses_per_pod_when_rwx_class_is_missing():
+    from madengine.deployment.k8s_pvc import resolve_results_layout
+
+    assert resolve_results_layout("auto", 2, False) == "per_pod"
+    assert resolve_results_layout("auto", 2, True) == "shared"
+    assert resolve_results_layout("shared", 2, False) == "shared"
+    assert resolve_results_layout("per_pod", 2, True) == "per_pod"
+    assert resolve_results_layout("auto", 1, False) == "shared"
+
+
+def test_shared_filesystem_provisioners_support_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert provisioner_supports_rwx("nfs.csi.k8s.io")
+    assert provisioner_supports_rwx("cluster.local/nfs-subdir-external-provisioner")
+    assert provisioner_supports_rwx("cephfs.csi.ceph.com")
+    assert provisioner_supports_rwx("efs.csi.aws.com")
+    assert provisioner_supports_rwx("file.csi.azure.com")
+    assert provisioner_supports_rwx("filestore.csi.storage.gke.io")
+    assert provisioner_supports_rwx("nfs-client")
+
+
+def test_block_and_local_provisioners_are_not_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert not provisioner_supports_rwx("rancher.io/local-path")
+    assert not provisioner_supports_rwx("kubernetes.io/no-provisioner")
+    assert not provisioner_supports_rwx("rbd.csi.ceph.com")
+    assert not provisioner_supports_rwx("")
+    assert not provisioner_supports_rwx(None)
+
+
+def test_data_layout_uses_a_local_disk_unless_read_write_many_is_usable():
+    from madengine.deployment.k8s_pvc import resolve_data_layout
+
+    assert resolve_data_layout("auto", False, None) == "per_pod"
+    assert resolve_data_layout("auto", True, None) == "shared"
+    assert resolve_data_layout("auto", False, True) == "shared"
+    assert resolve_data_layout("auto", True, False) == "per_pod"
+    assert resolve_data_layout("shared", False, False) == "shared"
+    assert resolve_data_layout("per_pod", True, True) == "per_pod"
+
+
+def _layout_mixin(provisioner, volumes=None, pvc=None, pvc_status=None):
+    """PVC mixin with a fake API.
+
+    ``pvc_status`` is the error status for a missing claim.
+    """
+    from types import SimpleNamespace
+
+    from kubernetes.client.rest import ApiException
+
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    mixin = KubernetesPVCMixin()
+    mixin.namespace = "default"
+    mixin.k8s_config = {
+        "nfs_storage_class": "nfs-banff",
+        "data_storage_class": "nfs-banff",
+        "local_path_storage_class": "local-path",
+        "results_layout": "auto",
+        "data_layout": "auto",
+    }
+    mixin.storage_v1 = MagicMock()
+    mixin.storage_v1.read_storage_class.return_value = SimpleNamespace(
+        provisioner=provisioner
+    )
+    mixin.core_v1 = MagicMock()
+    mixin.core_v1.list_persistent_volume.return_value = SimpleNamespace(
+        items=volumes or []
+    )
+    if pvc_status is not None:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.side_effect = (
+            ApiException(status=pvc_status)
+        )
+    else:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.return_value = pvc
+    return mixin
+
+
+def test_local_path_class_does_not_select_a_shared_results_volume():
+    mixin = _layout_mixin("rancher.io/local-path", pvc_status=404)
+    assert mixin._select_results_layout(2) == "per_pod"
+
+
+def test_existing_read_write_many_volume_selects_shared_results():
+    from types import SimpleNamespace
+
+    volume = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteMany"]))
+    mixin = _layout_mixin("example.com/custom-fs", volumes=[volume], pvc_status=404)
+    assert mixin._select_results_layout(2) == "shared"
+
+
+def test_non_rwx_data_claim_is_not_selected_for_mounting():
+    from types import SimpleNamespace
+
+    claim = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteOnce"]))
+    mixin = _layout_mixin("nfs.csi.k8s.io", pvc=claim)
+    assert mixin._select_data_layout() == "per_pod"
+
+
+def test_parallel_job_is_not_finished_when_only_some_pods_succeed():
+    from types import SimpleNamespace
+
+    from madengine.deployment.kubernetes import (
+        job_finished_failed,
+        job_finished_successfully,
+    )
+
+    def job(succeeded, completions, conditions=None):
+        return SimpleNamespace(
+            spec=SimpleNamespace(completions=completions),
+            status=SimpleNamespace(succeeded=succeeded, conditions=conditions or []),
+        )
+
+    partial = job(2, 4)
+    assert job_finished_successfully(partial) is False
+    assert job_finished_failed(partial) is False
+
+    done = job(
+        4,
+        4,
+        [SimpleNamespace(type="Complete", status="True")],
+    )
+    assert job_finished_successfully(done) is True
+
+    one_pod_failed = job(1, 4, [SimpleNamespace(type="Failed", status="False")])
+    assert job_finished_failed(one_pod_failed) is False
+    given_up = job(1, 4, [SimpleNamespace(type="Failed", status="True")])
+    assert job_finished_failed(given_up) is True
+
+
+def test_single_node_results_pvc_uses_local_path():
+    from madengine.deployment.config_loader import ConfigLoader
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    mixin = KubernetesPVCMixin()
+    mixin.k8s_config = cfg["k8s"]
+    assert mixin._k8s_results_storage_class(1) == "local-path"
+
+
+def test_k8s_preset_defaults_to_dockerhub_rocm():
+    from madengine.deployment.config_loader import ConfigLoader
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    assert cfg["k8s"]["secrets"]["image_pull_secret_names"] == ["dockerhub-rocm"]
+
+
+def test_missing_registry_image_is_a_configuration_error(tmp_path):
+    with pytest.raises(ConfigurationError, match="registry image"):
+        _k8s_template_context(tmp_path=tmp_path, image_info={"push_failed": True})
+
+
+def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    assert "dockerhub-rocm" in [s["name"] for s in ctx["image_pull_secrets"]]
+
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = (
+        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    )
+    job = list(yaml.safe_load_all(rendered))[0]
+    pull_names = [
+        s["name"]
+        for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
+    ]
+    assert pull_names[-1] == "dockerhub-rocm"
+
+
+def test_per_pod_data_volume_is_a_local_claim(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    ctx["data_per_pod"] = True
+    ctx["data_pvc"] = None
+    ctx["data_storage_class"] = "local-path"
+    ctx["data_storage_size"] = "100Gi"
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    job = list(yaml.safe_load_all(rendered))[0]
+    volumes = job["spec"]["template"]["spec"]["volumes"]
+    data = next(volume for volume in volumes if volume["name"] == "data")
+    claim = data["ephemeral"]["volumeClaimTemplate"]["spec"]
+    assert claim["accessModes"] == ["ReadWriteOnce"]
+    assert claim["storageClassName"] == "local-path"
+    assert "madengine-shared-data" not in rendered
 
 
 def test_resolve_image_pull_existing():
@@ -292,7 +510,11 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
 
 
 def _k8s_template_context(
-    model_timeout=None, cli_timeout=-1, tmp_path=None, launcher_type=None
+    model_timeout=None,
+    cli_timeout=-1,
+    tmp_path=None,
+    launcher_type=None,
+    image_info=None,
 ):
     """Template context for a minimal single-node job, without touching a cluster.
 
@@ -301,6 +523,7 @@ def _k8s_template_context(
     (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
     instead of the direct-script branch.
     """
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
     from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
     from madengine.deployment.k8s_template_context import (
         KubernetesTemplateContextMixin,
@@ -308,7 +531,10 @@ def _k8s_template_context(
     from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
 
     class _Harness(
-        KubernetesTemplateContextMixin, KubernetesScriptsMixin, KubernetesLauncherMixin
+        KubernetesTemplateContextMixin,
+        KubernetesScriptsMixin,
+        KubernetesLauncherMixin,
+        KubernetesPVCMixin,
     ):
         pass
 
@@ -357,7 +583,7 @@ def _k8s_template_context(
     harness.data = None
 
     return harness._prepare_template_context(
-        model_info, {"registry_image": "dummy:latest"}
+        model_info, image_info or {"registry_image": "dummy:latest"}
     )
 
 
@@ -634,3 +860,94 @@ class TestK8sRequirePinnedImage:
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
             )
+
+
+def test_shared_volume_csvs_are_used_instead_of_log_copies(tmp_path):
+    """nfs-banff keeps one ReadWriteMany results volume. That copy wins."""
+    pvc = tmp_path / "pvc"
+    pvc.mkdir()
+    (pvc / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,10,throughput_tot\n"
+    )
+    log_dir = tmp_path / "log"
+    log_dir.mkdir()
+    (log_dir / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,999,throughput_tot\n"
+    )
+    chosen = perf_csv_artifact_sources(
+        [
+            {"type": "pvc_collection", "local_path": str(pvc)},
+            {"type": "log_csv", "local_path": str(log_dir)},
+        ]
+    )
+    assert [art["type"] for art in chosen] == ["pvc_collection"]
+
+    local_only = perf_csv_artifact_sources(
+        [{"type": "log_csv", "local_path": str(log_dir)}]
+    )
+    assert [art["type"] for art in local_only] == ["log_csv"]
+
+
+def test_multiline_log_is_not_decoded_as_a_bytes_repr():
+    text = "b'not a kubernetes bytes repr\nsecond line'"
+    assert decode_pod_log(text) == text
+
+
+def test_bytes_repr_pod_log_is_decoded_before_csv_recovery(tmp_path):
+    """The k8s client returns str(log_bytes), which hides every newline."""
+    csv_body = "model,performance,metric\nQwen3-8B,158.33,throughput_tot\n"
+    text = (
+        "serving done\n"
+        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
+        f"{csv_body}"
+        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
+    )
+    wrapped = str(text.encode("utf-8"))
+    assert "\n" not in wrapped
+    decoded = decode_pod_log(wrapped)
+    assert decoded == text
+    assert decode_pod_log(text.encode("utf-8")) == text
+
+    results = {"logs": [{"pod": "job-0", "log": decoded}], "artifacts": []}
+    assert materialize_perf_csvs_from_logs(tmp_path, results) == 1
+    saved = (tmp_path / "job-0" / "log_csv" / "perf_Qwen3-8B.csv").read_text()
+    assert "158.33" in saved
+
+
+def test_collector_pod_name_is_a_dns_label():
+    """A sliced job name used to end with a hyphen and Kubernetes rejected it."""
+    name = collector_pod_name("madengine-vllm-pyt-vllm-qwen3-8b")
+    assert name == "collector-madengine-vllm-pyt-vllm-qwen3-8b"
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name)
+
+
+def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
+    """local-path pods delete their disks on exit; the log is the durable copy."""
+    csv_body = "model,performance,metric\nQwen3-8B,158.33,tokens_per_second\n"
+    log = (
+        "serving done\n"
+        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
+        f"{csv_body}"
+        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
+    )
+    assert extract_perf_csv_blocks(log) == [("perf_Qwen3-8B.csv", csv_body.rstrip("\n"))]
+
+    results = {
+        "logs": [
+            {"pod": "job-0-abc", "log": log},
+            {"pod": "job-1-def", "log": log.replace("158.33", "160.00")},
+        ],
+        "artifacts": [],
+    }
+    written = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert written == 2
+    assert (tmp_path / "job-0-abc" / "log_csv" / "perf_Qwen3-8B.csv").is_file()
+    assert (tmp_path / "job-1-def" / "log_csv" / "perf_Qwen3-8B.csv").read_text().startswith(
+        "model,performance,metric"
+    )
+    assert results["artifacts"][0]["type"] == "log_csv"
+
+    # A shared-volume copy already on disk is left alone.
+    again = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert again == 0
+    assert len(results["artifacts"]) == 2

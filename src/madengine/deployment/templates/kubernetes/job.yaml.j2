@@ -436,7 +436,25 @@ spec:
             fi
             
             echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
-            
+
+            # Container logs stay available through the API after the pod
+            # finishes. A per-pod local-path volume does not.
+            echo ""
+            echo "=== Emitting performance CSVs to the container log ==="
+            _emitted=" "
+            for csvf in /results/${HOSTNAME}/perf.csv /results/${HOSTNAME}/perf_*.csv{% if multiple_results %} "/results/${HOSTNAME}/{{ multiple_results | basename }}"{% endif %}; do
+                [ -f "$csvf" ] || continue
+                _base=$(basename "$csvf")
+                case "$_emitted" in
+                    *" $_base "*) continue ;;
+                esac
+                _emitted="$_emitted$_base "
+                echo "MADENGINE_PERF_CSV_BEGIN ${_base}"
+                cat "$csvf"
+                echo ""
+                echo "MADENGINE_PERF_CSV_END ${_base}"
+            done
+
             echo "=== Benchmark job completed with exit code $MODEL_EXIT_CODE ==="
             exit $MODEL_EXIT_CODE
             {% else %}
@@ -664,7 +682,25 @@ spec:
             fi
             
             echo "✓ All artifacts copied to PVC: /results/${HOSTNAME}/"
-            
+
+            # Container logs stay available through the API after the pod
+            # finishes. A per-pod local-path volume does not.
+            echo ""
+            echo "=== Emitting performance CSVs to the container log ==="
+            _emitted=" "
+            for csvf in /results/${HOSTNAME}/perf.csv /results/${HOSTNAME}/perf_*.csv{% if multiple_results %} "/results/${HOSTNAME}/{{ multiple_results | basename }}"{% endif %}; do
+                [ -f "$csvf" ] || continue
+                _base=$(basename "$csvf")
+                case "$_emitted" in
+                    *" $_base "*) continue ;;
+                esac
+                _emitted="$_emitted$_base "
+                echo "MADENGINE_PERF_CSV_BEGIN ${_base}"
+                cat "$csvf"
+                echo ""
+                echo "MADENGINE_PERF_CSV_END ${_base}"
+            done
+
             echo ""
             echo "=== Benchmark job completed with exit code ${MODEL_EXIT_CODE:-0} ==="
             exit ${MODEL_EXIT_CODE:-0}
@@ -702,7 +738,10 @@ spec:
           mountPath: /dev/shm
         - name: results
           mountPath: /results
-        {% if data_pvc %}
+        {% if data_per_pod | default(false) %}
+        - name: data
+          mountPath: /data
+        {% elif data_pvc %}
         - name: data
           mountPath: /data
           readOnly: false  # Must be writable for data provider downloads
@@ -752,9 +791,34 @@ spec:
           medium: Memory
           sizeLimit: 16Gi  # Increased for Ray/vLLM (should be >30% of RAM, recommended 16Gi+)
       - name: results
+        {% if results_per_pod %}
+        ephemeral:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              {% if results_storage_class %}
+              storageClassName: {{ results_storage_class }}
+              {% endif %}
+              resources:
+                requests:
+                  storage: {{ results_storage_size }}
+        {% else %}
         persistentVolumeClaim:
           claimName: {{ results_pvc }}
-      {% if data_pvc %}
+        {% endif %}
+      {% if data_per_pod | default(false) %}
+      - name: data
+        ephemeral:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              {% if data_storage_class %}
+              storageClassName: {{ data_storage_class }}
+              {% endif %}
+              resources:
+                requests:
+                  storage: {{ data_storage_size }}
+      {% elif data_pvc %}
       - name: data
         persistentVolumeClaim:
           claimName: {{ data_pvc }}

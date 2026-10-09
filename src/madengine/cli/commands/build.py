@@ -343,6 +343,20 @@ def build(
         # Check results and exit with appropriate code
         failed_builds = len(build_summary.get("failed_builds", []))
         successful_builds = len(build_summary.get("successful_builds", []))
+        failed_pushes = build_summary.get("failed_pushes", [])
+
+        if failed_pushes:
+            # Built but not pushed: a run would reference a local-only image.
+            console.print(
+                f"💥 [bold red]{len(failed_pushes)} image(s) failed to push "
+                f"to registry {registry}[/bold red]"
+            )
+            for failure in failed_pushes:
+                console.print(
+                    f"  [red]• {failure.get('docker_image')}: "
+                    f"{failure.get('error')}[/red]"
+                )
+            raise typer.Exit(ExitCode.BUILD_FAILURE)
 
         if failed_builds == 0:
             console.print(
