@@ -257,6 +257,7 @@ class TestKubernetesLauncherDispatch:
         from unittest.mock import MagicMock
 
         from madengine.deployment.base import create_jinja_env
+        from madengine.deployment.k8s_pvc import KubernetesPVCMixin
         from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
         from madengine.deployment.k8s_template_context import (
             KubernetesTemplateContextMixin,
@@ -269,6 +270,7 @@ class TestKubernetesLauncherDispatch:
             KubernetesTemplateContextMixin,
             KubernetesScriptsMixin,
             KubernetesLauncherMixin,
+            KubernetesPVCMixin,
         ):
             pass
 
