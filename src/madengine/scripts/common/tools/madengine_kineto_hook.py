@@ -15,6 +15,17 @@ import sys
 _SAVED_DAEMON = "MADENGINE_KINETO_USE_DAEMON"
 
 
+# These run after the daemon is up and import torch, then exit. Dynolog keeps
+# them in the job, and the training worker segfaults while flushing its trace.
+_STARTUP_HELPERS = frozenset({"rocenv_tool.py", "pip", "pip3", "rocm-sdk"})
+
+
+def _is_startup_helper() -> bool:
+    """True for short-lived container tools that must not register with dynolog."""
+    names = {os.path.basename(arg) for arg in sys.argv}
+    return bool(names & _STARTUP_HELPERS)
+
+
 def _is_torchrun_launcher() -> bool:
     """True for the torchrun process, not for a script whose name contains it."""
     argv = sys.argv
@@ -38,6 +49,8 @@ if os.environ.get("KINETO_USE_DAEMON") or os.environ.get(_SAVED_DAEMON):
     # launcher only; the worker puts it back before importing torch.
     if _is_torchrun_launcher():
         os.environ[_SAVED_DAEMON] = os.environ.get("KINETO_USE_DAEMON", "")
+        os.environ.pop("KINETO_USE_DAEMON", None)
+    elif _is_startup_helper():
         os.environ.pop("KINETO_USE_DAEMON", None)
     else:
         saved = os.environ.get(_SAVED_DAEMON)
