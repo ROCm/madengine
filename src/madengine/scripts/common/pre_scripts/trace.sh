@@ -228,14 +228,38 @@ tracelens)
 		exit 0
 	fi
 
+	# A failed venv leaves a partial tree that the next attempt will not replace.
+	_tl_reset_venv() {
+		rm -rf "$_tl_venv"
+	}
+
+	# TheRock images ship CPython without ensurepip, and their apt repositories
+	# can be unusable. Build the venv without pip and bootstrap it from get-pip.
+	_tl_venv_without_ensurepip() {
+		_tl_reset_venv
+		python3 -m venv --without-pip "$_tl_venv" || return 1
+		local getpip=/tmp/madengine-get-pip.py
+		if command -v curl >/dev/null 2>&1; then
+			curl -fsSL -o "$getpip" https://bootstrap.pypa.io/get-pip.py || return 1
+		elif command -v wget >/dev/null 2>&1; then
+			wget -q -O "$getpip" https://bootstrap.pypa.io/get-pip.py || return 1
+		else
+			echo "Error: need curl or wget to bootstrap pip." >&2
+			return 1
+		fi
+		"${_tl_venv}/bin/python3" "$getpip" -q || return 1
+		rm -f "$getpip"
+	}
+
 	if ! python3 -m venv "$_tl_venv" 2>/dev/null; then
 		echo "python3 -m venv failed; attempting to install the venv module..." >&2
+		_tl_reset_venv
 		if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
-			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+			apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv || true
 		elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+			sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv || true
 		fi
-		if ! python3 -m venv "$_tl_venv"; then
+		if ! python3 -m venv "$_tl_venv" 2>/dev/null && ! _tl_venv_without_ensurepip; then
 			echo "Error: could not create a virtualenv at ${_tl_venv}." >&2
 			echo "Install python3-venv, or set TRACELENS_VENV to an existing venv." >&2
 			exit 1
@@ -249,6 +273,18 @@ tracelens)
 	case $- in *x*) _tl_restore_x=1 ;; esac
 	set +x
 	_tl_spec="${TRACELENS_PIP_SPEC:-git+https://github.com/AMD-AGI/TraceLens.git@${_tl_ref}}"
+	# pip's git+ requirement shells out to git, which TheRock images do not ship.
+	# A public GitHub archive URL installs the same commit without git.
+	if ! command -v git >/dev/null 2>&1; then
+		case "$_tl_spec" in
+		git+https://github.com/*)
+			_tl_repo="${_tl_spec#git+https://github.com/}"
+			_tl_repo="${_tl_repo%.git@*}"
+			_tl_archive_ref="${_tl_spec##*@}"
+			_tl_spec="https://github.com/${_tl_repo}/archive/${_tl_archive_ref}.tar.gz"
+			;;
+		esac
+	fi
 	if ! "${_tl_venv}/bin/python3" -m pip install -q "$_tl_spec"; then
 		echo "Error: pip could not install TraceLens (spec omitted from logs)." >&2
 		echo "Check network access, or override TRACELENS_PIP_SPEC / TRACELENS_GIT_REF." >&2
@@ -256,7 +292,7 @@ tracelens)
 		exit 1
 	fi
 	[ "$_tl_restore_x" -eq 1 ] && set -x
-	unset _tl_restore_x _tl_spec
+	unset _tl_restore_x _tl_spec _tl_repo _tl_archive_ref
 	"${_tl_venv}/bin/python3" -c 'import TraceLens; print("TraceLens import OK")'
 
 	# .pftrace input needs traceconv. TraceLens downloads it on demand, which fails

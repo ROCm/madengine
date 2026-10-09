@@ -153,7 +153,10 @@ def process_miopen_trace(output_lines: list) -> bool:
     Returns:
         matched: Boolean value
     """
-    RE_MATCH = re.compile(r"MIOpen\(HIP\): Command \[.*\] (./bin/MIOpenDriver .*)$")
+    # Current MIOpen prints "MIOpen: Command ...". Older builds used "MIOpen(HIP):".
+    RE_MATCH = re.compile(
+        r"MIOpen(?:\(HIP\))?: Command \[.*\] (\./bin/MIOpenDriver .*)$"
+    )
     matched = False
     config_cnt = {}
     for line in output_lines:
