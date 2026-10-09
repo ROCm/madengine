@@ -218,6 +218,89 @@ def is_per_replica_launcher(launcher_type: Optional[str]) -> bool:
     return launcher_type.strip().lower() in PER_REPLICA_LAUNCHERS
 
 
+def _first_set(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _process_count_from_model(n_gpus: Any) -> int:
+    """Process count implied by a model card's ``n_gpus``.
+
+    ``-1`` on a model card means every GPU on the node, not a process count.
+    Using it as ``nproc_per_node`` produced a negative value and skipped the
+    launcher that would have rejected it.
+    """
+    try:
+        count = int(n_gpus)
+    except (TypeError, ValueError):
+        return 1
+    return count if count >= 1 else 1
+
+
+def resolve_distributed_launch(
+    additional_context: Optional[Dict[str, Any]],
+    manifest: Optional[Dict[str, Any]] = None,
+    model_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve the launcher a Kubernetes job should run.
+
+    ``madengine run --additional-context`` puts the launcher in
+    ``distributed`` (``{"launcher": "vllm", "nnodes": 4}``). An older shape
+    uses ``launcher`` (``{"type": "vllm"}``). A manifest saved at build time
+    stores the same fields under ``deployment_config.distributed``.
+
+    Runtime context wins over the manifest, field by field, so a run can
+    change the launcher without rebuilding. Within the runtime context,
+    ``launcher`` wins over ``distributed``.
+    """
+    additional_context = additional_context or {}
+    manifest = manifest or {}
+    model_info = model_info or {}
+
+    runtime = additional_context.get("distributed") or {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    launcher_obj = additional_context.get("launcher") or {}
+    if not isinstance(launcher_obj, dict):
+        launcher_obj = {}
+    manifest_dist = (manifest.get("deployment_config") or {}).get("distributed") or {}
+    if not isinstance(manifest_dist, dict):
+        manifest_dist = {}
+
+    nproc = _first_set(
+        launcher_obj.get("nproc_per_node"),
+        runtime.get("nproc_per_node"),
+        manifest_dist.get("nproc_per_node"),
+    )
+    if nproc is None:
+        nproc = _process_count_from_model(model_info.get("n_gpus", 1))
+
+    return {
+        "launcher": _first_set(
+            launcher_obj.get("type"),
+            runtime.get("launcher"),
+            manifest_dist.get("launcher"),
+        ),
+        "nnodes": _first_set(
+            launcher_obj.get("nnodes"),
+            runtime.get("nnodes"),
+            manifest_dist.get("nnodes"),
+            1,
+        ),
+        "nproc_per_node": nproc,
+        "master_port": _first_set(
+            launcher_obj.get("master_port"),
+            runtime.get("master_port"),
+            runtime.get("port"),
+            manifest_dist.get("master_port"),
+            manifest_dist.get("port"),
+            29500,
+        ),
+    }
+
+
 _SELF_MANAGED_LAUNCHERS: frozenset = frozenset({"slurm_multi"})
 
 

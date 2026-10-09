@@ -15,7 +15,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import is_per_replica_launcher, launcher_for_reporting
+from .common import (
+    is_per_replica_launcher,
+    launcher_for_reporting,
+    resolve_distributed_launch,
+)
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -56,6 +60,14 @@ class KubernetesResultsMixin:
         "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
         "data_download_duration,build_number,additional_docker_run_options"
     )
+
+    def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:
+        """Same launcher resolution the job template uses."""
+        return resolve_distributed_launch(
+            getattr(self.config, "additional_context", None),
+            self.manifest,
+            model_info,
+        )
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
@@ -112,21 +124,12 @@ class KubernetesResultsMixin:
             else:
                 build_info = {}
 
-            # Check if this is a multi-node distributed job
-            deployment_config = self.manifest.get("deployment_config", {})
-            distributed_config = deployment_config.get("distributed", {})
-            is_distributed = distributed_config.get("enabled", False)
-            nnodes = distributed_config.get("nnodes", 1)
-            is_multinode = is_distributed and nnodes > 1
-
-            # Determine launcher_type the same way as _prepare_template_context does
-            # (deployment_config doesn't store launcher_type directly)
-            launcher_config = self.config.additional_context.get("launcher", {})
-            launcher_type = (
-                launcher_config.get("type")
-                if launcher_config.get("type") is not None
-                else distributed_config.get("launcher")
-            )
+            # Same resolution as the job template. nnodes > 1 is the multi-node
+            # signal: the documented distributed block does not set "enabled".
+            launch = self._launch_settings(model_info)
+            nnodes = launch["nnodes"]
+            is_multinode = isinstance(nnodes, int) and nnodes > 1
+            launcher_type = launch["launcher"]
 
             # Reporting sentinel only. Validation already ran in BaseDeployment.
             launcher_type = launcher_for_reporting(launcher_type, "kubernetes")
@@ -921,14 +924,10 @@ class KubernetesResultsMixin:
             Dict with all perf.csv fields marked as FAILED
         """
         # Get topology information for failure record
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
 
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
@@ -998,13 +997,10 @@ class KubernetesResultsMixin:
         """Build full run_details dict from aggregated record for perf_entry and update_* pipeline."""
         from madengine.utils.config_parser import ConfigParser
 
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1061,17 +1057,13 @@ class KubernetesResultsMixin:
         Same shape as container_runner create_run_details_dict; model/performance/metric
         are omitted so they are filled from the multiple_results CSV.
         """
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
         total_gpus = nnodes * nproc_per_node
         gpus_per_node = str(nproc_per_node)
         nnodes_str = str(nnodes)
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         result = {
             "n_gpus": str(total_gpus),
             "nnodes": nnodes_str,
@@ -1113,15 +1105,10 @@ class KubernetesResultsMixin:
         Build one perf.csv row for a single row from a multiple_results CSV.
         Same shape as _create_failure_record but with SUCCESS and item's performance/metric/model.
         """
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = launcher_for_reporting(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         result = {
             "model": item.get("model", model_info.get("name", "")),
             "n_gpus": str(nnodes * nproc_per_node),
