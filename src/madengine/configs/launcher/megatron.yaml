@@ -1,4 +1,6 @@
 # @package _global_
+# Hydra group alias of launcher=megatron-lm. The launcher value stays
+# megatron-lm; validate_launcher does not accept the string "megatron".
 distributed:
   enabled: true
   launcher: megatron-lm

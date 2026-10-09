@@ -28,6 +28,16 @@ class TestLoadConfigEndToEnd:
         assert ctx["distributed"]["enabled"] is True
         assert ctx["distributed"]["launcher"] == "torchrun"
 
+    def test_launcher_torchtitan_is_not_torchrun(self):
+        ctx, meta = load_config(["launcher=torchtitan"])
+        assert ctx["distributed"]["launcher"] == "torchtitan"
+
+    def test_launcher_megatron_group_is_megatron_lm(self):
+        ctx, meta = load_config(["launcher=megatron"])
+        assert ctx["distributed"]["launcher"] == "megatron-lm"
+        alias, _ = load_config(["launcher=megatron-lm"])
+        assert alias["distributed"]["launcher"] == "megatron-lm"
+
     def test_combined_overrides(self):
         ctx, meta = load_config(
             [

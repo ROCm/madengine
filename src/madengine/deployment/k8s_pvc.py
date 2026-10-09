@@ -236,10 +236,11 @@ class KubernetesPVCMixin:
 
     def _create_results_pvc(self, nnodes: int = 1) -> str:
         """
-        Create a PersistentVolumeClaim for per-job results.
+        Create the shared per-job results claim.
 
-        Single-node uses ReadWriteOnce (typically local-path). Multi-node uses
-        ReadWriteMany (typically nfs-banff or other RWX class).
+        Skipped when ``results_layout`` is ``per_pod`` (each pod has its own
+        ReadWriteOnce volume). Single-node uses ReadWriteOnce. Multi-node uses
+        ReadWriteMany.
         """
         pvc_name = f"{self.job_name}-results"
         access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"

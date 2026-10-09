@@ -771,7 +771,13 @@ class SlurmDeployment(BaseDeployment):
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
-        master_port = self.distributed_config.get("port", 29500)
+        # ``port`` is the SLURM key. ``master_port`` is what Kubernetes and the
+        # Hydra launcher groups write. Honor an explicit port, otherwise the
+        # master_port alias, otherwise 29500.
+        if self.distributed_config.get("port") is not None:
+            master_port = self.distributed_config["port"]
+        else:
+            master_port = self.distributed_config.get("master_port", 29500)
         
         # Apply multi-node profiling logic if tools are configured
         tools = additional_context.get("tools", [])

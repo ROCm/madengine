@@ -1,7 +1,7 @@
 # @package _global_
 distributed:
   enabled: true
-  launcher: torchrun
+  launcher: torchtitan
   backend: nccl
   nnodes: 1
   nproc_per_node: 8

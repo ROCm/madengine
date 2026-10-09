@@ -402,7 +402,7 @@ madengine separates **per-job results** from **long-lived shared data**:
 
 | Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
 |--------|-------------|----------------------------|----------------------------|
-| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** — `multi_node_results_storage_class` → `nfs_storage_class` → `storage_class` (e.g. `nfs-banff`) |
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** when that class can serve ReadWriteMany (`multi_node_results_storage_class` → `nfs_storage_class` → `storage_class`). Otherwise one **RWO** volume per pod (`local_path_storage_class`), and `perf.csv` is recovered from pod logs |
 | **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** when that StorageClass can serve ReadWriteMany; otherwise one local disk per pod | Same rule |
 
 **Built-in defaults** are in `presets/k8s/defaults.json`: `results_layout` and `data_layout` are `auto`. Multi-node results and the dataset cache use `nfs_storage_class` / `data_storage_class` (`nfs-banff`) only when that StorageClass exists and its provisioner is a shared filesystem, or a PersistentVolume of that class is already ReadWriteMany. Otherwise each pod gets a ReadWriteOnce volume on `local-path`. Set `results_layout` or `data_layout` to `shared` or `per_pod` to override. A dataset claim that already exists and is not ReadWriteMany is left in place and not mounted.
@@ -420,7 +420,7 @@ Example override for a different cluster:
 ```
 
 - **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
-- **`local_path_storage_class`**: RWO class for **single-node only** results PVC. Still accepted for backward compatibility; new configs should prefer `single_node_results_storage_class` or rely on `storage_class`.
+- **`local_path_storage_class`**: RWO class for the single-node results PVC and for a per-pod volume when ReadWriteMany storage is unavailable. New configs can set `single_node_results_storage_class` for the single-node claim; `local_path_storage_class` is still the class used for per-pod disks.
 - **`storage_class`**: Generic broad fallback used for **both** the data PVC and single-node results PVC when no more-specific key is set. Added in 2.0.3.
 - **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
 - **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
@@ -435,7 +435,7 @@ Example override for a different cluster:
 
 - ✅ NFS (e.g. `nfs-banff`, `nfs-client`)
 - ✅ CephFS, GlusterFS, AWS EFS, Azure Files
-- ❌ `local-path` (RWO only — not for shared-data or multi-node results)
+- ❌ `local-path` as a shared multi-node claim (RWO only). It is used for the per-pod disk when ReadWriteMany is unavailable.
 
 ### Custom PVC (Optional)
 
@@ -562,7 +562,7 @@ To use an existing PVC instead of auto-creation:
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
 | `storage_class` | string | **`local-path`** (preset) | Broad fallback for the single-node results PVC when no more-specific key is set |
 | `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
-| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` |
+| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` and for a per-pod volume |
 | `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
 | `results_layout` | string | **`auto`** | `auto` uses a shared results volume when the multi-node class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
 | `data_layout` | string | **`auto`** | `auto` uses `madengine-shared-data` when that class can serve ReadWriteMany; `shared` or `per_pod` force that choice |

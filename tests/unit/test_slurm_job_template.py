@@ -437,3 +437,24 @@ class TestSglangDisaggNodeIps:
         # neither the docker bridge nor the management address may be published
         assert "172.17.0.1" not in out.stdout
         assert "192.168.1.5" not in out.stdout
+
+
+class TestMasterPort:
+    """SLURM uses distributed.port, and distributed.master_port when port is omitted."""
+
+    def test_port_wins_over_master_port(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            distributed_overrides={"port": 30002, "master_port": 30001},
+        )
+        rendered = _render(deployment)
+        assert "--master_port=30002" in rendered
+        assert "--master_port=30001" not in rendered
+
+    def test_master_port_used_when_port_is_omitted(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path, distributed_overrides={"master_port": 30001}
+        )
+        deployment.distributed_config.pop("port", None)
+        rendered = _render(deployment)
+        assert "--master_port=30001" in rendered

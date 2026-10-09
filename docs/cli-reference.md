@@ -656,7 +656,6 @@ For complex configurations, use JSON files with `--additional-context-file`:
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0",

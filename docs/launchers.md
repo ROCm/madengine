@@ -74,7 +74,7 @@ madengine run --manifest-file build_manifest.json
 }
 ```
 
-Note: `distributed.port` sets the master port on **SLURM** (`distributed.get("port", 29500)`). On **Kubernetes**, the master port is instead read from a separate top-level `"launcher"` object (`{"launcher": {"master_port": 29500}}`), not from `distributed`.
+`distributed.port` and `distributed.master_port` both set the master port (default 29500). On SLURM, `port` wins when both are set. On Kubernetes the order is `launcher.master_port`, then `distributed.master_port`, then `distributed.port`, then the same keys saved in the build manifest.
 
 **Features**:
 - Automatic rank assignment
@@ -905,10 +905,10 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ### Common Issues
 
 **1. Launcher Not Found**
-```bash
-Error: Unknown launcher type 'xyz'
+```text
+Unknown launcher 'xyz' in distributed.launcher
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM only. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
 
 **2. Multi-Node Communication Fails**
 ```bash
