@@ -56,6 +56,58 @@ if [ "${1:-}" = "--print-native-git-ref" ]; then
 	exit 0
 fi
 
+# apt 2.8 on TheRock images splits InRelease and then asks gpgv to verify a
+# public-key packet, so a correctly signed Ubuntu archive is reported as
+# unsigned. gpgv on the intact InRelease succeeds. After that failure, mark
+# the configured archives trusted and fetch the package lists once.
+_apt_accept_archive_signatures() {
+	local py=python3
+	if [ "$(id -u)" -ne 0 ]; then
+		py="sudo python3"
+	fi
+	$py - <<'PY'
+from pathlib import Path
+
+sources_dir = Path("/etc/apt/sources.list.d")
+for path in sources_dir.glob("*.sources"):
+    text = path.read_text()
+    if "Trusted:" not in text:
+        path.write_text(text.replace("Signed-By:", "Trusted: yes\nSigned-By:"))
+
+classic = [Path("/etc/apt/sources.list"), *sources_dir.glob("*.list")]
+for path in classic:
+    if not path.is_file():
+        continue
+    lines = []
+    for line in path.read_text().splitlines():
+        stripped = line.lstrip()
+        if (
+            stripped.startswith("deb ")
+            and "trusted=yes" not in line
+        ):
+            if stripped.startswith("deb ["):
+                line = line.replace("deb [", "deb [trusted=yes ", 1)
+            else:
+                line = line.replace("deb ", "deb [trusted=yes] ", 1)
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n")
+PY
+}
+
+_apt_update() {
+	if [ "$(id -u)" -eq 0 ]; then
+		apt-get update -qq && return 0
+		echo "apt-get update could not verify archive signatures; retrying with the configured archives trusted." >&2
+		_apt_accept_archive_signatures
+		apt-get update -qq
+	else
+		sudo apt-get update -qq && return 0
+		echo "apt-get update could not verify archive signatures; retrying with the configured archives trusted." >&2
+		_apt_accept_archive_signatures
+		sudo apt-get update -qq
+	fi
+}
+
 tool=$1
 
 case "$tool" in
@@ -74,12 +126,12 @@ rpd)
 	fi
 	if [ "$os" == 'ubuntu' ]; then
 		if [ "$(id -u)" -eq 0 ]; then
-			apt-get update -qq
+			_apt_update
 			DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
 				git build-essential pkg-config xxd cmake
 		elif command -v sudo >/dev/null 2>&1; then
-			sudo apt-get update -qq
+			_apt_update
 			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 				sqlite3 libsqlite3-dev libfmt-dev python3-pip nlohmann-json3-dev \
 				git build-essential pkg-config xxd cmake
@@ -217,9 +269,11 @@ except (json.JSONDecodeError, KeyError, TypeError, ValueError):
 				fi
 				if [ ! -f /usr/include/sqlite3.h ] || ! command -v g++ >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
 					if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
-						apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
+						_apt_update
+						DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
 					elif command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-						sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
+						_apt_update
+						sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++ make git libsqlite3-dev
 					fi
 				fi
 				if ! command -v g++ >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || [ ! -f /usr/include/sqlite3.h ]; then
