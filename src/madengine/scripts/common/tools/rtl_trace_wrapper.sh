@@ -25,10 +25,14 @@
 #   HSA_TOOLS_LIB            librtl.so. Exported when unset so torchrun workers inherit it.
 #   RTL_OUTPUT               Per-process trace path (default: $RTL_WRAPPER_OUTPUT_DIR/trace_%p.db)
 #   RTL_MODE                 Profiling mode for `rtl trace --mode` (e.g. lite, default, full).
-#                            Used only if `rtl trace --help` (or the Python CLI --help) lists --mode;
-#                            otherwise a warning is printed and tracing runs without --mode.
-#                            When unset, `rtl trace` uses the RTL CLI default (version-dependent).
+#                            Used only if `rtl trace --help` (or the Python CLI --help) lists --mode
+#                            as its own flag; otherwise a warning is printed and tracing runs without
+#                            --mode. When unset, `rtl trace` uses the RTL CLI default (version-dependent).
 #                            See: https://github.com/sunway513/rocm-trace-lite
+#
+# Databases already in the output directory are removed before the workload runs.
+# The post-run check globs every trace*.db, so a leftover trace_<pid>.db from an
+# earlier run would hide a new trace that captured no kernel dispatches.
 
 set -euo pipefail
 
@@ -52,7 +56,12 @@ else
 fi
 
 if [[ -n "${RTL_MODE:-}" ]]; then
-	if "${RTL_CLI[@]}" --help 2>&1 | grep -q -- '--mode'; then
+	# Capture help instead of piping into `grep -q`. Under `pipefail`, a CLI that
+	# prints --mode and then exits non-zero (or gets SIGPIPE) made the probe fail
+	# and the requested mode was silently dropped.
+	_rtl_help="$("${RTL_CLI[@]}" --help 2>&1 || true)"
+	# Match the flag itself. A substring search also matches --model.
+	if grep -qE '(^|[[:space:]])--mode([[:space:]=,{]|$)' <<< "${_rtl_help}"; then
 		RTL_CLI+=(--mode "${RTL_MODE}")
 	else
 		echo "Warning: RTL_MODE is set, but installed '${RTL_CLI[*]}' does not support --mode; continuing without it." >&2
@@ -91,8 +100,13 @@ if [[ -f /usr/local/lib/librtl.so ]]; then
 			echo "rocm-trace-lite: replaced ${_rtl_pkg} with the library built for this image." >&2
 		fi
 	fi
-	echo "rocm-trace-lite: librtl $(sha256sum /usr/local/lib/librtl.so | awk '{print $1}')" >&2
+	if command -v sha256sum >/dev/null 2>&1; then
+		echo "rocm-trace-lite: librtl $(sha256sum /usr/local/lib/librtl.so | awk '{print $1}')" >&2
+	fi
 fi
+
+# Only this run's databases may satisfy the GPU-op check below.
+find "${RTL_OUT_DIR}" -maxdepth 1 -type f -name 'trace*.db' -delete
 
 rc=0
 "${RTL_CLI[@]}" -o "${RTL_DB}" "$@" || rc=$?
@@ -119,8 +133,10 @@ for db in sorted(paths):
             "select count(*) from rocpd_op o left join rocpd_string s on o.opType_id = s.id "
             "where coalesce(s.string, '') != 'UserMarker'"
         ).fetchone()[0]
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as exc:
+        # Same outcome as an unreadable db (not counted). Say so: a schema
+        # error is not "RTL intercepted nothing".
+        print(f"rocm-trace-lite: could not read GPU ops from {db}: {exc}", file=sys.stderr)
 print(total)
 EOF
 )
