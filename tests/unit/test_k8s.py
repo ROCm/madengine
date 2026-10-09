@@ -83,6 +83,97 @@ def test_results_layout_auto_uses_per_pod_when_rwx_class_is_missing():
     assert resolve_results_layout("auto", 1, False) == "shared"
 
 
+def test_shared_filesystem_provisioners_support_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert provisioner_supports_rwx("nfs.csi.k8s.io")
+    assert provisioner_supports_rwx("cluster.local/nfs-subdir-external-provisioner")
+    assert provisioner_supports_rwx("cephfs.csi.ceph.com")
+    assert provisioner_supports_rwx("efs.csi.aws.com")
+    assert provisioner_supports_rwx("file.csi.azure.com")
+    assert provisioner_supports_rwx("filestore.csi.storage.gke.io")
+    assert provisioner_supports_rwx("nfs-client")
+
+
+def test_block_and_local_provisioners_are_not_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert not provisioner_supports_rwx("rancher.io/local-path")
+    assert not provisioner_supports_rwx("kubernetes.io/no-provisioner")
+    assert not provisioner_supports_rwx("rbd.csi.ceph.com")
+    assert not provisioner_supports_rwx("")
+    assert not provisioner_supports_rwx(None)
+
+
+def test_data_layout_uses_a_local_disk_unless_read_write_many_is_usable():
+    from madengine.deployment.k8s_pvc import resolve_data_layout
+
+    assert resolve_data_layout("auto", False, None) == "per_pod"
+    assert resolve_data_layout("auto", True, None) == "shared"
+    assert resolve_data_layout("auto", False, True) == "shared"
+    assert resolve_data_layout("auto", True, False) == "per_pod"
+    assert resolve_data_layout("shared", False, False) == "shared"
+    assert resolve_data_layout("per_pod", True, True) == "per_pod"
+
+
+def _layout_mixin(provisioner, volumes=None, pvc=None, pvc_status=None):
+    """PVC mixin with a fake API.
+
+    ``pvc_status`` is the error status for a missing claim.
+    """
+    from types import SimpleNamespace
+
+    from kubernetes.client.rest import ApiException
+
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    mixin = KubernetesPVCMixin()
+    mixin.namespace = "default"
+    mixin.k8s_config = {
+        "nfs_storage_class": "nfs-banff",
+        "data_storage_class": "nfs-banff",
+        "local_path_storage_class": "local-path",
+        "results_layout": "auto",
+        "data_layout": "auto",
+    }
+    mixin.storage_v1 = MagicMock()
+    mixin.storage_v1.read_storage_class.return_value = SimpleNamespace(
+        provisioner=provisioner
+    )
+    mixin.core_v1 = MagicMock()
+    mixin.core_v1.list_persistent_volume.return_value = SimpleNamespace(
+        items=volumes or []
+    )
+    if pvc_status is not None:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.side_effect = (
+            ApiException(status=pvc_status)
+        )
+    else:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.return_value = pvc
+    return mixin
+
+
+def test_local_path_class_does_not_select_a_shared_results_volume():
+    mixin = _layout_mixin("rancher.io/local-path", pvc_status=404)
+    assert mixin._select_results_layout(2) == "per_pod"
+
+
+def test_existing_read_write_many_volume_selects_shared_results():
+    from types import SimpleNamespace
+
+    volume = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteMany"]))
+    mixin = _layout_mixin("example.com/custom-fs", volumes=[volume], pvc_status=404)
+    assert mixin._select_results_layout(2) == "shared"
+
+
+def test_non_rwx_data_claim_is_not_selected_for_mounting():
+    from types import SimpleNamespace
+
+    claim = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteOnce"]))
+    mixin = _layout_mixin("nfs.csi.k8s.io", pvc=claim)
+    assert mixin._select_data_layout() == "per_pod"
+
+
 def test_parallel_job_is_not_finished_when_only_some_pods_succeed():
     from types import SimpleNamespace
 
@@ -157,6 +248,30 @@ def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
         for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
     ]
     assert pull_names[-1] == "dockerhub-rocm"
+
+
+def test_per_pod_data_volume_is_a_local_claim(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    ctx["data_per_pod"] = True
+    ctx["data_pvc"] = None
+    ctx["data_storage_class"] = "local-path"
+    ctx["data_storage_size"] = "100Gi"
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    job = list(yaml.safe_load_all(rendered))[0]
+    volumes = job["spec"]["template"]["spec"]["volumes"]
+    data = next(volume for volume in volumes if volume["name"] == "data")
+    claim = data["ephemeral"]["volumeClaimTemplate"]["spec"]
+    assert claim["accessModes"] == ["ReadWriteOnce"]
+    assert claim["storageClassName"] == "local-path"
+    assert "madengine-shared-data" not in rendered
 
 
 def test_resolve_image_pull_existing():

@@ -738,7 +738,10 @@ spec:
           mountPath: /dev/shm
         - name: results
           mountPath: /results
-        {% if data_pvc %}
+        {% if data_per_pod | default(false) %}
+        - name: data
+          mountPath: /data
+        {% elif data_pvc %}
         - name: data
           mountPath: /data
           readOnly: false  # Must be writable for data provider downloads
@@ -803,7 +806,19 @@ spec:
         persistentVolumeClaim:
           claimName: {{ results_pvc }}
         {% endif %}
-      {% if data_pvc %}
+      {% if data_per_pod | default(false) %}
+      - name: data
+        ephemeral:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              {% if data_storage_class %}
+              storageClassName: {{ data_storage_class }}
+              {% endif %}
+              resources:
+                requests:
+                  storage: {{ data_storage_size }}
+      {% elif data_pvc %}
       - name: data
         persistentVolumeClaim:
           claimName: {{ data_pvc }}

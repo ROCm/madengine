@@ -487,14 +487,19 @@ class KubernetesDeployment(
                 pvc_name = self._create_results_pvc(nnodes=nnodes_deploy)
                 self.console.print(f"[green]✓ Created PVC: {pvc_name}[/green]")
 
-            # 1b. Create or reuse data PVC if data provider is configured and auto-creation was flagged
+            # 1b. Shared data PVC only when that claim is ReadWriteMany.
+            # A local disk per pod is already on the pod spec.
             if hasattr(self, '_data_config') and self._data_config:
-                # Check if we set the PVC name during prepare (auto-creation case)
-                data_pvc_name = self.k8s_config.get("data_pvc")
-                if data_pvc_name == "madengine-shared-data":
-                    # Auto-creation mode: create/reuse the PVC
-                    nnodes = getattr(self, '_nnodes', 1)
-                    self._create_or_get_data_pvc(nnodes=nnodes)
+                if getattr(self, "_data_layout", None) == "per_pod":
+                    self.console.print(
+                        "[blue]Using a local ReadWriteOnce data volume "
+                        "on each pod[/blue]"
+                    )
+                else:
+                    data_pvc_name = self.k8s_config.get("data_pvc")
+                    if data_pvc_name == "madengine-shared-data":
+                        nnodes = getattr(self, '_nnodes', 1)
+                        self._create_or_get_data_pvc(nnodes=nnodes)
 
             # 2. Create Secrets from local credential.json (strategy: from_local_credentials)
             merged_sec = merge_secrets_config(self.k8s_config)
