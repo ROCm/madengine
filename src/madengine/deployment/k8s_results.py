@@ -7,6 +7,7 @@ aggregating multi-node results, and writing to perf.csv / perf_super.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import ast
 import json
 import re
 import subprocess
@@ -40,9 +41,144 @@ def _pod_job_name_label_selector(deployment_id: str) -> str:
     return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
+def decode_pod_log(log: Any) -> str:
+    """Return pod log text with real newlines.
+
+    ``read_namespaced_pod_log`` receives raw bytes. The Kubernetes client then
+    does ``str(those_bytes)``, which is a Python repr (``b'line\\nline'``)
+    rather than decoded text. Parsing that repr never sees a ``performance:``
+    line or a perf CSV block.
+    """
+    if isinstance(log, bytes):
+        return log.decode("utf-8", errors="replace")
+    if not isinstance(log, str):
+        return "" if log is None else str(log)
+    # A real container log has newlines. The broken bytes repr does not, so
+    # only that form is decoded. Multiline logs from an NFS-backed run are
+    # left unchanged.
+    if (
+        "\n" not in log
+        and len(log) >= 3
+        and log[0] == "b"
+        and log[1] in "\"'"
+        and log[-1] == log[1]
+    ):
+        try:
+            value = ast.literal_eval(log)
+        except (SyntaxError, ValueError, MemoryError):
+            return log
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+    return log
+
+
 def collector_pod_name(deployment_id: str) -> str:
-    """Consistent name for the temporary PVC collector pod."""
-    return f"collector-{deployment_id[:15]}"
+    """Name for the temporary PVC collector pod.
+
+    A raw prefix of the job name can end on a hyphen
+    (``collector-madengine-vllm-``), which Kubernetes rejects. Sanitize the
+    full id so the name is a DNS label that starts and ends with a letter
+    or digit.
+    """
+    from .k8s_names import sanitize_k8s_object_name
+
+    return sanitize_k8s_object_name("collector", deployment_id, max_total_len=63)
+
+
+_PERF_CSV_BLOCK_RE = re.compile(
+    r"^MADENGINE_PERF_CSV_BEGIN ([A-Za-z0-9._-]+)\r?\n"
+    r"(.*?)\r?\nMADENGINE_PERF_CSV_END \1\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def extract_perf_csv_blocks(log_text: str) -> list:
+    """Return ``(filename, csv_text)`` pairs printed into a container log."""
+    if not log_text:
+        return []
+    return [(m.group(1), m.group(2)) for m in _PERF_CSV_BLOCK_RE.finditer(log_text)]
+
+
+def _artifact_dir_has_perf_csv(local_path: str) -> bool:
+    path = Path(local_path)
+    if not path.is_dir():
+        return False
+    return any(path.rglob("perf.csv")) or any(path.rglob("perf_*.csv"))
+
+
+def perf_csv_artifact_sources(artifacts: list) -> list:
+    """Prefer CSVs copied from a shared volume over copies recovered from logs.
+
+    A cluster with ReadWriteMany storage (for example nfs-banff) fills
+    ``pvc_collection``. A local-path cluster has no shared volume, so the
+    only copies are ``log_csv``. Using both would count each pod twice.
+    """
+    pvc = [art for art in artifacts if art.get("type") == "pvc_collection"]
+    if any(_artifact_dir_has_perf_csv(art.get("local_path", "")) for art in pvc):
+        return pvc
+    return [art for art in artifacts if art.get("type") == "log_csv"]
+
+
+def find_perf_csv(local_path: Path, filename: Optional[str]) -> Optional[Path]:
+    """Find a perf CSV at the top of a collected directory or one level down."""
+    if not local_path.is_dir():
+        return None
+    if filename:
+        direct = local_path / filename
+        if direct.is_file():
+            return direct
+        nested = sorted(p for p in local_path.rglob(filename) if p.is_file())
+        if nested:
+            return nested[0]
+    top = sorted(p for p in local_path.glob("perf_*.csv") if p.is_file())
+    if top:
+        return top[0]
+    nested_perf = sorted(p for p in local_path.rglob("perf_*.csv") if p.is_file())
+    return nested_perf[0] if nested_perf else None
+
+
+def materialize_perf_csvs_from_logs(results_dir: Path, results: dict) -> int:
+    """Write perf CSVs that pods printed to stdout into per-pod directories.
+
+    Used when there is no shared results volume. Each pod's local-path disk
+    is deleted with the pod, but the API still has the container log.
+    """
+    artifacts = results.setdefault("artifacts", [])
+    if any(
+        art.get("type") in ("pvc_collection", "log_csv")
+        and _artifact_dir_has_perf_csv(art.get("local_path", ""))
+        for art in artifacts
+    ):
+        return 0
+
+    written = 0
+    for entry in results.get("logs") or []:
+        pod = entry.get("pod") or "pod"
+        blocks = extract_perf_csv_blocks(entry.get("log") or "")
+        if not blocks:
+            continue
+        dest = results_dir / pod / "log_csv"
+        dest.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for name, body in blocks:
+            safe = Path(name).name
+            if not safe or safe in {".", ".."}:
+                continue
+            text = body if body.endswith("\n") else body + "\n"
+            (dest / safe).write_text(text, encoding="utf-8")
+            count += 1
+        if count:
+            artifacts.append(
+                {
+                    "source": f"pod-log:{pod}",
+                    "local_path": str(dest),
+                    "file_count": count,
+                    "type": "log_csv",
+                    "k8s_pod": pod,
+                }
+            )
+            written += count
+    return written
 
 
 class KubernetesResultsMixin:
@@ -169,8 +305,10 @@ class KubernetesResultsMixin:
 
                 try:
                     # 1. Collect pod logs
-                    log = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name, namespace=self.namespace
+                    log = decode_pod_log(
+                        self.core_v1.read_namespaced_pod_log(
+                            name=pod_name, namespace=self.namespace
+                        )
                     )
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
@@ -253,6 +391,11 @@ class KubernetesResultsMixin:
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
             k8s_pod_names = [p.metadata.name for p in sorted_pods]
             self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
+            n_log_csvs = materialize_perf_csvs_from_logs(results_dir, results)
+            if n_log_csvs:
+                self.console.print(
+                    f"[green]✓ Recovered {n_log_csvs} performance CSV(s) from pod logs[/green]"
+                )
 
             # ========================================================================
             # Aggregate per-node metrics
@@ -680,6 +823,13 @@ class KubernetesResultsMixin:
             pod_names: Full Kubernetes pod names for this job (ordered)
         """
         from .kubernetes import assign_pvc_subdirs_to_pods
+
+        if getattr(self, "_results_layout", "shared") == "per_pod":
+            self.console.print(
+                "[dim]Per-pod local results volumes; pod logs were collected. "
+                "No shared ReadWriteMany volume to copy.[/dim]"
+            )
+            return
 
         pvc_name = f"{deployment_id}-results"
 
@@ -1182,17 +1332,8 @@ class KubernetesResultsMixin:
             if gpu_arch_match:
                 gpu_arch = gpu_arch_match.group(1)
         parsed_list = []
-        for art in results.get("artifacts", []):
-            if art.get("type") != "pvc_collection":
-                continue
-            local_path = Path(art.get("local_path", ""))
-            if not local_path.is_dir():
-                continue
-            # Prefer exact filename (same as Docker multiple_results); fallback to any perf_*.csv
-            csv_path = (local_path / filename) if filename else None
-            if not csv_path or not csv_path.is_file():
-                perf_csvs = sorted(local_path.glob("perf_*.csv"))
-                csv_path = perf_csvs[0] if perf_csvs else None
+        for art in perf_csv_artifact_sources(results.get("artifacts", [])):
+            csv_path = find_perf_csv(Path(art.get("local_path", "")), filename)
             if not csv_path or not csv_path.is_file():
                 continue
             try:
@@ -1380,16 +1521,8 @@ class KubernetesResultsMixin:
         multiple_results_file = model_info.get("multiple_results")
         filename = Path(multiple_results_file).name if multiple_results_file else None
         csv_paths: List[Path] = []
-        for art in results.get("artifacts", []):
-            if art.get("type") != "pvc_collection":
-                continue
-            local_path = Path(art.get("local_path", ""))
-            if not local_path.is_dir():
-                continue
-            csv_path = (local_path / filename) if filename else None
-            if not csv_path or not csv_path.is_file():
-                perf_csvs = sorted(local_path.glob("perf_*.csv"))
-                csv_path = perf_csvs[0] if perf_csvs else None
+        for art in perf_csv_artifact_sources(results.get("artifacts", [])):
+            csv_path = find_perf_csv(Path(art.get("local_path", "")), filename)
             if csv_path and csv_path.is_file():
                 csv_paths.append(csv_path)
         if not csv_paths:

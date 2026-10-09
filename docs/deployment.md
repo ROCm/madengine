@@ -105,7 +105,7 @@ See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
 ### Secrets and credentials
 
-By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
+By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Pods also reference the pre-created pull secret `dockerhub-rocm` (`k8s.secrets.image_pull_secret_names`). Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
 
 ### Validating rendered manifests
 
