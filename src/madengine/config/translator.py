@@ -6,6 +6,11 @@ from omegaconf import DictConfig, OmegaConf
 
 from madengine.deployment.common import canonicalize_distributed_launcher
 
+# perf.csv values, not launchers. Drop them so a Hydra group such as
+# launcher=native does not fail validation; omitting the key is how a run
+# with no distributed launcher is configured.
+_REPORTING_SENTINELS = frozenset({"docker", "native"})
+
 
 class ConfigTranslator:
     """Maps YAML config keys to internal additional_context dict format."""
@@ -36,7 +41,6 @@ class ConfigTranslator:
         "defaults",
         "scheduler",
         "hardware",
-        "launcher",
     }
 
     @classmethod
@@ -88,6 +92,12 @@ class ConfigTranslator:
                 # gpu_vendor; keep metadata only so YAML does not invent a
                 # runtime key that --additional-context never used.
                 metadata["runtime"] = value
+            elif key == "launcher":
+                # A string is the Hydra group selector. An object carries
+                # settings Kubernetes reads (type, master_port).
+                if isinstance(value, dict) and value:
+                    context["launcher"] = value
+                continue
             elif key in cls.OMIT_FROM_CONTEXT:
                 continue
             else:
@@ -106,8 +116,19 @@ class ConfigTranslator:
 
         dist = context.get("distributed")
         if isinstance(dist, dict) and dist.get("launcher"):
-            dist["launcher"] = (
-                canonicalize_distributed_launcher(dist["launcher"]) or dist["launcher"]
-            )
+            launcher = dist["launcher"]
+            if (
+                isinstance(launcher, str)
+                and launcher.strip().lower() in _REPORTING_SENTINELS
+            ):
+                # Leave an explicit no-launcher state. enabled: true alone
+                # makes Kubernetes profile selection inject torchrun, and a
+                # missing key would not override that injected value.
+                dist["enabled"] = False
+                dist["launcher"] = None
+            else:
+                dist["launcher"] = (
+                    canonicalize_distributed_launcher(launcher) or launcher
+                )
 
         return context, metadata

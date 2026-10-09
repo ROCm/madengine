@@ -240,7 +240,7 @@ class KubernetesTemplateContextMixin:
 
             self.console.print(f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             if not isinstance(nnodes, int) or nnodes < 1:
                 raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
@@ -361,7 +361,7 @@ class KubernetesTemplateContextMixin:
                 model_script=model_info.get("scripts", "run.sh")
             )
 
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             if nnodes > 1:
                 create_headless_service = True
                 self.console.print(f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]")
@@ -477,7 +477,7 @@ class KubernetesTemplateContextMixin:
             privileged_profiling = bool(ap_prof)
 
         _pytorch_native = frozenset(
-            {"torchrun", "deepspeed", "torchtitan", "megatron", "primus"}
+            {"torchrun", "deepspeed", "torchtitan", "megatron-lm", "primus"}
         )
         subdomain_val = (
             self.service_name

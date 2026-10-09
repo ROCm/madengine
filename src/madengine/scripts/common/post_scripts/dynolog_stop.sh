@@ -17,6 +17,19 @@ RESULT_FILE="/tmp/madengine_dynolog_trigger.result"
 
 OUTPUT_DIR=${TORCH_PROFILE_OUTPUT_DIR:-torch_profiler_output}
 
+# Drop the site hook dynolog_start.sh installed. Do this even when the daemon
+# never started, so a partial start cannot leave the hook behind.
+remove_kineto_hook() {
+    local site_file="/tmp/madengine_kineto_hook.site"
+    if [ ! -f "$site_file" ]; then
+        return 0
+    fi
+    local site
+    site=$(cat "$site_file")
+    rm -f "${site}/madengine_kineto_hook.py" "${site}/madengine_kineto_hook.pth" "$site_file"
+}
+remove_kineto_hook
+
 if [ ! -f "$DYNOLOG_START_FILE" ]; then
     echo "⚠️  Warning: dynolog was not started - skipping"
     exit 0
@@ -71,6 +84,15 @@ stop_pid() {
 stop_pid "dynolog trace trigger" "$TRIGGER_PID_FILE"
 stop_pid "dynolog daemon" "$DYNOLOG_PID_FILE"
 rm -f "$DYNOLOG_START_FILE"
+
+# The trigger asks Kineto to write on the container's own disk. Copy the
+# finished files into the collected directory. See dynolog_trigger.sh.
+KINETO_DIR=${TORCH_PROFILE_KINETO_DIR:-/tmp/madengine_kineto}
+if [ -d "$KINETO_DIR" ]; then
+    mkdir -p "$OUTPUT_DIR"
+    find "$KINETO_DIR" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.gz' \) \
+        -exec cp -a {} "$OUTPUT_DIR"/ \;
+fi
 
 # Kineto appends the process id to the requested filename, so a multi-rank run
 # produces one file per rank.

@@ -69,7 +69,7 @@ madengine ships with pre-built config groups under `src/madengine/configs/`:
 | `platform` | `docker` | `docker` (only; `bare_metal` / `singularity` / `podman` files exist but validation rejects them) | Execution platform |
 | `scheduler` | `local` | `local`, `slurm`, `k8s` | Job scheduler — `slurm` and `k8s` add root `slurm:` / `k8s:` sections (same keys as JSON) |
 | `hardware` | `amd` | `amd`, `nvidia`, `cpu` | Sets `gpu_vendor` and `guest_os` (same keys as JSON). Docker device flags still come from `gpu_vendor` in the engine, not from a `runtime` context key. |
-| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (canonical `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native`, `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
+| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (Hydra alias of `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native` (omits `distributed.launcher`; single-process), `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
 
 #### Append-Only Groups (added via `+group=option`)
 

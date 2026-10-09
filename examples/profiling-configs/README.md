@@ -263,14 +263,15 @@ rocprof_output/
 │   ├── kernel_trace.csv      # Kernel execution traces
 │   ├── hip_api_trace.csv     # HIP API calls
 │   └── memory_copy_trace.csv # Memory transfers
-├── model_trace.pftrace       # Perfetto format (if using rocprofv3_perfetto)
-└── trace.json                # JSON format (if using rocprofv3_lightweight)
+└── <hostname>/
+    ├── <pid>_results.pftrace # Perfetto format, one per process (rocprofv3_perfetto)
+    └── <pid>_results.json    # JSON format, one per process (rocprofv3_lightweight)
 
 gpu_info_power_profiler_output.csv  # Power consumption over time
 gpu_info_vram_profiler_output.csv   # VRAM usage over time
 library_trace.csv                    # Library API calls (if library tracing enabled)
 
-rocm_trace_lite_output/trace.db       # rocm-trace-lite (also trace.json.gz / trace_summary.txt as emitted by RTL)
+rocm_trace_lite_output/trace.db       # rocm-trace-lite merged trace (per-process trace_<pid>.db files are transient merge inputs)
 
 torch_profiler_output/*.json          # Kineto traces, one per rank (torch_profiler_dynolog)
 tracelens_output/                     # TraceLens reports plus tracelens_summary.csv

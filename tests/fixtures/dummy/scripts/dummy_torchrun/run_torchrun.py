@@ -32,10 +32,10 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Configuration
-BATCH_SIZE = 128  # Per-GPU batch size
-NUM_EPOCHS = 5
-NUM_BATCHES = 100  # Number of synthetic batches per epoch
-IMAGE_SIZE = 224
+BATCH_SIZE = int(os.environ.get("DUMMY_BATCH_SIZE", "128"))
+NUM_EPOCHS = int(os.environ.get("DUMMY_NUM_EPOCHS", "5"))
+NUM_BATCHES = int(os.environ.get("DUMMY_NUM_BATCHES", "100"))
+IMAGE_SIZE = int(os.environ.get("DUMMY_IMAGE_SIZE", "224"))
 NUM_CLASSES = 1000
 
 # Get distributed environment variables (set by torchrun)

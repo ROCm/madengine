@@ -144,7 +144,7 @@
     },
     "rocprofv3_perfetto": {
       "pre_scripts": [],
-      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --output-format pftrace --perfetto-trace-filename model_trace.pftrace -d ./rocprof_output --",
+      "cmd": "bash ../scripts/common/tools/rocprof_wrapper.sh --hip-trace --kernel-trace --memory-copy-trace --output-format pftrace -d ./rocprof_output --",
       "env_vars": {},
       "post_scripts": [
         {
@@ -262,7 +262,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -285,7 +286,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -308,7 +310,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -331,7 +334,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
@@ -354,7 +358,8 @@
       },
       "post_scripts": [
         {
-          "path": "scripts/common/post_scripts/tracelens.sh"
+          "path": "scripts/common/post_scripts/tracelens.sh",
+          "timeout": 7200
         },
         {
           "path": "scripts/common/post_scripts/trace.sh",
