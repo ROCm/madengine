@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--build-on-compute` on clusters that need an account, QoS or GPU request**: the build job now uses the run job's `slurm.account` and `slurm.qos`, and requests GPUs when `slurm.build_gpus_per_node` is set. Spur (crs-spur) refused the build job without them.
 - **Kubernetes target pinning**: the Python client and `kubectl` used different kubeconfig/context resolution and could reach different clusters. Both now use one kubeconfig (`k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`) and one context (`k8s.context`, which must exist, else the file's current context). The preset no longer hardcodes `~/.kube/config`.
 - **Kubernetes cleanup in shared namespaces**: a rerun deleted same-named objects by name; it now deletes only objects labelled `app=madengine` and stops otherwise.
 - **Kubernetes Job outcome**: a multi-pod Job was reported SUCCESS when its first pod finished and FAILED while retries remained. The outcome now comes from the Job's `Complete` / `Failed` conditions.

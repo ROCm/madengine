@@ -906,6 +906,19 @@ class BuildOrchestrator:
 
         reservation = slurm_config.get("reservation", "")
         time_limit = slurm_config.get("time", "02:00:00")
+        # The build job is submitted under the same account and QoS as the run job (the
+        # job template and the slurm_multi wrapper both honour them): on a cluster whose
+        # default QoS cannot get a node, a build without them was refused while the run
+        # would have been accepted. A build needs no GPUs, so it requests none unless
+        # build_gpus_per_node is set -- for schedulers that refuse a job without a GPU
+        # request (Spur on crs-spur).
+        build_directives = []
+        if slurm_config.get("account"):
+            build_directives.append(f"#SBATCH --account={slurm_config['account']}")
+        if slurm_config.get("qos"):
+            build_directives.append(f"#SBATCH --qos={slurm_config['qos']}")
+        if slurm_config.get("build_gpus_per_node"):
+            build_directives.append(f"#SBATCH --gpus-per-node={slurm_config['build_gpus_per_node']}")
         
         self.rich_console.print(f"  Partition: {partition}")
         self.rich_console.print(f"  Time limit: {time_limit}")
@@ -1119,6 +1132,7 @@ echo ""
 #SBATCH --ntasks=1
 #SBATCH --time={time_limit}
 {f'#SBATCH --reservation={reservation}' if reservation else ''}
+{chr(10).join(build_directives)}
 #SBATCH --output=madengine_build_%j.out
 #SBATCH --error=madengine_build_%j.err
 

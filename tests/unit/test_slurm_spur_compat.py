@@ -7,6 +7,7 @@ election. Each case here keeps stock SLURM's behaviour and adds the spur one.
 
 import subprocess
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -128,3 +129,71 @@ class TestSlurmMultiQosAccount:
     def test_absent_by_default(self, tmp_path):
         script = _wrapper(_deployment(tmp_path))
         assert "--qos" not in script and "--account" not in script
+
+
+class TestBuildOnComputeSlurmDirectives:
+    """The --build-on-compute job is submitted under the run job's account and QoS, and
+    requests GPUs only when build_gpus_per_node is set (Spur refuses a job without a GPU
+    request; elsewhere a build should not wait for a GPU node)."""
+
+    def _build_script(self, tmp_path, slurm):
+        import os
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock()
+        orch.console = MagicMock()
+        orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = {}
+        orch.additional_context = {"slurm": dict(slurm)}
+        orch._original_user_slurm_keys = set()
+        orch.credentials = {}
+        model = {
+            "name": "card",
+            "dockerfile": "docker/card",
+            "scripts": "scripts/card/run.slurm",
+            "n_gpus": "-1",
+            "tags": ["card"],
+            "slurm": {"partition": "gpu", "time": "01:00:00"},
+            "distributed": {"launcher": "slurm_multi"},
+            "env_vars": {},
+        }
+        df = tmp_path / "docker" / "card.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text("FROM scratch\n")
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
+                dm.return_value.run.return_value = [model]
+                with patch("subprocess.run") as run:
+                    run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(
+                        registry="localhost:5000/repo",
+                        manifest_output=str(tmp_path / "build_manifest.json"),
+                    )
+            return (tmp_path / "madengine_build_job.sh").read_text()
+        finally:
+            os.chdir(cwd)
+
+    def _header(self, script):
+        return [l for l in script.splitlines() if l.startswith("#SBATCH")]
+
+    def test_account_qos_and_gpus_reach_the_build_job(self, tmp_path):
+        h = self._header(self._build_script(tmp_path, {
+            "partition": "amd-spur", "account": "amd-aifw-dev", "qos": "amd-burst-qos",
+            "build_gpus_per_node": 8,
+        }))
+        assert "#SBATCH --partition=amd-spur" in h
+        assert "#SBATCH --account=amd-aifw-dev" in h
+        assert "#SBATCH --qos=amd-burst-qos" in h
+        assert "#SBATCH --gpus-per-node=8" in h
+
+    def test_nothing_extra_by_default(self, tmp_path):
+        h = self._header(self._build_script(tmp_path, {"partition": "gpu"}))
+        assert not [l for l in h if any(k in l for k in ("--account", "--qos", "--gpus"))]
+
+    def test_run_job_gpus_do_not_make_the_build_request_gpus(self, tmp_path):
+        h = self._header(self._build_script(tmp_path, {"partition": "gpu", "gpus_per_node": 8}))
+        assert not [l for l in h if "--gpus" in l]
