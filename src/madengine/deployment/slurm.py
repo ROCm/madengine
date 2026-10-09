@@ -12,8 +12,10 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -33,7 +35,7 @@ from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
-from madengine.core.timeout import subprocess_timeout
+from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.path_utils import scripts_base_dir_from
@@ -133,7 +135,19 @@ class SlurmDeployment(BaseDeployment):
         self.inside_allocation = os.environ.get("SLURM_JOB_ID") is not None
         self.existing_job_id = os.environ.get("SLURM_JOB_ID", "")
         self.allocation_nodes = self._get_allocation_node_count()
-        
+
+        # Everything the job script writes -- node workspaces, per-node logs, the
+        # task script, the collection directory -- is keyed on the job id, and so
+        # is collect_results() on this side. That is unique per sbatch, but every
+        # run inside one allocation shares a single SLURM_JOB_ID, so a second run
+        # would land on the first one's paths. Add a per-run discriminator there,
+        # and only there: a run that gets its own sbatch keeps the bare job id
+        # and the rendered script is unchanged. The random part keeps two runs
+        # started within the same second apart.
+        self._run_discriminator = (
+            f"_{time.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
+        )
+
         if self.inside_allocation:
             self.console.print(
                 f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
@@ -141,6 +155,42 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(
                 f"  Allocation has {self.allocation_nodes} nodes available"
             )
+
+    # Evaluated on use rather than in __init__: prepare() may still change
+    # self.nodes from the model card.
+    @property
+    def runs_in_place(self) -> bool:
+        """True if deploy() runs the templated script inside this allocation.
+
+        Only a multi-node run does; a single-node one submits its own sbatch.
+        """
+        return self.inside_allocation and self.nodes > 1
+
+    # One discriminator, three renderings: job_tag for the paths that are keyed
+    # on the job id, run_suffix on its own for the node workspace under
+    # SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR is already
+    # per-job and so collides between runs sharing one -- and run_id for what
+    # those expand to once the script runs, which is what collect_results()
+    # needs to find this run's artifacts.
+    @property
+    def run_suffix(self) -> str:
+        return self._run_discriminator if self.runs_in_place else ""
+
+    @property
+    def job_tag(self) -> str:
+        return "${SLURM_JOB_ID}" + self.run_suffix
+
+    @property
+    def run_id(self) -> str:
+        return self.existing_job_id + self.run_suffix
+
+    @property
+    def _launch_nodelist_var(self) -> str:
+        """Variable a launcher reads its hosts from inside the srun step.
+
+        An in-place step may cover only part of the allocation.
+        """
+        return "SLURM_STEP_NODELIST" if self.runs_in_place else "SLURM_JOB_NODELIST"
 
     def _get_allocation_node_count(self) -> int:
         """
@@ -814,6 +864,9 @@ class SlurmDeployment(BaseDeployment):
         
         return {
             "model_name": model_info["name"],
+            "job_tag": self.job_tag,
+            "run_suffix": self.run_suffix,
+            "in_place": self.runs_in_place,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
@@ -1099,7 +1152,7 @@ if [ -z "$_MAD_LOCAL_IP" ]; then
         | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
 fi
 
-SLURM_NODE_IPS=$(scontrol show hostname ${{SLURM_JOB_NODELIST}} | while read node; do
+SLURM_NODE_IPS=$(scontrol show hostname ${{{self._launch_nodelist_var}}} | while read node; do
     node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
     # Only the local node may fall back to its own address; doing this for a peer
     # would publish this node's IP in that peer's slot. The list holds NodeName
@@ -1121,7 +1174,7 @@ done | tr '\\n' ',' | sed 's/,$//')
 # yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
 # the barrier exactly like the loopback one did.
 if [ -z "$SLURM_NODE_IPS" ]; then
-    echo "ERROR: empty node list from 'scontrol show hostname ${{SLURM_JOB_NODELIST}}'" >&2
+    echo "ERROR: empty node list from 'scontrol show hostname ${{{self._launch_nodelist_var}}}'" >&2
     exit 1
 fi
 case "$SLURM_NODE_IPS" in
@@ -1169,10 +1222,10 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
         else:
             return f'''# DeepSpeed multi-node setup
 # Generate hostfile dynamically from SLURM
-cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
-$(scontrol show hostnames $SLURM_JOB_NODELIST | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+cat > /tmp/deepspeed_hostfile_{self.job_tag}.txt << EOF
+$(scontrol show hostnames ${self._launch_nodelist_var} | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
 EOF
-export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_{self.job_tag}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
     def _generate_megatron_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
@@ -1319,10 +1372,19 @@ export MASTER_PORT={master_port}
 
         self._job_submitted_at = time.time()
 
-        # slurm_multi inside an existing salloc allocation: run the generated script
-        # directly with bash instead of nesting another sbatch. Non-slurm_multi launchers
-        # always fall through to the standard sbatch flow (preserves develop behavior).
-        if self.inside_allocation and getattr(self, "_is_slurm_multi", False):
+        # Inside an existing salloc allocation, run the generated script directly
+        # with bash instead of nesting another sbatch, which would queue for new
+        # nodes and defeat the point of holding the allocation.
+        #
+        # Multi-node only, besides slurm_multi: the templated multi-node script
+        # dispatches the workload with srun, so it lands on the allocated nodes,
+        # while the single-node branch invokes madengine inline. Under sbatch that
+        # is the compute node; under bash in an allocation it is wherever the
+        # caller's shell is, typically a login node. Submitting a fresh sbatch is
+        # the right answer there.
+        if self.runs_in_place or (
+            self.inside_allocation and getattr(self, "_is_slurm_multi", False)
+        ):
             return self._run_inside_existing_allocation()
 
         # ==================== PREFLIGHT NODE SELECTION ====================
@@ -1442,12 +1504,20 @@ export MASTER_PORT={master_port}
         The script will use the nodes already allocated to the current job.
         SLURM environment variables (SLURM_NODELIST, etc.) are inherited.
         """
+        # slurm_multi runs the model's own script, which builds its paths from the
+        # raw SLURM_JOB_ID, so only the templated flow carries the per-run tag.
+        run_id = (
+            self.existing_job_id
+            if getattr(self, "_is_slurm_multi", False)
+            else self.run_id
+        )
+
         # Validate node count before running
         is_valid, error_msg = self._validate_allocation_nodes()
         if not is_valid:
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=error_msg,
             )
         
@@ -1455,6 +1525,8 @@ export MASTER_PORT={master_port}
             f"\n[bold cyan]Running inside existing SLURM allocation[/bold cyan]"
         )
         self.console.print(f"  Job ID: {self.existing_job_id}")
+        if run_id != self.existing_job_id:
+            self.console.print(f"  Run ID: {run_id}")
         self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
         self.console.print(f"  GPUs per node: {self.gpus_per_node}")
         self.console.print(f"  Script: {self.script_path}")
@@ -1462,19 +1534,29 @@ export MASTER_PORT={master_port}
         
         try:
             # Run script directly with bash (synchronous, blocks until done)
-            # Don't capture output - let it stream directly to console
-            result = subprocess.run(
-                ["bash", str(self.script_path)],
-                timeout=subprocess_timeout(self.config.timeout),
+            # Don't capture output - let it stream directly to console.
+            # Own process group, so a timeout or Ctrl-C can stop the srun step
+            # under bash too: killing bash alone leaves the step's tasks
+            # running in the caller's allocation, and cleanup() must not
+            # cancel the allocation itself.
+            timeout = self._in_place_timeout()
+            proc = subprocess.Popen(
+                ["bash", str(self.script_path)], start_new_session=True
             )
-            
+            try:
+                proc.wait(timeout=subprocess_timeout(timeout))
+            except BaseException:
+                self._stop_process_group(proc)
+                raise
+            result = subprocess.CompletedProcess(proc.args, proc.returncode)
+
             if result.returncode == 0:
                 self.console.print(
                     f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
                 )
                 return DeploymentResult(
                     status=DeploymentStatus.SUCCESS,
-                    deployment_id=self.existing_job_id,
+                    deployment_id=run_id,
                     message=f"Completed inside existing allocation {self.existing_job_id}",
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously, no need to poll
@@ -1485,7 +1567,7 @@ export MASTER_PORT={master_port}
                 )
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
-                    deployment_id=self.existing_job_id,
+                    deployment_id=run_id,
                     message=f"Script failed with exit code {result.returncode}",
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
@@ -1493,20 +1575,52 @@ export MASTER_PORT={master_port}
                 
         except subprocess.TimeoutExpired:
             self.console.print(
-                f"\n[red]✗ Script timed out after {self.config.timeout}s[/red]"
+                f"\n[red]✗ Script timed out after {timeout}s[/red]"
             )
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
-                message=f"Script timed out after {self.config.timeout}s",
+                deployment_id=run_id,
+                message=f"Script timed out after {timeout}s",
             )
         except Exception as e:
             self.console.print(f"\n[red]✗ Execution error: {e}[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=f"Execution error: {str(e)}",
             )
+
+    def _in_place_timeout(self) -> int:
+        """Timeout for the in-place wait, resolved as the job's madengine does.
+
+        config.timeout was resolved without the model card, so it would cut a
+        run the card allows longer -- or unbounded -- off at the default, which
+        the same script under sbatch is not.
+        """
+        models = (self.manifest or {}).get("built_models") or {}
+        model_info = next(iter(models.values()), {})
+        return resolve_run_timeout(model_info, self.config.cli_timeout)
+
+    @staticmethod
+    def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:
+        """Stop *proc* and everything in its process group.
+
+        srun relays SIGTERM to the step's tasks; SIGKILL follows for whatever
+        outlives *grace* seconds.
+        """
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 5.0)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline:
+                proc.poll()  # reap bash, or its zombie keeps the group alive
+                try:
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    return
+                time.sleep(0.2)
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """Check SLURM job status (locally)."""
@@ -2486,6 +2600,18 @@ export MASTER_PORT={master_port}
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
+        # An in-place run has no job of its own: its id is the caller's
+        # allocation or a tag derived from it, and cancelling the allocation
+        # would end every later run that shares it.
+        if self.inside_allocation and deployment_id in (
+            self.existing_job_id,
+            self.run_id,
+        ):
+            self.console.print(
+                f"[yellow]Not cancelling allocation {self.existing_job_id}: "
+                "it belongs to the caller[/yellow]"
+            )
+            return True
         try:
             subprocess.run(
                 ["scancel", deployment_id], capture_output=True, timeout=10
