@@ -95,6 +95,45 @@ def test_hook_does_not_register_the_torchrun_launcher(tmp_path):
     assert "saved 1" in result.stdout
 
 
+def test_hook_does_not_register_startup_helpers(tmp_path):
+    """rocenv, pip, and rocm-sdk import torch and exit before the worker.
+
+    A dead registrant left in the dynolog job makes the worker SIGSEGV while
+    flushing the trace that was requested for it.
+    """
+    fake = tmp_path / "fake"
+    profiler = fake / "torch" / "profiler"
+    profiler.mkdir(parents=True)
+    (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
+    (profiler / "__init__.py").write_text("IMPORTED = True\n", encoding="utf-8")
+    script = textwrap.dedent(
+        """
+        import os
+        import sys
+        sys.path.insert(0, os.environ["FAKE_TORCH"])
+        sys.path.insert(0, os.path.dirname(os.environ["HOOK"]))
+        sys.argv = ["python3", "rocenv_tool.py", "--lite"]
+        import madengine_kineto_hook
+        print("imported", "torch.profiler" in sys.modules)
+        print("daemon", os.environ.get("KINETO_USE_DAEMON", "<unset>"))
+        """
+    )
+    env = dict(os.environ)
+    env["FAKE_TORCH"] = str(fake)
+    env["HOOK"] = str(HOOK)
+    env["KINETO_USE_DAEMON"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "imported False" in result.stdout
+    assert "daemon <unset>" in result.stdout
+
+
 def test_hook_restores_the_daemon_for_the_worker(tmp_path):
     fake = tmp_path / "fake"
     profiler = fake / "torch" / "profiler"

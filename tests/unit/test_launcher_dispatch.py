@@ -247,6 +247,114 @@ class TestKubernetesLauncherDispatch:
         context = deployment._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
         assert context["subdomain"] == deployment.service_name
 
+    def test_runtime_distributed_block_launches_multinode_vllm(self, tmp_path):
+        """The documented run-time block is enough. The manifest need not contain it.
+
+        This is `madengine run --tags pyt_vllm_qwen3-8b` with
+        ``distributed.launcher=vllm``, ``nnodes=4``, ``nproc_per_node=8`` against
+        a manifest built without that block. The model card's ``n_gpus`` is ``-1``.
+        """
+        from unittest.mock import MagicMock
+
+        from madengine.deployment.base import create_jinja_env
+        from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+        from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
+        from madengine.deployment.k8s_template_context import (
+            KubernetesTemplateContextMixin,
+        )
+        from madengine.deployment.kubernetes_launcher_mixin import (
+            KubernetesLauncherMixin,
+        )
+
+        class _Harness(
+            KubernetesTemplateContextMixin,
+            KubernetesScriptsMixin,
+            KubernetesLauncherMixin,
+            KubernetesPVCMixin,
+        ):
+            pass
+
+        model = {
+            **MODEL_ENTRY,
+            "name": "pyt_vllm_qwen3-8b",
+            "n_gpus": "-1",
+            "scripts": "scripts/vllm/run.sh",
+            "args": "--model_repo Qwen/Qwen3-8B --config configs/extended.yaml",
+        }
+        manifest = {
+            "built_images": {"dummy-image": {"docker_image": "dummy:latest"}},
+            "built_models": {"dummy-image": model},
+            "context": MANIFEST_CONTEXT,
+        }
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        k8s_config = {
+            "namespace": "default",
+            "gpu_count": 8,
+            "memory": "256Gi",
+            "memory_limit": "320Gi",
+            "cpu": "32",
+            "cpu_limit": "48",
+        }
+        harness = _Harness()
+        harness.config = DeploymentConfig(
+            target="k8s",
+            manifest_file=str(manifest_path),
+            additional_context={
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "k8s": k8s_config,
+                "distributed": {
+                    "launcher": "vllm",
+                    "nnodes": 4,
+                    "nproc_per_node": 8,
+                },
+            },
+        )
+        harness.k8s_config = k8s_config
+        harness.console = MagicMock()
+        harness.manifest = manifest
+        harness.namespace = "default"
+        harness.job_name = "test-job"
+        harness.job_label = "test-job"
+        harness.service_name = "test-svc"
+        harness.main_container_name = "test-svc"
+        harness.configmap_name = "test-cm"
+        harness.gpu_resource_name = "amd.com/gpu"
+        harness.data = None
+
+        context = harness._prepare_template_context(model, IMAGE_INFO)
+        assert context["launcher_type"] == "vllm"
+        assert context["nnodes"] == 4
+        assert context["nproc_per_node"] == 8
+        assert context["completions"] == 4
+        assert context["create_headless_service"] is True
+        assert context["subdomain"] == "test-svc"
+        assert "NNODES=4" in context["launcher_command"]
+        assert "NPROC_PER_NODE=8" in context["launcher_command"]
+
+        template_dir = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "madengine"
+            / "deployment"
+            / "templates"
+            / "kubernetes"
+        )
+        script = create_jinja_env(template_dir).get_template("job.yaml.j2").render(
+            **context
+        )
+        assert "subdomain: test-svc" in script
+        assert "completions: 4" in script
+
+    def test_all_gpus_model_card_is_not_a_negative_process_count(self):
+        from madengine.deployment.common import resolve_distributed_launch
+
+        resolved = resolve_distributed_launch({}, {}, {"n_gpus": "-1"})
+        assert resolved["launcher"] is None
+        assert resolved["nnodes"] == 1
+        assert resolved["nproc_per_node"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Cross-backend parity

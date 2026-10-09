@@ -343,13 +343,13 @@ class TestTraceLensContainerTools:
     ):
         """torch_profiler_dynolog captures an on-demand trace from a PyTorch run.
 
-        The warmup is shortened from the 60s default because the fixture workload
-        is far shorter lived than a real training job. Input shapes, stacks, and
-        modules stay off: on TheRock torch they abort RocmActivityProfiler, so
-        an accepted request never becomes a trace file. The tool defaults stay
-        on for builds where those captures work. The trigger leaves the torchrun
-        launcher out of the request, and the launcher does not register with
-        dynolog; either one keeps the worker from finishing its trace. The
+        Warmup is 0. The default 60s, and even 20s, starts before this job and
+        outlasts it on a fast GPU, so the stop script kills the trigger before
+        dyno gputrace runs. The fixture instead keeps calling optimizer.step()
+        until that request is accepted and the capture window has closed.
+        Input shapes, stacks, and modules stay off: on TheRock torch they abort
+        RocmActivityProfiler, so an accepted request never becomes a trace file.
+        The trigger leaves the torchrun launcher out of the request. The
         fixture's 224x224 batches are larger than this RocmActivityProfiler
         can flush, so this run uses a small image.
         """
@@ -361,16 +361,17 @@ class TestTraceLensContainerTools:
                         {
                             "name": "torch_profiler_dynolog",
                             "env_vars": {
-                                "TORCH_PROFILE_WARMUP_S": "20",
-                                "TORCH_PROFILE_RETRY_INTERVAL_S": "5",
-                                "TORCH_PROFILE_MAX_ATTEMPTS": "10",
+                                "TORCH_PROFILE_WARMUP_S": "0",
+                                "TORCH_PROFILE_RETRY_INTERVAL_S": "1",
+                                "TORCH_PROFILE_STABLE_S": "5",
+                                "TORCH_PROFILE_MAX_ATTEMPTS": "30",
                                 "TORCH_PROFILE_RECORD_SHAPES": "0",
                                 "TORCH_PROFILE_WITH_STACKS": "0",
                                 "TORCH_PROFILE_WITH_MODULES": "0",
                                 "DUMMY_BATCH_SIZE": "2",
                                 "DUMMY_IMAGE_SIZE": "64",
-                                "DUMMY_NUM_EPOCHS": "1",
-                                "DUMMY_NUM_BATCHES": "800",
+                                "DUMMY_WAIT_FOR_KINETO": "1",
+                                "DUMMY_KINETO_TIMEOUT_S": "90",
                             },
                         }
                     ]
