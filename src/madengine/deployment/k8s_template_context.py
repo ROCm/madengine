@@ -13,7 +13,11 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import canonicalize_distributed_launcher, configure_multi_node_profiling
+from .common import (
+    canonicalize_distributed_launcher,
+    configure_multi_node_profiling,
+    resolve_distributed_launch,
+)
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_label_value
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
@@ -167,37 +171,19 @@ class KubernetesTemplateContextMixin:
                 else:
                     self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
 
-        # Get launcher configuration from manifest's deployment_config or additional_context
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        launcher_config = self.config.additional_context.get("launcher", {})
-
-        # Merge manifest and runtime launcher config (runtime overrides)
-        # Use explicit None checking to handle 0 values correctly
-        launcher_type = (
-            launcher_config.get("type")
-            if launcher_config.get("type") is not None
-            else distributed_config.get("launcher")
+        # Runtime additional_context.distributed is the documented CLI shape
+        # (madengine run --additional-context). launcher.type overrides it.
+        # The manifest copy is only the fallback from build time.
+        launch = resolve_distributed_launch(
+            self.config.additional_context, self.manifest, model_info
         )
-
-        nnodes = (
-            launcher_config.get("nnodes")
-            if launcher_config.get("nnodes") is not None
-            else distributed_config.get("nnodes", 1)
-        )
+        launcher_type = launch["launcher"]
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        master_port = launch["master_port"]
 
         # Store for use in deploy() method
         self._nnodes = nnodes
-
-        nproc_per_node = (
-            launcher_config.get("nproc_per_node")
-            if launcher_config.get("nproc_per_node") is not None
-            else distributed_config.get("nproc_per_node")
-            if distributed_config.get("nproc_per_node") is not None
-            else int(model_info.get("n_gpus", 1))
-        )
-
-        master_port = launcher_config.get("master_port", 29500)
 
         # Validate configuration
         if launcher_type == "torchrun":
@@ -476,14 +462,9 @@ class KubernetesTemplateContextMixin:
         else:
             privileged_profiling = bool(ap_prof)
 
-        _pytorch_native = frozenset(
-            {"torchrun", "deepspeed", "torchtitan", "megatron-lm", "primus"}
-        )
-        subdomain_val = (
-            self.service_name
-            if nnodes > 1 and launcher_type in _pytorch_native
-            else None
-        )
+        # Any launcher that created a headless Service needs the pod subdomain,
+        # including vLLM and SGLang. Without it, pod-0 DNS does not resolve.
+        subdomain_val = self.service_name if create_headless_service else None
 
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
