@@ -22,12 +22,12 @@ from typing import Any, Dict, List, Optional
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .common import (
-    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_self_managed_launcher,
-    normalize_launcher,
+    launcher_for_reporting,
     resolve_launcher_from_sources,
     resolve_node_count,
+    validate_launcher,
 )
 from .config_loader import ConfigLoader, apply_deployment_config
 from .slurm_node_selector import SlurmNodeSelector
@@ -757,19 +757,16 @@ class SlurmDeployment(BaseDeployment):
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
         
-        # Extract launcher configuration. Resolved the same way as the self-managed
-        # peek in prepare(), so the path taken and the env block emitted can never
-        # disagree about which launcher this model uses.
-        launcher_type = self._resolve_launcher(model_info)
-
-        # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
-        # passes through normalize_launcher instead of being mapped to "docker".
-        launcher_type = canonicalize_distributed_launcher(launcher_type) or launcher_type
-        # Normalize launcher based on deployment type and validity
-        launcher_type = normalize_launcher(launcher_type, "slurm")
-        # Persist the resolved launcher so downstream readers (reporting paths,
-        # later normalize_launcher calls) see the same value the template used,
-        # rather than re-deriving from the raw alias and mapping it to "docker".
+        # Same resolver as the self-managed peek in prepare(), so the path taken
+        # and the env block cannot disagree. Validation replaces the old silent
+        # rewrite to "docker": an unknown name fails here instead of running as
+        # a single process and still reporting success.
+        launcher_type = validate_launcher(
+            self._resolve_launcher(model_info),
+            source="distributed.launcher",
+        )
+        if launcher_type is None:
+            launcher_type = "torchrun"
         self.distributed_config["launcher"] = launcher_type
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
@@ -891,7 +888,7 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_sglang_disagg_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "torchtitan":
             return self._generate_torchtitan_command(nnodes, nproc_per_node, master_port)
@@ -1763,7 +1760,7 @@ export MASTER_PORT={master_port}
         from madengine.utils.config_parser import ConfigParser
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
 
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1822,7 +1819,7 @@ export MASTER_PORT={master_port}
         from madengine.reporting.update_perf_csv import flatten_tags
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
         total_gpus = self.nodes * self.gpus_per_node
         result = {
             "n_gpus": str(total_gpus),

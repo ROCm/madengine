@@ -344,7 +344,14 @@ class TestTraceLensContainerTools:
         """torch_profiler_dynolog captures an on-demand trace from a PyTorch run.
 
         The warmup is shortened from the 60s default because the fixture workload
-        is far shorter lived than a real training job.
+        is far shorter lived than a real training job. Input shapes, stacks, and
+        modules stay off: on TheRock torch they abort RocmActivityProfiler, so
+        an accepted request never becomes a trace file. The tool defaults stay
+        on for builds where those captures work. The trigger leaves the torchrun
+        launcher out of the request, and the launcher does not register with
+        dynolog; either one keeps the worker from finishing its trace. The
+        fixture's 224x224 batches are larger than this RocmActivityProfiler
+        can flush, so this run uses a small image.
         """
         global_data["console"].sh(
             build_run_command(
@@ -357,6 +364,13 @@ class TestTraceLensContainerTools:
                                 "TORCH_PROFILE_WARMUP_S": "20",
                                 "TORCH_PROFILE_RETRY_INTERVAL_S": "5",
                                 "TORCH_PROFILE_MAX_ATTEMPTS": "10",
+                                "TORCH_PROFILE_RECORD_SHAPES": "0",
+                                "TORCH_PROFILE_WITH_STACKS": "0",
+                                "TORCH_PROFILE_WITH_MODULES": "0",
+                                "DUMMY_BATCH_SIZE": "2",
+                                "DUMMY_IMAGE_SIZE": "64",
+                                "DUMMY_NUM_EPOCHS": "1",
+                                "DUMMY_NUM_BATCHES": "800",
                             },
                         }
                     ]
@@ -375,6 +389,6 @@ class TestTraceLensContainerTools:
         traces = [f for f in collected if f.endswith((".json", ".json.gz"))]
         if not traces:
             pytest.fail(
-                "no Kineto trace captured; dynolog never matched a PyTorch process "
+                "no Kineto trace file was written "
                 f"(torch_profiler_output/ contains {collected})."
             )

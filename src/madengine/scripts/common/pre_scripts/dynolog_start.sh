@@ -54,6 +54,39 @@ else
     exit 1
 fi
 
+# Iteration capture counts optimizer.step(), and PyTorch registers that hook
+# only when torch.profiler is imported. Unmodified workloads never import it,
+# so the daemon matches the process and then waits forever. A site hook imports
+# it for this run; dynolog_stop.sh removes the hook. Install it before the
+# trigger is armed: the import check is itself a PyTorch process, and a trigger
+# that is already polling will accept that short-lived process and exit.
+install_kineto_hook() {
+    local hook_src=""
+    if [ -f "scripts/common/tools/madengine_kineto_hook.py" ]; then
+        hook_src="scripts/common/tools/madengine_kineto_hook.py"
+    elif [ -f "../scripts/common/tools/madengine_kineto_hook.py" ]; then
+        hook_src="../scripts/common/tools/madengine_kineto_hook.py"
+    else
+        echo "Warning: madengine_kineto_hook.py not found; iteration capture needs torch.profiler imported."
+        return 0
+    fi
+    if ! python3 -c 'import torch' >/dev/null 2>&1; then
+        echo "Warning: torch is not importable; skipping the Kineto optimizer-step hook."
+        return 0
+    fi
+    local site
+    site=$(python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)
+    if [ -z "$site" ] || [ ! -d "$site" ]; then
+        echo "Warning: could not find site-packages; skipping the Kineto optimizer-step hook."
+        return 0
+    fi
+    cp "$hook_src" "${site}/madengine_kineto_hook.py"
+    printf '%s\n' 'import madengine_kineto_hook' > "${site}/madengine_kineto_hook.pth"
+    echo "$site" > /tmp/madengine_kineto_hook.site
+    echo "✓ installed Kineto optimizer-step hook in ${site}"
+}
+install_kineto_hook
+
 nohup bash "$TRIGGER_SCRIPT" > /tmp/madengine_dynolog_trigger.log 2>&1 &
 TRIGGER_PID=$!
 echo "$TRIGGER_PID" > "$TRIGGER_PID_FILE"
