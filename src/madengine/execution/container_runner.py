@@ -1480,8 +1480,13 @@ class ContainerRunner:
                                 )
 
                         model_docker.sh(f"rm -rf {model_dir}", timeout=240)
+                        # TheRock base images do not ship git. Models that mount
+                        # the workspace still need to run; only mark the mount
+                        # safe when git is present.
                         model_docker.sh(
-                            "git config --global --add safe.directory /myworkspace"
+                            "if command -v git >/dev/null 2>&1; then "
+                            "git config --global --add safe.directory /myworkspace; "
+                            "fi"
                         )
 
                         # Clone model repo if needed
@@ -1515,7 +1520,9 @@ class ContainerRunner:
                                 )
 
                             model_docker.sh(
-                                f"git config --global --add safe.directory /myworkspace/{model_dir}"
+                                "if command -v git >/dev/null 2>&1; then "
+                                f"git config --global --add safe.directory /myworkspace/{model_dir}; "
+                                "fi"
                             )
                             run_results["git_commit"] = model_docker.sh(
                                 f"cd {model_dir} && git rev-parse HEAD"
