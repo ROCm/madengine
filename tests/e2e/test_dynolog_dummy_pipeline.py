@@ -20,6 +20,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -354,6 +355,9 @@ class TestTraceRequest:
             TORCH_PROFILE_WARMUP_S="0",
             TORCH_PROFILE_RETRY_INTERVAL_S="0",
             TORCH_PROFILE_MAX_ATTEMPTS="5",
+            # Production waits for torchrun's startup processes to finish
+            # registering. These tests stage a log that is already final.
+            TORCH_PROFILE_STABLE_S="0",
         )
         settings.update(env)
         return run_script(TRIGGER_SCRIPT, work, dummy.environ(**settings))
@@ -437,6 +441,56 @@ class TestTraceRequest:
         request = dummy_dynolog.requests()[0]
         assert f"--pids {worker.pid}" in request, request
         assert str(launcher.pid) not in request
+
+    def test_trigger_waits_for_the_worker_instead_of_its_parent(
+        self, workdir, dummy_dynolog
+    ):
+        """The first registered process is torchrun's startup helper.
+
+        It is still alive when it registers, and a request for it is accepted
+        and then writes nothing. The worker registers a moment later. The
+        parent shows up as an ancestor on the worker's registration line, so
+        once registrations settle the request names only the worker.
+        """
+        parent = subprocess.Popen(["sleep", "30"])
+        worker = subprocess.Popen(["sleep", "30"])
+        log = Path("/tmp/madengine_dynolog.log")
+        try:
+            log.write_text(
+                "I Registered process ({0}) for job 0.\n".format(parent.pid),
+                encoding="utf-8",
+            )
+
+            def register_worker() -> None:
+                time.sleep(1)
+                with log.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        "I Registered process ({0}, {1}) for job 0.\n".format(
+                            worker.pid, parent.pid
+                        )
+                    )
+
+            updater = threading.Thread(target=register_worker)
+            updater.start()
+            result = self.run_trigger(
+                workdir,
+                dummy_dynolog,
+                TORCH_PROFILE_STABLE_S="3",
+                TORCH_PROFILE_RETRY_INTERVAL_S="1",
+                TORCH_PROFILE_MAX_ATTEMPTS="8",
+            )
+            updater.join()
+        finally:
+            for proc in (parent, worker):
+                proc.kill()
+                proc.wait()
+            log.unlink(missing_ok=True)
+
+        assert result.returncode == 0, result.stdout
+        assert len(dummy_dynolog.requests()) == 1, dummy_dynolog.requests()
+        request = dummy_dynolog.requests()[0]
+        assert f"--pids {worker.pid}" in request, request
+        assert str(parent.pid) not in request
 
     def test_an_option_dyno_rejects_fails_fast_and_says_so(
         self, workdir, dummy_dynolog

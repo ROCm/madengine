@@ -70,12 +70,14 @@ install_kineto_hook() {
         echo "Warning: madengine_kineto_hook.py not found; iteration capture needs torch.profiler imported."
         return 0
     fi
-    if ! python3 -c 'import torch' >/dev/null 2>&1; then
+    # This check imports torch. With the daemon already running that registers a
+    # process which exits immediately, and the worker then segfaults on flush.
+    if ! env -u KINETO_USE_DAEMON python3 -c 'import torch' >/dev/null 2>&1; then
         echo "Warning: torch is not importable; skipping the Kineto optimizer-step hook."
         return 0
     fi
     local site
-    site=$(python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)
+    site=$(env -u KINETO_USE_DAEMON python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)
     if [ -z "$site" ] || [ ! -d "$site" ]; then
         echo "Warning: could not find site-packages; skipping the Kineto optimizer-step hook."
         return 0
