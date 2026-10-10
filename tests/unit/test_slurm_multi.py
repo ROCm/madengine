@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from madengine.core.errors import ConfigurationError
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
     is_self_managed_launcher,
