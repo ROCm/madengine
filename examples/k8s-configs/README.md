@@ -178,14 +178,14 @@ Located in [`minimal/`](minimal/) directory:
 
 Registry and runtime credentials are **not** stored in a ConfigMap. By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from your local `credential.json` before creating the Job: a `kubernetes.io/dockerconfigjson` Secret when Docker Hub auth is present, and an opaque Secret with `credential.json` for in-container use. Mount paths match the previous behavior (`/workspace/credential.json`).
 
-- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI).
+- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI). The default pull-secret list is `dockerhub-rocm`, the Docker Hub secret in the `default` namespace.
 - **`omit`**: no Secret creation from the client; optional extra pull secret names only.
 
 To validate rendered YAML after a debug run, install [kubeconform](https://github.com/yannh/kubeconform) and run `./tests/scripts/k8s_validate_manifests.sh ./k8s_manifests` from the madengine repo root (see `docs/deployment.md`).
 
 ### Multi-node DNS (PyTorch vs Ray)
 
-For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
 
 For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
 
@@ -402,12 +402,10 @@ madengine separates **per-job results** from **long-lived shared data**:
 
 | Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
 |--------|-------------|----------------------------|----------------------------|
-| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** — `multi_node_results_storage_class` → `nfs_storage_class` → `storage_class` (e.g. `nfs-banff`) |
-| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** when that class can serve ReadWriteMany (`multi_node_results_storage_class` → `nfs_storage_class` → `storage_class`). Otherwise one **RWO** volume per pod (`local_path_storage_class`), and `perf.csv` is recovered from pod logs |
+| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** when that StorageClass can serve ReadWriteMany; otherwise one local disk per pod | Same rule |
 
-**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, generic `storage_class` → `nfs-banff` (broad fallback for both data and single-node results PVCs), `recreate_shared_data_pvc` → `false`. The legacy `local_path_storage_class` key is still honoured as a single-node-results fallback for backward compatibility but is no longer set in the preset. You do not need to set any of these unless you use another cluster — then override in additional context.
-
-> **2.0.3 default change:** Before 2.0.3 the preset set `local_path_storage_class: "local-path"`, so single-node results PVCs landed on `local-path` by default. The preset now sets `storage_class: "nfs-banff"` instead, so both the data PVC and the single-node results PVC default to `nfs-banff` unless you override. If you actually want `local-path` for single-node results, set `"local_path_storage_class": "local-path"` (or `"single_node_results_storage_class": "local-path"`) in your `--additional-context`.
+**Built-in defaults** are in `presets/k8s/defaults.json`: `results_layout` and `data_layout` are `auto`. Multi-node results and the dataset cache use `nfs_storage_class` / `data_storage_class` (`nfs-banff`) only when that StorageClass exists and its provisioner is a shared filesystem, or a PersistentVolume of that class is already ReadWriteMany. Otherwise each pod gets a ReadWriteOnce volume on `local-path`. Set `results_layout` or `data_layout` to `shared` or `per_pod` to override. A dataset claim that already exists and is not ReadWriteMany is left in place and not mounted.
 
 Example override for a different cluster:
 
@@ -422,7 +420,7 @@ Example override for a different cluster:
 ```
 
 - **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
-- **`local_path_storage_class`**: RWO class for **single-node only** results PVC. Still accepted for backward compatibility; new configs should prefer `single_node_results_storage_class` or rely on `storage_class`.
+- **`local_path_storage_class`**: RWO class for the single-node results PVC and for a per-pod volume when ReadWriteMany storage is unavailable. New configs can set `single_node_results_storage_class` for the single-node claim; `local_path_storage_class` is still the class used for per-pod disks.
 - **`storage_class`**: Generic broad fallback used for **both** the data PVC and single-node results PVC when no more-specific key is set. Added in 2.0.3.
 - **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
 - **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
@@ -437,7 +435,7 @@ Example override for a different cluster:
 
 - ✅ NFS (e.g. `nfs-banff`, `nfs-client`)
 - ✅ CephFS, GlusterFS, AWS EFS, Azure Files
-- ❌ `local-path` (RWO only — not for shared-data or multi-node results)
+- ❌ `local-path` as a shared multi-node claim (RWO only). It is used for the per-pod disk when ReadWriteMany is unavailable.
 
 ### Custom PVC (Optional)
 
@@ -562,10 +560,12 @@ To use an existing PVC instead of auto-creation:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
-| `storage_class` | string | **`nfs-banff`** (preset, since 2.0.3) | Generic broad fallback for both the data PVC and the single-node results PVC when no more-specific key is set |
+| `storage_class` | string | **`local-path`** (preset) | Broad fallback for the single-node results PVC when no more-specific key is set |
 | `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
-| `local_path_storage_class` | string | `null` (not in preset since 2.0.3; was **`local-path`** in ≤ 2.0.2) | Optional RWO class for single-node `{job}-results`. Still honoured for backward compatibility |
+| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` and for a per-pod volume |
 | `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
+| `results_layout` | string | **`auto`** | `auto` uses a shared results volume when the multi-node class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
+| `data_layout` | string | **`auto`** | `auto` uses `madengine-shared-data` when that class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
 | `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (falls back to `local_path_storage_class`, then `storage_class`) |
 | `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
 | `results_storage_size` | string | `"10Gi"` | Size of the per-job `{job}-results` PVC |
@@ -580,7 +580,7 @@ Configuration for distributed workloads (training and inference):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`, `vllm`, `sglang` |
+| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`, `vllm`, `sglang` |
 | `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
 | `nnodes` | integer | `1` | Number of nodes |
@@ -679,7 +679,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 **Training Launchers:**
 - **torchrun**: Standard PyTorch DDP/FSDP training
 - **deepspeed**: ZeRO optimization for memory efficiency
-- **megatron**: Megatron-LM tensor and pipeline parallelism
+- **megatron-lm**: Megatron-LM tensor and pipeline parallelism
 - **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
 - **primus**: Unified Primus pretrain (Megatron / TorchTitan / MaxText experiment YAML; see [Primus on Kubernetes](#primus-on-kubernetes))
 

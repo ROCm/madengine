@@ -93,7 +93,6 @@ The deployment target is automatically detected from the `k8s` key in the config
     "gpu_vendor": "AMD",
     "memory": "32Gi",
     "cpu": "16",
-    "service_account": "madengine-sa",
     "image_pull_policy": "Always"
   }
 }
@@ -110,7 +109,7 @@ See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
 ### Secrets and credentials
 
-By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
+By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Pods also reference the pre-created pull secret `dockerhub-rocm` (`k8s.secrets.image_pull_secret_names`). Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
 
 ### Validating rendered manifests
 
@@ -121,6 +120,12 @@ With `"debug": true` in additional context, `madengine run` writes rendered mani
 ```
 
 The script exits successfully if `kubeconform` is missing (skip) or if validation passes.
+
+### Storage and runtime launchers
+
+A multi-node job uses a shared ReadWriteMany volume when `k8s.nfs_storage_class` (default `nfs-banff`) can serve one. On a cluster whose only StorageClass is local-path, each pod gets its own ReadWriteOnce disk (`results_layout` / `data_layout`: `auto`, or force `shared` / `per_pod`). Performance CSVs are then taken from pod logs. See [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#storage-classes-local-path-vs-nfs).
+
+`madengine run --additional-context` `distributed` (launcher, `nnodes`, `nproc_per_node`) is applied at submit time and wins over the copy saved in `build_manifest.json`. `n_gpus: -1` on a model card means "all GPUs on the node", not a process count. Multi-node vLLM and SGLang pods join the headless Service subdomain so pod-0 DNS resolves.
 
 ### Multi-Node Training
 
@@ -148,7 +153,7 @@ This creates:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Megatron-LM training
+- `megatron-lm` - Megatron-LM training
 - `torchtitan` - LLM pre-training
 - `primus` - Primus unified pretrain (Megatron / TorchTitan / MaxText YAML)
 - `vllm` - LLM inference

@@ -11,7 +11,7 @@ madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
 ```
 
-### 2. Configuration File
+### 2. JSON Configuration File
 
 ```bash
 madengine run --tags model --additional-context-file config.json
@@ -24,6 +24,169 @@ madengine run --tags model --additional-context-file config.json
   "guest_os": "UBUNTU"
 }
 ```
+
+### 3. YAML Configuration (`--config`)
+
+```bash
+madengine run --tags model --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
+```
+
+> **Mutual exclusion**: `--config` cannot be combined with `--additional-context` or `--additional-context-file`. Using both produces an error.
+
+See [YAML Configuration](#yaml-configuration-config) below for full details.
+
+## YAML Configuration (`--config`)
+
+The `--config` flag is another way to fill the same `additional_context` dict that `--additional-context` already uses. Hydra only composes YAML fragments; after translation, `run` / `build` take the existing JSON path (`Context`, SLURM/K8s/Docker). It is available on both commands.
+
+User job files use the **same top-level keys as JSON** (`slurm`, `k8s`, `distributed`, `env_vars`, `docker` → `docker_build_arg`, …). They are not Hydra `defaults:` lists — a `defaults:` block in `my_job.yaml` is ignored as composition.
+
+### How It Works
+
+1. madengine loads a base `config.yaml` with sensible defaults (AMD hardware, Docker platform, local scheduler)
+2. **User YAML files** (e.g., `my_job.yaml`) merge over those defaults
+3. **Config group overrides** (e.g., `scheduler=slurm`) swap in pre-built YAML fragments
+4. **Inline overrides** (e.g., `distributed.nnodes=4`) set individual values last and win over the YAML file
+
+All four can be combined in a single command:
+
+```bash
+madengine run --config my_job.yaml \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+```
+
+### Config Groups
+
+madengine ships with pre-built config groups under `src/madengine/configs/`:
+
+#### Default Groups (swapped via `group=option`)
+
+| Group | Default | Options | Description |
+|-------|---------|---------|-------------|
+| `platform` | `docker` | `docker` (only; `bare_metal` / `singularity` / `podman` files exist but validation rejects them) | Execution platform |
+| `scheduler` | `local` | `local`, `slurm`, `k8s` | Job scheduler — `slurm` and `k8s` add root `slurm:` / `k8s:` sections (same keys as JSON) |
+| `hardware` | `amd` | `amd`, `nvidia`, `cpu` | Sets `gpu_vendor` and `guest_os` (same keys as JSON). Docker device flags still come from `gpu_vendor` in the engine, not from a `runtime` context key. |
+| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (Hydra alias of `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native` (omits `distributed.launcher`; single-process), `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
+
+#### Append-Only Groups (added via `+group=option`)
+
+These are not loaded by default. Use the `+` prefix to add them:
+
+| Group | Options | Description |
+|-------|---------|-------------|
+| `+profile` | `mi300x_8gpu`, `mi300x_single`, `mi250x_4gpu`, `h100_8gpu`, `a100_8gpu` | Hardware profiles — sets GPU type, environment variables, distributed settings |
+| `+env` | `nccl_debug`, `nccl_tuned`, `infiniband`, `miopen_defaults` | Environment variable presets |
+| `+tools` | `rocprofv3_lightweight`, `rocprofv3_comprehensive`, `power_profiler`, `vram_profiler`, `rocm_trace_lite` | Profiling tool presets |
+| `+data` | `local`, `s3`, `minio`, `nas` | Data source configuration |
+| `+build` | `default`, `ci`, `multi_arch` | `ci` → Docker `--no-cache` (`docker_clean_cache`, same as `--clean-docker-cache`); `multi_arch` → `build.target_archs` `[gfx90a, gfx942]` (same as `--target-archs`) |
+
+### User YAML Files
+
+Create a job-specific YAML file and pass it via `--config`:
+
+```yaml
+# my_slurm_job.yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  MY_VAR: test_value
+  NCCL_DEBUG: INFO
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+
+slurm:
+  partition: gpu
+  time: "02:00:00"
+```
+
+```bash
+madengine run --config my_slurm_job.yaml
+```
+
+Write `slurm:` / `distributed:` the same way you would in `--additional-context` JSON. Do not use a Hydra `defaults:` list in this file.
+
+User YAML values merge on top of the base config and any config group selections. You can also combine a user file with overrides (inline `key=value` wins):
+
+```bash
+madengine run --config my_slurm_job.yaml --config distributed.nnodes=8
+```
+
+### Priority Order
+
+1. **Inline overrides** (`key=value`) — highest
+2. **User YAML file** — merged on top of composed config
+3. **Config group selections** (`scheduler=slurm`)
+4. **Base config defaults** — lowest
+
+### Examples
+
+```bash
+# Local run with defaults (AMD, Docker, no distribution)
+madengine run --tags dummy --config
+
+# SLURM multi-node training
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# MI300x 8-GPU profile with NCCL debug
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# NVIDIA hardware
+madengine run --tags model --config hardware=nvidia
+
+# Kubernetes with vLLM inference
+madengine run --tags model \
+  --config scheduler=k8s \
+  --config launcher=vllm \
+  --config distributed.nnodes=2
+
+# Build with CI preset and multi-arch
+madengine build --tags model \
+  --config +build=ci \
+  --registry docker.io/myorg
+
+# User YAML with profiling
+madengine run --config my_job.yaml \
+  --config +tools=rocprofv3_lightweight
+```
+
+### Metadata from Config
+
+When using `--config`, certain YAML keys are extracted as metadata rather than passed to the internal context:
+
+- `model.tags` — used as `--tags` if not specified on the CLI
+- `model.timeout` — used as `--timeout` if not specified
+- `model.container_image` — promoted to `MAD_CONTAINER_IMAGE` in context
+- `build.registry` — used as `--registry` if not specified
+- `build.target_archs` — used as `--target-archs` if not specified
+- `platform`, `output`, `summary_output`, `data_config`, `live_output` — extracted to metadata (`live_output: true` is also copied into context, matching the JSON `live_output` key)
+- `hardware` `runtime` device lists stay in metadata only — they are not an `additional_context` key
+
+### Validation
+
+madengine validates the composed config and reports errors for:
+
+- Conflicting scheduler selections (e.g., both `slurm` and `k8s` sections present)
+- `distributed.enabled: true` without a `distributed.launcher`
+- Invalid `distributed.nnodes` (must be a positive integer)
+- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is Kubernetes. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
+- Unsupported `platform.type` (currently only `docker` is supported)
+- Unknown top-level config keys (catches typos)
 
 ## Default Configuration Values
 
@@ -487,7 +650,7 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `ttl_seconds_after_finished` - Optional Job TTL in seconds (auto-delete finished Job); `null` to omit
 - `allow_privileged_profiling` - `null` means enable elevated `securityContext` when tools/profiling are configured; `true`/`false` to force
 - `secrets.strategy` - `from_local_credentials` (default): create `Secret` objects from local `credential.json` at deploy time; `existing`: only reference pre-created Secrets; `omit`: no runtime Secret from client
-- `secrets.image_pull_secret_names` - Extra pull secret names (strings) merged with any created from `credential.json` when using `from_local_credentials`
+- `secrets.image_pull_secret_names` - Pull secret names referenced on the pod (`imagePullSecrets`). Default is `["dockerhub-rocm"]` (the Docker Hub secret in the `default` namespace). Merged with any secret created from `credential.json` when using `from_local_credentials`. Replace the list to use different secrets.
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 **Cluster and scheduling keys:**
@@ -502,13 +665,12 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `data_pvc` - Name of an existing PVC to use for data, skipping auto-creation
 - `storage_class` - Broad fallback StorageClass for both the shared-data PVC and the single-node results PVC
 - `nfs_storage_class` / `data_storage_class` - RWX class for shared data and multi-node results
-- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the legacy single-node fallback)
+- `single_node_results_storage_class` / `multi_node_results_storage_class` - Fine-grained results-PVC overrides (`local_path_storage_class` is the ReadWriteOnce class for a single-node claim and for a per-pod volume)
+- `results_layout` / `data_layout` - `auto` (default), `shared`, or `per_pod`. `auto` uses one ReadWriteMany claim when that StorageClass can serve it, and a ReadWriteOnce volume on each pod when it cannot. An existing `madengine-shared-data` claim that is not ReadWriteMany is left in the cluster and not mounted.
 - `results_storage_size` / `data_storage_size` - PVC sizes (defaults: `10Gi` / `100Gi`)
 - `recreate_shared_data_pvc` - Delete and recreate `madengine-shared-data` before use. **Destroys existing data** — back up first; intended for migrating an RWO PVC to RWX
 
-Multi-node jobs require an RWX results StorageClass; madengine warns when one is
-not set. The full key reference, PVC access-mode matrix, and preset defaults are
-in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
+With `results_layout: auto`, a multi-node job does not require ReadWriteMany storage. When the shared class cannot serve the job, each pod uses a local disk and performance rows are copied from pod logs. A shared-volume copy is preferred when it is present. The full key reference, PVC access-mode matrix, and preset defaults are in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
 
 ### Multi-Node Kubernetes
 
@@ -524,6 +686,8 @@ in [examples/k8s-configs/README.md](../examples/k8s-configs/README.md).
   }
 }
 ```
+
+See [`examples/configs/templates/k8s.yaml`](../examples/configs/templates/k8s.yaml) for the complete annotated YAML template, or [`examples/configs/demo/k8s/`](../examples/configs/demo/k8s/) for ready-to-run examples.
 
 ## SLURM Deployment
 
@@ -603,6 +767,8 @@ Node health preflight, shared-storage, and results-collection keys (`enable_node
 }
 ```
 
+See [`examples/configs/templates/slurm.yaml`](../examples/configs/templates/slurm.yaml) for the complete annotated YAML template, or [`examples/configs/demo/slurm/`](../examples/configs/demo/slurm/) for ready-to-run examples.
+
 ## llm-d Deployment
 
 Adding an `llm_d` key benchmarks a [llm-d](https://github.com/llm-d/llm-d) inference
@@ -663,11 +829,13 @@ The full key reference, reliability behaviour and troubleshooting are in
 }
 ```
 
+> **YAML config note**: When using `--config`, you must also set `distributed.enabled: true` explicitly. The default config loads `launcher: none` which sets `enabled: false`; setting a launcher alone does not override it.
+
 **Launcher Options:**
 - `launcher` - Framework name (required)
 - `nnodes` - Number of nodes
 - `nproc_per_node` - Processes/GPUs per node
-- `master_port` - Master communication port (default: 29500)
+- `master_port` - Master communication port (default: 29500). SLURM also reads `port`; when both are set, `port` wins. Kubernetes reads `launcher.master_port`, then `distributed.master_port`, then `distributed.port`.
 
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP

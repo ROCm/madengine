@@ -28,6 +28,90 @@ except ImportError:
     YAML_AVAILABLE = False
 
 
+RESULTS_LAYOUT_AUTO = "auto"
+RESULTS_LAYOUT_SHARED = "shared"
+RESULTS_LAYOUT_PER_POD = "per_pod"
+SHARED_DATA_PVC_NAME = "madengine-shared-data"
+
+# StorageClass has no access-mode field. These provisioners serve a shared
+# filesystem. A name that merely exists, including local-path, does not.
+_RWX_PROVISIONERS = frozenset(
+    {
+        "nfs.csi.k8s.io",
+        "cephfs.csi.ceph.com",
+        "efs.csi.aws.com",
+        "file.csi.azure.com",
+        "filestore.csi.storage.gke.io",
+        "nfs-subdir-external-provisioner",
+    }
+)
+
+
+def provisioner_supports_rwx(provisioner: Optional[str]) -> bool:
+    """True when this provisioner can create a ReadWriteMany filesystem."""
+    if provisioner is None:
+        return False
+    name = str(provisioner).strip().lower()
+    if not name:
+        return False
+    tail = name.rsplit("/", 1)[-1]
+    if name in _RWX_PROVISIONERS or tail in _RWX_PROVISIONERS:
+        return True
+    for segment in name.replace(".", "/").split("/"):
+        if segment in {"nfs", "cephfs"} or segment.startswith(("nfs-", "cephfs-")):
+            return True
+    return False
+
+
+def resolve_results_layout(
+    layout: Optional[str], nnodes: int, rwx_usable: bool
+) -> str:
+    """Choose how multi-pod results are stored.
+
+    ``shared`` is one ReadWriteMany claim. ``per_pod`` is a ReadWriteOnce
+    claim created with each pod. ``auto`` uses ``shared`` when the configured
+    multi-node StorageClass can serve ReadWriteMany, and ``per_pod`` when it
+    cannot. A single pod always uses one claim.
+    """
+    if nnodes <= 1:
+        return RESULTS_LAYOUT_SHARED
+    mode = (layout or RESULTS_LAYOUT_AUTO).strip().lower()
+    if mode == RESULTS_LAYOUT_SHARED:
+        return RESULTS_LAYOUT_SHARED
+    if mode == RESULTS_LAYOUT_PER_POD:
+        return RESULTS_LAYOUT_PER_POD
+    if rwx_usable:
+        return RESULTS_LAYOUT_SHARED
+    return RESULTS_LAYOUT_PER_POD
+
+
+def resolve_data_layout(
+    layout: Optional[str],
+    rwx_usable: bool,
+    existing_claim_is_rwx: Optional[bool],
+) -> str:
+    """Choose the dataset volume.
+
+    ``existing_claim_is_rwx`` is True when ``madengine-shared-data`` exists
+    and is ReadWriteMany, False when that claim exists with another access
+    mode, and None when it is absent. A claim that is not ReadWriteMany is
+    left in the cluster and not mounted. ``shared`` and ``per_pod`` are
+    explicit overrides.
+    """
+    mode = (layout or RESULTS_LAYOUT_AUTO).strip().lower()
+    if mode == RESULTS_LAYOUT_PER_POD:
+        return RESULTS_LAYOUT_PER_POD
+    if mode == RESULTS_LAYOUT_SHARED:
+        return RESULTS_LAYOUT_SHARED
+    if existing_claim_is_rwx is True:
+        return RESULTS_LAYOUT_SHARED
+    if existing_claim_is_rwx is False:
+        return RESULTS_LAYOUT_PER_POD
+    if rwx_usable:
+        return RESULTS_LAYOUT_SHARED
+    return RESULTS_LAYOUT_PER_POD
+
+
 class KubernetesPVCMixin:
     """PVC lifecycle management for Kubernetes deployments."""
 
@@ -57,12 +141,106 @@ class KubernetesPVCMixin:
             or self.k8s_config.get("storage_class")
         )
 
+    def _k8s_local_results_storage_class(self) -> Optional[str]:
+        """ReadWriteOnce class for one results volume per pod."""
+        return (
+            self.k8s_config.get("local_path_storage_class")
+            or self.k8s_config.get("single_node_results_storage_class")
+            or self.k8s_config.get("storage_class")
+        )
+
+    def _storage_class_supports_rwx(self, name: Optional[str]) -> bool:
+        """True when ``name`` can serve a ReadWriteMany filesystem.
+
+        The StorageClass object must exist, and either its provisioner is a
+        shared-filesystem driver or a PersistentVolume of that class is already
+        ReadWriteMany. A missing client keeps the shared layout so manifest
+        rendering in unit tests does not require a cluster. A 403 or 404 is
+        not usable storage.
+        """
+        if not name:
+            return False
+        storage_v1 = getattr(self, "storage_v1", None)
+        if storage_v1 is None:
+            return True
+        try:
+            storage_class = storage_v1.read_storage_class(name=name)
+        except ApiException as e:
+            if getattr(e, "status", None) in (403, 404):
+                return False
+            raise
+        provisioner = getattr(storage_class, "provisioner", None)
+        # A test double has no real provisioner string. Keep the shared layout,
+        # matching manifest renders that never connect to a cluster.
+        if provisioner is not None and not isinstance(provisioner, str):
+            return True
+        if provisioner_supports_rwx(provisioner):
+            return True
+        return self._has_rwx_persistent_volume(name)
+
+    def _has_rwx_persistent_volume(self, storage_class: str) -> bool:
+        """True when a PersistentVolume of this class is already ReadWriteMany."""
+        core_v1 = getattr(self, "core_v1", None)
+        if core_v1 is None:
+            return False
+        try:
+            volumes = core_v1.list_persistent_volume(
+                field_selector=f"spec.storageClassName={storage_class}"
+            )
+        except ApiException as e:
+            if getattr(e, "status", None) in (403, 404):
+                return False
+            raise
+        for volume in getattr(volumes, "items", None) or []:
+            modes = getattr(getattr(volume, "spec", None), "access_modes", None) or []
+            if "ReadWriteMany" in modes:
+                return True
+        return False
+
+    def _existing_shared_data_is_rwx(self) -> Optional[bool]:
+        """Access mode of ``madengine-shared-data``, or None when it is absent."""
+        core_v1 = getattr(self, "core_v1", None)
+        if core_v1 is None:
+            return None
+        try:
+            claim = core_v1.read_namespaced_persistent_volume_claim(
+                name=SHARED_DATA_PVC_NAME,
+                namespace=getattr(self, "namespace", None) or "default",
+            )
+        except ApiException as e:
+            if getattr(e, "status", None) in (403, 404):
+                return None
+            raise
+        modes = getattr(getattr(claim, "spec", None), "access_modes", None) or []
+        return "ReadWriteMany" in modes
+
+    def _select_results_layout(self, nnodes: int) -> str:
+        rwx_class = self._k8s_results_storage_class(max(nnodes, 2))
+        return resolve_results_layout(
+            self.k8s_config.get("results_layout"),
+            nnodes,
+            self._storage_class_supports_rwx(rwx_class),
+        )
+
+    def _select_data_layout(self) -> str:
+        return resolve_data_layout(
+            self.k8s_config.get("data_layout"),
+            self._storage_class_supports_rwx(self._k8s_data_storage_class()),
+            self._existing_shared_data_is_rwx(),
+        )
+
+    def _results_use_per_pod(self, nnodes: int) -> bool:
+        layout = self._select_results_layout(nnodes)
+        self._results_layout = layout
+        return layout == RESULTS_LAYOUT_PER_POD
+
     def _create_results_pvc(self, nnodes: int = 1) -> str:
         """
-        Create a PersistentVolumeClaim for per-job results.
+        Create the shared per-job results claim.
 
-        Single-node uses ReadWriteOnce (typically local-path). Multi-node uses
-        ReadWriteMany (typically nfs-banff or other RWX class).
+        Skipped when ``results_layout`` is ``per_pod`` (each pod has its own
+        ReadWriteOnce volume). Single-node uses ReadWriteOnce. Multi-node uses
+        ReadWriteMany.
         """
         pvc_name = f"{self.job_name}-results"
         access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
@@ -135,9 +313,10 @@ class KubernetesPVCMixin:
         """
         Create or reuse ``madengine-shared-data`` for long-lived datasets (cache).
 
-        Always uses ReadWriteMany + an NFS-style StorageClass so the same PVC
-        works for single- and multi-pod jobs. Use ``data_storage_class`` or
-        ``nfs_storage_class`` (e.g. nfs-banff), not local-path.
+        Uses ReadWriteMany so the same PVC works for every pod. Callers skip
+        this when ``data_layout`` is ``per_pod`` or the class cannot serve
+        ReadWriteMany. An existing claim that is not ReadWriteMany is left in
+        place; ``data_layout: shared`` is required to keep using it.
 
         Args:
             nnodes: Reserved for logging (shared-data access mode does not depend on it).
@@ -192,10 +371,11 @@ class KubernetesPVCMixin:
             f"[dim]  Access mode: {access_mode}; storageClass={storage_class or '(cluster default)'}; "
             f"nnodes={nnodes}[/dim]"
         )
-        if not storage_class:
+        if not storage_class or not self._storage_class_supports_rwx(storage_class):
             self.console.print(
-                "[yellow]⚠️  Set k8s.nfs_storage_class or data_storage_class to an RWX class "
-                "(e.g. nfs-banff) for shared-data. Default SC may be local-path (RWO-only).[/yellow]"
+                "[yellow]⚠️  This data StorageClass is not a confirmed ReadWriteMany "
+                "filesystem. The claim may stay pending. Set k8s.data_layout to "
+                "per_pod for a local disk on each pod.[/yellow]"
             )
 
         template_dir = Path(__file__).parent / "templates" / "kubernetes"

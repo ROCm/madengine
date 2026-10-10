@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Version](https://img.shields.io/badge/version-2.1.3-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-brightgreen.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **AI model automation and benchmarking platform for local and distributed execution**
@@ -19,10 +19,11 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 ## ✨ Key Features
 
 - **🚀 Modern CLI** — Rich terminal output with Typer and Rich
+- **📝 YAML Config** — Composable [Hydra-based YAML configs](docs/configuration.md#yaml-configuration-config) with config groups, hardware profiles, and CLI overrides — alternative to `--additional-context` JSON
 - **🎯 Simple Deployment** — Run locally or deploy to Kubernetes/SLURM by adding a config key; no code changes
 - **🔧 Distributed Launchers** — torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** — Docker-based execution with GPU support (ROCm, CUDA)
-- **📊 Performance Tools** — Integrated profiling with rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite), rocBLAS/MIOpen/RCCL tracing → see [Profiling](docs/profiling.md)
+- **📊 Performance Tools** — rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite), on-demand Kineto traces, and [TraceLens](docs/profiling.md#tracelens---tracelens-trace-analysis) reports → see [Profiling](docs/profiling.md)
 - **⚙️ Intelligent Defaults** — Minimal configs auto-merged with presets; host/in-container ROCm path auto-detected → see [Configuration](docs/configuration.md#rocm-path-run-only)
 
 ## 🚀 Quick Start
@@ -39,9 +40,13 @@ madengine discover --tags dummy
 
 # Run locally (discover → build → run, as configured by the model)
 madengine run --tags dummy
+
+# Or with YAML config (Hydra-based, composable)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note:** For build operations `gpu_vendor` defaults to `AMD` and `guest_os` to `UBUNTU`. For non-AMD/Ubuntu environments, set them explicitly, e.g. `--additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'`.
+> **Note:** `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. For build operations `gpu_vendor` defaults to `AMD` and `guest_os` to `UBUNTU`. For non-AMD/Ubuntu environments, set them explicitly, e.g. `--additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'`.
 
 **Results:** Performance data is written to `perf.csv` (and optionally `perf_entry.csv`), created automatically if missing. Failed runs are recorded with status `FAILURE` so every attempted model appears. See [Exit Codes](docs/cli-reference.md#exit-codes) for CI usage. If ROCm isn't auto-detected, set `MAD_ROCM_PATH` — see [Configuration](docs/configuration.md#rocm-path-run-only).
 
@@ -178,7 +183,7 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | [Installation](docs/installation.md) | Complete installation instructions |
 | [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
-| [Configuration](docs/configuration.md) | Advanced options, ROCm path, log error scan |
+| [Configuration](docs/configuration.md) | Advanced options; [YAML config (`--config`)](docs/configuration.md#yaml-configuration-config); ROCm path; log error scan |
 | [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
 | [llm-d](docs/llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
@@ -205,7 +210,7 @@ All launchers support single-GPU, multi-GPU, and multi-node (where infrastructur
 
 ## 📊 Profiling
 
-madengine ships integrated profiling for AMD ROCm — `rocprof`, eight pre-configured `rocprofv3` profiles (ROCm 7.0+), `rocm-trace-lite`, library tracing (rocBLAS/MIOpen/Tensile/RCCL), and power/VRAM monitors. Tools are stackable via `--additional-context '{"tools": [...]}'`.
+madengine ships integrated profiling for AMD ROCm — `rocprof`, eight pre-configured `rocprofv3` profiles (ROCm 7.0+), `rocm-trace-lite`, library tracing (rocBLAS/MIOpen/Tensile/RCCL), power/VRAM monitors, on-demand Kineto traces, and TraceLens reports. Tools are stackable via `--additional-context '{"tools": [...]}'` or `--config +tools=...`.
 
 ```bash
 madengine run --tags model --additional-context '{"tools": [{"name": "rocprofv3_compute"}]}'
@@ -225,6 +230,21 @@ cd madengine && pip install -e .
 ```
 
 See the [Installation Guide](docs/installation.md) for details.
+
+## 📝 YAML Configuration (`--config`)
+
+`--config` is a YAML spelling of the same context as `--additional-context`, on both `run` and `build`. It is mutually exclusive with `--additional-context` and `--additional-context-file`. Inline `key=value` overrides win over a user file.
+
+```bash
+madengine run --tags dummy \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+madengine run --config my_job.yaml --config distributed.nnodes=8
+```
+
+Config groups, the user-file format, and ready-to-run demos are in the [Configuration Guide](docs/configuration.md#yaml-configuration-config) and [`examples/configs/`](examples/configs/).
 
 ## 💡 Tips & Troubleshooting
 

@@ -27,12 +27,16 @@ madengine discover --tags dummy
 # Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
-# Or with explicit configuration
+# Or with explicit JSON configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or with YAML config (composable, Hydra-based)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
+> **Note**: `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations.
 
 Results are saved to `perf_entry.csv`.
 
@@ -419,12 +423,13 @@ Deployment target is automatically detected from `slurm` key in configuration. T
 
 Use configuration files for complex settings:
 
+**JSON format** (`--additional-context-file`):
+
 **config.json:**
 ```json
 {
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0"
@@ -435,6 +440,42 @@ Use configuration files for complex settings:
 ```bash
 madengine run --tags model --additional-context-file config.json
 ```
+
+**YAML format** (`--config` — same keys as the JSON object, not a Hydra `defaults:` list):
+
+**my_job.yaml:**
+```yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  PYTORCH_TUNABLEOP_ENABLED: "1"
+  HSA_ENABLE_SDMA: "0"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+```
+
+```bash
+madengine run --config my_job.yaml
+
+# With additional overrides
+madengine run --config my_job.yaml --config distributed.nnodes=4
+
+# Or use config groups without a file
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config +profile=mi300x_8gpu
+```
+
+> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details, and [`examples/configs/`](../examples/configs/) for annotated templates and ready-to-run demos.
 
 ### Custom Timeouts
 
@@ -619,8 +660,11 @@ Configure distributed training:
 - `deepspeed` - ZeRO optimization
 - `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated prefill/decode
+- `slurm_multi` - Self-managed per-node containers (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 
@@ -642,6 +686,7 @@ my_model,125.3,98.5,15.2,...
 - Model configurations
 - Deployment configuration
 - Build timestamp
+- After a local run, `docker_run_cmd`: the `docker run` command for that invocation (best-effort; a missing write does not fail the run)
 
 Use this manifest to run pre-built images:
 
@@ -727,7 +772,6 @@ cat > config.json << 'EOF'
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "distributed": {
     "launcher": "torchrun",
     "nproc_per_node": 4

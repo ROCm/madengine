@@ -1,0 +1,11 @@
+# @package _global_
+# Single-process run. `native` is a perf.csv value, not a launcher.
+# The translator clears enabled and sets launcher to null so a Kubernetes
+# profile cannot inject torchrun. Do not copy this group into JSON.
+distributed:
+  enabled: true
+  launcher: native
+  backend: nccl
+  nnodes: 1
+  nproc_per_node: 8
+  master_port: 29500

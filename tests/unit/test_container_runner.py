@@ -357,13 +357,11 @@ class TestResolveLocalMultiNodeRunnerEnv:
 
     @pytest.mark.parametrize(
         "launcher",
-        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+        ["vllm", "sglang", "sglang-disagg", "primus"],
     )
     def test_self_managed_launchers_set_empty_string(self, launcher):
         """Self-managing launchers set the var to "" (defined but empty),
-        so downstream scripts under set -u don't fail referencing it.
-        Covers the ``sglang_disagg`` underscore alias to lock in the
-        canonicalize_distributed_launcher() routing."""
+        so downstream scripts under set -u don't fail referencing it."""
         runner = self._runner(
             additional_context={"distributed": {"launcher": launcher}},
         )
@@ -438,7 +436,9 @@ class TestRunContainerSkipModelRun:
         runner.perf_csv_path = "/tmp/test_perf.csv"
         return runner
 
-    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+    def _run_container_with_mocks(
+        self, runner, model_info, docker_sh_calls, sh_side_effect=None, **kwargs
+    ):
         """Call run_container with all the infrastructure mocked away.
 
         Patches:
@@ -458,6 +458,10 @@ class TestRunContainerSkipModelRun:
         def noop_timeout(_):
             yield
 
+        def _record_sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            return "ok"
+
         with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
              patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
              patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
@@ -468,9 +472,12 @@ class TestRunContainerSkipModelRun:
              patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch("madengine.execution.container_runner.update_perf_csv"), \
+             patch("madengine.execution.container_runner.update_perf_super_json"), \
+             patch("madengine.execution.container_runner.update_perf_super_csv"), \
              patch.object(Docker, "__init__", return_value=None), \
-             patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
+             patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
              patch.object(Docker, "__del__", return_value=None), \
              patch("builtins.open", mock_open(read_data="")):
             return runner.run_container(
@@ -523,6 +530,63 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestPostScriptsAfterWorkloadFailure:
+    """A failed model still runs every post-script, and the run stays failed."""
+
+    def _failed_model(self, fail_scripts):
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        runner.context.ctx["post_scripts"] = [
+            {"path": "scripts/common/post_scripts/collect.sh"},
+            {"path": "scripts/common/post_scripts/analyze.sh"},
+        ]
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        docker_sh_calls = []
+
+        def sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            if "bash run.sh" in cmd:
+                raise RuntimeError("model failed: extractor exit 1")
+            script = next(
+                (name for name in fail_scripts if f"bash {name}" in cmd), None
+            )
+            if script:
+                raise RuntimeError(f"{script} failed")
+            return "ok"
+
+        result = harness._run_container_with_mocks(
+            runner, model_info, docker_sh_calls, sh_side_effect=sh
+        )
+        ran = [
+            c
+            for c in docker_sh_calls
+            if "bash collect.sh" in c or "bash analyze.sh" in c
+        ]
+        return result, ran
+
+    def test_successful_post_scripts_keep_the_model_failure(self):
+        result, ran = self._failed_model(fail_scripts=())
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
+
+    def test_one_failing_post_script_does_not_skip_the_next(self):
+        result, ran = self._failed_model(fail_scripts=("collect.sh",))
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
 
 
 class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
@@ -606,6 +670,7 @@ class TestRunContainerDefaultTimeoutIsSentinel:
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
              patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
              patch.object(Docker, "sh",
                           side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
                               (cmd, kw.get("timeout"))
@@ -920,3 +985,87 @@ class TestRequirePinnedImageLocalRun:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+
+
+class TestSlurmEnvPassthrough:
+    """Launcher variables must reach the container.
+
+    The SLURM job script computes the SGLang topology and peer list, but the
+    model only sees variables named in the passthrough allowlist. Dropping or
+    misspelling one silently restores the single-node fallback
+    (xP=1/yD=1, IPADDRS=localhost) with every other test still green.
+    """
+
+    SGLANG_VARS = {
+        "SGLANG_DISAGG_MODE": "enabled",
+        "SGLANG_DISAGG_PREFILL_NODES": "2",
+        "SGLANG_DISAGG_DECODE_NODES": "2",
+        "SGLANG_DISAGG_TOTAL_NODES": "4",
+        "SGLANG_NODE_IPS": "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+        "SGLANG_NODE_RANK": "0",
+        "SGLANG_TP_SIZE": "8",
+    }
+
+    def test_allowlist_covers_sglang_disagg(self):
+        from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
+
+        missing = [v for v in self.SGLANG_VARS if v not in SLURM_PASSTHROUGH_ENV_VARS]
+        assert not missing, f"not forwarded into the container: {missing}"
+
+    def test_shell_values_reach_docker_env(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, self.SGLANG_VARS, clear=False):
+            merged = runner._merge_slurm_env_from_shell()
+
+        docker_env = ctx.ctx["docker_env_vars"]
+        for name, value in self.SGLANG_VARS.items():
+            assert docker_env.get(name) == value, f"{name} not passed through"
+        assert merged >= len(self.SGLANG_VARS)
+
+    def test_absent_values_are_not_invented(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, {}, clear=True):
+            runner._merge_slurm_env_from_shell()
+
+        assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestGitSafeDirectory:
+    """A container without git must still run. A present git that fails must not."""
+
+    def test_missing_git_does_not_fail(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_git_config_failure_still_fails(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        git = tmp_path / "git"
+        git.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        git.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 3
+
+    def test_path_with_a_space_is_quoted(self):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        command = git_safe_directory_command("/my workspace")
+        assert "safe.directory '/my workspace'" in command

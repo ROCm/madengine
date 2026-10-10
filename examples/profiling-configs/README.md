@@ -110,7 +110,29 @@ madengine run --tags your_model \
   --additional-context-file examples/profiling-configs/rocm_trace_lite_default.json
 ```
 
-### 7. Multi-Node Distributed (`rocprofv3_multi_node.json`)
+### 7. TraceLens Analysis (`torch_profiler_tracelens.json`, `tracelens_rocprofv3.json`)
+
+**Use Case**: Turn raw traces into operator, kernel, roofline, and collective reports with [TraceLens](https://github.com/AMD-AGI/TraceLens). TraceLens only analyzes traces, so it is always stacked after a profiler.
+
+- **`torch_profiler_tracelens.json`** — captures `torch.profiler` (Kineto) traces on demand via dynolog, then generates the PyTorch operator and roofline reports. The workload must be PyTorch, and iteration-based capture needs an `optimizer.step()` loop.
+- **`tracelens_rocprofv3.json`** — profiles with `rocprofv3_lightweight` (JSON) and generates the kernel summary reports.
+
+**Requirements / notes:**
+
+- The trace pre-script installs TraceLens into an isolated virtualenv at `/opt/madengine-tracelens-venv`, so its pinned `protobuf` and `xprof` cannot disturb the workload's Python environment. The container needs **HTTPS access to GitHub** on the first run. Override the revision with `TRACELENS_GIT_REF`, or the whole spec with `TRACELENS_PIP_SPEC`.
+- TraceLens cannot read rocprofv3's default SQLite (`*_results.db`) or RPD databases. Use `rocprofv3_lightweight` (JSON) or `rocprofv3_perfetto` (`.pftrace`); unreadable artifacts are listed in `tracelens_output/tracelens_summary.csv` as `SKIPPED` with guidance.
+- To keep TraceLens out of the workload image entirely, skip the in-container tool and analyze on the host instead: `pip install 'madengine[tracelens]'` then `madengine report tracelens`. See the [Profiling Guide](../../docs/profiling.md#tracelens---tracelens-trace-analysis).
+
+**Usage**:
+```bash
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/torch_profiler_tracelens.json
+
+madengine run --tags your_model \
+  --additional-context-file examples/profiling-configs/tracelens_rocprofv3.json
+```
+
+### 8. Multi-Node Distributed (`rocprofv3_multi_node.json`)
 
 **Use Case**: Large-scale distributed training on SLURM clusters
 
@@ -217,6 +239,8 @@ The wrapper script auto-detects which profiler is available and formats the comm
 
 **Other:** `rocm_trace_lite` (RTL **lite** mode) and `rocm_trace_lite_default` (RTL **default** mode) — kernel dispatch SQLite trace via [rocm-trace-lite](https://sunway513.github.io/rocm-trace-lite/index.html), installed from **GitHub Release wheels** by the trace pre-script (not PyPI; see [Profiling Guide](../../docs/profiling.md)). Not a rocprofv3 preset; do not combine with `rocprof` / `rocprofv3_*` on the same run.
 
+**PyTorch tracing and analysis:** `torch_profiler_dynolog` captures Kineto traces on demand, and `tracelens` (or the mode-specific `tracelens_pytorch`, `tracelens_rocprof`, `tracelens_pftrace`, `tracelens_collective`) generates TraceLens reports from whatever traces a co-selected profiler produced. Neither is a rocprofv3 preset; `tracelens` is analysis only and must be stacked after a profiler.
+
 ## Counter Definition Files
 
 Counter files are located at `src/madengine/scripts/common/tools/counters/`:
@@ -239,14 +263,18 @@ rocprof_output/
 │   ├── kernel_trace.csv      # Kernel execution traces
 │   ├── hip_api_trace.csv     # HIP API calls
 │   └── memory_copy_trace.csv # Memory transfers
-├── model_trace.pftrace       # Perfetto format (if using rocprofv3_perfetto)
-└── trace.json                # JSON format (if using rocprofv3_lightweight)
+└── <hostname>/
+    ├── <pid>_results.pftrace # Perfetto format, one per process (rocprofv3_perfetto)
+    └── <pid>_results.json    # JSON format, one per process (rocprofv3_lightweight)
 
 gpu_info_power_profiler_output.csv  # Power consumption over time
 gpu_info_vram_profiler_output.csv   # VRAM usage over time
 library_trace.csv                    # Library API calls (if library tracing enabled)
 
-rocm_trace_lite_output/trace.db       # rocm-trace-lite (also trace.json.gz / trace_summary.txt as emitted by RTL)
+rocm_trace_lite_output/trace.db       # rocm-trace-lite merged trace (per-process trace_<pid>.db files are transient merge inputs)
+
+torch_profiler_output/*.json          # Kineto traces, one per rank (torch_profiler_dynolog)
+tracelens_output/                     # TraceLens reports plus tracelens_summary.csv
 ```
 
 ## Visualization

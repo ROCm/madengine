@@ -134,6 +134,83 @@ class BaseDeployment(ABC):
         self.config = config
         self.manifest = self._load_manifest(config.manifest_file)
         self.console = Console()
+        self._validate_launchers()
+
+    def _validate_launchers(self) -> None:
+        """Validate every launcher this deployment will read, and canonicalize in place.
+
+        Deliberately in ``__init__`` rather than ``validate()``: ``execute()`` catches
+        bare ``Exception`` and returns a FAILED result without re-raising, so a
+        ConfigurationError raised any later never reaches the handler in
+        ``cli/commands/run.py``. ``__init__`` runs under DeploymentFactory.create(),
+        which re-raises ConfigurationError, so the user gets INVALID_ARGS and a message
+        naming the correct spelling.
+
+        Raises:
+            ConfigurationError: If any configured launcher is not a valid launcher.
+        """
+        # Imported here: common.py imports from core.errors, and a module-level import
+        # would make base.py part of that chain for every deployment consumer.
+        from madengine.core.errors import ConfigurationError, create_error_context
+
+        from .common import ensure_launcher_allowed, validate_launcher
+
+        context = self.config.additional_context or {}
+
+        def _accept(value: Optional[str], source: str) -> Optional[str]:
+            canonical = validate_launcher(value, source=source)
+            ensure_launcher_allowed(
+                canonical, self.DEPLOYMENT_TYPE, source=source
+            )
+            return canonical
+
+        distributed = context.get("distributed")
+        if isinstance(distributed, dict) and "launcher" in distributed:
+            distributed["launcher"] = _accept(
+                distributed["launcher"], "additional_context.distributed.launcher"
+            )
+
+        launcher_cfg = context.get("launcher")
+        if launcher_cfg is not None and not isinstance(launcher_cfg, dict):
+            # A bare string here is a natural mistake, since distributed.launcher *is*
+            # a string. Left alone it surfaces as AttributeError deep in the K8s
+            # template context, so name both valid shapes now.
+            raise ConfigurationError(
+                f"'launcher' in additional_context must be an object, got "
+                f"{type(launcher_cfg).__name__} ({launcher_cfg!r})",
+                context=create_error_context(
+                    operation="validate_launchers",
+                    component="deployment.base",
+                    additional_info={"launcher": launcher_cfg},
+                ),
+                suggestions=[
+                    'Use {"launcher": {"type": "torchrun", "nnodes": 2}}',
+                    'Or {"distributed": {"launcher": "torchrun", "nnodes": 2}}',
+                ],
+            )
+        if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
+            launcher_cfg["type"] = _accept(
+                launcher_cfg["type"], "additional_context.launcher.type"
+            )
+
+        deployment_config = self.manifest.get("deployment_config")
+        if isinstance(deployment_config, dict):
+            manifest_distributed = deployment_config.get("distributed")
+            if isinstance(manifest_distributed, dict) and "launcher" in manifest_distributed:
+                manifest_distributed["launcher"] = _accept(
+                    manifest_distributed["launcher"],
+                    "build_manifest.json deployment_config.distributed.launcher",
+                )
+
+        for model_name, model_info in (self.manifest.get("built_models") or {}).items():
+            if not isinstance(model_info, dict):
+                continue
+            model_distributed = model_info.get("distributed")
+            if isinstance(model_distributed, dict) and "launcher" in model_distributed:
+                model_distributed["launcher"] = _accept(
+                    model_distributed["launcher"],
+                    f"model '{model_name}' distributed.launcher",
+                )
 
     def _load_manifest(self, manifest_file: str) -> Dict:
         """
@@ -473,6 +550,9 @@ class BaseDeployment(ABC):
                 "tpot",
                 "response_time",
                 "accuracy",
+                "exact_match",
+                "itl",
+                "e2el",
                 "precision",
                 "recall",
                 "f1",

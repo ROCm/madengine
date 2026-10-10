@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -31,6 +31,10 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
     create_error_context,
+)
+from madengine.deployment.common import (
+    is_self_managed_launcher,
+    resolve_launcher_from_sources,
 )
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
@@ -237,8 +241,14 @@ class RunOrchestrator:
             if not self.additional_context:
                 self.additional_context = {}
             
-            # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # "_explicit_slurm_keys" carries provenance for slurm.* fields (user/model-card
+            # explicit vs. ConfigLoader preset default) captured at build time — see
+            # BuildOrchestrator._merge_model_config_into_manifest.
+            for key in [
+                "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars",
+                "debug", "_explicit_slurm_keys",
+            ]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
@@ -261,7 +271,10 @@ class RunOrchestrator:
 
             # Infer deployment target from config structure (Convention over Configuration)
             # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
-            target = self._infer_deployment_target(self.additional_context)
+            # SlurmDeployment sizes and launches from the first built model, so that
+            # is the card whose launcher decides the target as well.
+            first_model = next(iter((manifest.get("built_models") or {}).values()), None)
+            target = self._infer_deployment_target(self.additional_context, first_model)
             
             # Legacy support: check manifest for explicit target
             if not target or target == "local":
@@ -501,6 +514,18 @@ class RunOrchestrator:
                 for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
+                # "_explicit_slurm_keys" describes the slurm block it was recorded
+                # against. Replacing that block above makes the build-time
+                # provenance stale: a manifest built with an explicit slurm.nodes
+                # would keep "nodes" marked explicit even though the runtime slurm
+                # block never sets it, so SlurmDeployment would treat its own
+                # default nodes=1 as deliberate and ignore distributed.nnodes.
+                # RunOrchestrator does not run --additional-context through
+                # ConfigLoader, so the runtime keys are exactly what the user set.
+                if "slurm" in self.additional_context:
+                    stored_config["_explicit_slurm_keys"] = sorted(
+                        self.additional_context.get("slurm") or {}
+                    )
                 manifest["deployment_config"] = stored_config
             
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
@@ -784,12 +809,71 @@ class RunOrchestrator:
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
         if result.metrics:
-            return {
+            summary = {
                 "successful_runs": result.metrics.get("successful_runs", []),
                 "failed_runs": result.metrics.get("failed_runs", []),
             }
         else:
-            return {"successful_runs": [], "failed_runs": []}
+            summary = {"successful_runs": [], "failed_runs": []}
+
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            reported = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict) and isinstance(run.get("model"), str)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if not self._model_reported(model, reported)
+            ]
+            summary["failed_runs"] = [
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
+            ]
+
+        return summary
+
+    @staticmethod
+    def _model_reported(model: str, reported: Set[str]) -> bool:
+        """Did this manifest model appear among the successful runs?
+
+        A model with a multiple-results CSV is reported once per row, under the
+        manifest name decorated with the row's own model: ``<model>_<row>`` in
+        both ``slurm.py`` and ``k8s_results.py``. Matching the name alone would
+        blame a model that did run.
+        """
+        return any(
+            name == model or name.startswith(f"{model}_") for name in reported
+        )
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
+        try:
+            with open(manifest_file) as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            return []
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            name = name or key
+            # One model can own several images (multi-arch, several Dockerfiles),
+            # and blaming it once per image would inflate the failure count.
+            if name not in names:
+                names.append(name)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
@@ -1137,18 +1221,25 @@ class RunOrchestrator:
         except Exception as e:
             self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
 
-    def _infer_deployment_target(self, config: Dict) -> str:
+    def _infer_deployment_target(
+        self, config: Dict, model_info: Optional[Dict] = None
+    ) -> str:
         """
         Infer deployment target from configuration structure.
-        
+
         Convention over Configuration:
         - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
-        - Neither present → local execution
+        - A self-managed SLURM launcher (slurm_multi) → slurm deployment
+        - None of the above → local execution
 
         Args:
             config: Configuration dictionary
+            model_info: The manifest's model card, consulted for the launcher when
+                ``config`` does not name one. A runtime ``distributed`` override
+                replaces the stored block wholesale, so ``config`` alone can lose a
+                launcher the model card declared.
 
         Returns:
             Deployment target: "llm-d", "k8s", "slurm", or "local"
@@ -1159,9 +1250,21 @@ class RunOrchestrator:
             return "llm-d"
         elif "k8s" in config or "kubernetes" in config:
             return "k8s"
-        elif "slurm" in config:
+        if "slurm" in config:
             return "slurm"
-        else:
-            return "local"
+        # slurm_multi runs the model's own .slurm script through sbatch/srun, so it is
+        # a SLURM deployment by construction. Without this a model card that declared
+        # the launcher but no `slurm` block inferred "local" and was handed to the
+        # container runner, which never reaches the slurm_multi path at all.
+        # Resolve the launcher exactly as SlurmDeployment._resolve_launcher does
+        # (deployment config first, model card second) so the two cannot disagree.
+        launcher = resolve_launcher_from_sources(
+            (config.get("distributed") or {}).get("launcher"),
+            ((model_info or {}).get("distributed") or {}).get("launcher"),
+            default="",
+        )
+        if is_self_managed_launcher(launcher):
+            return "slurm"
+        return "local"
     
 

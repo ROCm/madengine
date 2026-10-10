@@ -523,3 +523,57 @@ class TestRunCommandExitCodes:
             )
 
         assert result.exit_code == ExitCode.BUILD_FAILURE
+
+
+class TestBuildCommandExitCodes:
+    """Build command exit codes for Jenkins."""
+
+    def test_build_push_failure_returns_build_failure_exit_code(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """An image that built but failed to push must not exit SUCCESS.
+
+        Regression: a registry login failure was swallowed, the CLI printed
+        "All builds completed successfully!", and the K8s run then referenced a
+        local-only image the cluster could not pull.
+        """
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "summary": {
+                        "successful_builds": [
+                            {"model": "dummy", "docker_image": "ci-dummy"}
+                        ],
+                        "failed_builds": [],
+                        "failed_pushes": [
+                            {
+                                "model": "dummy",
+                                "docker_image": "ci-dummy",
+                                "error": "login failed",
+                            }
+                        ],
+                    }
+                }
+            )
+        )
+        build_module = importlib.import_module("madengine.cli.commands.build")
+        with patch.object(build_module, "BuildOrchestrator", return_value=MagicMock()):
+            result = runner.invoke(
+                app,
+                [
+                    "build",
+                    "--tags",
+                    "dummy",
+                    "--registry",
+                    "dockerhub",
+                    "--manifest-output",
+                    str(manifest),
+                    "--summary-output",
+                    str(tmp_path / "summary.json"),
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert result.exit_code == ExitCode.BUILD_FAILURE, result.stdout

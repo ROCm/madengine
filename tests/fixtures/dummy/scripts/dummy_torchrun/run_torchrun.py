@@ -32,10 +32,10 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Configuration
-BATCH_SIZE = 128  # Per-GPU batch size
-NUM_EPOCHS = 5
-NUM_BATCHES = 100  # Number of synthetic batches per epoch
-IMAGE_SIZE = 224
+BATCH_SIZE = int(os.environ.get("DUMMY_BATCH_SIZE", "128"))
+NUM_EPOCHS = int(os.environ.get("DUMMY_NUM_EPOCHS", "5"))
+NUM_BATCHES = int(os.environ.get("DUMMY_NUM_BATCHES", "100"))
+IMAGE_SIZE = int(os.environ.get("DUMMY_IMAGE_SIZE", "224"))
 NUM_CLASSES = 1000
 
 # Get distributed environment variables (set by torchrun)
@@ -100,6 +100,96 @@ def generate_synthetic_batch(batch_size, device):
     return images, labels
 
 
+def run_one_batch(model, optimizer, criterion, device):
+    """One forward/backward/step. Dynolog's iteration capture counts the step."""
+    images, labels = generate_synthetic_batch(BATCH_SIZE, device)
+    optimizer.zero_grad()
+    outputs = model(images)
+    loss = criterion(outputs, labels)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+
+def _kineto_request_accepted():
+    """True once dynolog_trigger.sh has had a gputrace request matched."""
+    result_path = os.environ.get(
+        "DYNOLOG_TRIGGER_RESULT", "/tmp/madengine_dynolog_trigger.result"
+    )
+    try:
+        with open(result_path, "r", encoding="utf-8") as handle:
+            return handle.read().strip() == "accepted"
+    except OSError:
+        return False
+
+
+def _kineto_trace_written():
+    """True once Kineto has renamed a finished trace into its output directory."""
+    kineto_dir = os.environ.get("TORCH_PROFILE_KINETO_DIR", "/tmp/madengine_kineto")
+    if not os.path.isdir(kineto_dir):
+        return False
+    for name in os.listdir(kineto_dir):
+        if name.endswith(".json") or name.endswith(".json.gz"):
+            return True
+    return False
+
+
+def train_until_kineto(model, optimizer, criterion, device):
+    """Keep stepping until an on-demand Kineto trace can finish.
+
+    A fixed batch count is not long enough on a fast GPU: the trigger sleeps
+    before its first request, and the stop script kills that request if the
+    process has already exited. Stay inside optimizer.step() until the request
+    has been accepted and enough further steps have run for the capture window
+    to close, or until DUMMY_KINETO_TIMEOUT_S.
+    """
+    model.train()
+    epoch_start = time.time()
+    timeout_s = float(os.environ.get("DUMMY_KINETO_TIMEOUT_S", "90"))
+    deadline = epoch_start + timeout_s
+    total_loss = 0.0
+    batch_idx = 0
+    # dyno can report the request accepted before this process's Kineto thread
+    # has the config. Iteration capture only counts optimizer.step() calls made
+    # after that, so keep stepping until the trace file exists.
+    while time.time() < deadline:
+        batch_start = time.time()
+        loss_value = run_one_batch(model, optimizer, criterion, device)
+        batch_time = time.time() - batch_start
+        total_loss += loss_value
+        batch_idx += 1
+
+        if local_rank == 0 and batch_idx % 20 == 0:
+            print(
+                f"Kineto hold batch [{batch_idx}] "
+                f"Loss: {loss_value:.4f} "
+                f"Throughput: {BATCH_SIZE / batch_time:.2f} samples/sec (local)"
+            )
+
+        if _kineto_trace_written():
+            if local_rank == 0:
+                print(f"Kineto trace file is ready after {batch_idx} batches")
+            break
+    else:
+        if local_rank == 0:
+            print(
+                f"Kineto hold reached {timeout_s:.0f}s "
+                f"without a trace file "
+                f"(dyno accepted={_kineto_request_accepted()}, batches={batch_idx})"
+            )
+
+    epoch_time = max(time.time() - epoch_start, 1e-6)
+    completed = max(batch_idx, 1)
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", 1))
+    local_gpu_throughput = (completed * BATCH_SIZE) / epoch_time
+    return {
+        "avg_loss": total_loss / completed,
+        "node_throughput": local_gpu_throughput * local_world_size,
+        "epoch_time": epoch_time,
+        "local_world_size": local_world_size,
+    }
+
+
 def train_epoch(model, optimizer, criterion, epoch, device):
     """Train for one epoch with node-local throughput measurement"""
     model.train()
@@ -109,24 +199,11 @@ def train_epoch(model, optimizer, criterion, epoch, device):
     
     for batch_idx in range(NUM_BATCHES):
         batch_start = time.time()
-        
-        # Generate synthetic data
-        images, labels = generate_synthetic_batch(BATCH_SIZE, device)
-        
-        # Forward pass
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        
-        # Backward pass (gradients are automatically synchronized across GPUs)
-        loss.backward()
-        
-        # Update weights
-        optimizer.step()
+        loss_value = run_one_batch(model, optimizer, criterion, device)
         
         batch_time = time.time() - batch_start
         total_samples += BATCH_SIZE
-        total_loss += loss.item()
+        total_loss += loss_value
         
         # Print progress from local rank 0 on each node
         if local_rank == 0 and (batch_idx + 1) % 20 == 0:
@@ -253,19 +330,26 @@ def main():
         print(f"[Node {node_rank}] Starting Training")
         print(f"{'='*70}")
     
-    # Training loop
+    # Training loop. The dynolog e2e holds the process in optimizer.step()
+    # until a trace can be requested; a fixed batch count finishes first on
+    # a fast GPU and the trigger is killed during its warmup sleep.
     all_metrics = []
-    for epoch in range(NUM_EPOCHS):
-        metrics = train_epoch(
-            model, optimizer, criterion, epoch, device
+    if os.environ.get("DUMMY_WAIT_FOR_KINETO") == "1" and world_size == 1:
+        all_metrics.append(
+            train_until_kineto(model, optimizer, criterion, device)
         )
-        all_metrics.append(metrics)
-        
-        if local_rank == 0:
-            print(f"\n[Node {node_rank}] Epoch [{epoch+1}/{NUM_EPOCHS}] Complete:")
-            print(f"  Average Loss: {metrics['avg_loss']:.4f}")
-            print(f"  Node Throughput: {metrics['node_throughput']:.2f} samples/sec")
-            print(f"  Local GPUs: {metrics['local_world_size']}")
+    else:
+        for epoch in range(NUM_EPOCHS):
+            metrics = train_epoch(
+                model, optimizer, criterion, epoch, device
+            )
+            all_metrics.append(metrics)
+
+            if local_rank == 0:
+                print(f"\n[Node {node_rank}] Epoch [{epoch+1}/{NUM_EPOCHS}] Complete:")
+                print(f"  Average Loss: {metrics['avg_loss']:.4f}")
+                print(f"  Node Throughput: {metrics['node_throughput']:.2f} samples/sec")
+                print(f"  Local GPUs: {metrics['local_world_size']}")
     
     # Calculate average node throughput across all epochs
     avg_node_throughput = sum(m['node_throughput'] for m in all_metrics) / len(all_metrics)
