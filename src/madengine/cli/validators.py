@@ -149,6 +149,7 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
         "k8s",
         "slurm",
         "kubernetes",
+        "llm_d",
         "distributed",
         "vllm",
         "deployment_config",

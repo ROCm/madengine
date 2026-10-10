@@ -37,7 +37,7 @@ from .k8s_names import (
     sanitize_k8s_object_name,
 )
 from .k8s_pvc import KubernetesPVCMixin
-from .k8s_results import KubernetesResultsMixin, collector_pod_name, decode_pod_log
+from .k8s_results import KubernetesResultsMixin, collector_pod_name
 from .k8s_scripts import KubernetesScriptsMixin
 from .k8s_secrets import (
     SECRETS_STRATEGY_FROM_LOCAL,
@@ -633,6 +633,7 @@ class KubernetesDeployment(
         self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
 
         pod_name = None
+        container_name = None
         log_position = 0
         reported_succeeded = None
 
@@ -650,20 +651,30 @@ class KubernetesDeployment(
                         label_selector=_pod_job_name_label_selector(deployment_id),
                     )
                     if pods.items:
-                        pod_name = pods.items[0].metadata.name
+                        pod = pods.items[0]
+                        pod_name = pod.metadata.name
+                        container_name = (
+                            pod.spec.containers[0].name
+                            if pod.spec and pod.spec.containers
+                            else None
+                        )
                         self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
 
                 # Stream logs if we have a pod
                 if pod_name:
                     try:
-                        # Get logs from current position
-                        logs = decode_pod_log(
-                            self.core_v1.read_namespaced_pod_log(
-                                name=pod_name,
-                                namespace=self.namespace,
-                                tail_lines=100 if log_position == 0 else None,
-                            )
-                        )
+                        # Get logs from current position.
+                        # _preload_content=False + manual decode: see collect_results()
+                        # in k8s_results.py for why (default returns stringified bytes).
+                        # Name the workload container: an extract-scripts init container
+                        # means the API will not default to it.
+                        logs = self.core_v1.read_namespaced_pod_log(
+                            name=pod_name,
+                            namespace=self.namespace,
+                            container=container_name,
+                            tail_lines=100 if log_position == 0 else None,
+                            _preload_content=False,
+                        ).data.decode("utf-8", errors="replace")
 
                         # Print new log lines and trigger artifact collection
                         if logs:
@@ -732,13 +743,16 @@ class KubernetesDeployment(
             for pod in pods.items:
                 pod_name = pod.metadata.name
                 try:
-                    logs = decode_pod_log(
-                        self.core_v1.read_namespaced_pod_log(
-                            name=pod_name,
-                            namespace=self.namespace,
-                            tail_lines=50,
-                        )
+                    primary_container = (
+                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
                     )
+                    logs = self.core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self.namespace,
+                        container=primary_container,
+                        tail_lines=50,
+                        _preload_content=False,
+                    ).data.decode("utf-8", errors="replace")
                     self.console.print(f"[dim]Pod: {pod_name}[/dim]")
                     print(logs)
                     print()

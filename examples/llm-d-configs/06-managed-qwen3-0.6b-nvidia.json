@@ -1,0 +1,29 @@
+{
+  "_comment": "Same smoke test as 05-managed-qwen3-0.6b-amd.json, on an NVIDIA cluster instead. Only two things differ: gpu_vendor picks the nvidia.com/gpu preset (k8s.gpu_resource_name, accelerator.type) instead of AMD's, and decode.image is a CUDA vLLM image instead of a ROCm one.",
+  "_comment_charts": "infra/modelservice.ref override the defaults' oci://ghcr.io/... refs: as of writing, anonymous 'helm pull'/'helm template' against those two ghcr.io packages returns 401/403 (the gaie/inferencepool chart on registry.k8s.io is unaffected and needs no override). Both charts are also published to a plain, genuinely anonymous GitHub Pages Helm repo, so point there instead: run once before installing, 'helm repo add llm-d-infra https://llm-d-incubation.github.io/llm-d-infra/ && helm repo add llm-d-modelservice https://llm-d-incubation.github.io/llm-d-modelservice/ && helm repo update'. Versions below are each chart's latest as of writing; re-check with 'helm search repo <alias> --versions'.",
+  "gpu_vendor": "NVIDIA",
+  "k8s": {
+    "namespace": "llm-d-bench",
+    "gpu_count": 0,
+    "gpu_resource_name": "nvidia.com/gpu"
+  },
+  "llm_d": {
+    "model": {
+      "hf_repo": "Qwen/Qwen3-0.6B",
+      "name": "Qwen3-0.6B",
+      "size": "5Gi"
+    },
+    "prefill": { "replicas": 0 },
+    "decode": {
+      "replicas": 1,
+      "tensor_parallel": 1,
+      "gpu_count": 1,
+      "image": "vllm/vllm-openai:latest"
+    },
+    "charts": {
+      "infra": { "ref": "llm-d-infra/llm-d-infra", "version": "v1.4.0" },
+      "gaie": { "version": "v1.5.0" },
+      "modelservice": { "ref": "llm-d-modelservice/llm-d-modelservice", "version": "v0.4.16" }
+    }
+  }
+}
