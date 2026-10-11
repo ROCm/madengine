@@ -204,6 +204,33 @@ class TestDisplayResultsTable:
 
             mock_console.print.assert_called()
 
+    def test_display_results_table_skipped_prebuilt_image(self):
+        """A skipped Docker build names the model and the image that was reused."""
+        summary = {
+            "successful_builds": [],
+            "failed_builds": [],
+            "skipped_builds": [
+                {
+                    "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
+                    "docker_image": "rocm/example:tag",
+                    "status": "SKIPPED",
+                }
+            ],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results")
+
+            table_arg = mock_console.print.call_args_list[0][0][0]
+            buf = StringIO()
+            RichConsole(file=buf, width=140, force_terminal=True).print(table_arg)
+            rendered = buf.getvalue()
+            assert "pyt_vllm_disagg_llmd_qwen3-0.6b" in rendered
+            assert "Skipped" in rendered
+            assert "No items" not in rendered
+            notes = [str(call.args[0]) for call in mock_console.print.call_args_list[1:]]
+            assert any("rocm/example:tag" in note for note in notes)
+
 
 # ============================================================================
 # CLI Validation Tests

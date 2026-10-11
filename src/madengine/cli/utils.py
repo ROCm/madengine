@@ -110,6 +110,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     """
     successful = summary.get("successful_builds", summary.get("successful_runs", []))
     failed = summary.get("failed_builds", summary.get("failed_runs", []))
+    skipped = summary.get("skipped_builds", [])
     
     # Detect if this is a RUN result with per-node data (vs BUILD result)
     has_node_data = False
@@ -311,8 +312,25 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
             table.add_row(*row)
             row_index += 1
 
+    # Pre-built image mode records a skip instead of a Docker build.
+    for item in skipped:
+        if isinstance(item, dict):
+            model_name = extract_model_name(item)
+        else:
+            model_name = str(item)
+        status = "⏭️ Skipped"
+        if has_node_data:
+            row = [str(row_index), status, model_name, "-", "-", "-"]
+        else:
+            row = [str(row_index), status, model_name]
+        if show_gpu_arch:
+            arch = build_gpu_arch_display(item) if isinstance(item, dict) else "N/A"
+            row.append(arch)
+        table.add_row(*row)
+        row_index += 1
+
     # Show empty state if no results
-    if not successful and not failed:
+    if not successful and not failed and not skipped:
         if has_node_data:
             row = ["1", "ℹ️ No items", "", "", "", ""]
         else:
@@ -322,7 +340,26 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
         table.add_row(*row)
 
     console.print(table)
-    
+
+    if skipped and not has_node_data:
+        images = []
+        for item in skipped:
+            if not isinstance(item, dict):
+                continue
+            image = item.get("docker_image")
+            if image and image not in images:
+                images.append(image)
+        if len(images) == 1:
+            console.print(
+                f"\n[dim]Build skipped: using pre-built image {images[0]}[/dim]"
+            )
+        elif images:
+            console.print(
+                "\n[dim]Build skipped: using pre-built images "
+                + ", ".join(images)
+                + "[/dim]"
+            )
+
     # Print job-level summaries for multi-node jobs (RUN results only)
     if has_node_data and job_summaries:
         console.print("\n💡 [bold]Job Summary:[/bold]")

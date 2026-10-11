@@ -440,6 +440,11 @@ class RunOrchestrator:
             "local_image_mode": True,
             "local_image_name": image_name,
             "deployment_config": self.additional_context.get("deployment_config", {}),
+            "summary": {
+                "successful_builds": [],
+                "failed_builds": [],
+                "skipped_builds": [],
+            },
         }
         
         # For each model, create a synthetic entry using the provided image
@@ -488,6 +493,13 @@ class RunOrchestrator:
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
                 "multiple_results": model.get("multiple_results", ""),
             }
+            manifest["summary"]["skipped_builds"].append(
+                {
+                    "model": model_name,
+                    "docker_image": image_name,
+                    "status": "SKIPPED",
+                }
+            )
         
         # Write manifest to file
         with open(manifest_output, "w") as f:
