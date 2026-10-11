@@ -517,7 +517,7 @@ spec:
             # Run main model script
             echo ""
             echo "=== Running model benchmark script ==="
-            if [ -f "{{ model_script }}" ]; then
+            if [ -f "{{ model_script.split()[0] }}" ]; then
                 {% if tools_config and tools_config|length > 0 %}
                 # Run with profiling tools
                 {%   for tool in tools_config %}

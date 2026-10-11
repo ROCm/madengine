@@ -454,7 +454,10 @@ class RunOrchestrator:
                 "build_status": "SKIPPED",
                 "build_time": 0,
                 "local_image": True,
-                "registry_image": None,
+                # Kubernetes cannot see a node-local Docker image. The name the
+                # user passed is what the cluster pulls, so it is the registry
+                # image as well.
+                "registry_image": image_name,
             }
             
             # Convert data list to comma-separated string (required by dataprovider)
