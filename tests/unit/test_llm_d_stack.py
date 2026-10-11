@@ -627,21 +627,28 @@ class TestReadiness:
 
     def test_returns_when_every_replica_is_ready(self, tmp_path):
         deployment = _managed_deployment(tmp_path)
-        _, api, client = self._api(deployment, [[_deployment_obj("decode", 1, 1)]])
+        release = deployment.stack.release_name("modelservice")
+        _, api, client = self._api(
+            deployment, [[_deployment_obj(f"{release}-decode", 1, 1)]]
+        )
 
         with patch("kubernetes.client", client):
             deployment._wait_for_model_servers()
 
-        selector = api.list_namespaced_deployment.call_args.kwargs["label_selector"]
-        assert selector == (
-            "app.kubernetes.io/instance=madengine-dummy-llm-d-modelservice"
+        assert release == "madengine-dummy-llm-d-modelservice"
+        assert "label_selector" not in (
+            api.list_namespaced_deployment.call_args.kwargs
         )
 
     def test_polls_until_ready(self, tmp_path):
         deployment = _managed_deployment(tmp_path)
+        release = deployment.stack.release_name("modelservice")
         _, api, client = self._api(
             deployment,
-            [[_deployment_obj("decode", 2, 0)], [_deployment_obj("decode", 2, 2)]],
+            [
+                [_deployment_obj(f"{release}-decode", 2, 0)],
+                [_deployment_obj(f"{release}-decode", 2, 2)],
+            ],
         )
 
         with (
@@ -665,7 +672,10 @@ class TestReadiness:
 
     def test_timeout_names_the_pending_deployments(self, tmp_path):
         deployment = _managed_deployment(tmp_path, {"readiness_timeout": 0})
-        _, api, client = self._api(deployment, [[_deployment_obj("decode", 2, 1)]])
+        release = deployment.stack.release_name("modelservice")
+        _, api, client = self._api(
+            deployment, [[_deployment_obj(f"{release}-decode", 2, 1)]]
+        )
 
         with patch("kubernetes.client", client):
             with pytest.raises(ConfigurationError, match="decode"):

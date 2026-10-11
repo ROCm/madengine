@@ -577,6 +577,8 @@ class KubernetesTemplateContextMixin:
             "timeout": resolve_run_timeout(model_info, self.config.cli_timeout),
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
+            # Env vars whose values come from a Secret. Empty for ordinary jobs.
+            "secret_env": [],
             # Volumes
             "results_pvc": f"{self.job_name}-results",  # Shared results PVC when layout is shared
             "pvc_name": f"{self.job_name}-results",      # PVC name for template

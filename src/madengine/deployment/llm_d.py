@@ -23,6 +23,7 @@ Two modes:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import os
 import shlex
 import shutil
 import time
@@ -36,8 +37,69 @@ from madengine.core.image_digest import resolve_pinned_image
 from .base import DeploymentResult, DeploymentStatus
 from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_object_name
+from .k8s_secrets import replace_namespaced_secret
 from .kubernetes import KubernetesDeployment
 from .llm_d_stack import COMPONENTS, LlmdStack, LlmdStackError
+
+def llm_d_release_prefix(raw_model_name: str, prefix: str = "madengine") -> str:
+    """Helm release stem that still names the model.
+
+    ``<prefix>-<card>`` is used when it fits in 40 characters. Helm release
+    names cannot exceed 53 characters once ``-modelservice`` is appended, and
+    the generic sanitizer replaces an over-long card with a hash. A card such
+    as ``pyt_vllm_disagg_llmd_qwen3-0.6b`` is one character over, so keep
+    ``<prefix>-llmd-<model>`` instead.
+    """
+    candidate = sanitize_k8s_container_name(
+        sanitize_k8s_object_name(prefix, raw_model_name)
+    )
+    if len(candidate) <= _MAX_RELEASE_PREFIX_LEN:
+        return candidate
+
+    marker = "-llmd-"
+    if marker in candidate:
+        tail = candidate.split(marker, 1)[1]
+        short = sanitize_k8s_container_name(f"{prefix}-llmd-{tail}")
+        if short and len(short) <= _MAX_RELEASE_PREFIX_LEN:
+            return short
+
+    return sanitize_k8s_container_name(
+        sanitize_k8s_object_name(
+            prefix, raw_model_name, max_total_len=_MAX_RELEASE_PREFIX_LEN
+        ),
+        max_len=_MAX_RELEASE_PREFIX_LEN,
+    )
+
+
+def _model_repo_from_args(args: Any) -> Optional[str]:
+    """Return the ``--model_repo`` value from a model card's ``args`` string."""
+    try:
+        parts = shlex.split(str(args or ""))
+    except ValueError:
+        return None
+    for index, part in enumerate(parts):
+        if part == "--model_repo" and index + 1 < len(parts):
+            repo = parts[index + 1].strip()
+            return repo or None
+        if part.startswith("--model_repo="):
+            repo = part.split("=", 1)[1].strip()
+            return repo or None
+    return None
+
+
+def _host_hf_token() -> Optional[str]:
+    """Token from the madengine process, never from a values file.
+
+    ``MAD_SECRETS_HFTOKEN`` is the name madengine already redacts.
+    ``HF_TOKEN`` is accepted as well because that is the variable people
+    export for Hugging Face.
+    """
+    for key in ("MAD_SECRETS_HFTOKEN", "HF_TOKEN"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
 
 # CRDs that must exist on the cluster before an llm-d stack can be stood up.
 # Checked in managed mode only; madengine reports them but never installs them,
@@ -95,6 +157,9 @@ class LlmdDeployment(KubernetesDeployment):
 
         # --tags selects the model everywhere else (local, k8s, slurm); do the
         # same here before anything reads model.uri or prefill/decode.image.
+        # A card args "--model_repo org/name" is that model's Hugging Face id,
+        # the same contract as scripts/vllm/run.sh.
+        self._apply_model_repo_from_card()
         self._resolve_model_uri()
         self._resolve_model_images()
 
@@ -152,11 +217,38 @@ class LlmdDeployment(KubernetesDeployment):
         raw_model_name = self.manifest["built_models"][model_keys[0]]["name"]
 
         prefix = self.llmd_config.get("release_prefix") or "madengine"
-        name = sanitize_k8s_object_name(
-            prefix, raw_model_name, max_total_len=_MAX_RELEASE_PREFIX_LEN
-        )
-        # Helm release names are DNS labels: no dots.
-        return sanitize_k8s_container_name(name, max_len=_MAX_RELEASE_PREFIX_LEN)
+        return llm_d_release_prefix(raw_model_name, prefix)
+
+    def _apply_model_repo_from_card(self) -> None:
+        """Copy the selected card's ``--model_repo`` into the llm-d model.
+
+        Standard vLLM cards name the Hugging Face repository in ``args``
+        (``--model_repo Qwen/Qwen3-8B``). That value is the served model: it
+        fills ``llm_d.model.hf_repo`` and ``llm_d.model.name`` when the
+        additional context left them empty. A context value that names a
+        different repository is a configuration error, so a run cannot serve
+        one model and record another.
+        """
+        repo = _model_repo_from_args(self._selected_model_info().get("args"))
+        if not repo:
+            return
+        model = self.llmd_config.setdefault("model", {})
+        for key in ("hf_repo", "name"):
+            existing = str(model.get(key) or "").strip()
+            if existing and existing != repo:
+                raise ConfigurationError(
+                    f"llm_d.model.{key} is {existing!r}, but the selected "
+                    f"model card says --model_repo {repo!r}. Remove "
+                    f"llm_d.model.{key} from the additional context, or make "
+                    "the two the same repository."
+                )
+            model[key] = repo
+
+    def _selected_model_info(self) -> Dict[str, Any]:
+        models = self.manifest.get("built_models") or {}
+        if not models:
+            return {}
+        return models[next(iter(models))]
 
     def _resolve_model_uri(self) -> None:
         """Default ``model.uri`` from the simpler ``hf_repo`` field.
@@ -734,6 +826,78 @@ class LlmdDeployment(KubernetesDeployment):
     # Deploy
     # ------------------------------------------------------------------
 
+    def _prepare_template_context(
+        self, model_info: Dict, image_info: Dict
+    ) -> Dict[str, Any]:
+        """Add the benchmark client's HF_TOKEN as a secret reference.
+
+        ``vllm bench serve`` downloads the tokenizer itself. Gated repos such
+        as Llama reject that download unless the client pod has ``HF_TOKEN``.
+        The value is never written into the Job manifest: a host
+        ``MAD_SECRETS_HFTOKEN`` or ``HF_TOKEN`` is stored in a job Secret, and
+        otherwise ``llm_d.model.hf_token_secret`` is referenced directly.
+        """
+        context = super()._prepare_template_context(model_info, image_info)
+        ref = self._benchmark_hf_token_ref(model_info)
+        if ref:
+            context["secret_env"] = list(context.get("secret_env") or []) + [ref]
+        return context
+
+    def _benchmark_hf_token_ref(self, model_info: Dict) -> Optional[Dict[str, str]]:
+        token = _host_hf_token()
+        if token:
+            job_name = self.job_name or sanitize_k8s_object_name(
+                "madengine", model_info["name"]
+            )
+            secret_name = f"{job_name}-hf-token"
+            self._store_hf_token_secret(secret_name, token)
+            self._owned_hf_token_secret = secret_name
+            self.console.print(
+                "[dim]Benchmark client HF_TOKEN loaded from the environment "
+                f"into secret {secret_name}[/dim]"
+            )
+            return {"name": "HF_TOKEN", "secret_name": secret_name, "key": "HF_TOKEN"}
+
+        model = (self.llmd_config or {}).get("model") or {}
+        secret_name = model.get("hf_token_secret")
+        if secret_name:
+            self.console.print(
+                "[dim]Benchmark client HF_TOKEN loaded from secret "
+                f"{secret_name}[/dim]"
+            )
+            return {
+                "name": "HF_TOKEN",
+                "secret_name": str(secret_name),
+                "key": "HF_TOKEN",
+            }
+        return None
+
+    def _store_hf_token_secret(self, name: str, token: str) -> None:
+        from kubernetes import client
+
+        body = client.V1Secret(
+            metadata=client.V1ObjectMeta(name=name, namespace=self.namespace),
+            type="Opaque",
+            string_data={"HF_TOKEN": token},
+        )
+        replace_namespaced_secret(self.core_v1, self.namespace, name, body)
+
+    def cleanup(self, deployment_id: str) -> bool:
+        ok = super().cleanup(deployment_id)
+        name = getattr(self, "_owned_hf_token_secret", None)
+        if not name:
+            return ok
+        try:
+            self.core_v1.delete_namespaced_secret(name=name, namespace=self.namespace)
+        except Exception as e:
+            status = getattr(e, "status", None)
+            if status != 404:
+                self.console.print(
+                    f"[yellow]⚠ HF token secret cleanup warning: {e}[/yellow]"
+                )
+                return False
+        return ok
+
     def prepare(self) -> bool:
         """Stand the stack up (managed mode), then render the client Job.
 
@@ -825,9 +989,10 @@ class LlmdDeployment(KubernetesDeployment):
         from kubernetes import client
         from kubernetes.client.rest import ApiException
 
-        selector = (
-            f"app.kubernetes.io/instance={self.stack.release_name('modelservice')}"
-        )
+        # llm-d-modelservice v0.4 does not set app.kubernetes.io/instance on
+        # the prefill and decode Deployments. Their names are
+        # <release>-l-prefill and <release>-l-decode.
+        release = self.stack.release_name("modelservice")
         apps_v1 = client.AppsV1Api()
         deadline = time.monotonic() + int(
             self.llmd_config.get("readiness_timeout", 1800)
@@ -835,8 +1000,8 @@ class LlmdDeployment(KubernetesDeployment):
 
         while True:
             try:
-                deployments = apps_v1.list_namespaced_deployment(
-                    namespace=self.namespace, label_selector=selector
+                listed = apps_v1.list_namespaced_deployment(
+                    namespace=self.namespace
                 ).items
             except ApiException as e:
                 self.console.print(
@@ -845,9 +1010,14 @@ class LlmdDeployment(KubernetesDeployment):
                 )
                 return
 
+            deployments = [
+                item
+                for item in listed
+                if (item.metadata.name or "").startswith(f"{release}-")
+            ]
             if not deployments:
                 self.console.print(
-                    f"[yellow]⚠ No Deployments matched '{selector}'; relying on "
+                    f"[yellow]⚠ No Deployments named '{release}-*'; relying on "
                     "helm's own readiness gate[/yellow]"
                 )
                 return
@@ -871,7 +1041,7 @@ class LlmdDeployment(KubernetesDeployment):
                     f"waiting for model-server Deployments to become ready: {names}. "
                     "Large models can exceed the default; raise "
                     "llm_d.readiness_timeout, or inspect the pods with "
-                    f"'kubectl -n {self.namespace} get pods -l {selector}'."
+                    f"'kubectl -n {self.namespace} get deploy {release}'."
                 )
 
             self.console.print(
@@ -1102,6 +1272,11 @@ class LlmdDeployment(KubernetesDeployment):
         """Add the llm-d endpoint and topology to the benchmark client's env."""
         env_vars = super()._prepare_env_vars(model_info)
         env_vars.update(self._llmd_env_vars())
+        # The benchmark script writes this name; the result collector reads the
+        # same name from the model card.
+        csv_name = str(model_info.get("multiple_results") or "").strip()
+        if csv_name:
+            env_vars["MAD_OUTPUT_CSV"] = csv_name
         return env_vars
 
     def _llmd_env_vars(self) -> Dict[str, str]:

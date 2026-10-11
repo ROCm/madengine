@@ -39,6 +39,103 @@ except ImportError:
     REPORTING_AVAILABLE = False
 
 
+def llm_d_shape_from_roles(llmd: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Serving shape implied by ``prefill`` and ``decode`` replica counts.
+
+    Each replica is one pod. This is the fallback for when those pods are no
+    longer listable: with the hostname anti-affinity used on this cluster,
+    one pod lands on one node. A live pod list is the real node count.
+    """
+    per_node: Dict[str, int] = {}
+    index = 0
+    for role in ("prefill", "decode"):
+        block = llmd.get(role) or {}
+        if not isinstance(block, dict) or block.get("create") is False:
+            continue
+        try:
+            replicas = int(block.get("replicas") or 0)
+            gpus = int(block.get("gpu_count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if replicas < 1 or gpus < 1:
+            continue
+        for _ in range(replicas):
+            per_node[f"{role}-{index}"] = gpus
+            index += 1
+    return _shape_from_node_gpus(per_node)
+
+
+def llm_d_shape_from_pods(
+    pods: List[Any], name_prefix: str, gpu_resource: str
+) -> Optional[Dict[str, int]]:
+    """Distinct nodes and GPUs of this run's inference-serving pods."""
+    per_node: Dict[str, int] = {}
+    for pod in pods:
+        meta = getattr(pod, "metadata", None)
+        spec = getattr(pod, "spec", None)
+        if meta is None or spec is None:
+            continue
+        name = getattr(meta, "name", "") or ""
+        if name_prefix and not name.startswith(name_prefix):
+            continue
+        labels = getattr(meta, "labels", None) or {}
+        if labels.get("llm-d.ai/inference-serving") not in (None, "true"):
+            continue
+        node = getattr(spec, "node_name", None)
+        if not node:
+            continue
+        gpus = 0
+        for container in getattr(spec, "containers", None) or []:
+            gpus += _container_gpu_request(container, gpu_resource)
+        per_node[node] = per_node.get(node, 0) + gpus
+    return _shape_from_node_gpus(per_node)
+
+
+def _container_gpu_request(container: Any, gpu_resource: str) -> int:
+    resources = getattr(container, "resources", None)
+    requests = getattr(resources, "requests", None) if resources is not None else None
+    if not isinstance(requests, dict):
+        return 0
+    raw = requests.get(gpu_resource)
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def gpu_arch_from_product_name(product: str) -> Optional[str]:
+    """Map an AMD GPU product label to the gfx name rocminfo would print.
+
+    The llm-d benchmark client requests no GPU, so its log never contains
+    ``Name : gfx...``. The serving node's product label is the architecture
+    those GPUs actually are.
+    """
+    name = (product or "").upper().replace("-", "").replace("_", "")
+    if "MI300" in name or "MI325" in name or "MI308" in name:
+        return "gfx942"
+    if "MI250" in name or "MI210" in name or "MI200" in name:
+        return "gfx90a"
+    if "MI100" in name:
+        return "gfx908"
+    return None
+
+
+def _shape_from_node_gpus(per_node: Dict[str, int]) -> Optional[Dict[str, int]]:
+    """``nnodes`` is the number of nodes; ``gpus_per_node`` is uniform when it can be."""
+    total = sum(per_node.values())
+    if not per_node or total < 1:
+        return None
+    nnodes = len(per_node)
+    counts = set(per_node.values())
+    if len(counts) == 1:
+        gpus_per_node = next(iter(counts))
+    elif total % nnodes == 0:
+        gpus_per_node = total // nnodes
+    else:
+        gpus_per_node = max(counts, key=lambda count: list(per_node.values()).count(count))
+    return {"nnodes": nnodes, "gpus_per_node": gpus_per_node, "n_gpus": total}
+
+
 def _pod_job_name_label_selector(deployment_id: str) -> str:
     """Selector for the ``job-name`` pod label; value must be a valid <=63-char label value."""
     from .k8s_names import sanitize_k8s_label_value
@@ -204,6 +301,120 @@ class KubernetesResultsMixin:
             self.manifest,
             model_info,
         )
+
+    def _llm_d_result_shape(self) -> Optional[Dict[str, int]]:
+        """Node and GPU counts of the llm-d servers, for the results table.
+
+        The benchmark client is one CPU pod, so the launch settings describe
+        ``1N×1G``. Prefill and decode are separate pods. Their node names, read
+        while they are still scheduled, are the topology the table shows.
+        Replica counts are the fallback once those pods are gone.
+        """
+        llmd = getattr(self, "llmd_config", None)
+        if not isinstance(llmd, dict) or not llmd:
+            return None
+        shape = self._observed_llm_d_shape() or llm_d_shape_from_roles(llmd)
+        if shape and not getattr(self, "_llm_d_shape_reported", False):
+            self._llm_d_shape_reported = True
+            console = getattr(self, "console", None)
+            if console is not None:
+                console.print(
+                    "[cyan]llm-d serving topology: "
+                    f"{shape['nnodes']}N×{shape['gpus_per_node']}G[/cyan]"
+                )
+        return shape
+
+    def _observed_llm_d_shape(self) -> Optional[Dict[str, int]]:
+        core = getattr(self, "core_v1", None)
+        if core is None:
+            return None
+        prefix = ""
+        if hasattr(self, "_release_prefix"):
+            try:
+                prefix = f"{self._release_prefix()}-modelservice"
+            except Exception:
+                prefix = ""
+        gpu_resource = "amd.com/gpu"
+        k8s_config = getattr(self, "k8s_config", None) or {}
+        if isinstance(k8s_config, dict) and k8s_config.get("gpu_resource_name"):
+            gpu_resource = k8s_config["gpu_resource_name"]
+        try:
+            listed = core.list_namespaced_pod(
+                namespace=getattr(self, "namespace", "default"),
+                label_selector="llm-d.ai/inference-serving=true",
+            )
+        except Exception:
+            return None
+        return llm_d_shape_from_pods(
+            getattr(listed, "items", None) or [], prefix, gpu_resource
+        )
+
+    def _llm_d_gpu_architecture(self) -> Optional[str]:
+        """gfx name of the GPU the model pods landed on, or None."""
+        if getattr(self, "_llm_d_gpu_arch_resolved", False):
+            return getattr(self, "_llm_d_gpu_arch", None) or None
+        self._llm_d_gpu_arch_resolved = True
+        self._llm_d_gpu_arch = self._gpu_arch_from_serving_node()
+        return self._llm_d_gpu_arch
+
+    def _gpu_arch_from_serving_node(self) -> Optional[str]:
+        core = getattr(self, "core_v1", None)
+        if core is None or not isinstance(getattr(self, "llmd_config", None), dict):
+            return None
+        prefix = ""
+        if hasattr(self, "_release_prefix"):
+            try:
+                prefix = f"{self._release_prefix()}-modelservice"
+            except Exception:
+                prefix = ""
+        try:
+            listed = core.list_namespaced_pod(
+                namespace=getattr(self, "namespace", "default"),
+                label_selector="llm-d.ai/inference-serving=true",
+            )
+        except Exception:
+            return None
+        node_name = ""
+        for pod in getattr(listed, "items", None) or []:
+            meta = getattr(pod, "metadata", None)
+            spec = getattr(pod, "spec", None)
+            name = getattr(meta, "name", "") or ""
+            if prefix and not name.startswith(prefix):
+                continue
+            node_name = getattr(spec, "node_name", "") or ""
+            if node_name:
+                break
+        if not node_name:
+            return None
+        try:
+            node = core.read_node(node_name)
+        except Exception:
+            return None
+        labels = getattr(getattr(node, "metadata", None), "labels", None) or {}
+        if not isinstance(labels, dict):
+            return None
+        product = (
+            labels.get("amd.com/gpu.product-name")
+            or labels.get("beta.amd.com/gpu.product-name")
+            or ""
+        )
+        return gpu_arch_from_product_name(str(product))
+
+    def _stamp_llm_d_shape(self, record: Dict[str, Any]) -> None:
+        """Replace the client-pod size with the serving size, when this is llm-d.
+
+        The Model column stays the MAD card name (``--tags``). The Hugging Face
+        repository is the card's ``--model_repo``, not a second name for the row.
+        """
+        shape = self._llm_d_result_shape()
+        if shape:
+            record["n_gpus"] = str(shape["n_gpus"])
+            record["nnodes"] = str(shape["nnodes"])
+            record["gpus_per_node"] = str(shape["gpus_per_node"])
+        arch = self._llm_d_gpu_architecture()
+        current = str(record.get("gpu_architecture") or "").strip()
+        if arch and current in ("", "N/A", "nan", "None"):
+            record["gpu_architecture"] = arch
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
@@ -488,7 +699,7 @@ class KubernetesResultsMixin:
                     except Exception as e:
                         self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
                     results["successful_runs"].append({
-                        "model": model_info.get("name"),
+                        "model": run_details_dict.get("model") or model_info.get("name"),
                         "perf_data": aggregated_record,
                         "nodes": results["nodes"],
                         "per_node_metrics": per_node_metrics
@@ -1139,6 +1350,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 
@@ -1195,6 +1407,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(run_details)
         flatten_tags_in_place(run_details)
         try:
             scripts_path = model_info.get("scripts", "")
@@ -1253,6 +1466,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 
@@ -1302,6 +1516,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 

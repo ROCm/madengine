@@ -721,6 +721,13 @@ spec:
         - name: {{ key }}
           value: "{{ value }}"
         {% endfor %}
+        {% for item in secret_env | default([]) %}
+        - name: {{ item.name }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ item.secret_name }}
+              key: {{ item.key }}
+        {% endfor %}
         
         volumeMounts:
         - name: workspace

@@ -1030,3 +1030,197 @@ def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
     again = materialize_perf_csvs_from_logs(tmp_path, results)
     assert again == 0
     assert len(results["artifacts"]) == 2
+
+
+def _serving_pod(name, node, gpus, resource="amd.com/gpu"):
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.metadata.labels = {"llm-d.ai/inference-serving": "true"}
+    pod.spec.node_name = node
+    container = MagicMock()
+    container.resources.requests = {resource: str(gpus)}
+    sidecar = MagicMock()
+    sidecar.resources.requests = {}
+    pod.spec.containers = [sidecar, container]
+    return pod
+
+
+class TestLlmdResultTopology:
+    """The results table reads nnodes and gpus_per_node. For llm-d those describe
+    the prefill and decode pods, not the single CPU benchmark client."""
+
+    def test_role_counts_are_one_node_per_replica(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_roles
+
+        shape = llm_d_shape_from_roles(
+            {
+                "prefill": {"replicas": 2, "gpu_count": 1},
+                "decode": {"replicas": 2, "gpu_count": 1},
+            }
+        )
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_disabled_prefill_is_not_a_node(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_roles
+
+        shape = llm_d_shape_from_roles(
+            {
+                "prefill": {"create": False, "replicas": 2, "gpu_count": 1},
+                "decode": {"replicas": 4, "gpu_count": 1},
+            }
+        )
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_live_pods_report_the_nodes_they_landed_on(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_pods
+
+        prefix = "madengine-pyt-vllm-disagg-llmd-qwen3-8b-modelservice"
+        pods = [
+            _serving_pod(f"{prefix}-pr-a", "c23-23", 1),
+            _serving_pod(f"{prefix}-pr-b", "c23-28", 1),
+            _serving_pod(f"{prefix}-de-a", "c23-33", 1),
+            _serving_pod(f"{prefix}-de-b", "c23-18", 1),
+            _serving_pod("someone-else-modelservice-de-c", "c23-18", 1),
+        ]
+        shape = llm_d_shape_from_pods(pods, prefix, "amd.com/gpu")
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_two_pods_on_one_node_count_as_one_node(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_pods
+
+        pods = [
+            _serving_pod("ms-pr-a", "c23-23", 1),
+            _serving_pod("ms-de-a", "c23-23", 1),
+        ]
+        shape = llm_d_shape_from_pods(pods, "", "amd.com/gpu")
+        assert shape == {"nnodes": 1, "gpus_per_node": 2, "n_gpus": 2}
+
+    def test_stamp_uses_live_nodes_ahead_of_replica_counts(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 1, "gpu_count": 1},
+            "decode": {"replicas": 1, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[
+                _serving_pod(f"{prefix}-modelservice-pr-a", "n1", 1),
+                _serving_pod(f"{prefix}-modelservice-pr-b", "n2", 1),
+                _serving_pod(f"{prefix}-modelservice-de-a", "n3", 1),
+                _serving_pod(f"{prefix}-modelservice-de-b", "n4", 1),
+            ]
+        )
+        record = {"n_gpus": "1", "nnodes": "1", "gpus_per_node": "1"}
+        deployment._stamp_llm_d_shape(record)
+        assert record == {"n_gpus": "4", "nnodes": "4", "gpus_per_node": "1"}
+
+    def test_mi250_node_label_is_recorded_as_gfx90a(self):
+        from madengine.deployment.k8s_results import (
+            KubernetesResultsMixin,
+            gpu_arch_from_product_name,
+        )
+
+        assert (
+            gpu_arch_from_product_name("AMD_INSTINCT_MI250_MCM_OAM_AC_MBA")
+            == "gfx90a"
+        )
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 2, "gpu_count": 1},
+            "decode": {"replicas": 2, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[_serving_pod(f"{prefix}-modelservice-pr-a", "c23-28", 1)]
+        )
+        node = MagicMock()
+        node.metadata.labels = {
+            "amd.com/gpu.product-name": "AMD_INSTINCT_MI250_MCM_OAM_AC_MBA"
+        }
+        deployment.core_v1.read_node.return_value = node
+        record = {
+            "n_gpus": "1",
+            "nnodes": "1",
+            "gpus_per_node": "1",
+            "gpu_architecture": "N/A",
+        }
+        deployment._stamp_llm_d_shape(record)
+        assert record["gpu_architecture"] == "gfx90a"
+        assert record["nnodes"] == "1"
+        deployment.core_v1.read_node.assert_called_with("c23-28")
+
+    def test_a_plain_kubernetes_job_keeps_its_own_shape(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        deployment = KubernetesResultsMixin()
+        deployment.core_v1 = MagicMock()
+        record = {
+            "n_gpus": "8",
+            "nnodes": "1",
+            "gpus_per_node": "8",
+            "gpu_architecture": "gfx942",
+        }
+        deployment._stamp_llm_d_shape(record)
+        assert record == {
+            "n_gpus": "8",
+            "nnodes": "1",
+            "gpus_per_node": "8",
+            "gpu_architecture": "gfx942",
+        }
+        deployment.core_v1.list_namespaced_pod.assert_not_called()
+        deployment.core_v1.read_node.assert_not_called()
+
+    def test_the_model_column_keeps_the_mad_card_name(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "model": {"name": "Qwen/Qwen3-0.6B", "hf_repo": "Qwen/Qwen3-0.6B"},
+            "prefill": {"replicas": 0},
+            "decode": {"replicas": 0},
+        }
+        record = {
+            "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
+            "gpu_architecture": "gfx90a",
+        }
+        deployment._stamp_llm_d_shape(record)
+        assert record["model"] == "pyt_vllm_disagg_llmd_qwen3-0.6b"
+        assert record["gpu_architecture"] == "gfx90a"
+
+    def test_an_architecture_already_in_the_log_is_kept(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 1, "gpu_count": 1},
+            "decode": {"replicas": 1, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[_serving_pod(f"{prefix}-modelservice-pr-a", "c23-28", 1)]
+        )
+        node = MagicMock()
+        node.metadata.labels = {
+            "amd.com/gpu.product-name": "AMD_INSTINCT_MI250_MCM_OAM_AC_MBA"
+        }
+        deployment.core_v1.read_node.return_value = node
+        record = {"gpu_architecture": "gfx942"}
+        deployment._stamp_llm_d_shape(record)
+        assert record["gpu_architecture"] == "gfx942"

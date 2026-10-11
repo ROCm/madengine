@@ -42,7 +42,10 @@ ATTACH_CONTEXT = {
 
 
 def _build_deployment(
-    tmp_path: Path, additional_context: dict, built_images: dict = None
+    tmp_path: Path,
+    additional_context: dict,
+    built_images: dict = None,
+    model_entry: dict = None,
 ):
     """A real LlmdDeployment over a minimal manifest, with the k8s client mocked."""
     scripts_dir = tmp_path / "scripts" / "dummy_llm_d"
@@ -55,7 +58,7 @@ def _build_deployment(
             {
                 "built_images": built_images
                 or {"dummy_llm_d": {"docker_image": "client:latest"}},
-                "built_models": {"dummy_llm_d": MODEL_ENTRY},
+                "built_models": {"dummy_llm_d": model_entry or MODEL_ENTRY},
                 "context": {
                     "docker_env_vars": {},
                     "docker_mounts": {},
@@ -816,6 +819,94 @@ class TestRenderedJob:
         assert env["MY_KNOB"] == "7"
         assert env["MAD_LLM_D_ENDPOINT"] == "http://llm-d-gw.example.com"
 
+    def test_model_card_names_the_results_csv(self, tmp_path):
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        model = {**MODEL_ENTRY, "multiple_results": "perf_Qwen3-0.6B_llmd.csv"}
+
+        assert (
+            deployment._prepare_env_vars(model)["MAD_OUTPUT_CSV"]
+            == "perf_Qwen3-0.6B_llmd.csv"
+        )
+
+    def test_client_has_no_hf_token_unless_one_is_configured(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MAD_SECRETS_HFTOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        rendered = _render_job(_build_deployment(tmp_path, ATTACH_CONTEXT))
+
+        assert "secretKeyRef:" not in rendered
+        assert "HF_TOKEN" not in rendered
+
+    def test_client_references_the_context_hf_token_secret(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MAD_SECRETS_HFTOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                **ATTACH_CONTEXT,
+                "llm_d": {
+                    **ATTACH_CONTEXT["llm_d"],
+                    "model": {
+                        "name": "meta-llama/Llama-3.1-8B-Instruct",
+                        "hf_token_secret": "llm-d-hf-token",
+                    },
+                },
+            },
+        )
+        rendered = _render_job(deployment)
+
+        assert "name: HF_TOKEN" in rendered
+        assert "name: llm-d-hf-token" in rendered
+        assert "key: HF_TOKEN" in rendered
+        deployment.core_v1.create_namespaced_secret.assert_not_called()
+
+    def test_host_mad_secrets_token_is_stored_not_inlined(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("MAD_SECRETS_HFTOKEN", "hf-test-token-value")
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        rendered = _render_job(deployment)
+
+        assert "hf-test-token-value" not in rendered
+        assert "name: madengine-dummy-llm-d-hf-token" in rendered
+        assert "key: HF_TOKEN" in rendered
+        body = deployment.core_v1.create_namespaced_secret.call_args.kwargs["body"]
+        assert body.string_data["HF_TOKEN"] == "hf-test-token-value"
+
+    def test_host_hf_token_is_accepted_when_mad_secrets_is_unset(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MAD_SECRETS_HFTOKEN", raising=False)
+        monkeypatch.setenv("HF_TOKEN", "hf-plain-env-token")
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        rendered = _render_job(deployment)
+
+        assert "hf-plain-env-token" not in rendered
+        body = deployment.core_v1.create_namespaced_secret.call_args.kwargs["body"]
+        assert body.string_data["HF_TOKEN"] == "hf-plain-env-token"
+
+    def test_cleanup_deletes_the_job_token_secret(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
+        deployment._owned_hf_token_secret = "madengine-dummy-llm-d-hf-token"
+        with patch(
+            "madengine.deployment.kubernetes.KubernetesDeployment.cleanup",
+            return_value=True,
+        ):
+            assert deployment.cleanup("madengine-dummy-llm-d") is True
+        deployment.core_v1.delete_namespaced_secret.assert_called_once_with(
+            name="madengine-dummy-llm-d-hf-token",
+            namespace=deployment.namespace,
+        )
+
     def test_attach_mode_advertises_no_release_prefix(self, tmp_path):
         """There are no helm releases to correlate with when attaching."""
         deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
@@ -939,6 +1030,104 @@ class TestTeardown:
 # ---------------------------------------------------------------------------
 # _resolve_model_uri(): hf_repo -> hf:// URI shorthand
 # ---------------------------------------------------------------------------
+
+
+class TestLlmdReleasePrefix:
+    def test_a_name_that_fits_is_unchanged(self):
+        from madengine.deployment.llm_d import llm_d_release_prefix
+
+        stem = llm_d_release_prefix("pyt_vllm_disagg_llmd_qwen3-8b")
+
+        assert stem == "madengine-pyt-vllm-disagg-llmd-qwen3-8b"
+        assert len(stem + "-modelservice") <= 53
+
+    def test_an_overlong_name_keeps_the_model(self):
+        from madengine.deployment.llm_d import llm_d_release_prefix
+
+        qwen = llm_d_release_prefix("pyt_vllm_disagg_llmd_qwen3-0.6b")
+        llama = llm_d_release_prefix("pyt_vllm_disagg_llmd_llama-3.1-8b")
+
+        assert qwen == "madengine-llmd-qwen3-0-6b"
+        assert llama == "madengine-llmd-llama-3-1-8b"
+        assert "e6714fe2da9a" not in qwen
+        assert len(qwen + "-modelservice") <= 53
+        assert len(llama + "-modelservice") <= 53
+
+
+class TestModelRepoFromCard:
+    def _card(self, args):
+        return {**MODEL_ENTRY, "args": args}
+
+    def test_card_repo_fills_hf_repo_name_and_uri(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {"k8s": {}, "llm_d": {"model": {"size": "10Gi"}}},
+            model_entry=self._card("--model_repo Qwen/Qwen3-0.6B"),
+        )
+        model = deployment.llmd_config["model"]
+
+        assert model["hf_repo"] == "Qwen/Qwen3-0.6B"
+        assert model["name"] == "Qwen/Qwen3-0.6B"
+        assert model["uri"] == "hf://Qwen/Qwen3-0.6B"
+        assert model["size"] == "10Gi"
+        assert deployment._llmd_env_vars()["MAD_LLM_D_MODEL"] == "Qwen/Qwen3-0.6B"
+
+    def test_matching_context_repo_is_kept(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {
+                    "model": {
+                        "hf_repo": "Qwen/Qwen3-8B",
+                        "name": "Qwen/Qwen3-8B",
+                    }
+                },
+            },
+            model_entry=self._card("--model_repo Qwen/Qwen3-8B"),
+        )
+
+        assert deployment.llmd_config["model"]["uri"] == "hf://Qwen/Qwen3-8B"
+
+    def test_a_different_context_repo_is_rejected(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="llm_d.model.hf_repo"):
+            _build_deployment(
+                tmp_path,
+                {
+                    "k8s": {},
+                    "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-0.6B"}},
+                },
+                model_entry=self._card(
+                    "--model_repo meta-llama/Llama-3.1-8B-Instruct"
+                ),
+            )
+
+    def test_a_different_context_name_is_rejected(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="llm_d.model.name"):
+            _build_deployment(
+                tmp_path,
+                {
+                    "k8s": {},
+                    "llm_d": {"model": {"name": "Qwen/Qwen3-8B"}},
+                },
+                model_entry=self._card("--model_repo Qwen/Qwen3-0.6B"),
+            )
+
+    def test_a_card_without_model_repo_leaves_the_context_unchanged(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            {
+                "k8s": {},
+                "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B"}},
+            },
+        )
+
+        assert deployment.llmd_config["model"]["hf_repo"] == "Qwen/Qwen3-32B"
+        assert deployment.llmd_config["model"]["name"] == "Qwen3-32B"
 
 
 class TestResolveModelUri:
@@ -1691,7 +1880,11 @@ class TestWaitForModelServers:
     def test_ready_deployments_return(self, tmp_path):
         apps_v1 = MagicMock()
         apps_v1.list_namespaced_deployment.return_value.items = [
-            _deployment(ready_replicas=2, replicas=2)
+            _deployment(
+                ready_replicas=2,
+                replicas=2,
+                name="madengine-dummy-llm-d-modelservice-decode",
+            )
         ]
 
         self._deployment_with_apps_v1(tmp_path, apps_v1)  # must not raise
@@ -1726,7 +1919,11 @@ class TestWaitForModelServers:
         )
         apps_v1 = MagicMock()
         apps_v1.list_namespaced_deployment.return_value.items = [
-            _deployment(ready_replicas=0, replicas=2)
+            _deployment(
+                ready_replicas=0,
+                replicas=2,
+                name="madengine-dummy-llm-d-modelservice-decode",
+            )
         ]
 
         with patch("kubernetes.client.AppsV1Api", return_value=apps_v1):
