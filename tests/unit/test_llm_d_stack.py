@@ -197,6 +197,34 @@ class TestModelserviceValues:
         values = _stack({"prefill": {"replicas": 0}}).values("modelservice")
         assert values["prefill"] == {"create": False}
         assert values["decode"]["create"] is True
+        assert values["routing"]["proxy"]["enabled"] is False
+
+    def test_disagg_pins_the_nixl_sidecar_and_rocm_ucx(self):
+        values = _stack().values("modelservice")
+        proxy = values["routing"]["proxy"]
+        assert proxy["enabled"] is True
+        assert proxy["connector"] == "nixlv2"
+        assert proxy["image"].endswith(":v0.11.0")
+        for role in ("prefill", "decode"):
+            container = values[role]["containers"][0]
+            assert "--kv-transfer-config" in container["args"]
+            assert "--enforce-eager" in container["args"]
+            assert container["env"][0]["value"].startswith("rocm_copy")
+            assert values[role]["volumes"][0]["name"] == "shm"
+
+    def test_nvidia_disagg_does_not_set_rocm_ucx(self):
+        values = _stack(gpu_resource_name="nvidia.com/gpu").values("modelservice")
+        container = values["decode"]["containers"][0]
+        assert "--kv-transfer-config" in container["args"]
+        assert "env" not in container
+        assert "--enforce-eager" not in container["args"]
+        assert "volumes" not in values["decode"]
+
+    def test_image_pull_secrets_land_on_both_roles(self):
+        stack = _stack(image_pull_secrets=[{"name": "dockerhub-rocm"}])
+        values = stack.values("modelservice")
+        for role in ("prefill", "decode"):
+            assert values[role]["imagePullSecrets"] == [{"name": "dockerhub-rocm"}]
 
     def test_modelservice_values_carry_no_inferencepool_reference(self):
         """The chart's schema has no field for one; the gaie release owns the
@@ -246,6 +274,7 @@ class TestInfraAndGaieValues:
     def test_gateway_class_flows_to_infra_and_provider(self):
         stack = _stack({"gateway": "istio"})
         assert stack.values("infra")["gateway"]["gatewayClassName"] == "istio"
+        assert stack.values("infra")["gateway"]["provider"] == "istio"
         assert stack.values("gaie")["provider"]["name"] == "istio"
 
     def test_unrecognized_gateway_class_is_not_passed_as_gaie_provider(self):
@@ -254,7 +283,25 @@ class TestInfraAndGaieValues:
         # verbatim would fail chart validation.
         stack = _stack({"gateway": "agentgateway"})
         assert stack.values("infra")["gateway"]["gatewayClassName"] == "agentgateway"
+        # The infra chart defaults provider to istio. Leaving it unset installs
+        # Istio resources on a cluster whose GatewayClass is agentgateway.
+        assert stack.values("infra")["gateway"]["provider"] == "agentgateway"
         assert stack.values("gaie")["provider"]["name"] == "none"
+
+    def test_disagg_uses_the_llm_d_endpoint_picker(self):
+        extension = _stack().values("gaie")["inferenceExtension"]
+        image = extension["image"]
+        assert image["repository"] == "llm-d/llm-d-router-endpoint-picker"
+        assert image["tag"] == "v0.11.0"
+        assert extension["pluginsConfigFile"] == "pd-epp.yaml"
+        assert "llm-d.ai/v1alpha1" in extension["pluginsCustomConfig"]["pd-epp.yaml"]
+        assert extension["flags"]["allow-experimental-plugins"] == "true"
+
+    def test_aggregated_serving_keeps_the_chart_default_picker(self):
+        extension = _stack({"prefill": {"replicas": 0}}).values("gaie")[
+            "inferenceExtension"
+        ]
+        assert extension == {"replicas": 1}
 
     def test_inferencepool_targets_the_model_server_port(self):
         pool = _stack().values("gaie")["inferencePool"]

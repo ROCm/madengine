@@ -13,16 +13,15 @@ block into chart values, and shelling out to ``helm``. Readiness polling and
 endpoint resolution need a Kubernetes client and live in
 :class:`~madengine.deployment.llm_d.LlmdDeployment`.
 
-**On the generated values.** madengine generates the minimum set of values that
-expresses its own configuration surface — model, replicas, tensor parallelism,
-GPU count, auth secret, gateway class, port. Everything else is left to the
-chart's own defaults. The value key paths below track the upstream chart
-schemas, which are still moving; they are correct for the chart versions a user
-pins, or they are not, and the way to find out without touching a cluster is
-``llm_d.dry_run``, which renders the values files and ``helm template`` output
-for inspection. ``llm_d.extra_values`` is the escape hatch and is deep-merged
-last, so any key madengine gets wrong or omits can be corrected from config
-without a madengine change.
+**On the generated values.** madengine generates the values that express its
+configuration surface: model, replicas, tensor parallelism, GPU count, auth
+secret, gateway class, and port. Prefill/decode disaggregation also needs
+pieces the chart defaults get wrong on ROCm (the llm-d endpoint picker, a
+pinned NIXL sidecar, and UCX transports that exist in the ROCm image), so
+those are generated when ``prefill.replicas`` is greater than zero. Cluster
+layout that is not portable — hostname anti-affinity, a ClusterIP gateway on
+a cluster with no load balancer — stays in ``llm_d.extra_values`` or in
+``deploy/llm-d/mi250/``. ``llm_d.extra_values`` is deep-merged last.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -61,6 +60,70 @@ _GAIE_PROVIDERS = {"gke", "istio"}
 # whatever key we already put in resources.limits (see _modelservice_values).
 _ACCELERATOR_TYPES = {"amd.com/gpu": "amd", "nvidia.com/gpu": "nvidia"}
 
+# gateway.provider values the llm-d-infra chart will render. Left unset, the
+# chart defaults to istio even when gatewayClassName is agentgateway.
+_INFRA_PROVIDERS = {
+    "istio",
+    "kgateway",
+    "agentgateway",
+    "gke-l7-regional-external-managed",
+}
+
+# GIE's own EPP has no prefill/decode plugins. This is the llm-d picker that
+# does, pinned to the release whose config apiVersion is llm-d.ai/v1alpha1.
+_DISAGG_EPP_IMAGE = {
+    "registry": "ghcr.io",
+    "repository": "llm-d/llm-d-router-endpoint-picker",
+    "tag": "v0.11.0",
+    "pullPolicy": "IfNotPresent",
+}
+_DISAGG_SIDECAR_IMAGE = "ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.11.0"
+_KV_TRANSFER_CONFIG = (
+    '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_buffer_device":"cuda"}'
+)
+# cuda_copy/cuda_ipc are not in the ROCm UCX build; NIXL then fails to
+# register GPU memory. rocm_copy is what moved KV cache between MI250 nodes.
+_ROCM_UCX_TLS = "rocm_copy,rocm_ipc,tcp,self,sm"
+
+_PD_EPP_YAML = """\
+apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+  - type: approx-prefix-cache-producer
+    parameters:
+      maxPrefixTokensToMatch: 16384
+      lruCapacityPerServer: 31250
+  - type: prefix-cache-scorer
+  - type: queue-scorer
+  - type: prefill-filter
+  - type: decode-filter
+  - type: max-score-picker
+  - type: disagg-profile-handler
+    parameters:
+      deciders:
+        prefill: prefix-based-pd-decider
+  - type: prefix-based-pd-decider
+    parameters:
+      nonCachedTokens: 1
+schedulingProfiles:
+  - name: prefill
+    plugins:
+      - pluginRef: prefill-filter
+      - pluginRef: max-score-picker
+      - pluginRef: prefix-cache-scorer
+        weight: 2
+      - pluginRef: queue-scorer
+        weight: 1
+  - name: decode
+    plugins:
+      - pluginRef: decode-filter
+      - pluginRef: max-score-picker
+      - pluginRef: prefix-cache-scorer
+        weight: 2
+      - pluginRef: queue-scorer
+        weight: 1
+"""
+
 
 class LlmdStackError(RuntimeError):
     """A helm operation failed."""
@@ -75,6 +138,7 @@ class LlmdStack:
         namespace: str,
         release_prefix: str,
         gpu_resource_name: str = "amd.com/gpu",
+        image_pull_secrets: Optional[List[Dict[str, str]]] = None,
         shell: Optional[ShellConsole] = None,
     ):
         """Initialize.
@@ -86,6 +150,9 @@ class LlmdStack:
             release_prefix: Prefix for the three release names.
             gpu_resource_name: Extended resource to request for model servers
                 (``amd.com/gpu`` or ``nvidia.com/gpu``).
+            image_pull_secrets: ``imagePullSecrets`` entries for model-server
+                pods, ``[{"name": "..."}]``. Empty when the cluster pulls
+                public images.
             shell: Command runner. Defaults to madengine's Console, which
                 redacts ``MAD_SECRETS_*`` and known token shapes before printing
                 or raising a command.
@@ -94,6 +161,7 @@ class LlmdStack:
         self.namespace = namespace
         self.release_prefix = release_prefix
         self.gpu_resource_name = gpu_resource_name
+        self.image_pull_secrets = list(image_pull_secrets or [])
         self.shell = shell or ShellConsole(live_output=True)
 
     # ------------------------------------------------------------------
@@ -153,14 +221,25 @@ class LlmdStack:
             return extra.get(component) or {}
         return extra if component == "modelservice" else {}
 
+    def _disaggregated(self) -> bool:
+        """True when a prefill role will be created.
+
+        ``prefill.replicas`` of 0 is aggregated serving: one pod does both
+        phases, and the chart must not start the routing sidecar.
+        """
+        prefill = self.llmd_config.get("prefill") or {}
+        return int(prefill.get("replicas", 0)) > 0
+
     def _infra_values(self) -> Dict[str, Any]:
         """Values for the llm-d-infra chart (the Gateway)."""
-        return {
-            "gateway": {
-                "enabled": True,
-                "gatewayClassName": self.llmd_config.get("gateway", "agentgateway"),
-            }
+        gateway = self.llmd_config.get("gateway", "agentgateway")
+        gateway_values: Dict[str, Any] = {
+            "enabled": True,
+            "gatewayClassName": gateway,
         }
+        if gateway in _INFRA_PROVIDERS:
+            gateway_values["provider"] = gateway
+        return {"gateway": gateway_values}
 
     def _gateway_fullname(self) -> str:
         """Name of the Gateway object created by the infra release.
@@ -178,7 +257,7 @@ class LlmdStack:
 
     def _gaie_values(self) -> Dict[str, Any]:
         """Values for the GAIE inferencepool chart (InferencePool + EPP)."""
-        return {
+        values: Dict[str, Any] = {
             "inferencePool": {
                 "targetPortNumber": MODEL_SERVER_PORT,
                 "modelServers": {"matchLabels": dict(MODEL_SERVER_LABEL)},
@@ -192,6 +271,16 @@ class LlmdStack:
                 "inferenceGatewayName": self._gateway_fullname(),
             },
         }
+        if self._disaggregated():
+            values["inferenceExtension"].update(
+                {
+                    "image": dict(_DISAGG_EPP_IMAGE),
+                    "pluginsConfigFile": "pd-epp.yaml",
+                    "pluginsCustomConfig": {"pd-epp.yaml": _PD_EPP_YAML},
+                    "flags": {"allow-experimental-plugins": "true"},
+                }
+            )
+        return values
 
     def _modelservice_values(self) -> Dict[str, Any]:
         """Values for the llm-d-modelservice chart (prefill/decode servers)."""
@@ -225,7 +314,10 @@ class LlmdStack:
             # InferencePool, and it discovers model-server pods purely by the
             # matchLabels selector above -- the modelservice chart's schema has
             # no field to name or reference an InferencePool at all.
-            "routing": {"servicePort": MODEL_SERVER_PORT},
+            "routing": {
+                "servicePort": MODEL_SERVER_PORT,
+                "proxy": self._routing_proxy(),
+            },
             "prefill": self._role_values("prefill", prefill),
             "decode": self._role_values("decode", decode),
         }
@@ -240,6 +332,17 @@ class LlmdStack:
             values["accelerator"] = {"type": accelerator_type}
         return values
 
+    def _routing_proxy(self) -> Dict[str, Any]:
+        """Sidecar settings. The chart default leaves the sidecar on."""
+        if not self._disaggregated():
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "connector": "nixlv2",
+            "image": _DISAGG_SIDECAR_IMAGE,
+            "imagePullPolicy": "IfNotPresent",
+        }
+
     def _role_values(self, role: str, role_config: Dict[str, Any]) -> Dict[str, Any]:
         """Values for one prefill/decode role."""
         replicas = int(role_config.get("replicas", 0))
@@ -249,11 +352,10 @@ class LlmdStack:
 
         gpu_count = str(role_config.get("gpu_count", 1))
         tensor_parallel = int(role_config.get("tensor_parallel", 1))
-
+        args = ["--tensor-parallel-size", str(tensor_parallel)]
         container: Dict[str, Any] = {
             "name": "vllm",
             "modelCommand": "vllmServe",
-            "args": ["--tensor-parallel-size", str(tensor_parallel)],
             "resources": {
                 "limits": {self.gpu_resource_name: gpu_count},
                 "requests": {self.gpu_resource_name: gpu_count},
@@ -262,7 +364,38 @@ class LlmdStack:
         if role_config.get("image"):
             container["image"] = role_config["image"]
 
-        return {"create": True, "replicas": replicas, "containers": [container]}
+        role_values: Dict[str, Any] = {
+            "create": True,
+            "replicas": replicas,
+            "containers": [container],
+        }
+        if self.image_pull_secrets:
+            role_values["imagePullSecrets"] = list(self.image_pull_secrets)
+
+        if self.gpu_resource_name == "amd.com/gpu":
+            # vLLM on this ROCm image needs a sized /dev/shm; the chart does
+            # not add one.
+            container["volumeMounts"] = [{"name": "shm", "mountPath": "/dev/shm"}]
+            role_values["volumes"] = [
+                {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "16Gi"}}
+            ]
+
+        if self._disaggregated():
+            args.extend(["--kv-transfer-config", _KV_TRANSFER_CONFIG])
+            if self.gpu_resource_name == "amd.com/gpu":
+                args.append("--enforce-eager")
+                container["env"] = [
+                    {"name": "UCX_TLS", "value": _ROCM_UCX_TLS},
+                    {"name": "VLLM_NIXL_SIDE_CHANNEL_PORT", "value": "5557"},
+                    {
+                        "name": "VLLM_NIXL_SIDE_CHANNEL_HOST",
+                        "valueFrom": {
+                            "fieldRef": {"fieldPath": "status.podIP"},
+                        },
+                    },
+                ]
+        container["args"] = args
+        return role_values
 
     def write_values(self, output_dir: Path) -> Dict[str, Path]:
         """Write every component's values file and return the paths."""

@@ -450,9 +450,22 @@ class LlmdDeployment(KubernetesDeployment):
                 namespace=self.namespace,
                 release_prefix=self._release_prefix(),
                 gpu_resource_name=self.gpu_resource_name,
+                image_pull_secrets=self._configured_image_pull_secrets(),
                 shell=self.shell,
             )
         return self._stack
+
+    def _configured_image_pull_secrets(self) -> List[Dict[str, str]]:
+        """Registry pull secrets named in the k8s config.
+
+        Model-server pods are installed before the benchmark Job's prepare()
+        step, so they cannot wait for a secret that prepare() creates. Names
+        already present in ``k8s.secrets.image_pull_secret_names`` are the
+        ones that exist on the cluster ahead of standup.
+        """
+        k8s = self.config.additional_context.get("k8s") or {}
+        names = (k8s.get("secrets") or {}).get("image_pull_secret_names") or []
+        return [{"name": str(name)} for name in names if name]
 
     # ------------------------------------------------------------------
     # Validate
