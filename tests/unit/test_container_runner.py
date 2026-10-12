@@ -1088,7 +1088,13 @@ class TestStaleMultipleResultsIsDropped:
     MODEL_SCRIPT_CMD = "bash run.sh"
 
     def _container_commands(
-        self, tmp_path, monkeypatch, multiple_results, sh=None, perf_csv="perf.csv"
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        sh=None,
+        perf_csv="perf.csv",
+        skip_model_run=False,
     ):
         """The commands run_container sends into the container, in order.
 
@@ -1135,7 +1141,11 @@ class TestStaleMultipleResultsIsDropped:
         ):
             docker = mock_docker_cls.return_value
             docker.sh = MagicMock(side_effect=sh) if sh else MagicMock(return_value="")
-            runner.run_container(model_info=model_info, docker_image="img:latest")
+            runner.run_container(
+                model_info=model_info,
+                docker_image="img:latest",
+                skip_model_run=skip_model_run,
+            )
 
         return [call.args[0] for call in docker.sh.call_args_list]
 
@@ -1161,6 +1171,14 @@ class TestStaleMultipleResultsIsDropped:
     def test_nothing_is_deleted_without_multiple_results(self, tmp_path, monkeypatch):
         commands = self._container_commands(tmp_path, monkeypatch, None)
         assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_skip_model_run_deletes_nothing(self, tmp_path, monkeypatch):
+        """An inspection run starts no model, so nothing would replace the file."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", skip_model_run=True
+        )
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+        assert self._index_of(commands, self.MODEL_SCRIPT_CMD) is None
 
     def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
         commands = self._container_commands(tmp_path, monkeypatch, "   ")

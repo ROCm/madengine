@@ -1577,12 +1577,17 @@ class ContainerRunner:
                         # and _resolve_multiple_results_path prefers it over
                         # run_directory. Delete it from inside the container:
                         # the file was written as root and the caller may not be
-                        # able to unlink it.
+                        # able to unlink it. Not on --skip-model-run, where
+                        # nothing would write a replacement.
                         stale_results = (
                             model_info.get("multiple_results") or ""
                         ).strip()
-                        if stale_results and not is_cumulative_report(
-                            stale_results, self.perf_csv_path
+                        if (
+                            stale_results
+                            and not skip_model_run
+                            and not is_cumulative_report(
+                                stale_results, self.perf_csv_path
+                            )
                         ):
                             # Keep a failed unlink non-fatal, but do not keep it
                             # quiet: the file is still what
