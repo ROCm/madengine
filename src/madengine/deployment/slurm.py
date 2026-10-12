@@ -167,12 +167,9 @@ class SlurmDeployment(BaseDeployment):
         """
         return self.inside_allocation and self.nodes > 1
 
-    # One discriminator, three renderings: job_tag for the paths that are keyed
-    # on the job id, run_suffix on its own for the node workspace under
-    # SLURM_TMPDIR -- which carries no job id, because SLURM_TMPDIR is already
-    # per-job and so collides between runs sharing one -- and run_id for what
-    # those expand to once the script runs, which is what collect_results()
-    # needs to find this run's artifacts.
+    # One discriminator, two renderings: job_tag for the paths the script writes,
+    # and run_id for what those expand to once it runs, which is what
+    # collect_results() needs to find this run's artifacts.
     @property
     def run_suffix(self) -> str:
         return self._run_discriminator if self.runs_in_place else ""
@@ -893,7 +890,6 @@ class SlurmDeployment(BaseDeployment):
         return {
             "model_name": model_info["name"],
             "job_tag": self.job_tag,
-            "run_suffix": self.run_suffix,
             "in_place": self.runs_in_place,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,

@@ -210,8 +210,10 @@ else
              -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
              -print 2>/dev/null |
         while IFS= read -r STALE_WORKSPACE; do
+            # The id ends at the first underscore; a run inside an allocation
+            # tags its directory madengine_job_<id>_<stamp>_<hex>_node_<rank>.
             STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
-            STALE_JOB=${STALE_JOB%%_node_*}
+            STALE_JOB=${STALE_JOB%%_*}
             if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
                 continue
             fi
@@ -528,8 +530,10 @@ if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
          -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
          -print 2>/dev/null |
     while IFS= read -r STALE_WORKSPACE; do
+        # The id ends at the first underscore; a run inside an allocation tags
+        # its directory madengine_job_<id>_<stamp>_<hex>_node_<rank>.
         STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
-        STALE_JOB=${STALE_JOB%%_node_*}
+        STALE_JOB=${STALE_JOB%%_*}
         if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
             continue
         fi

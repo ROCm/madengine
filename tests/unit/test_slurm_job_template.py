@@ -629,6 +629,38 @@ class TestJobScopedWorkspacesAreReclaimed:
         )
 
     @pytest.mark.parametrize("nodes", [1, 2])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "madengine_job_12345",
+            "madengine_job_12345_node_0",
+            "madengine_job_12345_20261006141121_2f4e57_node_1",
+        ],
+    )
+    def test_the_sweep_reads_the_job_id_out_of_every_workspace_name(
+        self, tmp_path, nodes, name
+    ):
+        """A run-tagged name must still yield the bare id squeue reports, or a
+        live run inside an allocation reads as abandoned and gets swept."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        parse = [line.strip() for line in script.splitlines() if "STALE_JOB=${" in line]
+        assert len(parse) == 2, parse
+        out = subprocess.run(
+            ["bash", "-c", "; ".join(parse) + '; printf %s "$STALE_JOB"'],
+            env={"STALE_WORKSPACE": f"/scratch/{name}", "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert out.stdout == "12345"
+
+    @pytest.mark.parametrize("nodes", [1, 2])
     def test_the_liveness_query_asks_only_for_this_users_jobs(self, tmp_path, nodes):
         """Every node task runs it, and only this uid's directories can match."""
         script = _render(
