@@ -596,7 +596,7 @@ class TestJobScopedWorkspacesAreReclaimed:
         assert '-uid "$(id -u)"' in script
         assert 'grep -qx -- "$STALE_JOB"' in script
         # No way to tell a live job from an abandoned one without squeue.
-        assert script.index("LIVE_JOBS=$(squeue -h -o %i") < script.index(self.SWEEP)
+        assert script.index("LIVE_JOBS=$(squeue -h -u") < script.index(self.SWEEP)
 
     @pytest.mark.parametrize("nodes", [1, 2])
     def test_the_sweep_gives_up_when_squeue_does(self, tmp_path, nodes):
@@ -611,7 +611,23 @@ class TestJobScopedWorkspacesAreReclaimed:
             )
         )
         assert "squeue -h -j" not in script
-        assert "if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then" in script
+        assert (
+            'if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then'
+            in script
+        )
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_liveness_query_asks_only_for_this_users_jobs(self, tmp_path, nodes):
+        """Every node task runs it, and only this uid's directories can match."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "squeue -h -o %i" not in script
+        assert script.count('squeue -h -u "$(id -un)" -o %i') == 1
 
     @pytest.mark.parametrize("nodes", [1, 2])
     def test_a_reused_job_id_starts_from_an_empty_directory(self, tmp_path, nodes):

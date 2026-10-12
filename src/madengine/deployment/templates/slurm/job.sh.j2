@@ -194,10 +194,11 @@ else
     #
     # The liveness question cannot be asked per id: `squeue -j <finished id>`
     # and `squeue -j <id>` against an unreachable controller both answer with
-    # an empty listing and a non-zero status. One query for the whole queue
-    # separates the two -- it either succeeds and names every live job, or
-    # fails, and a failure (including squeue missing entirely) sweeps nothing.
-    if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then
+    # an empty listing and a non-zero status. One query for this user's jobs
+    # -- the only ones whose directories the sweep may touch -- separates the
+    # two: it either succeeds and names every live one, or fails, and a
+    # failure (including squeue missing entirely) sweeps nothing.
+    if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
         find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
              -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
              -print 2>/dev/null |
@@ -513,9 +514,9 @@ fi
 # Same guards as the single-node path: this user's directories only, only job
 # ids SLURM no longer reports, -mindepth 1 so find's own starting point -- the
 # scratch root -- can never be the thing that gets removed, and one query for
-# the whole queue, because a per-id query answers the same way for a finished
+# this user's jobs, because a per-id query answers the same way for a finished
 # job and for a controller that cannot be reached.
-if LIVE_JOBS=$(squeue -h -o %i 2>/dev/null); then
+if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
     find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
          -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
          -print 2>/dev/null |
