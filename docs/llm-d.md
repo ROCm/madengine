@@ -353,6 +353,22 @@ role at all, and all traffic goes to decode pods:
 "decode":  {"replicas": 4, "tensor_parallel": 8, "gpu_count": 8}
 ```
 
+## What perf.csv records
+
+The benchmark client is one CPU pod, so its own launch settings are not the
+result. An llm-d row records the serving stack:
+
+| Column | Value | Meaning |
+|---|---|---|
+| `deployment_type` | `llm-d` | Helm-managed llm-d stack. A plain Kubernetes Job stays `kubernetes`. |
+| `launcher` | `vllm` | Model server. Managed llm-d currently generates `modelCommand: vllmServe`. |
+| `serving_mode` | `disaggregated` or `aggregated` | `disaggregated` when prefill replicas are above 0. `aggregated` when prefill is disabled. |
+
+`launcher` here is the runtime, the same kind of value as `torchrun` or `sglang`
+on a plain Kubernetes job. It is not `distributed.launcher`, and `vllm-disagg`
+is not a launcher name. Topology (`4N×1G` and so on) stays in the node and GPU
+columns.
+
 ## Reliability notes
 
 Things worth knowing before you point this at a shared cluster:

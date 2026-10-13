@@ -39,6 +39,28 @@ except ImportError:
     REPORTING_AVAILABLE = False
 
 
+# The model servers are vLLM (`modelCommand: vllmServe`). This is the runtime
+# recorded in perf.csv, not a madengine distributed launcher.
+_LLM_D_REPORTED_LAUNCHER = "vllm"
+
+
+def llm_d_serving_mode(llmd: Dict[str, Any]) -> str:
+    """Return ``disaggregated`` when prefill replicas run, else ``aggregated``.
+
+    Prefill ``replicas`` of 0, or ``create: false``, is aggregated serving:
+    the chart does not create a prefill role. The value describes that
+    topology. It is not a launcher name.
+    """
+    prefill = llmd.get("prefill") or {}
+    if not isinstance(prefill, dict) or prefill.get("create") is False:
+        return "aggregated"
+    try:
+        replicas = int(prefill.get("replicas") or 0)
+    except (TypeError, ValueError):
+        return "aggregated"
+    return "disaggregated" if replicas > 0 else "aggregated"
+
+
 def llm_d_shape_from_roles(llmd: Dict[str, Any]) -> Optional[Dict[str, int]]:
     """Serving shape implied by ``prefill`` and ``decode`` replica counts.
 
@@ -291,7 +313,8 @@ class KubernetesResultsMixin:
         "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
         "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
         "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-        "data_download_duration,build_number,additional_docker_run_options"
+        "data_download_duration,build_number,additional_docker_run_options,"
+        "serving_mode"
     )
 
     def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:
@@ -405,7 +428,20 @@ class KubernetesResultsMixin:
 
         The Model column stays the MAD card name (``--tags``). The Hugging Face
         repository is the card's ``--model_repo``, not a second name for the row.
+
+        The benchmark client has no distributed launcher, so an unstamped row
+        would say ``kubernetes`` / ``native``. The row records the serving
+        stack instead: deployment ``llm-d``, launcher ``vllm``, and
+        ``serving_mode`` ``disaggregated`` or ``aggregated``.
         """
+        llmd = getattr(self, "llmd_config", None)
+        if isinstance(llmd, dict) and llmd:
+            reported = getattr(self, "DEPLOYMENT_TYPE", "llm-d")
+            if reported in ("k8s", "kubernetes"):
+                reported = "llm-d"
+            record["deployment_type"] = reported
+            record["launcher"] = _LLM_D_REPORTED_LAUNCHER
+            record["serving_mode"] = llm_d_serving_mode(llmd)
         shape = self._llm_d_result_shape()
         if shape:
             record["n_gpus"] = str(shape["n_gpus"])
@@ -623,10 +659,136 @@ class KubernetesResultsMixin:
                     f"[green]✓ Recovered {n_log_csvs} performance CSV(s) from pod logs[/green]"
                 )
 
+            # Prefer the card's multiple_results CSV when present (same as local
+            # Docker). A log line "performance: ..." is only a fallback for cards
+            # without that CSV. Otherwise llm-d would keep one tokens_per_second
+            # row and drop the serving metric set in the CSV.
+            resolved_csv_path = None
+            if (model_info.get("multiple_results") or "").strip():
+                resolved_csv_path = self._resolve_multiple_results_csv(
+                    results_dir, results, model_info
+                )
+
             # ========================================================================
-            # Aggregate per-node metrics
+            # Record performance: multiple_results CSV, else per-node log metrics
             # ========================================================================
-            if per_node_metrics:
+            if resolved_csv_path and REPORTING_AVAILABLE:
+                # Docker-compatible flow: produce perf.csv, perf_entry.*, perf_super.*
+                gpu_arch = "N/A"
+                if results.get("logs"):
+                    log_content = results["logs"][0].get("log", "")
+                    m = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
+                    if m:
+                        gpu_arch = m.group(1)
+                self._ensure_perf_csv_exists()
+                common_info = self._build_common_info_dict(
+                    model_info, build_info, deployment_id, gpu_arch
+                )
+                common_info_path = Path("common_info.json")
+                with open(common_info_path, "w", encoding="utf-8") as f:
+                    json.dump(common_info, f, indent=2)
+                update_perf_csv(
+                    perf_csv="perf.csv",
+                    multiple_results=str(resolved_csv_path),
+                    common_info=str(common_info_path),
+                    model_name=model_info.get("name", ""),
+                )
+                scripts_path = model_info.get("scripts", "")
+                scripts_base_dir = scripts_base_dir_from(scripts_path)
+                num_entries = update_perf_super_json(
+                    perf_super_json="perf_super.json",
+                    multiple_results=str(resolved_csv_path),
+                    common_info=str(common_info_path),
+                    model_name=model_info.get("name", ""),
+                    scripts_base_dir=scripts_base_dir,
+                )
+                update_perf_super_csv(
+                    perf_super_json="perf_super.json",
+                    perf_super_csv="perf_super.csv",
+                    num_entries=num_entries,
+                )
+                # Build successful_runs for display (one entry per CSV row)
+                import csv as _csv
+
+                model_name = model_info.get("name", "")
+                with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        row = {k.strip(): v for k, v in row.items() if k}
+                        if row.get("performance") and row.get("metric"):
+                            display_model = f"{model_name}_{row.get('model', '')}"
+                            record = self._create_multiple_result_row_record(
+                                model_info,
+                                build_info,
+                                deployment_id,
+                                {
+                                    "model": display_model,
+                                    "performance": row.get("performance"),
+                                    "metric": row.get("metric", ""),
+                                    "gpu_architecture": gpu_arch,
+                                    "duration": row.get("test_duration", "N/A"),
+                                },
+                            )
+                            if record:
+                                results["successful_runs"].append(
+                                    {
+                                        "model": display_model,
+                                        "perf_data": record,
+                                        "nodes": [],
+                                        "per_node_metrics": [
+                                            {
+                                                "model": display_model,
+                                                "performance": row.get("performance"),
+                                                "metric": row.get("metric", ""),
+                                            }
+                                        ],
+                                    }
+                                )
+                self.console.print(
+                    "[green]✓ Updated perf.csv, perf_entry.*, perf_super.* "
+                    "(Docker-compatible)[/green]"
+                )
+            elif resolved_csv_path and not REPORTING_AVAILABLE:
+                # Fallback when reporting module not available: legacy row-by-row write
+                fallback_metrics = self._parse_multiple_results_from_artifacts(
+                    results_dir, results, model_info, build_info
+                )
+                if fallback_metrics:
+                    for item in fallback_metrics:
+                        record = self._create_multiple_result_row_record(
+                            model_info, build_info, deployment_id, item
+                        )
+                        if record:
+                            self._write_to_perf_csv(record)
+                            results["successful_runs"].append(
+                                {
+                                    "model": item["model"],
+                                    "perf_data": record,
+                                    "nodes": [],
+                                    "per_node_metrics": [item],
+                                }
+                            )
+                    self.console.print(
+                        f"[green]✓ Wrote {len(fallback_metrics)} row(s) from "
+                        "multiple_results to perf.csv[/green]"
+                    )
+                else:
+                    error_msg = "No performance metrics found from any node"
+                    failure_record = self._create_failure_record(
+                        model_info, build_info, deployment_id, error_msg
+                    )
+                    self._write_to_perf_csv(failure_record)
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
+                    self.console.print(
+                        "[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
+                    )
+            elif per_node_metrics:
                 # Special handling for Ray launchers - multiply by nnodes
                 if is_multinode and is_per_replica:
                     original_perf = per_node_metrics[0]["performance"]
@@ -635,36 +797,40 @@ class KubernetesResultsMixin:
                         f"[green]  Per-replica: {original_perf:.1f} req/s[/green]"
                     )
                     self.console.print(
-                        f"[green]  Total capacity: {aggregated_perf:.1f} req/s ({nnodes} nodes)[/green]"
+                        f"[green]  Total capacity: {aggregated_perf:.1f} req/s "
+                        f"({nnodes} nodes)[/green]"
                     )
 
-                    # Create aggregated record manually for Ray
                     aggregated_record = {
                         "model": per_node_metrics[0]["model"],
                         "performance": aggregated_perf,
                         "metric": per_node_metrics[0]["metric"],
                         "status": "SUCCESS",
-                        "topology": f"{nnodes}N×{per_node_metrics[0].get('local_gpus', 1)}G",
+                        "topology": (
+                            f"{nnodes}N×{per_node_metrics[0].get('local_gpus', 1)}G"
+                        ),
                         "nnodes": nnodes,
                         "launcher": launcher_type or "N/A",
                         "deployment_type": "kubernetes",
-                        "gpu_architecture": per_node_metrics[0].get("gpu_architecture", "N/A"),
+                        "gpu_architecture": per_node_metrics[0].get(
+                            "gpu_architecture", "N/A"
+                        ),
                         "duration": per_node_metrics[0].get("duration", "N/A"),
                         "data_name": per_node_metrics[0].get("data_name", "N/A"),
-                        "data_provider": per_node_metrics[0].get("data_provider", "N/A"),
+                        "data_provider": per_node_metrics[0].get(
+                            "data_provider", "N/A"
+                        ),
                         "aggregation_method": "scaled_by_nnodes",
-                        "nodes_contributing": nnodes
+                        "nodes_contributing": nnodes,
                     }
                 else:
-                    # Use new aggregation logic for other launchers
                     aggregated_record = self._aggregate_node_metrics(
                         per_node_metrics,
                         nnodes,
-                        launcher_type
+                        launcher_type,
                     )
 
                 if aggregated_record:
-                    # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
                     self._ensure_perf_csv_exists()
                     run_details_dict = self._build_perf_entry_from_aggregated(
                         aggregated_record, model_info, build_info, deployment_id
@@ -673,9 +839,15 @@ class KubernetesResultsMixin:
                     with open(perf_entry_path, "w", encoding="utf-8") as f:
                         json.dump(run_details_dict, f, indent=2)
                     if run_details_dict.get("status") == "SUCCESS":
-                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv",
+                            single_result=str(perf_entry_path),
+                        )
                     else:
-                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv",
+                            exception_result=str(perf_entry_path),
+                        )
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
                     try:
@@ -697,140 +869,42 @@ class KubernetesResultsMixin:
                             num_entries=num_entries,
                         )
                     except Exception as e:
-                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
-                    results["successful_runs"].append({
-                        "model": run_details_dict.get("model") or model_info.get("name"),
-                        "perf_data": aggregated_record,
-                        "nodes": results["nodes"],
-                        "per_node_metrics": per_node_metrics
-                    })
-                    self.console.print(
-                        f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
+                        self.console.print(
+                            f"[yellow]⚠ Could not update perf_super: {e}[/yellow]"
+                        )
+                    results["successful_runs"].append(
+                        {
+                            "model": run_details_dict.get("model")
+                            or model_info.get("name"),
+                            "perf_data": aggregated_record,
+                            "nodes": results["nodes"],
+                            "per_node_metrics": per_node_metrics,
+                        }
                     )
                     self.console.print(
-                        f"[green]✓ Updated perf_entry.json, perf.csv, perf_super.* (Docker-compatible)[/green]"
+                        f"[green]✓ Aggregated performance from "
+                        f"{len(per_node_metrics)} nodes[/green]"
+                    )
+                    self.console.print(
+                        "[green]✓ Updated perf_entry.json, perf.csv, perf_super.* "
+                        "(Docker-compatible)[/green]"
                     )
             else:
-                # No performance from log: try multiple_results CSV (same contract as local Docker)
-                # Resolve single CSV path (one pod) or merged CSV path (multi-pod with sum/avg rules)
-                resolved_csv_path = self._resolve_multiple_results_csv(
-                    results_dir, results, model_info
+                error_msg = "No performance metrics found from any node"
+                failure_record = self._create_failure_record(
+                    model_info, build_info, deployment_id, error_msg
                 )
-                if resolved_csv_path and REPORTING_AVAILABLE:
-                    # Docker-compatible flow: produce perf.csv, perf_entry.*, perf_super.*
-                    gpu_arch = "N/A"
-                    if results.get("logs"):
-                        log_content = results["logs"][0].get("log", "")
-                        m = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
-                        if m:
-                            gpu_arch = m.group(1)
-                    self._ensure_perf_csv_exists()
-                    common_info = self._build_common_info_dict(
-                        model_info, build_info, deployment_id, gpu_arch
-                    )
-                    common_info_path = Path("common_info.json")
-                    with open(common_info_path, "w", encoding="utf-8") as f:
-                        json.dump(common_info, f, indent=2)
-                    update_perf_csv(
-                        perf_csv="perf.csv",
-                        multiple_results=str(resolved_csv_path),
-                        common_info=str(common_info_path),
-                        model_name=model_info.get("name", ""),
-                    )
-                    scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = scripts_base_dir_from(scripts_path)
-                    num_entries = update_perf_super_json(
-                        perf_super_json="perf_super.json",
-                        multiple_results=str(resolved_csv_path),
-                        common_info=str(common_info_path),
-                        model_name=model_info.get("name", ""),
-                        scripts_base_dir=scripts_base_dir,
-                    )
-                    update_perf_super_csv(
-                        perf_super_json="perf_super.json",
-                        perf_super_csv="perf_super.csv",
-                        num_entries=num_entries,
-                    )
-                    # Build successful_runs for display (one entry per CSV row)
-                    import csv as _csv
-                    model_name = model_info.get("name", "")
-                    with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
-                        reader = _csv.DictReader(f)
-                        for row in reader:
-                            row = {k.strip(): v for k, v in row.items() if k}
-                            if row.get("performance") and row.get("metric"):
-                                display_model = f"{model_name}_{row.get('model', '')}"
-                                record = self._create_multiple_result_row_record(
-                                    model_info, build_info, deployment_id,
-                                    {
-                                        "model": display_model,
-                                        "performance": row.get("performance"),
-                                        "metric": row.get("metric", ""),
-                                        "gpu_architecture": gpu_arch,
-                                        "duration": row.get("test_duration", "N/A"),
-                                    },
-                                )
-                                if record:
-                                    results["successful_runs"].append({
-                                        "model": display_model,
-                                        "perf_data": record,
-                                        "nodes": [],
-                                        "per_node_metrics": [{"model": display_model, "performance": row.get("performance"), "metric": row.get("metric", "")}],
-                                    })
-                    self.console.print(
-                        f"[green]✓ Updated perf.csv, perf_entry.*, perf_super.* (Docker-compatible)[/green]"
-                    )
-                elif resolved_csv_path and not REPORTING_AVAILABLE:
-                    # Fallback when reporting module not available: legacy row-by-row write
-                    fallback_metrics = self._parse_multiple_results_from_artifacts(
-                        results_dir, results, model_info, build_info
-                    )
-                    if fallback_metrics:
-                        for item in fallback_metrics:
-                            record = self._create_multiple_result_row_record(
-                                model_info, build_info, deployment_id, item
-                            )
-                            if record:
-                                self._write_to_perf_csv(record)
-                                results["successful_runs"].append({
-                                    "model": item["model"],
-                                    "perf_data": record,
-                                    "nodes": [],
-                                    "per_node_metrics": [item],
-                                })
-                        self.console.print(
-                            f"[green]✓ Wrote {len(fallback_metrics)} row(s) from multiple_results to perf.csv[/green]"
-                        )
-                if not resolved_csv_path:
-                    # No multiple_results CSV found: record failure
-                    error_msg = "No performance metrics found from any node"
-                    failure_record = self._create_failure_record(
-                        model_info, build_info, deployment_id, error_msg
-                    )
-                    self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
+                self._write_to_perf_csv(failure_record)
+                results["failed_runs"].append(
+                    {
                         "model": model_info.get("name", "Unknown"),
                         "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
-                    self.console.print(
-                        f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
-                    )
-                elif resolved_csv_path and not REPORTING_AVAILABLE and not results.get("successful_runs"):
-                    # Legacy path ran but produced no valid rows
-                    error_msg = "No performance metrics found from any node"
-                    failure_record = self._create_failure_record(
-                        model_info, build_info, deployment_id, error_msg
-                    )
-                    self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
-                    self.console.print(
-                        f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
-                    )
+                        "nodes": results["nodes"],
+                    }
+                )
+                self.console.print(
+                    "[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
+                )
 
             # 4. Generate summary
             self._generate_results_summary(results, results_dir)

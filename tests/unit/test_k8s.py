@@ -9,7 +9,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -940,6 +940,51 @@ class TestK8sPodLogContainerParam:
         assert kwargs["container"] == "main-container"
         assert kwargs["_preload_content"] is False
 
+    def test_multiple_results_csv_wins_over_log_performance_lines(
+        self, tmp_path, monkeypatch
+    ):
+        """A card with multiple_results keeps its metric rows, not one log line."""
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+        csv_path = tmp_path / "perf_Llama.csv"
+        csv_path.write_text(
+            "model,performance,metric,unit\n"
+            "Llama,366.4,throughput_tot,tok/sec\n"
+            "Llama,122.1,throughput_gen,tok/sec\n"
+            "Llama,84.3,median_ttft,ms\n",
+            encoding="utf-8",
+        )
+        deployment.manifest["built_models"]["img1"]["multiple_results"] = "perf_Llama.csv"
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "performance: 122.1 tokens_per_second\n"
+        )
+        deployment.core_v1.read_namespaced_pod.return_value = pod
+        deployment._collect_from_pvc = MagicMock()
+        deployment._resolve_multiple_results_csv = MagicMock(return_value=csv_path)
+        deployment._generate_results_summary = MagicMock()
+        deployment._refresh_pod_until_terminal_phase = MagicMock(return_value=pod)
+        deployment._primary_workload_container_exit_code = MagicMock(return_value=0)
+
+        with patch(
+            "madengine.deployment.k8s_results.update_perf_csv"
+        ) as mock_update_csv, patch(
+            "madengine.deployment.k8s_results.update_perf_super_json",
+            return_value=3,
+        ), patch(
+            "madengine.deployment.k8s_results.update_perf_super_csv"
+        ):
+            results = deployment.collect_results("job")
+
+        assert mock_update_csv.call_args.kwargs["multiple_results"] == str(csv_path)
+        assert "single_result" not in mock_update_csv.call_args.kwargs
+        assert len(results["successful_runs"]) == 3
+        assert [r["perf_data"]["metric"] for r in results["successful_runs"]] == [
+            "throughput_tot",
+            "throughput_gen",
+            "median_ttft",
+        ]
+
 
 def test_shared_volume_csvs_are_used_instead_of_log_copies(tmp_path):
     """nfs-banff keeps one ReadWriteMany results volume. That copy wins."""
@@ -1117,9 +1162,22 @@ class TestLlmdResultTopology:
                 _serving_pod(f"{prefix}-modelservice-de-b", "n4", 1),
             ]
         )
-        record = {"n_gpus": "1", "nnodes": "1", "gpus_per_node": "1"}
+        record = {
+            "n_gpus": "1",
+            "nnodes": "1",
+            "gpus_per_node": "1",
+            "deployment_type": "kubernetes",
+            "launcher": "native",
+        }
         deployment._stamp_llm_d_shape(record)
-        assert record == {"n_gpus": "4", "nnodes": "4", "gpus_per_node": "1"}
+        assert record == {
+            "n_gpus": "4",
+            "nnodes": "4",
+            "gpus_per_node": "1",
+            "deployment_type": "llm-d",
+            "launcher": "vllm",
+            "serving_mode": "disaggregated",
+        }
 
     def test_mi250_node_label_is_recorded_as_gfx90a(self):
         from madengine.deployment.k8s_results import (
@@ -1172,13 +1230,18 @@ class TestLlmdResultTopology:
             "gpus_per_node": "8",
             "gpu_architecture": "gfx942",
         }
+        record["deployment_type"] = "kubernetes"
+        record["launcher"] = "torchrun"
         deployment._stamp_llm_d_shape(record)
         assert record == {
             "n_gpus": "8",
             "nnodes": "1",
             "gpus_per_node": "8",
             "gpu_architecture": "gfx942",
+            "deployment_type": "kubernetes",
+            "launcher": "torchrun",
         }
+        assert "serving_mode" not in record
         deployment.core_v1.list_namespaced_pod.assert_not_called()
         deployment.core_v1.read_node.assert_not_called()
 
@@ -1195,9 +1258,22 @@ class TestLlmdResultTopology:
             "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
             "gpu_architecture": "gfx90a",
         }
+        record["deployment_type"] = "kubernetes"
+        record["launcher"] = "native"
         deployment._stamp_llm_d_shape(record)
         assert record["model"] == "pyt_vllm_disagg_llmd_qwen3-0.6b"
         assert record["gpu_architecture"] == "gfx90a"
+        assert record["deployment_type"] == "llm-d"
+        assert record["launcher"] == "vllm"
+        assert record["serving_mode"] == "aggregated"
+
+    def test_prefill_create_false_is_aggregated_serving(self):
+        from madengine.deployment.k8s_results import llm_d_serving_mode
+
+        assert llm_d_serving_mode({"prefill": {"create": False, "replicas": 2}}) == (
+            "aggregated"
+        )
+        assert llm_d_serving_mode({"prefill": {"replicas": 2}}) == "disaggregated"
 
     def test_an_architecture_already_in_the_log_is_kept(self):
         from madengine.deployment.k8s_results import KubernetesResultsMixin

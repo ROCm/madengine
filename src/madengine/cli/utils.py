@@ -426,6 +426,7 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Topology", justify="center", style="blue")
         perf_table.add_column("Launcher", justify="center", style="magenta")
         perf_table.add_column("Deployment", justify="center", style="cyan")
+        perf_table.add_column("Mode", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
@@ -504,6 +505,13 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
             # Get launcher value as-is from the CSV (don't default to "docker" here)
             launcher = str(row.get("launcher", "")) if not pd.isna(row.get("launcher")) and row.get("launcher") != "" else "N/A"
             deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
+            serving_mode_val = row.get("serving_mode", "")
+            blank_mode = pd.isna(serving_mode_val) or str(serving_mode_val).strip() in (
+                "",
+                "nan",
+                "None",
+            )
+            serving_mode = "" if blank_mode else str(serving_mode_val)
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
@@ -531,8 +539,9 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
-                launcher,           # Distributed launcher (docker, torchrun, vllm, etc.)
+                launcher,           # Model runtime (vllm, torchrun, sglang, ...)
                 deployment_type,
+                serving_mode,       # disaggregated/aggregated for llm-d; blank otherwise
                 gpu_arch,
                 performance,
                 metric,

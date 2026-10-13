@@ -685,7 +685,8 @@ class BaseDeployment(ABC):
             "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
             "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
             "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-            "data_download_duration,build_number,additional_docker_run_options"
+            "data_download_duration,build_number,additional_docker_run_options,"
+            "serving_mode"
         )
         perf_csv_path.write_text(standard_header + "\n", encoding="utf-8")
 
@@ -726,6 +727,7 @@ class BaseDeployment(ABC):
             "data_download_duration",
             "build_number",
             "additional_docker_run_options",
+            "serving_mode",
         ]
         file_exists = perf_csv_path.exists()
         existing_header = None
