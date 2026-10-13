@@ -630,17 +630,25 @@ class TestJobScopedWorkspacesAreReclaimed:
 
     @pytest.mark.parametrize("nodes", [1, 2])
     @pytest.mark.parametrize(
-        "name",
+        ("name", "job_id"),
         [
-            "madengine_job_12345",
-            "madengine_job_12345_node_0",
-            "madengine_job_12345_20261006141121_2f4e57_node_1",
+            ("madengine_job_12345", "12345"),
+            ("madengine_job_12345_node_0", "12345"),
+            ("madengine_job_12345_20261006141121_2f4e57_node_1", "12345"),
+            # An array task's own id contains an underscore. squeue -o %i
+            # prints that whole string, so the sweep must not stop at the first.
+            ("madengine_job_12345_7", "12345_7"),
+            ("madengine_job_12345_7_node_0", "12345_7"),
+            (
+                "madengine_job_12345_7_20261006141121_2f4e57_node_0",
+                "12345_7",
+            ),
         ],
     )
     def test_the_sweep_reads_the_job_id_out_of_every_workspace_name(
-        self, tmp_path, nodes, name
+        self, tmp_path, nodes, name, job_id
     ):
-        """A run-tagged name must still yield the bare id squeue reports, or a
+        """A run-tagged name must still yield the id squeue reports, or a
         live run inside an allocation reads as abandoned and gets swept."""
         script = _render(
             _build_deployment(
@@ -650,7 +658,7 @@ class TestJobScopedWorkspacesAreReclaimed:
             )
         )
         parse = [line.strip() for line in script.splitlines() if "STALE_JOB=${" in line]
-        assert len(parse) == 2, parse
+        assert len(parse) == 3, parse
         out = subprocess.run(
             ["bash", "-c", "; ".join(parse) + '; printf %s "$STALE_JOB"'],
             env={"STALE_WORKSPACE": f"/scratch/{name}", "PATH": "/usr/bin:/bin"},
@@ -658,7 +666,7 @@ class TestJobScopedWorkspacesAreReclaimed:
             text=True,
             check=True,
         )
-        assert out.stdout == "12345"
+        assert out.stdout == job_id
 
     @pytest.mark.parametrize("nodes", [1, 2])
     def test_the_liveness_query_asks_only_for_this_users_jobs(self, tmp_path, nodes):

@@ -210,10 +210,12 @@ else
              -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
              -print 2>/dev/null |
         while IFS= read -r STALE_WORKSPACE; do
-            # The id ends at the first underscore; a run inside an allocation
-            # tags its directory madengine_job_<id>_<stamp>_<hex>_node_<rank>.
+            # squeue -o %i prints an array task as <id>_<index>, so the first
+            # underscore is not the end of the id. Drop only the rank suffix
+            # and an in-place run tag (_<14-digit stamp>_<6 hex>).
             STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
-            STALE_JOB=${STALE_JOB%%_*}
+            STALE_JOB=${STALE_JOB%%_node_*}
+            STALE_JOB=${STALE_JOB%_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]}
             if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
                 continue
             fi
@@ -530,10 +532,12 @@ if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
          -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
          -print 2>/dev/null |
     while IFS= read -r STALE_WORKSPACE; do
-        # The id ends at the first underscore; a run inside an allocation tags
-        # its directory madengine_job_<id>_<stamp>_<hex>_node_<rank>.
+        # squeue -o %i prints an array task as <id>_<index>, so the first
+        # underscore is not the end of the id. Drop only the rank suffix and
+        # an in-place run tag (_<14-digit stamp>_<6 hex>).
         STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
-        STALE_JOB=${STALE_JOB%%_*}
+        STALE_JOB=${STALE_JOB%%_node_*}
+        STALE_JOB=${STALE_JOB%_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]}
         if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
             continue
         fi
