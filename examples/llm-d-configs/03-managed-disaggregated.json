@@ -10,7 +10,7 @@
       "hf_repo": "deepseek-ai/DeepSeek-R1-0528",
       "cache_pvc": "madengine-shared-data",
       "cache_timeout": 21600,
-      "name": "DeepSeek-R1-0528",
+      "name": "deepseek-ai/DeepSeek-R1-0528",
       "hf_token_secret": "hf-token"
     },
     "gateway": "agentgateway",

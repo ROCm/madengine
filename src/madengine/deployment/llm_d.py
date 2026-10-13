@@ -36,7 +36,11 @@ from madengine.core.image_digest import resolve_pinned_image
 
 from .base import DeploymentResult, DeploymentStatus
 from .config_loader import ConfigLoader, apply_deployment_config
-from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_object_name
+from .k8s_names import (
+    _MAX_JOB_NAME_LEN,
+    sanitize_k8s_container_name,
+    sanitize_k8s_object_name,
+)
 from .k8s_secrets import replace_namespaced_secret
 from .kubernetes import KubernetesDeployment
 from .llm_d_stack import COMPONENTS, LlmdStack, LlmdStackError
@@ -847,7 +851,9 @@ class LlmdDeployment(KubernetesDeployment):
         token = _host_hf_token()
         if token:
             job_name = self.job_name or sanitize_k8s_object_name(
-                "madengine", model_info["name"]
+                "madengine",
+                model_info["name"],
+                max_total_len=_MAX_JOB_NAME_LEN,
             )
             secret_name = f"{job_name}-hf-token"
             self._store_hf_token_secret(secret_name, token)

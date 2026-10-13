@@ -32,8 +32,9 @@ except ImportError:
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_names import (
+    _MAX_JOB_NAME_LEN,
+    pod_job_name_label_selector as _pod_job_name_label_selector,
     sanitize_k8s_container_name,
-    sanitize_k8s_label_value,
     sanitize_k8s_object_name,
 )
 from .k8s_pvc import KubernetesPVCMixin
@@ -47,11 +48,6 @@ from .k8s_secrets import (
 )
 from .k8s_template_context import KubernetesTemplateContextMixin
 from .kubernetes_launcher_mixin import KubernetesLauncherMixin
-
-
-def _pod_job_name_label_selector(deployment_id: str) -> str:
-    """Selector for the ``job-name`` pod label; value must be a valid ≤63-char label value."""
-    return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
 def _job_condition_true(job: Any, condition_type: str) -> bool:
@@ -220,7 +216,7 @@ class KubernetesDeployment(
 
         # Generated resources (see prepare(): K8s uses different constraints per field)
         self.job_name = None
-        self.job_label = None  # pod label job-name + label selectors; ≤63 chars (sanitize_k8s_label_value)
+        self.job_label = None  # always equal to job_name (Batch requires job-name label == metadata.name)
         self.service_name = None  # headless Service metadata.name + Pod subdomain; DNS label ≤63 (no dots)
         self.main_container_name = None  # same string as service_name (container names are DNS labels)
         self.configmap_name = None
@@ -300,17 +296,21 @@ class KubernetesDeployment(
             model_info = self.manifest["built_models"][model_key]
             image_info = self.manifest["built_images"][model_key]
 
-            # Resource names: one logical job, three string forms (job_name alone cannot satisfy every K8s limit).
-            # - job_name: Job/PVC/ConfigMap metadata (RFC 1123 subdomain, up to 253 chars; may contain dots).
-            # - job_label: value for label job-name on pods + Service selector + API label_selector queries
-            #   (≤63; sanitize_k8s_label_value); must stay in sync with _pod_job_name_label_selector(deployment_id).
-            # - service_name / main_container_name: single DNS label (≤63, no dots) from
-            #   sanitize_k8s_container_name(job_name)—used for headless Service name, Pod subdomain, and the
-            #   middle label in Indexed Job DNS ({job_name}-{i}.{service_name}.ns.svc...). Launcher mixin uses
-            #   service_name for that subdomain segment via _k8s_headless_subdomain_label.
+            # Resource names: one logical job, three string forms.
+            # - job_name: Job metadata.name. Batch Jobs force the pod template
+            #   label ``job-name`` to equal metadata.name, and label values are
+            #   capped at 63 chars — so Job names must be ≤63 (not the RFC 1123
+            #   subdomain max of 253). PVC/ConfigMap names append a short suffix
+            #   and may still use the longer subdomain limit.
+            # - job_label: must equal job_name (Job controller validates this).
+            # - service_name / main_container_name: single DNS label (≤63, no
+            #   dots) from sanitize_k8s_container_name(job_name)—used for
+            #   headless Service name, Pod subdomain, and Indexed Job DNS.
             raw_model_name = model_info["name"]
-            self.job_name = sanitize_k8s_object_name("madengine", raw_model_name)
-            self.job_label = sanitize_k8s_label_value(self.job_name)
+            self.job_name = sanitize_k8s_object_name(
+                "madengine", raw_model_name, max_total_len=_MAX_JOB_NAME_LEN
+            )
+            self.job_label = self.job_name
             self.main_container_name = sanitize_k8s_container_name(self.job_name)
             self.service_name = self.main_container_name
             if any(ch in raw_model_name for ch in "/\\ "):

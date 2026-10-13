@@ -418,6 +418,20 @@ class TestSanitizeK8sObjectName:
         n2 = sanitize_k8s_object_name("madengine", long_name)
         assert n == n2
 
+    def test_job_name_cap_keeps_label_parity(self):
+        """Batch Jobs require metadata.name == pod job-name label (≤63)."""
+        from madengine.deployment.k8s_names import _MAX_JOB_NAME_LEN
+
+        raw = "vllm_disagg_llmd/pyt_vllm_disagg_llmd_qwen3-30b-a3b_fp8"
+        job_name = sanitize_k8s_object_name(
+            "madengine", raw, max_total_len=_MAX_JOB_NAME_LEN
+        )
+        assert len(job_name) <= _MAX_JOB_NAME_LEN
+        assert job_name == sanitize_k8s_label_value(job_name)
+        # Uncapped name exceeds the Job label limit (regression for MoE cards).
+        uncapped = sanitize_k8s_object_name("madengine", raw)
+        assert len(uncapped) > _MAX_JOB_NAME_LEN
+
     def test_empty_body_uses_model(self):
         n = sanitize_k8s_object_name("madengine", "///")
         assert "madengine" in n
@@ -426,11 +440,16 @@ class TestSanitizeK8sObjectName:
 
 @pytest.mark.unit
 def test_pod_job_name_label_selector_matches_sanitized_job_name():
-    """Pods use job-name label value = sanitize_k8s_label_value(Job metadata name); list queries must match."""
-    jid = sanitize_k8s_object_name("madengine", "z" * 400)
+    """Pods use job-name label value = Job metadata name (≤63); list queries must match."""
+    from madengine.deployment.k8s_names import _MAX_JOB_NAME_LEN
+
+    jid = sanitize_k8s_object_name(
+        "madengine", "z" * 400, max_total_len=_MAX_JOB_NAME_LEN
+    )
     sel = _pod_job_name_label_selector(jid)
     assert sel == f"job-name={sanitize_k8s_label_value(jid)}"
-    assert len(sel.split("=", 1)[1]) <= 63
+    assert len(sel.split("=", 1)[1]) <= _MAX_JOB_NAME_LEN
+    assert sel.split("=", 1)[1] == jid
 
 
 @pytest.mark.unit

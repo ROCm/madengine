@@ -42,6 +42,15 @@ flowchart TD
 
 `llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
 
+### Kubernetes Job naming
+
+Batch Jobs force the pod template label `job-name` to equal `metadata.name`, and
+label values are at most 63 characters. madengine therefore builds Job names with
+`sanitize_k8s_object_name(..., max_total_len=63)` so long model card paths (for
+example llm-d MoE cards) hash/truncate instead of failing admission. PVC and
+ConfigMap names append a short suffix (`-results`, `-config`) and may still use
+the longer RFC 1123 subdomain limit (253).
+
 ## Kubernetes Deployment
 
 ### Prerequisites

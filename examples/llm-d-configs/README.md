@@ -30,6 +30,10 @@ Each model repo in `01`-`04` is one MAD already tracks for standalone vLLM bench
 `pyt_vllm_llama-3.1-8b`). Those models run vLLM serve-and-benchmark inside a single
 container; these configs benchmark the *same* repos served instead through an
 external llm-d gateway, with disaggregated prefill/decode where it matters.
+`model.name` in every example is the full Hugging Face id so it matches a card's
+`--model_repo` when you use those MAD tags. With `dummy_llm_d` (no `--model_repo`
+in `args`), a short name still works; with a real vLLM card, a short alias is
+rejected.
 
 `model.hf_repo` (02) is shorthand for `model.uri: "hf://<hf_repo>"` — simplest to write, but
 re-downloads the model on every standup. `03` adds `model.cache_pvc`, since re-downloading

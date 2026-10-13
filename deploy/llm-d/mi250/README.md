@@ -6,9 +6,13 @@ These files are the configuration that served `Qwen/Qwen3-0.6B` on `mad-mi250-k8
 - `inferencepool` v1.5.0, with the endpoint picker image overridden to `ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.11.0`
 - `llm-d-modelservice` v0.4.16
 
+For the madengine-managed equivalent (card-driven `llm_d` context, generated Helm
+values, reporting), see [docs/llm-d.md](../../../docs/llm-d.md) — especially
+[MI250 / AMD path constraints](../../../docs/llm-d.md#mi250--amd-path-constraints).
+
 The namespace `llm-d-bench` must already contain `dockerhub-rocm` and `llm-d-hf-token` (key `HF_TOKEN`). This cluster has only the `local-path` StorageClass, so model weights use an emptyDir (`hf://`) and are not put on a ReadWriteMany volume.
 
-`modelservice-disagg-values.yaml` is two prefill pods and two decode pods, one pod per worker. UCX must use `rocm_copy,rocm_ipc,tcp,self,sm`. `cuda_copy` is not in this image and NIXL then fails to register GPU memory.
+`modelservice-disagg-values.yaml` is two prefill pods and two decode pods, **one GCD per pod** (`gpu_count: 1`, TP=1), with pod anti-affinity across nodes. UCX must use `rocm_copy,rocm_ipc,tcp,self,sm`. `cuda_copy` is not in this image and NIXL then fails to register GPU memory. There is no InfiniBand device on the pods, so this is not an RDMA / MoRI / WideEP path.
 
 `modelservice-aggregated-values.yaml` is four independent vLLM pods and no prefill/decode split. For that mode, install the InferencePool chart without the endpoint-picker override in `inferencepool-values.yaml`. The prefill/decode picker will try to send every prompt to a prefill pod, and there is none.
 

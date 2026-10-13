@@ -169,9 +169,15 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 ### Deployment Target Inference
 
 No explicit `"deploy"` field is needed. Target is inferred from config structure:
+- `"llm_d"` key present → llm-d (checked before `k8s`, because llm-d configs carry both)
 - `"k8s"` or `"kubernetes"` key present → Kubernetes deployment
 - `"slurm"` key present → SLURM deployment
 - Neither → local Docker execution
+
+llm-d reporting stamps `deployment_type=llm-d`, `launcher=vllm`, and
+`serving_mode=disaggregated|aggregated`. Card `--model_repo` fills `llm_d.model`
+identity when unset. Batch Job names are capped at 63 characters (label parity).
+See `docs/llm-d.md` and `deploy/llm-d/mi250/` for the MI250 path (1 GPU/pod, no RDMA).
 
 ### Test Structure
 

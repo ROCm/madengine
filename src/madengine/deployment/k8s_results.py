@@ -21,6 +21,7 @@ from .common import (
     launcher_for_reporting,
     resolve_distributed_launch,
 )
+from .k8s_names import pod_job_name_label_selector
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -156,12 +157,6 @@ def _shape_from_node_gpus(per_node: Dict[str, int]) -> Optional[Dict[str, int]]:
     else:
         gpus_per_node = max(counts, key=lambda count: list(per_node.values()).count(count))
     return {"nnodes": nnodes, "gpus_per_node": gpus_per_node, "n_gpus": total}
-
-
-def _pod_job_name_label_selector(deployment_id: str) -> str:
-    """Selector for the ``job-name`` pod label; value must be a valid <=63-char label value."""
-    from .k8s_names import sanitize_k8s_label_value
-    return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
 def decode_pod_log(log: Any) -> str:
@@ -488,7 +483,7 @@ class KubernetesResultsMixin:
             # Get pods for this job
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
-                label_selector=_pod_job_name_label_selector(deployment_id),
+                label_selector=pod_job_name_label_selector(deployment_id),
             )
 
             # Get model info and build info from manifest

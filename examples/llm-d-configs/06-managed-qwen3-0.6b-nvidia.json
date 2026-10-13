@@ -10,7 +10,7 @@
   "llm_d": {
     "model": {
       "hf_repo": "Qwen/Qwen3-0.6B",
-      "name": "Qwen3-0.6B",
+      "name": "Qwen/Qwen3-0.6B",
       "size": "5Gi"
     },
     "prefill": { "replicas": 0 },

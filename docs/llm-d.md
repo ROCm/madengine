@@ -79,13 +79,20 @@ madengine run --tags my_llm_d_benchmark --additional-context '{
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
     "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
-    "model": {"name": "Qwen3-32B"}
+    "model": {"name": "Qwen/Qwen3-32B"}
   }
 }'
 ```
 
-`model.name` is required in both modes: it is the model string sent in inference
-requests and the value recorded in `perf.csv`.
+`MAD_LLM_D_MODEL` (and the OpenAI request `model` field) come from `llm_d.model.name`.
+When the selected MAD card has `--model_repo <hf_id>`, madengine copies that id into
+`llm_d.model.hf_repo` and `llm_d.model.name` if you leave them unset. If you set either
+field yourself, it must match the card's `--model_repo` exactly — a short alias such as
+`"Qwen3-32B"` with a card that says `--model_repo Qwen/Qwen3-32B` is rejected. Cards
+without `--model_repo` (for example `dummy_llm_d`) still need an explicit `model.name`.
+
+The `perf.csv` **Model** column stays the MAD card name (for example
+`vllm_disagg_llmd/pyt_vllm_disagg_llmd_qwen3-8b`); `MAD_LLM_D_MODEL` is the served HF id.
 
 The examples on this page use `Qwen/Qwen3-32B`, `deepseek-ai/DeepSeek-R1-0528` and
 `meta-llama/Llama-3.1-8B-Instruct` — repos MAD already tracks for standalone vLLM
@@ -211,7 +218,13 @@ does:
 performance: 1234.5 tokens_per_second
 ```
 
-or a `multiple_results` CSV. No reporting code is llm-d-specific.
+or a `multiple_results` CSV. When the card sets `multiple_results`, that CSV is preferred
+over `performance:` lines in the log (same rule as local Docker and plain Kubernetes).
+
+Reporting stamps llm-d-specific identity on each row: `deployment_type=llm-d`,
+`launcher=vllm` (the model server), and `serving_mode=disaggregated|aggregated`, plus
+live prefill/decode topology in the node/GPU columns. See
+[What perf.csv records](#what-perfcsv-records).
 
 A minimal client:
 
@@ -256,7 +269,7 @@ config, so you only specify what differs.
 | `model.cache_pvc` | `null` | PVC to cache `hf_repo` onto. madengine downloads it there once, in a Job run before standup, instead of re-downloading every run |
 | `model.cache_timeout` | `7200` | Bounds the cache-population Job, seconds |
 | `model.cache_job_image` | `null` | Image for the cache-population Job. Defaults to `python:3.11-slim` |
-| `model.name` | `null` | Model name in requests and `perf.csv`. **Required in both modes** |
+| `model.name` | `null` | Model string in inference requests (`MAD_LLM_D_MODEL`). Filled from the card's `--model_repo` when unset; otherwise required. Must match `--model_repo` when both are set. The `perf.csv` Model column remains the MAD card name |
 | `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token (key `HF_TOKEN`). Also used by the cache-population Job |
 | `model.size` | `null` | Size of the model-artifact volume. **Required when `uri` uses the `hf://` scheme** — the chart sizes an emptyDir download volume from it, and its own default (`5Mi`) is unusable. Set it comfortably above the model's on-disk size |
 | `prefill.replicas` | `1` | `0` disables the prefill role (aggregated serving) |
@@ -362,12 +375,33 @@ result. An llm-d row records the serving stack:
 |---|---|---|
 | `deployment_type` | `llm-d` | Helm-managed llm-d stack. A plain Kubernetes Job stays `kubernetes`. |
 | `launcher` | `vllm` | Model server. Managed llm-d currently generates `modelCommand: vllmServe`. |
-| `serving_mode` | `disaggregated` or `aggregated` | `disaggregated` when prefill replicas are above 0. `aggregated` when prefill is disabled. |
+| `serving_mode` | `disaggregated` or `aggregated` | `disaggregated` when prefill replicas are above 0. `aggregated` when prefill is disabled. Also shown in the CLI Mode column. |
 
 `launcher` here is the runtime, the same kind of value as `torchrun` or `sglang`
 on a plain Kubernetes job. It is not `distributed.launcher`, and `vllm-disagg`
 is not a launcher name. Topology (`4N×1G` and so on) stays in the node and GPU
 columns.
+
+The benchmark client Job uses the shared Kubernetes naming rule: Job
+`metadata.name` is capped at 63 characters and equals the pod `job-name` label
+(Batch Jobs require that parity). Long MAD card names are hashed/truncated; PVC
+and ConfigMap names may still append a short suffix under the 253-character
+subdomain limit.
+
+## MI250 / AMD path constraints
+
+Hand-tuned chart values that served this path live under
+[`deploy/llm-d/mi250/`](../deploy/llm-d/mi250/). When madengine generates values
+for ROCm clusters it applies the same UCX/NIXL defaults. Practical limits for
+that topology:
+
+| Constraint | Detail |
+|---|---|
+| **1 GPU per model-server pod** | Defaults and the MI250 values use `gpu_count: 1` and `tensor_parallel: 1`. Large TP=8 cards (Mixtral-8×7B, Qwen3-235B, DeepSeek-class) need a different topology. |
+| **No pod RDMA / InfiniBand** | KV transfer uses NIXL with UCX `rocm_copy,rocm_ipc,tcp,self,sm`. Functional disagg; not a high-bandwidth RDMA path. |
+| **`local-path` storage** | Clusters that only expose `local-path` use `hf://` emptyDir downloads (set `model.size`), not ReadWriteMany PVC caches. |
+| **Out of scope here** | MoRI and WideEP need RDMA-class fabrics and multi-GPU expert-parallel layouts this path does not configure. |
+| **MoE on 1×GCD** | Prefer FP8 MoE weights that fit ~64 GiB HBM with KV (for example Qwen3-30B-A3B-FP8). Dense BF16 ~30B is too tight at TP=1. |
 
 ## Reliability notes
 

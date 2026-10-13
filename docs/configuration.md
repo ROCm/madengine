@@ -782,7 +782,7 @@ stack. The config also carries a `k8s` block, which configures the benchmark-cli
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
     "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
-    "model": {"name": "Qwen3-32B"}
+    "model": {"name": "Qwen/Qwen3-32B"}
   }
 }
 ```
@@ -793,7 +793,7 @@ stack. The config also carries a `k8s` block, which configures the benchmark-cli
 {
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
-    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen3-32B", "hf_token_secret": "hf-token"},
+    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen/Qwen3-32B", "hf_token_secret": "hf-token"},
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode": {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
     "charts": {
@@ -804,6 +804,12 @@ stack. The config also carries a `k8s` block, which configures the benchmark-cli
   }
 }
 ```
+
+When the MAD card has `--model_repo`, you can omit `model.name` / `model.hf_repo` and
+madengine fills them from the card; if you set them, they must match that id exactly.
+`perf.csv` records `deployment_type=llm-d`, `launcher=vllm`, and
+`serving_mode=disaggregated|aggregated` (also the CLI Mode column). A card's
+`multiple_results` CSV is preferred over log `performance:` lines.
 
 Managed mode requires `helm` on `PATH`, Gateway API + Inference Extension CRDs, and
 **pinned chart versions** — it refuses to run on a floating version. Set
