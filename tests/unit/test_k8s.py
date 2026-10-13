@@ -842,8 +842,12 @@ class TestK8sRequirePinnedImage:
         )
         # __init__ loads a real kubeconfig and fails without one, which has
         # nothing to do with how the pod spec picks an image reference.
+        # Template prep then asks whether the default results class is
+        # ReadWriteMany. A real StorageV1 client calls the cluster; a double
+        # has no provisioner string and keeps the shared layout.
         with patch("madengine.deployment.kubernetes.k8s_config.load_kube_config"):
             deployment = KubernetesDeployment(cfg)
+        deployment.storage_v1 = MagicMock()
         return deployment._prepare_template_context(model_info, image_info)
 
     def test_default_uses_tag(self, tmp_path, monkeypatch):
