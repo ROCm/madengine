@@ -251,6 +251,7 @@ madengine run [OPTIONS]
 | `--disable-skip-gpu-arch` | | FLAG | `False` | Disable skipping models based on GPU architecture |
 | `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
 | `--cleanup-perf` | | FLAG | `False` | Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files) |
+| `--wait-for-gpu-memory` | | INT | `None` | Before a local run, poll until every GPU reports at most 512 MB of memory in use. `0` checks once and fails if any GPU is over that threshold; a positive value is a wall-clock timeout in seconds. Ignored with a warning on SLURM/K8s. |
 
 **Examples:**
 
@@ -274,6 +275,11 @@ madengine run --manifest-file build_manifest.json
 madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
   --skip-model-run
+
+# Local run: wait up to 30s for every GPU to drop to 512 MB used or less.
+# Pass 0 to fail immediately if any GPU is over the threshold.
+# The flag is ignored on SLURM and Kubernetes.
+madengine run --tags model --wait-for-gpu-memory 30
 
 # Multi-GPU with torchrun
 madengine run --tags model \

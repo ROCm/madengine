@@ -570,6 +570,43 @@ class RunOrchestrator:
 
         return manifest_file
 
+    def _gpu_memory_wait_seconds(self) -> Optional[int]:
+        """Return --wait-for-gpu-memory when it is a real integer.
+
+        MagicMock-style objects and omitted attributes count as unset so
+        tests and callers that never passed the flag do not query GPUs.
+        """
+        raw = getattr(self.args, "wait_for_gpu_memory", None)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw
+
+    def _wait_for_gpu_memory(self) -> None:
+        """Block local execution until GPU memory is under the threshold."""
+        timeout_s = self._gpu_memory_wait_seconds()
+        if timeout_s is None:
+            return
+
+        from madengine.utils.gpu_memory_gate import check_gpu_memory_free
+        from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+
+        try:
+            tool_manager = get_gpu_tool_manager()
+        except Exception as exc:
+            raise ExecutionError(
+                "Refusing to run: unable to query GPU memory before the run.",
+                context=create_error_context(
+                    operation="check_gpu_memory_free",
+                    component="RunOrchestrator",
+                ),
+                suggestions=[
+                    "Confirm the GPU vendor tools are installed "
+                    "(amd-smi, rocm-smi, or nvidia-smi).",
+                ],
+            ) from exc
+
+        check_gpu_memory_free(tool_manager, timeout_s=timeout_s)
+
     def _execute_local(self, manifest_file: str, timeout: int) -> Dict:
         """Execute locally using container_runner."""
         self.rich_console.print("[cyan]Executing locally...[/cyan]\n")
@@ -737,6 +774,10 @@ class RunOrchestrator:
         # For full workflow, logs are combined later by _combine_build_and_run_logs()
         phase_suffix = ".run"
 
+        # After the image build, and before any container starts. A slow
+        # driver release from the previous job is the failure this waits out.
+        self._wait_for_gpu_memory()
+
         # Run models
         results = runner.run_models_from_manifest(
             manifest_file=manifest_file,
@@ -762,6 +803,7 @@ class RunOrchestrator:
             "--keep-alive": getattr(self.args, "keep_alive", False),
             "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
             "--skip-model-run": getattr(self.args, "skip_model_run", False),
+            "--wait-for-gpu-memory": self._gpu_memory_wait_seconds() is not None,
         }
         _active_local_flags = [name for name, val in _local_only_flags.items() if val]
         if _active_local_flags:
