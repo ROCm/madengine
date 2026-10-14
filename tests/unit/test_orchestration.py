@@ -363,6 +363,158 @@ class TestRunOrchestrator:
         assert "--keep-alive" in printed
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
+        # Unset on a MagicMock must not look like the flag was passed.
+        assert "--wait-for-gpu-memory" not in printed
+
+    def test_distributed_warns_when_gpu_memory_gate_set(self, tmp_path):
+        """--wait-for-gpu-memory is local-only and must be called out on SLURM/K8s."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.wait_for_gpu_memory = 30
+        mock_args.timeout = 60
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        printed = " ".join(
+            str(call) for call in orchestrator.rich_console.print.call_args_list
+        )
+        assert "--wait-for-gpu-memory" in printed
+        assert "--keep-alive" not in printed
+
+    def test_wait_for_gpu_memory_invokes_gate(self, tmp_path):
+        """A real integer timeout is handed to the gate with the host tool manager."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 15
+
+        orchestrator = RunOrchestrator(mock_args)
+        manager = object()
+        with patch(
+            "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
+            return_value=manager,
+        ) as get_manager, patch(
+            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
+        ) as check:
+            orchestrator._wait_for_gpu_memory()
+
+        get_manager.assert_called_once_with()
+        check.assert_called_once_with(manager, timeout_s=15)
+
+    def test_wait_for_gpu_memory_skipped_when_unset(self, tmp_path):
+        """Missing or non-integer values do not query the GPU."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+        with patch(
+            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
+        ) as check:
+            orchestrator._wait_for_gpu_memory()
+
+        check.assert_not_called()
+
+    def test_execute_local_waits_before_containers(self, tmp_path):
+        """The gate runs inside local execution, before the container runner."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(
+            json.dumps({"built_images": {"img": {"name": "m"}}, "built_models": {}})
+        )
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 30
+        mock_args.registry = None
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        # Containers still start when the model script is skipped, so the
+        # gate runs on this path too.
+        mock_args.skip_model_run = True
+
+        orchestrator = RunOrchestrator(mock_args)
+        order = []
+
+        def record_wait():
+            order.append("wait")
+
+        runner = MagicMock()
+
+        def record_run(**kwargs):
+            order.append("run")
+            return {"successful_runs": [], "failed_runs": []}
+
+        runner.run_models_from_manifest.side_effect = record_run
+
+        with patch.object(orchestrator, "_init_runtime_context"), patch.object(
+            orchestrator, "_show_node_info"
+        ), patch.object(orchestrator, "_copy_scripts"), patch.object(
+            orchestrator, "_wait_for_gpu_memory", side_effect=record_wait
+        ), patch(
+            "madengine.orchestration.run_orchestrator.load_credentials",
+            return_value={},
+        ), patch(
+            "madengine.execution.container_runner.ContainerRunner",
+            return_value=runner,
+        ):
+            orchestrator._execute_local(str(manifest), 60)
+
+        assert order == ["wait", "run"]
+
+    def test_wait_for_gpu_memory_tool_manager_failure_is_execution_error(
+        self, tmp_path
+    ):
+        """A vendor-detection failure is an ExecutionError, not a raw exception."""
+        from unittest.mock import MagicMock, patch
+        from madengine.core.errors import ExecutionError
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 0
+
+        orchestrator = RunOrchestrator(mock_args)
+        with patch(
+            "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
+            side_effect=ValueError("no gpu"),
+        ):
+            with pytest.raises(ExecutionError, match="unable to query GPU memory"):
+                orchestrator._wait_for_gpu_memory()
 
     @pytest.mark.parametrize(
         "cli_timeout,expected_config_timeout",
