@@ -66,8 +66,13 @@ Managed mode additionally:
   ```
 
 - Pinned chart versions (see [Chart versions](#chart-versions))
-- If the model is gated, a Secret holding the HF token that already exists in the
-  namespace. Pass its **name** as `llm_d.model.hf_token_secret`; the token itself never
+- If the model is gated, a Hugging Face token the benchmark client and the cache
+  Job can read. Either create a Secret in the namespace and pass its **name** as
+  `llm_d.model.hf_token_secret` (key `HF_TOKEN`), or set `MAD_SECRETS_HFTOKEN` or
+  `HF_TOKEN` on the madengine process. The environment value is stored in a Secret
+  named `<job>-hf-token` and mounted into the client pod. That Secret is deleted
+  when deployment cleanup runs (a failed run, or Ctrl-C after a deployment id
+  exists); a successful run leaves it in the namespace. The token itself never
   reaches a values file or a helm command line.
 
 ## Quick start — attach mode
@@ -105,7 +110,7 @@ through an external gateway instead of inside the benchmark container.
 madengine run --tags my_llm_d_benchmark --additional-context '{
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
-    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen3-32B", "size": "80Gi", "hf_token_secret": "hf-token"},
+    "model": {"hf_repo": "Qwen/Qwen3-32B", "name": "Qwen/Qwen3-32B", "size": "80Gi", "hf_token_secret": "hf-token"},
     "gateway": "agentgateway",
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode":  {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
@@ -208,7 +213,7 @@ madengine injects these into the client pod; your model's `run.sh` reads them:
 | `MAD_LLM_D_PREFILL_REPLICAS` | Prefill replicas (0 = aggregated serving) |
 | `MAD_LLM_D_DECODE_REPLICAS` | Decode replicas |
 | `MAD_LLM_D_TP` | Decode tensor-parallel size |
-| `MAD_LLM_D_RELEASE_PREFIX` | Helm release prefix — the releases are `<prefix>-infra`, `<prefix>-gaie`, `<prefix>-modelservice`. **Managed mode only**; attach mode sets no releases and so does not set it |
+| `MAD_LLM_D_RELEASE_PREFIX` | Helm release **stem** for this run (the sanitized model name included), not the `release_prefix` config key alone. Releases are `<stem>-infra`, `<stem>-gaie`, `<stem>-modelservice`. **Managed mode only**; attach mode sets no releases and so does not set it |
 
 The script drives load however it likes — `vllm bench serve`, `guidellm`,
 `inference-perf`, or plain HTTP — and emits results the way every other madengine model
@@ -262,7 +267,7 @@ config, so you only specify what differs.
 |---|---|---|
 | `endpoint_url` | `null` | Set → attach mode |
 | `dry_run` | `false` | Render values + `helm template`, install nothing |
-| `release_prefix` | `"madengine"` | Prefix for the three helm release names |
+| `release_prefix` | `"madengine"` | Leading segment of the helm release stem. The stem is `<prefix>-<sanitized model>` when that fits in 40 characters, otherwise `<prefix>-llmd-<model tail>`. Helm releases are `<stem>-infra`, `<stem>-gaie`, and `<stem>-modelservice`. `MAD_LLM_D_RELEASE_PREFIX` is that stem |
 | `gateway` | `"agentgateway"` | `gatewayClassName` and GAIE provider |
 | `model.uri` | `null` | Artifact the servers load, e.g. `hf://Qwen/Qwen3-32B`. Required in managed mode unless `hf_repo` is set |
 | `model.hf_repo` | `null` | Simpler alternative to `uri`: an HF repo id, e.g. `Qwen/Qwen3-32B`. Resolves to `hf://<hf_repo>` (re-downloaded every run), or to `pvc+hf://<cache_pvc>/hf_hub_cache/<hf_repo>` if `cache_pvc` is also set. Ignored if `uri` is set |
@@ -270,7 +275,7 @@ config, so you only specify what differs.
 | `model.cache_timeout` | `7200` | Bounds the cache-population Job, seconds |
 | `model.cache_job_image` | `null` | Image for the cache-population Job. Defaults to `python:3.11-slim` |
 | `model.name` | `null` | Model string in inference requests (`MAD_LLM_D_MODEL`). Filled from the card's `--model_repo` when unset; otherwise required. Must match `--model_repo` when both are set. The `perf.csv` Model column remains the MAD card name |
-| `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token (key `HF_TOKEN`). Also used by the cache-population Job |
+| `model.hf_token_secret` | `null` | Name of an existing Secret holding the HF token (key `HF_TOKEN`). Also used by the cache-population Job. `MAD_SECRETS_HFTOKEN` or `HF_TOKEN` on the madengine process is a separate path: it is copied into `<job>-hf-token` for the benchmark client |
 | `model.size` | `null` | Size of the model-artifact volume. **Required when `uri` uses the `hf://` scheme** — the chart sizes an emptyDir download volume from it, and its own default (`5Mi`) is unusable. Set it comfortably above the model's on-disk size |
 | `prefill.replicas` | `1` | `0` disables the prefill role (aggregated serving) |
 | `prefill.tensor_parallel` | `1` | `--tensor-parallel-size` |
@@ -292,6 +297,13 @@ One `k8s` key behaves differently under llm-d: **`k8s.gpu_count` defaults to `0`
 generator, and a client Job that reserves a GPU it never uses competes with the very
 stack it is measuring. Setting `k8s.gpu_count` yourself still wins, as do the usual
 runtime GPU overrides.
+
+That default is applied when the `llm_d` deployment is constructed and your `k8s`
+block does not already contain `gpu_count`. `madengine build` merges the ordinary
+Kubernetes profile first, and that profile sets `gpu_count` to `1`. The saved
+`build_manifest.json` then carries `1`, and a later `madengine run --manifest-file`
+treats the saved value as explicit. Set `"gpu_count": 0` in the `k8s` block you
+build with, or pass it again on the run command.
 
 ### Chart versions
 
@@ -421,9 +433,11 @@ Things worth knowing before you point this at a shared cluster:
 - **A teardown failure never masks your results.** It is logged with the exact
   `helm uninstall` command to run by hand, and the benchmark result is returned unchanged.
 - **Cache population is a standalone Job.** When `model.cache_pvc` is set, madengine runs a
-  one-off download Job before `helm install`, bounded by `model.cache_timeout`, and deletes
-  the Job object afterwards either way — only the downloaded weights persist on the PVC. A
-  failed download unwinds like any other standup failure.
+  one-off download Job before `helm install`, bounded by `model.cache_timeout`. The Job
+  object is deleted after a successful download; only the weights persist on the PVC. A
+  failed or timed-out Job is left in the namespace so `kubectl logs job/<name>` still
+  works, and the next run deletes it before creating a new one. A failed download
+  unwinds the helm releases like any other standup failure.
 - **Readiness is two-stage.** `helm --wait` can return before a model server has finished
   loading weights, so madengine additionally polls the model-server Deployments. This
   stage is best-effort on top of helm's own readiness gate: if those Deployments carry
@@ -454,8 +468,10 @@ No controller is watching your `gatewayClassName`, or it is still provisioning. 
 `kubectl -n <ns> get gateway`. Fall back to `endpoint_url`.
 
 **`Timed out ... waiting for model-server Deployments to become ready`**
-Large models can exceed the 30-minute default. Raise `readiness_timeout`, and check
-`kubectl -n <ns> get pods -l app.kubernetes.io/instance=<prefix>-modelservice`.
+Large models can exceed the 30-minute default. Raise `readiness_timeout`. llm-d-modelservice
+v0.4 does not set `app.kubernetes.io/instance` on the prefill and decode Deployments;
+their names start with `<stem>-modelservice-` (`<stem>` is `MAD_LLM_D_RELEASE_PREFIX`).
+Check `kubectl -n <ns> get deploy` for those names.
 
 **`Found N Gateway(s) ... and none is identifiably owned by release`**
 More than one Gateway in the namespace and none labelled with the infra release. Set
@@ -467,7 +483,8 @@ llm-d is Kubernetes-native. Remove the `slurm` block.
 **Releases left behind after a crash**
 ```bash
 helm list -n <namespace>
-helm uninstall <prefix>-modelservice <prefix>-gaie <prefix>-infra -n <namespace>
+# <stem> is MAD_LLM_D_RELEASE_PREFIX (it includes the model name), not release_prefix alone.
+helm uninstall <stem>-modelservice <stem>-gaie <stem>-infra -n <namespace>
 ```
 
 ## Next Steps

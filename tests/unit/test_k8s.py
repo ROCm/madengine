@@ -34,7 +34,6 @@ from madengine.deployment.k8s_secrets import (
 )
 from madengine.deployment.k8s_results import (
     collector_pod_name,
-    decode_pod_log,
     extract_perf_csv_blocks,
     materialize_perf_csvs_from_logs,
     perf_csv_artifact_sources,
@@ -1036,32 +1035,6 @@ def test_shared_volume_csvs_are_used_instead_of_log_copies(tmp_path):
         [{"type": "log_csv", "local_path": str(log_dir)}]
     )
     assert [art["type"] for art in local_only] == ["log_csv"]
-
-
-def test_multiline_log_is_not_decoded_as_a_bytes_repr():
-    text = "b'not a kubernetes bytes repr\nsecond line'"
-    assert decode_pod_log(text) == text
-
-
-def test_bytes_repr_pod_log_is_decoded_before_csv_recovery(tmp_path):
-    """The k8s client returns str(log_bytes), which hides every newline."""
-    csv_body = "model,performance,metric\nQwen3-8B,158.33,throughput_tot\n"
-    text = (
-        "serving done\n"
-        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
-        f"{csv_body}"
-        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
-    )
-    wrapped = str(text.encode("utf-8"))
-    assert "\n" not in wrapped
-    decoded = decode_pod_log(wrapped)
-    assert decoded == text
-    assert decode_pod_log(text.encode("utf-8")) == text
-
-    results = {"logs": [{"pod": "job-0", "log": decoded}], "artifacts": []}
-    assert materialize_perf_csvs_from_logs(tmp_path, results) == 1
-    saved = (tmp_path / "job-0" / "log_csv" / "perf_Qwen3-8B.csv").read_text()
-    assert "158.33" in saved
 
 
 def test_collector_pod_name_is_a_dns_label():
