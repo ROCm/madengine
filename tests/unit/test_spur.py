@@ -760,16 +760,26 @@ class TestLogCollectionCompatibility:
         printed = " ".join(str(c.args[0]) for c in dep.console.print.call_args_list)
         assert str(log) in printed
 
-    @pytest.mark.parametrize("cls", [SlurmDeployment, SpurDeployment])
-    def test_node_logs_key_on_the_collection_job_id(self, tmp_path, cls):
+    @pytest.mark.parametrize(
+        "cls, job_token",
+        [
+            (SlurmDeployment, "${SLURM_JOB_ID}"),
+            (SpurDeployment, "${MAD_COLLECT_JOB_ID}"),
+        ],
+    )
+    def test_node_logs_key_on_the_collection_job_id(self, tmp_path, cls, job_token):
         """The per-node logs the task script writes are the ones collect_results
-        reads for multi-node runs, so they must carry the same id."""
+        reads for multi-node runs, so they must carry the same id.
+
+        Stock SLURM expands job_tag from SLURM_JOB_ID, plus an in-place suffix
+        when two runs share an allocation. Spur keys paths on MAD_COLLECT_JOB_ID
+        so a task child cannot replace the shared array id with its own job id.
+        """
         script = _render_job_script(_make_deployment(tmp_path, cls, "torchrun"))
         assert (
             'export MAD_COLLECT_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"' in script
         )
-        assert "_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.out" in script
-        assert "_${SLURM_JOB_ID}_node_${SLURM_PROCID}.out" not in script
+        assert f"_{job_token}_node_" + "${SLURM_PROCID}.out" in script
 
 
 # ---------------------------------------------------------------------------

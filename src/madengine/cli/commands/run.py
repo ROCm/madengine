@@ -18,30 +18,26 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from madengine.orchestration.run_orchestrator import RunOrchestrator
-from madengine.core.errors import (
-    BuildError,
-    ConfigurationError,
-    ExecutionError,
-)
+from madengine.core.errors import BuildError, ConfigurationError, ExecutionError
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+from madengine.orchestration.run_orchestrator import RunOrchestrator
 
 from ..constants import (
-    ExitCode,
+    DEFAULT_DATA_CONFIG,
     DEFAULT_MANIFEST_FILE,
     DEFAULT_PERF_OUTPUT,
-    DEFAULT_DATA_CONFIG,
-    DEFAULT_TOOLS_CONFIG,
     DEFAULT_TIMEOUT,
+    DEFAULT_TOOLS_CONFIG,
+    ExitCode,
 )
 from ..utils import (
     console,
+    create_args_namespace,
+    display_performance_table,
+    display_results_table,
+    save_summary_with_feedback,
     setup_logging,
     split_comma_separated_tags,
-    create_args_namespace,
-    save_summary_with_feedback,
-    display_results_table,
-    display_performance_table,
 )
 from ..validators import (
     additional_context_needs_cli_validation,
@@ -80,6 +76,17 @@ def run(
             "--additional-context-file",
             "-f",
             help="File containing additional context JSON",
+        ),
+    ] = None,
+    config: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--config",
+            help=(
+                "YAML config file and/or Hydra overrides "
+                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
+                "Cannot be combined with --additional-context or --additional-context-file."
+            ),
         ),
     ] = None,
     keep_alive: Annotated[
@@ -181,6 +188,60 @@ def run(
     # Process tags to handle comma-separated values
     processed_tags = split_comma_separated_tags(tags)
 
+    # --config is mutually exclusive with --additional-context and --additional-context-file
+    if config:
+        if additional_context and additional_context.strip() not in ("", "{}"):
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+        if additional_context_file:
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+
+        from madengine.config import load_config
+
+        config_ctx, config_meta = load_config(config)
+
+        model_meta = config_meta.get("model") or {}
+        build_meta = config_meta.get("build") or {}
+        if not processed_tags and model_meta.get("tags"):
+            processed_tags = model_meta["tags"]
+        model_timeout = model_meta.get("timeout")
+        if timeout == DEFAULT_TIMEOUT and model_timeout is not None:
+            timeout = model_timeout
+        if not manifest_file and model_meta.get("manifest_file"):
+            manifest_file = model_meta["manifest_file"]
+        if not registry and build_meta.get("registry"):
+            registry = build_meta["registry"]
+        if not live_output and config_meta.get("live_output"):
+            live_output = True
+        if output == DEFAULT_PERF_OUTPUT and config_meta.get("output"):
+            output = config_meta["output"]
+        if summary_output is None and config_meta.get("summary_output"):
+            summary_output = config_meta["summary_output"]
+        if data_config_file_name == DEFAULT_DATA_CONFIG and config_meta.get(
+            "data_config"
+        ):
+            data_config_file_name = config_meta["data_config"]
+        if not skip_model_run and model_meta.get("skip_run"):
+            skip_model_run = True
+        if not require_pinned_image and config_ctx.get("require_pinned_image"):
+            require_pinned_image = True
+        if not keep_alive and config_ctx.get("docker_keep_alive"):
+            keep_alive = True
+        if not clean_docker_cache and config_ctx.get("docker_clean_cache"):
+            clean_docker_cache = True
+
+        additional_context = repr(config_ctx)
+        additional_context_file = None
+
     # Input validation
     if timeout < -1:
         console.print(
@@ -259,7 +320,7 @@ def run(
                 task = progress.add_task(
                     "Initializing execution orchestrator...", total=None
                 )
-                
+
                 # Use new RunOrchestrator
                 orchestrator = RunOrchestrator(args)
                 progress.update(task, description="Running models...")
@@ -274,23 +335,29 @@ def run(
 
             # Display results summary
             display_results_table(execution_summary, "Execution Results")
-            
+
             # Display detailed performance metrics from CSV (show all historical runs, mark current ones)
             perf_csv_path = getattr(args, "output", DEFAULT_PERF_OUTPUT)
             session_start_row = execution_summary.get("session_start_row")
             display_performance_table(perf_csv_path, session_start_row)
-            
+
             # Cleanup session marker AFTER display (so display functions can use it)
             from madengine.utils.session_tracker import SessionTracker
+
             tracker = SessionTracker(perf_csv_path)
             tracker.cleanup_marker()
-            
+
             # Cleanup intermediate perf files if requested
             if cleanup_perf:
-                from madengine.utils.perf_cleanup import cleanup_perf_intermediates as do_cleanup
-                console.print("\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]")
+                from madengine.utils.perf_cleanup import (
+                    cleanup_perf_intermediates as do_cleanup,
+                )
+
+                console.print(
+                    "\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]"
+                )
                 do_cleanup()
-            
+
             save_summary_with_feedback(execution_summary, summary_output, "Execution")
 
             failed_runs = len(execution_summary.get("failed_runs", []))
@@ -364,10 +431,10 @@ def run(
                 task = progress.add_task(
                     "Initializing workflow orchestrator...", total=None
                 )
-                
+
                 # Use new RunOrchestrator (handles build+run automatically when tags provided)
                 orchestrator = RunOrchestrator(args)
-                
+
                 progress.update(task, description="Building and running models...")
                 execution_summary = orchestrator.execute(
                     manifest_file=None,  # Triggers build phase
@@ -378,7 +445,7 @@ def run(
                 progress.update(task, description="Workflow completed!")
 
             # Load build summary from generated manifest
-            with open(manifest_output, 'r') as f:
+            with open(manifest_output, "r") as f:
                 manifest = json.load(f)
                 build_summary = manifest.get("summary", {})
 
@@ -395,23 +462,29 @@ def run(
             # Display results
             display_results_table(build_summary, "Build Results")
             display_results_table(execution_summary, "Execution Results")
-            
+
             # Display detailed performance metrics from CSV (show all historical runs, mark current ones)
             perf_csv_path = getattr(args, "output", DEFAULT_PERF_OUTPUT)
             session_start_row = execution_summary.get("session_start_row")
             display_performance_table(perf_csv_path, session_start_row)
-            
+
             # Cleanup session marker AFTER display (so display functions can use it)
             from madengine.utils.session_tracker import SessionTracker
+
             tracker = SessionTracker(perf_csv_path)
             tracker.cleanup_marker()
-            
+
             # Cleanup intermediate perf files if requested
             if cleanup_perf:
-                from madengine.utils.perf_cleanup import cleanup_perf_intermediates as do_cleanup
-                console.print("\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]")
+                from madengine.utils.perf_cleanup import (
+                    cleanup_perf_intermediates as do_cleanup,
+                )
+
+                console.print(
+                    "\n🧹 [cyan]Cleaning up intermediate performance files...[/cyan]"
+                )
                 do_cleanup()
-            
+
             save_summary_with_feedback(workflow_summary, summary_output, "Workflow")
 
             if workflow_summary["overall_success"]:
@@ -444,41 +517,39 @@ def run(
     except ExecutionError as e:
         # Runtime execution errors
         console.print(f"💥 [bold red]Runtime error: {e}[/bold red]")
-        if hasattr(e, 'suggestions') and e.suggestions:
+        if hasattr(e, "suggestions") and e.suggestions:
             console.print("\n💡 [cyan]Suggestions:[/cyan]")
             for suggestion in e.suggestions:
                 console.print(f"  • {suggestion}")
         raise typer.Exit(ExitCode.RUN_FAILURE)
-        
+
     except ConfigurationError as e:
         # Configuration errors
         console.print(f"⚙️  [bold red]Configuration error: {e}[/bold red]")
-        if hasattr(e, 'suggestions') and e.suggestions:
+        if hasattr(e, "suggestions") and e.suggestions:
             console.print("\n💡 [cyan]Suggestions:[/cyan]")
             for suggestion in e.suggestions:
                 console.print(f"  • {suggestion}")
         raise typer.Exit(ExitCode.INVALID_ARGS)
-        
+
     except KeyboardInterrupt:
         console.print("\n🛑 [yellow]Run cancelled by user[/yellow]")
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except FileNotFoundError as e:
         console.print(f"📁 [bold red]File not found: {e}[/bold red]")
         console.print("💡 Check manifest file path and required files")
         raise typer.Exit(ExitCode.FAILURE)
-        
+
     except Exception as e:
         console.print(f"💥 [bold red]Run process failed: {e}[/bold red]")
         if verbose:
             console.print_exception()
-        
-        from madengine.core.errors import handle_error, create_error_context
+
+        from madengine.core.errors import create_error_context, handle_error
+
         context = create_error_context(
-            operation="run",
-            phase="run",
-            component="run_command"
+            operation="run", phase="run", component="run_command"
         )
         handle_error(e, context=context)
         raise typer.Exit(ExitCode.FAILURE)
-

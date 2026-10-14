@@ -138,13 +138,20 @@ export WORLD_SIZE=$SLURM_NTASKS
 export LOCAL_RANK=$SLURM_LOCALID
 export NNODES={{ nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
-{% endif %}
+{%- if in_place %}
+# The step launched below may cover only part of this allocation, so the
+# rendezvous host and world size come from the hosts it is pinned to.
+STEP_NODELIST=$(scontrol show hostnames "{{ nodelist or '$SLURM_JOB_NODELIST' }}" | head -n {{ nodes }} | paste -sd, -)
+export MASTER_ADDR=${STEP_NODELIST%%,*}
+export WORLD_SIZE={{ nodes }}
+{%- endif %}
+{%- endif %}
 
 # GPU visibility (ROCm/CUDA)
 # IMPORTANT: Ray (vLLM, SGLang) requires HIP_VISIBLE_DEVICES for AMD GPUs
 # Do NOT set both HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES together
 GPU_LIST=$(seq -s, 0 $(({{ gpus_per_node }}-1)))
-{% if launcher_type == "vllm" or launcher_type == "sglang" %}
+{% if launcher_type in ['vllm', 'sglang', 'sglang-disagg'] %}
 # Ray-based launchers: Detect GPU vendor and set appropriate variable
 # CRITICAL: Do NOT set both HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES together
 if command -v rocm-smi &> /dev/null || command -v rocminfo &> /dev/null; then
@@ -247,13 +254,55 @@ if printf '%s' "$SUBMIT_FSTYPE" | grep -qE '^(nfs[0-9]*|lustre|gpfs|ceph|beegfs|
 else
     # Submission directory is local - use node scratch (rare case)
     if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-        WORKSPACE=$SLURM_TMPDIR
+        # Job-scoped for the same reason as the multi-node path below, and to
+        # match the /tmp fallback: a site can point SLURM_TMPDIR at persistent
+        # storage, and then a bare SLURM_TMPDIR is one workspace shared by every
+        # job that lands on the node.
+        WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}
         WORKSPACE_TYPE="local-slurm"
     else
         WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID:-$$}
-        mkdir -p $WORKSPACE
         WORKSPACE_TYPE="local-tmp"
     fi
+    # Job-scoped workspaces are never shared, so nothing reclaims them either.
+    # This one holds the only copy of the run's output (a local submission
+    # directory means the login node cannot read it back), so it is kept and
+    # the older ones are dropped instead.
+    #
+    # What may be deleted is narrow on purpose: only directories this user
+    # owns, only job ids SLURM no longer reports (a run can outlive the
+    # window while the directory's own mtime stays put), and never the
+    # scratch root, which find reports as its own starting point unless
+    # -mindepth keeps it out.
+    #
+    # The liveness question cannot be asked per id: `squeue -j <finished id>`
+    # and `squeue -j <id>` against an unreachable controller both answer with
+    # an empty listing and a non-zero status. One query for this user's jobs
+    # -- the only ones whose directories the sweep may touch -- separates the
+    # two: it either succeeds and names every live one, or fails, and a
+    # failure (including squeue missing entirely) sweeps nothing.
+    if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
+        find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
+             -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
+             -print 2>/dev/null |
+        while IFS= read -r STALE_WORKSPACE; do
+            # squeue -o %i prints an array task as <id>_<index>, so the first
+            # underscore is not the end of the id. Drop only the rank suffix
+            # and an in-place run tag (_<14-digit stamp>_<6 hex>).
+            STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
+            STALE_JOB=${STALE_JOB%%_node_*}
+            STALE_JOB=${STALE_JOB%_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]}
+            if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
+                continue
+            fi
+            rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+            echo "Reclaimed abandoned workspace: $STALE_WORKSPACE"
+        done
+    fi
+    # This job's own directory can only exist when an earlier job reused the
+    # id, which is exactly the inheritance the scoping is here to prevent.
+    rm -rf "$WORKSPACE" 2>/dev/null || true
+    mkdir -p $WORKSPACE
     echo "Using local node workspace: $WORKSPACE"
 fi
 {% endif %}
@@ -481,11 +530,10 @@ export TORCH_ELASTIC_RDZV_TIMEOUT=3600
 # /tmp is local to each node and won't be accessible by srun on other nodes
 {% if scheduler == 'spur' %}
 # Under a job array SLURM_JOB_ID is pinned to the shared array id, so include the
-# node rank (array task id) to keep each node's task script path unique on the
-# shared filesystem.
-TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}_${SLURM_PROCID}.sh"
+# node rank to keep each node's task script path unique on the shared filesystem.
+TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_{{ job_tag }}_${SLURM_PROCID}.sh"
 {% else %}
-TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_${SLURM_JOB_ID}.sh"
+TASK_SCRIPT="{{ manifest_file | dirname }}/{{ output_dir }}/madengine_task_{{ job_tag }}.sh"
 {% endif %}
 
 cat > "$TASK_SCRIPT" << 'TASK_SCRIPT_EOF'
@@ -527,7 +575,7 @@ echo "=========================================="
 # Generate launcher-specific command
 {{ launcher_command }}
 
-{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron-lm', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 {% endif %}
 echo "=========================================="
@@ -536,18 +584,52 @@ echo "=========================================="
 echo "Single-node {{ launcher_type|default('torchrun') }} setup"
 {{ launcher_command }}
 
-{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron-lm', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 {% endif %}
 {% endif %}
 echo ""
 
 # Setup workspace (SLURM_PROCID is now available)
+# The job id belongs in the path. A site can point SLURM_TMPDIR at persistent
+# node-local storage, and the workspace is never deleted, so without it two jobs
+# that place the same node rank on the same host share a directory: the later
+# one inherits the earlier one's files. A model that appends its results CSV to
+# the workspace root, as the Primus benchmark script does, then reports both
+# runs, and the stale rows reach perf_entry*.csv carrying this run's metadata.
 if [ -n "$SLURM_TMPDIR" ] && [ -d "$SLURM_TMPDIR" ] && [ -w "$SLURM_TMPDIR" ]; then
-    WORKSPACE=$SLURM_TMPDIR/madengine_node_${SLURM_PROCID}
+    WORKSPACE=$SLURM_TMPDIR/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 else
-    WORKSPACE=/tmp/madengine_job_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}
+    WORKSPACE=/tmp/madengine_job_{{ job_tag }}_node_${SLURM_PROCID}
 fi
+# A successful task deletes its workspace at the end of this script, so what
+# this sweep collects are the ones a failed task left behind for post-mortem.
+# Same guards as the single-node path: this user's directories only, only job
+# ids SLURM no longer reports, -mindepth 1 so find's own starting point -- the
+# scratch root -- can never be the thing that gets removed, and one query for
+# this user's jobs, because a per-id query answers the same way for a finished
+# job and for a controller that cannot be reached.
+if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then
+    find "$(dirname "$WORKSPACE")" -mindepth 1 -maxdepth 1 -type d \
+         -name 'madengine_job_*' -uid "$(id -u)" -mtime +7 \
+         -print 2>/dev/null |
+    while IFS= read -r STALE_WORKSPACE; do
+        # squeue -o %i prints an array task as <id>_<index>, so the first
+        # underscore is not the end of the id. Drop only the rank suffix and
+        # an in-place run tag (_<14-digit stamp>_<6 hex>).
+        STALE_JOB=${STALE_WORKSPACE##*/madengine_job_}
+        STALE_JOB=${STALE_JOB%%_node_*}
+        STALE_JOB=${STALE_JOB%_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]}
+        if printf '%s\n' "$LIVE_JOBS" | grep -qx -- "$STALE_JOB"; then
+            continue
+        fi
+        rm -rf "$STALE_WORKSPACE" 2>/dev/null || true
+        echo "Node ${SLURM_PROCID}: reclaimed abandoned workspace $STALE_WORKSPACE"
+    done
+fi
+# This job's own directory can only exist when an earlier job reused the id,
+# which is exactly the inheritance the scoping is here to prevent.
+rm -rf "$WORKSPACE" 2>/dev/null || true
 mkdir -p $WORKSPACE
 WORKSPACE_TYPE="local-multinode"
 echo "Multi-node: Node ${SLURM_PROCID} using local workspace: $WORKSPACE"
@@ -581,8 +663,8 @@ echo ""
 # Debug: set node log paths early and trap EXIT so we always see which node failed
 # =============================================================================
 RESULTS_DIR="$SUBMISSION_DIR"
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.err"
 echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script started" >> "${NODE_LOG_ERR}"
 trap 'ec=$?; echo "[DEBUG] $(date -Iseconds) Node ${SLURM_PROCID} ($(hostname)): task script exiting with code $ec" >> "${NODE_LOG_ERR}"' EXIT
 
@@ -725,7 +807,7 @@ echo "  RANK (node rank): ${RANK}"
 echo "  NODE_RANK: ${NODE_RANK}"
 echo "  NNODES: ${NNODES}"
 echo "  NPROC_PER_NODE: ${GPUS_PER_NODE}"
-{% if launcher_type in ['torchrun', 'deepspeed', 'megatron', 'torchtitan'] %}
+{% if launcher_type in ['torchrun', 'deepspeed', 'megatron-lm', 'torchtitan'] %}
 echo "  MAD_MULTI_NODE_RUNNER: ${MAD_MULTI_NODE_RUNNER}"
 {% endif %}
 if [ "${SLURM_PROCID}" = "0" ]; then
@@ -737,8 +819,8 @@ echo ""
 
 # Create node-specific log files in results directory
 RESULTS_DIR={{ manifest_file | dirname }}
-NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.out"
-NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${SLURM_PROCID}.err"
+NODE_LOG_OUT="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.out"
+NODE_LOG_ERR="${RESULTS_DIR}/{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${SLURM_PROCID}.err"
 
 echo "Node ${SLURM_PROCID} logs:"
 echo "  stdout: ${NODE_LOG_OUT}"
@@ -779,9 +861,14 @@ echo "Task completed with exit code: $TASK_EXIT"
 # =============================================================================
 
 SUBMISSION_DIR={{ manifest_file | dirname }}
-JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${MAD_COLLECT_JOB_ID}"
+JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/{{ job_tag }}"
 NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_${SLURM_PROCID}"
 mkdir -p "$NODE_COLLECTION_DIR"
+
+# A copy that fails here decides whether the workspace may be deleted below:
+# on a full or unreachable shared filesystem the node's own copy is then all
+# that is left of the run.
+COLLECTION_OK=1
 
 if [ $TASK_EXIT -eq 0 ]; then
     echo ""
@@ -789,18 +876,24 @@ if [ $TASK_EXIT -eq 0 ]; then
     echo "Node ${SLURM_PROCID}: Copying artifacts to ${NODE_COLLECTION_DIR}"
     echo "========================================================================"
     # Copy node stdout/stderr into node dir for collect_results
-    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
-    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+    if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || COLLECTION_OK=0; fi
+    if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || COLLECTION_OK=0; fi
     # Copy env, logs, profiling, multi_results, etc. (not perf.csv/perf_entry/perf_super)
     for f in "$WORKSPACE"/*_env.csv "$WORKSPACE"/*.log "$WORKSPACE"/multi_results*.csv "$WORKSPACE"/results* "$WORKSPACE"/gpu_info_*.csv "$WORKSPACE"/library_trace.csv; do
-        if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+        if [ -f "$f" ]; then cp "$f" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     done
     {% if multiple_results %}
-    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
-    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
+    if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     {% endif %}
-    if [ -d "$WORKSPACE/rocprof_output" ]; then cp -r "$WORKSPACE/rocprof_output" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
-    echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
+    for d in rocprof_output rpd_output rocm_trace_lite_output torch_profiler_output tracelens_output; do
+        if [ -d "$WORKSPACE/$d" ]; then cp -r "$WORKSPACE/$d" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
+    done
+    if [ $COLLECTION_OK -eq 1 ]; then
+        echo "  ✓ Node ${SLURM_PROCID} artifacts copied"
+    else
+        echo "  ⚠ Node ${SLURM_PROCID}: some artifacts could not be copied"
+    fi
     echo "========================================================================"
 else
     echo ""
@@ -811,6 +904,27 @@ else
     # Copy node logs so collect_results can still inspect them
     if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
     if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+fi
+
+# The workspace holds a full rsync of the project plus this node's outputs, and
+# it is job-scoped, so leaving it behind grows without bound on a persistent
+# SLURM_TMPDIR. Drop it once the artifacts above are safely in
+# $NODE_COLLECTION_DIR -- but only then: a failed task, and a task whose
+# artifacts did not all copy out, keep the workspace, because at that point it
+# holds the only copy of the run. The sweep at the top of the next job on this
+# node collects what is left once SLURM no longer knows the job.
+# Best-effort: this script runs under `set -e`, the model ran as root in the
+# container and can leave root-owned files in the bind mount, and a task that
+# already succeeded must not be reported as failed over an unlink.
+if [ $TASK_EXIT -eq 0 ] && [ $COLLECTION_OK -eq 1 ]; then
+    cd /
+    if rm -rf "$WORKSPACE" 2>/dev/null; then
+        echo "Node ${SLURM_PROCID}: removed workspace $WORKSPACE"
+    else
+        echo "Node ${SLURM_PROCID}: could not remove workspace $WORKSPACE"
+    fi
+elif [ $TASK_EXIT -eq 0 ]; then
+    echo "Node ${SLURM_PROCID}: kept workspace $WORKSPACE, artifact collection was incomplete"
 fi
 
 exit $TASK_EXIT
@@ -827,7 +941,10 @@ bash "$TASK_SCRIPT"
 EXIT_CODE=$?
 {% else %}
 echo "Launching tasks on {{ nodes }} nodes..."
-srun bash "$TASK_SCRIPT"
+{# Under sbatch the #SBATCH directives above already shape the step. Inside an
+   existing allocation they are inert comments, and a bare srun would spread the
+   run over every node the allocation holds rather than the ones it asked for. -#}
+srun {% if in_place %}-N {{ nodes }} -n {{ nodes }} --nodelist "$STEP_NODELIST" {% endif %}bash "$TASK_SCRIPT"
 EXIT_CODE=$?
 {% endif %}
 
@@ -868,7 +985,7 @@ EXIT_CODE=$?
 {% if multiple_results %}
 if [ $EXIT_CODE -eq 0 ]; then
     SUBMISSION_DIR={{ manifest_file | dirname }}
-    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/${MAD_COLLECT_JOB_ID}"
+    JOB_COLLECTION_DIR="${SUBMISSION_DIR}/{{ output_dir }}/{{ model_name }}/{{ job_tag }}"
     NODE_COLLECTION_DIR="${JOB_COLLECTION_DIR}/node_0"
     mkdir -p "$NODE_COLLECTION_DIR"
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
@@ -910,8 +1027,8 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "  📋 Individual Node Logs ({{ nodes }} nodes):"
     echo "  ─────────────────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.err"
         if [ -f "$NODE_OUT" ]; then
             OUT_SIZE=$(du -h "$NODE_OUT" 2>/dev/null | cut -f1)
             ERR_SIZE=$(du -h "$NODE_ERR" 2>/dev/null | cut -f1)
@@ -933,14 +1050,14 @@ else
     echo "  📋 Check Individual Node Logs:"
     echo "  ─────────────────────────────────"
     for i in $(seq 0 $(({{ nodes }} - 1))); do
-        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.out"
-        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_node_${i}.err"
+        NODE_OUT="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.out"
+        NODE_ERR="{{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_node_${i}.err"
         if [ -f "$NODE_OUT" ] || [ -f "$NODE_ERR" ]; then
             echo "  Node $i: ${NODE_OUT}"
         fi
     done
     {% else %}
-    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_${MAD_COLLECT_JOB_ID}_*.out"
+    echo "  Check logs: {{ output_dir }}/madengine-{{ model_name }}_{{ job_tag }}_*.out"
     {% endif %}
     echo "========================================================================"
 fi

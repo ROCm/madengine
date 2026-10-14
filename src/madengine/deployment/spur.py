@@ -99,6 +99,15 @@ class SpurDeployment(SlurmDeployment):
     # instead of srun.
     IS_SPUR = True
 
+    @property
+    def job_tag(self) -> str:
+        """Paths key on the array id, which srun would otherwise replace.
+
+        ``MAD_COLLECT_JOB_ID`` is captured before the task script runs. An
+        in-place suffix, when present, still isolates concurrent runs.
+        """
+        return "${MAD_COLLECT_JOB_ID}" + self.run_suffix
+
     def __init__(self, config: DeploymentConfig):
         super().__init__(config)
         # Rendezvous root MUST be on a shared (NFS) filesystem visible to every
