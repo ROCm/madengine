@@ -354,6 +354,8 @@ Unlike templated launchers, slurm_multi runs the model's `.slurm` script directl
 
 When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated launchers do the same for multi-node runs: the job script runs in place and starts its tasks with `srun` on the first `nodes` hosts of the allocation (or on `slurm.nodelist`, when set). Each run gets its own paths, so several runs can share one allocation. Single-node runs still submit their own `sbatch`, because in place their script would run on the submitting host.
 
+Those paths are job-scoped directories, not the SLURM submission directory. A single-node job uses `$SLURM_TMPDIR/madengine_job_<job id>` when that directory is writable, otherwise `/tmp/madengine_job_<job id>`. A multi-node task appends `_node_<rank>`, and an in-place run also appends a per-run suffix so two runs in one allocation do not share a directory. A multi-node task removes its workspace only after the task exits 0 and every artifact has been copied out; a failure, or a copy that did not finish, keeps the directory. A later job from the same user deletes `madengine_job_*` directories older than 7 days under that scratch root when `squeue -u` lists this user's jobs and the directory's job id is not among them. An unanswered `squeue` deletes nothing.
+
 ```bash
 salloc --nodes=3 --gpus-per-node=8 --partition=gpu
 madengine run --manifest-file build_manifest.json

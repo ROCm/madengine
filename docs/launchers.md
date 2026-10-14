@@ -666,7 +666,7 @@ fields are honoured identically on both paths:
 | `distributed.launcher` | Selects the path. Resolved deployment-config-first, model-card-second — the same resolution used to emit the launcher env block, so the two can never disagree. |
 | `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. Non-numeric or non-positive values are ignored with a warning — `slurm.nodes` is used instead. |
 | `slurm.*` | `partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `output_dir`, `nodelist`, `account`, `qos`, `modules`, `skip_gpus_directive`, `results_dir` — the full set every build path (normal build, prebuilt image, `--build-on-compute`) promotes into `deployment_config.slurm`. Other `slurm.*` fields documented in [configuration.md](configuration.md) are read at deploy time but are not copied from the model card into a manifest's `deployment_config`. |
-| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. |
+| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. A normal run deletes a leftover file with that name first, so a script that appends cannot report the previous run. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the basename of `--output` are kept. `--skip-model-run` does not delete it, because nothing writes a replacement. The `slurm_multi` wrapper applies the same rule but only knows the default output name `perf.csv`. |
 
 > **`args` is not sbatch flags.** On the templated path `args` goes to the
 > containerised `run.sh`; on this path it is appended to `bash <model>.slurm`. It is
@@ -847,7 +847,11 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 
 **DeepSpeed**:
 ```bash
+# Kubernetes
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
+
+# SLURM — the hostfile is per job, and an in-place salloc run adds a suffix
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."
 ```
 
 **Megatron-LM**:

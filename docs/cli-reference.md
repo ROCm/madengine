@@ -374,6 +374,7 @@ madengine run --config my_job.yaml --config distributed.nnodes=8
 **Deployment Targets:**
 
 - **Local** - Docker containers on local machine
+- **llm-d** - Detected when an `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
 - **Kubernetes** - Detected when `k8s` key present in context
 - **SLURM** - Detected when `slurm` key present in context
 

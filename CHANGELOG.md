@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **llm-d reporting and model identity**: Result rows stamp `deployment_type=llm-d`, `launcher=vllm`, and `serving_mode=disaggregated|aggregated` (also the CLI Mode column). The selected MAD card's `--model_repo` fills `llm_d.model.hf_repo` / `model.name` when unset; an explicit value that differs from the card is rejected. When the card sets `multiple_results`, that CSV is preferred over log `performance:` lines.
 
+- **SLURM multi-node runs inside an existing allocation** (#213): When `SLURM_JOB_ID` is set, a multi-node templated launcher runs in place with `srun` instead of nesting another `sbatch`. Single-node runs still submit `sbatch`. Each in-place run gets its own workspace and DeepSpeed hostfile (`/tmp/deepspeed_hostfile_<job tag>.txt`). Workspaces are `madengine_job_<job id>_node_<rank>` under `SLURM_TMPDIR` or `/tmp`, removed after a successful artifact copy, and reclaimed after 7 days by a later job from the same user.
+
+- **Stale `multiple_results` files**: A normal run deletes a leftover results CSV before the model script so an appending script cannot report the previous run. `--skip-model-run` leaves the file. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are kept. `MAD_CONTAINER_IMAGE` records the build as skipped and the summary prints which pre-built image was used.
+
 ### Fixed
 
 - **Kubernetes Job names longer than 63 characters failed admission**: Batch Jobs require the pod `job-name` label to equal `metadata.name`, and label values are capped at 63. Long card paths (for example llm-d MoE names) are now built with `sanitize_k8s_object_name(..., max_total_len=63)` so the Job name and label stay identical.
@@ -22,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 
 - Documented llm-d card-driven model identity, serving_mode / multiple_results reporting, Job naming (≤63), and MI250 path constraints (1 GPU/pod, no RDMA/MoRI/WideEP) in `docs/llm-d.md`, `docs/deployment.md`, `docs/configuration.md`, `deploy/llm-d/mi250/README.md`, and `examples/llm-d-configs/`. Example `model.name` values use full Hugging Face ids.
+
+- Corrected llm-d docs that disagreed with the code: managed `model.name` must be the full Hugging Face id, `hf://` URIs need `model.size`, helm releases use the model-qualified stem (`MAD_LLM_D_RELEASE_PREFIX`), and a failed model-cache Job is left for `kubectl logs`. Documented in-place SLURM workspaces, stale `multiple_results` deletion, and the `MAD_CONTAINER_IMAGE` skip summary.
 
 ## [2.3.0] - 2026-10-09
 

@@ -308,6 +308,7 @@ Pass **`--skip-model-run`** to start containers and run `pre_scripts`, but skip 
 - Exit status is `SKIPPED` (not `FAILURE`) — the overall run exits `0`.
 - Combine with **`--keep-alive`** to leave a fully-set-up, live container for manual inspection or debugging.
 - Has **no effect** on distributed (SLURM/K8s) targets — a warning is printed if used with them.
+- A normal run deletes a leftover `multiple_results` file before the model script, so an appending script cannot report the previous run. `--skip-model-run` leaves that file, because nothing writes a replacement. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are never deleted.
 
 ```bash
 # Skip the model script; container starts and pre_scripts run
@@ -387,6 +388,17 @@ At the start of each container run, madengine prints a side-by-side environment 
 | ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
 
 The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+
+### Deploy to llm-d
+
+An `llm_d` block benchmarks an [llm-d](llm-d.md) stack. It is checked before `k8s`, because the same config also carries a `k8s` block for the benchmark-client Job.
+
+```bash
+madengine run --tags my_llm_d_benchmark \
+  --additional-context-file examples/llm-d-configs/02-managed-dry-run.json
+```
+
+See [llm-d](llm-d.md) for attach mode, managed mode, and the MI250 notes.
 
 ### Deploy to Kubernetes
 
