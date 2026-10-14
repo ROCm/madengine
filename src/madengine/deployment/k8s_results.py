@@ -7,7 +7,6 @@ aggregating multi-node results, and writing to perf.csv / perf_super.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import ast
 import json
 import re
 import subprocess
@@ -157,37 +156,6 @@ def _shape_from_node_gpus(per_node: Dict[str, int]) -> Optional[Dict[str, int]]:
     else:
         gpus_per_node = max(counts, key=lambda count: list(per_node.values()).count(count))
     return {"nnodes": nnodes, "gpus_per_node": gpus_per_node, "n_gpus": total}
-
-
-def decode_pod_log(log: Any) -> str:
-    """Return pod log text with real newlines.
-
-    ``read_namespaced_pod_log`` receives raw bytes. The Kubernetes client then
-    does ``str(those_bytes)``, which is a Python repr (``b'line\\nline'``)
-    rather than decoded text. Parsing that repr never sees a ``performance:``
-    line or a perf CSV block.
-    """
-    if isinstance(log, bytes):
-        return log.decode("utf-8", errors="replace")
-    if not isinstance(log, str):
-        return "" if log is None else str(log)
-    # A real container log has newlines. The broken bytes repr does not, so
-    # only that form is decoded. Multiline logs from an NFS-backed run are
-    # left unchanged.
-    if (
-        "\n" not in log
-        and len(log) >= 3
-        and log[0] == "b"
-        and log[1] in "\"'"
-        and log[-1] == log[1]
-    ):
-        try:
-            value = ast.literal_eval(log)
-        except (SyntaxError, ValueError, MemoryError):
-            return log
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-    return log
 
 
 def collector_pod_name(deployment_id: str) -> str:

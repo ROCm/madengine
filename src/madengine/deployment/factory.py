@@ -2,8 +2,8 @@
 """
 Deployment Factory - Creates appropriate deployment instances.
 
-Implements Factory pattern to dynamically create SLURM or Kubernetes
-deployment instances based on target configuration.
+Implements Factory pattern to dynamically create SLURM, Kubernetes, or
+llm-d deployment instances based on target configuration.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -18,7 +18,7 @@ class DeploymentFactory:
     Factory for creating deployment instances.
 
     Supports dynamic registration and creation of deployment types.
-    Currently supports: slurm, k8s/kubernetes
+    Currently supports: slurm, k8s/kubernetes, llm-d
     """
 
     _deployments: Dict[str, Type[BaseDeployment]] = {}

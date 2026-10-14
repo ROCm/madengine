@@ -478,8 +478,13 @@ madengine run --tags my_model \
 ```
 
 `--tags` is required in this mode — without it madengine has no models to map
-onto the image and fails with a configuration error. Note this is an
-`--additional-context` key, not an environment variable.
+onto the image and fails with a configuration error. The build summary marks
+those models skipped and prints `Build skipped: using pre-built image …`.
+Note this is an `--additional-context` key, not an environment variable.
+
+On Kubernetes the same reference is what the cluster pulls (`registry_image`
+is set to that name). A tag that exists only in the local Docker daemon is
+not visible to the cluster.
 
 ### Custom Base Image
 
@@ -749,6 +754,16 @@ Node health preflight, shared-storage, and results-collection keys (`enable_node
 `shared_workspace`, `results_dir`) are documented in
 [examples/slurm-configs/README.md](../examples/slurm-configs/README.md).
 
+Job-local workspaces are separate from `output_dir`. A single-node job uses
+`$SLURM_TMPDIR/madengine_job_<job id>` (or `/tmp/madengine_job_<job id>`). A
+multi-node task uses `madengine_job_<job tag>_node_<rank>` under the same root;
+inside an existing allocation the tag also carries a per-run suffix. A
+multi-node task deletes its workspace after a successful artifact copy and
+keeps it when the task fails or the copy is incomplete. A later job on that
+node deletes this user's `madengine_job_*` directories older than 7 days when
+`squeue -u` succeeds and the job id is no longer listed. See
+[Running inside salloc](deployment.md#running-inside-salloc).
+
 ### Multi-Node SLURM
 
 ```json
@@ -793,7 +808,7 @@ stack. The config also carries a `k8s` block, which configures the benchmark-cli
 {
   "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
   "llm_d": {
-    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen/Qwen3-32B", "hf_token_secret": "hf-token"},
+    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen/Qwen3-32B", "size": "80Gi", "hf_token_secret": "hf-token"},
     "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
     "decode": {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
     "charts": {
