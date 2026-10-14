@@ -205,6 +205,67 @@ class TestDisplayResultsTable:
 
             mock_console.print.assert_called()
 
+    def test_display_results_table_skipped_prebuilt_image(self):
+        """A skipped Docker build names the model and the image that was reused."""
+        summary = {
+            "successful_builds": [],
+            "failed_builds": [],
+            "skipped_builds": [
+                {
+                    "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
+                    "docker_image": "rocm/example:tag",
+                    "status": "SKIPPED",
+                }
+            ],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results")
+
+            table_arg = mock_console.print.call_args_list[0][0][0]
+            buf = StringIO()
+            RichConsole(file=buf, width=140, force_terminal=True).print(table_arg)
+            rendered = buf.getvalue()
+            assert "pyt_vllm_disagg_llmd_qwen3-0.6b" in rendered
+            assert "Skipped" in rendered
+            assert "No items" not in rendered
+            notes = [str(call.args[0]) for call in mock_console.print.call_args_list[1:]]
+            assert any("rocm/example:tag" in note for note in notes)
+
+    def test_performance_table_shows_llm_d_deployment_and_mode(self, tmp_path):
+        """llm-d rows show the serving runtime and mode; other rows leave Mode blank."""
+        from madengine.cli.utils import display_performance_table
+
+        csv_path = tmp_path / "perf.csv"
+        csv_path.write_text(
+            "model,nnodes,gpus_per_node,n_gpus,launcher,deployment_type,"
+            "serving_mode,gpu_architecture,performance,metric,status,"
+            "test_duration,dataname,data_provider_type\n"
+            "vllm_disagg_llmd/llama,4,1,4,vllm,llm-d,disaggregated,gfx90a,"
+            "118.2,tokens_per_second,SUCCESS,174,huggingface,huggingface\n"
+            "plain-k8s,1,8,8,torchrun,kubernetes,,gfx942,1,samples_per_second,"
+            "SUCCESS,10,N/A,N/A\n",
+            encoding="utf-8",
+        )
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_performance_table(str(csv_path))
+            tables = [
+                call.args[0]
+                for call in mock_console.print.call_args_list
+                if call.args and hasattr(call.args[0], "add_row")
+            ]
+        assert tables
+        table_arg = tables[-1]
+        headers = [column.header for column in table_arg.columns]
+        cells = [str(cell) for column in table_arg.columns for cell in column.cells]
+        rendered = " ".join(headers + cells)
+        assert "Mode" in headers
+        assert "llm-d" in rendered
+        assert "disaggregated" in rendered
+        assert "vllm" in rendered
+        assert "torchrun" in rendered
+        assert "kubernetes" in rendered
+
 
 # ============================================================================
 # CLI Validation Tests

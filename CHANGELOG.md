@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`llm-d` deployment target** (#181): Benchmarks an [llm-d](https://llm-d.ai) stack — vLLM/SGLang model servers behind a Gateway API Inference Extension `InferencePool` — from an ordinary single-pod Kubernetes Job, so the existing ConfigMap bundling, log streaming, result harvesting and `perf.csv` path are reused unchanged. Two modes: **attach** (`llm_d.endpoint_url` set: madengine benchmarks a stack it did not create and never installs or uninstalls anything) and **managed** (madengine installs three pinned helm releases, waits for model-server readiness, reads the endpoint off the live `Gateway`, benchmarks, then tears the releases down on the way out — on success as well as on failure). Target selection follows the existing Convention over Configuration rule: an `llm_d` key selects it, checked before `k8s` because an llm-d config carries both. The benchmark client itself is CPU-only — `k8s.gpu_count` defaults to `0` under llm-d so the load generator does not compete with the stack it measures. See `docs/llm-d.md`.
+
+### Changed
+
+- **llm-d reporting and model identity**: Result rows stamp `deployment_type=llm-d`, `launcher=vllm`, and `serving_mode=disaggregated|aggregated` (also the CLI Mode column). The selected MAD card's `--model_repo` fills `llm_d.model.hf_repo` / `model.name` when unset; an explicit value that differs from the card is rejected. When the card sets `multiple_results`, that CSV is preferred over log `performance:` lines.
+
+### Fixed
+
+- **Kubernetes Job names longer than 63 characters failed admission**: Batch Jobs require the pod `job-name` label to equal `metadata.name`, and label values are capped at 63. Long card paths (for example llm-d MoE names) are now built with `sanitize_k8s_object_name(..., max_total_len=63)` so the Job name and label stay identical.
+
+### Docs
+
+- Documented llm-d card-driven model identity, serving_mode / multiple_results reporting, Job naming (≤63), and MI250 path constraints (1 GPU/pod, no RDMA/MoRI/WideEP) in `docs/llm-d.md`, `docs/deployment.md`, `docs/configuration.md`, `deploy/llm-d/mi250/README.md`, and `examples/llm-d-configs/`. Example `model.name` values use full Hugging Face ids.
+
 ## [2.3.0] - 2026-10-09
 
 ### Added

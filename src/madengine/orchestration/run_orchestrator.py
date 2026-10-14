@@ -246,7 +246,7 @@ class RunOrchestrator:
             # explicit vs. ConfigLoader preset default) captured at build time — see
             # BuildOrchestrator._merge_model_config_into_manifest.
             for key in [
-                "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars",
+                "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars",
                 "debug", "_explicit_slurm_keys",
             ]:
                 if key in deployment_config and key not in self.additional_context:
@@ -440,6 +440,11 @@ class RunOrchestrator:
             "local_image_mode": True,
             "local_image_name": image_name,
             "deployment_config": self.additional_context.get("deployment_config", {}),
+            "summary": {
+                "successful_builds": [],
+                "failed_builds": [],
+                "skipped_builds": [],
+            },
         }
         
         # For each model, create a synthetic entry using the provided image
@@ -454,7 +459,10 @@ class RunOrchestrator:
                 "build_status": "SKIPPED",
                 "build_time": 0,
                 "local_image": True,
-                "registry_image": None,
+                # Kubernetes cannot see a node-local Docker image. The name the
+                # user passed is what the cluster pulls, so it is the registry
+                # image as well.
+                "registry_image": image_name,
             }
             
             # Convert data list to comma-separated string (required by dataprovider)
@@ -485,6 +493,13 @@ class RunOrchestrator:
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
                 "multiple_results": model.get("multiple_results", ""),
             }
+            manifest["summary"]["skipped_builds"].append(
+                {
+                    "model": model_name,
+                    "docker_image": image_name,
+                    "status": "SKIPPED",
+                }
+            )
         
         # Write manifest to file
         with open(manifest_output, "w") as f:
@@ -511,7 +526,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 # "_explicit_slurm_keys" describes the slurm block it was recorded
@@ -1268,6 +1283,7 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
 
         Convention over Configuration:
+        - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
         - A self-managed SLURM launcher (slurm_multi) → slurm deployment
@@ -1281,9 +1297,13 @@ class RunOrchestrator:
                 launcher the model card declared.
 
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "llm-d", "k8s", "slurm", or "local"
         """
-        if "k8s" in config or "kubernetes" in config:
+        # Checked first: an llm-d config also carries a "k8s" block, which
+        # configures the benchmark-client Job.
+        if "llm_d" in config:
+            return "llm-d"
+        elif "k8s" in config or "kubernetes" in config:
             return "k8s"
         if "slurm" in config:
             return "slurm"
