@@ -532,6 +532,17 @@ class TestCreateManifestFromLocalImage:
 
         built_model = next(iter(manifest["built_models"].values()))
         assert built_model["multiple_results"] == "perf_uber_storefront_v1t1.csv"
+        built_image = next(iter(manifest["built_images"].values()))
+        assert built_image["registry_image"] == "registry.io/org/model:ci-tag"
+        assert manifest["summary"]["successful_builds"] == []
+        assert manifest["summary"]["failed_builds"] == []
+        assert manifest["summary"]["skipped_builds"] == [
+            {
+                "model": "uber_storefront/v1t1",
+                "docker_image": "registry.io/org/model:ci-tag",
+                "status": "SKIPPED",
+            }
+        ]
 
     @patch("madengine.orchestration.run_orchestrator.Context")
     def test_multiple_results_defaults_to_empty_string(self, mock_context, tmp_path):
