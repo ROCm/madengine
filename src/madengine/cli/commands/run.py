@@ -21,6 +21,7 @@ except ImportError:
 from madengine.core.errors import BuildError, ConfigurationError, ExecutionError
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.orchestration.run_orchestrator import RunOrchestrator
+from madengine.utils.gpu_memory_gate import DEFAULT_THRESHOLD_MB
 
 from ..constants import (
     DEFAULT_DATA_CONFIG,
@@ -176,6 +177,20 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
+    wait_for_gpu_memory: Annotated[
+        Optional[int],
+        typer.Option(
+            "--wait-for-gpu-memory",
+            min=0,
+            help=(
+                "Before a local run, require every GPU to report at most "
+                f"{DEFAULT_THRESHOLD_MB} MB of memory in use. "
+                "Pass 0 to check once and fail if any GPU is over that "
+                "threshold, or a number of seconds to poll until memory "
+                "drops or the timeout elapses. Ignored on SLURM and Kubernetes."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -309,6 +324,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=True,
             )
 
@@ -420,6 +436,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 

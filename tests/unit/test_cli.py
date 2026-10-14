@@ -16,6 +16,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import importlib
 import json
 import os
+import re
 from io import StringIO
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -498,8 +499,49 @@ class TestRunCommandExitCodes:
         """CLI help is reachable in CI without GPU."""
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == ExitCode.SUCCESS
-        assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
-        assert "--skip-model-run" in result.stdout
+        # Rich bolds each segment of an option name, so strip ANSI before matching.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "run" in plain.lower() or "model" in plain.lower()
+        assert "--skip-model-run" in plain
+        assert "--wait-for-gpu-memory" in plain
+        from madengine.utils.gpu_memory_gate import DEFAULT_THRESHOLD_MB
+
+        assert str(DEFAULT_THRESHOLD_MB) in plain
+
+    def test_run_rejects_negative_gpu_memory_wait(self, runner: CliRunner) -> None:
+        """A negative wait is rejected by the CLI before orchestration."""
+        result = runner.invoke(app, ["run", "--wait-for-gpu-memory", "-1"])
+        assert result.exit_code != ExitCode.SUCCESS
+
+    def test_run_forwards_wait_for_gpu_memory(self, runner: CliRunner) -> None:
+        """The flag value reaches the orchestrator args namespace."""
+        run_module = importlib.import_module("madengine.cli.commands.run")
+        captured = {}
+
+        def factory(args):
+            captured["args"] = args
+            mock_orch = MagicMock()
+            mock_orch.execute.return_value = {
+                "successful_runs": [],
+                "failed_runs": [],
+            }
+            return mock_orch
+
+        with patch.object(run_module, "RunOrchestrator", side_effect=factory):
+            runner.invoke(
+                app,
+                [
+                    "run",
+                    "--tags",
+                    "some_model",
+                    "--wait-for-gpu-memory",
+                    "30",
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert captured["args"].wait_for_gpu_memory == 30
 
     def test_run_command_build_error_returns_build_failure_exit_code(
         self, runner: CliRunner
