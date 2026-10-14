@@ -1065,11 +1065,16 @@ class BuildOrchestrator:
             dockerfile_basename = (
                 Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
             )
-            local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
+            # Namespaced card names ("sglang_disagg/pyt_...") cannot go into a tag -- Docker
+            # tags allow no "/" -- so they are flattened as the regular build does
+            # (docker_builder: "/" -> "_"), giving the same ci-<card>_<dockerfile> name.
+            # The raw name was used before: "rocm/mad-private:sglang_disagg/pyt_..." is not a
+            # valid reference, so the build job would have built the image and failed to tag it.
+            local_image_name = f"ci-{model_name.replace('/', '_')}_{dockerfile_basename}".lower()
             if len(registry_parts) >= 2:
-                registry_image_name = f"{registry}:{model_name}"
+                registry_image_name = f"{registry}:{local_image_name}"
             else:
-                registry_image_name = f"{registry}/{model_name}:latest"
+                registry_image_name = f"{registry}/{local_image_name}:latest"
             self.rich_console.print(f"  {model_name}: {dockerfile_path} -> {registry_image_name}")
             per_model_data.append({
                 "model": model,

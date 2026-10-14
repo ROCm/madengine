@@ -5,6 +5,7 @@ hostnames`, rejects `sacct -X`, and can refuse sbatch during a Raft leader
 election. Each case here keeps stock SLURM's behaviour and adds the spur one.
 """
 
+import json
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -197,3 +198,54 @@ class TestBuildOnComputeSlurmDirectives:
     def test_run_job_gpus_do_not_make_the_build_request_gpus(self, tmp_path):
         h = self._header(self._build_script(tmp_path, {"partition": "gpu", "gpus_per_node": 8}))
         assert not [l for l in h if "--gpus" in l]
+
+
+class TestBuildOnComputeImageNames:
+    """A namespaced card ("dir/card") must give valid Docker references: tags allow no "/".
+    The name is flattened as the regular build does, ci-<dir>_<card>_<dockerfile>."""
+
+    # Docker reference: [registry[:port]/]path[:tag]; tag = [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}
+    REF = r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$"
+
+    def _manifest(self, tmp_path, registry, name):
+        import os, re
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock(); orch.console = MagicMock(); orch.rich_console = MagicMock()
+        orch.context = MagicMock(); orch.context.ctx = {}
+        orch.additional_context = {"slurm": {"partition": "gpu"}}
+        orch._original_user_slurm_keys = set(); orch.credentials = {}
+        model = {"name": name, "dockerfile": "docker/card", "scripts": "scripts/x/run.slurm",
+                 "n_gpus": "-1", "tags": ["card"], "slurm": {"partition": "gpu"},
+                 "distributed": {"launcher": "slurm_multi"}, "env_vars": {}}
+        df = tmp_path / "docker" / "card.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True); df.write_text("FROM scratch\n")
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
+                dm.return_value.run.return_value = [model]
+                with patch("subprocess.run") as run:
+                    run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(registry=registry,
+                                                   manifest_output=str(tmp_path / "m.json"))
+            script = (tmp_path / "madengine_build_job.sh").read_text()
+        finally:
+            os.chdir(cwd)
+        manifest = json.loads((tmp_path / "m.json").read_text())
+        return manifest, script
+
+    def test_namespaced_card_gives_a_valid_tag(self, tmp_path):
+        import re
+        manifest, script = self._manifest(tmp_path, "localhost:5000/repo", "sglang_disagg/pyt_card-x")
+        img = manifest["built_models"]["sglang_disagg/pyt_card-x"]["env_vars"]["DOCKER_IMAGE_NAME"]
+        assert img == "localhost:5000/repo:ci-sglang_disagg_pyt_card-x_card"
+        assert re.match(self.REF, img), img
+        assert "docker push localhost:5000/repo:ci-sglang_disagg_pyt_card-x_card" in script
+
+    def test_registry_without_path_also_valid(self, tmp_path):
+        import re
+        manifest, _ = self._manifest(tmp_path, "localhost:5000", "sglang_disagg/pyt_card-x")
+        img = manifest["built_models"]["sglang_disagg/pyt_card-x"]["env_vars"]["DOCKER_IMAGE_NAME"]
+        assert img == "localhost:5000/ci-sglang_disagg_pyt_card-x_card:latest"
+        assert re.match(self.REF, img), img
