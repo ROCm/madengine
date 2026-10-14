@@ -400,6 +400,15 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(f"[red]✗ Error checking madengine: {e}[/red]")
             return False
 
+    @staticmethod
+    def _safe_name(model_info: Dict) -> str:
+        """Model name usable as a single path component.
+
+        Cards discovered under scripts/<dir>/ are named "<dir>/<name>"; left as is,
+        the slash points file names into a subdirectory that is never created.
+        """
+        return model_info["name"].replace("/", "_")
+
     def prepare(self) -> bool:
         """Generate sbatch script from template."""
         # Escape-hatch early dispatch: slurm_multi is a self-managed launcher that runs the
@@ -621,13 +630,15 @@ class SlurmDeployment(BaseDeployment):
         )
         _bash_invocation = f"bash {_script_name_q} {_model_args_q}".rstrip()
         
+        safe_name = self._safe_name(model_info)
+
         # Generate simple wrapper script
         # IMPORTANT: SBATCH directives MUST be at the top, right after #!/bin/bash
         script_lines = [
             "#!/bin/bash",
-            f"#SBATCH --job-name=madengine-{model_info['name']}",
-            f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j_%t.out",
-            f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j_%t.err",
+            f"#SBATCH --job-name=madengine-{safe_name}",
+            f"#SBATCH --output={self.output_dir}/madengine-{safe_name}_%j_%t.out",
+            f"#SBATCH --error={self.output_dir}/madengine-{safe_name}_%j_%t.err",
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --nodes={self.nodes}",
             f"#SBATCH --ntasks={self.nodes}",
@@ -743,7 +754,7 @@ class SlurmDeployment(BaseDeployment):
         completion_marker_dir = self.output_dir.resolve()
         completion_marker_template = (
             completion_marker_dir
-            / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}.complete"
+            / f"madengine_{safe_name}_${{SLURM_JOB_ID:-local}}.complete"
         )
         
         # Disable `set -e` around the model script bash invocation below so a
@@ -799,18 +810,18 @@ class SlurmDeployment(BaseDeployment):
         # Store marker info for monitor() to reconstruct the path with deployment_id.
         self._completion_marker_dir = completion_marker_dir
         self._completion_marker_basename_template = (
-            f"madengine_{model_info['name']}_{{job_id}}.complete"
+            f"madengine_{safe_name}_{{job_id}}.complete"
         )
         # Backward-compat: monitor() falls back to this single path when the
         # job-id-aware path is unavailable (e.g. inside_allocation flow).
         self._completion_marker = (
-            completion_marker_dir / f"madengine_{model_info['name']}_local.complete"
+            completion_marker_dir / f"madengine_{safe_name}_local.complete"
         )
         
         script_content = "\n".join(script_lines)
         
         # Save script
-        self.script_path = self.output_dir / f"madengine_{model_info['name']}.sh"
+        self.script_path = self.output_dir / f"madengine_{safe_name}.sh"
         self.script_path.write_text(script_content)
         self.script_path.chmod(0o755)
         

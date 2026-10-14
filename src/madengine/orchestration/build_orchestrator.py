@@ -1042,11 +1042,14 @@ class BuildOrchestrator:
             dockerfile_basename = (
                 Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
             )
-            local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
+            # Cards discovered under scripts/<dir>/ are named "<dir>/<name>", and an
+            # image tag cannot contain a slash.
+            image_model_name = model_name.replace("/", "_")
+            local_image_name = f"ci-{image_model_name}_{dockerfile_basename}".lower()
             if len(registry_parts) >= 2:
-                registry_image_name = f"{registry}:{model_name}"
+                registry_image_name = f"{registry}:{image_model_name}"
             else:
-                registry_image_name = f"{registry}/{model_name}:latest"
+                registry_image_name = f"{registry}/{image_model_name}:latest"
             self.rich_console.print(f"  {model_name}: {dockerfile_path} -> {registry_image_name}")
             per_model_data.append({
                 "model": model,
