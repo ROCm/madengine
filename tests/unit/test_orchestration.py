@@ -16,6 +16,7 @@ from madengine.core.additional_context_defaults import (
 from madengine.orchestration.build_orchestrator import BuildOrchestrator
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 from madengine.core.errors import ConfigurationError
+from madengine.cli.utils import create_args_namespace
 
 
 # ---- image_filtering ----
@@ -160,6 +161,9 @@ class TestRunOrchestratorInit:
         mock_args = MagicMock()
         mock_args.additional_context = None
         mock_args.live_output = True
+        # A bare MagicMock auto-vivifies truthy attributes; pin the flags this
+        # assertion depends on so they cannot leak into additional_context.
+        mock_args.require_pinned_image = False
 
         orchestrator = RunOrchestrator(mock_args)
 
@@ -359,6 +363,280 @@ class TestRunOrchestrator:
         assert "--keep-alive" in printed
         assert "--skip-model-run" in printed
         assert "--keep-model-dir" not in printed  # was False, must not appear
+        # Unset on a MagicMock must not look like the flag was passed.
+        assert "--wait-for-gpu-memory" not in printed
+
+    def test_distributed_warns_when_gpu_memory_gate_set(self, tmp_path):
+        """--wait-for-gpu-memory is local-only and must be called out on SLURM/K8s."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.wait_for_gpu_memory = 30
+        mock_args.timeout = 60
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        printed = " ".join(
+            str(call) for call in orchestrator.rich_console.print.call_args_list
+        )
+        assert "--wait-for-gpu-memory" in printed
+        assert "--keep-alive" not in printed
+
+    def test_wait_for_gpu_memory_invokes_gate(self, tmp_path):
+        """A real integer timeout is handed to the gate with the host tool manager."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 15
+
+        orchestrator = RunOrchestrator(mock_args)
+        manager = object()
+        with patch(
+            "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
+            return_value=manager,
+        ) as get_manager, patch(
+            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
+        ) as check:
+            orchestrator._wait_for_gpu_memory()
+
+        get_manager.assert_called_once_with()
+        check.assert_called_once_with(manager, timeout_s=15)
+
+    def test_wait_for_gpu_memory_skipped_when_unset(self, tmp_path):
+        """Missing or non-integer values do not query the GPU."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+        with patch(
+            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
+        ) as check:
+            orchestrator._wait_for_gpu_memory()
+
+        check.assert_not_called()
+
+    def test_execute_local_waits_before_containers(self, tmp_path):
+        """The gate runs inside local execution, before the container runner."""
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(
+            json.dumps({"built_images": {"img": {"name": "m"}}, "built_models": {}})
+        )
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 30
+        mock_args.registry = None
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        # Containers still start when the model script is skipped, so the
+        # gate runs on this path too.
+        mock_args.skip_model_run = True
+
+        orchestrator = RunOrchestrator(mock_args)
+        order = []
+
+        def record_wait():
+            order.append("wait")
+
+        runner = MagicMock()
+
+        def record_run(**kwargs):
+            order.append("run")
+            return {"successful_runs": [], "failed_runs": []}
+
+        runner.run_models_from_manifest.side_effect = record_run
+
+        with patch.object(orchestrator, "_init_runtime_context"), patch.object(
+            orchestrator, "_show_node_info"
+        ), patch.object(orchestrator, "_copy_scripts"), patch.object(
+            orchestrator, "_wait_for_gpu_memory", side_effect=record_wait
+        ), patch(
+            "madengine.orchestration.run_orchestrator.load_credentials",
+            return_value={},
+        ), patch(
+            "madengine.execution.container_runner.ContainerRunner",
+            return_value=runner,
+        ):
+            orchestrator._execute_local(str(manifest), 60)
+
+        assert order == ["wait", "run"]
+
+    def test_wait_for_gpu_memory_tool_manager_failure_is_execution_error(
+        self, tmp_path
+    ):
+        """A vendor-detection failure is an ExecutionError, not a raw exception."""
+        from unittest.mock import MagicMock, patch
+        from madengine.core.errors import ExecutionError
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        mock_args.wait_for_gpu_memory = 0
+
+        orchestrator = RunOrchestrator(mock_args)
+        with patch(
+            "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
+            side_effect=ValueError("no gpu"),
+        ):
+            with pytest.raises(ExecutionError, match="unable to query GPU memory"):
+                orchestrator._wait_for_gpu_memory()
+
+    @pytest.mark.parametrize(
+        "cli_timeout,expected_config_timeout",
+        [
+            (-1, 7200),  # unspecified -> shared default, not left as -1
+            (0, 0),  # explicit "no timeout" passed through
+            (120, 120),  # explicit timeout passed through
+        ],
+    )
+    def test_distributed_resolves_timeout_sentinel(
+        self, tmp_path, cli_timeout, expected_config_timeout
+    ):
+        """_execute_distributed must resolve the CLI sentinel before building
+        DeploymentConfig.
+
+        Regression: unlike the local path (which calls resolve_run_timeout() in
+        container_runner.py), the distributed path forwarded args.timeout to
+        DeploymentConfig verbatim. A default run (--timeout unspecified, i.e.
+        -1) therefore left DeploymentConfig.timeout == -1, which
+        subprocess_timeout() maps to None -- silently dropping the wall-clock
+        cap on the SLURM in-allocation path instead of applying the intended
+        7200s default.
+        """
+        from unittest.mock import MagicMock, patch
+        from madengine.orchestration.run_orchestrator import RunOrchestrator
+
+        mock_args = MagicMock()
+        mock_args.keep_alive = False
+        mock_args.keep_model_dir = False
+        mock_args.skip_model_run = False
+        mock_args.timeout = cli_timeout
+        mock_args.additional_context = None
+        mock_args.live_output = False
+
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {}
+        orchestrator.rich_console = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.is_success = True
+        fake_result.deployment_id = "test-id"
+        fake_result.logs_path = None
+        fake_result.metrics = {"successful_runs": [], "failed_runs": []}
+
+        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+            mock_deploy = MagicMock()
+            mock_deploy.execute.return_value = fake_result
+            mock_create.return_value = mock_deploy
+
+            orchestrator._execute_distributed("slurm", str(tmp_path / "manifest.json"))
+
+        deployment_config = mock_create.call_args.args[0]
+        assert deployment_config.timeout == expected_config_timeout
+        assert isinstance(deployment_config.timeout, int)
+        # The sentinel itself must also survive, unresolved, for the job script
+        # to forward to the madengine it re-invokes.
+        assert deployment_config.cli_timeout == cli_timeout
+
+    def test_model_card_timeout_survives_the_distributed_round_trip(self, tmp_path):
+        """A model card's timeout must still win on SLURM when no --timeout is given.
+
+        Regression: _execute_distributed resolved the sentinel and the template
+        rendered that resolved value, so the job re-invoked madengine with an
+        explicit --timeout 7200. Precedence (correctly) ranks an explicit CLI
+        timeout above the model card, so the card's own value was discarded --
+        only on distributed targets, and only because madengine had synthesized
+        the value it was now treating as user intent.
+        """
+        from madengine.core.timeout import resolve_run_timeout
+
+        model_card = {"name": "foo", "timeout": 3600}
+
+        # Hop 1: the orchestrator, which has no model card in hand.
+        rendered = -1  # DeploymentConfig.cli_timeout for an unspecified --timeout
+        # Hop 2: the in-job madengine, resolving against the card.
+        assert resolve_run_timeout(model_card, rendered) == 3600
+        # ... matching what the single-hop local path produces.
+        assert resolve_run_timeout(model_card, -1) == 3600
+
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            ({}, -1),  # omitted -> sentinel, so the model card can still win
+            ({"timeout": 120}, 120),
+            ({"timeout": 0}, 0),
+            ({"timeout": -1}, -1),
+        ],
+    )
+    def test_execute_forwards_timeout_sentinel_to_local(
+        self, tmp_path, kwargs, expected
+    ):
+        """execute()'s own default must be the sentinel, not DEFAULT_RUN_TIMEOUT.
+
+        Regression: the parameter defaulted to 7200, which _execute_local hands
+        to resolve_run_timeout() as an explicit CLI timeout. A programmatic
+        caller that omitted `timeout` therefore silently outranked every model
+        card, contradicting the documented precedence.
+        """
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"target": "local"},
+                    "context": {},
+                    "built_images": {},
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+
+        orchestrator = RunOrchestrator(mock_args)
+
+        with patch.object(RunOrchestrator, "_cleanup_model_dir_copies"), \
+             patch.object(RunOrchestrator, "_execute_local") as mock_local:
+            mock_local.return_value = {"successful_runs": [], "failed_runs": []}
+            orchestrator.execute(manifest_file=str(manifest_path), **kwargs)
+
+        assert mock_local.call_args.args[1] == expected
 
 
 @pytest.mark.unit
@@ -406,6 +684,17 @@ class TestCreateManifestFromLocalImage:
 
         built_model = next(iter(manifest["built_models"].values()))
         assert built_model["multiple_results"] == "perf_uber_storefront_v1t1.csv"
+        built_image = next(iter(manifest["built_images"].values()))
+        assert built_image["registry_image"] == "registry.io/org/model:ci-tag"
+        assert manifest["summary"]["successful_builds"] == []
+        assert manifest["summary"]["failed_builds"] == []
+        assert manifest["summary"]["skipped_builds"] == [
+            {
+                "model": "uber_storefront/v1t1",
+                "docker_image": "registry.io/org/model:ci-tag",
+                "status": "SKIPPED",
+            }
+        ]
 
     @patch("madengine.orchestration.run_orchestrator.Context")
     def test_multiple_results_defaults_to_empty_string(self, mock_context, tmp_path):
@@ -446,3 +735,545 @@ class TestCreateManifestFromLocalImage:
 
         built_model = next(iter(manifest["built_models"].values()))
         assert built_model["multiple_results"] == ""
+
+
+@pytest.mark.unit
+class TestMergeModelConfigIntoManifest:
+    """BuildOrchestrator._merge_model_config_into_manifest is shared by every build
+    path (normal Docker build, prebuilt-image, implicit DOCKER_IMAGE_NAME), so a model
+    card's distributed/slurm declarations reach deployment_config no matter how the
+    image was built.
+    """
+
+    @patch("madengine.orchestration.build_orchestrator.Context")
+    @patch("os.path.exists", return_value=False)
+    def _make_orchestrator(self, mock_exists, mock_context, additional_context=None):
+        mock_args = MagicMock()
+        mock_args.additional_context = additional_context
+        mock_args.additional_context_file = None
+        mock_args.live_output = True
+        return BuildOrchestrator(mock_args)
+
+    def test_normal_build_path_persists_model_card_launcher(self, tmp_path):
+        """Regression: only the prebuilt-image path used to copy distributed.launcher
+        into deployment_config, so a normal Docker build of a slurm_multi model card
+        left deployment_config without a launcher and `run` inferred "local"."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
+
+        models = [{"name": "m1", "distributed": {"launcher": "slurm_multi"}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved = json.loads(manifest_file.read_text())
+        assert saved["deployment_config"]["distributed"]["launcher"] == "slurm_multi"
+
+    def test_expanded_slurm_whitelist_promotes_all_documented_fields(self, tmp_path):
+        """docs/launchers.md documents these slurm.* fields as part of the model-card
+        contract; the merge whitelist must actually promote every one of them."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
+
+        model_slurm = {
+            "partition": "gpu",
+            "nodes": 4,
+            "gpus_per_node": 8,
+            "time": "12:00:00",
+            "exclusive": True,
+            "reservation": "myres",
+            "output_dir": "./out",
+            "nodelist": "node[1-4]",
+            "account": "myaccount",
+            "qos": "high",
+            "modules": ["rocm/6.0"],
+            "skip_gpus_directive": True,
+            "results_dir": "./results",
+        }
+        models = [{"name": "m1", "slurm": model_slurm}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved_slurm = json.loads(manifest_file.read_text())["deployment_config"]["slurm"]
+        for key, value in model_slurm.items():
+            assert saved_slurm[key] == value
+
+    def test_explicit_slurm_keys_provenance_distinguishes_model_card_from_default(
+        self, tmp_path
+    ):
+        """Regression: a manifest's slurm dict is written *after* ConfigLoader applies
+        preset defaults, so a persisted nodes=1 default was indistinguishable from a
+        real user/model-card setting on a later `run --manifest-file`. The merge must
+        record which keys were actually explicit (user additional-context or model
+        card) as opposed to a preset default."""
+        orchestrator = self._make_orchestrator(
+            additional_context='{"slurm": {"partition": "gpu"}}'
+        )
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "m1"}}}))
+
+        # Model card declares nnodes-sizing via slurm.nodes; "time" here simulates a
+        # ConfigLoader-applied preset default already present in additional_context,
+        # which must NOT be treated as explicit.
+        models = [{"name": "m1", "slurm": {"nodes": 4}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        explicit_keys = set(
+            json.loads(manifest_file.read_text())["deployment_config"][
+                "_explicit_slurm_keys"
+            ]
+        )
+        assert "partition" in explicit_keys  # from --additional-context
+        assert "nodes" in explicit_keys  # copied from the model card
+        assert "time" not in explicit_keys  # never declared by user or model card
+
+    def test_failed_first_model_does_not_supply_deployment_metadata(self, tmp_path):
+        """`models` is the full discovery list, but built_models only holds models
+        whose build succeeded. If the first discovered model failed, its
+        distributed/slurm settings must not be persisted: `run` would infer the
+        target and allocation from a model that is not runnable."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img-ok": {"name": "ok"}}}))
+
+        models = [
+            {
+                "name": "failed",
+                "distributed": {"launcher": "slurm_multi", "nnodes": 8},
+                "slurm": {"nodes": 8, "partition": "failed-part"},
+            },
+            {
+                "name": "ok",
+                "distributed": {"launcher": "torchrun", "nnodes": 2},
+                "slurm": {"nodes": 2, "partition": "ok-part"},
+            },
+        ]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        deployment_config = json.loads(manifest_file.read_text())["deployment_config"]
+        assert deployment_config["distributed"]["launcher"] == "torchrun"
+        assert deployment_config["distributed"]["nnodes"] == 2
+        assert deployment_config["slurm"]["nodes"] == 2
+        assert deployment_config["slurm"]["partition"] == "ok-part"
+
+    def test_no_built_models_persists_no_model_card_metadata(self, tmp_path):
+        """When every build failed there is no runnable model to take metadata from."""
+        orchestrator = self._make_orchestrator()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {}}))
+
+        models = [{"name": "failed", "distributed": {"launcher": "slurm_multi"}}]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        saved = json.loads(manifest_file.read_text())
+        assert "distributed" not in saved.get("deployment_config", {})
+
+    def test_differing_config_warning_ignores_unbuilt_models(self, tmp_path):
+        """Only built models can be the source, so an unbuilt model's differing
+        config is not a conflict worth warning about."""
+        orchestrator = self._make_orchestrator()
+        orchestrator.rich_console = MagicMock()
+        manifest_file = tmp_path / "build_manifest.json"
+        manifest_file.write_text(json.dumps({"built_models": {"img": {"name": "ok"}}}))
+
+        models = [
+            {"name": "failed", "distributed": {"launcher": "slurm_multi"}},
+            {"name": "ok", "distributed": {"launcher": "torchrun"}},
+        ]
+        orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
+
+        printed = " ".join(str(c) for c in orchestrator.rich_console.print.call_args_list)
+        assert "differing" not in printed
+
+
+@pytest.mark.unit
+class TestRequirePinnedImageContext:
+    """--require-pinned-image and require_pinned_image both reach additional_context."""
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_cli_flag_sets_context_key(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_flag_absent_leaves_key_unset(self, mock_context):
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=False,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert "require_pinned_image" not in orch.additional_context
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_additional_context_key_alone_is_honoured(self, mock_context):
+        args = create_args_namespace(
+            additional_context="{'require_pinned_image': True}",
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        assert orch.additional_context["require_pinned_image"] is True
+
+    @patch("madengine.orchestration.run_orchestrator.Context")
+    def test_key_is_persisted_into_manifest_context(self, mock_context, tmp_path):
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+                    "built_models": {"img1": {"name": "m"}},
+                    "context": {},
+                    "deployment_config": {},
+                }
+            )
+        )
+
+        args = create_args_namespace(
+            additional_context=None,
+            require_pinned_image=True,
+            live_output=False,
+        )
+        orch = RunOrchestrator(args)
+        orch._load_and_merge_manifest(str(manifest_path))
+
+        written = json.loads(manifest_path.read_text())
+        assert written["context"]["require_pinned_image"] is True
+
+
+class TestDistributedDeploymentFailureIsReported:
+    """A failed scheduler deployment must reach the caller as a failure.
+
+    The CLI derives its exit code from ``len(failed_runs)``, so a summary with
+    empty lists reads as a clean run: a SLURM job that failed was reported as
+    "All model executions completed successfully" and exited 0.
+    """
+
+    @staticmethod
+    def _orchestrator(tmp_path):
+        args = MagicMock()
+        args.additional_context = None
+        args.live_output = True
+        args.require_pinned_image = False
+        args.timeout = -1
+        with patch("madengine.orchestration.run_orchestrator.Context"):
+            return RunOrchestrator(args)
+
+    def _deploy(
+        self,
+        tmp_path,
+        *,
+        is_success,
+        metrics=None,
+        message="Job 34462 failed",
+        models=("llama-3.1-70b",),
+        manifest_data=None,
+    ):
+        if manifest_data is None:
+            # Locally built models: keyed by image, logical name in "model".
+            manifest_data = {
+                "built_images": {f"ci-{name}": {"model": name} for name in models}
+            }
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(json.dumps(manifest_data))
+        orchestrator = self._orchestrator(tmp_path)
+        orchestrator.rich_console = MagicMock()
+        result = MagicMock()
+        result.is_success = is_success
+        result.metrics = metrics
+        result.message = message
+        result.deployment_id = "34462"
+        result.logs_path = None
+        with patch("madengine.deployment.factory.DeploymentFactory") as factory:
+            factory.create.return_value.execute.return_value = result
+            return orchestrator._execute_distributed("slurm", str(manifest))
+
+    def test_failure_without_metrics_is_not_silently_successful(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert summary["failed_runs"], "a failed deployment reported no failures"
+        assert summary["successful_runs"] == []
+
+    def test_failure_carries_the_scheduler_message(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, metrics=None)
+        assert "34462" in summary["failed_runs"][0]["error"]
+
+    def test_success_is_left_alone(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=True, metrics=None)
+        assert summary["failed_runs"] == []
+
+    def test_reported_failures_are_not_duplicated(self, tmp_path):
+        metrics = {
+            "successful_runs": [],
+            "failed_runs": [{"model": "m", "error": "boom"}],
+        }
+        summary = self._deploy(tmp_path, is_success=False, metrics=metrics)
+        assert summary["failed_runs"] == metrics["failed_runs"]
+
+    def test_every_model_in_the_manifest_is_blamed(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, models=("llama-3.1-70b", "mixtral-8x7b")
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == [
+            "llama-3.1-70b",
+            "mixtral-8x7b",
+        ]
+
+    def test_image_keys_are_resolved_to_model_names(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=("model1",))
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_prebuilt_manifest_resolves_through_built_models(self, tmp_path):
+        # The --use-image path keys both maps by model name and omits "model".
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            manifest_data={
+                "built_images": {"model1": {"prebuilt": True}},
+                "built_models": {"model1": {"name": "model1"}},
+            },
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_key_is_used_when_the_manifest_carries_no_name(self, tmp_path):
+        summary = self._deploy(
+            tmp_path, is_success=False, manifest_data={"built_images": {"model1": {}}}
+        )
+        assert summary["failed_runs"][0]["model"] == "model1"
+
+    def test_a_model_built_into_several_images_is_blamed_once(self, tmp_path):
+        # Multi-arch and multi-Dockerfile builds give one model several images.
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            manifest_data={
+                "built_images": {
+                    "ci-model1-gfx942": {"model": "model1"},
+                    "ci-model1-gfx950": {"model": "model1"},
+                }
+            },
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model1"]
+
+    def test_models_that_did_report_success_are_not_blamed(self, tmp_path):
+        # A deployment can fail after some models reported metrics; those must
+        # not appear in both lists.
+        metrics = {"successful_runs": [{"model": "model1"}], "failed_runs": []}
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            metrics=metrics,
+            models=("model1", "model2"),
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
+
+    def test_a_multiple_results_row_counts_as_the_model_reporting(self, tmp_path):
+        # slurm.py and k8s_results.py name each results row "<model>_<row>".
+        metrics = {
+            "successful_runs": [{"model": "model1_Llama-3.1-70B"}],
+            "failed_runs": [],
+        }
+        summary = self._deploy(
+            tmp_path,
+            is_success=False,
+            metrics=metrics,
+            models=("model1", "model2"),
+        )
+        assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
+
+    def test_empty_manifest_falls_back_to_the_target(self, tmp_path):
+        summary = self._deploy(tmp_path, is_success=False, models=())
+        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
+
+    def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text("{ not json")
+        orchestrator = self._orchestrator(tmp_path)
+        orchestrator.rich_console = MagicMock()
+        result = MagicMock()
+        result.is_success = False
+        result.metrics = None
+        result.message = "Job 34462 failed"
+        result.logs_path = None
+        with patch("madengine.deployment.factory.DeploymentFactory") as factory:
+            factory.create.return_value.execute.return_value = result
+            summary = orchestrator._execute_distributed("slurm", str(manifest))
+        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
+
+
+class TestPlaceholderImageRejection:
+    """Model cards ship DOCKER_IMAGE_NAME as a "<supply-your-image>" marker.
+
+    The implicit --use-image path used to accept any single distinct card value, so
+    the placeholder became the image name and every compute node failed on
+    `docker pull <supply-your-image>` instead of the user getting told at submit time.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "<supply-your-image>",
+        "<your-image-here>",
+        "  <supply-your-image>  ",
+        "",
+        "   ",
+        "\t\n",
+        None,
+    ])
+    def test_placeholders_detected(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "rocm/vllm:latest",
+        "docker.io/myorg/img:tag",
+        "ci-pyt_vllm_kimi_k3_mi300x",
+        "localhost:5000/img",
+    ])
+    def test_real_images_accepted(self, value):
+        assert BuildOrchestrator._is_placeholder_image(value) is False
+
+    def test_reject_raises_configuration_error(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        with pytest.raises(ConfigurationError) as exc:
+            orchestrator._reject_placeholder_image("<supply-your-image>", ["m1"])
+        assert "placeholder" in str(exc.value).lower()
+
+    def test_reject_passes_through_real_image(self):
+        orchestrator = BuildOrchestrator.__new__(BuildOrchestrator)
+        orchestrator._reject_placeholder_image("rocm/vllm:latest", ["m1"])
+
+
+class TestSelfManagedLauncherImpliesSlurm:
+    """A slurm_multi model card without a `slurm` block still deploys to SLURM.
+
+    Target inference keys on the presence of a `slurm`/`k8s` block. Model cards
+    routinely declare only `distributed.launcher: slurm_multi`, which inferred
+    "local" and handed the job to the container runner — so the slurm_multi path
+    was never reached and the model's .slurm script was run as a local workload.
+    """
+
+    @pytest.mark.parametrize("config,expected", [
+        ({}, "local"),
+        ({"slurm": {}}, "slurm"),
+        ({"k8s": {}}, "k8s"),
+        ({"distributed": {"launcher": "slurm_multi"}}, "slurm"),
+        ({"distributed": {"launcher": "slurm-multi"}}, "slurm"),
+        ({"distributed": {"launcher": "torchrun"}}, "local"),
+        ({"distributed": {"launcher": "vllm"}}, "local"),
+        ({"distributed": {}}, "local"),
+        # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
+        # but the explicit target is the user's stated intent.
+        ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
+    ])
+    def test_inference(self, config, expected):
+        assert RunOrchestrator._infer_deployment_target(None, config) == expected
+
+    # A runtime `--additional-context` replaces the whole `distributed` block, so a
+    # partial override like {"distributed": {"nnodes": 4}} drops the launcher that
+    # the build stored. Inference must still see the model card's launcher, resolved
+    # the same way SlurmDeployment._resolve_launcher does (deployment first, card
+    # second), or the run is handed to the local container runner.
+    @pytest.mark.parametrize("config,card_launcher,expected", [
+        ({"distributed": {"nnodes": 4}}, "slurm_multi", "slurm"),
+        ({}, "slurm_multi", "slurm"),
+        ({"distributed": {"launcher": ""}}, "slurm_multi", "slurm"),
+        # An explicit deployment launcher outranks the card, as in the deployment.
+        ({"distributed": {"launcher": "torchrun"}}, "slurm_multi", "local"),
+        ({"distributed": {"launcher": "slurm_multi"}}, "torchrun", "slurm"),
+        ({"distributed": {"nnodes": 4}}, "torchrun", "local"),
+        ({"distributed": {"nnodes": 4}}, None, "local"),
+        # An explicit k8s/slurm block still decides first.
+        ({"k8s": {}}, "slurm_multi", "k8s"),
+    ])
+    def test_inference_uses_model_card_launcher(self, config, card_launcher, expected):
+        model_info = {"distributed": {"launcher": card_launcher}} if card_launcher else {}
+        assert (
+            RunOrchestrator._infer_deployment_target(None, config, model_info) == expected
+        )
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_execute_routes_partial_distributed_override_to_slurm(
+        self, mock_cleanup, tmp_path
+    ):
+        """End to end through the real manifest merge: the stored deployment launcher
+        is replaced by the runtime `distributed` block, yet the card's slurm_multi
+        launcher must still route the run to the SLURM deployment."""
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {"distributed": {"launcher": "slurm_multi"}},
+                    "context": {},
+                    "built_images": {},
+                    "built_models": {
+                        "img": {
+                            "name": "m1",
+                            "distributed": {"launcher": "slurm_multi"},
+                        }
+                    },
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        orchestrator = RunOrchestrator(mock_args)
+        orchestrator.additional_context = {"distributed": {"nnodes": 4}}
+
+        summary = {"successful_runs": [], "failed_runs": []}
+        with patch.object(
+            RunOrchestrator, "_execute_distributed", return_value=summary
+        ) as mock_dist, patch.object(
+            RunOrchestrator, "_execute_local", return_value=summary
+        ) as mock_local:
+            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_not_called()
+        assert mock_dist.call_args.args[0] == "slurm"
+
+    @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
+    def test_stored_local_target_does_not_override_slurm_multi(
+        self, mock_cleanup, tmp_path
+    ):
+        """_save_deployment_config stores `target: "local"` for a build-time
+        `distributed` block without a `slurm` block. execute()'s legacy fallback to
+        the stored target only applies when inference itself returned "local", so
+        it must not demote a slurm_multi model card to the local container runner."""
+        manifest_path = tmp_path / "build_manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "deployment_config": {
+                        "target": "local",
+                        "distributed": {"nnodes": 4},
+                    },
+                    "context": {},
+                    "built_images": {},
+                    "built_models": {
+                        "img": {
+                            "name": "m1",
+                            "distributed": {"launcher": "slurm_multi"},
+                        }
+                    },
+                }
+            )
+        )
+
+        mock_args = MagicMock()
+        mock_args.additional_context = None
+        mock_args.live_output = False
+        mock_args.output = str(tmp_path / "perf.csv")
+        orchestrator = RunOrchestrator(mock_args)
+
+        summary = {"successful_runs": [], "failed_runs": []}
+        with patch.object(
+            RunOrchestrator, "_execute_distributed", return_value=summary
+        ) as mock_dist, patch.object(
+            RunOrchestrator, "_execute_local", return_value=summary
+        ) as mock_local:
+            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+
+        mock_local.assert_not_called()
+        assert mock_dist.call_args.args[0] == "slurm"

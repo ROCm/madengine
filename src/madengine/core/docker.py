@@ -5,6 +5,7 @@ This module provides a class to run commands inside docker.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import os
 import re
@@ -45,6 +46,7 @@ class Docker:
     container_name = None
     heartbeat_path = None
     keep_alive = False
+    docker_run_cmd = ""
     _closed = False
 
     def __init__(
@@ -91,9 +93,7 @@ class Docker:
         )
         # if container name exists, clean it up automatically
         if container_name_exists:
-            print(
-                f"⚠️  Container '{container_name}' already exists. Cleaning up..."
-            )
+            print(f"⚠️  Container '{container_name}' already exists. Cleaning up...")
             lifecycle.reap(container_name)
             print(f"✓ Cleaned up existing container '{container_name}'")
 
@@ -131,15 +131,22 @@ class Docker:
         command += "--name " + shlex.quote(container_name) + " "
         command += shlex.quote(image) + " "
 
-        if keep_alive:
-            # No watchdog: the container is meant to outlive this process.
-            self.console.sh(command + "cat ")
-        else:
-            self._start_with_watchdog(command)
+        try:
+            if keep_alive:
+                # No watchdog: the container is meant to outlive this process.
+                self.docker_run_cmd = command + "cat "
+                self.console.sh(self.docker_run_cmd)
+            else:
+                self._start_with_watchdog(command)
 
-        # find container sha
-        self.docker_sha = self._resolve_container_id(container_name)
-        lifecycle.register(self.docker_sha, container_name)
+            # find container sha
+            self.docker_sha = self._resolve_container_id(container_name)
+            lifecycle.register(self.docker_sha, container_name)
+        except Exception:
+            # The container may already be running. close() reaps by name
+            # even when the id was never resolved.
+            self.close()
+            raise
 
     def _start_with_watchdog(self, command: str) -> None:
         """Start the container under the heartbeat watchdog.
@@ -158,7 +165,8 @@ class Docker:
         # The watchdog exits immediately if the heartbeat file is missing, so
         # the first beat has to land before the container starts.
         lifecycle.start_heartbeat(self.heartbeat_path)
-        self.console.sh(command + lifecycle.container_watchdog_command())
+        self.docker_run_cmd = command + lifecycle.container_watchdog_command()
+        self.console.sh(self.docker_run_cmd)
 
         if lifecycle.container_state(self.container_name) == "running":
             return
@@ -173,7 +181,8 @@ class Docker:
         lifecycle.stop_heartbeat(self.heartbeat_path)
         self.heartbeat_path = None
         lifecycle.reap(self.container_name)
-        self.console.sh(command + "cat ")
+        self.docker_run_cmd = command + "cat "
+        self.console.sh(self.docker_run_cmd)
 
         state = lifecycle.container_state(self.container_name)
         if state != "running":
@@ -242,11 +251,14 @@ class Docker:
             return
 
         # Dropping the heartbeat is what stops the container; the reap below
-        # then removes it and reports if it refused to die.
+        # then removes it and reports if it refused to die. Reap by name when
+        # startup failed before the id was resolved, or the container leaks.
         if self.heartbeat_path:
             lifecycle.stop_heartbeat(self.heartbeat_path)
+        ref = self.container_name or self.docker_sha
+        if ref:
+            lifecycle.reap(ref, self.docker_sha)
         if self.docker_sha:
-            lifecycle.reap(self.container_name or self.docker_sha, self.docker_sha)
             lifecycle.unregister(self.docker_sha)
 
     def __enter__(self) -> "Docker":

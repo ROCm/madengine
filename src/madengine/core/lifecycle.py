@@ -28,6 +28,7 @@ anyway, having spent the grace period achieving nothing.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import glob
 import json
@@ -38,7 +39,6 @@ import threading
 import time
 import typing
 import uuid
-
 
 # Labels stamped on every container madengine starts, so a container can be
 # traced back to the run that owns it long after that run's process is gone.
@@ -68,8 +68,37 @@ DEFAULT_STATE_DIR = "~/.madengine"
 # third of the staleness threshold leaves room for a stalled host to miss a
 # couple of beats without the container giving up on a run that is still fine.
 HEARTBEAT_FILENAME = ".madengine_heartbeat"
-HEARTBEAT_INTERVAL = int(os.environ.get("MADENGINE_HEARTBEAT_INTERVAL", "15"))
-HEARTBEAT_STALE_AFTER = int(os.environ.get("MADENGINE_HEARTBEAT_STALE_AFTER", "120"))
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Read a positive integer environment variable.
+
+    A missing, non-integer, or non-positive value falls back to ``default``
+    so a mistyped tuning knob cannot crash import or busy-loop the heartbeat
+    thread.
+
+    Args:
+        name (str): Environment variable name.
+        default (int): Value used when the variable is unset or invalid.
+
+    Returns:
+        int: The parsed value, or ``default``.
+    """
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+HEARTBEAT_INTERVAL = _positive_int_env("MADENGINE_HEARTBEAT_INTERVAL", 15)
+HEARTBEAT_STALE_AFTER = _positive_int_env("MADENGINE_HEARTBEAT_STALE_AFTER", 120)
+# A beat slower than the staleness window would stop a healthy container.
+if HEARTBEAT_INTERVAL >= HEARTBEAT_STALE_AFTER:
+    HEARTBEAT_INTERVAL = max(1, HEARTBEAT_STALE_AFTER // 3)
 
 # Locations of a container's cgroup process list, tried in order.  Reading
 # these needs no help from the docker daemon, which is the point: when the
@@ -102,9 +131,7 @@ def state_dir() -> str:
     Returns:
         str: Absolute path to the state directory. Created if missing.
     """
-    path = os.path.expanduser(
-        os.environ.get("MADENGINE_STATE_DIR", DEFAULT_STATE_DIR)
-    )
+    path = os.path.expanduser(os.environ.get("MADENGINE_STATE_DIR", DEFAULT_STATE_DIR))
     try:
         os.makedirs(path, exist_ok=True)
     except OSError:
@@ -188,7 +215,9 @@ def unregister(container_id: str) -> None:
         container_id (str): The full container id.
     """
     path = _registry_path()
-    _write_registry(path, [e for e in _read_registry(path) if e.get("id") != container_id])
+    _write_registry(
+        path, [e for e in _read_registry(path) if e.get("id") != container_id]
+    )
 
 
 def registered() -> typing.List[typing.Dict]:
@@ -245,9 +274,7 @@ def container_state(ref: str) -> typing.Optional[str]:
         Optional[str]: ``"running"``, ``"exited"`` and so on, ``""`` if the
             container is gone, or ``None`` if docker did not answer in time.
     """
-    code, out = docker(
-        ["inspect", "-f", "{{.State.Status}}", ref], INSPECT_TIMEOUT
-    )
+    code, out = docker(["inspect", "-f", "{{.State.Status}}", ref], INSPECT_TIMEOUT)
     if code is None:
         return None
     if code != 0:
@@ -428,7 +455,9 @@ def reap(
     if final_state == "":
         result["removed"] = True
         return result
-    result["docker_responsive"] = result["docker_responsive"] and final_state is not None
+    result["docker_responsive"] = (
+        result["docker_responsive"] and final_state is not None
+    )
     result["wedged"] = bool(result["stuck_pids"]) or bool(final_state)
     if result["wedged"]:
         _report_wedged(ref, result["stuck_pids"], verbose=verbose)
@@ -483,7 +512,9 @@ def _report_wedged(
     print("=" * 80, flush=True)
 
 
-def reap_registered(verbose: bool = True, budget: float = 0.0) -> typing.List[typing.Dict]:
+def reap_registered(
+    verbose: bool = True, budget: float = 0.0
+) -> typing.List[typing.Dict]:
     """Reap every container owned by this process.
 
     Args:
@@ -491,7 +522,7 @@ def reap_registered(verbose: bool = True, budget: float = 0.0) -> typing.List[ty
         budget (float): Total seconds to spend, or 0 for no limit. When the
             budget runs out the remaining containers are left to their dead
             man's switch, which does not need us alive.
-        
+
     Returns:
         list: One :func:`reap` result per container attempted.
     """
@@ -514,7 +545,9 @@ def reap_registered(verbose: bool = True, budget: float = 0.0) -> typing.List[ty
 
 
 _heartbeat_paths: typing.Set[str] = set()
-_heartbeat_lock = threading.Lock()
+# Re-entrant: a signal handler runs on the main thread and may interrupt
+# start_heartbeat/stop_heartbeat while this lock is already held.
+_heartbeat_lock = threading.RLock()
 _heartbeat_thread: typing.Optional[threading.Thread] = None
 
 
@@ -638,8 +671,11 @@ def install_signal_handlers() -> None:
         _cleanup_in_progress = True
         print(f"\nReceived {name}; stopping containers...", flush=True)
         # Drop the heartbeats before anything else. Even if every docker call
-        # below times out, the containers now stop by themselves.
-        for path in list(_heartbeat_paths):
+        # below times out, the containers now stop by themselves. Snapshot
+        # under the lock; the handler may be interrupting a holder of it.
+        with _heartbeat_lock:
+            paths = list(_heartbeat_paths)
+        for path in paths:
             stop_heartbeat(path)
         try:
             reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)

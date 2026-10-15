@@ -12,12 +12,15 @@
     "ttl_seconds_after_finished": null,
     "allow_privileged_profiling": null,
     "nfs_storage_class": "nfs-banff",
-    "storage_class": "nfs-banff",
+    "local_path_storage_class": "local-path",
+    "storage_class": "local-path",
+    "results_layout": "auto",
+    "data_layout": "auto",
     "data_storage_class": "nfs-banff",
     "recreate_shared_data_pvc": false,
     "secrets": {
       "strategy": "from_local_credentials",
-      "image_pull_secret_names": [],
+      "image_pull_secret_names": ["dockerhub-rocm"],
       "runtime_secret_name": null
     }
   },

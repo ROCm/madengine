@@ -8,6 +8,10 @@ Extracted so run_container logic is easier to test and maintain.
 import re
 import typing
 
+# Timeout resolution lives in core.timeout so the deployment layer can share it;
+# re-exported here for existing importers.
+from madengine.core.timeout import resolve_run_timeout  # noqa: F401
+
 # Default substrings matched in container run logs post-hoc (see ContainerRunner).
 DEFAULT_LOG_ERROR_PATTERNS: typing.Tuple[str, ...] = (
     "OutOfMemoryError",
@@ -200,35 +204,6 @@ def resolve_run_status(
     return "FAILURE", "no performance metrics"
 
 
-def resolve_run_timeout(
-    model_info: typing.Dict,
-    cli_timeout: int,
-    default_cli_timeout: int = 7200,
-) -> int:
-    """
-    Resolve effective run timeout from model config and CLI.
-
-    - If model has a timeout and CLI is using default (7200), use model's timeout.
-    - If CLI timeout is explicitly set (not default), it overrides model timeout.
-
-    Args:
-        model_info: Model info dict; may have "timeout" key.
-        cli_timeout: Timeout from CLI.
-        default_cli_timeout: Value considered "default" for CLI (typically 7200).
-
-    Returns:
-        Effective timeout in seconds.
-    """
-    if (
-        "timeout" in model_info
-        and model_info["timeout"] is not None
-        and model_info["timeout"] > 0
-        and cli_timeout == default_cli_timeout
-    ):
-        return model_info["timeout"]
-    return cli_timeout
-
-
 def _docker_image_ref_for_log_naming(docker_image: str) -> str:
     """
     Reduce a Docker image reference to a stable filename-safe log naming component.
@@ -269,6 +244,37 @@ def _docker_image_ref_for_log_naming(docker_image: str) -> str:
         .replace(":", "_")
         .replace("@", "_")
     )
+
+
+def container_name_from_image_ref(docker_image: str) -> str:
+    """
+    Derive a Docker-legal ``--name`` value from an image reference.
+
+    Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]*`` for container names, so a
+    digest-pinned reference (``repo@sha256:...``, produced when
+    ``require_pinned_image`` is set) cannot be used verbatim: the ``@`` is
+    rejected by the daemon. The digest is dropped rather than encoded because it
+    adds no disambiguation a run needs, and the tag is kept so containers for
+    different tags of the same repo stay distinct.
+
+    Tagged references keep their historical name, e.g. ``registry/ns/img:ci-m_df``
+    -> ``container_registry_ns_img_ci-m_df``. Unlike
+    :func:`_docker_image_ref_for_log_naming`, CI-style tags are *not* collapsed
+    to the bare tag, so existing container names are unchanged.
+
+    Args:
+        docker_image: Image reference, with or without tag/digest.
+
+    Returns:
+        A container name, always prefixed with ``container_``.
+    """
+    ref_without_digest = (docker_image or "").strip().split("@", 1)[0]
+    # Legal image references only contain [a-z0-9._-] plus "/" and ":", so the
+    # final sanitize is a no-op for them; it keeps the Docker-legal invariant
+    # true for anything unexpected instead of failing at `docker run`.
+    safe = ref_without_digest.replace("/", "_").replace(":", "_")
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", safe)
+    return "container_" + safe
 
 
 def make_run_log_file_path(

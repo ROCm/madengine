@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -169,10 +170,11 @@ class TestReap:
     def test_escalates_to_host_pids(self, state_dir):
         fake = FakeDocker(["running", "running", "running", ""])
         killed = []
-        with patch.object(lifecycle, "docker", fake), \
-             patch.object(lifecycle, "container_host_pids", return_value=[4242]), \
-             patch.object(lifecycle, "_kill_host_pids", killed.extend), \
-             patch.object(lifecycle.time, "sleep"):
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[4242]
+        ), patch.object(lifecycle, "_kill_host_pids", killed.extend), patch.object(
+            lifecycle.time, "sleep"
+        ):
             result = lifecycle.reap("c", "cid", verbose=False)
         assert killed == [4242]
         assert result["removed"] is True
@@ -180,11 +182,13 @@ class TestReap:
 
     def test_d_state_pids_are_reported_as_wedged(self, state_dir):
         fake = FakeDocker(["running"])
-        with patch.object(lifecycle, "docker", fake), \
-             patch.object(lifecycle, "container_host_pids", return_value=[4242]), \
-             patch.object(lifecycle, "_kill_host_pids", lambda pids: None), \
-             patch.object(lifecycle, "uninterruptible_pids", return_value=[4242]), \
-             patch.object(lifecycle.time, "sleep"):
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[4242]
+        ), patch.object(lifecycle, "_kill_host_pids", lambda pids: None), patch.object(
+            lifecycle, "uninterruptible_pids", return_value=[4242]
+        ), patch.object(
+            lifecycle.time, "sleep"
+        ):
             result = lifecycle.reap("c", "cid", verbose=False)
 
         assert result["wedged"] is True
@@ -199,8 +203,9 @@ class TestReap:
         # "docker isn't answering" is not evidence that the host needs a
         # reboot; crying wolf here would make the marker worthless.
         fake = FakeDocker([None])
-        with patch.object(lifecycle, "docker", fake), \
-             patch.object(lifecycle, "container_host_pids", return_value=[]):
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[]
+        ):
             result = lifecycle.reap("c", verbose=False)
 
         assert result["wedged"] is False
@@ -209,8 +214,9 @@ class TestReap:
 
     def test_every_docker_call_is_bounded(self, state_dir):
         fake = FakeDocker(["running", "running", "running", "running"])
-        with patch.object(lifecycle, "docker", fake), \
-             patch.object(lifecycle, "container_host_pids", return_value=[]):
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[]
+        ):
             lifecycle.reap("c", verbose=False)
         # A wedged GPU blocks the daemon too, so an unbounded call here would
         # burn the whole cancellation grace period and orphan the container.
@@ -286,6 +292,35 @@ class TestHeartbeat:
         lifecycle._beat_once()
         assert not os.path.exists(path)
 
+    def test_stop_while_the_lock_is_held_does_not_deadlock(self, tmp_path):
+        """A signal handler can interrupt the main thread inside the lock."""
+        path = str(tmp_path / "hb")
+        lifecycle.start_heartbeat(path)
+        with lifecycle._heartbeat_lock:
+            lifecycle.stop_heartbeat(path)
+        assert not os.path.exists(path)
+
+
+class TestHeartbeatEnv:
+    """Tuning knobs must not crash import or busy-loop."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("", 15),
+            ("30", 30),
+            ("nope", 15),
+            ("0", 15),
+            ("-4", 15),
+        ],
+    )
+    def test_invalid_values_fall_back(self, raw, expected):
+        with patch.dict(os.environ, {"MADENGINE_HEARTBEAT_INTERVAL": raw}, clear=False):
+            assert (
+                lifecycle._positive_int_env("MADENGINE_HEARTBEAT_INTERVAL", 15)
+                == expected
+            )
+
 
 class TestWatchdogCommand:
     """The shell loop that runs as container PID 1."""
@@ -306,8 +341,12 @@ class TestWatchdogCommand:
         cmd = lifecycle.watchdog_script().replace("/myworkspace/", f"{hb_dir}/")
         start = time.time()
         proc = subprocess.run(
-            cmd, shell=True, timeout=timeout, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, universal_newlines=True,
+            cmd,
+            shell=True,
+            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
         )
         return proc.returncode, time.time() - start, proc.stdout
 
@@ -319,7 +358,12 @@ class TestWatchdogCommand:
     def test_exits_shortly_after_heartbeat_disappears(self, tmp_path):
         path = tmp_path / lifecycle.HEARTBEAT_FILENAME
         path.write_text(str(int(time.time())))
-        os.system(f"(sleep 1; rm -f {path}) &")
+
+        def unlink_later() -> None:
+            time.sleep(1)
+            path.unlink(missing_ok=True)
+
+        threading.Thread(target=unlink_later, daemon=True).start()
         code, elapsed, _ = self._run(str(tmp_path), timeout=30)
         assert code == 0
         assert elapsed < 15
@@ -372,9 +416,7 @@ time.sleep(60)
                 proc.wait(timeout=10)
         return proc.returncode, out
 
-    @pytest.mark.parametrize(
-        "signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
-    )
+    @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
     def test_signal_tears_containers_down_and_exits_130(self, tmp_path, signum):
         code, out = self._run_child(tmp_path / "state", signum)
         assert code == 130, out

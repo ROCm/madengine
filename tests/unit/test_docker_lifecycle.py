@@ -16,7 +16,6 @@ from madengine.core import lifecycle
 from madengine.core.console import Console
 from madengine.core.docker import Docker
 
-
 CID = "a" * 64
 
 
@@ -36,6 +35,7 @@ def fake_docker(quiet_state):
         SimpleNamespace-like MagicMock bundle with ``sh``, ``state`` and
         ``reap`` attached.
     """
+
     def default_sh(command, *args, **kwargs):
         # An empty answer to the pre-existence probe keeps the constructor on
         # the happy path; everything else just needs to be non-fatal.
@@ -46,10 +46,11 @@ def fake_docker(quiet_state):
     sh = MagicMock(side_effect=default_sh)
     state = MagicMock(return_value="running")
     reap = MagicMock(return_value={"removed": True, "wedged": False, "stuck_pids": []})
-    with patch.object(Console, "sh", sh), \
-         patch.object(lifecycle, "container_state", state), \
-         patch.object(lifecycle, "reap", reap), \
-         patch.object(lifecycle, "docker", return_value=(0, CID)):
+    with patch.object(Console, "sh", sh), patch.object(
+        lifecycle, "container_state", state
+    ), patch.object(lifecycle, "reap", reap), patch.object(
+        lifecycle, "docker", return_value=(0, CID)
+    ):
         bundle = MagicMock()
         bundle.sh, bundle.state, bundle.reap = sh, state, reap
         yield bundle
@@ -73,9 +74,7 @@ class TestLaunch:
 
     def test_runs_the_watchdog_as_pid_one(self, fake_docker):
         Docker(image="img:tag", container_name="c1", dockerOpts="")
-        assert run_line(fake_docker.sh).endswith(
-            lifecycle.container_watchdog_command()
-        )
+        assert run_line(fake_docker.sh).endswith(lifecycle.container_watchdog_command())
 
     def test_stays_detached(self, fake_docker):
         # Detached is deliberate: the watchdog, not an attached stdin, is what
@@ -84,7 +83,9 @@ class TestLaunch:
         assert run_line(fake_docker.sh).startswith("docker run -t -d ")
         docker.close()
 
-    def test_heartbeat_exists_before_the_container_starts(self, fake_docker, quiet_state):
+    def test_heartbeat_exists_before_the_container_starts(
+        self, fake_docker, quiet_state
+    ):
         seen = {}
 
         def record(command, *args, **kwargs):
@@ -126,7 +127,11 @@ class TestWatchdogFallback:
         fake_docker.state.side_effect = ["exited", "running"]
         Docker(image="img:tag", container_name="c1", dockerOpts="")
 
-        runs = [c.args[0] for c in fake_docker.sh.call_args_list if "docker run" in c.args[0]]
+        runs = [
+            c.args[0]
+            for c in fake_docker.sh.call_args_list
+            if "docker run" in c.args[0]
+        ]
         assert len(runs) == 2
         assert runs[1].endswith("cat ")
         # A silent fallback would quietly reintroduce the orphaned-container
@@ -143,6 +148,13 @@ class TestWatchdogFallback:
         fake_docker.state.side_effect = ["exited", "exited"]
         with pytest.raises(RuntimeError, match="failed to start"):
             Docker(image="img:tag", container_name="c1", dockerOpts="")
+
+    def test_reaps_by_name_when_the_id_cannot_be_resolved(self, fake_docker):
+        """A running container whose inspect timed out must still be reaped."""
+        with patch.object(lifecycle, "docker", return_value=(None, "timed out")):
+            with pytest.raises(RuntimeError, match="Could not resolve"):
+                Docker(image="img:tag", container_name="c1", dockerOpts="")
+        fake_docker.reap.assert_called_with("c1", None)
 
 
 class TestClose:

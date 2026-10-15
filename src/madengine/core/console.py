@@ -139,7 +139,7 @@ class Console:
         self,
         command: str,
         canFail: bool = False,
-        timeout: int = 60,
+        timeout: typing.Optional[int] = 60,
         secret: bool = False,
         prefix: str = "",
         env: typing.Optional[typing.Dict[str, str]] = None,
@@ -149,7 +149,7 @@ class Console:
         Args:
             command (str): The shell command.
             canFail (bool): The flag to allow failure.
-            timeout (int): The timeout in seconds.
+            timeout (typing.Optional[int]): The timeout in seconds; None waits indefinitely.
             secret (bool): The flag to hide the command.
             prefix (str): The prefix of the output.
             env (typing.Optional[typing.Dict[str, str]]): The environment variables.

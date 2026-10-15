@@ -5,8 +5,17 @@ Keep new K8s-focused unit tests here to avoid many small `test_k8s_*.py` files.
 Integration/e2e tests stay in their own modules.
 """
 
-import pytest
+import json
+import re
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
+import yaml
+
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+from madengine.deployment.base import DeploymentConfig, create_jinja_env
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
     sanitize_k8s_label_value,
@@ -23,17 +32,26 @@ from madengine.deployment.k8s_secrets import (
     resolve_runtime_secret_name,
     build_registry_secret_data,
 )
+from madengine.deployment.k8s_results import (
+    collector_pod_name,
+    extract_perf_csv_blocks,
+    materialize_perf_csvs_from_logs,
+    perf_csv_artifact_sources,
+)
 from madengine.deployment.kubernetes import (
+    KubernetesDeployment,
     _pod_job_name_label_selector,
     assign_pvc_subdirs_to_pods,
     match_pvc_subdir_to_k8s_pod,
 )
+from madengine.core.errors import ConfigurationError
+from madengine.deployment.base import DeploymentConfig
 
 
 def test_merge_secrets_config_defaults():
     merged = merge_secrets_config({})
     assert merged["strategy"] == SECRETS_STRATEGY_FROM_LOCAL
-    assert merged["image_pull_secret_names"] == []
+    assert merged["image_pull_secret_names"] == ["dockerhub-rocm"]
 
 
 def test_resolve_image_pull_from_local_with_preview():
@@ -43,6 +61,216 @@ def test_resolve_image_pull_from_local_with_preview():
         ["job-reg"],
     )
     assert refs == [{"name": "job-reg"}, {"name": "extra"}]
+
+
+def test_resolve_image_pull_from_local_includes_dockerhub_rocm():
+    refs = resolve_image_pull_secret_refs(
+        SECRETS_STRATEGY_FROM_LOCAL,
+        merge_secrets_config({}),
+        ["job-reg"],
+    )
+    assert refs == [{"name": "job-reg"}, {"name": "dockerhub-rocm"}]
+
+
+def test_results_layout_auto_uses_per_pod_when_rwx_class_is_missing():
+    from madengine.deployment.k8s_pvc import resolve_results_layout
+
+    assert resolve_results_layout("auto", 2, False) == "per_pod"
+    assert resolve_results_layout("auto", 2, True) == "shared"
+    assert resolve_results_layout("shared", 2, False) == "shared"
+    assert resolve_results_layout("per_pod", 2, True) == "per_pod"
+    assert resolve_results_layout("auto", 1, False) == "shared"
+
+
+def test_shared_filesystem_provisioners_support_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert provisioner_supports_rwx("nfs.csi.k8s.io")
+    assert provisioner_supports_rwx("cluster.local/nfs-subdir-external-provisioner")
+    assert provisioner_supports_rwx("cephfs.csi.ceph.com")
+    assert provisioner_supports_rwx("efs.csi.aws.com")
+    assert provisioner_supports_rwx("file.csi.azure.com")
+    assert provisioner_supports_rwx("filestore.csi.storage.gke.io")
+    assert provisioner_supports_rwx("nfs-client")
+
+
+def test_block_and_local_provisioners_are_not_read_write_many():
+    from madengine.deployment.k8s_pvc import provisioner_supports_rwx
+
+    assert not provisioner_supports_rwx("rancher.io/local-path")
+    assert not provisioner_supports_rwx("kubernetes.io/no-provisioner")
+    assert not provisioner_supports_rwx("rbd.csi.ceph.com")
+    assert not provisioner_supports_rwx("")
+    assert not provisioner_supports_rwx(None)
+
+
+def test_data_layout_uses_a_local_disk_unless_read_write_many_is_usable():
+    from madengine.deployment.k8s_pvc import resolve_data_layout
+
+    assert resolve_data_layout("auto", False, None) == "per_pod"
+    assert resolve_data_layout("auto", True, None) == "shared"
+    assert resolve_data_layout("auto", False, True) == "shared"
+    assert resolve_data_layout("auto", True, False) == "per_pod"
+    assert resolve_data_layout("shared", False, False) == "shared"
+    assert resolve_data_layout("per_pod", True, True) == "per_pod"
+
+
+def _layout_mixin(provisioner, volumes=None, pvc=None, pvc_status=None):
+    """PVC mixin with a fake API.
+
+    ``pvc_status`` is the error status for a missing claim.
+    """
+    from types import SimpleNamespace
+
+    from kubernetes.client.rest import ApiException
+
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    mixin = KubernetesPVCMixin()
+    mixin.namespace = "default"
+    mixin.k8s_config = {
+        "nfs_storage_class": "nfs-banff",
+        "data_storage_class": "nfs-banff",
+        "local_path_storage_class": "local-path",
+        "results_layout": "auto",
+        "data_layout": "auto",
+    }
+    mixin.storage_v1 = MagicMock()
+    mixin.storage_v1.read_storage_class.return_value = SimpleNamespace(
+        provisioner=provisioner
+    )
+    mixin.core_v1 = MagicMock()
+    mixin.core_v1.list_persistent_volume.return_value = SimpleNamespace(
+        items=volumes or []
+    )
+    if pvc_status is not None:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.side_effect = (
+            ApiException(status=pvc_status)
+        )
+    else:
+        mixin.core_v1.read_namespaced_persistent_volume_claim.return_value = pvc
+    return mixin
+
+
+def test_local_path_class_does_not_select_a_shared_results_volume():
+    mixin = _layout_mixin("rancher.io/local-path", pvc_status=404)
+    assert mixin._select_results_layout(2) == "per_pod"
+
+
+def test_existing_read_write_many_volume_selects_shared_results():
+    from types import SimpleNamespace
+
+    volume = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteMany"]))
+    mixin = _layout_mixin("example.com/custom-fs", volumes=[volume], pvc_status=404)
+    assert mixin._select_results_layout(2) == "shared"
+
+
+def test_non_rwx_data_claim_is_not_selected_for_mounting():
+    from types import SimpleNamespace
+
+    claim = SimpleNamespace(spec=SimpleNamespace(access_modes=["ReadWriteOnce"]))
+    mixin = _layout_mixin("nfs.csi.k8s.io", pvc=claim)
+    assert mixin._select_data_layout() == "per_pod"
+
+
+def test_parallel_job_is_not_finished_when_only_some_pods_succeed():
+    from types import SimpleNamespace
+
+    from madengine.deployment.kubernetes import (
+        job_finished_failed,
+        job_finished_successfully,
+    )
+
+    def job(succeeded, completions, conditions=None):
+        return SimpleNamespace(
+            spec=SimpleNamespace(completions=completions),
+            status=SimpleNamespace(succeeded=succeeded, conditions=conditions or []),
+        )
+
+    partial = job(2, 4)
+    assert job_finished_successfully(partial) is False
+    assert job_finished_failed(partial) is False
+
+    done = job(
+        4,
+        4,
+        [SimpleNamespace(type="Complete", status="True")],
+    )
+    assert job_finished_successfully(done) is True
+
+    one_pod_failed = job(1, 4, [SimpleNamespace(type="Failed", status="False")])
+    assert job_finished_failed(one_pod_failed) is False
+    given_up = job(1, 4, [SimpleNamespace(type="Failed", status="True")])
+    assert job_finished_failed(given_up) is True
+
+
+def test_single_node_results_pvc_uses_local_path():
+    from madengine.deployment.config_loader import ConfigLoader
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    mixin = KubernetesPVCMixin()
+    mixin.k8s_config = cfg["k8s"]
+    assert mixin._k8s_results_storage_class(1) == "local-path"
+
+
+def test_k8s_preset_defaults_to_dockerhub_rocm():
+    from madengine.deployment.config_loader import ConfigLoader
+
+    cfg = ConfigLoader.load_k8s_config({"k8s": {"gpu_count": 1}})
+    assert cfg["k8s"]["secrets"]["image_pull_secret_names"] == ["dockerhub-rocm"]
+
+
+def test_missing_registry_image_is_a_configuration_error(tmp_path):
+    with pytest.raises(ConfigurationError, match="registry image"):
+        _k8s_template_context(tmp_path=tmp_path, image_info={"push_failed": True})
+
+
+def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    assert "dockerhub-rocm" in [s["name"] for s in ctx["image_pull_secrets"]]
+
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = (
+        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    )
+    job = list(yaml.safe_load_all(rendered))[0]
+    pull_names = [
+        s["name"]
+        for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
+    ]
+    assert pull_names[-1] == "dockerhub-rocm"
+
+
+def test_per_pod_data_volume_is_a_local_claim(tmp_path):
+    ctx = _k8s_template_context(tmp_path=tmp_path)
+    ctx["data_per_pod"] = True
+    ctx["data_pvc"] = None
+    ctx["data_storage_class"] = "local-path"
+    ctx["data_storage_size"] = "100Gi"
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    job = list(yaml.safe_load_all(rendered))[0]
+    volumes = job["spec"]["template"]["spec"]["volumes"]
+    data = next(volume for volume in volumes if volume["name"] == "data")
+    claim = data["ephemeral"]["volumeClaimTemplate"]["spec"]
+    assert claim["accessModes"] == ["ReadWriteOnce"]
+    assert claim["storageClassName"] == "local-path"
+    assert "madengine-shared-data" not in rendered
 
 
 def test_resolve_image_pull_existing():
@@ -189,6 +417,20 @@ class TestSanitizeK8sObjectName:
         n2 = sanitize_k8s_object_name("madengine", long_name)
         assert n == n2
 
+    def test_job_name_cap_keeps_label_parity(self):
+        """Batch Jobs require metadata.name == pod job-name label (≤63)."""
+        from madengine.deployment.k8s_names import _MAX_JOB_NAME_LEN
+
+        raw = "vllm_disagg_llmd/pyt_vllm_disagg_llmd_qwen3-30b-a3b_fp8"
+        job_name = sanitize_k8s_object_name(
+            "madengine", raw, max_total_len=_MAX_JOB_NAME_LEN
+        )
+        assert len(job_name) <= _MAX_JOB_NAME_LEN
+        assert job_name == sanitize_k8s_label_value(job_name)
+        # Uncapped name exceeds the Job label limit (regression for MoE cards).
+        uncapped = sanitize_k8s_object_name("madengine", raw)
+        assert len(uncapped) > _MAX_JOB_NAME_LEN
+
     def test_empty_body_uses_model(self):
         n = sanitize_k8s_object_name("madengine", "///")
         assert "madengine" in n
@@ -197,11 +439,16 @@ class TestSanitizeK8sObjectName:
 
 @pytest.mark.unit
 def test_pod_job_name_label_selector_matches_sanitized_job_name():
-    """Pods use job-name label value = sanitize_k8s_label_value(Job metadata name); list queries must match."""
-    jid = sanitize_k8s_object_name("madengine", "z" * 400)
+    """Pods use job-name label value = Job metadata name (≤63); list queries must match."""
+    from madengine.deployment.k8s_names import _MAX_JOB_NAME_LEN
+
+    jid = sanitize_k8s_object_name(
+        "madengine", "z" * 400, max_total_len=_MAX_JOB_NAME_LEN
+    )
     sel = _pod_job_name_label_selector(jid)
     assert sel == f"job-name={sanitize_k8s_label_value(jid)}"
-    assert len(sel.split("=", 1)[1]) <= 63
+    assert len(sel.split("=", 1)[1]) <= _MAX_JOB_NAME_LEN
+    assert sel.split("=", 1)[1] == jid
 
 
 @pytest.mark.unit
@@ -274,3 +521,781 @@ class TestGatherSystemEnvDetailsK8sRocenvMode:
         pre_scripts = []
         mixin.gather_system_env_details(pre_scripts, "my_model", rocenv_mode="bogus")
         assert pre_scripts[0]["args"] == "my_model_env lite UBUNTU"
+
+
+# ---------------------------------------------------------------------------
+# Run timeout on the K8s path
+
+
+def _k8s_template_context(
+    model_timeout=None,
+    cli_timeout=-1,
+    tmp_path=None,
+    launcher_type=None,
+    image_info=None,
+):
+    """Template context for a minimal single-node job, without touching a cluster.
+
+    Builds the context off the same mixin the deployment uses, so the timeout
+    the template sees is the one a real render would get. Pass ``launcher_type``
+    (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
+    instead of the direct-script branch.
+    """
+    from madengine.deployment.k8s_pvc import KubernetesPVCMixin
+    from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
+    from madengine.deployment.k8s_template_context import (
+        KubernetesTemplateContextMixin,
+    )
+    from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
+
+    class _Harness(
+        KubernetesTemplateContextMixin,
+        KubernetesScriptsMixin,
+        KubernetesLauncherMixin,
+        KubernetesPVCMixin,
+    ):
+        pass
+
+    model_info = {
+        "name": "dummy",
+        "scripts": "scripts/dummy/run.sh",
+        "args": "",
+        "n_gpus": "1",
+    }
+    if model_timeout is not None:
+        model_info["timeout"] = model_timeout
+
+    manifest = {
+        "built_images": {"dummy": {"docker_image": "dummy:latest"}},
+        "built_models": {"dummy": model_info},
+        "context": {"gpu_vendor": "AMD", "guest_os": "UBUNTU"},
+    }
+    manifest_path = tmp_path / "build_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    k8s_config = {"namespace": "ns"}
+    additional_context = {"k8s": k8s_config}
+    if launcher_type is not None:
+        additional_context["launcher"] = {
+            "type": launcher_type,
+            "nnodes": 1,
+            "nproc_per_node": 1,
+        }
+    harness = _Harness()
+    harness.config = DeploymentConfig(
+        target="k8s",
+        manifest_file=str(manifest_path),
+        additional_context=additional_context,
+        cli_timeout=cli_timeout,
+    )
+    harness.k8s_config = k8s_config
+    harness.console = MagicMock()
+    harness.manifest = manifest
+    harness.namespace = "ns"
+    harness.job_name = "j"
+    harness.job_label = "j"
+    harness.main_container_name = "c"
+    harness.configmap_name = "cm"
+    harness.service_name = "s"
+    harness.gpu_resource_name = "amd.com/gpu"
+    harness.data = None
+
+    return harness._prepare_template_context(
+        model_info, image_info or {"registry_image": "dummy:latest"}
+    )
+
+
+def _render_k8s_job_script(context):
+    """Render job.yaml.j2 and return the main container's shell script."""
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = (
+        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**context)
+    )
+    job = list(yaml.safe_load_all(rendered))[0]
+    return job["spec"]["template"]["spec"]["containers"][0]["args"][0]
+
+
+class TestK8sRunTimeoutResolution:
+    """The model card's timeout must reach the K8s job, following v1 precedence.
+
+    Unlike SLURM, no inner madengine re-resolves inside the pod, so the card has
+    to be applied at render time -- config.timeout only bounds the submitting
+    process's wait on the Job and never saw the card.
+    """
+
+    def test_default_when_neither_card_nor_cli_specifies(self, tmp_path):
+        ctx = _k8s_template_context(tmp_path=tmp_path)
+        assert ctx["timeout"] == DEFAULT_RUN_TIMEOUT
+
+    def test_model_card_overrides_default(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, tmp_path=tmp_path)
+        assert ctx["timeout"] == 360
+
+    def test_cli_overrides_model_card(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=360, cli_timeout=120, tmp_path=tmp_path
+        )
+        assert ctx["timeout"] == 120
+
+    @pytest.mark.parametrize("card_timeout", [0, -1])
+    def test_model_card_can_ask_for_no_timeout(self, card_timeout, tmp_path):
+        ctx = _k8s_template_context(model_timeout=card_timeout, tmp_path=tmp_path)
+        assert ctx["timeout"] == card_timeout
+
+    def test_cli_zero_disables_a_model_card_timeout(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, cli_timeout=0, tmp_path=tmp_path)
+        assert ctx["timeout"] == 0
+
+
+class TestK8sJobScriptTimeout:
+    """The rendered job script must actually enforce the resolved timeout."""
+
+    def test_model_script_is_wrapped_in_timeout(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=360, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 360 bash /tmp/run_model.sh" in script
+
+    def test_non_positive_timeout_runs_unbounded(self, tmp_path):
+        ctx = _k8s_template_context(model_timeout=0, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 0 " not in script
+        assert "No timeout set" in script
+        assert "bash /tmp/run_model.sh" in script
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        """The heredoc terminator must land in column 0 after YAML dedent."""
+        for card_timeout in (360, 0):
+            ctx = _k8s_template_context(model_timeout=card_timeout, tmp_path=tmp_path)
+            script_path = tmp_path / f"job_{card_timeout}.sh"
+            script_path.write_text(_render_k8s_job_script(ctx))
+            result = subprocess.run(
+                ["bash", "-n", str(script_path)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+
+class TestK8sJobScriptTimeoutLauncherBranch:
+    """Same guarantees as TestK8sJobScriptTimeout, but for the launcher branch.
+
+    torchrun/deepspeed-style jobs render through the `launcher_command` branch of
+    job.yaml.j2, not the direct-script branch -- the timeout wrapper and exit-code
+    capture are templated separately in each, so each needs its own coverage.
+    """
+
+    def test_model_script_is_wrapped_in_timeout(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        assert ctx["launcher_command"] is not None
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 360 bash /tmp/run_model.sh" in script
+
+    def test_non_positive_timeout_runs_unbounded(self, tmp_path):
+        ctx = _k8s_template_context(
+            model_timeout=0, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        assert "timeout 0 " not in script
+        assert "No timeout set" in script
+        assert "bash /tmp/run_model.sh" in script
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        for card_timeout in (360, 0):
+            ctx = _k8s_template_context(
+                model_timeout=card_timeout, launcher_type="torchrun", tmp_path=tmp_path
+            )
+            script_path = tmp_path / f"job_launcher_{card_timeout}.sh"
+            script_path.write_text(_render_k8s_job_script(ctx))
+            result = subprocess.run(
+                ["bash", "-n", str(script_path)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(self, model_exit_code, tmp_path):
+        """Same set -e hazard as the direct-script branch: exit code must be
+        captured, not acted on, so post-scripts and artifact copy still run."""
+        ctx = _k8s_template_context(
+            model_timeout=360, launcher_type="torchrun", tmp_path=tmp_path
+        )
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"launcher_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+
+
+def _run_model_invocation_block(script, model_exit_code, tmp_path, name):
+    """Execute just the model-invocation block of a rendered job script.
+
+    Takes the lines from MODEL_START_TIME to MODEL_END_TIME verbatim, runs them
+    under `set -e` against a stub model script exiting with `model_exit_code`,
+    and reports whether execution reached the end of the block (i.e. whether the
+    container would go on to run post-scripts and copy artifacts).
+    """
+    lines = script.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME="))
+    end = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME="))
+    block = "\n".join(l.strip() for l in lines[start:end])
+
+    stub = tmp_path / f"run_model_{name}.sh"
+    stub.write_text(f"#!/bin/bash\nexit {model_exit_code}\n")
+    harness = tmp_path / f"harness_{name}.sh"
+    harness.write_text(
+        "set -e\n"
+        f"cp {stub} /tmp/run_model.sh\n"
+        f"{block}\n"
+        'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+    )
+    return subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, timeout=60
+    )
+
+
+class TestK8sJobScriptPublishesResultsOnFailure:
+    """A failed or timed-out model must not abort the container early.
+
+    The script runs under `set -e` and copies artifacts to the results PVC only
+    after the model returns, so a bare invocation (or an early `exit`) would
+    throw away perf.csv and the logs for exactly the runs worth diagnosing.
+    Both branches capture the exit code and defer to the single exit at the end.
+    """
+
+    @pytest.mark.parametrize("model_timeout", [360, 0])
+    @pytest.mark.parametrize("model_exit_code", [0, 1, 124])
+    def test_execution_continues_past_the_model(
+        self, model_timeout, model_exit_code, tmp_path
+    ):
+        ctx = _k8s_template_context(model_timeout=model_timeout, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        result = _run_model_invocation_block(
+            script, model_exit_code, tmp_path, f"{model_timeout}_{model_exit_code}"
+        )
+        assert (
+            f"REACHED_ARTIFACT_COPY exit={model_exit_code}" in result.stdout
+        ), f"aborted early: rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+
+    def test_timeout_exit_code_is_reported(self, tmp_path):
+        """A real `timeout` kill (124) must be labelled, not just propagated."""
+        ctx = _k8s_template_context(model_timeout=1, tmp_path=tmp_path)
+        script = _render_k8s_job_script(ctx)
+        lines = script.splitlines()
+        start = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME=")
+        )
+        end = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME=")
+        )
+        block = "\n".join(l.strip() for l in lines[start:end])
+
+        harness = tmp_path / "harness_real_timeout.sh"
+        harness.write_text(
+            "set -e\n"
+            'printf "#!/bin/bash\\nsleep 30\\n" > /tmp/run_model.sh\n'
+            f"{block}\n"
+            'echo "REACHED_ARTIFACT_COPY exit=$MODEL_EXIT_CODE"\n'
+        )
+        result = subprocess.run(
+            ["bash", str(harness)], capture_output=True, text=True, timeout=60
+        )
+        assert "model script timed out after 1s" in result.stdout
+        assert "REACHED_ARTIFACT_COPY exit=124" in result.stdout
+
+
+class TestK8sRequirePinnedImage:
+    """The generated pod spec image field honours require_pinned_image."""
+
+    DIGEST = "sha256:" + "df36ef7e" * 8
+
+    def _template_context(self, tmp_path, monkeypatch, require_pinned, image_digest):
+        """Build a real template context, the way prepare() does.
+
+        _prepare_template_context reads the manifest and the model's scripts
+        directory from the current working directory, so the test runs inside
+        tmp_path with a minimal model tree.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "scripts" / "dummy").mkdir(parents=True)
+        (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")
+
+        image_info = {"registry_image": "myorg/ci:m"}
+        if image_digest:
+            image_info["image_digest"] = image_digest
+        model_info = {
+            "name": "m",
+            "tags": ["t"],
+            "n_gpus": "1",
+            "args": "",
+            "scripts": "scripts/dummy/run.sh",
+            "dockerfile": "docker/dummy",
+        }
+        manifest = {
+            "built_images": {"img1": image_info},
+            "built_models": {"img1": model_info},
+            "context": {},
+        }
+        (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
+
+        additional_context = {
+            "k8s": {"namespace": "default"},
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+        }
+        if require_pinned:
+            additional_context["require_pinned_image"] = True
+
+        cfg = DeploymentConfig(
+            target="k8s",
+            manifest_file="build_manifest.json",
+            additional_context=additional_context,
+        )
+        # __init__ loads a real kubeconfig and fails without one, which has
+        # nothing to do with how the pod spec picks an image reference.
+        # Template prep then asks whether the default results class is
+        # ReadWriteMany. A real StorageV1 client calls the cluster; a double
+        # has no provisioner string and keeps the shared layout.
+        with patch("madengine.deployment.kubernetes.k8s_config.load_kube_config"):
+            deployment = KubernetesDeployment(cfg)
+        deployment.storage_v1 = MagicMock()
+        return deployment._prepare_template_context(model_info, image_info)
+
+    def test_default_uses_tag(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path, monkeypatch, require_pinned=False, image_digest=self.DIGEST
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_enabled_uses_pinned_reference(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path, monkeypatch, require_pinned=True, image_digest=self.DIGEST
+        )
+        assert ctx["image"] == f"myorg/ci@{self.DIGEST}"
+
+    def test_enabled_without_digest_raises(self, tmp_path, monkeypatch):
+        with pytest.raises(ConfigurationError):
+            self._template_context(
+                tmp_path, monkeypatch, require_pinned=True, image_digest=None
+            )
+
+
+class TestK8sPodLogContainerParam:
+    """Job pods have an extract-scripts init container alongside the main workload
+    container, so read_namespaced_pod_log() must be given an explicit container name
+    (the raw API has no defaulting behavior, unlike `kubectl logs`). It must also be
+    called with _preload_content=False and the response manually decoded: on this
+    client/cluster combination, the default _preload_content=True path returns the
+    raw response body stringified (literal "b'...'"), not decoded UTF-8 text, which
+    corrupts newline-sensitive performance-log parsing."""
+
+    def _deployment(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        manifest = {
+            "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+            "built_models": {"img1": {"name": "m", "tags": ["t"]}},
+            "context": {},
+        }
+        (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
+
+        cfg = DeploymentConfig(
+            target="k8s",
+            manifest_file="build_manifest.json",
+            additional_context={"k8s": {"namespace": "default"}},
+        )
+        deployment = KubernetesDeployment(cfg)
+        deployment.core_v1 = MagicMock()
+        return deployment
+
+    def _fake_pod(self, name, main_container_name):
+        pod = MagicMock()
+        pod.metadata.name = name
+        main_container = MagicMock()
+        main_container.name = main_container_name
+        pod.spec.containers = [main_container]
+        pod.status.phase = "Succeeded"
+        pod.status.container_statuses = []
+        return pod
+
+    def _fake_log_response(self, text):
+        response = MagicMock()
+        response.data = text.encode("utf-8")
+        return response
+
+    def test_collect_results_passes_main_container_name_and_decodes(
+        self, tmp_path, monkeypatch
+    ):
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "log output"
+        )
+        deployment.core_v1.read_namespaced_pod.return_value = pod
+
+        results = deployment.collect_results("job")
+
+        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs["container"] == "main-container"
+        assert kwargs["_preload_content"] is False
+        assert results["logs"][0]["log"] == "log output"
+
+    def test_print_pod_logs_on_failure_passes_main_container_name_and_decodes(
+        self, tmp_path, monkeypatch
+    ):
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "log output"
+        )
+
+        deployment._print_pod_logs_on_failure("job")
+
+        _, kwargs = deployment.core_v1.read_namespaced_pod_log.call_args
+        assert kwargs["container"] == "main-container"
+        assert kwargs["_preload_content"] is False
+
+    def test_multiple_results_csv_wins_over_log_performance_lines(
+        self, tmp_path, monkeypatch
+    ):
+        """A card with multiple_results keeps its metric rows, not one log line."""
+        deployment = self._deployment(tmp_path, monkeypatch)
+        pod = self._fake_pod("job-0", "main-container")
+        csv_path = tmp_path / "perf_Llama.csv"
+        csv_path.write_text(
+            "model,performance,metric,unit\n"
+            "Llama,366.4,throughput_tot,tok/sec\n"
+            "Llama,122.1,throughput_gen,tok/sec\n"
+            "Llama,84.3,median_ttft,ms\n",
+            encoding="utf-8",
+        )
+        deployment.manifest["built_models"]["img1"]["multiple_results"] = "perf_Llama.csv"
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
+            "performance: 122.1 tokens_per_second\n"
+        )
+        deployment.core_v1.read_namespaced_pod.return_value = pod
+        deployment._collect_from_pvc = MagicMock()
+        deployment._resolve_multiple_results_csv = MagicMock(return_value=csv_path)
+        deployment._generate_results_summary = MagicMock()
+        deployment._refresh_pod_until_terminal_phase = MagicMock(return_value=pod)
+        deployment._primary_workload_container_exit_code = MagicMock(return_value=0)
+
+        with patch(
+            "madengine.deployment.k8s_results.update_perf_csv"
+        ) as mock_update_csv, patch(
+            "madengine.deployment.k8s_results.update_perf_super_json",
+            return_value=3,
+        ), patch(
+            "madengine.deployment.k8s_results.update_perf_super_csv"
+        ):
+            results = deployment.collect_results("job")
+
+        assert mock_update_csv.call_args.kwargs["multiple_results"] == str(csv_path)
+        assert "single_result" not in mock_update_csv.call_args.kwargs
+        assert len(results["successful_runs"]) == 3
+        assert [r["perf_data"]["metric"] for r in results["successful_runs"]] == [
+            "throughput_tot",
+            "throughput_gen",
+            "median_ttft",
+        ]
+
+
+def test_shared_volume_csvs_are_used_instead_of_log_copies(tmp_path):
+    """nfs-banff keeps one ReadWriteMany results volume. That copy wins."""
+    pvc = tmp_path / "pvc"
+    pvc.mkdir()
+    (pvc / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,10,throughput_tot\n"
+    )
+    log_dir = tmp_path / "log"
+    log_dir.mkdir()
+    (log_dir / "perf_Qwen3-8B.csv").write_text(
+        "model,performance,metric\nQwen3-8B,999,throughput_tot\n"
+    )
+    chosen = perf_csv_artifact_sources(
+        [
+            {"type": "pvc_collection", "local_path": str(pvc)},
+            {"type": "log_csv", "local_path": str(log_dir)},
+        ]
+    )
+    assert [art["type"] for art in chosen] == ["pvc_collection"]
+
+    local_only = perf_csv_artifact_sources(
+        [{"type": "log_csv", "local_path": str(log_dir)}]
+    )
+    assert [art["type"] for art in local_only] == ["log_csv"]
+
+
+def test_collector_pod_name_is_a_dns_label():
+    """A sliced job name used to end with a hyphen and Kubernetes rejected it."""
+    name = collector_pod_name("madengine-vllm-pyt-vllm-qwen3-8b")
+    assert name == "collector-madengine-vllm-pyt-vllm-qwen3-8b"
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name)
+
+
+def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
+    """local-path pods delete their disks on exit; the log is the durable copy."""
+    csv_body = "model,performance,metric\nQwen3-8B,158.33,tokens_per_second\n"
+    log = (
+        "serving done\n"
+        "MADENGINE_PERF_CSV_BEGIN perf_Qwen3-8B.csv\n"
+        f"{csv_body}"
+        "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
+    )
+    assert extract_perf_csv_blocks(log) == [("perf_Qwen3-8B.csv", csv_body.rstrip("\n"))]
+
+    results = {
+        "logs": [
+            {"pod": "job-0-abc", "log": log},
+            {"pod": "job-1-def", "log": log.replace("158.33", "160.00")},
+        ],
+        "artifacts": [],
+    }
+    written = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert written == 2
+    assert (tmp_path / "job-0-abc" / "log_csv" / "perf_Qwen3-8B.csv").is_file()
+    assert (tmp_path / "job-1-def" / "log_csv" / "perf_Qwen3-8B.csv").read_text().startswith(
+        "model,performance,metric"
+    )
+    assert results["artifacts"][0]["type"] == "log_csv"
+
+    # A shared-volume copy already on disk is left alone.
+    again = materialize_perf_csvs_from_logs(tmp_path, results)
+    assert again == 0
+    assert len(results["artifacts"]) == 2
+
+
+def _serving_pod(name, node, gpus, resource="amd.com/gpu"):
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.metadata.labels = {"llm-d.ai/inference-serving": "true"}
+    pod.spec.node_name = node
+    container = MagicMock()
+    container.resources.requests = {resource: str(gpus)}
+    sidecar = MagicMock()
+    sidecar.resources.requests = {}
+    pod.spec.containers = [sidecar, container]
+    return pod
+
+
+class TestLlmdResultTopology:
+    """The results table reads nnodes and gpus_per_node. For llm-d those describe
+    the prefill and decode pods, not the single CPU benchmark client."""
+
+    def test_role_counts_are_one_node_per_replica(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_roles
+
+        shape = llm_d_shape_from_roles(
+            {
+                "prefill": {"replicas": 2, "gpu_count": 1},
+                "decode": {"replicas": 2, "gpu_count": 1},
+            }
+        )
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_disabled_prefill_is_not_a_node(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_roles
+
+        shape = llm_d_shape_from_roles(
+            {
+                "prefill": {"create": False, "replicas": 2, "gpu_count": 1},
+                "decode": {"replicas": 4, "gpu_count": 1},
+            }
+        )
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_live_pods_report_the_nodes_they_landed_on(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_pods
+
+        prefix = "madengine-pyt-vllm-disagg-llmd-qwen3-8b-modelservice"
+        pods = [
+            _serving_pod(f"{prefix}-pr-a", "c23-23", 1),
+            _serving_pod(f"{prefix}-pr-b", "c23-28", 1),
+            _serving_pod(f"{prefix}-de-a", "c23-33", 1),
+            _serving_pod(f"{prefix}-de-b", "c23-18", 1),
+            _serving_pod("someone-else-modelservice-de-c", "c23-18", 1),
+        ]
+        shape = llm_d_shape_from_pods(pods, prefix, "amd.com/gpu")
+        assert shape == {"nnodes": 4, "gpus_per_node": 1, "n_gpus": 4}
+
+    def test_two_pods_on_one_node_count_as_one_node(self):
+        from madengine.deployment.k8s_results import llm_d_shape_from_pods
+
+        pods = [
+            _serving_pod("ms-pr-a", "c23-23", 1),
+            _serving_pod("ms-de-a", "c23-23", 1),
+        ]
+        shape = llm_d_shape_from_pods(pods, "", "amd.com/gpu")
+        assert shape == {"nnodes": 1, "gpus_per_node": 2, "n_gpus": 2}
+
+    def test_stamp_uses_live_nodes_ahead_of_replica_counts(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 1, "gpu_count": 1},
+            "decode": {"replicas": 1, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[
+                _serving_pod(f"{prefix}-modelservice-pr-a", "n1", 1),
+                _serving_pod(f"{prefix}-modelservice-pr-b", "n2", 1),
+                _serving_pod(f"{prefix}-modelservice-de-a", "n3", 1),
+                _serving_pod(f"{prefix}-modelservice-de-b", "n4", 1),
+            ]
+        )
+        record = {
+            "n_gpus": "1",
+            "nnodes": "1",
+            "gpus_per_node": "1",
+            "deployment_type": "kubernetes",
+            "launcher": "native",
+        }
+        deployment._stamp_llm_d_shape(record)
+        assert record == {
+            "n_gpus": "4",
+            "nnodes": "4",
+            "gpus_per_node": "1",
+            "deployment_type": "llm-d",
+            "launcher": "vllm",
+            "serving_mode": "disaggregated",
+        }
+
+    def test_mi250_node_label_is_recorded_as_gfx90a(self):
+        from madengine.deployment.k8s_results import (
+            KubernetesResultsMixin,
+            gpu_arch_from_product_name,
+        )
+
+        assert (
+            gpu_arch_from_product_name("AMD_INSTINCT_MI250_MCM_OAM_AC_MBA")
+            == "gfx90a"
+        )
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 2, "gpu_count": 1},
+            "decode": {"replicas": 2, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[_serving_pod(f"{prefix}-modelservice-pr-a", "c23-28", 1)]
+        )
+        node = MagicMock()
+        node.metadata.labels = {
+            "amd.com/gpu.product-name": "AMD_INSTINCT_MI250_MCM_OAM_AC_MBA"
+        }
+        deployment.core_v1.read_node.return_value = node
+        record = {
+            "n_gpus": "1",
+            "nnodes": "1",
+            "gpus_per_node": "1",
+            "gpu_architecture": "N/A",
+        }
+        deployment._stamp_llm_d_shape(record)
+        assert record["gpu_architecture"] == "gfx90a"
+        assert record["nnodes"] == "1"
+        deployment.core_v1.read_node.assert_called_with("c23-28")
+
+    def test_a_plain_kubernetes_job_keeps_its_own_shape(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        deployment = KubernetesResultsMixin()
+        deployment.core_v1 = MagicMock()
+        record = {
+            "n_gpus": "8",
+            "nnodes": "1",
+            "gpus_per_node": "8",
+            "gpu_architecture": "gfx942",
+        }
+        record["deployment_type"] = "kubernetes"
+        record["launcher"] = "torchrun"
+        deployment._stamp_llm_d_shape(record)
+        assert record == {
+            "n_gpus": "8",
+            "nnodes": "1",
+            "gpus_per_node": "8",
+            "gpu_architecture": "gfx942",
+            "deployment_type": "kubernetes",
+            "launcher": "torchrun",
+        }
+        assert "serving_mode" not in record
+        deployment.core_v1.list_namespaced_pod.assert_not_called()
+        deployment.core_v1.read_node.assert_not_called()
+
+    def test_the_model_column_keeps_the_mad_card_name(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "model": {"name": "Qwen/Qwen3-0.6B", "hf_repo": "Qwen/Qwen3-0.6B"},
+            "prefill": {"replicas": 0},
+            "decode": {"replicas": 0},
+        }
+        record = {
+            "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
+            "gpu_architecture": "gfx90a",
+        }
+        record["deployment_type"] = "kubernetes"
+        record["launcher"] = "native"
+        deployment._stamp_llm_d_shape(record)
+        assert record["model"] == "pyt_vllm_disagg_llmd_qwen3-0.6b"
+        assert record["gpu_architecture"] == "gfx90a"
+        assert record["deployment_type"] == "llm-d"
+        assert record["launcher"] == "vllm"
+        assert record["serving_mode"] == "aggregated"
+
+    def test_prefill_create_false_is_aggregated_serving(self):
+        from madengine.deployment.k8s_results import llm_d_serving_mode
+
+        assert llm_d_serving_mode({"prefill": {"create": False, "replicas": 2}}) == (
+            "aggregated"
+        )
+        assert llm_d_serving_mode({"prefill": {"replicas": 2}}) == "disaggregated"
+
+    def test_an_architecture_already_in_the_log_is_kept(self):
+        from madengine.deployment.k8s_results import KubernetesResultsMixin
+
+        prefix = "madengine-model"
+        deployment = KubernetesResultsMixin()
+        deployment.llmd_config = {
+            "prefill": {"replicas": 1, "gpu_count": 1},
+            "decode": {"replicas": 1, "gpu_count": 1},
+        }
+        deployment.namespace = "llm-d-bench"
+        deployment.k8s_config = {"gpu_resource_name": "amd.com/gpu"}
+        deployment.console = MagicMock()
+        deployment._release_prefix = lambda: prefix
+        deployment.core_v1 = MagicMock()
+        deployment.core_v1.list_namespaced_pod.return_value = MagicMock(
+            items=[_serving_pod(f"{prefix}-modelservice-pr-a", "c23-28", 1)]
+        )
+        node = MagicMock()
+        node.metadata.labels = {
+            "amd.com/gpu.product-name": "AMD_INSTINCT_MI250_MCM_OAM_AC_MBA"
+        }
+        deployment.core_v1.read_node.return_value = node
+        record = {"gpu_architecture": "gfx942"}
+        deployment._stamp_llm_d_shape(record)
+        assert record["gpu_architecture"] == "gfx942"
