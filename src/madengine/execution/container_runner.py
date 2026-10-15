@@ -621,6 +621,35 @@ class ContainerRunner:
             self.rich_console.print(f"[red]❌ Failed to pull image {registry_image}: {e}[/red]")
             raise
 
+    @staticmethod
+    def _scripts_dir(scripts_arg: str, model_name: str = "") -> str:
+        """The directory holding a model's scripts, never the filesystem root.
+
+        The caller turns this into `cp -vLR --preserve=all {dir}/. {model_dir}/`. A bare filename
+        means "beside the model", which is the working directory -- but `os.path.dirname("run.sh")`
+        is `""`, so the command became `cp -vLR --preserve=all /. {model_dir}/` and the copy walked
+        the container's root, /proc included, until recursion stopped it.
+
+        Cards discovered from the filesystem never reach that: `discover_models` rewrites `scripts`
+        to `scripts/<rel>/<name>`. An entry supplied through a manifest is used as written, so a
+        bare filename arrives intact.
+
+        Returns:
+            The directory, or "." for a bare filename.
+
+        Raises:
+            ValueError: the entry resolves to the filesystem root, which is never a model's
+                script directory and would copy everything.
+        """
+        dir_path = os.path.dirname(scripts_arg)
+        if os.path.normpath(dir_path or ".") == os.sep:
+            raise ValueError(
+                f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, whose "
+                f"directory is the filesystem root. Copying the model's scripts would copy "
+                f"everything; give a path relative to the model directory."
+            )
+        return dir_path or "."
+
     def get_gpu_arg(self, requested_gpus: str) -> str:
         """Get the GPU arguments for docker run.
 
@@ -1662,11 +1691,11 @@ class ContainerRunner:
                         scripts_arg = model_info["scripts"]
                         if scripts_arg.endswith(".sh") or scripts_arg.endswith(".slurm"):
                             # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_info.get("name", ""))
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):
                             # Python script specified directly
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_info.get("name", ""))
                             script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
                             # Directory specified (legacy behavior)

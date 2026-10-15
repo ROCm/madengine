@@ -1373,3 +1373,38 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
             self._run(tmp_path, monkeypatch, "perf_model.csv")
 
         assert "Could not delete the stale results file" in capsys.readouterr().out
+
+
+class TestScriptsDirResolution:
+    """A model's `scripts` entry must name a directory, or the copy takes the filesystem root.
+
+    The caller builds `cp -vLR --preserve=all {dir}/. {model_dir}/`. With `scripts` a bare
+    filename, `os.path.dirname` is `""`, the source becomes `/.`, and the copy walks the
+    container's root -- /proc included -- until recursion stops it. Filesystem-discovered cards
+    never hit this because `discover_models` rewrites `scripts` to `scripts/<rel>/<name>`; an
+    entry supplied through a manifest is used as written.
+    """
+
+    def test_a_bare_filename_means_the_working_directory(self):
+        """Not "", which the caller would turn into `cp /. dest`."""
+        assert ContainerRunner._scripts_dir("run_vllm_deepep.sh", "pyt_vllm_deepep") == "."
+
+    def test_an_empty_entry_means_the_working_directory(self):
+        assert ContainerRunner._scripts_dir("", "some_model") == "."
+
+    def test_a_root_entry_is_refused(self):
+        """`/run.sh` yields `/`, and `cp /. dest` is the same catastrophe by another route."""
+        with pytest.raises(ValueError) as e:
+            ContainerRunner._scripts_dir("/run.sh", "some_model")
+        assert "filesystem root" in str(e.value)
+
+    def test_the_caller_never_builds_a_root_copy(self):
+        """The property that matters, stated directly on the command the caller builds."""
+        for entry in ("run.sh", "", "scripts/m/run.sh", "./run.sh"):
+            src = f"{ContainerRunner._scripts_dir(entry, 'm')}/."
+            assert src != "/.", f"{entry!r} would copy the filesystem root"
+
+    def test_a_normal_entry_is_unchanged(self):
+        assert (ContainerRunner._scripts_dir("scripts/sglang_disagg/run.sh", "m")
+                == "scripts/sglang_disagg")
+        assert ContainerRunner._scripts_dir("scripts/m/run.py", "m") == "scripts/m"
