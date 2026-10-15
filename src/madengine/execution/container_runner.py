@@ -241,11 +241,16 @@ def git_safe_directory_command(path: str) -> str:
     TheRock images do not ship git. Skipping the config when git is absent
     keeps the run going. When git is installed, a failing ``git config``
     still fails the command.
+
+    ``-C /`` keeps git from resolving the workspace's ``.git`` first. A
+    worktree checkout is a ``.git`` file whose gitdir lives outside the
+    bind mount, and ``git config --global`` otherwise exits 128 before it
+    writes the setting.
     """
     quoted = _bash_quote_path(path)
     return (
         "if command -v git >/dev/null 2>&1; then "
-        f"git config --global --add safe.directory {quoted}; "
+        f"git -C / config --global --add safe.directory {quoted}; "
         "fi"
     )
 

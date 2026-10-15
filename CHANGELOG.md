@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Git safe.directory no longer aborts a worktree checkout**: `git config --global` resolves the workspace `.git` before writing the setting. A worktree is a `.git` file whose gitdir sits outside the container bind mount, so the command exited 128 on images that ship git and failed the run. The setting is now written with `git -C /`, which does not open that repository. A missing git is still skipped, and a real `git config` failure still fails the command.
+
 - **Kubernetes Job names longer than 63 characters failed admission**: Batch Jobs require the pod `job-name` label to equal `metadata.name`, and label values are capped at 63. Long card paths (for example llm-d MoE names) are now built with `sanitize_k8s_object_name(..., max_total_len=63)` so the Job name and label stay identical.
 
 ### Docs
