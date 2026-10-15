@@ -216,6 +216,33 @@ def _benchmark_entries(
     return defaults + specific
 
 
+def _benchmark_kind(
+    config: Dict[str, Any],
+    model_env: Dict[str, Any],
+    runtime: Dict[str, Any],
+) -> Optional[str]:
+    """Which benchmark block to merge, before that block is applied.
+
+    Lowest precedence first: the file's ``model.env``, then a kind-less
+    benchmark entry, then the card, then the submit-time override. Selecting
+    only from the card and the runtime leaves a file that names ``niah`` with
+    ``BENCHMARK_SCRIPT=niah`` and without the niah block's settings.
+    """
+    kind = _env_of(config.get("model")).get("BENCHMARK_SCRIPT")
+    for entry in _benchmark_entries(config, None):
+        selected = _env_of(entry).get("BENCHMARK_SCRIPT")
+        if selected:
+            kind = selected
+    if model_env.get("BENCHMARK_SCRIPT"):
+        kind = model_env.get("BENCHMARK_SCRIPT")
+    if runtime.get("BENCHMARK_SCRIPT"):
+        kind = runtime.get("BENCHMARK_SCRIPT")
+    if kind is None:
+        return None
+    text = str(kind).strip()
+    return text or None
+
+
 def resolve_env(
     config: Dict[str, Any],
     model_env: Optional[Dict[str, Any]] = None,
@@ -323,12 +350,7 @@ def resolve_for_model(
         )
     model_env = model_info.get("env_vars") or {}
     runtime = runtime_env or {}
-    # A submit-time BENCHMARK_SCRIPT selects the benchmark block. Reading the
-    # card first would keep that block's settings and skip the override's kind.
-    if runtime.get("BENCHMARK_SCRIPT"):
-        benchmark = runtime.get("BENCHMARK_SCRIPT")
-    else:
-        benchmark = model_env.get("BENCHMARK_SCRIPT")
+    benchmark = _benchmark_kind(config, model_env, runtime)
     env = resolve_env(
         config,
         model_env=model_env,

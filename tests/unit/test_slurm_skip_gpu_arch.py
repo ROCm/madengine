@@ -14,6 +14,7 @@ No test here reaches a cluster: every srun/squeue is a mocked subprocess.run.
 import csv
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -325,6 +326,45 @@ class TestExecuteDistributedSlurm:
         )
         assert later._apply_skip_gpu_arch_for_slurm(str(manifest)) == (2, [])
 
+    def test_skipped_row_uses_the_card_name(self, tmp_path):
+        # A normal build keys built_images by the Docker tag, not the card name.
+        manifest = {
+            "built_images": {"ci-sub_model": {"docker_image": "ci-sub_model"}},
+            "built_models": {
+                "ci-sub_model": {
+                    "name": "sub/model",
+                    "skip_gpu_arch": "gfx950",
+                    "distributed": {"launcher": "slurm_multi"},
+                }
+            },
+            "context": {},
+        }
+        path = tmp_path / "build_manifest.json"
+        path.write_text(json.dumps(manifest))
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+
+        remaining, skipped = orch._apply_skip_gpu_arch_for_slurm(str(path))
+
+        assert remaining == 0
+        assert skipped == ["sub/model"]
+        assert _perf_rows(tmp_path)[0]["model"] == "sub/model"
+
+    def test_each_run_keeps_its_own_filtered_copy(self, tmp_path):
+        manifest = _manifest(
+            tmp_path, [("only950", "gfx950"), ("only942", "gfx942")]
+        )
+        first = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        second = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
+
+        assert first._apply_skip_gpu_arch_for_slurm(str(manifest))[0] == 1
+        assert second._apply_skip_gpu_arch_for_slurm(str(manifest))[0] == 1
+
+        assert first._slurm_submit_manifest != second._slurm_submit_manifest
+        left = json.loads(Path(first._slurm_submit_manifest).read_text())
+        right = json.loads(Path(second._slurm_submit_manifest).read_text())
+        assert list(left["built_models"]) == ["only942"]
+        assert list(right["built_models"]) == ["only950"]
+
 
 class TestFailedDeploymentIsAFailure:
     """SLURM said FAILED / TIMEOUT, madengine printed
@@ -446,6 +486,20 @@ class TestOutputHoldsThisRun:
         assert _export_session_rows("perf.csv", 0, str(out)) == 1
         assert out.read_text().splitlines() == ["status,model", "SKIPPED,s", "SUCCESS,a"]
 
+    def test_another_path_to_the_working_csv_is_not_appended(self, tmp_path):
+        from madengine.orchestration.run_orchestrator import _export_session_rows
+
+        src = tmp_path / "perf.csv"
+        src.write_text(self.HEADER + "a,SUCCESS,1\n")
+        linked = tmp_path / "linked.csv"
+        linked.symlink_to(src)
+        hard = tmp_path / "hard.csv"
+        os.link(src, hard)
+
+        assert _export_session_rows(str(src), 0, str(linked)) == 0
+        assert _export_session_rows(str(src), 0, str(hard)) == 0
+        assert src.read_text().count("a,SUCCESS,1") == 1
+
     def test_a_quoted_newline_is_one_record(self, tmp_path):
         from madengine.orchestration.run_orchestrator import _csv_data_row_count
 
@@ -479,6 +533,92 @@ class TestManifestDockerEnvReachesDistributed:
         env = create.call_args.args[0].additional_context["docker_env_vars"]
         assert env["NCCL_IB_HCA"] == "from-runtime"
         assert env["KEEP"] == "1"
+
+    def test_unreadable_manifest_still_reaches_the_deployment(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m1", "gfx950")])
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        real_open = open
+
+        def guarded(path, mode="r", *args, **kwargs):
+            if os.fspath(path) == str(manifest) and "r" in str(mode):
+                raise OSError("unreadable")
+            return real_open(path, mode, *args, **kwargs)
+
+        deployment = MagicMock()
+        deployment.execute.return_value = MagicMock(is_success=True, metrics=None)
+        with patch("builtins.open", guarded), patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ) as create:
+            orch._execute_distributed("slurm", str(manifest))
+        create.assert_called_once()
+        assert create.call_args.args[0].manifest_file == str(manifest)
+
+    def test_filtered_copy_write_failure_does_not_submit(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m_skip", "gfx950"), ("m_run", "")])
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        real_open = open
+
+        def guarded(path, mode="r", *args, **kwargs):
+            if "skip_gpu_arch" in os.fspath(path) and "w" in str(mode):
+                raise OSError("read-only file system")
+            return real_open(path, mode, *args, **kwargs)
+
+        deployment = MagicMock()
+        with patch("builtins.open", guarded), patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ) as create:
+            with pytest.raises(OSError, match="read-only file system"):
+                orch._execute_distributed("slurm", str(manifest))
+        create.assert_not_called()
+
+
+class TestLocalManifestEnvDoesNotOverrideRuntime:
+    def test_saved_token_stays_out_of_additional_context(self, tmp_path):
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "built_images": {"img": {"docker_image": "img"}},
+                    "built_models": {"img": {"name": "m"}},
+                    "context": {
+                        "docker_env_vars": {
+                            "MAD_SECRETS_HFTOKEN": "stale",
+                            "KEEP": "from-manifest",
+                        }
+                    },
+                }
+            )
+        )
+        orch = _orchestrator(tmp_path, {"partition": "mi355"})
+        orch.context = MagicMock()
+        orch.context.ctx = {"docker_env_vars": {"MAD_SECRETS_HFTOKEN": "fresh"}}
+        orch.context.get_gpu_vendor.return_value = "NONE"
+        orch.context.get_system_gpu_architecture.return_value = ""
+        runner = MagicMock()
+        runner.run_models_from_manifest.return_value = {
+            "successful_runs": [],
+            "failed_runs": [],
+        }
+
+        with patch.object(orch, "_init_runtime_context"), patch.object(
+            orch, "_show_node_info"
+        ), patch.object(orch, "_copy_scripts"), patch.object(
+            orch, "_wait_for_gpu_memory"
+        ), patch(
+            "madengine.orchestration.run_orchestrator.load_credentials",
+            return_value={},
+        ), patch(
+            "madengine.execution.container_runner.ContainerRunner",
+            return_value=runner,
+        ):
+            orch._execute_local(str(manifest), 60)
+
+        assert "docker_env_vars" not in orch.additional_context
+        env = orch.context.ctx["docker_env_vars"]
+        assert env["MAD_SECRETS_HFTOKEN"] == "fresh"
+        assert env["KEEP"] == "from-manifest"
 
 
 class TestCwdOffsetStaysOnCwdPerf:

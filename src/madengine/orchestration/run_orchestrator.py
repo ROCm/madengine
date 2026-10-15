@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -78,8 +79,14 @@ def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
 
     if not dst or not os.path.exists(src):
         return 0
-    if os.path.abspath(dst) == os.path.abspath(src):
-        return 0
+    # abspath misses a symlink or hard link to the working CSV. Appending
+    # those rows back onto the same file duplicates the session.
+    try:
+        if os.path.samefile(src, dst):
+            return 0
+    except OSError:
+        if os.path.abspath(dst) == os.path.abspath(src):
+            return 0
     with open(src, "r", encoding="utf-8", errors="ignore", newline="") as f:
         reader = csv.DictReader(f)
         fields = reader.fieldnames or []
@@ -97,6 +104,18 @@ def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
             w.writeheader()
             w.writerows(rows)
     return len(rows)
+
+
+def _skip_gpu_arch_manifest_path(manifest_file: str) -> str:
+    """A new path beside the build manifest for this run's filtered copy.
+
+    The deployment reads the path back, including from a job script, so the
+    file has to stay. A fixed suffix would let a concurrent run of the same
+    manifest replace it before that read.
+    """
+    source = Path(manifest_file)
+    token = f"{os.getpid()}.{uuid.uuid4().hex}"
+    return str(source.with_name(f"{source.stem}.skip_gpu_arch.{token}.json"))
 
 
 class RunOrchestrator:
@@ -732,10 +751,11 @@ class RunOrchestrator:
                     if k not in self.context.ctx["docker_env_vars"]:
                         self.context.ctx["docker_env_vars"][k] = v
 
-            # The deployment layer receives only additional_context. The same
-            # handoff runs on the distributed path; both keep a runtime value
-            # per key and fill in keys that exist only in the manifest.
-            self._handoff_manifest_docker_env_vars(manifest)
+            # Leave additional_context alone. The loop above already fills keys
+            # the runtime context does not have. Copying the manifest into
+            # additional_context.docker_env_vars would undo that: run_container
+            # copies that map over the context unconditionally, so a token saved
+            # at build time would replace the one Context just read.
 
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
@@ -881,16 +901,14 @@ class RunOrchestrator:
         # script with no madengine on the compute node to catch it later.
         skipped_runs = []
         # A missing manifest is the deployment's error to report, with its own
-        # message; this check only filters one that exists.
+        # message; this check only filters one that exists. An unreadable
+        # manifest returns (None, []) from the filter. A failure to save the
+        # filtered copy is not that case: it propagates, so incompatible cards
+        # are not submitted from the original file.
         if target == "slurm" and os.path.exists(manifest_file):
-            try:
-                remaining, skipped = self._apply_skip_gpu_arch_for_slurm(
-                    manifest_file
-                )
-            except (OSError, ValueError):
-                # Unreadable is the deployment's error to report, same as a
-                # missing file. Filtering cannot run, so do not abort here.
-                remaining, skipped = None, []
+            remaining, skipped = self._apply_skip_gpu_arch_for_slurm(
+                manifest_file
+            )
             if remaining is not None:
                 # Same shape container_runner reports a skipped run in, so the
                 # Execution Results table lists the model instead of omitting it.
@@ -1379,7 +1397,11 @@ class RunOrchestrator:
         compatible_images, skipped = _filter_by_skip_gpu_arch(
             built_images, built_models, runtime_gpu_arch, disable_skip=False
         )
-        for model_name, image_info, gpu_arch in skipped:
+        for key, image_info, gpu_arch in skipped:
+            # built_images is keyed by the Docker image tag. The card name is
+            # what the execution summary and perf.csv both have to record.
+            card = built_models.get(key) or {}
+            model_name = card.get("name") or key
             self.rich_console.print(
                 f"[yellow]  Skipping model {model_name} as it is not supported on {gpu_arch} architecture.[/yellow]"
             )
@@ -1442,8 +1464,13 @@ class RunOrchestrator:
             (number of models left to submit, names of the models skipped)
         """
         self._slurm_submit_manifest = manifest_file
-        with open(manifest_file, "r") as f:
-            manifest = json.load(f)
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            # Unreadable is the deployment's error to report, same as a
+            # missing file. Filtering cannot run, so do not abort here.
+            return None, []
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
 
@@ -1491,7 +1518,10 @@ class RunOrchestrator:
         filtered["built_models"] = {
             k: v for k, v in built_models.items() if k not in skipped
         }
-        filtered_path = str(Path(manifest_file).with_suffix(".skip_gpu_arch.json"))
+        # A shared name lets two runs of this manifest overwrite each other's
+        # submission copy. The write is outside the read handler above: if it
+        # fails, the caller must not fall through to the original manifest.
+        filtered_path = _skip_gpu_arch_manifest_path(manifest_file)
         with open(filtered_path, "w") as f:
             json.dump(filtered, f, indent=2)
         self._slurm_submit_manifest = filtered_path

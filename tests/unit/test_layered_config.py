@@ -264,6 +264,59 @@ class TestResolveForModel:
         assert env["GSM_SHOTS"] == "5"
         assert "NIAH_WORDS" not in env
 
+    def test_file_benchmark_script_selects_its_block(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            model:
+              env: {BENCHMARK_SCRIPT: niah}
+            benchmark:
+              - env: {SHARED: '1'}
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+            """,
+        )
+        env, _ = resolve_for_model({"name": "x"}, tmp_path)
+        assert env["BENCHMARK_SCRIPT"] == "niah"
+        assert env["NIAH_WORDS"] == "10000"
+        assert env["SHARED"] == "1"
+
+    def test_task_default_benchmark_script_selects_its_block(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            benchmark:
+              - env: {BENCHMARK_SCRIPT: niah}
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+            """,
+        )
+        env, _ = resolve_for_model({"name": "x"}, tmp_path)
+        assert env["NIAH_WORDS"] == "10000"
+
+    def test_card_benchmark_script_overrides_the_file(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            model:
+              env: {BENCHMARK_SCRIPT: niah}
+            benchmark:
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+              - kind: gsm8k
+                env: {GSM_SHOTS: '5'}
+            """,
+        )
+        env, _ = resolve_for_model(
+            {"name": "x", "env_vars": {"BENCHMARK_SCRIPT": "gsm8k"}}, tmp_path
+        )
+        assert env["BENCHMARK_SCRIPT"] == "gsm8k"
+        assert env["GSM_SHOTS"] == "5"
+        assert "NIAH_WORDS" not in env
+
     def test_model_serve_is_refused(self, tmp_path):
         write(
             tmp_path,
