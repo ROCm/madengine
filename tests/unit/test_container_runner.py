@@ -1376,42 +1376,53 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
 
 
 class TestScriptsDirResolution:
-    """A model's `scripts` entry must not name the directory its scripts are copied into.
+    """A model's `scripts` entry must not name a directory that holds the copy destination.
 
-    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` with `model_dir` inside the
-    working directory, so any ancestor of it copies the destination into itself. `cp` refuses for
-    `./.`; for `/.` it does not -- it walks the filesystem, 1.8 GB in two minutes when measured.
+    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in a container whose working
+    directory is /myworkspace. Any source equal to or containing the destination copies it into
+    itself: `cp ./. run_directory/` exits 1, while `cp /. run_directory/` does not refuse at all
+    -- it walks the filesystem, measured at 1.8 GB in two minutes.
 
-    Filesystem-discovered cards always carry a directory, because `discover_models` rewrites
-    `scripts` to `scripts/<rel>/<name>`. Manifest entries skip that rewrite, which is where every
-    spelling below comes from.
+    Both sides are resolved against the working directory first, so the judgement is about which
+    directory is copied rather than how it is spelled.
     """
 
-    @pytest.mark.parametrize("entry", [
-        "run.sh",        # dirname "" -> source "/." : the filesystem root
-        "",              # same
-        "./run.sh",      # dirname "." -> the working directory, which holds the destination
-        "/run.sh",       # the root, spelled directly
-        "//run.sh",      # normpath keeps "//" on POSIX, so this is the root again
-        "../run.sh",     # the parent of the working directory
-        "../../run.sh",
+    DEST = "run_directory"
+
+    @pytest.mark.parametrize("entry,why", [
+        ("run.sh", "no directory at all: the source becomes /."),
+        ("", "same"),
+        ("./run.sh", "the working directory, which holds the destination"),
+        ("/run.sh", "the filesystem root"),
+        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
+        ("../run.sh", "the parent of the working directory"),
+        ("/myworkspace/run.sh", "the working directory written absolutely"),
+        ("run_directory/run.sh", "the destination itself"),
+        ("./run_directory/run.sh", "the destination, spelled differently"),
     ])
-    def test_an_ancestor_of_the_destination_is_refused(self, entry):
-        with pytest.raises(ValueError) as e:
-            ContainerRunner._scripts_dir(entry, "m")
-        assert "contains the directory" in str(e.value)
+    def test_a_source_holding_the_destination_is_refused(self, entry, why):
+        with pytest.raises(ValueError):
+            ContainerRunner._scripts_dir(entry, self.DEST, "m")
 
     @pytest.mark.parametrize("entry,expected", [
         ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
         ("scripts/m/run.py", "scripts/m"),
         ("scripts/m/sub/run.sh", "scripts/m/sub"),
+        # Resolves to the same directory as the first case, so it must be judged the same way.
+        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
+        # Outside the workspace entirely: it cannot contain the destination.
+        ("../opt/bench/run.sh", "../opt/bench"),
+        ("/opt/bench/run.sh", "/opt/bench"),
     ])
-    def test_a_path_under_the_model_directory_is_unchanged(self, entry, expected):
-        assert ContainerRunner._scripts_dir(entry, "m") == expected
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+        assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
 
-    def test_the_caller_never_builds_an_ancestor_copy(self):
-        """The property stated on the command the caller builds, not on the helper's return."""
-        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh"):
-            with pytest.raises(ValueError):
-                src = f"{ContainerRunner._scripts_dir(entry, 'm')}/."
-                raise AssertionError(f"{entry!r} produced copy source {src!r}")
+    def test_the_caller_never_builds_a_self_copy(self):
+        """Stated on the command the caller builds, not on the helper's return value."""
+        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
+                      "/myworkspace/run.sh", "run_directory/run.sh"):
+            try:
+                src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
+            except ValueError:
+                continue
+            raise AssertionError(f"{entry!r} produced copy source {src + '/.'!r}")
