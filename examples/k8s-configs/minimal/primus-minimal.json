@@ -1,0 +1,29 @@
+{
+  "_comment": "Primus Minimal Config - Dedicated launcher support",
+  "_description": "Primus pretrain with config path; launcher sets PRIMUS_CONFIG_PATH only",
+  "_use_case": "Run Primus example configs (Megatron/TorchTitan/Jax) on Kubernetes",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+
+  "k8s": {
+    "gpu_count": 2,
+    "namespace": "default",
+    "memory": "32Gi",
+    "cpu": "16"
+  },
+
+  "distributed": {
+    "launcher": "primus",
+    "nnodes": 1,
+    "nproc_per_node": 2,
+    "primus": {
+      "config_path": "examples/megatron/configs/MI300X/deepseek_v2_lite-BF16-pretrain.yaml",
+      "cli_extra": ""
+    }
+  },
+
+  "env_vars": {
+    "OMP_NUM_THREADS": "8"
+  }
+}

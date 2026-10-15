@@ -17,15 +17,18 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
+import os
 import re
+import signal
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
-from madengine.deployment.base import DeploymentConfig
+from madengine.deployment.base import DeploymentConfig, DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
 
 
@@ -272,30 +275,676 @@ class TestInAllocationTimeout:
     which raised TypeError once the CLI started sending None for "no timeout".
     subprocess spells "no timeout" as None and reads 0 as "expire now", so
     both sentinels have to be mapped, not compared inline.
+
+    The cap is resolved as the job script's own madengine resolves it --
+    default, then model card, then an explicit --timeout -- or a run the card
+    allows longer would be cut off at the default, unlike under sbatch.
     """
 
-    def _invoke(self, tmp_path, timeout):
-        deployment = _build_deployment(tmp_path)
-        # Set on the config directly: None is one of the values under test, so
-        # it cannot be routed through _build_deployment's "omit the kwarg" flag.
-        deployment.config.timeout = timeout
+    def _invoke(self, tmp_path, cli_timeout, model_timeout):
+        deployment = _build_deployment(tmp_path, cli_timeout=cli_timeout)
+        deployment.manifest["built_models"]["dummy-image"]["timeout"] = model_timeout
         deployment.inside_allocation = False  # skip the allocation-size check
         deployment.script_path = tmp_path / "job.sh"
         deployment.script_path.write_text("#!/bin/bash\nexit 0\n")
-        with patch(
-            "madengine.deployment.slurm.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 0),
-        ) as mock_run:
+        with patch("madengine.deployment.slurm.subprocess.Popen") as mock_popen:
+            mock_popen.return_value.returncode = 0
             deployment._run_inside_existing_allocation()
-        mock_run.assert_called_once()
-        return mock_run.call_args.kwargs["timeout"]
+        mock_popen.assert_called_once()
+        return mock_popen.return_value.wait.call_args.kwargs["timeout"]
 
-    @pytest.mark.parametrize("timeout", [0, -1, None])
-    def test_no_timeout_values_become_none(self, tmp_path, timeout):
-        assert self._invoke(tmp_path, timeout) is None
-
-    def test_positive_timeout_passed_through(self, tmp_path):
-        assert self._invoke(tmp_path, 120) == 120
+    @pytest.mark.parametrize(
+        "cli_timeout, model_timeout, expected",
+        [
+            (-1, None, DEFAULT_RUN_TIMEOUT),  # neither level sets one
+            (-1, 36000, 36000),  # the card allows longer than the default
+            (-1, 0, None),  # the card asks for no timeout
+            (-1, -1, None),
+            (120, 36000, 120),  # an explicit --timeout outranks the card
+            (0, 36000, None),  # and an explicit 0 means none
+        ],
+    )
+    def test_the_wait_resolves_like_the_job_script(
+        self, tmp_path, cli_timeout, model_timeout, expected
+    ):
+        assert self._invoke(tmp_path, cli_timeout, model_timeout) == expected
 
     def test_default_config_carries_the_shared_default(self, tmp_path):
         assert _build_deployment(tmp_path).config.timeout == DEFAULT_RUN_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# 6. SGLang disaggregated peer list resolves to routable addresses
+
+class TestSglangDisaggNodeIps:
+    """Peers must never be published as loopback.
+
+    On Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+    `getent hosts` makes every node advertise itself as loopback and any
+    all-nodes barrier hangs.
+    """
+
+    @staticmethod
+    def _sglang_env(tmp_path) -> str:
+        deployment = _build_deployment(
+            tmp_path,
+            {"nodes": 4},
+            {"launcher": "sglang-disagg", "nnodes": 4},
+        )
+        return deployment._generate_sglang_disagg_command(
+            nnodes=4, nproc_per_node=8, master_port=29500
+        )
+
+    @staticmethod
+    def _code_lines(script: str) -> list:
+        """Executable lines only — the comments name the rejected commands."""
+        return [l for l in script.splitlines() if not l.lstrip().startswith("#")]
+
+    def test_uses_ahostsv4_and_skips_loopback(self, tmp_path):
+        script = self._sglang_env(tmp_path)
+        assert "getent ahostsv4" in script
+        assert "/^127\\./" in script
+        # the plain lookup is what returned the 127.0.1.1 self-mapping
+        assert not any("getent hosts" in l for l in self._code_lines(script))
+
+    def test_fallback_is_restricted_to_the_local_node(self, tmp_path):
+        """A peer that fails to resolve must not inherit this node's address."""
+        out = self._run_resolution(tmp_path, ["node1", "node4"])
+        assert out.returncode != 0, out.stdout + out.stderr
+        assert "node4" in out.stderr
+        # publishing our own address in the peer's slot is worse than no entry
+        assert "10.0.0.2" not in out.stdout
+
+    def test_local_node_is_identified_by_its_slurm_nodename(self, tmp_path):
+        """The list holds NodeName, which need not equal the machine hostname.
+
+        With NodeHostname configured the two differ, and matching on hostname
+        alone would treat the local entry as an unresolvable peer and abort a
+        job that has a perfectly good address to advertise.
+        """
+        out = self._run_resolution(tmp_path, ["node1", "node9"], nodename="node9")
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "RESULT=10.0.0.1,10.0.0.2" in out.stdout, out.stdout + out.stderr
+
+    def _run_resolution(self, tmp_path, nodes, ifname="fenic0", nodename=None):
+        """Execute the rendered resolution logic against stubbed system tools.
+
+        The simulated machine answers to hostname ``node2`` and holds a docker
+        bridge (172.17.0.1), a management address (192.168.1.5) and the cluster
+        interface (10.0.0.2). ``node1`` resolves normally, ``node2``/``node4``/
+        ``node9`` only to loopback and anything else not at all. ``nodename``
+        sets SLURMD_NODENAME, i.e. the identity SLURM gives the local node.
+        """
+        script = self._sglang_env(tmp_path)
+        start = script.index("# Address this node advertises")
+        snippet = script[start : script.index("export SGLANG_NODE_IPS", start)]
+
+        bin_dir = tmp_path / "stubbin"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "ip").write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            '  *"addr show dev fenic0"*) echo "3: fenic0 inet 10.0.0.2/24 scope global fenic0";;\n'
+            '  *"addr show dev docker0"*) echo "4: docker0 inet 172.17.0.1/16 scope global docker0";;\n'
+            '  *"route get"*) echo "1.1.1.1 via 192.168.1.1 dev mgmt0 src 192.168.1.5 uid 0";;\n'
+            "  *) exit 1;;\n"
+            "esac\n"
+        )
+        (bin_dir / "getent").write_text(
+            '#!/bin/bash\ncase "$2" in\n  node1) echo "10.0.0.1 node1";;\n'
+            '  node2|node4|node9) echo "127.0.1.1 $2";;\n  *) exit 2;;\nesac\n'
+        )
+        (bin_dir / "hostname").write_text(
+            '#!/bin/bash\ncase "$1" in\n  -s) echo node2;;\n  *) echo node2;;\nesac\n'
+        )
+        (bin_dir / "scontrol").write_text(
+            "#!/bin/bash\nexit 1\n"
+            if not nodes
+            else "#!/bin/bash\nprintf '%s\\n' " + " ".join(nodes) + "\n"
+        )
+        for f in bin_dir.iterdir():
+            f.chmod(0o755)
+
+        runner = tmp_path / "run.sh"
+        runner.write_text(snippet + '\necho "RESULT=$SLURM_NODE_IPS"\n')
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "NCCL_SOCKET_IFNAME": ifname,
+            "SLURM_JOB_NODELIST": "stub",
+        }
+        if nodename is not None:
+            env["SLURMD_NODENAME"] = nodename
+        return subprocess.run(
+            ["bash", str(runner)], capture_output=True, text=True, env=env
+        )
+
+    def test_empty_node_list_fails_the_job(self, tmp_path):
+        """A failing `scontrol` yields "" through the pipeline, not a marker.
+
+        Without an explicit check that falls straight past the UNRESOLVED case
+        and launches with no peers, which hangs the barrier just as loopback did.
+        """
+        out = self._run_resolution(tmp_path, [])
+        assert out.returncode != 0, out.stdout + out.stderr
+        assert "empty node list" in out.stderr
+        assert "RESULT=" not in out.stdout
+
+    def test_unresolvable_peer_fails_the_job(self, tmp_path):
+        """Failing fast is what prevents another allocation-length hang."""
+        out = self._run_resolution(tmp_path, ["node1", "node3"])
+        assert out.returncode != 0, out.stdout + out.stderr
+        # the operator needs to know which node could not be resolved
+        assert "node3" in out.stderr
+        assert "RESULT=" not in out.stdout
+
+    def test_local_address_comes_from_the_cluster_interface(self, tmp_path):
+        """`hostname -I` lists every interface unordered, so it is not used."""
+        script = self._sglang_env(tmp_path)
+        assert not any("hostname -I" in l for l in self._code_lines(script))
+        assert "NCCL_SOCKET_IFNAME" in script
+
+        out = self._run_resolution(tmp_path, ["node1", "node2"])
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "RESULT=10.0.0.1,10.0.0.2" in out.stdout, out.stdout + out.stderr
+        # neither the docker bridge nor the management address may be published
+        assert "172.17.0.1" not in out.stdout
+        assert "192.168.1.5" not in out.stdout
+
+
+class TestMasterPort:
+    """SLURM uses distributed.port, and distributed.master_port when port is omitted."""
+
+    def test_port_wins_over_master_port(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path,
+            distributed_overrides={"port": 30002, "master_port": 30001},
+        )
+        rendered = _render(deployment)
+        assert "--master_port=30002" in rendered
+        assert "--master_port=30001" not in rendered
+
+    def test_master_port_used_when_port_is_omitted(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path, distributed_overrides={"master_port": 30001}
+        )
+        deployment.distributed_config.pop("port", None)
+        rendered = _render(deployment)
+        assert "--master_port=30001" in rendered
+
+
+# ---------------------------------------------------------------------------
+# 7. The node-local workspace is scoped to the job
+
+class TestWorkspaceIsJobScoped:
+    """A node-local workspace must not be shared by consecutive jobs.
+
+    Nothing deletes these directories, and a site is free to point
+    SLURM_TMPDIR at storage that outlives the job. Without the job id in the
+    path, two jobs placing the same node rank on the same host get one
+    directory, and the second reads the first one's results CSV back as its
+    own (see the `multiple_results` cleanup in `container_runner`).
+    """
+
+    def test_multi_node_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert (
+            "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+        assert (
+            "WORKSPACE=/tmp/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}"
+            in script
+        )
+
+    def test_multi_node_workspace_is_not_shared_between_jobs(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "madengine_node_${SLURM_PROCID}" not in script
+
+    def test_single_node_local_workspace_carries_the_job_id(self, tmp_path):
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID:-$$}" in script
+        # A bare SLURM_TMPDIR is the shared directory this guards against.
+        assert re.search(r"WORKSPACE=\$SLURM_TMPDIR\s*$", script, re.M) is None
+
+
+class TestJobScopedWorkspacesAreReclaimed:
+    """One directory per job replaces one directory per node rank, so the
+    template owes the node a way to get the space back."""
+
+    POST_RUN_REMOVAL = 'if rm -rf "$WORKSPACE" 2>/dev/null; then'
+    RESET = 'rm -rf "$WORKSPACE" 2>/dev/null || true'
+    SWEEP = "-name 'madengine_job_*' -uid"
+
+    def test_a_successful_task_removes_its_workspace(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert self.POST_RUN_REMOVAL in script
+
+    def test_the_removal_follows_the_artifact_copy(self, tmp_path):
+        """Removing before collection would throw away the run's results."""
+        script = _render(_build_deployment(tmp_path))
+        assert script.index("NODE_COLLECTION_DIR") < script.index(
+            self.POST_RUN_REMOVAL
+        )
+
+    def test_a_failed_task_keeps_its_workspace(self, tmp_path):
+        """Only the logs are copied out on failure, so the rest has to stay."""
+        script = _render(_build_deployment(tmp_path))
+        removal = script.index(self.POST_RUN_REMOVAL)
+        guard = script.rindex(
+            "if [ $TASK_EXIT -eq 0 ] && [ $COLLECTION_OK -eq 1 ]; then", 0, removal
+        )
+        assert "else" not in script[guard:removal]
+
+    def test_a_workspace_whose_artifacts_did_not_copy_is_kept(self, tmp_path):
+        """Every `cp` here is best-effort, so a full or unreachable shared
+        filesystem would otherwise leave the run with no copy at all."""
+        script = _render(_build_deployment(tmp_path))
+        assert "|| COLLECTION_OK=0" in script
+        # The best-effort copies must feed the flag rather than swallow.
+        collection = script[
+            script.index("Copying artifacts to") : script.index(
+                "Task FAILED with exit code"
+            )
+        ]
+        assert "|| true" not in collection
+        assert "[ $COLLECTION_OK -eq 1 ]" in script
+        assert "artifact collection was incomplete" in script
+
+    def test_the_removal_cannot_fail_the_task(self, tmp_path):
+        """The task script runs under `set -e` and the container writes as
+        root, so a bare `rm -rf` would report a successful run as failed."""
+        script = _render(_build_deployment(tmp_path))
+        assert re.search(r'^\s*rm -rf "\$WORKSPACE"\s*$', script, re.M) is None
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_leftovers_are_swept_before_the_workspace_is_created(
+        self, tmp_path, nodes
+    ):
+        """A failed task keeps its workspace; this is what collects it later."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        sweep = script.index(self.SWEEP)
+        assert script.index("mkdir -p $WORKSPACE", sweep) > sweep
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_spares_the_directory_it_starts_from(self, tmp_path, nodes):
+        """find reports its starting point too, so a scratch root that happens
+        to match the glob would be handed to `rm -rf` whole."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "-mindepth 1 -maxdepth 1 -type d" in script
+        # No sweep may reach find without it.
+        assert script.count("-mindepth 1 -maxdepth 1 -type d") == script.count(
+            "-maxdepth 1 -type d"
+        )
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_spares_live_and_foreign_workspaces(self, tmp_path, nodes):
+        """A run can outlive the retention window while its directory's own
+        mtime stays put, and a shared scratch root holds other users' work."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert '-uid "$(id -u)"' in script
+        assert 'grep -qx -- "$STALE_JOB"' in script
+        # No way to tell a live job from an abandoned one without squeue.
+        assert script.index("LIVE_JOBS=$(squeue -h -u") < script.index(self.SWEEP)
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_sweep_gives_up_when_squeue_does(self, tmp_path, nodes):
+        """`squeue -j <id>` answers the same way for a job that finished and
+        for a controller that cannot be reached, so it cannot be asked at all:
+        one query for the queue either succeeds or takes the sweep with it."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "squeue -h -j" not in script
+        assert (
+            'if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then'
+            in script
+        )
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    @pytest.mark.parametrize(
+        ("name", "job_id"),
+        [
+            ("madengine_job_12345", "12345"),
+            ("madengine_job_12345_node_0", "12345"),
+            ("madengine_job_12345_20261006141121_2f4e57_node_1", "12345"),
+            # An array task's own id contains an underscore. squeue -o %i
+            # prints that whole string, so the sweep must not stop at the first.
+            ("madengine_job_12345_7", "12345_7"),
+            ("madengine_job_12345_7_node_0", "12345_7"),
+            (
+                "madengine_job_12345_7_20261006141121_2f4e57_node_0",
+                "12345_7",
+            ),
+        ],
+    )
+    def test_the_sweep_reads_the_job_id_out_of_every_workspace_name(
+        self, tmp_path, nodes, name, job_id
+    ):
+        """A run-tagged name must still yield the id squeue reports, or a
+        live run inside an allocation reads as abandoned and gets swept."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        parse = [line.strip() for line in script.splitlines() if "STALE_JOB=${" in line]
+        assert len(parse) == 3, parse
+        out = subprocess.run(
+            ["bash", "-c", "; ".join(parse) + '; printf %s "$STALE_JOB"'],
+            env={"STALE_WORKSPACE": f"/scratch/{name}", "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert out.stdout == job_id
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_the_liveness_query_asks_only_for_this_users_jobs(self, tmp_path, nodes):
+        """Every node task runs it, and only this uid's directories can match."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        assert "squeue -h -o %i" not in script
+        assert script.count('squeue -h -u "$(id -un)" -o %i') == 1
+
+    @pytest.mark.parametrize("nodes", [1, 2])
+    def test_a_reused_job_id_starts_from_an_empty_directory(self, tmp_path, nodes):
+        """The sweep keeps live job ids, and a reused id reads as live -- the
+        current job's own directory has to be reset on its own account."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": nodes},
+                distributed_overrides={"nnodes": nodes},
+            )
+        )
+        reset = script.index(self.RESET)
+        assert script.index("mkdir -p $WORKSPACE", reset) > reset
+
+    def test_the_single_node_workspace_is_not_removed_after_the_run(self, tmp_path):
+        """With a local submission directory it holds the only copy of the
+        output: the login node cannot read it back."""
+        script = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"nnodes": 1},
+            )
+        )
+        assert self.POST_RUN_REMOVAL not in script
+        # The one removal left is the reset that precedes mkdir.
+        assert script.count('rm -rf "$WORKSPACE"') == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. Running inside an existing allocation
+
+class TestInsideExistingAllocation:
+    """A second run in one allocation must not land on the first one's paths.
+
+    Everything the job script writes is keyed on the job id, which is unique per
+    sbatch but shared by every run inside one `salloc`. These lock in that the
+    tag carries a per-run discriminator there, and nowhere else: the sbatch
+    script every cluster already depends on must render exactly as before.
+    """
+
+    @staticmethod
+    def _inside(tmp_path, nodes=2, job_id="99999", **slurm_overrides):
+        with patch.dict("os.environ", {"SLURM_JOB_ID": job_id}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=nodes
+        ):
+            dep = _build_deployment(
+                tmp_path, slurm_overrides={"nodes": nodes, **slurm_overrides}
+            )
+            return dep, _render(dep)
+
+    def test_paths_are_untagged_outside_an_allocation(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "madengine_task_${SLURM_JOB_ID}.sh" in script
+        assert (
+            "WORKSPACE=$SLURM_TMPDIR/madengine_job_${SLURM_JOB_ID}_node_${SLURM_PROCID}\n"
+            in script
+        )
+        assert not re.search(r"\$\{SLURM_JOB_ID\}_\d{14}", script)
+
+    def test_srun_is_unconstrained_outside_an_allocation(self, tmp_path):
+        """The #SBATCH directives already shape the step; do not duplicate them."""
+        assert 'srun bash "$TASK_SCRIPT"' in _render(_build_deployment(tmp_path))
+
+    def test_every_written_path_is_run_scoped_inside_an_allocation(self, tmp_path):
+        dep, script = self._inside(tmp_path)
+        tag = dep.job_tag
+        assert re.fullmatch(r"\$\{SLURM_JOB_ID\}_\d{14}_[0-9a-f]{6}", tag), tag
+        for path in (
+            f"madengine_task_{tag}.sh",
+            f"WORKSPACE=/tmp/madengine_job_{tag}_node_",
+            f"_{tag}_node_${{SLURM_PROCID}}.out",
+            f"/dummy_torchrun_multinode/{tag}",
+            f"WORKSPACE=$SLURM_TMPDIR/madengine_job_{tag}_node_${{SLURM_PROCID}}",
+        ):
+            assert path in script, path
+        # No path may keep the bare id, or the two runs collide there instead.
+        assert not re.search(r"madengine[-_][\w{}$]*\$\{SLURM_JOB_ID\}(?!_\d)", script)
+
+    def test_run_id_matches_what_the_script_expands_to(self, tmp_path):
+        """collect_results() looks under the expanded tag, so they must agree."""
+        dep, _ = self._inside(tmp_path, job_id="12345")
+        assert dep.run_id == dep.job_tag.replace("${SLURM_JOB_ID}", "12345")
+
+    def test_two_runs_in_the_same_second_get_distinct_tags(self, tmp_path):
+        with patch(
+            "madengine.deployment.slurm.time.strftime", return_value="20261006120000"
+        ):
+            first, _ = self._inside(tmp_path)
+            second, _ = self._inside(tmp_path)
+        assert first.job_tag != second.job_tag
+
+    def test_srun_is_held_to_the_requested_nodes_inside_an_allocation(self, tmp_path):
+        """#SBATCH is inert here, so a bare srun would take the whole allocation."""
+        _, script = self._inside(tmp_path, nodes=2)
+        assert 'srun -N 2 -n 2 --nodelist "$STEP_NODELIST" bash "$TASK_SCRIPT"' in script
+
+    @pytest.mark.parametrize(
+        "overrides, expected",
+        [({}, ["h1,h2", "h1"]), ({"nodelist": "h3,h4"}, ["h3,h4", "h3"])],
+    )
+    def test_rendezvous_comes_from_the_step_hosts(self, tmp_path, overrides, expected):
+        """In a larger allocation the step must contain MASTER_ADDR, and
+        WORLD_SIZE must match its task count rather than the allocation's. An
+        explicit slurm.nodelist picks the hosts, as it does under sbatch."""
+        _, script = self._inside(tmp_path, nodes=2, **overrides)
+        lines = script.splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("STEP_NODELIST="))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        scontrol = bin_dir / "scontrol"
+        # Expands whatever list it is given, as scontrol does.
+        scontrol.write_text(
+            "#!/bin/bash\n"
+            'case "$3" in h3,h4) printf "h3\\nh4\\n" ;; '
+            '*) printf "h1\\nh2\\nh3\\nh4\\n" ;; esac\n'
+        )
+        scontrol.chmod(0o755)
+        snippet = "\n".join(
+            ["export SLURM_NTASKS=4"]
+            + lines[start : start + 3]
+            + ['echo "$STEP_NODELIST $MASTER_ADDR $WORLD_SIZE"']
+        )
+        out = subprocess.run(
+            ["bash", "-c", snippet],
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "SLURM_JOB_NODELIST": "h[1-4]"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        assert out == expected + ["2"]
+
+    def test_a_single_node_run_keeps_the_standard_script(self, tmp_path):
+        """It submits its own sbatch, so its paths and the id deploy() returns
+        must be the bare job id that collect_results() looks under."""
+        dep, script = self._inside(tmp_path, nodes=1)
+        assert dep.job_tag == "${SLURM_JOB_ID}"
+        assert dep.run_id == "99999"
+        assert script == _render(_build_deployment(tmp_path, slurm_overrides={"nodes": 1}))
+
+    def test_the_tag_follows_a_node_count_resolved_later(self, tmp_path):
+        """prepare() may still raise the node count from the model card."""
+        dep, _ = self._inside(tmp_path, nodes=1)
+        dep.nodes = 2
+        assert dep.run_suffix and dep.job_tag.endswith(dep.run_suffix)
+
+    @pytest.mark.parametrize(
+        "generator, nnodes",
+        [("_generate_deepspeed_command", 2), ("_generate_sglang_disagg_command", 3)],
+    )
+    def test_launchers_read_the_step_hosts_in_place(self, tmp_path, generator, nnodes):
+        """They run inside the step; the allocation may hold more hosts."""
+        dep, _ = self._inside(tmp_path, nodes=nnodes)
+        cmd = getattr(dep, generator)(nnodes, 8, 29500)
+        assert "SLURM_STEP_NODELIST" in cmd
+        assert "SLURM_JOB_NODELIST" not in cmd
+
+    @pytest.mark.parametrize(
+        "generator, nnodes",
+        [("_generate_deepspeed_command", 2), ("_generate_sglang_disagg_command", 3)],
+    )
+    def test_launchers_read_the_job_hosts_under_sbatch(self, tmp_path, generator, nnodes):
+        dep = _build_deployment(tmp_path, slurm_overrides={"nodes": nnodes})
+        cmd = getattr(dep, generator)(nnodes, 8, 29500)
+        assert "SLURM_JOB_NODELIST" in cmd
+        assert "SLURM_STEP_NODELIST" not in cmd
+
+    def test_deepspeed_hostfile_is_run_scoped(self, tmp_path):
+        """Two in-place runs on the same hosts would share /tmp otherwise."""
+        dep, _ = self._inside(tmp_path)
+        cmd = dep._generate_deepspeed_command(2, 8, 29500)
+        assert cmd.count(f"/tmp/deepspeed_hostfile_{dep.job_tag}.txt") == 2
+
+    def test_deepspeed_hostfile_keeps_the_job_id_under_sbatch(self, tmp_path):
+        dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
+        cmd = dep._generate_deepspeed_command(2, 8, 29500)
+        assert cmd.count("/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt") == 2
+
+    def test_a_timeout_stops_the_step_under_bash(self, tmp_path):
+        """Killing bash alone would leave its foreground srun -- here a
+        stand-in -- running in the caller's allocation."""
+        dep, _ = self._inside(tmp_path)
+        pid_file = tmp_path / "step.pid"
+        dep.script_path = tmp_path / "job.sh"
+        dep.script_path.write_text(
+            f"#!/bin/bash\nbash -c 'echo $$ > {pid_file}; exec sleep 300'\n"
+        )
+        dep.config.cli_timeout = 1
+
+        result = dep._run_inside_existing_allocation()
+
+        assert result.status is DeploymentStatus.FAILED
+        step = int(pid_file.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(step, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(step, signal.SIGKILL)
+        pytest.fail("the step outlived the timeout")
+
+    def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
+        script = _render(_build_deployment(tmp_path))
+        assert "STEP_NODELIST" not in script
+        assert "export GPUS_PER_NODE=8\n\n# GPU visibility" in script
+
+    @pytest.mark.parametrize("own_id", ["99999", "run_id"])
+    def test_cleanup_leaves_the_callers_allocation_alone(self, tmp_path, own_id):
+        """A failed in-place run reaches cleanup(); scancel on the allocation
+        would end every later run that shares it."""
+        dep, _ = self._inside(tmp_path)
+        with patch("madengine.deployment.slurm.subprocess.run") as run:
+            assert dep.cleanup(dep.run_id if own_id == "run_id" else own_id)
+        run.assert_not_called()
+
+    def test_cleanup_still_cancels_a_job_this_run_submitted(self, tmp_path):
+        """A single-node run in an allocation submits its own sbatch."""
+        dep, _ = self._inside(tmp_path)
+        with patch("madengine.deployment.slurm.subprocess.run") as run:
+            dep.cleanup("12345")
+        assert run.call_args.args[0] == ["scancel", "12345"]
+
+    def test_multi_node_runs_in_place(self, tmp_path):
+        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=2
+        ):
+            dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
+            dep.script_path = tmp_path / "job.sh"
+            dep.script_path.write_text("#!/bin/bash\nexit 0\n")
+            with patch.object(
+                SlurmDeployment, "_run_inside_existing_allocation"
+            ) as in_place:
+                dep.deploy()
+        in_place.assert_called_once()
+
+    def test_single_node_still_submits_an_sbatch(self, tmp_path):
+        """The single-node branch runs madengine inline, which under `bash` in an
+        allocation means the submitting host -- usually a login node. Submitting
+        a fresh sbatch is the right answer there."""
+        submitted = subprocess.CompletedProcess(
+            args=["sbatch"], returncode=0, stdout="Submitted batch job 12345\n", stderr=""
+        )
+        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
+            SlurmDeployment, "_get_allocation_node_count", return_value=1
+        ):
+            dep = _build_deployment(
+                tmp_path,
+                # Preflight shells out to the scheduler; this test is about the
+                # branch taken, not node selection.
+                slurm_overrides={"nodes": 1, "enable_node_check": False},
+                distributed_overrides={"nnodes": 1},
+            )
+            dep.script_path = tmp_path / "job.sh"
+            dep.script_path.write_text("#!/bin/bash\nexit 0\n")
+            with patch.object(
+                SlurmDeployment, "_run_inside_existing_allocation"
+            ) as in_place, patch(
+                "madengine.deployment.slurm.subprocess.run", return_value=submitted
+            ) as run:
+                result = dep.deploy()
+
+        in_place.assert_not_called()
+        assert run.call_args.args[0] == ["sbatch", str(dep.script_path)]
+        assert result.status is DeploymentStatus.SUCCESS
+        assert result.deployment_id == "12345"

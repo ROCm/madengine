@@ -33,6 +33,7 @@ from madengine.core.timeout import Timeout, subprocess_timeout
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
 from madengine.deployment.common import (
     canonicalize_distributed_launcher,
+    is_cumulative_report,
     is_self_managed_launcher,
 )
 from madengine.execution.container_runner_helpers import (
@@ -58,6 +59,30 @@ from madengine.utils.ops import PythonicTee, file_print
 from madengine.utils.path_utils import get_madengine_root, scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
 from madengine.utils.therock_markers import is_therock_tree
+
+
+# Shell environment variables forwarded into the container for SLURM jobs.
+# A launcher's variables must be listed here or they never reach the model
+# script, which then silently falls back to its single-node defaults.
+SLURM_PASSTHROUGH_ENV_VARS = [
+    'MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'RANK', 'NODE_RANK',
+    'NNODES', 'NPROC_PER_NODE', 'MAD_MULTI_NODE_RUNNER',
+    'MAD_COLLECT_METRICS', 'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME',
+    'NCCL_DEBUG', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL',
+    # Primus launcher (config path and optional CLI extra args)
+    'PRIMUS_CONFIG_PATH', 'PRIMUS_CLI_EXTRA',
+    # Rendezvous timeout so all nodes can join after pull
+    'TORCH_ELASTIC_RDZV_TIMEOUT',
+    # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
+    # CRITICAL: These must be passed to Docker for proper GPU device mapping
+    'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES',
+    # SGLang disaggregated topology and peer list, exported by the SLURM job
+    # script. Without them the model run.sh falls back to a single-node default
+    # (xP=1/yD=1, IPADDRS=localhost) and multi-node bring-up silently degrades.
+    'SGLANG_DISAGG_MODE', 'SGLANG_DISAGG_PREFILL_NODES',
+    'SGLANG_DISAGG_DECODE_NODES', 'SGLANG_DISAGG_TOTAL_NODES',
+    'SGLANG_NODE_IPS', 'SGLANG_NODE_RANK', 'SGLANG_TP_SIZE',
+]
 
 
 def _print_run_env_table(
@@ -180,9 +205,12 @@ def _print_run_env_table(
     rich_console.print(f"[dim]{'=' * 80}[/dim]\n")
 
 
-def _resolve_multiple_results_path(
-    multiple_results: str, model_dir: str
-) -> typing.Optional[str]:
+# Marker echoed by the container when the stale results file survives the
+# unlink; kept out of the command string so both sides cannot drift.
+_STALE_LEFT = "MAD_STALE_RESULTS_LEFT"
+
+
+def _resolve_multiple_results_path(multiple_results: str, model_dir: str) -> typing.Optional[str]:
     """Resolve multiple_results CSV path: try cwd then model_dir. Return first that exists."""
     if not multiple_results:
         return None
@@ -213,6 +241,26 @@ def _bash_quote_path(path: str) -> str:
     return shlex.quote(os.path.normpath((path or "").replace("\\", "/")))
 
 
+def git_safe_directory_command(path: str) -> str:
+    """Return a shell command that marks ``path`` as a git safe.directory.
+
+    TheRock images do not ship git. Skipping the config when git is absent
+    keeps the run going. When git is installed, a failing ``git config``
+    still fails the command.
+
+    ``-C /`` keeps git from resolving the workspace's ``.git`` first. A
+    worktree checkout is a ``.git`` file whose gitdir lives outside the
+    bind mount, and ``git config --global`` otherwise exits 128 before it
+    writes the setting.
+    """
+    quoted = _bash_quote_path(path)
+    return (
+        "if command -v git >/dev/null 2>&1; then "
+        f"git -C / config --global --add safe.directory {quoted}; "
+        "fi"
+    )
+
+
 def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
     """``cp --`` from ``model_dir/relative`` to ``.`` with quoted paths (no injection)."""
     rel = (relative_path or "").strip()
@@ -222,6 +270,16 @@ def _cp_model_dir_file_to_cwd_cmd(model_dir: str, relative_path: str) -> str:
 
 class ContainerRunner:
     """Class responsible for running Docker containers with models."""
+
+    def _merge_slurm_env_from_shell(self) -> int:
+        """Copy the allowlisted SLURM/launcher variables from the shell into
+        ``docker_env_vars``. Returns how many were found."""
+        merged = 0
+        for var_name in SLURM_PASSTHROUGH_ENV_VARS:
+            if var_name in os.environ:
+                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged += 1
+        return merged
 
     def __init__(
         self,
@@ -344,32 +402,8 @@ class ContainerRunner:
             total_gpus = int(nnodes) * int(gpus_per_node)
         except (ValueError, TypeError):
             total_gpus = resolved_gpu_count
-
-        # Extract launcher from multiple sources in priority order:
-        # 1. additional_context (passed via --additional-context CLI arg)
-        # 2. model_info distributed config (in models.json)
-        # 3. MAD_LAUNCHER environment variable
-        # 4. Default to 'docker' for local deployments
-        launcher = ""
-
-        # Check additional_context first (highest priority)
-        if self.additional_context:
-            distributed_config = self.additional_context.get("distributed", {})
-            launcher = distributed_config.get("launcher", "")
-            if launcher:
-                print(f"🚀 Launcher from additional_context: {launcher}")
-
-        # Check model_info distributed config
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-            if launcher:
-                print(f"🚀 Launcher from model_info: {launcher}")
-
-        # Fallback to environment variable
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER", "")
-            if launcher:
-                print(f"🚀 Launcher from MAD_LAUNCHER env: {launcher}")
+        
+        launcher = self._resolve_launcher(model_info, announce=True)
 
         # Apply deployment-specific defaults if no launcher specified
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
@@ -697,9 +731,46 @@ class ContainerRunner:
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
 
-    def _generate_local_launcher_command(
-        self, launcher_type: str, nproc_per_node: int
+    def _resolve_launcher(
+        self, model_info: typing.Dict, announce: bool = False
     ) -> str:
+        """Resolve the configured launcher for this run, in source priority order.
+
+        1. ``additional_context.distributed.launcher`` (the --additional-context CLI arg)
+        2. ``model_info.distributed.launcher`` (models.json)
+        3. ``MAD_LAUNCHER_TYPE`` / ``MAD_LAUNCHER`` (exported by the SLURM job script)
+
+        Does not validate. Launchers are validated at the config boundary — in
+        ``cli/validators.py`` for the CLI and ``BaseDeployment.__init__`` for
+        SLURM/K8s — so anything arriving here is already canonical. Callers on the
+        local Docker path warn and default rather than fail, which is why this
+        returns the value as given instead of raising on it.
+
+        Args:
+            model_info: The model card being run.
+            announce: Print which source supplied the launcher.
+
+        Returns:
+            The launcher name, or ``""`` if none is configured.
+        """
+        sources = [
+            (
+                (self.additional_context or {}).get("distributed", {}).get("launcher", ""),
+                "additional_context",
+            ),
+            ((model_info.get("distributed") or {}).get("launcher", ""), "model_info"),
+            (os.environ.get("MAD_LAUNCHER_TYPE", ""), "MAD_LAUNCHER_TYPE env"),
+            (os.environ.get("MAD_LAUNCHER", ""), "MAD_LAUNCHER env"),
+        ]
+        for value, label in sources:
+            if not value:
+                continue
+            if announce:
+                print(f"🚀 Launcher from {label}: {value}")
+            return value
+        return ""
+
+    def _generate_local_launcher_command(self, launcher_type: str, nproc_per_node: int) -> str:
         """Generate distributed process launcher command for Docker local deployment.
 
         Docker local is always single-node. This parallels
@@ -724,9 +795,9 @@ class ContainerRunner:
         else:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
 
-    # Deployment-mode sentinels that normalize_launcher emits for "no real
-    # launcher". Users may pass these explicitly; defaulting them to torchrun is
-    # expected, not an error, so they should not trigger an unrecognized warning.
+    # Deployment-mode sentinels meaning "no real launcher". Users may pass these
+    # explicitly; defaulting them to torchrun is expected, not an error, so they
+    # should not trigger an unrecognized warning.
     _NON_LAUNCHER_SENTINELS = ("docker", "native")
 
     def _resolve_local_multi_node_runner_env(
@@ -734,24 +805,16 @@ class ContainerRunner:
     ) -> None:
         """Set ``docker_env_vars["MAD_MULTI_NODE_RUNNER"]`` for local Docker runs.
 
-        No-op if the env var is already set. Resolves launcher from
-        ``additional_context.distributed.launcher``, then ``model_info.distributed.launcher``,
-        then ``MAD_LAUNCHER``; falls back to ``torchrun`` for unknown values.
-        Self-managing launchers (vllm/sglang/sglang-disagg/primus) set the var
-        to an empty string so downstream scripts under ``set -u`` don't fail.
+        No-op if the env var is already set. Resolves the launcher via
+        :meth:`_resolve_launcher`, falling back to ``torchrun``. Self-managing
+        launchers (vllm/sglang/sglang-disagg/primus) set the var to an empty
+        string so downstream scripts under ``set -u`` don't fail.
         """
         if "MAD_MULTI_NODE_RUNNER" in self.context.ctx["docker_env_vars"]:
             return
-        launcher = ""
-        if self.additional_context:
-            launcher = self.additional_context.get("distributed", {}).get(
-                "launcher", ""
-            )
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER", "")
-        canonical_launcher = canonicalize_distributed_launcher(launcher)
+        launcher = canonicalize_distributed_launcher(
+            self._resolve_launcher(model_info)
+        ) or ""
         valid_local_launchers = (
             "torchrun",
             "megatron",
@@ -763,8 +826,8 @@ class ContainerRunner:
             "sglang-disagg",
             "primus",
         )
-        if canonical_launcher in valid_local_launchers:
-            dist_launcher = canonical_launcher
+        if launcher in valid_local_launchers:
+            dist_launcher = launcher
         else:
             if launcher and launcher not in self._NON_LAUNCHER_SENTINELS:
                 print(
@@ -912,6 +975,33 @@ class ContainerRunner:
                         f"  Note: Command '{cmd}' already added by another tool, skipping duplicate."
                     )
 
+    def _drop_stale_results_file(
+        self, model_info: typing.Dict, directory: str
+    ) -> None:
+        """Delete a leftover ``multiple_results`` file from *directory*.
+
+        Args:
+            model_info: Model card; ``multiple_results`` names the file.
+            directory: Directory the model script appends the file in.
+        """
+        stale_results = (model_info.get("multiple_results") or "").strip()
+        if not stale_results or is_cumulative_report(
+            stale_results, self.perf_csv_path
+        ):
+            return
+        stale_path = os.path.join(directory, stale_results)
+        try:
+            os.remove(stale_path)
+            print(f"🧹 Removed stale results file: {stale_path}")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(
+                f"⚠️  Could not delete the stale results file {stale_path}: "
+                f"{exc}; rows from an earlier run may be reported as this "
+                "run's."
+            )
+
     def _run_self_managed(
         self,
         model_info: typing.Dict,
@@ -1021,6 +1111,17 @@ class ContainerRunner:
                 env[key] = str(value)
                 print(f"  ENV: {key}=<set>")
 
+        # Same stale results file as in run_container, one directory further
+        # out: the script runs on the host here, appends when the file exists,
+        # and slurm.collect_results falls back to this copy when no per-node CSV
+        # was collected. Unlink it directly -- there is no container to do it.
+        # Both directories the run touches: the script is launched with
+        # cwd=script_dir below, so a relative multiple_results lands there,
+        # while the collector looks for it next to the manifest.
+        self._drop_stale_results_file(model_info, cwd)
+        if script_dir != cwd:
+            self._drop_stale_results_file(model_info, script_dir)
+
         # Run script with logging
         test_start_time = time.time()
         self.rich_console.print(
@@ -1086,21 +1187,43 @@ class ContainerRunner:
         return run_results
 
     def run_pre_post_script(
-        self, model_docker: Docker, model_dir: str, pre_post: typing.List
+        self,
+        model_docker: Docker,
+        model_dir: str,
+        pre_post: typing.List,
+        best_effort: bool = False,
     ) -> None:
-        """Run pre/post scripts in the container."""
+        """Run pre/post scripts in the container.
+
+        A script entry may set "timeout" in seconds (default 600; 0 means none),
+        e.g. for trace analysis whose runtime grows with trace size.
+
+        When ``best_effort`` is true, a failing script is logged and later
+        scripts still run. The failed-model path uses this so one collector
+        cannot skip the remaining trace scripts; the model failure stays the
+        run result.
+        """
         for script in pre_post:
-            script_path = script["path"].strip()
-            model_docker.sh(
-                f"cp -vLR --preserve=all {script_path} {model_dir}", timeout=600
-            )
-            script_name = os.path.basename(script_path)
-            script_args = ""
-            if "args" in script:
-                script_args = script["args"].strip()
-            model_docker.sh(
-                f"cd {model_dir} && bash {script_name} {script_args}", timeout=600
-            )
+            try:
+                script_path = script["path"].strip()
+                model_docker.sh(
+                    f"cp -vLR --preserve=all {script_path} {model_dir}", timeout=600
+                )
+                script_name = os.path.basename(script_path)
+                script_args = ""
+                if "args" in script:
+                    script_args = script["args"].strip()
+                model_docker.sh(
+                    f"cd {model_dir} && bash {script_name} {script_args}",
+                    timeout=subprocess_timeout(int(script.get("timeout", 600))),
+                )
+            except Exception as script_err:
+                if not best_effort:
+                    raise
+                print(
+                    f"Script {script.get('path', script)} failed after the model "
+                    f"failed; continuing with the remaining scripts: {script_err}"
+                )
 
     def _ensure_rocenv_script(self, script_rel: str) -> bool:
         """Make the rocenv script reachable from the container, or skip it.
@@ -1374,42 +1497,10 @@ class ContainerRunner:
                             )
                     except ValueError:
                         pass
-
-        # List of environment variables to pass from shell to Docker (for SLURM jobs)
-        slurm_env_vars = [
-            "MASTER_ADDR",
-            "MASTER_PORT",
-            "WORLD_SIZE",
-            "RANK",
-            "NODE_RANK",
-            "NNODES",
-            "NPROC_PER_NODE",
-            "MAD_MULTI_NODE_RUNNER",
-            "MAD_COLLECT_METRICS",
-            "NCCL_SOCKET_IFNAME",
-            "GLOO_SOCKET_IFNAME",
-            "NCCL_DEBUG",
-            "NCCL_IB_DISABLE",
-            "NCCL_NET_GDR_LEVEL",
-            # Primus launcher (config path and optional CLI extra args)
-            "PRIMUS_CONFIG_PATH",
-            "PRIMUS_CLI_EXTRA",
-            # Rendezvous timeout so all nodes can join after pull
-            "TORCH_ELASTIC_RDZV_TIMEOUT",
-            # GPU visibility variables for Ray-based launchers (vLLM, SGLang)
-            # CRITICAL: These must be passed to Docker for proper GPU device mapping
-            "HIP_VISIBLE_DEVICES",
-            "ROCR_VISIBLE_DEVICES",
-            "CUDA_VISIBLE_DEVICES",
-        ]
-
+        
         # Check shell environment and add to docker_env_vars
-        merged_from_env = 0
-        for var_name in slurm_env_vars:
-            if var_name in os.environ:
-                self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
-                merged_from_env += 1
-
+        merged_from_env = self._merge_slurm_env_from_shell()
+        
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,
         # which tells Ray to IGNORE HIP_VISIBLE_DEVICES. We must explicitly override it.
@@ -1557,14 +1648,7 @@ class ContainerRunner:
         # ========== CHECK FOR SELF-MANAGED LAUNCHERS ==========
         # slurm_multi launchers run scripts directly on the host,
         # not inside a madengine-managed Docker. The script manages its own containers via srun.
-        launcher = ""
-        if self.additional_context:
-            distributed_config = self.additional_context.get("distributed", {})
-            launcher = distributed_config.get("launcher", "")
-        if not launcher and model_info.get("distributed"):
-            launcher = model_info["distributed"].get("launcher", "")
-        if not launcher:
-            launcher = os.environ.get("MAD_LAUNCHER_TYPE", "")
+        launcher = self._resolve_launcher(model_info)
         if is_self_managed_launcher(launcher):
             self.rich_console.print(
                 f"\n[bold cyan]🖥️ Self-managed launcher (launcher: {launcher})[/bold cyan]"
@@ -1593,6 +1677,7 @@ class ContainerRunner:
         self.rich_console.print(f"[dim]{'='*80}[/dim]")
 
         # Run the container with logging
+        model_docker = None
         try:
             with open(log_file_path, mode="w", buffering=1) as outlog:
                 with redirect_stdout(
@@ -1609,6 +1694,7 @@ class ContainerRunner:
                             keep_alive=keep_alive,
                             console=self.console,
                         )
+                        run_results["docker_run_cmd"] = model_docker.docker_run_cmd
 
                         # Check user
                         whoami = model_docker.sh("whoami")
@@ -1646,9 +1732,47 @@ class ContainerRunner:
                                 )
 
                         model_docker.sh(f"rm -rf {model_dir}", timeout=240)
-                        model_docker.sh(
-                            "git config --global --add safe.directory /myworkspace"
-                        )
+
+                        # run_directory above is recreated per run, but the
+                        # workspace root is not: it is the submission directory
+                        # for a single-node SLURM job, and plain cwd for a local
+                        # run. Several models write multiple_results there
+                        # (run_directory/..) and append when the file already
+                        # exists -- scripts/pytorch_train and
+                        # scripts/primus_megatron-lm both do -- so a leftover
+                        # from an earlier run is read back as part of this one,
+                        # and _resolve_multiple_results_path prefers it over
+                        # run_directory. Delete it from inside the container:
+                        # the file was written as root and the caller may not be
+                        # able to unlink it. Not on --skip-model-run, where
+                        # nothing would write a replacement.
+                        stale_results = (
+                            model_info.get("multiple_results") or ""
+                        ).strip()
+                        if (
+                            stale_results
+                            and not skip_model_run
+                            and not is_cumulative_report(
+                                stale_results, self.perf_csv_path
+                            )
+                        ):
+                            # Keep a failed unlink non-fatal, but do not keep it
+                            # quiet: the file is still what
+                            # _resolve_multiple_results_path picks, so the run
+                            # would merge the old rows without a word.
+                            quoted = _bash_quote_path(stale_results)
+                            probe = model_docker.sh(
+                                f"rm -f -- {quoted} 2>/dev/null; "
+                                f"if [ -e {quoted} ]; then echo {_STALE_LEFT}; fi"
+                            )
+                            if _STALE_LEFT in (probe or ""):
+                                print(
+                                    "⚠️  Could not delete the stale results file "
+                                    f"{stale_results}; rows from an earlier run "
+                                    "may be reported as this run's."
+                                )
+
+                        model_docker.sh(git_safe_directory_command("/myworkspace"))
 
                         # Clone model repo if needed
                         if "url" in model_info and model_info["url"] != "":
@@ -1681,7 +1805,7 @@ class ContainerRunner:
                                 )
 
                             model_docker.sh(
-                                f"git config --global --add safe.directory /myworkspace/{model_dir}"
+                                git_safe_directory_command(f"/myworkspace/{model_dir}")
                             )
                             run_results["git_commit"] = model_docker.sh(
                                 f"cd {model_dir} && git rev-parse HEAD"
@@ -1861,6 +1985,17 @@ class ContainerRunner:
                                         )
                                     except Exception:
                                         pass
+                                # Profiler post-scripts collect and analyze traces; a failed
+                                # run's profile is still needed to diagnose it. Each script
+                                # is best-effort so one failure cannot skip the rest. The
+                                # model error is re-raised and the run stays failed.
+                                if pre_encapsulate_post_scripts["post_scripts"]:
+                                    self.run_pre_post_script(
+                                        model_docker,
+                                        model_dir,
+                                        pre_encapsulate_post_scripts["post_scripts"],
+                                        best_effort=True,
+                                    )
                                 raise
                             # When live_output is True, Console.sh() already streamed the output; avoid duplicate print.
                             if not self.live_output:
@@ -2392,8 +2527,10 @@ class ContainerRunner:
                                 f"{reason} specified; model_dir({model_dir}) is not removed"
                             )
 
-                        # Explicitly delete model docker to stop the container
-                        del model_docker
+                        # Explicitly stop and remove the container. The
+                        # finally below repeats this on the failure paths;
+                        # close() is idempotent.
+                        model_docker.close()
 
         except Exception as e:
             self.rich_console.print("[bold red]===== EXCEPTION =====[/bold red]")
@@ -2450,6 +2587,13 @@ class ContainerRunner:
                 self.rich_console.print(
                     f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]"
                 )
+
+        finally:
+            # Reached on every path out of the block above, including the
+            # SIGALRM timeout, so a failed run never leaves the container
+            # holding the GPU.
+            if model_docker is not None:
+                model_docker.close()
 
         return run_results
 
@@ -3124,6 +3268,50 @@ class ContainerRunner:
                 targets.add(parts[1])
         return targets
 
+
+    def _update_manifest_with_run_cmd(
+        self,
+        manifest_file: str,
+        successful_runs: typing.List[typing.Dict],
+        failed_runs: typing.List[typing.Dict],
+    ) -> None:
+        """Append docker_run_cmd to build_manifest.json after the run.
+
+        The manifest already contains build info (build_command, base_docker,
+        docker_sha, dockerfile). This adds the docker run command which is
+        only known at run time on the GPU node. Downstream tools
+        (model_runner) then have everything in one file.
+
+        Best-effort: failures are logged but never block the run.
+        """
+        try:
+            all_runs = successful_runs + failed_runs
+            docker_run_cmd = ""
+            for run_info in all_runs:
+                cmd = run_info.get("docker_run_cmd", "")
+                if cmd:
+                    docker_run_cmd = cmd
+                    break
+
+            if not docker_run_cmd:
+                return
+
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+
+            manifest["docker_run_cmd"] = docker_run_cmd
+
+            with open(manifest_file, "w") as f:
+                json.dump(manifest, f, indent=2)
+            self.rich_console.print(
+                f"[dim]Added docker_run_cmd to {manifest_file}[/dim]"
+            )
+        except Exception as e:
+            self.rich_console.print(
+                f"[yellow]Warning: Could not update {manifest_file} "
+                f"with docker_run_cmd: {e}[/yellow]"
+            )
+
     def run_models_from_manifest(
         self,
         manifest_file: str,
@@ -3296,15 +3484,14 @@ class ContainerRunner:
                 # Check actual status and track accordingly
                 status = run_results.get("status", "SUCCESS")
                 if status == "SUCCESS":
-                    successful_runs.append(
-                        {
-                            "model": model_info["name"],
-                            "image": run_image,
-                            "status": status,
-                            "performance": run_results.get("performance"),
-                            "duration": run_results.get("test_duration"),
-                        }
-                    )
+                    successful_runs.append({
+                        "model": model_info["name"],
+                        "image": run_image,
+                        "status": status,
+                        "performance": run_results.get("performance"),
+                        "duration": run_results.get("test_duration"),
+                        "docker_run_cmd": run_results.get("docker_run_cmd", ""),
+                    })
                 elif status == "SKIPPED":
                     successful_runs.append(
                         {
@@ -3374,6 +3561,9 @@ class ContainerRunner:
                     self.rich_console.print(
                         f"[yellow]Warning: Could not record setup failure to perf CSV: {csv_e}[/yellow]"
                     )
+        
+        # Append docker_run_cmd to manifest (SRS-DL-001 DL-CAP-001)
+        self._update_manifest_with_run_cmd(manifest_file, successful_runs, failed_runs)
 
         # Summary
         self.rich_console.print(f"\n[bold]📊 Execution Summary:[/bold]")

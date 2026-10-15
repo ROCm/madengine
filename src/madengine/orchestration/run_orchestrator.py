@@ -16,7 +16,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -31,6 +31,10 @@ from madengine.core.errors import (
     ConfigurationError,
     ExecutionError,
     create_error_context,
+)
+from madengine.deployment.common import (
+    is_self_managed_launcher,
+    resolve_launcher_from_sources,
 )
 from madengine.utils.session_tracker import SessionTracker
 from madengine.orchestration.image_filtering import (
@@ -286,8 +290,14 @@ class RunOrchestrator:
             if not self.additional_context:
                 self.additional_context = {}
             
-            # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # "_explicit_slurm_keys" carries provenance for slurm.* fields (user/model-card
+            # explicit vs. ConfigLoader preset default) captured at build time — see
+            # BuildOrchestrator._merge_model_config_into_manifest.
+            for key in [
+                "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars",
+                "debug", "_explicit_slurm_keys",
+            ]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
             
@@ -310,7 +320,10 @@ class RunOrchestrator:
 
             # Infer deployment target from config structure (Convention over Configuration)
             # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
-            target = self._infer_deployment_target(self.additional_context)
+            # SlurmDeployment sizes and launches from the first built model, so that
+            # is the card whose launcher decides the target as well.
+            first_model = next(iter((manifest.get("built_models") or {}).values()), None)
+            target = self._infer_deployment_target(self.additional_context, first_model)
             
             # Legacy support: check manifest for explicit target
             if not target or target == "local":
@@ -476,6 +489,11 @@ class RunOrchestrator:
             "local_image_mode": True,
             "local_image_name": image_name,
             "deployment_config": self.additional_context.get("deployment_config", {}),
+            "summary": {
+                "successful_builds": [],
+                "failed_builds": [],
+                "skipped_builds": [],
+            },
         }
         
         # For each model, create a synthetic entry using the provided image
@@ -490,7 +508,10 @@ class RunOrchestrator:
                 "build_status": "SKIPPED",
                 "build_time": 0,
                 "local_image": True,
-                "registry_image": None,
+                # Kubernetes cannot see a node-local Docker image. The name the
+                # user passed is what the cluster pulls, so it is the registry
+                # image as well.
+                "registry_image": image_name,
             }
             
             # Convert data list to comma-separated string (required by dataprovider)
@@ -521,6 +542,13 @@ class RunOrchestrator:
                 "additional_docker_run_options": model.get("additional_docker_run_options", ""),
                 "multiple_results": model.get("multiple_results", ""),
             }
+            manifest["summary"]["skipped_builds"].append(
+                {
+                    "model": model_name,
+                    "docker_image": image_name,
+                    "status": "SKIPPED",
+                }
+            )
         
         # Write manifest to file
         with open(manifest_output, "w") as f:
@@ -547,9 +575,21 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
+                # "_explicit_slurm_keys" describes the slurm block it was recorded
+                # against. Replacing that block above makes the build-time
+                # provenance stale: a manifest built with an explicit slurm.nodes
+                # would keep "nodes" marked explicit even though the runtime slurm
+                # block never sets it, so SlurmDeployment would treat its own
+                # default nodes=1 as deliberate and ignore distributed.nnodes.
+                # RunOrchestrator does not run --additional-context through
+                # ConfigLoader, so the runtime keys are exactly what the user set.
+                if "slurm" in self.additional_context:
+                    stored_config["_explicit_slurm_keys"] = sorted(
+                        self.additional_context.get("slurm") or {}
+                    )
                 manifest["deployment_config"] = stored_config
             
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
@@ -578,6 +618,43 @@ class RunOrchestrator:
                 print("Merged runtime context and deployment config with manifest")
 
         return manifest_file
+
+    def _gpu_memory_wait_seconds(self) -> Optional[int]:
+        """Return --wait-for-gpu-memory when it is a real integer.
+
+        MagicMock-style objects and omitted attributes count as unset so
+        tests and callers that never passed the flag do not query GPUs.
+        """
+        raw = getattr(self.args, "wait_for_gpu_memory", None)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw
+
+    def _wait_for_gpu_memory(self) -> None:
+        """Block local execution until GPU memory is under the threshold."""
+        timeout_s = self._gpu_memory_wait_seconds()
+        if timeout_s is None:
+            return
+
+        from madengine.utils.gpu_memory_gate import check_gpu_memory_free
+        from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+
+        try:
+            tool_manager = get_gpu_tool_manager()
+        except Exception as exc:
+            raise ExecutionError(
+                "Refusing to run: unable to query GPU memory before the run.",
+                context=create_error_context(
+                    operation="check_gpu_memory_free",
+                    component="RunOrchestrator",
+                ),
+                suggestions=[
+                    "Confirm the GPU vendor tools are installed "
+                    "(amd-smi, rocm-smi, or nvidia-smi).",
+                ],
+            ) from exc
+
+        check_gpu_memory_free(tool_manager, timeout_s=timeout_s)
 
     def _execute_local(self, manifest_file: str, timeout: int) -> Dict:
         """Execute locally using container_runner."""
@@ -759,6 +836,10 @@ class RunOrchestrator:
         # For full workflow, logs are combined later by _combine_build_and_run_logs()
         phase_suffix = ".run"
 
+        # After the image build, and before any container starts. A slow
+        # driver release from the previous job is the failure this waits out.
+        self._wait_for_gpu_memory()
+
         # Run models
         results = runner.run_models_from_manifest(
             manifest_file=manifest_file,
@@ -784,6 +865,7 @@ class RunOrchestrator:
             "--keep-alive": getattr(self.args, "keep_alive", False),
             "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
             "--skip-model-run": getattr(self.args, "skip_model_run", False),
+            "--wait-for-gpu-memory": self._gpu_memory_wait_seconds() is not None,
         }
         _active_local_flags = [name for name, val in _local_only_flags.items() if val]
         if _active_local_flags:
@@ -802,35 +884,56 @@ class RunOrchestrator:
         # A missing manifest is the deployment's error to report, with its own
         # message; this check only filters one that exists.
         if target == "slurm" and os.path.exists(manifest_file):
-            remaining, skipped = self._apply_skip_gpu_arch_for_slurm(manifest_file)
-            # Same shape container_runner reports a skipped run in, so the
-            # Execution Results table lists the model instead of omitting it.
-            skipped_runs = [
-                {"model": name, "status": "SKIPPED", "performance": None, "duration": None}
-                for name in skipped
-            ]
-            if not remaining and not skipped:
-                # Nothing was skipped because there was nothing to run: the build
-                # produced no images. A run reported this as "All models skipped by
-                # skip_gpu_arch", an empty results table, and exit 0.
-                self.rich_console.print(
-                    f"[red]✗ {manifest_file} has no built images; nothing to submit.[/red]\n"
+            try:
+                remaining, skipped = self._apply_skip_gpu_arch_for_slurm(
+                    manifest_file
                 )
-                return {
-                    "successful_runs": [],
-                    "failed_runs": [{
-                        "model": f"build manifest {os.path.basename(manifest_file)}",
-                        "status": "FAILURE",
+            except (OSError, ValueError):
+                # Unreadable is the deployment's error to report, same as a
+                # missing file. Filtering cannot run, so do not abort here.
+                remaining, skipped = None, []
+            if remaining is not None:
+                # Same shape container_runner reports a skipped run in, so the
+                # Execution Results table lists the model instead of omitting it.
+                skipped_runs = [
+                    {
+                        "model": name,
+                        "status": "SKIPPED",
                         "performance": None,
                         "duration": None,
-                        "error": "the manifest has no built images",
-                    }],
-                }
-            if not remaining:
-                self.rich_console.print(
-                    "[yellow]All models skipped by skip_gpu_arch; nothing to submit.[/yellow]\n"
-                )
-                return {"successful_runs": skipped_runs, "failed_runs": []}
+                    }
+                    for name in skipped
+                ]
+                if not remaining and not skipped:
+                    # Nothing was skipped because there was nothing to run: the
+                    # build produced no images. A run reported this as "All
+                    # models skipped by skip_gpu_arch", an empty results table,
+                    # and exit 0.
+                    self.rich_console.print(
+                        f"[red]✗ {manifest_file} has no built images; "
+                        "nothing to submit.[/red]\n"
+                    )
+                    return {
+                        "successful_runs": [],
+                        "failed_runs": [
+                            {
+                                "model": (
+                                    f"build manifest "
+                                    f"{os.path.basename(manifest_file)}"
+                                ),
+                                "status": "FAILURE",
+                                "performance": None,
+                                "duration": None,
+                                "error": "the manifest has no built images",
+                            }
+                        ],
+                    }
+                if not remaining:
+                    self.rich_console.print(
+                        "[yellow]All models skipped by skip_gpu_arch; "
+                        "nothing to submit.[/yellow]\n"
+                    )
+                    return {"successful_runs": skipped_runs, "failed_runs": []}
 
         # Import from deployment layer
         from madengine.deployment.factory import DeploymentFactory
@@ -857,15 +960,13 @@ class RunOrchestrator:
             target=target,
             manifest_file=manifest_file,
             additional_context=self.additional_context,
-            # Two different values, deliberately. `timeout` caps this process's
-            # own wait on the deployment, so the sentinel has to be resolved
-            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
-            # in-allocation path runs unbounded. `cli_timeout` is what the
-            # generated job script forwards to the madengine it re-invokes, and
-            # must stay verbatim: that inner run resolves against the model card
-            # itself, and a concrete value here would read as an explicit
-            # --timeout and outrank the card. No model card is consulted at this
-            # level, hence the empty dict.
+            # Two different values, deliberately. `timeout` is the CLI value
+            # resolved against the default, for consumers that see no model
+            # card, hence the empty dict. `cli_timeout` is what the generated
+            # job script forwards to the madengine it re-invokes, and must stay
+            # verbatim: that inner run resolves against the model card itself,
+            # and a concrete value here would read as an explicit --timeout and
+            # outrank the card.
             timeout=resolve_run_timeout(
                 {}, getattr(self.args, "timeout", -1)
             ),
@@ -896,47 +997,73 @@ class RunOrchestrator:
 
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
-        metrics = result.metrics or {}
-        successful_runs = skipped_runs + metrics.get("successful_runs", [])
-        failed_runs = list(metrics.get("failed_runs", []))
+        if result.metrics:
+            summary = {
+                "successful_runs": skipped_runs
+                + list(result.metrics.get("successful_runs", [])),
+                "failed_runs": list(result.metrics.get("failed_runs", [])),
+            }
+        else:
+            summary = {"successful_runs": list(skipped_runs), "failed_runs": []}
 
-        # The CLI's exit code is "any failed_runs?", and failed_runs only ever held
-        # rows parsed from a perf CSV. A job that died before writing one -- FAILED,
-        # TIMEOUT, a docker pull that ran out of disk -- therefore reported no
-        # failures, printed "All model executions completed successfully", and
-        # exited 0 after "Deployment to slurm failed". A failed deployment is a
-        # failure of every model it submitted unless a row already says so.
-        if not result.is_success and not failed_runs:
-            failed_runs = [
-                {
-                    "model": name,
-                    "status": "FAILURE",
-                    "performance": None,
-                    "duration": None,
-                    "error": result.message,
-                }
-                for name in self._submitted_model_names(manifest_file)
-            ] or [
-                {
-                    "model": f"deployment {result.deployment_id or target}",
-                    "status": "FAILURE",
-                    "performance": None,
-                    "duration": None,
-                    "error": result.message,
-                }
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            reported = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict) and isinstance(run.get("model"), str)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if not self._model_reported(model, reported)
+            ]
+            summary["failed_runs"] = [
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
             ]
 
-        return {"successful_runs": successful_runs, "failed_runs": failed_runs}
+        return summary
 
     @staticmethod
-    def _submitted_model_names(manifest_file: str) -> List[str]:
-        """Names of the models a deployment was handed (after skip_gpu_arch filtering)."""
+    def _model_reported(model: str, reported: Set[str]) -> bool:
+        """Did this manifest model appear among the successful runs?
+
+        A model with a multiple-results CSV is reported once per row, under the
+        manifest name decorated with the row's own model: ``<model>_<row>`` in
+        both ``slurm.py`` and ``k8s_results.py``. Matching the name alone would
+        blame a model that did run.
+        """
+        return any(
+            name == model or name.startswith(f"{model}_") for name in reported
+        )
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
         try:
-            with open(manifest_file, "r") as f:
-                built_models = json.load(f).get("built_models", {}) or {}
+            with open(manifest_file) as f:
+                manifest = json.load(f)
         except (OSError, ValueError):
             return []
-        return [m.get("name") or key for key, m in built_models.items()]
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            name = name or key
+            # One model can own several images (multi-arch, several Dockerfiles),
+            # and blaming it once per image would inflate the failure count.
+            if name not in names:
+                names.append(name)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
@@ -1383,26 +1510,50 @@ class RunOrchestrator:
         except Exception as e:
             self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
 
-    def _infer_deployment_target(self, config: Dict) -> str:
+    def _infer_deployment_target(
+        self, config: Dict, model_info: Optional[Dict] = None
+    ) -> str:
         """
         Infer deployment target from configuration structure.
-        
+
         Convention over Configuration:
+        - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
-        - Neither present → local execution
-        
+        - A self-managed SLURM launcher (slurm_multi) → slurm deployment
+        - None of the above → local execution
+
         Args:
             config: Configuration dictionary
-            
+            model_info: The manifest's model card, consulted for the launcher when
+                ``config`` does not name one. A runtime ``distributed`` override
+                replaces the stored block wholesale, so ``config`` alone can lose a
+                launcher the model card declared.
+
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "llm-d", "k8s", "slurm", or "local"
         """
-        if "k8s" in config or "kubernetes" in config:
+        # Checked first: an llm-d config also carries a "k8s" block, which
+        # configures the benchmark-client Job.
+        if "llm_d" in config:
+            return "llm-d"
+        elif "k8s" in config or "kubernetes" in config:
             return "k8s"
-        elif "slurm" in config:
+        if "slurm" in config:
             return "slurm"
-        else:
-            return "local"
+        # slurm_multi runs the model's own .slurm script through sbatch/srun, so it is
+        # a SLURM deployment by construction. Without this a model card that declared
+        # the launcher but no `slurm` block inferred "local" and was handed to the
+        # container runner, which never reaches the slurm_multi path at all.
+        # Resolve the launcher exactly as SlurmDeployment._resolve_launcher does
+        # (deployment config first, model card second) so the two cannot disagree.
+        launcher = resolve_launcher_from_sources(
+            (config.get("distributed") or {}).get("launcher"),
+            ((model_info or {}).get("distributed") or {}).get("launcher"),
+            default="",
+        )
+        if is_self_managed_launcher(launcher):
+            return "slurm"
+        return "local"
     
 

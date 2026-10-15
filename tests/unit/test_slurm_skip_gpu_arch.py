@@ -411,8 +411,19 @@ class TestProbeReadsKfdTopology:
     def test_cpu_only_topology_falls_through_to_rocminfo(self, tmp_path):
         script = self._script(self._topology(tmp_path, [0]))
         assert script.rstrip().endswith('rocminfo 2>/dev/null')
-        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                             env={"PATH": "/usr/bin:/bin"}).stdout
+        # A stub, not the host rocminfo: this machine's rocminfo reports a GPU
+        # and would hide the "CPU-only topology yields no arch" case.
+        stub = tmp_path / "bin"
+        stub.mkdir()
+        rocminfo = stub / "rocminfo"
+        rocminfo.write_text("#!/bin/sh\nexit 0\n")
+        rocminfo.chmod(0o755)
+        out = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{stub}:/usr/bin:/bin"},
+        ).stdout
         assert parse_gpu_arch(out) is None
 
 

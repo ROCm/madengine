@@ -23,6 +23,7 @@ from madengine.core.auth import (
     explain_registry_denial,
     has_ambient_docker_auth,
     login_to_registry,
+    resolve_dockerhub_repository,
 )
 from madengine.core.console import Console, manifest_safe_context, redact_secrets
 from madengine.core.context import Context
@@ -771,6 +772,16 @@ class DockerBuilder:
                         {"model": model_info["name"], "error": str(e)}
                     )
 
+        for build_info in build_summary["successful_builds"]:
+            if build_info.get("push_failed"):
+                build_summary["failed_pushes"].append(
+                    {
+                        "model": build_info.get("model"),
+                        "docker_image": build_info.get("docker_image"),
+                        "error": build_info.get("push_error"),
+                    }
+                )
+
         return build_summary
 
     def _check_dockerfile_has_gpu_variables(
@@ -945,6 +956,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             results.append(build_info)
@@ -1082,16 +1094,12 @@ class DockerBuilder:
 
         # Determine registry image name based on registry type
         if registry.lower() in ["docker.io", "dockerhub"]:
-            # For DockerHub, always use format: repository:tag
-            # Try to get repository from credentials, fallback to default if not available
-            if (
-                credentials
-                and "dockerhub" in credentials
-                and "repository" in credentials["dockerhub"]
-            ):
-                registry_image = (
-                    f"{credentials['dockerhub']['repository']}:{docker_image}"
-                )
+            # For DockerHub, always use format: repository:tag.
+            # Placeholder repositories (your-org/your-repo) are ignored so a
+            # template credential.json does not retarget the push.
+            repository = resolve_dockerhub_repository(credentials)
+            if repository:
+                registry_image = f"{repository}:{docker_image}"
             else:
                 registry_image = docker_image
         else:
@@ -1163,6 +1171,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             arch_results.append(build_info)

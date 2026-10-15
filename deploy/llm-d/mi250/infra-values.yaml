@@ -1,0 +1,8 @@
+gateway:
+  enabled: true
+  provider: agentgateway
+  gatewayClassName: agentgateway
+  exposure:
+    type: internal
+  service:
+    type: ClusterIP
