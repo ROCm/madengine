@@ -310,10 +310,29 @@ def resolve_for_model(
         return {}, warnings
 
     config = load_config(path)
+    serve = (config.get("model") or {}).get("serve")
+    if serve:
+        # Same rule as a site: block. resolve_serve_args can merge the map, but
+        # no launcher receives the selected role and mode, so leaving the
+        # section in place would run a different recipe than the file describes.
+        raise LayeredConfigError(
+            f"{path}: model.serve is not applied to the workload. "
+            "No launcher receives these flags, so the section is refused rather "
+            "than dropped. Remove it until a runtime applies it, or put the "
+            "flags in the file the workload script already reads (models.yaml)."
+        )
+    model_env = model_info.get("env_vars") or {}
+    runtime = runtime_env or {}
+    # A submit-time BENCHMARK_SCRIPT selects the benchmark block. Reading the
+    # card first would keep that block's settings and skip the override's kind.
+    if runtime.get("BENCHMARK_SCRIPT"):
+        benchmark = runtime.get("BENCHMARK_SCRIPT")
+    else:
+        benchmark = model_env.get("BENCHMARK_SCRIPT")
     env = resolve_env(
         config,
-        model_env=model_info.get("env_vars") or {},
-        runtime_env=runtime_env or {},
-        benchmark=(model_info.get("env_vars") or {}).get("BENCHMARK_SCRIPT"),
+        model_env=model_env,
+        runtime_env=runtime,
+        benchmark=benchmark,
     )
     return env, warnings

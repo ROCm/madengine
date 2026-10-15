@@ -3041,9 +3041,19 @@ export MASTER_PORT={master_port}
                 reader = csv.DictReader(f)
                 reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
                 rows = [{k.strip(): v for k, v in row.items() if k} for row in reader]
-            if session_start_row is not None and session_start_row < len(rows):
-                rows = rows[session_start_row:]
-            elif session_start_row is not None and session_start_row >= len(rows):
+            # session_start_row counts rows already in the cwd perf.csv. A
+            # per-job or multiple_results CSV is a different file and starts at
+            # record 0; applying the cwd offset to it drops the job's own rows.
+            offset = session_start_row
+            try:
+                same_file = perf_file.resolve() == Path("perf.csv").resolve()
+            except OSError:
+                same_file = False
+            if not same_file:
+                offset = 0
+            if offset is not None and offset < len(rows):
+                rows = rows[offset:]
+            elif offset is not None and offset >= len(rows):
                 rows = []
             for row in rows:
                 run_data = {

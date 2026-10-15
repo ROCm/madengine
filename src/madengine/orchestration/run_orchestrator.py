@@ -51,10 +51,17 @@ DEPLOYMENT_PERF_CSV = "perf.csv"
 
 
 def _csv_data_row_count(path: str) -> int:
-    """Data rows (excluding the header) in a CSV, 0 if it does not exist."""
+    """Data records (excluding the header) in a CSV, 0 if it does not exist.
+
+    Counts records the way ``csv.DictReader`` does. A quoted field that contains
+    a newline is one record, and counting physical lines would make the session
+    offset skip rows that were actually written.
+    """
+    import csv
+
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return max(sum(1 for line in f if line.strip()) - 1, 0)
+        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            return sum(1 for _ in csv.DictReader(f))
     except OSError:
         return 0
 
@@ -725,18 +732,10 @@ class RunOrchestrator:
                     if k not in self.context.ctx["docker_env_vars"]:
                         self.context.ctx["docker_env_vars"][k] = v
 
-            # Also hand docker_env_vars to the deployment layer, which receives
-            # only additional_context. Without this a manifest's docker_env_vars
-            # reaches a local `docker run -e` but is silently dropped on the SLURM
-            # path, so the same variable has had to be declared twice -- once in
-            # context.docker_env_vars and again in deployment_config.env_vars.
-            # Two copies of a NIC list drift, and a wrong one does not fail: RCCL
-            # falls back to TCP and the benchmark still reports a number.
-            # setdefault, so an explicit runtime value still wins.
-            if self.context.ctx.get("docker_env_vars"):
-                self.additional_context.setdefault(
-                    "docker_env_vars", self.context.ctx["docker_env_vars"]
-                )
+            # The deployment layer receives only additional_context. The same
+            # handoff runs on the distributed path; both keep a runtime value
+            # per key and fill in keys that exist only in the manifest.
+            self._handoff_manifest_docker_env_vars(manifest)
 
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
@@ -955,10 +954,25 @@ class RunOrchestrator:
         if "session_start_row" not in self.additional_context:
             self.additional_context["session_start_row"] = working_start
 
+        # Manifest-only docker_env_vars (NCCL_IB_HCA and the like) are copied
+        # into context on the local path. SLURM and Kubernetes never enter that
+        # path, and the deployment reads additional_context, so the copy has to
+        # happen here as well. A runtime key still wins.
+        try:
+            with open(manifest_file, "r") as f:
+                self._handoff_manifest_docker_env_vars(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+        # skip_gpu_arch may have written a filtered copy. The build manifest
+        # itself is left as the build wrote it, so a later run can still see
+        # the models this one skipped.
+        submit_manifest = getattr(self, "_slurm_submit_manifest", manifest_file)
+
         # Create deployment configuration
         deployment_config = DeploymentConfig(
             target=target,
-            manifest_file=manifest_file,
+            manifest_file=submit_manifest,
             additional_context=self.additional_context,
             # Two different values, deliberately. `timeout` is the CLI value
             # resolved against the default, for consumers that see no model
@@ -1418,14 +1432,16 @@ class RunOrchestrator:
         Drop models whose skip_gpu_arch names the SLURM nodes' architecture.
 
         Same rule and same SKIPPED rows as the local path, applied before sbatch.
-        The manifest file is rewritten because the deployment reads it back and
-        submits built_models' first entry: a skipped model has to leave
-        built_models as well as built_images, or it is the one that gets
-        submitted.
+        The deployment reads the manifest back and submits built_models' first
+        entry, so a skipped model has to leave both built_models and
+        built_images. That filtered view is a per-run copy. The build manifest
+        stays as the build wrote it: rewriting it in place made the next run,
+        and ``--disable-skip-gpu-arch``, see an empty manifest.
 
         Returns:
             (number of models left to submit, names of the models skipped)
         """
+        self._slurm_submit_manifest = manifest_file
         with open(manifest_file, "r") as f:
             manifest = json.load(f)
         built_images = manifest.get("built_images", {})
@@ -1465,11 +1481,40 @@ class RunOrchestrator:
         if not skipped:
             return len(compatible), []
 
-        manifest["built_images"] = compatible
-        manifest["built_models"] = {k: v for k, v in built_models.items() if k not in skipped}
-        with open(manifest_file, "w") as f:
-            json.dump(manifest, f, indent=2)
-        return len(compatible), [built_models.get(k, {}).get("name", k) for k in skipped]
+        skipped_names = [built_models.get(k, {}).get("name", k) for k in skipped]
+        if not compatible:
+            # Nothing is submitted, so there is no filtered copy to hand over.
+            return 0, skipped_names
+
+        filtered = dict(manifest)
+        filtered["built_images"] = compatible
+        filtered["built_models"] = {
+            k: v for k, v in built_models.items() if k not in skipped
+        }
+        filtered_path = str(Path(manifest_file).with_suffix(".skip_gpu_arch.json"))
+        with open(filtered_path, "w") as f:
+            json.dump(filtered, f, indent=2)
+        self._slurm_submit_manifest = filtered_path
+        return len(compatible), skipped_names
+
+    def _handoff_manifest_docker_env_vars(self, manifest: Dict) -> None:
+        """Copy ``context.docker_env_vars`` into ``additional_context``.
+
+        The deployment layer never sees the manifest context. Keys already set
+        at runtime stay; keys that exist only in the manifest are filled in.
+        """
+        context = manifest.get("context") if isinstance(manifest, dict) else None
+        manifest_env = (
+            context.get("docker_env_vars") if isinstance(context, dict) else None
+        )
+        if not isinstance(manifest_env, dict) or not manifest_env:
+            return
+        dest = self.additional_context.get("docker_env_vars")
+        if not isinstance(dest, dict):
+            self.additional_context["docker_env_vars"] = dict(manifest_env)
+            return
+        for key, value in manifest_env.items():
+            dest.setdefault(key, value)
 
     def _write_skipped_status(self, model_name: str, image_info: Dict, gpu_arch: str) -> None:
         """Write SKIPPED status to perf CSV for models that were skipped.

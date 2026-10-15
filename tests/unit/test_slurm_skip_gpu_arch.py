@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -117,6 +118,46 @@ class TestProbeGpuArch:
         assert "--constraint=mi355x" in srun
         assert "--nodes=1" in srun
 
+    def test_plain_nodelist_pins_the_first_node(self):
+        selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
+        ok = subprocess.CompletedProcess([], 0, stdout=ROCMINFO, stderr="")
+        with patch(SELECTOR_RUN, return_value=ok) as run:
+            arch = selector.probe_gpu_arch(
+                partition="mi355", nodelist="node01,node02"
+            )
+        assert arch == "gfx950"
+        srun = run.call_args_list[0].args[0]
+        assert srun[0] == "srun"
+        assert "--nodelist=node01" in srun
+
+    def test_bracketed_nodelist_is_expanded_before_the_probe(self):
+        selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
+        hosts = subprocess.CompletedProcess(
+            [], 0, stdout="node01\nnode02\n", stderr=""
+        )
+        ok = subprocess.CompletedProcess([], 0, stdout=ROCMINFO, stderr="")
+        with patch(SELECTOR_RUN, side_effect=[hosts, ok]) as run:
+            arch = selector.probe_gpu_arch(
+                partition="mi355", nodelist="node[01-02]"
+            )
+        assert arch == "gfx950"
+        assert run.call_args_list[0].args[0] == [
+            "scontrol",
+            "show",
+            "hostnames",
+            "node[01-02]",
+        ]
+        assert "--nodelist=node01" in run.call_args_list[1].args[0]
+
+    def test_unexpandable_nodelist_does_not_probe_another_node(self):
+        selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="bad hostlist")
+        with patch(SELECTOR_RUN, return_value=failed) as run:
+            arch = selector.probe_gpu_arch(partition="mi355", nodelist="node[01-02]")
+        assert arch is None
+        assert run.call_count == 1
+        assert run.call_args.args[0][0] == "scontrol"
+
     def test_timeout_returns_none(self):
         selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
         with patch(SELECTOR_RUN, side_effect=subprocess.TimeoutExpired("srun", 5)):
@@ -133,11 +174,13 @@ class TestSlurmSkipGpuArch:
 
         run.assert_not_called()  # an explicit value needs no probe
         assert (remaining, skipped) == (1, ["m_skip"])
-        data = json.loads(manifest.read_text())
-        # Both maps: SlurmDeployment submits built_models' FIRST key, so a
-        # skipped model left there would still be the one sbatched.
+        # The build manifest stays intact. The deployment is handed a copy
+        # whose first built_models entry is the model that may run.
+        assert "m_skip" in json.loads(manifest.read_text())["built_models"]
+        data = json.loads(Path(orch._slurm_submit_manifest).read_text())
         assert list(data["built_images"]) == ["m_run"]
         assert list(data["built_models"]) == ["m_run"]
+        assert orch._slurm_submit_manifest != str(manifest)
         rows = _perf_rows(tmp_path)
         assert [(r["model"], r["status"]) for r in rows] == [("m_skip", "SKIPPED")]
         assert rows[0]["gpu_architecture"] == "gfx950"
@@ -253,6 +296,34 @@ class TestExecuteDistributedSlurm:
         deployment.execute.assert_called_once()
         submitted = json.loads(manifest.read_text())
         assert list(submitted["built_models"]) == ["m1"]
+
+    def test_partial_skip_submits_a_copy_and_keeps_the_build_manifest(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m_skip", "gfx950"), ("m_run", "")])
+        original = manifest.read_text()
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        deployment = MagicMock()
+        deployment.execute.return_value = MagicMock(is_success=True, metrics=None)
+
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ) as create:
+            orch._execute_distributed("slurm", str(manifest))
+
+        assert manifest.read_text() == original
+        config = create.call_args.args[0]
+        submitted = json.loads(Path(config.manifest_file).read_text())
+        assert config.manifest_file != str(manifest)
+        assert list(submitted["built_models"]) == ["m_run"]
+
+    def test_disable_on_a_later_run_still_sees_every_model(self, tmp_path):
+        manifest = _manifest(tmp_path, [("m_skip", "gfx950"), ("m_run", "")])
+        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
+        assert orch._apply_skip_gpu_arch_for_slurm(str(manifest)) == (1, ["m_skip"])
+        later = _orchestrator(
+            tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"}, disable=True
+        )
+        assert later._apply_skip_gpu_arch_for_slurm(str(manifest)) == (2, [])
 
 
 class TestFailedDeploymentIsAFailure:
@@ -374,6 +445,72 @@ class TestOutputHoldsThisRun:
         out.write_text("status,model\nSKIPPED,s\n")
         assert _export_session_rows("perf.csv", 0, str(out)) == 1
         assert out.read_text().splitlines() == ["status,model", "SKIPPED,s", "SUCCESS,a"]
+
+    def test_a_quoted_newline_is_one_record(self, tmp_path):
+        from madengine.orchestration.run_orchestrator import _csv_data_row_count
+
+        path = tmp_path / "perf.csv"
+        path.write_text(
+            'model,status,error\nm1,FAILURE,"line one\nline two"\nm2,SUCCESS,\n'
+        )
+        assert _csv_data_row_count(str(path)) == 2
+
+
+class TestManifestDockerEnvReachesDistributed:
+    def test_manifest_keys_arrive_and_runtime_keys_win(self, tmp_path):
+        manifest = {
+            "context": {
+                "docker_env_vars": {"NCCL_IB_HCA": "from-manifest", "KEEP": "1"}
+            },
+            "built_images": {"m1": {"docker_image": "m1"}},
+            "built_models": {"m1": {"name": "m1"}},
+        }
+        path = tmp_path / "build_manifest.json"
+        path.write_text(json.dumps(manifest))
+        orch = _orchestrator(tmp_path, {"partition": "mi355"})
+        orch.additional_context["docker_env_vars"] = {"NCCL_IB_HCA": "from-runtime"}
+        deployment = MagicMock()
+        deployment.execute.return_value = MagicMock(is_success=True, metrics=None)
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ) as create:
+            orch._execute_distributed("slurm", str(path))
+        env = create.call_args.args[0].additional_context["docker_env_vars"]
+        assert env["NCCL_IB_HCA"] == "from-runtime"
+        assert env["KEEP"] == "1"
+
+
+class TestCwdOffsetStaysOnCwdPerf:
+    def test_per_job_csv_is_not_sliced_by_the_cwd_offset(self, tmp_path):
+        from madengine.deployment.slurm import SlurmDeployment
+
+        (tmp_path / "perf.csv").write_text(
+            "model,status\n" + "old,SUCCESS\n" * 10
+        )
+        job = tmp_path / "job.csv"
+        job.write_text("model,status\nm1,SUCCESS\n")
+        dep = SlurmDeployment.__new__(SlurmDeployment)
+        dep.console = MagicMock()
+        results = {"perf_files": [str(job)], "successful_runs": [], "failed_runs": []}
+        dep._collect_results_parse_perf_csv(results, 10)
+        assert [row["model"] for row in results["successful_runs"]] == ["m1"]
+
+    def test_cwd_perf_csv_still_drops_rows_from_earlier_runs(self, tmp_path):
+        from madengine.deployment.slurm import SlurmDeployment
+
+        (tmp_path / "perf.csv").write_text(
+            "model,status\n" + "old,SUCCESS\n" * 10 + "m1,SUCCESS\n"
+        )
+        dep = SlurmDeployment.__new__(SlurmDeployment)
+        dep.console = MagicMock()
+        results = {
+            "perf_files": [str(tmp_path / "perf.csv")],
+            "successful_runs": [],
+            "failed_runs": [],
+        }
+        dep._collect_results_parse_perf_csv(results, 10)
+        assert [row["model"] for row in results["successful_runs"]] == ["m1"]
 
 
 class TestProbeReadsKfdTopology:

@@ -126,9 +126,10 @@ inside the container by their own scripts. This one is madengine's, and it exist
 for a narrower job than it originally had: **the two things that travel with a
 model and that nothing else can express.**
 
-- **`model:`** &mdash; how this model is served on this hardware, including the
-  serve flags per role &times; mode. `configs/*.yaml` has no concept of a role,
-  and a Hydra group has no concept of a model.
+- **`model:`** &mdash; how this model is served on this hardware, as environment
+  variables. `configs/*.yaml` has no concept of a model, and a Hydra group has
+  no concept of one either. Serve flags per role &times; mode stay in `models.yaml`
+  until a launcher applies them; a `model.serve` block in this file is refused.
 - **`benchmark:`** &mdash; what is measured, optionally per benchmark kind.
 
 It stops there. Anything true of the *cluster* rather than the *model* belongs to
@@ -146,15 +147,6 @@ model:                      # decided by: whoever tuned this model
     REQUIRE_LOCAL_WEIGHTS: '1'   # a fact about the MODEL: 1.5T will not load over NFS in time
     TP_SIZE: '8'
     PP_SIZE: '2'
-  serve:
-    base: "--attention-backend aiter"
-    modes:
-      tp: "--tensor-parallel-size 8"
-    roles:
-      prefill:
-        tp: "--disable-cuda-graph"
-      decode:
-        tp: "--disable-radix-cache --cuda-graph-bs 8 16 32 64 128 256 512"
 
 benchmark:                  # decided by: whoever defines the measurement
   - env:                    # no 'kind' -> applies to every benchmark
@@ -219,6 +211,14 @@ something at submit time should win, which is the property every one of these
 formats already relies on.
 
 ### Serve flags are a map, not a string
+
+`resolve_serve_args` can merge `model.serve` (base, then mode, then role) into one
+flag map. Nothing in the run path consumes that map: no launcher receives the
+selected role and mode. A file that contains `model.serve` is therefore
+**refused**, for the same reason a `site:` block is. Dropping the section
+silently would run a different recipe than the file describes. Until a runtime
+applies the map, put those flags in `models.yaml`, which the workload script
+reads itself.
 
 Within `serve`, a flag string is parsed into a map so a later layer can override a
 *single* flag:
@@ -317,8 +317,9 @@ Pick by **how long the value should outlive the run**:
   &rarr; `models.yaml`; it owns the role &times; mode axis nothing else has.
 - **Defines the measurement** (benchmark kind, knobs, `extra_args`)
   &rarr; `configs/*.yaml`.
-- **Wanting a model's serve recipe and its measurement in one reviewable file, on
-  the madengine path** &rarr; `mad-config.yaml`.
+- **Wanting a model's environment and its measurement in one reviewable file, on
+  the madengine path** &rarr; `mad-config.yaml`. Serve flags in that file are
+  refused until a launcher applies them.
 
 If a value seems to belong in two of these, it is usually two different values
 that happen to share a name today -- and they will drift.
