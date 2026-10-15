@@ -241,11 +241,16 @@ def git_safe_directory_command(path: str) -> str:
     TheRock images do not ship git. Skipping the config when git is absent
     keeps the run going. When git is installed, a failing ``git config``
     still fails the command.
+
+    ``-C /`` keeps git from resolving the workspace's ``.git`` first. A
+    worktree checkout is a ``.git`` file whose gitdir lives outside the
+    bind mount, and ``git config --global`` otherwise exits 128 before it
+    writes the setting.
     """
     quoted = _bash_quote_path(path)
     return (
         "if command -v git >/dev/null 2>&1; then "
-        f"git config --global --add safe.directory {quoted}; "
+        f"git -C / config --global --add safe.directory {quoted}; "
         "fi"
     )
 
@@ -1513,6 +1518,7 @@ class ContainerRunner:
         self.rich_console.print(f"[dim]{'='*80}[/dim]")
 
         # Run the container with logging
+        model_docker = None
         try:
             with open(log_file_path, mode="w", buffering=1) as outlog:
                 with redirect_stdout(
@@ -2252,8 +2258,10 @@ class ContainerRunner:
                                 f"{reason} specified; model_dir({model_dir}) is not removed"
                             )
 
-                        # Explicitly delete model docker to stop the container
-                        del model_docker
+                        # Explicitly stop and remove the container. The
+                        # finally below repeats this on the failure paths;
+                        # close() is idempotent.
+                        model_docker.close()
 
         except Exception as e:
             self.rich_console.print("[bold red]===== EXCEPTION =====[/bold red]")
@@ -2308,6 +2316,13 @@ class ContainerRunner:
 
             except Exception as csv_e:
                 self.rich_console.print(f"[yellow]Warning: Could not update perf.csv with exception: {csv_e}[/yellow]")
+
+        finally:
+            # Reached on every path out of the block above, including the
+            # SIGALRM timeout, so a failed run never leaves the container
+            # holding the GPU.
+            if model_docker is not None:
+                model_docker.close()
 
         return run_results
 
