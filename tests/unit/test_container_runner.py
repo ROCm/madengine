@@ -1423,3 +1423,21 @@ class TestPullImageTimeout:
         assert "may also be absent" in printed, (
             "the message must not assert that no fallback exists: the removal runs with "
             "|| true and names a different reference from the fallback tag")
+
+    def test_an_interrupted_removal_still_reports(self):
+        """The removal can raise after it has already deleted the image.
+
+        `console.sh` has its own timeout, so `docker rmi` can be cut off mid-flight. Recording the
+        attempt only on success skipped the diagnostic for exactly that case.
+        """
+        runner = self._runner()
+        runner.console.sh.side_effect = [
+            RuntimeError("Console script timeout"),   # the rmi, interrupted
+            RuntimeError("Console script timeout"),   # the pull that follows
+        ]
+        with patch.dict(os.environ,
+                        {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_IN_SLURM_JOB": "1"}):
+            with pytest.raises(RuntimeError):
+                runner.pull_image("registry/ns/img:tag")
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "attempted `docker rmi -f`" in printed

@@ -602,14 +602,17 @@ class ContainerRunner:
 
         if deployment_type == "slurm" and in_slurm_job:
             print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
+            # Set before the call, not after. `console.sh` can raise -- its own timeout, for
+            # one -- and the removal may already have deleted the image by then; recording the
+            # attempt afterwards would skip the diagnostic for exactly the interrupted case that
+            # most needs it. The consequence outlives this function: the caller treats a failed
+            # pull as "fall back to the local image", and this path has just tried to delete the
+            # copy that fallback might have used.
+            attempted_cache_removal = True
             # Remove any existing cached image to force fresh pull
             try:
                 self.console.sh(f"docker rmi -f {shlex.quote(registry_image)} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
-                # Noted, because the consequence outlives this function: the caller treats a
-                # failed pull as "fall back to the local image", and this path has just tried to
-                # delete the copy that fallback might have used.
-                attempted_cache_removal = True
             except Exception:
                 pass  # It's okay if image doesn't exist
 
