@@ -623,32 +623,44 @@ class ContainerRunner:
 
     @staticmethod
     def _scripts_dir(scripts_arg: str, model_name: str = "") -> str:
-        """The directory holding a model's scripts, never the filesystem root.
+        """The directory holding a model's scripts, or a refusal.
 
-        The caller turns this into `cp -vLR --preserve=all {dir}/. {model_dir}/`. A bare filename
-        means "beside the model", which is the working directory -- but `os.path.dirname("run.sh")`
-        is `""`, so the command became `cp -vLR --preserve=all /. {model_dir}/` and the copy walked
-        the container's root, /proc included, until recursion stopped it.
+        The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` inside the container, with
+        `model_dir` a subdirectory of the working directory. So the one property that matters is
+        that the source is neither the destination nor an ancestor of it:
 
-        Cards discovered from the filesystem never reach that: `discover_models` rewrites `scripts`
-        to `scripts/<rel>/<name>`. An entry supplied through a manifest is used as written, so a
-        bare filename arrives intact.
+        * an ancestor copies the destination into itself. `cp` refuses outright for `./.`, and for
+          `/.` it does not refuse -- it walks the filesystem. Two minutes of that produced 1.8 GB
+          before it was interrupted.
+        * which means a bare filename has never worked here. `os.path.dirname("run.sh")` is `""`,
+          the source became `/.`, and the root copy is what followed.
 
-        Returns:
-            The directory, or "." for a bare filename.
+        Cards discovered from the filesystem always carry a directory: `discover_models` rewrites
+        `scripts` to `scripts/<rel>/<name>`. Entries supplied through a manifest skip that rewrite
+        and arrive as written, which is where the bad spellings come from.
+
+        The check is lexical because this runs on the host while the copy runs in the container,
+        so the paths cannot be resolved here. Every spelling of an ancestor is therefore handled
+        explicitly rather than by resolution.
 
         Raises:
-            ValueError: the entry resolves to the filesystem root, which is never a model's
-                script directory and would copy everything.
+            ValueError: the entry names no directory, or one that contains the destination.
         """
         dir_path = os.path.dirname(scripts_arg)
-        if os.path.normpath(dir_path or ".") == os.sep:
+        norm = os.path.normpath(dir_path or ".")
+        # POSIX normpath keeps exactly two leading slashes, so "//x" stays "//x" and a test
+        # against "/" alone would let "//run.sh" through as "///." -- still the root.
+        while norm.startswith("//"):
+            norm = norm[1:]
+        if norm == os.sep or norm == "." or norm == ".." or norm.startswith(".." + os.sep):
             raise ValueError(
                 f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, whose "
-                f"directory is the filesystem root. Copying the model's scripts would copy "
-                f"everything; give a path relative to the model directory."
+                f"directory ({norm!r}) contains the directory the scripts are copied into. "
+                f"Copying it would copy the destination into itself, and for the filesystem root "
+                f"that means copying the filesystem. Give a path under the model directory, "
+                f"e.g. 'scripts/<model>/{os.path.basename(scripts_arg) or 'run.sh'}'."
             )
-        return dir_path or "."
+        return dir_path
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
         """Get the GPU arguments for docker run.
@@ -1698,8 +1710,13 @@ class ContainerRunner:
                             dir_path = self._scripts_dir(scripts_arg, model_info.get("name", ""))
                             script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
-                            # Directory specified (legacy behavior)
-                            dir_path = model_info["scripts"]
+                            # Directory specified (legacy behavior). Through the same helper: an
+                            # empty entry here produced `cp ... /. run_directory/` by the same
+                            # route the filename branches did.
+                            dir_path = self._scripts_dir(
+                                os.path.join(scripts_arg, "run.sh"),
+                                model_info.get("name", ""),
+                            )
                             script_name = "bash run.sh"
 
                         # Add script prepend command
