@@ -74,7 +74,10 @@ class TestLaunch:
 
     def test_runs_the_watchdog_as_pid_one(self, fake_docker):
         Docker(image="img:tag", container_name="c1", dockerOpts="")
-        assert run_line(fake_docker.sh).endswith(lifecycle.container_watchdog_command())
+        expected = lifecycle.container_watchdog_command(
+            lifecycle.heartbeat_filename("c1")
+        )
+        assert run_line(fake_docker.sh).endswith(expected)
 
     def test_stays_detached(self, fake_docker):
         # Detached is deliberate: the watchdog, not an attached stdin, is what
@@ -91,7 +94,7 @@ class TestLaunch:
         def record(command, *args, **kwargs):
             if "docker run" in command:
                 seen["heartbeat"] = os.path.exists(
-                    quiet_state / lifecycle.HEARTBEAT_FILENAME
+                    quiet_state / lifecycle.heartbeat_filename("c1")
                 )
             return "1000"
 
@@ -142,7 +145,22 @@ class TestWatchdogFallback:
         fake_docker.state.side_effect = ["exited", "running"]
         docker = Docker(image="img:tag", container_name="c1", dockerOpts="")
         assert docker.heartbeat_path is None
-        assert not os.path.exists(quiet_state / lifecycle.HEARTBEAT_FILENAME)
+        assert not os.path.exists(quiet_state / lifecycle.heartbeat_filename("c1"))
+
+    def test_unknown_state_does_not_start_an_unwatched_container(self, fake_docker):
+        """A timed-out inspect is not evidence that the image lacks a shell."""
+        fake_docker.state.return_value = None
+        with pytest.raises(RuntimeError, match="unwatched"):
+            Docker(image="img:tag", container_name="c1", dockerOpts="")
+        runs = [
+            c.args[0]
+            for c in fake_docker.sh.call_args_list
+            if "docker run" in c.args[0]
+        ]
+        assert len(runs) == 1
+        assert runs[0].rstrip().endswith("sh") or "sh -c" in runs[0]
+        assert not runs[0].endswith("cat ")
+        fake_docker.reap.assert_called()
 
     def test_raises_when_the_container_will_not_start_at_all(self, fake_docker):
         fake_docker.state.side_effect = ["exited", "exited"]
@@ -162,7 +180,7 @@ class TestClose:
 
     def test_drops_heartbeat_then_reaps(self, fake_docker, quiet_state):
         docker = Docker(image="img:tag", container_name="c1", dockerOpts="")
-        heartbeat = quiet_state / lifecycle.HEARTBEAT_FILENAME
+        heartbeat = quiet_state / lifecycle.heartbeat_filename("c1")
         assert heartbeat.exists()
 
         docker.close()
@@ -194,7 +212,7 @@ class TestClose:
             image="img:tag", container_name="c1", dockerOpts="", keep_alive=True
         )
         assert run_line(fake_docker.sh).endswith("cat ")
-        assert not (quiet_state / lifecycle.HEARTBEAT_FILENAME).exists()
+        assert not (quiet_state / lifecycle.heartbeat_filename("c1")).exists()
 
         docker.close()
         fake_docker.reap.assert_not_called()

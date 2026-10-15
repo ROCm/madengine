@@ -140,6 +140,13 @@ class TestContainerState:
         with patch.object(lifecycle, "docker", FakeDocker([None])):
             assert lifecycle.container_state("c") is None
 
+    def test_inspect_error_is_unknown_not_gone(self):
+        def fake(args, timeout):
+            return 1, "Cannot connect to the Docker daemon"
+
+        with patch.object(lifecycle, "docker", fake):
+            assert lifecycle.container_state("c") is None
+
 
 class TestReap:
     """The bounded escalation."""
@@ -212,6 +219,42 @@ class TestReap:
         assert result["docker_responsive"] is False
         assert not (state_dir / "gpu_wedged.json").exists()
 
+    def test_exited_container_that_cannot_be_removed_is_not_wedged(self, state_dir):
+        # `exited` means the container is not holding the GPU. A failed `rm`
+        # is a Docker error, not a reason to demand a host reboot.
+        fake = FakeDocker(["exited"])
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[]
+        ):
+            result = lifecycle.reap("c", verbose=False)
+        assert result["removed"] is False
+        assert result["wedged"] is False
+        assert not (state_dir / "gpu_wedged.json").exists()
+
+    def test_stops_when_the_deadline_has_passed(self, state_dir):
+        fake = FakeDocker(["running"])
+        with patch.object(lifecycle, "docker", fake):
+            result = lifecycle.reap("c", verbose=False, deadline=time.time() - 1)
+        assert result["removed"] is False
+        assert result["wedged"] is False
+        assert fake.calls == []
+
+    def test_caps_each_docker_call_at_the_remaining_budget(self, state_dir):
+        seen = []
+
+        def fake(args, timeout):
+            seen.append(timeout)
+            if args[0] == "inspect":
+                return 0, "running"
+            return 0, ""
+
+        with patch.object(lifecycle, "docker", fake), patch.object(
+            lifecycle, "container_host_pids", return_value=[]
+        ):
+            lifecycle.reap("c", verbose=False, deadline=time.time() + 3)
+        assert seen
+        assert all(timeout <= 3.05 for timeout in seen)
+
     def test_every_docker_call_is_bounded(self, state_dir):
         fake = FakeDocker(["running", "running", "running", "running"])
         with patch.object(lifecycle, "docker", fake), patch.object(
@@ -235,7 +278,7 @@ class TestReapRegistered:
         with patch.object(
             lifecycle,
             "reap",
-            lambda ref, cid=None, verbose=True: reaped.append(ref)
+            lambda ref, cid=None, verbose=True, deadline=None: reaped.append(ref)
             or {"removed": True, "wedged": False, "stuck_pids": []},
         ):
             lifecycle.reap_registered(verbose=False)
@@ -246,7 +289,7 @@ class TestReapRegistered:
             lifecycle.register(f"cid-{i}", f"name-{i}")
         reaped = []
 
-        def slow_reap(ref, cid=None, verbose=True):
+        def slow_reap(ref, cid=None, verbose=True, deadline=None):
             reaped.append(ref)
             time.sleep(0.05)
             return {"removed": True, "wedged": False, "stuck_pids": []}
@@ -292,6 +335,22 @@ class TestHeartbeat:
         lifecycle._beat_once()
         assert not os.path.exists(path)
 
+    def test_write_replaces_the_file_without_leaving_it_empty(self, tmp_path):
+        path = tmp_path / "hb"
+        path.write_text("111")
+        lifecycle._write_heartbeat(str(path))
+        assert path.read_text().isdigit()
+        assert list(tmp_path.glob(".madengine_hb_*")) == []
+
+    def test_beat_once_does_not_write_a_path_removed_under_the_lock(self, tmp_path):
+        path = str(tmp_path / "hb")
+        lifecycle.start_heartbeat(path)
+        with lifecycle._heartbeat_lock:
+            lifecycle._heartbeat_paths.discard(path)
+            os.remove(path)
+            lifecycle._beat_once()
+        assert not os.path.exists(path)
+
     def test_stop_while_the_lock_is_held_does_not_deadlock(self, tmp_path):
         """A signal handler can interrupt the main thread inside the lock."""
         path = str(tmp_path / "hb")
@@ -329,6 +388,20 @@ class TestWatchdogCommand:
         cmd = lifecycle.container_watchdog_command()
         assert lifecycle.HEARTBEAT_FILENAME in cmd
         assert str(lifecycle.HEARTBEAT_STALE_AFTER) in cmd
+
+    def test_filenames_are_per_container_and_shell_safe(self):
+        import shlex
+
+        first = lifecycle.heartbeat_filename("c1")
+        second = lifecycle.heartbeat_filename("c2")
+        assert first != second
+        nasty = lifecycle.heartbeat_filename("a b';rm")
+        assert "'" not in nasty
+        assert " " not in nasty
+        assert shlex.split(lifecycle.container_watchdog_command(nasty))[:2] == [
+            "sh",
+            "-c",
+        ]
 
     def test_survives_the_outer_shell(self):
         # The command is appended to a `shell=True` docker run line, so an

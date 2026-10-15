@@ -33,8 +33,10 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import glob
 import json
 import os
+import re
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import typing
@@ -68,6 +70,10 @@ DEFAULT_STATE_DIR = "~/.madengine"
 # third of the staleness threshold leaves room for a stalled host to miss a
 # couple of beats without the container giving up on a run that is still fine.
 HEARTBEAT_FILENAME = ".madengine_heartbeat"
+
+# docker inspect text that means the container is confirmed gone. Other
+# nonzero results (daemon down, permission denied) are an unknown state.
+_MISSING_CONTAINER_MARKERS = ("no such object", "no such container")
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -230,7 +236,7 @@ def registered() -> typing.List[typing.Dict]:
 
 
 def docker(
-    args: typing.List[str], timeout: int
+    args: typing.List[str], timeout: float
 ) -> typing.Tuple[typing.Optional[int], str]:
     """Run a docker CLI command under a hard deadline.
 
@@ -240,7 +246,7 @@ def docker(
 
     Args:
         args (list): Arguments to pass to the docker binary.
-        timeout (int): Deadline in seconds.
+        timeout (float): Deadline in seconds.
 
     Returns:
         tuple: ``(returncode, output)``. The return code is ``None`` if the
@@ -264,21 +270,58 @@ def docker(
         return None, str(exc)
 
 
-def container_state(ref: str) -> typing.Optional[str]:
+def _is_missing_container(output: str) -> bool:
+    """Return True when docker has confirmed the container does not exist.
+
+    Args:
+        output (str): Combined stdout and stderr from ``docker inspect``.
+
+    Returns:
+        bool: True only for a missing-object response.
+    """
+    text = (output or "").lower()
+    return any(marker in text for marker in _MISSING_CONTAINER_MARKERS)
+
+
+def _past_deadline(deadline: typing.Optional[float]) -> bool:
+    """Return True when an absolute deadline has been reached.
+
+    Args:
+        deadline (Optional[float]): ``time.time()`` deadline, or None for none.
+
+    Returns:
+        bool: True when the deadline is set and already past.
+    """
+    return deadline is not None and time.time() >= deadline
+
+
+def container_state(
+    ref: str, deadline: typing.Optional[float] = None
+) -> typing.Optional[str]:
     """Return a container's state.
 
     Args:
         ref (str): Container id or name.
+        deadline (Optional[float]): Absolute ``time.time()`` deadline. The
+            inspect call is shortened so it cannot run past this instant.
 
     Returns:
         Optional[str]: ``"running"``, ``"exited"`` and so on, ``""`` if the
-            container is gone, or ``None`` if docker did not answer in time.
+            container is confirmed gone, or ``None`` if docker did not answer
+            or returned an error that is not a missing-object response.
     """
-    code, out = docker(["inspect", "-f", "{{.State.Status}}", ref], INSPECT_TIMEOUT)
+    timeout = float(INSPECT_TIMEOUT)
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.time())
+        if timeout <= 0:
+            return None
+    code, out = docker(["inspect", "-f", "{{.State.Status}}", ref], timeout)
     if code is None:
         return None
     if code != 0:
-        return ""
+        if _is_missing_container(out):
+            return ""
+        return None
     return out.strip()
 
 
@@ -370,18 +413,23 @@ def reap(
     ref: str,
     container_id: typing.Optional[str] = None,
     verbose: bool = True,
+    deadline: typing.Optional[float] = None,
 ) -> typing.Dict:
     """Stop and remove a container, escalating until it is gone.
 
     Each step is bounded, and the next one is only attempted if the container
     is still there, so a healthy container costs one ``docker stop`` while a
-    wedged one cannot stall the caller indefinitely.
+    wedged one cannot stall the caller indefinitely. ``deadline`` caps the
+    whole escalation, not only the gap between containers: one unresponsive
+    ``docker`` call cannot spend longer than the time still remaining.
 
     Args:
         ref (str): Container id or name to reap.
         container_id (Optional[str]): The full container id, when known. Used
             to find host pids without asking the docker daemon.
         verbose (bool): Whether to narrate the escalation.
+        deadline (Optional[float]): Absolute ``time.time()`` deadline, or
+            None for no overall limit.
 
     Returns:
         dict: ``ref``, ``removed``, ``wedged``, ``stuck_pids``,
@@ -401,9 +449,23 @@ def reap(
         if verbose:
             print(f"   {step}", flush=True)
 
-    state = container_state(ref)
+    def call(args: typing.List[str], timeout: float, step: str) -> None:
+        effective = float(timeout)
+        if deadline is not None:
+            effective = min(effective, deadline - time.time())
+        if effective <= 0:
+            return
+        docker(args, effective)
+        note(step)
+
+    if _past_deadline(deadline):
+        return result
+
+    state = container_state(ref, deadline=deadline)
     if state == "":
         result["removed"] = True
+        return result
+    if _past_deadline(deadline):
         return result
     if state is None:
         result["docker_responsive"] = False
@@ -411,54 +473,75 @@ def reap(
     if state and state not in _LIVE_STATES:
         # Already dead, just not reaped -- the usual case for `madengine
         # cleanup`. Stopping and killing it would only add noise.
-        docker(["rm", "-f", ref], RM_TIMEOUT)
-        note("docker rm -f")
-        if container_state(ref) == "":
+        call(["rm", "-f", ref], RM_TIMEOUT, "docker rm -f")
+        if _past_deadline(deadline):
+            return result
+        if container_state(ref, deadline=deadline) == "":
             result["removed"] = True
             return result
 
-    docker(["stop", "-t", "1", ref], STOP_TIMEOUT)
-    note("docker stop")
-    if container_state(ref) == "":
+    if _past_deadline(deadline):
+        return result
+    call(["stop", "-t", "1", ref], STOP_TIMEOUT, "docker stop")
+    if _past_deadline(deadline):
+        return result
+    if container_state(ref, deadline=deadline) == "":
         result["removed"] = True
         return result
 
-    docker(["kill", "-s", "KILL", ref], KILL_TIMEOUT)
-    note("docker kill -s KILL")
-
-    docker(["rm", "-f", ref], RM_TIMEOUT)
-    note("docker rm -f")
-    if container_state(ref) == "":
+    if _past_deadline(deadline):
+        return result
+    call(["kill", "-s", "KILL", ref], KILL_TIMEOUT, "docker kill -s KILL")
+    if _past_deadline(deadline):
+        return result
+    call(["rm", "-f", ref], RM_TIMEOUT, "docker rm -f")
+    if _past_deadline(deadline):
+        return result
+    if container_state(ref, deadline=deadline) == "":
         result["removed"] = True
         return result
 
     # The daemon could not remove it. Go around the daemon and signal the
     # container's processes on the host directly.
+    if _past_deadline(deadline):
+        return result
     cid = container_id or ref
     pids = container_host_pids(cid)
     if pids:
         note(f"SIGKILL host pids {pids}")
         _kill_host_pids(pids)
-        time.sleep(1)
-        docker(["rm", "-f", ref], RM_TIMEOUT)
-        if container_state(ref) == "":
+        pause = 1.0
+        if deadline is not None:
+            pause = min(pause, max(0.0, deadline - time.time()))
+        if pause:
+            time.sleep(pause)
+        if _past_deadline(deadline):
+            return result
+        call(["rm", "-f", ref], RM_TIMEOUT, "docker rm -f")
+        if _past_deadline(deadline):
+            return result
+        if container_state(ref, deadline=deadline) == "":
             result["removed"] = True
             return result
         result["stuck_pids"] = uninterruptible_pids(pids)
 
     # Only claim a wedge we can actually evidence. Processes stuck in D state
-    # are proof; so is a container the daemon still reports after being told
-    # twice to remove it. A daemon that never answered and left no host pids
-    # behind proves nothing -- saying "reboot this host" on that basis would
-    # train people to ignore the marker.
-    final_state = container_state(ref)
+    # are proof, and so is a container still in a live state after stop, kill,
+    # and rm. An exited or created container that `rm` could not delete is a
+    # removal error, not a wedged GPU. A daemon that never answered and left
+    # no host pids behind proves nothing.
+    if _past_deadline(deadline):
+        return result
+    final_state = container_state(ref, deadline=deadline)
+    if _past_deadline(deadline) and final_state is None:
+        return result
     if final_state == "":
         result["removed"] = True
         return result
     result["docker_responsive"] = (
         result["docker_responsive"] and final_state is not None
     )
-    result["wedged"] = bool(result["stuck_pids"]) or bool(final_state)
+    result["wedged"] = bool(result["stuck_pids"]) or final_state in _LIVE_STATES
     if result["wedged"]:
         _report_wedged(ref, result["stuck_pids"], verbose=verbose)
     elif verbose:
@@ -538,7 +621,12 @@ def reap_registered(
                 )
             break
         results.append(
-            reap(entry.get("name") or entry["id"], entry.get("id"), verbose=verbose)
+            reap(
+                entry.get("name") or entry["id"],
+                entry.get("id"),
+                verbose=verbose,
+                deadline=deadline,
+            )
         )
         unregister(entry["id"])
     return results
@@ -554,22 +642,39 @@ _heartbeat_thread: typing.Optional[threading.Thread] = None
 def _write_heartbeat(path: str) -> None:
     """Stamp the current time into a heartbeat file.
 
+    The file is replaced atomically. The container watchdog reads it at the
+    same time, and a truncate-then-write would let it observe an empty file
+    and treat a healthy container as stale.
+
     Args:
         path (str): Path to the heartbeat file.
     """
+    directory = os.path.dirname(path) or "."
+    tmp = None
     try:
-        with open(path, "w") as handle:
+        fd, tmp = tempfile.mkstemp(prefix=".madengine_hb_", dir=directory)
+        with os.fdopen(fd, "w") as handle:
             handle.write(str(int(time.time())))
+        os.replace(tmp, path)
+        tmp = None
     except OSError:
-        pass
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _beat_once() -> None:
-    """Refresh every heartbeat file that is still live."""
+    """Refresh every heartbeat file that is still live.
+
+    The membership check and the write share the lock. Otherwise a stop that
+    lands between the snapshot and the write deletes the file and this thread
+    recreates it, which keeps a cancelled container's watchdog alive.
+    """
     with _heartbeat_lock:
-        paths = list(_heartbeat_paths)
-    for path in paths:
-        _write_heartbeat(path)
+        for path in list(_heartbeat_paths):
+            _write_heartbeat(path)
 
 
 def _heartbeat_loop() -> None:
@@ -620,7 +725,26 @@ def stop_heartbeat(path: str) -> None:
         pass
 
 
-def watchdog_script() -> str:
+def heartbeat_filename(container_name: str) -> str:
+    """Return the workspace heartbeat file for one container.
+
+    One file per workspace would make every container launched from that
+    directory share a liveness signal: closing one removes the file and
+    stops the others, and a later run keeps a cancelled container alive.
+
+    Args:
+        container_name (str): The container name.
+
+    Returns:
+        str: A filename safe to embed in the watchdog script.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", container_name).strip("._")
+    if not safe:
+        safe = "container"
+    return f"{HEARTBEAT_FILENAME}.{safe[:80]}"
+
+
+def watchdog_script(filename: typing.Optional[str] = None) -> str:
     """Return the shell script a container runs as PID 1.
 
     The container stops itself once the heartbeat file disappears or goes
@@ -629,12 +753,18 @@ def watchdog_script() -> str:
     image that already supported the ``cat`` this replaces, and quoted with
     double quotes only so it can be embedded in a single-quoted ``sh -c``.
 
+    Args:
+        filename (Optional[str]): Heartbeat filename inside ``/myworkspace``.
+            Defaults to :data:`HEARTBEAT_FILENAME`. Callers that start a real
+            container pass :func:`heartbeat_filename` instead.
+
     Returns:
         str: The script body, without the ``sh -c`` wrapper.
     """
+    name = filename or HEARTBEAT_FILENAME
     return (
-        f"while [ -f /myworkspace/{HEARTBEAT_FILENAME} ]; do "
-        f"hb=$(cat /myworkspace/{HEARTBEAT_FILENAME} 2>/dev/null); "
+        f"while [ -f /myworkspace/{name} ]; do "
+        f"hb=$(cat /myworkspace/{name} 2>/dev/null); "
         'case "$hb" in ""|*[!0-9]*) hb=0 ;; esac; '
         f"if [ $(($(date +%s) - $hb)) -ge {HEARTBEAT_STALE_AFTER} ]; then "
         'echo "madengine heartbeat stale; stopping container"; break; fi; '
@@ -643,13 +773,16 @@ def watchdog_script() -> str:
     )
 
 
-def container_watchdog_command() -> str:
+def container_watchdog_command(filename: typing.Optional[str] = None) -> str:
     """Return the watchdog wrapped for a ``docker run`` command line.
+
+    Args:
+        filename (Optional[str]): Heartbeat filename inside ``/myworkspace``.
 
     Returns:
         str: The command, ready to append to a ``docker run`` line.
     """
-    return "sh -c '" + watchdog_script() + "' "
+    return "sh -c '" + watchdog_script(filename) + "' "
 
 
 def install_signal_handlers() -> None:

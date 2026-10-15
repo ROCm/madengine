@@ -155,3 +155,11 @@ class TestCleanupCommand:
         assert result.exit_code == ExitCode.GPU_WEDGED
         assert result.exit_code != ExitCode.SUCCESS
         assert result.exit_code != ExitCode.FAILURE
+
+    def test_unconfirmed_removal_is_a_failure(self):
+        result, _ = self._invoke(
+            [{"id": "abc", "name": "c1", "owner_pid": DEAD_PID, "state": "running"}],
+            reap_result={"removed": False, "wedged": False, "stuck_pids": []},
+        )
+        assert result.exit_code == ExitCode.FAILURE
+        assert "Removed 0" in result.stdout

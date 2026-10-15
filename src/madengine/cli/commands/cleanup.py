@@ -135,6 +135,7 @@ def cleanup(
         raise typer.Exit(ExitCode.SUCCESS)
 
     wedged = []
+    failed = []
     for container in stale:
         console.print(
             f"🧹 Removing [cyan]{container['name']}[/cyan] "
@@ -143,9 +144,17 @@ def cleanup(
         result = lifecycle.reap(container["id"], container["id"])
         if result["wedged"]:
             wedged.append(container["name"])
+        elif not result["removed"]:
+            failed.append(container["name"])
 
-    removed = len(stale) - len(wedged)
+    removed = len(stale) - len(wedged) - len(failed)
     console.print(f"🧹 [green]Removed {removed} container(s).[/green]")
+
+    if failed:
+        console.print(
+            f"💥 [bold red]{len(failed)} container(s) could not be removed: "
+            f"{', '.join(failed)}[/bold red]"
+        )
 
     if wedged:
         console.print(
@@ -157,5 +166,8 @@ def cleanup(
             "run another benchmark.[/red]"
         )
         raise typer.Exit(ExitCode.GPU_WEDGED)
+
+    if failed:
+        raise typer.Exit(ExitCode.FAILURE)
 
     raise typer.Exit(ExitCode.SUCCESS)

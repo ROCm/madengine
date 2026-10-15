@@ -79,7 +79,11 @@ class Docker:
         self.keep_alive = keep_alive
         self._closed = False
         cwd = os.getcwd()
-        self.heartbeat_path = os.path.join(cwd, lifecycle.HEARTBEAT_FILENAME)
+        # One file per container. A shared heartbeat would stop every other
+        # container from this workspace when this one is closed, and a later
+        # run would keep a cancelled container's watchdog alive.
+        self.heartbeat_name = lifecycle.heartbeat_filename(container_name)
+        self.heartbeat_path = os.path.join(cwd, self.heartbeat_name)
         self.console = console if console is not None else Console()
         self.userid = self.console.sh("id -u")
         self.groupid = self.console.sh("id -g")
@@ -165,11 +169,23 @@ class Docker:
         # The watchdog exits immediately if the heartbeat file is missing, so
         # the first beat has to land before the container starts.
         lifecycle.start_heartbeat(self.heartbeat_path)
-        self.docker_run_cmd = command + lifecycle.container_watchdog_command()
+        self.docker_run_cmd = command + lifecycle.container_watchdog_command(
+            self.heartbeat_name
+        )
         self.console.sh(self.docker_run_cmd)
 
-        if lifecycle.container_state(self.container_name) == "running":
+        state = lifecycle.container_state(self.container_name)
+        if state == "running":
             return
+        # None means the daemon did not answer. A live state means the
+        # watchdog container is still up. Either way, starting `cat` would
+        # replace it with a container that survives cancellation.
+        if state is None or state in lifecycle._LIVE_STATES:
+            raise RuntimeError(
+                f"Container '{self.container_name}' state is "
+                f"{state or 'unknown'}; refusing to start an unwatched "
+                "container"
+            )
 
         print(
             f"⚠️  Container '{self.container_name}' did not stay up under the "
