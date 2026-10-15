@@ -594,17 +594,27 @@ class ContainerRunner:
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
         
+        # A pull is not a 60-second command. console.sh defaults to that, and a multi-gigabyte
+        # serving image never finishes inside it, so every such pull raised "Console script
+        # timeout" regardless of how healthy the registry was.
+        pull_timeout = int(os.environ.get("MAD_DOCKER_PULL_TIMEOUT_SECS", "1800"))
+        removed_cached_image = False
+
         if deployment_type == "slurm" and in_slurm_job:
             print(f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)")
             # Remove any existing cached image to force fresh pull
             try:
                 self.console.sh(f"docker rmi -f {shlex.quote(registry_image)} 2>/dev/null || true")
                 print(f"✓ Removed cached image layers")
+                # Noted, because the consequence outlives this function: the caller treats a failed
+                # pull as "fall back to the local image", and on this path there is no longer one
+                # to fall back to.
+                removed_cached_image = True
             except Exception:
                 pass  # It's okay if image doesn't exist
-        
+
         try:
-            self.console.sh(f"docker pull {shlex.quote(registry_image)}")
+            self.console.sh(f"docker pull {shlex.quote(registry_image)}", timeout=pull_timeout)
 
             if local_name:
                 self.console.sh(f"docker tag {shlex.quote(registry_image)} {shlex.quote(local_name)}")
@@ -619,6 +629,12 @@ class ContainerRunner:
 
         except Exception as e:
             self.rich_console.print(f"[red]❌ Failed to pull image {registry_image}: {e}[/red]")
+            if removed_cached_image:
+                self.rich_console.print(
+                    f"[red]   The fresh-pull policy removed this node's cached copy first, so "
+                    f"there is no local image left to fall back to. Raise "
+                    f"MAD_DOCKER_PULL_TIMEOUT_SECS (currently {pull_timeout}s) if the pull was "
+                    f"still running when it was cut off.[/red]")
             raise
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
@@ -3084,7 +3100,17 @@ class ContainerRunner:
                                 f"{pull_target} for model "
                                 f"{model_info.get('name', image_name)}: {pull_error}"
                             ) from pull_error
-                        self.rich_console.print(f"[yellow]Warning: Could not pull from registry, using local image[/yellow]")
+                        # Named, because "using local image" reads as a recovery and often is not
+                        # one: the local tag may never have existed on this node, and on a SLURM
+                        # compute node the fresh-pull policy will have deleted the cached copy
+                        # before the pull was attempted. The run then fails further on with
+                        # "image not found", several steps away from the pull that caused it.
+                        self.rich_console.print(
+                            f"[yellow]Warning: could not pull {pull_target}: {pull_error}[/yellow]")
+                        self.rich_console.print(
+                            f"[yellow]Falling back to local image '{image_name}'. If that tag is "
+                            f"not present on this node, the run will fail at container start."
+                            f"[/yellow]")
                         run_image = image_name
                 else:
                     # Normal built image: Use the image name directly
