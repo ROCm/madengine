@@ -1419,4 +1419,7 @@ class TestPullImageTimeout:
             with pytest.raises(RuntimeError):
                 runner.pull_image("registry/ns/img:tag")
         printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
-        assert "no local image left to fall back to" in printed
+        assert "attempted `docker rmi -f`" in printed
+        assert "may also be absent" in printed, (
+            "the message must not assert that no fallback exists: the removal runs with "
+            "|| true and names a different reference from the fallback tag")
