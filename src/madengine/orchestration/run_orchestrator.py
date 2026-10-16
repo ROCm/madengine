@@ -15,8 +15,9 @@ import json
 import os
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
@@ -41,6 +42,80 @@ from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
+
+
+
+# The perf CSV the SLURM and k8s deployments append to. It is also what an
+# in-allocation madengine writes on a shared workspace, which is why the
+# deployment layer keeps it rather than following --output.
+DEPLOYMENT_PERF_CSV = "perf.csv"
+
+
+def _csv_data_row_count(path: str) -> int:
+    """Data records (excluding the header) in a CSV, 0 if it does not exist.
+
+    Counts records the way ``csv.DictReader`` does. A quoted field that contains
+    a newline is one record, and counting physical lines would make the session
+    offset skip rows that were actually written.
+    """
+    import csv
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            return sum(1 for _ in csv.DictReader(f))
+    except OSError:
+        return 0
+
+
+def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
+    """
+    Append the rows src gained since start_row to dst, so --output holds this run.
+
+    No-op when dst is unset or is src. dst keeps its own column order when it
+    already exists; columns it lacks are dropped rather than shifting the row.
+    Returns the number of rows written.
+    """
+    import csv
+
+    if not dst or not os.path.exists(src):
+        return 0
+    # abspath misses a symlink or hard link to the working CSV. Appending
+    # those rows back onto the same file duplicates the session.
+    try:
+        if os.path.samefile(src, dst):
+            return 0
+    except OSError:
+        if os.path.abspath(dst) == os.path.abspath(src):
+            return 0
+    with open(src, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames or []
+        rows = list(reader)[start_row:]
+    if not rows:
+        return 0
+    if os.path.exists(dst) and os.path.getsize(dst) > 0:
+        with open(dst, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            dst_fields = csv.DictReader(f).fieldnames or fields
+        with open(dst, "a", encoding="utf-8", newline="") as f:
+            csv.DictWriter(f, fieldnames=dst_fields, extrasaction="ignore").writerows(rows)
+    else:
+        with open(dst, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+    return len(rows)
+
+
+def _skip_gpu_arch_manifest_path(manifest_file: str) -> str:
+    """A new path beside the build manifest for this run's filtered copy.
+
+    The deployment reads the path back, including from a job script, so the
+    file has to stay. A fixed suffix would let a concurrent run of the same
+    manifest replace it before that read.
+    """
+    source = Path(manifest_file)
+    token = f"{os.getpid()}.{uuid.uuid4().hex}"
+    return str(source.with_name(f"{source.stem}.skip_gpu_arch.{token}.json"))
 
 
 class RunOrchestrator:
@@ -676,6 +751,12 @@ class RunOrchestrator:
                     if k not in self.context.ctx["docker_env_vars"]:
                         self.context.ctx["docker_env_vars"][k] = v
 
+            # Leave additional_context alone. The loop above already fills keys
+            # the runtime context does not have. Copying the manifest into
+            # additional_context.docker_env_vars would undo that: run_container
+            # copies that map over the context unconditionally, so a token saved
+            # at build time would replace the one Context just read.
+
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
         if self.additional_context:
@@ -813,6 +894,64 @@ class RunOrchestrator:
                 f"{', '.join(_active_local_flags)}[/yellow]\n"
             )
 
+        # skip_gpu_arch used to be enforced only by _execute_local, so a card
+        # declaring `skip_gpu_arch: gfx950` was sbatched onto gfx950 nodes and
+        # failed there instead of being skipped. It has to be decided before
+        # submission, and for every launcher -- slurm_multi runs the card's own
+        # script with no madengine on the compute node to catch it later.
+        skipped_runs = []
+        # A missing manifest is the deployment's error to report, with its own
+        # message; this check only filters one that exists. An unreadable
+        # manifest returns (None, []) from the filter. A failure to save the
+        # filtered copy is not that case: it propagates, so incompatible cards
+        # are not submitted from the original file.
+        if target == "slurm" and os.path.exists(manifest_file):
+            remaining, skipped = self._apply_skip_gpu_arch_for_slurm(
+                manifest_file
+            )
+            if remaining is not None:
+                # Same shape container_runner reports a skipped run in, so the
+                # Execution Results table lists the model instead of omitting it.
+                skipped_runs = [
+                    {
+                        "model": name,
+                        "status": "SKIPPED",
+                        "performance": None,
+                        "duration": None,
+                    }
+                    for name in skipped
+                ]
+                if not remaining and not skipped:
+                    # Nothing was skipped because there was nothing to run: the
+                    # build produced no images. A run reported this as "All
+                    # models skipped by skip_gpu_arch", an empty results table,
+                    # and exit 0.
+                    self.rich_console.print(
+                        f"[red]✗ {manifest_file} has no built images; "
+                        "nothing to submit.[/red]\n"
+                    )
+                    return {
+                        "successful_runs": [],
+                        "failed_runs": [
+                            {
+                                "model": (
+                                    f"build manifest "
+                                    f"{os.path.basename(manifest_file)}"
+                                ),
+                                "status": "FAILURE",
+                                "performance": None,
+                                "duration": None,
+                                "error": "the manifest has no built images",
+                            }
+                        ],
+                    }
+                if not remaining:
+                    self.rich_console.print(
+                        "[yellow]All models skipped by skip_gpu_arch; "
+                        "nothing to submit.[/yellow]\n"
+                    )
+                    return {"successful_runs": skipped_runs, "failed_runs": []}
+
         # Import from deployment layer
         from madengine.deployment.factory import DeploymentFactory
         from madengine.deployment.base import DeploymentConfig
@@ -821,15 +960,37 @@ class RunOrchestrator:
         if "live_output" not in self.additional_context:
             self.additional_context["live_output"] = getattr(self.args, "live_output", False)
         
-        # Pass session_start_row for result filtering in collect_results
-        session_start_row = self.session_tracker.session_start_row
+        # The deployment layer writes its rows to the working perf.csv (the file the
+        # in-allocation madengine also writes on a shared workspace), whatever --output
+        # says. The session tracker counts rows in --output, so its start row described a
+        # different file: with -o perf_<arch>.csv it was 0, and collect_results sliced
+        # the cumulative perf.csv from row 0 -- every earlier build's rows counted as this
+        # run's -- while the file --output named was never written at all. Measure the
+        # file the deployment actually appends to, and hand this session's rows to
+        # --output afterwards (_export_session_rows).
+        working_start = _csv_data_row_count(DEPLOYMENT_PERF_CSV)
         if "session_start_row" not in self.additional_context:
-            self.additional_context["session_start_row"] = session_start_row
+            self.additional_context["session_start_row"] = working_start
+
+        # Manifest-only docker_env_vars (NCCL_IB_HCA and the like) are copied
+        # into context on the local path. SLURM and Kubernetes never enter that
+        # path, and the deployment reads additional_context, so the copy has to
+        # happen here as well. A runtime key still wins.
+        try:
+            with open(manifest_file, "r") as f:
+                self._handoff_manifest_docker_env_vars(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+        # skip_gpu_arch may have written a filtered copy. The build manifest
+        # itself is left as the build wrote it, so a later run can still see
+        # the models this one skipped.
+        submit_manifest = getattr(self, "_slurm_submit_manifest", manifest_file)
 
         # Create deployment configuration
         deployment_config = DeploymentConfig(
             target=target,
-            manifest_file=manifest_file,
+            manifest_file=submit_manifest,
             additional_context=self.additional_context,
             # Two different values, deliberately. `timeout` is the CLI value
             # resolved against the default, for consumers that see no model
@@ -848,7 +1009,12 @@ class RunOrchestrator:
 
         # Create and execute deployment
         deployment = DeploymentFactory.create(deployment_config)
-        result = deployment.execute()
+        try:
+            result = deployment.execute()
+        finally:
+            _export_session_rows(
+                DEPLOYMENT_PERF_CSV, working_start, getattr(self.args, "output", None)
+            )
 
         if result.is_success:
             self.rich_console.print(f"[green]✓ Deployment to {target} complete[/green]")
@@ -865,11 +1031,12 @@ class RunOrchestrator:
         # Extract successful_runs and failed_runs from metrics if available
         if result.metrics:
             summary = {
-                "successful_runs": result.metrics.get("successful_runs", []),
-                "failed_runs": result.metrics.get("failed_runs", []),
+                "successful_runs": skipped_runs
+                + list(result.metrics.get("successful_runs", [])),
+                "failed_runs": list(result.metrics.get("failed_runs", [])),
             }
         else:
-            summary = {"successful_runs": [], "failed_runs": []}
+            summary = {"successful_runs": list(skipped_runs), "failed_runs": []}
 
         # A scheduler that never got far enough to report per-model metrics still
         # failed. The CLI decides the exit code from len(failed_runs), so leaving
@@ -1230,12 +1397,154 @@ class RunOrchestrator:
         compatible_images, skipped = _filter_by_skip_gpu_arch(
             built_images, built_models, runtime_gpu_arch, disable_skip=False
         )
-        for model_name, image_info, gpu_arch in skipped:
+        for key, image_info, gpu_arch in skipped:
+            # built_images is keyed by the Docker image tag. The card name is
+            # what the execution summary and perf.csv both have to record.
+            card = built_models.get(key) or {}
+            model_name = card.get("name") or key
             self.rich_console.print(
                 f"[yellow]  Skipping model {model_name} as it is not supported on {gpu_arch} architecture.[/yellow]"
             )
             self._write_skipped_status(model_name, image_info, gpu_arch)
         return compatible_images
+
+    def _resolve_slurm_gpu_arch(self, slurm_config: Dict) -> Optional[str]:
+        """
+        GPU architecture of the compute nodes a SLURM job will run on.
+
+        get_system_gpu_architecture() is what the local path uses, and on a SLURM
+        login node it describes a machine with no GPUs. So: slurm.gpu_arch if the
+        caller states it, otherwise one srun of rocminfo on the target partition.
+
+        Returns None when neither yields an answer. The caller must treat that as
+        unknown -- skipping a model because its arch could not be read would drop
+        it from a run with no evidence it was unsupported.
+        """
+        explicit = str(slurm_config.get("gpu_arch") or "").strip()
+        if explicit:
+            self.rich_console.print(
+                f"[dim]  Target GPU architecture from slurm.gpu_arch: {explicit}[/dim]"
+            )
+            return explicit
+
+        from madengine.deployment.slurm_node_selector import SlurmNodeSelector
+
+        partition = slurm_config.get("partition", "")
+        self.rich_console.print(
+            f"[dim]  Probing a node in partition {partition or '(default)'} "
+            f"for its GPU architecture (set slurm.gpu_arch to skip this)...[/dim]"
+        )
+        selector = SlurmNodeSelector(
+            console=self.rich_console,
+            reservation=slurm_config.get("reservation"),
+            timeout=int(slurm_config.get("node_check_timeout", 120)),
+        )
+        arch = selector.probe_gpu_arch(
+            partition=partition,
+            constraint=slurm_config.get("constraint"),
+            exclude=slurm_config.get("exclude"),
+            nodelist=slurm_config.get("nodelist"),
+        )
+        if arch:
+            self.rich_console.print(f"[dim]  Compute node GPU architecture: {arch}[/dim]")
+        return arch
+
+    def _apply_skip_gpu_arch_for_slurm(self, manifest_file: str) -> Tuple[int, List[str]]:
+        """
+        Drop models whose skip_gpu_arch names the SLURM nodes' architecture.
+
+        Same rule and same SKIPPED rows as the local path, applied before sbatch.
+        The deployment reads the manifest back and submits built_models' first
+        entry, so a skipped model has to leave both built_models and
+        built_images. That filtered view is a per-run copy. The build manifest
+        stays as the build wrote it: rewriting it in place made the next run,
+        and ``--disable-skip-gpu-arch``, see an empty manifest.
+
+        Returns:
+            (number of models left to submit, names of the models skipped)
+        """
+        self._slurm_submit_manifest = manifest_file
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            # Unreadable is the deployment's error to report, same as a
+            # missing file. Filtering cannot run, so do not abort here.
+            return None, []
+        built_images = manifest.get("built_images", {})
+        built_models = manifest.get("built_models", {})
+
+        if getattr(self.args, "disable_skip_gpu_arch", False):
+            self.rich_console.print(
+                "[dim]  --disable-skip-gpu-arch flag set, skipping GPU architecture checks[/dim]"
+            )
+            return len(built_images), []
+
+        # The probe costs an srun that may queue for minutes; spend it only when
+        # some card actually restricts its architecture.
+        if not any(built_models.get(k, {}).get("skip_gpu_arch") for k in built_images):
+            return len(built_images), []
+
+        from madengine.deployment.config_loader import ConfigLoader
+
+        # Resolved through the same loader SlurmDeployment uses, so the probe
+        # targets the partition the job will be submitted to, defaults included.
+        slurm_config = ConfigLoader.load_slurm_config(self.additional_context).get("slurm", {})
+
+        self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
+        gpu_arch = self._resolve_slurm_gpu_arch(slurm_config)
+        if not gpu_arch:
+            restricted = [k for k in built_images if built_models.get(k, {}).get("skip_gpu_arch")]
+            self.rich_console.print(
+                "[bold yellow]⚠️  skip_gpu_arch could NOT be enforced: the compute nodes' "
+                "GPU architecture is unknown (probe failed or found no gfx agent). "
+                f"Submitting anyway: {', '.join(restricted)}. "
+                "Set slurm.gpu_arch in --additional-context to enforce it.[/bold yellow]"
+            )
+            return len(built_images), []
+
+        compatible = self._filter_images_by_skip_gpu_arch(built_images, built_models, gpu_arch)
+        skipped = [k for k in built_images if k not in compatible]
+        if not skipped:
+            return len(compatible), []
+
+        skipped_names = [built_models.get(k, {}).get("name", k) for k in skipped]
+        if not compatible:
+            # Nothing is submitted, so there is no filtered copy to hand over.
+            return 0, skipped_names
+
+        filtered = dict(manifest)
+        filtered["built_images"] = compatible
+        filtered["built_models"] = {
+            k: v for k, v in built_models.items() if k not in skipped
+        }
+        # A shared name lets two runs of this manifest overwrite each other's
+        # submission copy. The write is outside the read handler above: if it
+        # fails, the caller must not fall through to the original manifest.
+        filtered_path = _skip_gpu_arch_manifest_path(manifest_file)
+        with open(filtered_path, "w") as f:
+            json.dump(filtered, f, indent=2)
+        self._slurm_submit_manifest = filtered_path
+        return len(compatible), skipped_names
+
+    def _handoff_manifest_docker_env_vars(self, manifest: Dict) -> None:
+        """Copy ``context.docker_env_vars`` into ``additional_context``.
+
+        The deployment layer never sees the manifest context. Keys already set
+        at runtime stay; keys that exist only in the manifest are filled in.
+        """
+        context = manifest.get("context") if isinstance(manifest, dict) else None
+        manifest_env = (
+            context.get("docker_env_vars") if isinstance(context, dict) else None
+        )
+        if not isinstance(manifest_env, dict) or not manifest_env:
+            return
+        dest = self.additional_context.get("docker_env_vars")
+        if not isinstance(dest, dict):
+            self.additional_context["docker_env_vars"] = dict(manifest_env)
+            return
+        for key, value in manifest_env.items():
+            dest.setdefault(key, value)
 
     def _write_skipped_status(self, model_name: str, image_info: Dict, gpu_arch: str) -> None:
         """Write SKIPPED status to perf CSV for models that were skipped.
