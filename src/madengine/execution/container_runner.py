@@ -655,6 +655,67 @@ class ContainerRunner:
             )
             raise
 
+    #: Docker is started with `--workdir /myworkspace/` (core/docker.py), so every relative path
+    #: in the copy below is relative to this.
+    CONTAINER_WORKDIR = "/myworkspace"
+
+    @classmethod
+    def _scripts_dir(cls, scripts_arg: str, model_dir: str, model_name: str = "") -> str:
+        """The directory holding a model's scripts, refusing one that contains the destination.
+
+        The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in the container. The one
+        property that must hold is that the source neither equals the destination nor contains
+        it, because either copies the destination into itself:
+
+        * `cp ./. run_directory/` exits 1 with "cannot copy a directory into itself".
+        * `cp /. run_directory/` does not refuse -- it walks the filesystem. Measured at 1.8 GB in
+          two minutes before it was interrupted. That is what a bare filename produced, since
+          `os.path.dirname("run.sh")` is `""`.
+
+        Both paths are resolved against the container's working directory first, so the comparison
+        is about what is copied rather than how it is spelled: `../myworkspace/scripts/m` and
+        `scripts/m` name the same directory and both pass, while `/myworkspace` and
+        `run_directory` are refused however they are written.
+
+        Lexical, not resolved: this runs on the host while the copy runs in the container, so
+        symlinks cannot be followed from here. It therefore judges paths, not inodes.
+
+        Args:
+            scripts_arg: the card's `scripts` entry.
+            model_dir: the copy destination, as passed to the same command.
+            model_name: for the message only.
+
+        Raises:
+            ValueError: the entry names no directory, or one holding the destination.
+        """
+        dir_path = os.path.dirname(scripts_arg)
+        if not dir_path:
+            raise ValueError(
+                f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, which names "
+                f"no directory, so the scripts would be copied from the filesystem root. Give a "
+                f"path to the directory holding it, e.g. "
+                f"'scripts/<model>/{os.path.basename(scripts_arg) or 'run.sh'}'."
+            )
+
+        def _under_workdir(path: str) -> str:
+            joined = os.path.normpath(os.path.join(cls.CONTAINER_WORKDIR, path))
+            # POSIX normpath keeps exactly two leading slashes, so "//" would survive as a
+            # distinct spelling of the root.
+            while joined.startswith("//"):
+                joined = joined[1:]
+            return joined
+
+        src = _under_workdir(dir_path)
+        dst = _under_workdir(model_dir)
+        if src == dst or dst.startswith(src.rstrip(os.sep) + os.sep):
+            raise ValueError(
+                f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, whose "
+                f"directory resolves to {src!r}, which holds the destination {dst!r}. Copying it "
+                f"would copy the destination into itself. Give a path to the model's own script "
+                f"directory."
+            )
+        return dir_path
+
     def get_gpu_arg(self, requested_gpus: str) -> str:
         """Get the GPU arguments for docker run.
 
@@ -1831,15 +1892,21 @@ class ContainerRunner:
                             ".slurm"
                         ):
                             # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_dir, model_info.get("name", ""))
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):
                             # Python script specified directly
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_dir, model_info.get("name", ""))
                             script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
-                            # Directory specified (legacy behavior)
-                            dir_path = model_info["scripts"]
+                            # Directory specified (legacy behavior). Through the same helper: an
+                            # empty entry here produced `cp ... /. run_directory/` by the same
+                            # route the filename branches did.
+                            dir_path = self._scripts_dir(
+                                os.path.join(scripts_arg, "run.sh"),
+                                model_dir,
+                                model_info.get("name", ""),
+                            )
                             script_name = "bash run.sh"
 
                         # Add script prepend command
