@@ -14,7 +14,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 from madengine.setup_page.schema import (
     CONTEXT_SCHEMA,
@@ -68,11 +68,17 @@ def collect_models() -> List[Dict[str, Any]]:
         discoverer.discover_models()
         for entry in discoverer.models:
             models.append(
-                {"name": entry.get("name", ""), "tags": _normalize_tags(entry.get("tags"))}
+                {
+                    "name": entry.get("name", ""),
+                    "tags": _normalize_tags(entry.get("tags")),
+                }
             )
         for custom in getattr(discoverer, "custom_models", []):
             models.append(
-                {"name": custom.name, "tags": _normalize_tags(getattr(custom, "tags", []))}
+                {
+                    "name": custom.name,
+                    "tags": _normalize_tags(getattr(custom, "tags", [])),
+                }
             )
     except FileNotFoundError:
         raise
@@ -138,12 +144,14 @@ def render_setup_page(
         "installCmd": install_cmd,
         "title": title,
     }
-    # Escape "<" so the JSON payload is safe inside a <script> block.
+    # The template name ends in .j2, so select_autoescape(["html", "xml"])
+    # would leave autoescape off. Escape HTML in {{ title }} and mark the JSON
+    # payload safe only after "<" cannot close the script element.
     data_json = json.dumps(data).replace("<", "\\u003c")
 
     env = Environment(
         loader=FileSystemLoader(_TEMPLATE_DIR),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=True,
     )
     template = env.get_template(_TEMPLATE_NAME)
     return template.render(title=title, data_json=data_json)

@@ -47,7 +47,11 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --workload)
-            WORKLOAD="${2:-run}"
+            if [ "$#" -lt 2 ] || [ -z "${2}" ] || [ "${2}" = "--" ]; then
+                echo "[run_workload] ERROR: --workload requires a name." >&2
+                exit 1
+            fi
+            WORKLOAD="${2}"
             shift 2
             ;;
         --workload=*)
