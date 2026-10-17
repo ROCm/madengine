@@ -17,6 +17,7 @@ from madengine.core.additional_context_defaults import (
 )
 from madengine.cli.validators import validate_additional_context
 from madengine.cli.constants import ExitCode
+from unittest.mock import MagicMock, patch
 
 
 class TestValidateAdditionalContext:
@@ -395,3 +396,94 @@ class TestValidateLauncherContext:
                 additional_context=self._context(launcher="torchrun")
             )
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+class TestBatchManifestFallbackKeepsModelFields:
+    """The fallback entry must not quietly replace a model card with defaults.
+
+    `process_batch_manifest_entries` builds the manifest entry from the discovered card. When
+    anything in that block raised, the handler substituted a hardcoded field list --
+    `additional_docker_run_options`, `env_vars`, `multiple_results` and `data` were dropped. The
+    run then goes ahead against a different configuration than the card describes: no
+    `--device=/dev/infiniband`, no backend selection, no cache mounts, and no sign of it beyond a
+    one-line warning that does not mention the substitution.
+    """
+
+    def _run(self, tmp_path, discovered, raise_after_discovery=True):
+        import json as _json
+        from madengine.cli import validators as V
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+
+        class _Discover:
+            def __init__(self, args=None):
+                pass
+
+            def run(self):
+                return [discovered] if discovered else []
+
+        with patch.object(V, "DiscoverModels", _Discover), \
+             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()), \
+             patch.object(V.glob, "glob",
+                          side_effect=RuntimeError("boom") if raise_after_discovery
+                          else (lambda p: ["docker/m.ubuntu.amd.Dockerfile"])):
+            V.process_batch_manifest_entries(
+                batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
+                manifest_output=str(manifest),
+                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+            )
+        return _json.loads(manifest.read_text())
+
+    def test_discovered_fields_survive_the_fallback(self, tmp_path):
+        card = {
+            "name": "m",
+            "dockerfile": "docker/m",
+            "scripts": "scripts/m/run.sh",
+            "additional_docker_run_options": "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2",
+            "multiple_results": "perf_m.csv",
+            "n_gpus": "-1",
+        }
+        out = self._run(tmp_path, card)
+        entries = list(out["built_models"].values())
+        assert entries, "no manifest entry was written"
+        entry = entries[0]
+        assert "--device=/dev/infiniband" in entry.get("additional_docker_run_options", ""), (
+            "the card's docker run options were dropped, so the run would measure a different "
+            "configuration")
+        assert entry.get("multiple_results") == "perf_m.csv"
+        assert entry.get("n_gpus") == "-1"
+
+    def test_a_defaults_only_entry_says_so(self, tmp_path, capsys):
+        """Discovery itself failing is the case that produces an entry from nothing.
+
+        An exception after the card was matched keeps the card (the test above). One before it --
+        discovery raising -- leaves the entry built from defaults alone, which is a different
+        configuration from the one requested and used to be reported as a single generic warning.
+        """
+        import json as _json
+        from madengine.cli import validators as V
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+
+        class _Discover:
+            def __init__(self, args=None):
+                pass
+
+            def run(self):
+                raise RuntimeError("discovery unavailable")
+
+        with patch.object(V, "DiscoverModels", _Discover), \
+             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()):
+            V.process_batch_manifest_entries(
+                batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
+                manifest_output=str(manifest),
+                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+            )
+
+        out = _json.loads(manifest.read_text())
+        assert list(out["built_models"].values()), "no manifest entry was written"
+        printed = capsys.readouterr().out
+        assert "defaults only" in printed, (
+            "a defaults-only entry must say so: it is a different configuration from the card")
