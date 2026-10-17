@@ -1,0 +1,5 @@
+# @package _global_
+tools:
+  - name: rocm_trace_lite
+    env_vars:
+      RTL_MODE: lite

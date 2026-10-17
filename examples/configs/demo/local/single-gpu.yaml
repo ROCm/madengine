@@ -1,0 +1,8 @@
+# Local Docker — single GPU, no distribution
+# madengine run --config examples/configs/demo/local/single-gpu.yaml
+
+model:
+  tags: [dummy]
+
+env_vars:
+  OMP_NUM_THREADS: "8"

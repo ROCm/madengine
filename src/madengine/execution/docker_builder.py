@@ -7,29 +7,59 @@ enabling distributed workflows where images are built on a central host
 and then distributed to remote nodes for execution.
 """
 
+import json
 import os
+import re
 import shlex
 import sys
-from pathlib import Path
 import time
-import json
-import re
 import typing
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
 from rich.console import Console as RichConsole
+
 from madengine.core.auth import (
     explain_registry_denial,
     has_ambient_docker_auth,
     login_to_registry,
+    resolve_dockerhub_repository,
 )
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context, redact_secrets
 from madengine.core.context import Context
-from madengine.utils.ops import PythonicTee
+from madengine.core.image_digest import parse_push_digest, parse_repo_digest
 from madengine.execution.dockerfile_utils import (
     is_target_arch_compatible_with_variable,
     parse_dockerfile_gpu_variables,
 )
+from madengine.utils.ops import PythonicTee
 
+
+
+def _is_prefix_variant(prefix: str, path: str) -> bool:
+    """Whether path is a Dockerfile variant of this card, not a sibling card.
+
+    Kept:
+        <prefix>.Dockerfile
+        <prefix>.<os>.<vendor>.Dockerfile
+        <prefix>.<ctx>.<os>.<vendor>.Dockerfile
+
+    ``<ctx>`` is ``noctx`` or ``ctx<token>``, the same-card context files
+    (dummy_ctxtest.ctx1, .ctx2a, .noctx). A sibling such as ``kimik3`` or
+    ``glmv5.1`` does not use that token, so ``ls <prefix>.*`` no longer builds it.
+    """
+    if not path.startswith(prefix + "."):
+        return False
+    rest = path[len(prefix) + 1 :]
+    return (
+        re.fullmatch(
+            r"(?:(?:noctx|ctx[A-Za-z0-9_-]*)\.)?"
+            r"(?:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)?"
+            r"Dockerfile",
+            rest,
+        )
+        is not None
+    )
 
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
@@ -49,6 +79,7 @@ class DockerBuilder:
         self.live_output = live_output
         self.rich_console = RichConsole()
         self.built_images = {}  # Track built images
+        self.pushed_digests = {}  # registry_image -> digest recorded at push time
         self.built_models = {}  # Track built models
 
     def get_context_path(self, info: typing.Dict) -> str:
@@ -88,20 +119,37 @@ class DockerBuilder:
             return ""
 
         build_args = ""
-        for build_arg in self.context.ctx["docker_build_arg"].keys():
+        context_build_arg = self.context.ctx.get("docker_build_arg", {})
+        for build_arg in context_build_arg.keys():
             build_args += (
                 "--build-arg "
                 + shlex.quote(str(build_arg))
                 + "="
-                + shlex.quote(str(self.context.ctx["docker_build_arg"][build_arg]))
+                + shlex.quote(str(context_build_arg[build_arg]))
                 + " "
             )
 
         if run_build_arg:
             for key, value in run_build_arg.items():
-                build_args += "--build-arg " + shlex.quote(str(key)) + "=" + shlex.quote(str(value)) + " "
+                build_args += (
+                    "--build-arg "
+                    + shlex.quote(str(key))
+                    + "="
+                    + shlex.quote(str(value))
+                    + " "
+                )
 
         return build_args
+
+    def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
+        """Size of a local image in bytes, or None when docker cannot say."""
+        try:
+            out = self.console.sh(
+                f"docker image inspect -f '{{{{.Size}}}}' {shlex.quote(image)}", canFail=True
+            )
+            return int(str(out).strip().splitlines()[-1])
+        except Exception:
+            return None
 
     def _resolve_base_docker(self, dockerfile: str) -> str:
         """Resolve the base image the Dockerfile builds ``FROM``.
@@ -218,7 +266,9 @@ class DockerBuilder:
         # Replace / with _ in log file path (already done above, but keeping for safety)
         log_file_path = log_file_path.replace("/", "_")
 
-        self.rich_console.print(f"\n[bold green]🔨 Starting Docker build for model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan]")
+        self.rich_console.print(
+            f"\n[bold green]🔨 Starting Docker build for model:[/bold green] [bold cyan]{model_info['name']}[/bold cyan]"
+        )
         print(f"📁 Dockerfile: {dockerfile}")
         print(f"🏷️  Target image: {docker_image}")
         print(f"📝 Build log: {log_file_path}")
@@ -241,6 +291,23 @@ class DockerBuilder:
         # Add additional build args if provided (for multi-architecture builds)
         if additional_build_args:
             run_build_arg.update(additional_build_args)
+
+        # Per-model build args declared in the model card (models.json). Lets a model
+        # pin build-time sources (e.g. VLLM_REPO/VLLM_REF) in-repo instead of requiring
+        # every caller to pass --additional-context. Context and multi-arch/cred args
+        # win on conflict, matching _pick_context_over_model() for run-time keys.
+        card_build_arg = model_info.get("docker_build_arg") or {}
+        if not isinstance(card_build_arg, dict):
+            raise RuntimeError(
+                f"docker_build_arg for model {model_info['name']} must be a JSON object "
+                f"mapping build-arg names to values, got {type(card_build_arg).__name__}"
+            )
+        for card_arg, card_value in card_build_arg.items():
+            if card_arg in self.context.ctx.get("docker_build_arg", {}):
+                continue
+            if card_arg in run_build_arg:
+                continue
+            run_build_arg[card_arg] = card_value
 
         build_args = self.get_build_arg(run_build_arg)
 
@@ -293,7 +360,9 @@ class DockerBuilder:
 
                 print(f"⏱️  Build Duration: {build_duration:.2f} seconds")
                 print(f"🏷️  MAD_CONTAINER_IMAGE is {docker_image}")
-                self.rich_console.print(f"[bold green]✅ Docker build completed successfully[/bold green]")
+                self.rich_console.print(
+                    f"[bold green]✅ Docker build completed successfully[/bold green]"
+                )
                 self.rich_console.print(f"[dim]{'='*80}[/dim]")
 
                 # Get base docker info
@@ -307,11 +376,13 @@ class DockerBuilder:
                     )
                     print(f"BASE DOCKER SHA is {docker_sha}")
                 except Exception as e:
-                    self.rich_console.print(f"[yellow]Warning: Could not get docker SHA: {e}[/yellow]")
+                    self.rich_console.print(
+                        f"[yellow]Warning: Could not get docker SHA: {e}[/yellow]"
+                    )
 
         # Infer GPU vendor from dockerfile path
         gpu_vendor = self._infer_gpu_vendor_from_dockerfile(dockerfile)
-        
+
         build_info = {
             "model": model_info["name"],
             "docker_image": docker_image,
@@ -319,10 +390,19 @@ class DockerBuilder:
             "base_docker": base_docker,
             "docker_sha": docker_sha,
             "build_duration": build_duration,
-            "build_command": build_command,
+            # Kept for the record only (nothing re-executes it), so it is stored with
+            # MAD_SECRETS_* build-arg values masked: it lands in build_manifest.json and
+            # build_summary.json, which CI archives.
+            "build_command": redact_secrets(build_command),
             "log_file": log_file_path,
             "gpu_vendor": gpu_vendor,  # Add GPU vendor for filtering
         }
+
+        # How much disk a node needs to pull this image. The SLURM node health check
+        # compares it with each candidate's free space on its docker data root.
+        image_size = self._local_image_size_bytes(docker_image)
+        if image_size:
+            build_info["image_size_bytes"] = image_size
 
         # Store built image info
         self.built_images[docker_image] = build_info
@@ -330,7 +410,9 @@ class DockerBuilder:
         # Store model info linked to the built image
         self.built_models[docker_image] = model_info
 
-        self.rich_console.print(f"[bold green]Successfully built image:[/bold green] [cyan]{docker_image}[/cyan]")
+        self.rich_console.print(
+            f"[bold green]Successfully built image:[/bold green] [cyan]{docker_image}[/cyan]"
+        )
 
         return build_info
 
@@ -393,18 +475,65 @@ class DockerBuilder:
 
             # Push the image
             push_command = f"docker push {shlex.quote(registry_image)}"
-            self.rich_console.print(f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]")
+            self.rich_console.print(
+                f"\n[bold blue]🚀 Starting docker push to registry...[/bold blue]"
+            )
             print(f"📤 Registry: {registry}")
             print(f"🏷️  Image: {registry_image}")
-            self.console.sh(push_command)
+            # No timeout: pushing multi-GB images routinely exceeds the 60s default.
+            push_output = self.console.sh(push_command, timeout=None)
 
-            self.rich_console.print(f"[bold green]✅ Successfully pushed image to registry:[/bold green] [cyan]{registry_image}[/cyan]")
+            self._record_pushed_digest(registry_image, push_output)
+
+            self.rich_console.print(
+                f"[bold green]✅ Successfully pushed image to registry:[/bold green] [cyan]{registry_image}[/cyan]"
+            )
             self.rich_console.print(f"[dim]{'='*80}[/dim]")
             return registry_image
 
         except Exception as e:
-            self.rich_console.print(f"[red]❌ Failed to push image {docker_image} to registry {registry}: {e}[/red]")
+            self.rich_console.print(
+                f"[red]❌ Failed to push image {docker_image} to registry {registry}: {e}[/red]"
+            )
             raise
+
+    def _record_pushed_digest(self, registry_image: str, push_output: str) -> None:
+        """Record the digest of the image just pushed, for digest-pinned runs.
+
+        Best-effort by design: the push has already succeeded by the time this
+        runs, so a missing digest is a manifest-completeness gap (noted at dim
+        level), never a build failure. Runs only consult the recorded digest
+        when --require-pinned-image is set.
+
+        Args:
+            registry_image: The reference that was pushed.
+            push_output: stdout/stderr captured from the push command.
+        """
+        digest = parse_push_digest(push_output)
+
+        if not digest:
+            # Some registries/mirrors do not print the digest line; ask the
+            # daemon for the RepoDigests entry it recorded for this push.
+            try:
+                inspect_output = self.console.sh(
+                    "docker image inspect --format '{{index .RepoDigests 0}}' "
+                    + shlex.quote(registry_image)
+                )
+                digest = parse_repo_digest(inspect_output)
+            except Exception:
+                digest = None
+
+        if not digest:
+            self.rich_console.print(
+                f"[dim]No pushed digest recorded for {registry_image}; "
+                f"--require-pinned-image runs will reject this manifest entry[/dim]"
+            )
+            return
+
+        self.pushed_digests[registry_image] = digest
+        self.rich_console.print(
+            f"[dim]Pushed digest: {registry_image} -> {digest}[/dim]"
+        )
 
     def export_build_manifest(
         self,
@@ -482,27 +611,32 @@ class DockerBuilder:
             "built_images": self.built_images,
             "built_models": self.built_models,
             "context": {
-                "docker_env_vars": self.context.ctx.get("docker_env_vars", {}),
+                # MAD_SECRETS_* stay out of the manifest; see manifest_safe_context.
+                "docker_env_vars": manifest_safe_context(self.context.ctx)["docker_env_vars"]
+                if "docker_env_vars" in self.context.ctx else {},
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
-                "docker_build_arg": self.context.ctx.get("docker_build_arg", {}),
+                "docker_build_arg": manifest_safe_context(self.context.ctx)["docker_build_arg"]
+                if "docker_build_arg" in self.context.ctx else {},
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
                 "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
             },
             "credentials_required": credentials_required,
         }
-        
+
         # Preserve tools configuration if present in context
         if "tools" in self.context.ctx:
             manifest["context"]["tools"] = self.context.ctx["tools"]
-        
+
         # Preserve pre/post scripts if present in context
         if "pre_scripts" in self.context.ctx:
             manifest["context"]["pre_scripts"] = self.context.ctx["pre_scripts"]
         if "post_scripts" in self.context.ctx:
             manifest["context"]["post_scripts"] = self.context.ctx["post_scripts"]
         if "encapsulate_script" in self.context.ctx:
-            manifest["context"]["encapsulate_script"] = self.context.ctx["encapsulate_script"]
+            manifest["context"]["encapsulate_script"] = self.context.ctx[
+                "encapsulate_script"
+            ]
 
         # Add push failure summary if any pushes failed
         push_failures = []
@@ -522,9 +656,13 @@ class DockerBuilder:
         with open(output_file, "w") as f:
             json.dump(manifest, f, indent=2)
 
-        self.rich_console.print(f"[green]Build manifest exported to:[/green] {output_file}")
+        self.rich_console.print(
+            f"[green]Build manifest exported to:[/green] {output_file}"
+        )
         if push_failures:
-            self.rich_console.print(f"[yellow]Warning: {len(push_failures)} image(s) failed to push to registry[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: {len(push_failures)} image(s) failed to push to registry[/yellow]"
+            )
             for failure in push_failures:
                 self.rich_console.print(
                     f"[red]  - {failure['image']} -> {failure['intended_registry_image']}: {failure['error']}[/red]"
@@ -554,12 +692,18 @@ class DockerBuilder:
         Returns:
             dict: Summary of all built images
         """
-        self.rich_console.print(f"[bold blue]Building Docker images for {len(models)} models...[/bold blue]")
-        
+        self.rich_console.print(
+            f"[bold blue]Building Docker images for {len(models)} models...[/bold blue]"
+        )
+
         if target_archs:
-            self.rich_console.print(f"[bold cyan]Multi-architecture build mode enabled for: {', '.join(target_archs)}[/bold cyan]")
+            self.rich_console.print(
+                f"[bold cyan]Multi-architecture build mode enabled for: {', '.join(target_archs)}[/bold cyan]"
+            )
         else:
-            self.rich_console.print(f"[bold cyan]Single architecture build mode[/bold cyan]")
+            self.rich_console.print(
+                f"[bold cyan]Single architecture build mode[/bold cyan]"
+            )
 
         build_summary = {
             "successful_builds": [],
@@ -568,69 +712,99 @@ class DockerBuilder:
             "successful_pushes": [],
             "failed_pushes": [],
         }
-        
+
         for model_info in models:
             # Check if MAD_SYSTEM_GPU_ARCHITECTURE is provided in additional_context
             # This overrides --target-archs and uses default flow
-            if ("docker_build_arg" in self.context.ctx and 
-                "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_build_arg"]):
-                self.rich_console.print(f"[yellow]Info: MAD_SYSTEM_GPU_ARCHITECTURE provided in additional_context, "
-                      f"disabling --target-archs and using default flow for model {model_info['name']}[/yellow]")
+            if (
+                "docker_build_arg" in self.context.ctx
+                and "MAD_SYSTEM_GPU_ARCHITECTURE"
+                in self.context.ctx["docker_build_arg"]
+            ):
+                self.rich_console.print(
+                    f"[yellow]Info: MAD_SYSTEM_GPU_ARCHITECTURE provided in additional_context, "
+                    f"disabling --target-archs and using default flow for model {model_info['name']}[/yellow]"
+                )
                 # Use single architecture build mode regardless of target_archs
                 try:
                     single_build_info = self._build_model_single_arch(
-                        model_info, credentials, clean_cache, 
-                        registry, phase_suffix, batch_build_metadata
+                        model_info,
+                        credentials,
+                        clean_cache,
+                        registry,
+                        phase_suffix,
+                        batch_build_metadata,
                     )
                     build_summary["successful_builds"].extend(single_build_info)
                     build_summary["total_build_time"] += sum(
                         info.get("build_duration", 0) for info in single_build_info
                     )
                 except Exception as e:
-                    build_summary["failed_builds"].append({
-                        "model": model_info["name"],
-                        "error": str(e)
-                    })
+                    build_summary["failed_builds"].append(
+                        {"model": model_info["name"], "error": str(e)}
+                    )
             elif target_archs:
                 # Multi-architecture build mode - always use architecture suffix
                 for arch in target_archs:
                     try:
                         # Always build with architecture suffix when --target-archs is used
                         arch_build_info = self._build_model_for_arch(
-                            model_info, arch, credentials, clean_cache, 
-                            registry, phase_suffix, batch_build_metadata
+                            model_info,
+                            arch,
+                            credentials,
+                            clean_cache,
+                            registry,
+                            phase_suffix,
+                            batch_build_metadata,
                         )
-                        
+
                         build_summary["successful_builds"].extend(arch_build_info)
                         build_summary["total_build_time"] += sum(
                             info.get("build_duration", 0) for info in arch_build_info
                         )
                     except Exception as e:
-                        build_summary["failed_builds"].append({
-                            "model": model_info["name"],
-                            "architecture": arch,
-                            "error": str(e)
-                        })
+                        build_summary["failed_builds"].append(
+                            {
+                                "model": model_info["name"],
+                                "architecture": arch,
+                                "error": str(e),
+                            }
+                        )
             else:
                 # Single architecture build mode (existing behavior - no validation needed)
                 try:
                     single_build_info = self._build_model_single_arch(
-                        model_info, credentials, clean_cache, 
-                        registry, phase_suffix, batch_build_metadata
+                        model_info,
+                        credentials,
+                        clean_cache,
+                        registry,
+                        phase_suffix,
+                        batch_build_metadata,
                     )
                     build_summary["successful_builds"].extend(single_build_info)
                     build_summary["total_build_time"] += sum(
                         info.get("build_duration", 0) for info in single_build_info
                     )
                 except Exception as e:
-                    build_summary["failed_builds"].append({
-                        "model": model_info["name"],
-                        "error": str(e)
-                    })
-        
+                    build_summary["failed_builds"].append(
+                        {"model": model_info["name"], "error": str(e)}
+                    )
+
+        for build_info in build_summary["successful_builds"]:
+            if build_info.get("push_failed"):
+                build_summary["failed_pushes"].append(
+                    {
+                        "model": build_info.get("model"),
+                        "docker_image": build_info.get("docker_image"),
+                        "error": build_info.get("push_error"),
+                    }
+                )
+
         return build_summary
 
-    def _check_dockerfile_has_gpu_variables(self, model_info: typing.Dict) -> typing.Tuple[bool, str]:
+    def _check_dockerfile_has_gpu_variables(
+        self, model_info: typing.Dict
+    ) -> typing.Tuple[bool, str]:
         """
         Check if model's Dockerfile contains GPU architecture variables.
         Returns (has_gpu_vars, dockerfile_path)
@@ -638,24 +812,26 @@ class DockerBuilder:
         try:
             # Find dockerfiles for this model
             dockerfiles = self._get_dockerfiles_for_model(model_info)
-            
+
             for dockerfile_path in dockerfiles:
-                with open(dockerfile_path, 'r') as f:
+                with open(dockerfile_path, "r") as f:
                     dockerfile_content = f.read()
-                
+
                 # Parse GPU architecture variables from Dockerfile
                 dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
-                
+
                 if dockerfile_gpu_vars:
                     return True, dockerfile_path
                 else:
                     return False, dockerfile_path
-            
+
             # No dockerfiles found
             return False, "No Dockerfile found"
-            
+
         except Exception as e:
-            self.rich_console.print(f"[yellow]Warning: Error checking GPU variables for model {model_info['name']}: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: Error checking GPU variables for model {model_info['name']}: {e}[/yellow]"
+            )
             return False, "Error reading Dockerfile"
 
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
@@ -663,9 +839,19 @@ class DockerBuilder:
         try:
             # Quote the dockerfile path to prevent shell injection
             dockerfile_quoted = shlex.quote(model_info["dockerfile"])
-            all_dockerfiles = self.console.sh(
-                f"ls {dockerfile_quoted}.*"
-            ).split("\n")
+            all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
+            # A card's dockerfile is a prefix for its own variants:
+            # <prefix>.Dockerfile, <prefix>.<os>.<vendor>.Dockerfile, or a same-card
+            # context file <prefix>.ctx*.<os>.<vendor>.Dockerfile. `ls <prefix>.*`
+            # also matched sibling cards that share the prefix: every card on
+            # docker/vllm_disagg_inference also built vllm_disagg_inference.glmv5.1
+            # and .kimik3, and ran in the GLM-5.1 image, while a
+            # network error on the Kimi one failed the build. Only the card's own
+            # variants are kept.
+            all_dockerfiles = [
+                f for f in all_dockerfiles
+                if _is_prefix_variant(model_info["dockerfile"], f.strip())
+            ]
 
             dockerfiles = {}
             for cur_docker_file in all_dockerfiles:
@@ -676,14 +862,18 @@ class DockerBuilder:
 
             # Filter dockerfiles based on context
             dockerfiles = self.context.filter(dockerfiles)
-            
+
             return list(dockerfiles.keys())
-            
+
         except Exception as e:
-            self.rich_console.print(f"[yellow]Warning: Error finding dockerfiles for model {model_info['name']}: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: Error finding dockerfiles for model {model_info['name']}: {e}[/yellow]"
+            )
             return []
 
-    def _validate_target_arch_against_dockerfile(self, model_info: typing.Dict, target_arch: str) -> bool:
+    def _validate_target_arch_against_dockerfile(
+        self, model_info: typing.Dict, target_arch: str
+    ) -> bool:
         """
         Validate that target architecture is compatible with model's Dockerfile GPU variables.
         Called during build phase when --target-archs is provided.
@@ -691,71 +881,77 @@ class DockerBuilder:
         try:
             # Find dockerfiles for this model
             dockerfiles = self._get_dockerfiles_for_model(model_info)
-            
+
             for dockerfile_path in dockerfiles:
-                with open(dockerfile_path, 'r') as f:
+                with open(dockerfile_path, "r") as f:
                     dockerfile_content = f.read()
-                
+
                 # Parse GPU architecture variables from Dockerfile
                 dockerfile_gpu_vars = parse_dockerfile_gpu_variables(dockerfile_content)
-                
+
                 if not dockerfile_gpu_vars:
                     # No GPU variables found - target arch is acceptable
-                    self.rich_console.print(f"[cyan]Info: No GPU architecture variables found in {dockerfile_path}, "
-                          f"target architecture '{target_arch}' is acceptable[/cyan]")
+                    self.rich_console.print(
+                        f"[cyan]Info: No GPU architecture variables found in {dockerfile_path}, "
+                        f"target architecture '{target_arch}' is acceptable[/cyan]"
+                    )
                     continue
-                
+
                 # Validate target architecture against each GPU variable
                 for var_name, var_values in dockerfile_gpu_vars.items():
                     if not is_target_arch_compatible_with_variable(
                         var_name, var_values, target_arch
                     ):
-                        self.rich_console.print(f"[red]Error: Target architecture '{target_arch}' is not compatible "
-                              f"with {var_name}={var_values} in {dockerfile_path}[/red]")
+                        self.rich_console.print(
+                            f"[red]Error: Target architecture '{target_arch}' is not compatible "
+                            f"with {var_name}={var_values} in {dockerfile_path}[/red]"
+                        )
                         return False
-                
-                self.rich_console.print(f"[cyan]Info: Target architecture '{target_arch}' validated successfully "
-                      f"against {dockerfile_path}[/cyan]")
-            
+
+                self.rich_console.print(
+                    f"[cyan]Info: Target architecture '{target_arch}' validated successfully "
+                    f"against {dockerfile_path}[/cyan]"
+                )
+
             return True
-            
+
         except FileNotFoundError as e:
-            self.rich_console.print(f"[yellow]Warning: Dockerfile not found for model {model_info['name']}: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: Dockerfile not found for model {model_info['name']}: {e}[/yellow]"
+            )
             return True  # Assume compatible if Dockerfile not found
         except Exception as e:
-            self.rich_console.print(f"[yellow]Warning: Error validating target architecture for model {model_info['name']}: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]Warning: Error validating target architecture for model {model_info['name']}: {e}[/yellow]"
+            )
             return True  # Assume compatible on parsing errors
 
     def _build_model_single_arch(
-        self, 
+        self,
         model_info: typing.Dict,
         credentials: typing.Dict,
         clean_cache: bool,
         registry: str,
         phase_suffix: str,
-        batch_build_metadata: typing.Optional[dict]
+        batch_build_metadata: typing.Optional[dict],
     ) -> typing.List[typing.Dict]:
         """Build model using existing single architecture flow."""
-        
+
         # Use existing build logic - MAD_SYSTEM_GPU_ARCHITECTURE comes from additional_context
         # or Dockerfile defaults
         dockerfiles = self._get_dockerfiles_for_model(model_info)
-        
+
         results = []
         for dockerfile in dockerfiles:
             build_info = self.build_image(
-                model_info, 
-                dockerfile, 
-                credentials,
-                clean_cache, 
-                phase_suffix
+                model_info, dockerfile, credentials, clean_cache, phase_suffix
             )
-            
+
             # Extract GPU architecture from build args or context for manifest
             gpu_arch = self._get_effective_gpu_architecture(model_info, dockerfile)
             if gpu_arch:
                 build_info["gpu_architecture"] = gpu_arch
-            
+
             # Handle registry push (existing logic)
             if registry:
                 try:
@@ -766,73 +962,87 @@ class DockerBuilder:
                         model_info,
                         credentials,
                     )
-                    self.push_image(build_info["docker_image"], registry, credentials, registry_image)
+                    self.push_image(
+                        build_info["docker_image"],
+                        registry,
+                        credentials,
+                        registry_image,
+                    )
                     build_info["registry_image"] = registry_image
+                    # Recorded at push time; consumed only by --require-pinned-image runs.
+                    pushed_digest = self.pushed_digests.get(registry_image)
+                    if pushed_digest:
+                        build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
-            
+
             results.append(build_info)
-        
+
         return results
 
-    def _get_effective_gpu_architecture(self, model_info: typing.Dict, dockerfile_path: str) -> str:
+    def _get_effective_gpu_architecture(
+        self, model_info: typing.Dict, dockerfile_path: str
+    ) -> str:
         """Get effective GPU architecture for single arch builds."""
         # Check if MAD_SYSTEM_GPU_ARCHITECTURE is in build args from additional_context
-        if ("docker_build_arg" in self.context.ctx and 
-            "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_build_arg"]):
+        if (
+            "docker_build_arg" in self.context.ctx
+            and "MAD_SYSTEM_GPU_ARCHITECTURE" in self.context.ctx["docker_build_arg"]
+        ):
             return self.context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"]
-        
+
         # Try to extract from Dockerfile defaults
         try:
-            with open(dockerfile_path, 'r') as f:
+            with open(dockerfile_path, "r") as f:
                 content = f.read()
-            
+
             # Look for ARG or ENV declarations
             patterns = [
                 r"ARG\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)",
-                r"ENV\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)"
+                r"ENV\s+MAD_SYSTEM_GPU_ARCHITECTURE=([^\s\n]+)",
             ]
-            
+
             for pattern in patterns:
                 match = re.search(pattern, content, re.IGNORECASE)
                 if match:
-                    return match.group(1).strip('"\'')
+                    return match.group(1).strip("\"'")
         except Exception:
             pass
-        
+
         return None
 
     def _infer_gpu_vendor_from_dockerfile(self, dockerfile: str) -> str:
         """Infer GPU vendor from dockerfile path.
-        
+
         Args:
             dockerfile: Path to dockerfile (e.g., "docker/dummy.ubuntu.amd.Dockerfile")
-            
+
         Returns:
             GPU vendor string: "AMD", "NVIDIA", or ""
         """
         dockerfile_lower = dockerfile.lower()
-        
+
         # Check for explicit vendor indicators in filename
-        if '.amd.' in dockerfile_lower or dockerfile_lower.endswith('.amd'):
+        if ".amd." in dockerfile_lower or dockerfile_lower.endswith(".amd"):
             return "AMD"
-        elif '.nvidia.' in dockerfile_lower or dockerfile_lower.endswith('.nvidia'):
+        elif ".nvidia." in dockerfile_lower or dockerfile_lower.endswith(".nvidia"):
             return "NVIDIA"
-        
+
         # Try to infer from base image in Dockerfile
         try:
-            with open(dockerfile, 'r') as f:
+            with open(dockerfile, "r") as f:
                 content = f.read()
-            
+
             # Look for base image indicators
-            if 'FROM' in content:
-                if 'rocm' in content.lower() or 'amd' in content.lower():
+            if "FROM" in content:
+                if "rocm" in content.lower() or "amd" in content.lower():
                     return "AMD"
-                elif 'nvidia' in content.lower() or 'cuda' in content.lower():
+                elif "nvidia" in content.lower() or "cuda" in content.lower():
                     return "NVIDIA"
         except Exception:
             pass
-        
+
         # Default to empty (legacy - will be treated as compatible with all)
         return ""
 
@@ -902,16 +1112,12 @@ class DockerBuilder:
 
         # Determine registry image name based on registry type
         if registry.lower() in ["docker.io", "dockerhub"]:
-            # For DockerHub, always use format: repository:tag
-            # Try to get repository from credentials, fallback to default if not available
-            if (
-                credentials
-                and "dockerhub" in credentials
-                and "repository" in credentials["dockerhub"]
-            ):
-                registry_image = (
-                    f"{credentials['dockerhub']['repository']}:{docker_image}"
-                )
+            # For DockerHub, always use format: repository:tag.
+            # Placeholder repositories (your-org/your-repo) are ignored so a
+            # template credential.json does not retarget the push.
+            repository = resolve_dockerhub_repository(credentials)
+            if repository:
+                registry_image = f"{repository}:{docker_image}"
             else:
                 registry_image = docker_image
         else:
@@ -930,55 +1136,62 @@ class DockerBuilder:
         return registry_image
 
     def _build_model_for_arch(
-        self, 
+        self,
         model_info: typing.Dict,
         gpu_arch: str,
         credentials: typing.Dict,
         clean_cache: bool,
         registry: str,
         phase_suffix: str,
-        batch_build_metadata: typing.Optional[dict]
+        batch_build_metadata: typing.Optional[dict],
     ) -> typing.List[typing.Dict]:
         """Build model for specific GPU architecture with smart image naming."""
-        
+
         # Find dockerfiles
         dockerfiles = self._get_dockerfiles_for_model(model_info)
-        
+
         arch_results = []
         for dockerfile in dockerfiles:
             # When using --target-archs, always add architecture suffix regardless of GPU variables
             # This ensures consistent naming for multi-architecture builds
             base_image_name = self._create_base_image_name(model_info, dockerfile)
             arch_image_name = f"{base_image_name}_{gpu_arch}"
-            
+
             # Set MAD_SYSTEM_GPU_ARCHITECTURE for this build
             arch_build_args = {"MAD_SYSTEM_GPU_ARCHITECTURE": gpu_arch}
-            
+
             # Build the image
             build_info = self.build_image(
-                model_info, 
-                dockerfile, 
+                model_info,
+                dockerfile,
                 credentials,
-                clean_cache, 
+                clean_cache,
                 phase_suffix,
                 additional_build_args=arch_build_args,
-                override_image_name=arch_image_name
+                override_image_name=arch_image_name,
             )
-            
+
             # Add architecture metadata
             build_info["gpu_architecture"] = gpu_arch
-            
+
             # Handle registry push with architecture-specific tagging
             if registry:
                 registry_image = self._determine_registry_image_name(
                     arch_image_name, registry, credentials
                 )
                 try:
-                    self.push_image(arch_image_name, registry, credentials, registry_image)
+                    self.push_image(
+                        arch_image_name, registry, credentials, registry_image
+                    )
                     build_info["registry_image"] = registry_image
+                    # Recorded at push time; consumed only by --require-pinned-image runs.
+                    pushed_digest = self.pushed_digests.get(registry_image)
+                    if pushed_digest:
+                        build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
-            
+
             arch_results.append(build_info)
-        
+
         return arch_results

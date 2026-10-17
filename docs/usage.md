@@ -27,12 +27,16 @@ madengine discover --tags dummy
 # Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
-# Or with explicit configuration
+# Or with explicit JSON configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or with YAML config (composable, Hydra-based)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
+> **Note**: `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations.
 
 Results are saved to `perf_entry.csv`.
 
@@ -304,6 +308,7 @@ Pass **`--skip-model-run`** to start containers and run `pre_scripts`, but skip 
 - Exit status is `SKIPPED` (not `FAILURE`) — the overall run exits `0`.
 - Combine with **`--keep-alive`** to leave a fully-set-up, live container for manual inspection or debugging.
 - Has **no effect** on distributed (SLURM/K8s) targets — a warning is printed if used with them.
+- A normal run deletes a leftover `multiple_results` file before the model script, so an appending script cannot report the previous run. `--skip-model-run` leaves that file, because nothing writes a replacement. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are never deleted.
 
 ```bash
 # Skip the model script; container starts and pre_scripts run
@@ -384,6 +389,17 @@ At the start of each container run, madengine prints a side-by-side environment 
 
 The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
 
+### Deploy to llm-d
+
+An `llm_d` block benchmarks an [llm-d](llm-d.md) stack. It is checked before `k8s`, because the same config also carries a `k8s` block for the benchmark-client Job.
+
+```bash
+madengine run --tags my_llm_d_benchmark \
+  --additional-context-file examples/llm-d-configs/02-managed-dry-run.json
+```
+
+See [llm-d](llm-d.md) for attach mode, managed mode, and the MI250 notes.
+
 ### Deploy to Kubernetes
 
 ```bash
@@ -419,12 +435,13 @@ Deployment target is automatically detected from `slurm` key in configuration. T
 
 Use configuration files for complex settings:
 
+**JSON format** (`--additional-context-file`):
+
 **config.json:**
 ```json
 {
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0"
@@ -436,6 +453,42 @@ Use configuration files for complex settings:
 madengine run --tags model --additional-context-file config.json
 ```
 
+**YAML format** (`--config` — same keys as the JSON object, not a Hydra `defaults:` list):
+
+**my_job.yaml:**
+```yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  PYTORCH_TUNABLEOP_ENABLED: "1"
+  HSA_ENABLE_SDMA: "0"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+```
+
+```bash
+madengine run --config my_job.yaml
+
+# With additional overrides
+madengine run --config my_job.yaml --config distributed.nnodes=4
+
+# Or use config groups without a file
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config +profile=mi300x_8gpu
+```
+
+> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details, and [`examples/configs/`](../examples/configs/) for annotated templates and ready-to-run demos.
+
 ### Custom Timeouts
 
 ```bash
@@ -445,6 +498,23 @@ madengine run --tags model --timeout 7200
 # No timeout (run indefinitely)
 madengine run --tags model --timeout 0
 ```
+
+Precedence, lowest to highest: the 7200s default, then a model card's `timeout`
+field, then `--timeout`. `--timeout -1` (the default) means "not passed" and
+falls through to the level below, so an explicit `--timeout 7200` still
+overrides a model card timeout even though it equals the default. A resolved
+timeout of `0` or less means no timeout — including a model card that sets
+`"timeout": 0` or `-1`.
+
+The same default and precedence apply to distributed runs. On SLURM the
+submitting process caps its own wait at the resolved timeout, and forwards
+`--timeout` unresolved to the job, so a model card's value still wins there.
+On Kubernetes the timeout is resolved when the Job manifest is rendered — the
+pod has no inner `madengine` to resolve it — and the model script is wrapped in
+`timeout`, so a model that overruns is killed with exit code 124 and logs
+`model script timed out after Ns`. A pod whose model fails or times out still
+runs its post-scripts and copies its artifacts to the results PVC before
+exiting on the model's code, so failed runs remain diagnosable.
 
 ### Debugging
 
@@ -602,8 +672,11 @@ Configure distributed training:
 - `deepspeed` - ZeRO optimization
 - `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated prefill/decode
+- `slurm_multi` - Self-managed per-node containers (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 
@@ -625,6 +698,7 @@ my_model,125.3,98.5,15.2,...
 - Model configurations
 - Deployment configuration
 - Build timestamp
+- After a local run, `docker_run_cmd`: the `docker run` command for that invocation (best-effort; a missing write does not fail the run)
 
 Use this manifest to run pre-built images:
 
@@ -710,7 +784,6 @@ cat > config.json << 'EOF'
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "distributed": {
     "launcher": "torchrun",
     "nproc_per_node": 4
