@@ -1,0 +1,586 @@
+"""Unit tests for the TraceLens trace analyzer script.
+
+The analyzer is shipped as a standalone stdlib-only script under
+``scripts/common/tools/`` so it can run both inside a workload container and on
+the host, so it is loaded here by path rather than imported as a module.
+"""
+
+import csv
+import glob
+import gzip
+import importlib.util
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import pytest
+
+from madengine.utils.path_utils import get_madengine_root
+
+CHROME_TRACE = b'{"traceEvents": [], "schemaVersion": 1}'
+
+
+def _load_analyzer():
+    script = (
+        get_madengine_root() / "scripts" / "common" / "tools" / "tracelens_analyze.py"
+    )
+    assert script.is_file(), f"analyzer script missing at {script}"
+    spec = importlib.util.spec_from_file_location("tracelens_analyze", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def analyzer():
+    return _load_analyzer()
+
+
+def _write(root: Path, rel: str, content: bytes = b"{}") -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+@pytest.fixture
+def trace_tree(tmp_path):
+    """A directory shaped like the working directory after a profiled run."""
+    _write(tmp_path, "torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+    _write(tmp_path, "torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+    _write(tmp_path, "traces/model_rank2.pt.trace.json", CHROME_TRACE)
+    _write(tmp_path, "rocprof_output/9999_results.json", b"{}")
+    _write(tmp_path, "rocprof_output/model_trace.pftrace", b"\x00\x01")
+    _write(tmp_path, "rocprof_output/1e4d92661463/1234_results.db", b"sqlite")
+    _write(tmp_path, "rpd_output/trace.rpd", b"sqlite")
+    _write(tmp_path, "rpd_output/trace.json", CHROME_TRACE)
+    _write(tmp_path, "perf.csv", b"model,performance\n")
+    return tmp_path
+
+
+class TestDiscovery:
+    """Trace classification must route each artifact to the right TraceLens reader."""
+
+    def test_classifies_each_trace_kind(self, analyzer, trace_tree):
+        traces, _ = analyzer.discover_traces(str(trace_tree))
+        names = {
+            kind: sorted(Path(p).name for p in paths) for kind, paths in traces.items()
+        }
+
+        assert names[analyzer.KIND_PYTORCH] == [
+            "libkineto_trace_rank0_1.json",
+            "libkineto_trace_rank1_2.json",
+            "model_rank2.pt.trace.json",
+            "trace.json",
+        ]
+        assert names[analyzer.KIND_ROCPROF_JSON] == ["9999_results.json"]
+        assert names[analyzer.KIND_PFTRACE] == ["model_trace.pftrace"]
+
+    def test_reports_unreadable_formats_with_guidance(self, analyzer, trace_tree):
+        _, unsupported = analyzer.discover_traces(str(trace_tree))
+        by_name = {Path(p).name: reason for p, reason in unsupported}
+
+        assert "1234_results.db" in by_name
+        assert "--output-format" in by_name["1234_results.db"]
+        assert "trace.rpd" in by_name
+
+    def test_sniffs_ambiguous_trace_json(self, analyzer, tmp_path):
+        """trace.json is written by both rpd (Chrome trace) and rocm-trace-lite."""
+        _write(tmp_path, "rpd_output/trace.json", CHROME_TRACE)
+        _write(tmp_path, "other_output/trace.json", b'{"not": "a trace"}')
+
+        traces, _ = analyzer.discover_traces(str(tmp_path))
+        claimed = [Path(p).parent.name for p in traces.get(analyzer.KIND_PYTORCH, [])]
+        assert claimed == ["rpd_output"]
+
+    def test_excludes_report_output_directory(self, analyzer, tmp_path):
+        """Re-running analysis must not treat previous reports as new inputs."""
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_1.json", CHROME_TRACE)
+        _write(tmp_path, "tracelens_output/stale_results.json", b"{}")
+
+        traces, unsupported = analyzer.discover_traces(
+            str(tmp_path), exclude_dirs=[str(tmp_path / "tracelens_output")]
+        )
+        assert analyzer.KIND_ROCPROF_JSON not in traces
+        assert unsupported == []
+
+    def test_empty_tree_discovers_nothing(self, analyzer, tmp_path):
+        traces, unsupported = analyzer.discover_traces(str(tmp_path))
+        assert traces == {}
+        assert unsupported == []
+
+
+class TestCommandConstruction:
+    """TraceLens must be invoked with the flags each report generator expects."""
+
+    def test_falls_back_to_module_when_console_script_absent(self, analyzer):
+        command = analyzer._build_command(
+            "/nonexistent/bin/python3",
+            "TraceLens_generate_perf_report_pytorch",
+            ["--profile_json_path", "trace.json"],
+        )
+        assert command[0] == "/nonexistent/bin/python3"
+        assert command[1] == "-c"
+        assert "TraceLens.Reporting.generate_perf_report_pytorch" in command[2]
+        assert command[-2:] == ["--profile_json_path", "trace.json"]
+
+    def test_prefers_console_script_in_interpreter_bindir(self, analyzer, tmp_path):
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        python = bindir / "python3"
+        python.write_text("")
+        script = bindir / "TraceLens_generate_perf_report_rocprof"
+        script.write_text("")
+        script.chmod(0o755)
+
+        command = analyzer._build_command(
+            str(python), "TraceLens_generate_perf_report_rocprof", ["--x"]
+        )
+        assert command == [str(script), "--x"]
+
+    def test_every_entry_point_has_a_module_fallback(self, analyzer):
+        for name, module in analyzer._ENTRY_POINTS.items():
+            assert name.startswith("TraceLens_")
+            assert module.startswith("TraceLens.Reporting.")
+
+    def test_pytorch_args_request_shapes_and_roofline(self, analyzer):
+        args = analyzer._pytorch_args("t.json", "/out/t", "MI300X", [])
+        assert args[:2] == ["--profile_json_path", "t.json"]
+        assert "--output_csvs_dir" in args
+        assert args[args.index("--gpu_arch_platform") + 1] == "MI300X"
+
+    def test_pytorch_args_omit_roofline_without_arch(self, analyzer):
+        args = analyzer._pytorch_args("t.json", "/out/t", None, [])
+        assert "--gpu_arch_platform" not in args
+
+    def test_pytorch_args_do_not_request_the_short_kernel_study(self, analyzer):
+        # TraceLens writes that sheet with index=False, and pandas refuses when
+        # its columns are a MultiIndex, which loses the whole workbook.
+        args = analyzer._pytorch_args("t.json", "/out/t", "MI300X", [])
+        assert "--short_kernel_study" not in args
+
+    def test_the_short_kernel_study_can_be_asked_for_explicitly(self, analyzer):
+        args = analyzer._pytorch_args(
+            "t.json", "/out/t", "MI300X", ["--short_kernel_study"]
+        )
+        assert "--short_kernel_study" in args
+
+    def test_pftrace_produces_three_complementary_reports(self, analyzer):
+        jobs = analyzer._pftrace_jobs("t.pftrace", "/out/t", [])
+        assert [tool for tool, _ in jobs] == [
+            "TraceLens_generate_perf_report_pftrace_hip_activity",
+            "TraceLens_generate_perf_report_pftrace_hip_api",
+            "TraceLens_generate_perf_report_pftrace_memory_copy",
+        ]
+        for _, args in jobs:
+            assert args[:2] == ["--trace_path", "t.pftrace"]
+
+    def test_collective_args_carry_rank_regex_and_world_size(self, analyzer):
+        args = analyzer._collective_args("/scratch/collective", "/out/coll", 8, [])
+        assert args[args.index("--world_size") + 1] == "8"
+        assert "rank" in args[args.index("--rank_regex") + 1]
+        # Scoped to the staged per-rank traces: a wider glob sweeps up unrelated
+        # JSON, and rocprofv3 results are hundreds of megabytes each.
+        trace_glob = args[args.index("--trace_glob") + 1]
+        assert trace_glob == os.path.join("/scratch/collective", "**", "*.json*")
+
+    def test_extra_args_are_forwarded(self, analyzer):
+        args = analyzer._pytorch_args("t.json", "/out/t", None, ["--detect_recompute"])
+        assert args[-1] == "--detect_recompute"
+
+
+class TestReportStem:
+    """Report names must be unique per trace and safe as filenames."""
+
+    def test_strips_known_trace_suffixes(self, analyzer, tmp_path):
+        stem = analyzer._report_stem(
+            str(tmp_path / "traces" / "model_rank0.pt.trace.json"), str(tmp_path)
+        )
+        assert stem == "traces_model_rank0"
+
+    def test_distinguishes_same_name_in_different_directories(self, analyzer, tmp_path):
+        a = analyzer._report_stem(str(tmp_path / "node_0" / "trace.json"), str(tmp_path))
+        b = analyzer._report_stem(str(tmp_path / "node_1" / "trace.json"), str(tmp_path))
+        assert a != b
+
+
+class TestSanitizedTrace:
+    """Sanitized copies must not collide across ranks or directories."""
+
+    def test_same_basename_in_different_directories_do_not_overwrite(
+        self, analyzer, tmp_path
+    ):
+        rank0 = _write(tmp_path, "rank0/trace.json", b'{"rank": 0, "bad": "\xff"}')
+        rank1 = _write(tmp_path, "rank1/trace.json", b'{"rank": 1, "bad": "\xfe"}')
+        workspace = [None]
+        try:
+            copy0 = analyzer._sanitized_trace(
+                str(rank0), analyzer.KIND_ROCPROF_JSON, workspace
+            )
+            copy1 = analyzer._sanitized_trace(
+                str(rank1), analyzer.KIND_ROCPROF_JSON, workspace
+            )
+
+            assert copy0 != copy1
+            assert os.path.basename(copy0) == os.path.basename(copy1) == "trace.json"
+            assert '"rank": 0' in Path(copy0).read_text(encoding="utf-8")
+            assert '"rank": 1' in Path(copy1).read_text(encoding="utf-8")
+        finally:
+            if workspace[0]:
+                shutil.rmtree(workspace[0], ignore_errors=True)
+
+
+class TestCollectiveInputs:
+    """The collective report must read exactly the per-rank traces, readably."""
+
+    @staticmethod
+    def _collective_inputs(analyzer, root, monkeypatch):
+        """Run analyze() and return what the collective job's glob matched."""
+        seen = {}
+
+        def fake_run(command, cwd=None):
+            command = list(command)
+            if any("multi_rank" in part for part in command):
+                pattern = command[command.index("--trace_glob") + 1]
+                matches = sorted(glob.glob(pattern, recursive=True))
+                seen["matches"] = matches
+                seen["bytes"] = [Path(m).read_bytes() for m in matches]
+            return 0, ""
+
+        monkeypatch.setattr(analyzer, "_run", fake_run)
+        analyzer.analyze(
+            root=str(root), output_dir=str(root / "out"), python=sys.executable
+        )
+        return seen
+
+    def test_multi_node_glob_does_not_sweep_up_unrelated_json(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+        _write(tmp_path, "node_0/rocprof_output/9999_results.json", b"{}")
+        _write(tmp_path, "manifest.json", b"{}")
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert sorted(os.path.basename(m) for m in seen["matches"]) == [
+            "libkineto_trace_rank0_1.json",
+            "libkineto_trace_rank1_2.json",
+        ]
+
+    def test_same_basename_on_different_nodes_are_both_included(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert len(seen["matches"]) == 2
+
+    def test_undecodable_traces_reach_the_collective_report_sanitized(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(
+            tmp_path,
+            "torch_profiler_output/libkineto_trace_rank0_1.json",
+            b'{"traceEvents": [], "bad": "\xff"}',
+        )
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert len(seen["bytes"]) == 2
+        for payload in seen["bytes"]:
+            payload.decode("utf-8")
+
+    def test_skip_reason_counts_how_many_traces_carry_a_rank(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_724.json", CHROME_TRACE)
+        monkeypatch.setattr(analyzer, "_run", lambda command, cwd=None: (0, ""))
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+
+        skipped = [r for r in summary["results"] if r["status"] == "SKIPPED"]
+        assert len(skipped) == 1
+        assert "1 of 2" in skipped[0]["detail"]
+        assert "none of these" not in skipped[0]["detail"]
+
+    @staticmethod
+    def _kineto(rank: int) -> bytes:
+        return (
+            b'{"schemaVersion": 1, "distributedInfo": {"backend": "nccl", "rank": %d, '
+            b'"world_size": 2}, "traceEvents": []}' % rank
+        )
+
+    def test_rank_read_from_distributed_info_when_filename_lacks_it(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        # tensorboard_trace_handler without worker_name names traces <host>_<pid>.
+        _write(tmp_path, "tensorboard/host_1043.17909.pt.trace.json", self._kineto(1))
+        _write(tmp_path, "tensorboard/host_1044.17910.pt.trace.json", self._kineto(0))
+
+        seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
+
+        assert sorted(os.path.basename(m) for m in seen["matches"]) == [
+            "rank0_host_1044.17910.pt.trace.json",
+            "rank1_host_1043.17909.pt.trace.json",
+        ]
+
+    def test_rank_read_from_gzipped_trace(self, analyzer, tmp_path):
+        path = _write(tmp_path, "t/host_1.pt.trace.json.gz", gzip.compress(self._kineto(3)))
+        assert analyzer._collective_name(str(path)) == "rank3_host_1.pt.trace.json.gz"
+
+    def test_filename_rank_wins_and_unknown_rank_is_none(self, analyzer, tmp_path):
+        named = _write(tmp_path, "a/libkineto_trace_rank5_1.json", self._kineto(2))
+        bare = _write(tmp_path, "a/libkineto_trace_9.json", CHROME_TRACE)
+        assert analyzer._collective_name(str(named)) == "libkineto_trace_rank5_1.json"
+        assert analyzer._collective_name(str(bare)) is None
+
+
+class TestAnalyze:
+    """The analyze() driver must schedule one job per trace and record outcomes."""
+
+    def test_schedules_a_job_for_every_trace_and_writes_summary(
+        self, analyzer, trace_tree, monkeypatch
+    ):
+        calls = []
+
+        def fake_run(command, cwd=None):
+            calls.append(list(command))
+            return 0, ""
+
+        monkeypatch.setattr(analyzer, "_run", fake_run)
+        out = trace_tree / "tracelens_output"
+        summary = analyzer.analyze(
+            root=str(trace_tree), output_dir=str(out), python=sys.executable
+        )
+
+        # 4 pytorch + 1 rocprof + 3 pftrace + 1 collective
+        assert len(calls) == 9
+        assert summary["succeeded"] == 9
+        assert summary["failed"] == 0
+        # The unreadable .db and .rpd artifacts are surfaced as skipped.
+        assert summary["skipped"] == 2
+
+        with open(summary["summary_csv"], newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        assert len(rows) == 11
+        assert set(rows[0]) == set(analyzer.SUMMARY_CSV_FIELDS)
+
+    def test_a_trace_without_gpu_activity_is_skipped_not_failed(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """dynolog traces the torchrun launcher too, and it runs no kernels.
+
+        Reporting that as a failure means every multi-process run profiled
+        through dynolog ends with a failure row next to its real report.
+        """
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_724.json", CHROME_TRACE)
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (
+                1,
+                "Traceback (most recent call last):\n"
+                "ValueError: No GPU events found in the trace",
+            ),
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+        assert summary["failed"] == 0
+        assert summary["skipped"] == 1
+        row = summary["results"][0]
+        assert row["status"] == "SKIPPED"
+        assert "no GPU activity" in row["detail"]
+        # Nothing was written, so pointing at a report directory would mislead.
+        assert row["output"] == ""
+
+    def test_records_failure_detail(self, analyzer, tmp_path, monkeypatch):
+        _write(tmp_path, "rocprof_output/1_results.json", b"{}")
+        monkeypatch.setattr(
+            analyzer, "_run", lambda command, cwd=None: (1, "boom\nNot a valid file")
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+        assert summary["failed"] == 1
+        assert summary["results"][0]["detail"] == "Not a valid file"
+
+    def test_mode_restricts_to_one_trace_kind(self, analyzer, trace_tree, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        analyzer.analyze(
+            root=str(trace_tree),
+            output_dir=str(trace_tree / "out"),
+            mode="rocprof",
+            python=sys.executable,
+        )
+        assert len(calls) == 1
+        assert any("generate_perf_report_rocprof" in part for part in calls[0])
+
+    def test_collective_mode_emits_only_the_multi_rank_report(
+        self, analyzer, trace_tree, monkeypatch
+    ):
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        analyzer.analyze(
+            root=str(trace_tree),
+            output_dir=str(trace_tree / "out"),
+            mode="collective",
+            python=sys.executable,
+        )
+        assert len(calls) == 1
+        assert any("multi_rank_collective_report" in part for part in calls[0])
+
+    def test_no_collective_report_for_a_single_rank(self, analyzer, tmp_path, monkeypatch):
+        _write(tmp_path, "torch_profiler_output/libkineto_trace_1.json", CHROME_TRACE)
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+        assert len(calls) == 1
+        assert not any("multi_rank" in part for call in calls for part in call)
+
+    def test_collective_report_is_skipped_when_ranks_cannot_be_identified(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """dynolog names traces after the pid, and TraceLens needs the rank.
+
+        Attempting the report anyway fails on every multi-process run profiled
+        through dynolog, which reads as a broken tool rather than a limitation.
+        """
+        for pid in (724, 892):
+            _write(
+                tmp_path, f"torch_profiler_output/libkineto_trace_{pid}.json", CHROME_TRACE
+            )
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+
+        assert not any("multi_rank" in part for call in calls for part in call)
+        skipped = [r for r in summary["results"] if r["status"] == "SKIPPED"]
+        assert len(skipped) == 1
+        assert "rank" in skipped[0]["detail"]
+        assert "dynolog" in skipped[0]["detail"]
+
+    def test_max_traces_caps_work_per_kind(self, analyzer, trace_tree, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (calls.append(list(command)), (0, ""))[1],
+        )
+
+        analyzer.analyze(
+            root=str(trace_tree),
+            output_dir=str(trace_tree / "out"),
+            mode="pytorch",
+            max_traces=2,
+            python=sys.executable,
+        )
+        assert len(calls) == 2
+
+    def test_empty_tree_reports_nothing_without_error(self, analyzer, tmp_path):
+        summary = analyzer.analyze(
+            root=str(tmp_path), output_dir=str(tmp_path / "out"), python=sys.executable
+        )
+        assert summary["results"] == []
+        assert summary["succeeded"] == 0
+
+    def test_truncated_gzip_is_reported_instead_of_aborting(
+        self, analyzer, tmp_path, monkeypatch
+    ):
+        """A gzip missing its trailer raises EOFError, which is not an OSError.
+
+        That used to leave analyze() before the summary existed. The trace is
+        still handed to TraceLens, and the failure is recorded.
+        """
+        payload = gzip.compress(b'{"traceEvents": [{"cat": "kernel"}]}')[:-8]
+        trace = _write(
+            tmp_path, "torch_profiler_output/libkineto_trace_1.json.gz", payload
+        )
+        assert analyzer._read_head(str(trace)) == ""
+        calls = []
+        monkeypatch.setattr(
+            analyzer,
+            "_run",
+            lambda command, cwd=None: (
+                calls.append(list(command)),
+                (1, "dummy TraceLens: could not read truncated gzip"),
+            )[1],
+        )
+
+        summary = analyzer.analyze(
+            root=str(tmp_path),
+            output_dir=str(tmp_path / "out"),
+            python=sys.executable,
+        )
+
+        assert calls
+        assert summary["failed"] == 1
+        assert summary["results"][0]["status"] == "FAILURE"
+        assert "could not read" in summary["results"][0]["detail"]
+
+
+class TestCli:
+    """The script's CLI is the contract used by tracelens.sh and the host wrapper."""
+
+    def test_discover_only_writes_json_summary_and_succeeds(
+        self, analyzer, trace_tree, capsys
+    ):
+        summary_path = trace_tree / "discovery.json"
+        code = analyzer.main(
+            ["--root", str(trace_tree), "--discover-only", "--json-summary", str(summary_path)]
+        )
+        capsys.readouterr()
+
+        assert code == 0
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        assert summary["discovered"]["pytorch"] == 4
+        assert len(summary["unsupported"]) == 2
+
+    def test_exit_code_reflects_failures(self, analyzer, tmp_path, monkeypatch, capsys):
+        _write(tmp_path, "rocprof_output/1_results.json", b"{}")
+        monkeypatch.setattr(analyzer, "_run", lambda command, cwd=None: (1, "failed"))
+
+        code = analyzer.main(["--root", str(tmp_path), "--output-dir", str(tmp_path / "out")])
+        capsys.readouterr()
+        assert code == 1
+
+    def test_rejects_unknown_mode(self, analyzer):
+        with pytest.raises(SystemExit):
+            analyzer.main(["--mode", "nonsense"])

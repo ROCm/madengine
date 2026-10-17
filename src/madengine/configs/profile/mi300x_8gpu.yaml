@@ -1,0 +1,12 @@
+# @package _global_
+gpu_type: mi300x
+gpu_memory_gb: 192
+gpus_per_node: 8
+
+distributed:
+  nproc_per_node: 8
+
+env_vars:
+  GPU_MAX_HW_QUEUES: "2"
+  HSA_ENABLE_SDMA: "0"
+  HSA_FORCE_FINE_GRAIN_PCIE: "1"

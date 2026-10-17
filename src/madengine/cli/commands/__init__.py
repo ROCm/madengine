@@ -12,7 +12,16 @@ from .run import run
 from .discover import discover
 from .report import report_app
 from .database import database
+from .cleanup import cleanup
 from .setup_page import setup_page
 
-__all__ = ["build", "run", "discover", "report_app", "database", "setup_page"]
+__all__ = [
+    "build",
+    "run",
+    "discover",
+    "report_app",
+    "database",
+    "cleanup",
+    "setup_page",
+]
 

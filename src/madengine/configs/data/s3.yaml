@@ -1,0 +1,6 @@
+# @package _global_
+data:
+  provider: s3
+  bucket: null
+  prefix: null
+  region: null

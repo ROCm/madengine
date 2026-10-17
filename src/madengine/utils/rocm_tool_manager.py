@@ -29,6 +29,85 @@ from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 # ROCm version threshold for amd-smi vs rocm-smi (from PR #54)
 ROCM_VERSION_THRESHOLD = (6, 4, 1)
 
+_VRAM_TOTAL_KEY = "VRAM Total Memory (B)"
+_VRAM_USED_KEY = "VRAM Total Used Memory (B)"
+
+
+def _vram_megabytes(field: object) -> int:
+    """Read a VRAM field that is either a bare number or {value, unit}."""
+    if isinstance(field, dict):
+        return int(field["value"])
+    return int(field)
+
+
+def parse_amd_smi_mem_usage(output: str) -> List[Dict[str, int]]:
+    """Parse `amd-smi metric --mem-usage --json`.
+
+    Current amd-smi prints a top-level list of GPU objects, the same shape
+    as `amd-smi list --json`. Some versions wrap that list in ``gpu_data``.
+    """
+    data = json.loads(output)
+    if isinstance(data, list):
+        entries = data
+    elif isinstance(data, dict) and isinstance(data.get("gpu_data"), list):
+        entries = data["gpu_data"]
+    else:
+        raise ValueError(
+            "amd-smi memory JSON is neither a GPU list nor a gpu_data object"
+        )
+
+    usage: List[Dict[str, int]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or "mem_usage" not in entry:
+            continue
+        mem = entry["mem_usage"]
+        usage.append(
+            {
+                "gpu": int(entry["gpu"]),
+                "used_mb": _vram_megabytes(mem["used_vram"]),
+                "total_mb": _vram_megabytes(mem["total_vram"]),
+            }
+        )
+    return usage
+
+
+def parse_rocm_smi_mem_usage(output: str) -> List[Dict[str, int]]:
+    """Parse `rocm-smi --showmeminfo vram --json`.
+
+    Keys are card names such as ``card0``. Entries without a card index or
+    without the VRAM byte fields are skipped. Some versions nest those
+    fields under ``VRAM`` or ``GPU Memory``.
+    """
+    data = json.loads(output)
+    if not isinstance(data, dict):
+        raise ValueError("rocm-smi memory JSON is not an object")
+
+    usage: List[Dict[str, int]] = []
+    for card_name, card_info in sorted(data.items()):
+        if not isinstance(card_info, dict):
+            continue
+        info = card_info
+        for nested_key in ("VRAM", "GPU Memory"):
+            nested = card_info.get(nested_key)
+            if isinstance(nested, dict):
+                info = nested
+                break
+        if _VRAM_TOTAL_KEY not in info or _VRAM_USED_KEY not in info:
+            continue
+        match = re.search(r"\d+", str(card_name))
+        if match is None:
+            continue
+        total_bytes = int(info[_VRAM_TOTAL_KEY])
+        used_bytes = int(info[_VRAM_USED_KEY])
+        usage.append(
+            {
+                "gpu": int(match.group()),
+                "used_mb": used_bytes // (1024 * 1024),
+                "total_mb": total_bytes // (1024 * 1024),
+            }
+        )
+    return usage
+
 
 class ROCmToolManager(BaseGPUToolManager):
     """AMD ROCm tool manager with version-aware tool selection.
@@ -410,7 +489,49 @@ class ROCmToolManager(BaseGPUToolManager):
                 return "No AMD GPUs detected"
         except Exception as e:
             return f"Unable to detect AMD GPU vendor: {e}"
-    
+
+    def get_gpu_memory_usage_mb(self) -> List[Dict[str, int]]:
+        """Get per-GPU VRAM usage in MB.
+
+        Prefers ``amd-smi metric --mem-usage --json`` and falls back to
+        ``rocm-smi --showmeminfo vram --json``.
+
+        Returns:
+            List of dicts: [{"gpu": 0, "used_mb": int, "total_mb": int}, ...]
+
+        Raises:
+            RuntimeError: If memory usage cannot be determined with any tool,
+                or the tools report no GPUs.
+        """
+        if self.is_tool_available(self.AMD_SMI_PATH):
+            try:
+                output = self.execute_command(
+                    f"{self.AMD_SMI_PATH} metric --mem-usage --json"
+                )
+                usage = parse_amd_smi_mem_usage(output)
+                if usage:
+                    return usage
+                self._log_warning(
+                    "amd-smi mem-usage returned no GPUs, trying rocm-smi"
+                )
+            except Exception as e:
+                self._log_warning(
+                    f"amd-smi mem-usage query failed, trying rocm-smi: {e}"
+                )
+
+        try:
+            output = self.execute_command(
+                f"{self.ROCM_SMI_PATH} --showmeminfo vram --json"
+            )
+            usage = parse_rocm_smi_mem_usage(output)
+            if not usage:
+                raise RuntimeError("rocm-smi reported no VRAM entries")
+            return usage
+        except Exception as e:
+            raise RuntimeError(
+                "Unable to determine GPU memory usage.\n" f"Error: {e}\n"
+            ) from e
+
     def list_gpus_json(self) -> List[Dict]:
         """List all GPUs with detailed information in JSON format.
         

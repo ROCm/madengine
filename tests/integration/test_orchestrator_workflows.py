@@ -323,6 +323,9 @@ class TestRunOrchestrator:
         mock_args = MagicMock()
         mock_args.additional_context = None
         mock_args.live_output = True
+        # A bare MagicMock auto-vivifies truthy attributes; pin the flags this
+        # assertion depends on so they cannot leak into additional_context.
+        mock_args.require_pinned_image = False
 
         orchestrator = RunOrchestrator(mock_args)
 
@@ -335,6 +338,7 @@ class TestRunOrchestrator:
         mock_args = MagicMock()
         mock_args.additional_context = '{"deploy": "slurm", "slurm": {"nodes": 4}}'
         mock_args.live_output = True
+        mock_args.require_pinned_image = False
 
         orchestrator = RunOrchestrator(mock_args)
 

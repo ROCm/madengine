@@ -1,0 +1,5 @@
+# @package _global_
+# Identity preset: same as primary build defaults. Use +build=default only
+# when you want to be explicit; omitting +build is equivalent.
+build:
+  manifest_output: build_manifest.json
