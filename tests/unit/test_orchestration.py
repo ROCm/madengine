@@ -1083,9 +1083,13 @@ class TestDistributedDeploymentFailureIsReported:
         )
         assert [run["model"] for run in summary["failed_runs"]] == ["model2"]
 
-    def test_empty_manifest_falls_back_to_the_target(self, tmp_path):
+    def test_empty_manifest_fails_before_submit(self, tmp_path):
+        # A manifest with no images is a failure of its own. It is not submitted
+        # and then reported as a nameless scheduler failure.
         summary = self._deploy(tmp_path, is_success=False, models=())
-        assert [run["model"] for run in summary["failed_runs"]] == ["slurm deployment"]
+        assert [run["model"] for run in summary["failed_runs"]] == [
+            "build manifest build_manifest.json"
+        ]
 
     def test_unreadable_manifest_falls_back_to_the_target(self, tmp_path):
         manifest = tmp_path / "build_manifest.json"

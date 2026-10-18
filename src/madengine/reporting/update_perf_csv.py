@@ -63,7 +63,12 @@ def flatten_tags(perf_entry: dict):
         The performance entry with flattened tags.
     """
     # flatten tags to a string, if tags is a list.
-    if isinstance(perf_entry["tags"], list):
+    #
+    # .get, not ["tags"]: an exception result need not carry tags. The SKIPPED
+    # entry _write_skipped_status writes has none, so indexing raised KeyError,
+    # its caller downgraded that to a dim warning, and no skip_gpu_arch skip
+    # ever reached perf.csv -- the run summary showed the model as simply absent.
+    if isinstance(perf_entry.get("tags"), list):
         perf_entry["tags"] = ",".join(str(item) for item in perf_entry["tags"])
 
 

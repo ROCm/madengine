@@ -1066,6 +1066,26 @@ class TestGitSafeDirectory:
         )
         assert result.returncode == 3
 
+    def test_broken_worktree_gitdir_does_not_fail(self, tmp_path):
+        """A .git file pointing outside the mount must not abort the run."""
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").write_text(
+            "gitdir: /nonexistent/gitdir\n", encoding="utf-8"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command(str(workspace))],
+            cwd=workspace,
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
     def test_path_with_a_space_is_quoted(self):
         from madengine.execution.container_runner import git_safe_directory_command
 
