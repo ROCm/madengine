@@ -640,9 +640,9 @@ madengine cleanup [OPTIONS]
 | `--all` | | FLAG | `False` | Also remove containers whose owning madengine process is still running |
 | `--dry-run` | | FLAG | `False` | List what would be removed, remove nothing |
 
-**Exit codes:** `0` when nothing needs removing or every targeted container was removed. `1` when a container is still present and was not wedged. `5` (`GPU_WEDGED`) when a container is still present after stop, kill, and remove, and the host PIDs are stuck in uninterruptible sleep or the daemon still reports the container. A `gpu_wedged.json` marker is written so CI can take the runner out of rotation.
+**Exit codes:** `0` when nothing needs removing or every targeted container was removed. `1` when a container is still present and was not wedged, or when `docker ps` times out or returns an error — that is not reported as an empty host. `5` (`GPU_WEDGED`) when a container is still present after stop, kill, and remove, and the host PIDs are stuck in uninterruptible sleep or the daemon still reports the container. A `gpu_wedged.json` marker is written so CI can take the runner out of rotation.
 
-Local runs also stop themselves. Each container madengine starts runs a POSIX-shell watchdog as PID 1. The watchdog stops the container when that container's heartbeat file in the bind-mounted workspace goes stale. `--keep-alive` does not install the watchdog, because leaving the container behind is the point of the flag. Images without a shell fall back to `cat` as PID 1 and print a warning that the container is unwatched.
+Local runs also stop themselves. Each container madengine starts runs a POSIX-shell watchdog as PID 1. The watchdog stops the container when that container's heartbeat file in the bind-mounted workspace goes stale. `--keep-alive` does not install the watchdog, and a cancel leaves that container running. Images without a shell fall back to `cat` as PID 1 and print a warning that the container is unwatched. A cancel also stops an in-place SLURM step, deletes a submitted SLURM or Kubernetes job, and uninstalls a managed llm-d stack.
 
 | Variable | Description | Default |
 |----------|-------------|---------|

@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from madengine.core import lifecycle
 from madengine.core.console import Console as ShellConsole
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
@@ -44,6 +45,7 @@ from .k8s_names import (
 from .k8s_secrets import replace_namespaced_secret
 from .kubernetes import KubernetesDeployment
 from .llm_d_stack import COMPONENTS, LlmdStack, LlmdStackError
+
 
 def llm_d_release_prefix(raw_model_name: str, prefix: str = "madengine") -> str:
     """Helm release stem that still names the model.
@@ -1230,15 +1232,21 @@ class LlmdDeployment(KubernetesDeployment):
         already terminated, but helm releases hold GPUs indefinitely, so the
         success path needs an explicit teardown.
         """
-        if self.is_dry_run:
-            # Short-circuits before validate(), so a dry run needs neither GPU
-            # nodes nor a reachable cluster beyond a loadable kubeconfig.
-            return self._dry_run_report()
-
+        # os._exit on cancel skips the finally below. The hook covers a
+        # Ctrl-C during standup, the client Job, or result collection.
+        cancel_hook = lifecycle.register_cancel_hook(self._teardown_stack)
         try:
-            return super().execute()
+            if self.is_dry_run:
+                # Short-circuits before validate(), so a dry run needs neither
+                # GPU nodes nor a reachable cluster beyond a loadable kubeconfig.
+                return self._dry_run_report()
+
+            try:
+                return super().execute()
+            finally:
+                self._teardown_stack()
         finally:
-            self._teardown_stack()
+            lifecycle.unregister_cancel_hook(cancel_hook)
 
     def _teardown_stack(self) -> None:
         """Uninstall releases this run installed. Never raises."""

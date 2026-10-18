@@ -933,6 +933,41 @@ class TestTeardown:
 
         teardown.assert_called_once()
 
+    def test_cancel_hook_uninstalls_before_execute_returns(self, tmp_path):
+        """os._exit skips the finally, so the hook has to uninstall on its own."""
+        context = {
+            "k8s": {},
+            "llm_d": {
+                "model": {
+                    "name": "Qwen/Qwen3-0.6B",
+                    "uri": "hf://Qwen/Qwen3-0.6B",
+                    "size": "2Gi",
+                },
+                "gateway": "istio",
+            },
+        }
+        deployment = _build_deployment(tmp_path, context)
+        deployment._installed_releases = ["rel-infra", "rel-modelservice"]
+        uninstalled = []
+        deployment.stack.uninstall = lambda name: uninstalled.append(name)
+        seen = {}
+
+        def parent_execute():
+            from madengine.core import lifecycle
+
+            lifecycle.run_cancel_hooks()
+            seen["left"] = list(deployment._installed_releases)
+            return MagicMock(status=DeploymentStatus.SUCCESS)
+
+        with patch(
+            "madengine.deployment.base.BaseDeployment.execute",
+            side_effect=parent_execute,
+        ):
+            deployment.execute()
+
+        assert seen["left"] == []
+        assert uninstalled == ["rel-modelservice", "rel-infra"]
+
     def test_teardown_runs_after_a_failing_execute(self, tmp_path):
         deployment = _build_deployment(tmp_path, ATTACH_CONTEXT)
 

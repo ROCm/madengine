@@ -6,8 +6,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from madengine.core import lifecycle
 from madengine.core.errors import ConfigurationError
-from madengine.deployment.base import BaseDeployment, DeploymentConfig, create_jinja_env
+from madengine.deployment.base import (
+    BaseDeployment,
+    DeploymentConfig,
+    DeploymentResult,
+    DeploymentStatus,
+    create_jinja_env,
+)
 from madengine.deployment.common import (
     VALID_LAUNCHERS,
     canonicalize_distributed_launcher,
@@ -18,7 +25,6 @@ from madengine.deployment.common import (
     tools_include_rocprof_family,
     validate_launcher,
 )
-
 
 # ---- deployment.base (create_jinja_env) ----
 
@@ -312,6 +318,37 @@ def _make_deployment():
     cfg.additional_context = {}
     with patch.object(BaseDeployment, "_load_manifest", return_value={}):
         return _ConcreteDeployment(cfg)
+
+
+class TestCancelHook:
+    """A signal cannot unwind execute(), so the running job is registered."""
+
+    def test_a_running_job_is_cleaned_up_from_the_cancel_hook(self):
+        dep = _make_deployment()
+        dep.validate = lambda: True
+        dep.prepare = lambda: True
+        cleaned = []
+        dep.cleanup = lambda deployment_id: cleaned.append(deployment_id) or True
+        dep.deploy = lambda: DeploymentResult(
+            status=DeploymentStatus.SUCCESS,
+            deployment_id="job-9",
+            message="ok",
+        )
+
+        def monitor(deployment_id):
+            lifecycle.run_cancel_hooks()
+            return DeploymentResult(
+                status=DeploymentStatus.SUCCESS,
+                deployment_id=deployment_id,
+                message="done",
+            )
+
+        dep.monitor = monitor
+        dep.collect_results = lambda deployment_id: {}
+        dep.config.monitor = True
+        dep.execute()
+        lifecycle.run_cancel_hooks()
+        assert cleaned == ["job-9"]
 
 
 class TestParsePerformanceFromLog:
