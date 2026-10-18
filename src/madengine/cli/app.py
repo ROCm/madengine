@@ -20,7 +20,7 @@ except ImportError:
 
 from madengine.core import lifecycle
 
-from .commands import build, run, discover, report_app, database, cleanup
+from .commands import build, run, discover, report_app, database, cleanup, setup_page
 from .constants import ExitCode
 from .utils import console
 
@@ -42,6 +42,7 @@ app.command()(run)
 app.command()(discover)
 app.command()(database)
 app.command()(cleanup)
+app.command(name="setup-page")(setup_page)
 app.add_typer(report_app, name="report")
 
 
