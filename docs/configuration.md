@@ -4,6 +4,10 @@ Complete guide to configuring madengine for various use cases and environments.
 
 ## Configuration Methods
 
+> Configuring a **distributed inference** workload? See
+> [Distributed Config](distributed-config.md) for how the formats divide by scope and
+> how they layer.
+
 ### 1. Inline JSON String
 
 ```bash
@@ -747,6 +751,7 @@ See [`examples/configs/templates/k8s.yaml`](../examples/configs/templates/k8s.ya
 - `modules` - Array of environment modules to `module load` in the job (default: `[]`)
 - `network_interface` - Interface exported as `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` (e.g. `ib0`)
 - `output_dir` - Directory for SLURM `.out`/`.err` files (default: `./slurm_results`)
+- `gpu_arch` - GPU architecture of the compute nodes (e.g. `"gfx942"`), used to enforce a model card's `skip_gpu_arch` before submission. madengine runs on the login node, which has no GPUs, so when this is unset it probes one node of `partition` with `srun ... rocminfo` (waiting up to `node_check_timeout`). If the probe cannot run, the model is submitted anyway with a warning that `skip_gpu_arch` was not enforced. `--disable-skip-gpu-arch` bypasses the check and the probe.
 - `skip_gpus_directive` - Omit the `#SBATCH --gpus-per-node` directive (default: `false`). Set `true` on clusters that expose no GPU GRES and reject any job script carrying it; allocation then relies on `exclusive` / `nproc_per_node`.
 
 Node health preflight, shared-storage, and results-collection keys (`enable_node_check`,
@@ -1076,6 +1081,20 @@ For Kubernetes/SLURM deployments:
 5. Base defaults (k8s/defaults.json; llm-d layers `llm-d/defaults.json` beneath these)
 6. Environment variables
 7. Built-in fallbacks - Lowest
+
+Layers merge key by key: a nested object in a higher layer overrides only the keys it names.
+So a file that describes a cluster and a command-line string that describes one run combine
+into both:
+
+```bash
+# cluster.json: {"slurm": {"partition": "amd-rccl", "gpus_per_node": 8, "exclusive": true}}
+madengine run --tags model --additional-context-file cluster.json \
+    --additional-context '{"slurm": {"nodes": 4, "time": "06:00:00"}}'
+# -> slurm: partition amd-rccl, gpus_per_node 8, exclusive, nodes 4, time 06:00:00
+```
+
+`madengine build` and `madengine run` accept the two options together and combine them the
+same way.
 
 ## Complete Examples
 

@@ -86,7 +86,7 @@ def build(
         typer.Option(
             "--additional-context-file",
             "-f",
-            help="File containing additional context JSON",
+            help="File containing additional context JSON; --additional-context is deep-merged over it",
         ),
     ] = None,
     config: Annotated[
@@ -183,13 +183,6 @@ def build(
             "❌ [bold red]Error: Cannot specify both --batch-manifest and --tags options[/bold red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    if additional_context_file and additional_context != "{}":
-        console.print(
-            "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
-        )
-        raise typer.Exit(ExitCode.INVALID_ARGS)
-
     if use_image and registry:
         console.print(
             "❌ [bold red]Error: Cannot specify both --use-image and --registry options[/bold red]\n"

@@ -141,6 +141,7 @@ module = [
     "jsondiff.*",
     "git.*",
     "kubernetes.*",
+    "yaml.*",
 ]
 ignore_missing_imports = true
 

@@ -229,15 +229,22 @@ class DiscoverModels:
                         model_dict["name"] = clean_path + "/" + model_dict["name"]
                         # Store the original filesystem path for later use (internal field)
                         model_dict["_fs_rel_path"] = rel_path
-                        # Update relative path for dockerfile and scripts (keep full path with "scripts")
-                        model_dict["dockerfile"] = os.path.normpath(
-                            os.path.join(
-                                "scripts", rel_path, model_dict["dockerfile"]
+                        # Update relative path for dockerfile and scripts (keep full path with "scripts").
+                        # Both keys are optional - ModelInfo defaults them to "" - and this
+                        # walk is recursive, so it reads models.json files the previous
+                        # one-level scan never opened. Entries there may legitimately omit
+                        # either key, and reading them unconditionally raised
+                        # KeyError('dockerfile') for the whole discovery pass.
+                        if model_dict.get("dockerfile"):
+                            model_dict["dockerfile"] = os.path.normpath(
+                                os.path.join(
+                                    "scripts", rel_path, model_dict["dockerfile"]
+                                )
                             )
-                        )
-                        model_dict["scripts"] = os.path.normpath(
-                            os.path.join("scripts", rel_path, model_dict["scripts"])
-                        )
+                        if model_dict.get("scripts"):
+                            model_dict["scripts"] = os.path.normpath(
+                                os.path.join("scripts", rel_path, model_dict["scripts"])
+                            )
                         # Keep tags as-is (do not prefix with dirname); tags are logical names for filtering
                         self.models.append(model_dict)
                         self.model_list.append(model_dict["name"])

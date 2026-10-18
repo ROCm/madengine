@@ -796,6 +796,13 @@ class KubernetesTemplateContextMixin:
         """
         env_vars = {}
 
+        # Manifest docker_env_vars are below every other source. The deployment
+        # reads additional_context, and this is the map the pod template renders.
+        docker_env = self.config.additional_context.get("docker_env_vars") or {}
+        if isinstance(docker_env, dict):
+            for key, value in docker_env.items():
+                env_vars[str(key)] = "" if value is None else str(value)
+
         # 1. Base environment variables from additional_context
         base_env = self.config.additional_context.get("env_vars", {})
         env_vars.update(base_env)
