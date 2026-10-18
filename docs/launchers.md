@@ -6,6 +6,10 @@ Complete reference for all distributed execution launchers supported by madengin
 
 ## Overview
 
+> For how a distributed inference workload is *configured* (models.yaml,
+> configs/*.yaml, cluster.sh, or mad-config.yaml), see
+> [Distributed Config](distributed-config.md).
+
 madengine provides unified support for multiple distributed frameworks, enabling seamless execution across training and inference workloads on both Kubernetes and SLURM clusters.
 
 ### Supported Launchers
@@ -19,8 +23,10 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **Primus** | Training | Megatron/TorchTitan/Jax via Primus config | ✅ | ✅ | ✅ |
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
-| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 3) |
+| **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
+
+> **llm-d is not a launcher.** A launcher is a way madengine starts a workload *inside its own container*. [llm-d](llm-d.md) is a deployment target: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`, not `distributed.launcher`. Result rows record that split: `deployment_type` is `llm-d`, `launcher` is the model server (`vllm`), and `serving_mode` is `disaggregated` or `aggregated`. When the card sets `multiple_results`, that CSV is preferred over log `performance:` aggregation, same as local Docker and plain Kubernetes.
 
 ---
 
@@ -69,10 +75,12 @@ madengine run --manifest-file build_manifest.json
     "launcher": "torchrun",
     "nnodes": 2,
     "nproc_per_node": 8,
-    "master_port": 29500
+    "port": 29500
   }
 }
 ```
+
+`distributed.port` and `distributed.master_port` both set the master port (default 29500). On SLURM, `port` wins when both are set. On Kubernetes the order is `launcher.master_port`, then `distributed.master_port`, then `distributed.port`, then the same keys saved in the build manifest.
 
 **Features**:
 - Automatic rank assignment
@@ -136,7 +144,7 @@ madengine run --manifest-file build_manifest.json
 ```json
 {
   "distributed": {
-    "launcher": "megatron",
+    "launcher": "megatron-lm",
     "nnodes": 4,
     "nproc_per_node": 8
   }
@@ -276,8 +284,6 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
 
 **Examples**:
-- SLURM: `examples/slurm-configs/minimal/primus-minimal.json`
-- K8s: `examples/k8s-configs/minimal/primus-minimal.json`
 - K8s (Primus vs upstream workload API, MaxText caveats, TorchTitan/Megatron/MaxText sample JSON): `examples/k8s-configs/README.md` section **Primus on Kubernetes**
 
 ---
@@ -314,13 +320,13 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Architecture**:
 - Single-node: TP across GPUs, no Ray
 - Multi-node (K8s): Data Parallelism with independent replicas per pod
-- Multi-node (SLURM): TP + PP with Ray cluster
+- Multi-node (SLURM): Data Parallelism (one vLLM serve per node, TP only on that node, no shared Ray cluster)
 
 **Environment Variables**:
 ```bash
 VLLM_TENSOR_PARALLEL_SIZE=4
 VLLM_PIPELINE_PARALLEL_SIZE=1
-VLLM_DISTRIBUTED_BACKEND="auto"  # or "ray" for multi-node
+VLLM_DISTRIBUTED_BACKEND="auto"  # or "none" for multi-node SLURM (data parallel)
 ```
 
 **Examples**:
@@ -419,9 +425,13 @@ SGLang Disaggregated separates inference into specialized node pools:
 ```
 
 **Minimum Requirements**:
-- **Nodes**: Minimum 3 nodes (1 proxy + 1 prefill + 1 decode)
+- **Nodes**: **SLURM** — minimum 2 nodes (co-located proxy on the first prefill node + 1 prefill + 1 decode). **Kubernetes** — minimum 3 nodes (dedicated proxy + 1 prefill + 1 decode); a 2-node co-located topology is rejected.
 - **GPUs**: Minimum 1 GPU per node (for tensor parallelism)
 - **Network**: High-speed interconnect (InfiniBand recommended for production)
+
+The proxy/router is started by the model's `run.sh`, not by the launcher, so on
+SLURM both layouts are valid: a dedicated proxy node (`1 + xP + yD == nnodes`) or
+a proxy co-located on the first prefill node (`xP + yD == nnodes`).
 
 **Node Roles**:
 1. **Proxy Node (Rank 0)**: Load balancer, request router (mini_lb)
@@ -429,15 +439,17 @@ SGLang Disaggregated separates inference into specialized node pools:
 3. **Decode Nodes**: Receive KV cache, generate output tokens
 
 **Automatic Split (Default)**:
-- Uses 40/60 golden ratio for prefill/decode
-- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`
+- Uses 40/60 golden ratio for prefill/decode across the worker nodes
+- Formula: `prefill = max(1, (nnodes - 1) * 2 // 5)`, `decode = nnodes - 1 - prefill`
+- `nnodes == 2` is special-cased on SLURM to 1 prefill + 1 decode with a co-located proxy (the general formula would yield 0 decode nodes)
 
 | Total Nodes | Proxy | Prefill | Decode |
 |-------------|-------|---------|--------|
-| 3 | 1 | 1 (33%) | 1 (33%) |
-| 5 | 1 | 2 (40%) | 2 (40%) |
-| 7 | 1 | 2 (29%) | 4 (57%) |
-| 11 | 1 | 4 (40%) | 6 (60%) |
+| 2 (SLURM only) | co-located | 1 | 1 |
+| 3 | 1 | 1 | 1 |
+| 5 | 1 | 1 | 3 |
+| 7 | 1 | 2 | 4 |
+| 11 | 1 | 4 | 6 |
 
 **Custom Split (NEW Feature!)**:
 
@@ -469,7 +481,8 @@ Override automatic split based on workload characteristics:
 **Validation Rules**:
 - `prefill_nodes >= 1`
 - `decode_nodes >= 1`
-- `prefill_nodes + decode_nodes + 1 == nnodes`
+- `prefill_nodes + decode_nodes + 1 == nnodes` (dedicated proxy node), **or**
+  `prefill_nodes + decode_nodes == nnodes` (proxy co-located on the first prefill node, SLURM)
 
 **Features**:
 - Disaggregated prefill/decode architecture
@@ -529,14 +542,14 @@ SGLANG_NODE_IPS="10.0.0.1,10.0.0.2,..."
 **Performance Tuning**:
 ```bash
 # Start with automatic split
-madengine run --tags model --config minimal-config.json
+madengine run --tags model --additional-context-file minimal-config.json
 
 # Monitor bottleneck (prefill latency vs decode throughput)
 # If prefill is bottleneck → increase prefill nodes
 # If decode is bottleneck → increase decode nodes
 
 # Apply custom split
-madengine run --tags model --config custom-split-config.json
+madengine run --tags model --additional-context-file custom-split-config.json
 ```
 
 **Troubleshooting**:
@@ -637,7 +650,7 @@ madengine build --tags my_model --build-on-compute --registry docker.io/myorg
 
 **Run Phase — salloc support**:
 
-When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` inside `salloc` (no behavior change).
+When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated multi-node launchers also run in place inside `salloc`, while single-node runs still submit `sbatch`; see [Running Inside salloc](deployment.md#running-inside-salloc).
 
 ```bash
 # Inside salloc: runs synchronously with bash
@@ -646,6 +659,44 @@ madengine run --manifest-file build_manifest.json
 ```
 
 **Alias**: `"slurm-multi"` (hyphen) is normalized to `"slurm_multi"` (underscore).
+
+**Model-card contract (shared with the templated path)**:
+
+slurm_multi hands the *topology* to the workload, not the *contract*. These model-card
+fields are honoured identically on both paths:
+
+| Field | Effect |
+|-------|--------|
+| `distributed.launcher` | Selects the path. Resolved deployment-config-first, model-card-second — the same resolution used to emit the launcher env block, so the two can never disagree. |
+| `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. Non-numeric or non-positive values are ignored with a warning — `slurm.nodes` is used instead. |
+| `slurm.*` | `partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `output_dir`, `nodelist`, `account`, `qos`, `modules`, `skip_gpus_directive`, `results_dir` — the full set every build path (normal build, prebuilt image, `--build-on-compute`) promotes into `deployment_config.slurm`. Other `slurm.*` fields documented in [configuration.md](configuration.md) are read at deploy time but are not copied from the model card into a manifest's `deployment_config`. |
+| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. A normal run deletes a leftover file with that name first, so a script that appends cannot report the previous run. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the basename of `--output` are kept. `--skip-model-run` does not delete it, because nothing writes a replacement. The `slurm_multi` wrapper applies the same rule but only knows the default output name `perf.csv`. |
+
+> **`args` is not sbatch flags.** On the templated path `args` goes to the
+> containerised `run.sh`; on this path it is appended to `bash <model>.slurm`. It is
+> **not** forwarded to `sbatch`, so `"args": "-N 4 -n 4"` does *not* request 4 nodes —
+> it passes two ignored positional arguments to a script that never reads `$@`, and
+> the job runs on the `slurm.nodes` default of 1. Size the allocation with
+> `distributed.nnodes` (or `slurm.nodes`) instead.
+
+> **`multiple_results` is read directly here.** On the templated path the CSV is
+> narrow and gets merged with `common_info` by `update_perf_csv`. A self-managed
+> script has no `common_info` to merge against, so it writes the full perf schema
+> itself and madengine reads it as-is — routing it through `handle_multiple_results()`
+> would recompute `status` from `performance` and flip a legitimate zero-score
+> FAILURE row to SUCCESS.
+
+> **Preset selection still keys on `slurm.nodes`.** `ConfigLoader` picks the
+> single-node vs multi-node preset before `nnodes` reconciliation, so a card sized
+> only by `nnodes` keeps the single-node preset. That is usually what RDMA inference
+> workloads want — the multi-node preset sets `NCCL_IB_DISABLE=1` and
+> `NCCL_SOCKET_IFNAME=eth0` — but set `slurm.time` explicitly if the 12 h single-node
+> default is too short.
+
+**Placeholder images are rejected**: model cards commonly ship
+`"DOCKER_IMAGE_NAME": "<supply-your-image>"` as a fill-me-in marker. Any
+angle-bracketed value is rejected at submit time with an actionable error rather than
+becoming the image every compute node fails to pull.
 
 **Features**:
 - Wrapper SBATCH script with shell-quoted env_vars (injection-safe)
@@ -694,6 +745,34 @@ madengine run --manifest-file build_manifest.json
 
 ---
 
+## Parallelism Capabilities
+
+How each launcher handles the various parallelism strategies. `✅Auto` = supported and configured by madengine; `❗Manual` = supported by the launcher but requires user configuration; `❗Limited` / `❗Disabled` = launcher or platform limitation.
+
+| Launcher | Tensor Parallel (TP) | Pipeline Parallel (PP) | Data Parallel (DP) | Context Parallel (CP) | FSDP/ZeRO | Expert Parallel (EP) | Primary Use Case |
+|----------|----------------------|------------------------|--------------------|------------------------|-----------|----------------------|------------------|
+| **torchrun** | ❗Manual | ❌No | ❗Manual (DDP) | ❌No | ❗Manual (FSDP) | ❌No | General distributed training |
+| **TorchTitan** | ✅Auto | ✅Auto | ✅Auto (FSDP2) | ❗Manual | ✅Auto (FSDP2) | ❌No | Large-scale LLM pre-training |
+| **DeepSpeed** | ❗Manual | ❗Manual | ✅Auto (ZeRO) | ❌No | ✅Auto (ZeRO) | ❌No | Memory-efficient training |
+| **Megatron-LM** | ✅Auto | ✅Auto | ✅Implicit | ✅Auto | ❌No | ❌No | Large transformer training |
+| **Primus** | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❗Manual | ❌No | Unified pretrain (experiment YAML; backend-specific) |
+| **vLLM** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ✅Auto (Replicas) | ❌No | ❌No | ❗Manual | High-throughput inference |
+| **SGLang** | ✅Auto | SLURM: ✅Auto (Multi) / K8s: ❗Disabled | ❗Limited | ❌No | ❌No | ❌No | Inference + structured gen |
+| **SGLang PD Disagg** | ✅Auto | ❌No | ✅Role-based | ❌No | ❌No | ❌No | Optimized prefill/decode |
+
+## Infrastructure Capabilities
+
+| Feature | Local | Kubernetes | SLURM |
+|---------|-------|-----------|-------|
+| **Execution** | Docker containers | K8s Jobs | SLURM jobs |
+| **Multi-Node** | ❌ | ✅ Indexed Jobs | ✅ Job arrays |
+| **Resource Mgmt** | Manual | Declarative (YAML) | Batch scheduler |
+| **Monitoring** | Docker logs | kubectl/dashboard | squeue/scontrol |
+| **Auto-scaling** | ❌ | ✅ | ❌ |
+| **Network** | Host | CNI plugin | InfiniBand/Ethernet |
+
+---
+
 ## Configuration Best Practices
 
 ### 1. Launcher Selection
@@ -713,6 +792,7 @@ Structured generation      → SGLang or SGLang Disaggregated
 Memory constrained         → vLLM (PagedAttention)
 Large-scale clusters (5+)  → SGLang Disaggregated
 Workload-specific tuning   → SGLang Disaggregated
+Gateway-routed serving     → llm-d (deployment target, see llm-d.md)
 ```
 
 ### 2. Resource Allocation
@@ -771,7 +851,11 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 
 **DeepSpeed**:
 ```bash
+# Kubernetes
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
+
+# SLURM — the hostfile is per job, and an in-place salloc run adds a suffix
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."
 ```
 
 **Megatron-LM**:
@@ -832,10 +916,10 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ### Common Issues
 
 **1. Launcher Not Found**
-```bash
-Error: Unknown launcher type 'xyz'
+```text
+Unknown launcher 'xyz' in distributed.launcher
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg`, `slurm_multi` (or `slurm-multi`)
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM only. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
 
 **2. Multi-Node Communication Fails**
 ```bash
@@ -878,7 +962,7 @@ madengine provides `$MAD_MULTI_NODE_RUNNER` for frameworks that use torchrun:
 #!/bin/bash
 # Your model script
 
-# For torchrun/deepspeed/megatron/torchtitan
+# For torchrun/deepspeed/megatron-lm/torchtitan
 $MAD_MULTI_NODE_RUNNER your_training_script.py --args
 
 # For primus (no MAD_MULTI_NODE_RUNNER; use run.sh → run_pretrain.sh; PRIMUS_* / BACKEND set by madengine)

@@ -95,15 +95,46 @@ detect_profiler() {
     return 1
 }
 
+# Make a relative output directory (-d/--output-directory) absolute against the
+# wrapper's cwd (the model's run_directory). The profiler resolves it in the profiled
+# process, so a launcher that changes directory before starting the workload (e.g.
+# `cd $PRIMUS_ROOT && torchrun ...`) would otherwise write traces outside
+# run_directory, where the post-script never finds them.
+absolutize_output_dir() {
+    local -a out=()
+    local expect_dir=false
+    while [ $# -gt 0 ]; do
+        local arg="$1"
+        if [ "$expect_dir" = true ]; then
+            [[ "$arg" != /* ]] && arg="$PWD/${arg#./}"
+            expect_dir=false
+        elif [ "$arg" = "--" ]; then
+            out+=("$@")
+            break
+        elif [ "$arg" = "-d" ] || [ "$arg" = "--output-directory" ]; then
+            expect_dir=true
+        elif [[ "$arg" == --output-directory=* ]]; then
+            local dir="${arg#--output-directory=}"
+            [[ "$dir" != /* ]] && arg="--output-directory=$PWD/${dir#./}"
+        fi
+        out+=("$arg")
+        shift
+    done
+    ABS_ARGS=("${out[@]}")
+}
+
 # Main execution
 main() {
     local profiler=$(detect_profiler)
     local exit_code=$?
-    
+
     if [ $exit_code -ne 0 ]; then
         return 1
     fi
-    
+
+    absolutize_output_dir "$@"
+    set -- "${ABS_ARGS[@]}"
+
     # Execute the detected profiler with all passed arguments
     if [ "$profiler" = "rocprof" ]; then
         # Legacy rocprof syntax: rocprof [options] <app> [args]

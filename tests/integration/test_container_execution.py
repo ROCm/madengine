@@ -21,6 +21,7 @@ import pytest
 from madengine.execution.container_runner import ContainerRunner
 from madengine.core.context import Context
 from madengine.core.console import Console
+from madengine.utils.path_utils import get_madengine_root
 
 
 class TestContainerRunner:
@@ -205,13 +206,18 @@ class TestContainerRunner:
             "args": "",
         }
 
-        with patch.object(runner, "get_gpu_arg", return_value="--gpus device=0"):
-            with patch.object(runner, "get_cpu_arg", return_value=""):
-                with patch.object(runner, "get_env_arg", return_value=""):
-                    with patch.object(runner, "get_mount_arg", return_value=""):
-                        result = runner.run_container(
-                            model_info, "test-image", timeout=300
-                        )
+        # gather_system_env_details copies a packaged script with shutil.
+        # This test replaces open() for the whole call, and a MagicMock used as a
+        # file descriptor is stdout. Under pytest capture that is a regular file,
+        # so sendfile appends the capture onto itself and never reaches EOF.
+        with patch.object(runner, "gather_system_env_details"):
+            with patch.object(runner, "get_gpu_arg", return_value="--gpus device=0"):
+                with patch.object(runner, "get_cpu_arg", return_value=""):
+                    with patch.object(runner, "get_env_arg", return_value=""):
+                        with patch.object(runner, "get_mount_arg", return_value=""):
+                            result = runner.run_container(
+                                model_info, "test-image", timeout=300
+                            )
 
         assert result["status"] == "SUCCESS"
         assert "test_duration" in result
@@ -463,6 +469,35 @@ class TestContainerRunner:
             call for call in mock_docker.sh.call_args_list if "cp -vLR" in str(call)
         ]
         assert len(copy_calls) == 2
+
+    def test_run_pre_post_script_timeout(self):
+        """Per-script timeout: default 600 s, explicit value, and 0 for no limit."""
+        runner = ContainerRunner()
+        mock_docker = MagicMock()
+        scripts = [
+            {"path": "a.sh"},
+            {"path": "b.sh", "timeout": 7200},
+            {"path": "c.sh", "timeout": 0},
+        ]
+
+        runner.run_pre_post_script(mock_docker, "model_dir", scripts)
+
+        run_timeouts = [
+            call.kwargs["timeout"]
+            for call in mock_docker.sh.call_args_list
+            if "&& bash" in call.args[0]
+        ]
+        assert run_timeouts == [600, 7200, None]
+
+    def test_tracelens_presets_allow_long_analysis(self):
+        """TraceLens post-scripts outlast the 600 s default on large traces."""
+        tools = json.loads(
+            (get_madengine_root() / "scripts" / "common" / "tools.json").read_text()
+        )["tools"]
+        for name, cfg in tools.items():
+            for script in cfg.get("post_scripts", []):
+                if script["path"].endswith("tracelens.sh"):
+                    assert script.get("timeout", 600) >= 3600, name
 
     def test_initialization_with_all_parameters(self):
         """Test ContainerRunner initialization with all parameters."""

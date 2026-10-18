@@ -103,16 +103,16 @@ MODEL_DIR=tests/fixtures/dummy madengine run \
 
 ```bash
 # For single GPU testing
-cp examples/k8s-configs/01-single-node-single-gpu.json my-config.json
+cp examples/k8s-configs/basic/01-native-single-node-single-gpu.json my-config.json
 
 # For multi-GPU (2 GPUs)
-cp examples/k8s-configs/02-single-node-multi-gpu.json my-config.json
+cp examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json my-config.json
 
 # For multi-node distributed (2 nodes × 2 GPUs)
-cp examples/k8s-configs/03-multi-node-basic.json my-config.json
+cp examples/k8s-configs/basic/03-torchrun-multi-node-basic.json my-config.json
 
 # For data provider with auto-PVC
-cp examples/k8s-configs/06-data-provider-with-pvc.json my-config.json
+cp examples/k8s-configs/basic/06-data-provider-with-pvc.json my-config.json
 ```
 
 #### 2. Customize for Your Cluster (Optional)
@@ -158,10 +158,10 @@ Located in [`minimal/`](minimal/) directory:
 
 | File | Description | GPU Count |
 |------|-------------|-----------|
-| [`minimal/single-gpu-minimal.json`](minimal/single-gpu-minimal.json) | Single GPU with auto-defaults | 1 |
-| [`minimal/multi-gpu-minimal.json`](minimal/multi-gpu-minimal.json) | Multi-GPU with auto-defaults | 2 |
-| [`minimal/multi-node-minimal.json`](minimal/multi-node-minimal.json) | Multi-node with auto-defaults | 2×2 |
-| [`minimal/nvidia-gpu-minimal.json`](minimal/nvidia-gpu-minimal.json) | NVIDIA GPUs with auto-defaults | 4 |
+| [`minimal/torchrun-single-gpu-minimal.json`](minimal/torchrun-single-gpu-minimal.json) | Single GPU with auto-defaults | 1 |
+| [`minimal/torchrun-multi-gpu-minimal.json`](minimal/torchrun-multi-gpu-minimal.json) | Multi-GPU with auto-defaults | 2 |
+| [`minimal/torchrun-multi-node-minimal.json`](minimal/torchrun-multi-node-minimal.json) | Multi-node with auto-defaults | 2×2 |
+| [`minimal/torchrun-nvidia-gpu-minimal.json`](minimal/torchrun-nvidia-gpu-minimal.json) | NVIDIA GPUs with auto-defaults | 4 |
 | [`minimal/custom-namespace-minimal.json`](minimal/custom-namespace-minimal.json) | Shows override examples | 1 |
 
 **Distributed Launchers:**
@@ -169,7 +169,6 @@ Located in [`minimal/`](minimal/) directory:
 | File | Launcher | Description | GPUs |
 |------|----------|-------------|------|
 | [`minimal/torchtitan-single-node-minimal.json`](minimal/torchtitan-single-node-minimal.json) | TorchTitan | LLM pre-training (single-node) | 8 |
-| [`minimal/primus-minimal.json`](minimal/primus-minimal.json) | primus | Primus pretrain (edit `distributed.primus.config_path`) | 2 |
 | [`minimal/vllm-single-node-minimal.json`](minimal/vllm-single-node-minimal.json) | vLLM | LLM inference (single-node) | 4 |
 | [`minimal/sglang-single-node-minimal.json`](minimal/sglang-single-node-minimal.json) | SGLang | LLM inference (single-node) | 4 |
 
@@ -179,14 +178,14 @@ Located in [`minimal/`](minimal/) directory:
 
 Registry and runtime credentials are **not** stored in a ConfigMap. By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from your local `credential.json` before creating the Job: a `kubernetes.io/dockerconfigjson` Secret when Docker Hub auth is present, and an opaque Secret with `credential.json` for in-container use. Mount paths match the previous behavior (`/workspace/credential.json`).
 
-- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI).
+- **`existing`**: use only pre-created Secrets; set `k8s.secrets.image_pull_secret_names` and `k8s.secrets.runtime_secret_name` (GitOps / CI). The default pull-secret list is `dockerhub-rocm`, the Docker Hub secret in the `default` namespace.
 - **`omit`**: no Secret creation from the client; optional extra pull secret names only.
 
 To validate rendered YAML after a debug run, install [kubeconform](https://github.com/yannh/kubeconform) and run `./tests/scripts/k8s_validate_manifests.sh ./k8s_manifests` from the madengine repo root (see `docs/deployment.md`).
 
 ### Multi-node DNS (PyTorch vs Ray)
 
-For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
+For **PyTorch-native** launchers (`torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`), multi-node Jobs use a **headless Service** whose name matches `pod.spec.subdomain`, per Kubernetes DNS rules, so pods get stable per-pod DNS names for rendezvous.
 
 For **Ray-based** multi-node (`vllm`, `sglang`), a headless Service may still be created for networking, but **per-pod DNS via `subdomain` is not applied** the same way as for PyTorch; production multi-node Ray on Kubernetes often uses **KubeRay** (see upstream vLLM / Ray docs). Treat Job-based multi-node Ray as a best-effort path.
 
@@ -211,24 +210,24 @@ Set `distributed.primus.config_path` to your YAML under the Primus repo layout. 
 
 **MaxText caveat:** For **multi-node** MaxText, Primus `run_pretrain.sh` may run **in-container `apt` installs** (InfiniBand-related packages). Many clusters disallow that unless the image is pre-baked or policy allows it. madengine logs a **warning** when MaxText is detected (`backend` or path) and `nnodes > 1`.
 
-Primus examples under [`basic/`](basic/): [`primus-single-node-multi-gpu.json`](basic/primus-single-node-multi-gpu.json) (one pod, multi-GPU) and [`primus-multi-node.json`](basic/primus-multi-node.json) (Indexed Job). The same files work for TorchTitan, Megatron, and MaxText: set `distributed.primus.config_path` to your experiment YAML, and rely on madengine’s `BACKEND` inference from the model name (`primus_pretrain/<launcher>_<arch>_...`) or set `distributed.primus.backend` only when you need an explicit override. Use `docker_env_vars.HF_TOKEN` as a placeholder or runtime secrets — do not commit real tokens.
+To use Primus, start from any `distributed.launcher: "torchrun"` example under [`basic/`](basic/) or [`minimal/`](minimal/) and change `distributed.launcher` to `"primus"`, adding a nested `distributed.primus.config_path` pointing at your experiment YAML (see [Distributed Execution Fields](#distributed-execution-fields) below). This works for TorchTitan, Megatron, and MaxText: set `distributed.primus.config_path` to your experiment YAML, and rely on madengine's `BACKEND` inference from the model name (`primus_pretrain/<launcher>_<arch>_...`) or set `distributed.primus.backend` only when you need an explicit override. Use `docker_env_vars.HF_TOKEN` as a placeholder or runtime secrets — do not commit real tokens.
 
 ### Full Configs (Reference Examples)
 
 Complete configurations showing all available fields:
 
-**Training Configs:**
+**Training Configs (basic/):**
 
 | File | GPUs | Nodes | Launcher | Use Case |
 |------|------|-------|----------|----------|
-| [`01-single-node-single-gpu.json`](01-single-node-single-gpu.json) | 1 | 1 | None | Basic testing, small models |
-| [`01-single-node-single-gpu-tools.json`](01-single-node-single-gpu-tools.json) | 1 | 1 | None | Single GPU + monitoring |
-| [`02-single-node-multi-gpu.json`](02-single-node-multi-gpu.json) | 2 | 1 | torchrun | Multi-GPU training |
-| [`02-single-node-multi-gpu-tools.json`](02-single-node-multi-gpu-tools.json) | 2 | 1 | torchrun | Multi-GPU + monitoring |
-| [`03-multi-node-basic.json`](03-multi-node-basic.json) | 2/node | 2 | torchrun | Multi-node basics (4 GPUs total) |
-| [`04-multi-node-advanced.json`](04-multi-node-advanced.json) | 2/node | 4 | torchrun | Production multi-node (8 GPUs) |
-| [`05-nvidia-gpu-example.json`](05-nvidia-gpu-example.json) | 4 | 1 | torchrun | NVIDIA GPUs (A100, H100) |
-| [`06-data-provider-with-pvc.json`](06-data-provider-with-pvc.json) | 2 | 1+ | torchrun | **Data provider with auto-PVC** |
+| [`basic/01-native-single-node-single-gpu.json`](basic/01-native-single-node-single-gpu.json) | 1 | 1 | None | Basic testing, small models |
+| [`basic/01-native-single-node-single-gpu-tools.json`](basic/01-native-single-node-single-gpu-tools.json) | 1 | 1 | None | Single GPU + monitoring |
+| [`basic/02-torchrun-single-node-multi-gpu.json`](basic/02-torchrun-single-node-multi-gpu.json) | 2 | 1 | torchrun | Multi-GPU training |
+| [`basic/02-torchrun-single-node-multi-gpu-tools.json`](basic/02-torchrun-single-node-multi-gpu-tools.json) | 2 | 1 | torchrun | Multi-GPU + monitoring |
+| [`basic/03-torchrun-multi-node-basic.json`](basic/03-torchrun-multi-node-basic.json) | 2/node | 2 | torchrun | Multi-node basics (4 GPUs total) |
+| [`basic/04-torchrun-multi-node-advanced.json`](basic/04-torchrun-multi-node-advanced.json) | 2/node | 4 | torchrun | Production multi-node (8 GPUs) |
+| [`basic/05-torchrun-nvidia-gpu-example.json`](basic/05-torchrun-nvidia-gpu-example.json) | 4 | 1 | torchrun | NVIDIA GPUs (A100, H100) |
+| [`basic/06-data-provider-with-pvc.json`](basic/06-data-provider-with-pvc.json) | 2 | 1+ | torchrun | **Data provider with auto-PVC** |
 
 **Distributed Launcher Configs (basic/):**
 
@@ -237,8 +236,6 @@ Complete configurations showing all available fields:
 | [`basic/torchtitan-multi-node-basic.json`](basic/torchtitan-multi-node-basic.json) | 8/node | 4 | TorchTitan | Llama 3.1 70B+ training |
 | [`basic/vllm-multi-node-basic.json`](basic/vllm-multi-node-basic.json) | 4/node | 2 | vLLM | High-throughput inference |
 | [`basic/sglang-multi-node-basic.json`](basic/sglang-multi-node-basic.json) | 4/node | 2 | SGLang | Distributed inference |
-| [`basic/primus-single-node-multi-gpu.json`](basic/primus-single-node-multi-gpu.json) | 8 | 1 | primus | Primus pretrain (single pod; edit `primus.config_path`) |
-| [`basic/primus-multi-node.json`](basic/primus-multi-node.json) | 8/node | 2+ | primus | Primus pretrain (multi-pod; edit `nnodes`, `primus.config_path`) |
 
 ---
 
@@ -248,26 +245,26 @@ Complete configurations showing all available fields:
 
 | Scenario | Config File | GPUs | Nodes |
 |----------|-------------|------|-------|
-| **Quick test** | `01-single-node-single-gpu.json` | 1 | 1 |
-| **Single GPU benchmark** | `01-single-node-single-gpu-tools.json` | 1 | 1 |
-| **Multi-GPU (2 GPUs)** | `02-single-node-multi-gpu.json` | 2 | 1 |
-| **Multi-GPU + monitoring** | `02-single-node-multi-gpu-tools.json` | 2 | 1 |
-| **Multi-node (4 GPUs)** | `03-multi-node-basic.json` | 2×2 | 2 |
-| **Multi-node (8 GPUs)** | `04-multi-node-advanced.json` | 2×4 | 4 |
-| **NVIDIA GPUs** | `05-nvidia-gpu-example.json` | 4 | 1 |
-| **With data download** | `06-data-provider-with-pvc.json` | 2 | 1+ |
+| **Quick test** | `basic/01-native-single-node-single-gpu.json` | 1 | 1 |
+| **Single GPU benchmark** | `basic/01-native-single-node-single-gpu-tools.json` | 1 | 1 |
+| **Multi-GPU (2 GPUs)** | `basic/02-torchrun-single-node-multi-gpu.json` | 2 | 1 |
+| **Multi-GPU + monitoring** | `basic/02-torchrun-single-node-multi-gpu-tools.json` | 2 | 1 |
+| **Multi-node (4 GPUs)** | `basic/03-torchrun-multi-node-basic.json` | 2×2 | 2 |
+| **Multi-node (8 GPUs)** | `basic/04-torchrun-multi-node-advanced.json` | 2×4 | 4 |
+| **NVIDIA GPUs** | `basic/05-torchrun-nvidia-gpu-example.json` | 4 | 1 |
+| **With data download** | `basic/06-data-provider-with-pvc.json` | 2 | 1+ |
 
 ### By Use Case
 
 | Use Case | Recommended Config |
 |----------|-------------------|
-| **Development/Testing** | `01-single-node-single-gpu.json` |
-| **Small models (BERT, ResNet)** | `01-single-node-single-gpu.json` |
-| **Medium models (GPT-2, Stable Diffusion)** | `02-single-node-multi-gpu.json` |
-| **Large models (LLaMA-13B)** | `03-multi-node-basic.json` |
-| **Very large models (LLaMA-70B+)** | `04-multi-node-advanced.json` |
-| **Models requiring datasets** | `06-data-provider-with-pvc.json` |
-| **Busy/shared clusters** | `02-single-node-multi-gpu.json` (2 GPUs) |
+| **Development/Testing** | `basic/01-native-single-node-single-gpu.json` |
+| **Small models (BERT, ResNet)** | `basic/01-native-single-node-single-gpu.json` |
+| **Medium models (GPT-2, Stable Diffusion)** | `basic/02-torchrun-single-node-multi-gpu.json` |
+| **Large models (LLaMA-13B)** | `basic/03-torchrun-multi-node-basic.json` |
+| **Very large models (LLaMA-70B+)** | `basic/04-torchrun-multi-node-advanced.json` |
+| **Models requiring datasets** | `basic/06-data-provider-with-pvc.json` |
+| **Busy/shared clusters** | `basic/02-torchrun-single-node-multi-gpu.json` (2 GPUs) |
 
 ---
 
@@ -278,7 +275,7 @@ Complete configurations showing all available fields:
 ```bash
 MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy \
-  --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
+  --additional-context-file examples/k8s-configs/basic/01-native-single-node-single-gpu.json \
   --registry dockerhub
 
 MODEL_DIR=tests/fixtures/dummy madengine run \
@@ -291,7 +288,7 @@ MODEL_DIR=tests/fixtures/dummy madengine run \
 ```bash
 MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun \
-  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
+  --additional-context-file examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json \
   --registry dockerhub
 
 MODEL_DIR=tests/fixtures/dummy madengine run \
@@ -304,7 +301,7 @@ MODEL_DIR=tests/fixtures/dummy madengine run \
 ```bash
 MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun \
-  --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
+  --additional-context-file examples/k8s-configs/basic/03-torchrun-multi-node-basic.json \
   --registry dockerhub
 
 MODEL_DIR=tests/fixtures/dummy madengine run \
@@ -317,7 +314,7 @@ MODEL_DIR=tests/fixtures/dummy madengine run \
 ```bash
 MODEL_DIR=tests/fixtures/dummy madengine build \
   --tags dummy_torchrun_data_minio \
-  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --additional-context-file examples/k8s-configs/basic/06-data-provider-with-pvc.json \
   --registry dockerhub
 
 MODEL_DIR=tests/fixtures/dummy madengine run \
@@ -347,7 +344,7 @@ kubectl get pvc madengine-shared-data
 **Step 1: Use data provider config**
 ```bash
 madengine build --tags dummy_torchrun_data_minio \
-  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --additional-context-file examples/k8s-configs/basic/06-data-provider-with-pvc.json \
   --registry dockerhub
 ```
 
@@ -405,12 +402,10 @@ madengine separates **per-job results** from **long-lived shared data**:
 
 | Volume | Typical use | Single-node (`nnodes: 1`) | Multi-node (`nnodes > 1`) |
 |--------|-------------|----------------------------|----------------------------|
-| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** — `multi_node_results_storage_class` → `nfs_storage_class` → `storage_class` (e.g. `nfs-banff`) |
-| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** — always `ReadWriteMany` + NFS class | Same PVC |
+| **`{job}-results`** | Benchmark artifacts (`/results`) | **RWO** — `single_node_results_storage_class` → `local_path_storage_class` → `storage_class` (e.g. `local-path` or `nfs-banff`) | **RWX** when that class can serve ReadWriteMany (`multi_node_results_storage_class` → `nfs_storage_class` → `storage_class`). Otherwise one **RWO** volume per pod (`local_path_storage_class`), and `perf.csv` is recovered from pod logs |
+| **`madengine-shared-data`** | Dataset cache (`/data`) | **RWX** when that StorageClass can serve ReadWriteMany; otherwise one local disk per pod | Same rule |
 
-**Built-in defaults (Banff-oriented)** are in `presets/k8s/defaults.json`: `nfs_storage_class` / `data_storage_class` → `nfs-banff`, generic `storage_class` → `nfs-banff` (broad fallback for both data and single-node results PVCs), `recreate_shared_data_pvc` → `false`. The legacy `local_path_storage_class` key is still honoured as a single-node-results fallback for backward compatibility but is no longer set in the preset. You do not need to set any of these unless you use another cluster — then override in additional context.
-
-> **2.0.3 default change:** Before 2.0.3 the preset set `local_path_storage_class: "local-path"`, so single-node results PVCs landed on `local-path` by default. The preset now sets `storage_class: "nfs-banff"` instead, so both the data PVC and the single-node results PVC default to `nfs-banff` unless you override. If you actually want `local-path` for single-node results, set `"local_path_storage_class": "local-path"` (or `"single_node_results_storage_class": "local-path"`) in your `--additional-context`.
+**Built-in defaults** are in `presets/k8s/defaults.json`: `results_layout` and `data_layout` are `auto`. Multi-node results and the dataset cache use `nfs_storage_class` / `data_storage_class` (`nfs-banff`) only when that StorageClass exists and its provisioner is a shared filesystem, or a PersistentVolume of that class is already ReadWriteMany. Otherwise each pod gets a ReadWriteOnce volume on `local-path`. Set `results_layout` or `data_layout` to `shared` or `per_pod` to override. A dataset claim that already exists and is not ReadWriteMany is left in place and not mounted.
 
 Example override for a different cluster:
 
@@ -425,7 +420,7 @@ Example override for a different cluster:
 ```
 
 - **`nfs_storage_class`**: RWX class (e.g. `nfs-banff`) — used for shared-data (with `data_storage_class`) and multi-node results unless overridden.
-- **`local_path_storage_class`**: RWO class for **single-node only** results PVC. Still accepted for backward compatibility; new configs should prefer `single_node_results_storage_class` or rely on `storage_class`.
+- **`local_path_storage_class`**: RWO class for the single-node results PVC and for a per-pod volume when ReadWriteMany storage is unavailable. New configs can set `single_node_results_storage_class` for the single-node claim; `local_path_storage_class` is still the class used for per-pod disks.
 - **`storage_class`**: Generic broad fallback used for **both** the data PVC and single-node results PVC when no more-specific key is set. Added in 2.0.3.
 - **`data_storage_class`**: Optional override for `madengine-shared-data` only (defaults to `nfs_storage_class` then `storage_class`).
 - **`single_node_results_storage_class`** / **`multi_node_results_storage_class`**: Optional fine-grained overrides for results PVCs.
@@ -440,7 +435,7 @@ Example override for a different cluster:
 
 - ✅ NFS (e.g. `nfs-banff`, `nfs-client`)
 - ✅ CephFS, GlusterFS, AWS EFS, Azure Files
-- ❌ `local-path` (RWO only — not for shared-data or multi-node results)
+- ❌ `local-path` as a shared multi-node claim (RWO only). It is used for the per-pod disk when ReadWriteMany is unavailable.
 
 ### Custom PVC (Optional)
 
@@ -465,7 +460,6 @@ To use an existing PVC instead of auto-creation:
   "_comment": "Description of this configuration",
   "gpu_vendor": "AMD|NVIDIA",
   "guest_os": "UBUNTU",
-  "deploy": "k8s",
   
   "k8s": {
     "kubeconfig": "~/.kube/config",
@@ -483,8 +477,7 @@ To use an existing PVC instead of auto-creation:
     "node_selector": {},
     "tolerations": [],
     
-    "data_pvc": null,        // Optional: for data providers
-    "results_pvc": null      // Optional: custom results storage
+    "data_pvc": null         // Optional: for data providers
   },
   
   "distributed": {
@@ -512,10 +505,10 @@ To use an existing PVC instead of auto-creation:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `gpu_vendor` | string | **Yes** | `"AMD"` or `"NVIDIA"` |
-| `guest_os` | string | **Yes** | `"UBUNTU"`, `"RHEL"`, etc. |
-| `deploy` | string | **Yes** | Must be `"k8s"` |
-| `k8s` | object | **Yes** | Kubernetes configuration |
+| `gpu_vendor` | string | No (default `"AMD"`) | `"AMD"` or `"NVIDIA"` |
+| `guest_os` | string | No (default `"UBUNTU"`) | `"UBUNTU"` or `"CENTOS"` |
+| `deploy` | string | No | Not needed — deploy target is auto-inferred from presence of the `k8s`/`kubernetes` key (or `slurm`); if set, it must agree with the inferred target |
+| `k8s` | object | **Yes** | Kubernetes configuration (presence of this key is what triggers K8s deployment) |
 | `distributed` | object | No | Distributed training (for torchrun) |
 | `env_vars` | object | No | Custom environment variables |
 | `debug` | boolean | No | Enable debug mode (saves manifests) |
@@ -551,7 +544,9 @@ To use an existing PVC instead of auto-creation:
 |-------|------|---------|-------------|
 | `image_pull_policy` | string | `"Always"` | `"Always"`, `"IfNotPresent"`, or `"Never"` |
 | `backoff_limit` | integer | `3` | Retry attempts before marking failed |
-| `host_ipc` | boolean | `false` | Enable shared memory (required for multi-node) |
+| `allow_privileged_profiling` | boolean | `null` | Whether the pod runs with the elevated privileges profiling tools need. If unset (`null`), it's auto-enabled when a `tools` config is present; set explicitly to `true`/`false` to override |
+
+**Note:** `host_ipc` is **not** user-configurable — madengine always sets it automatically to `nnodes > 1` (enabled for multi-node jobs, disabled otherwise). Setting `k8s.host_ipc` in your config has no effect; it is not read anywhere.
 
 **Optional - Node Selection:**
 
@@ -565,14 +560,19 @@ To use an existing PVC instead of auto-creation:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `data_pvc` | string | `null` | Data PVC name (auto-created if using data provider) |
-| `results_pvc` | string | `null` | Results PVC name (auto-created by default) |
-| `storage_class` | string | **`nfs-banff`** (preset, since 2.0.3) | Generic broad fallback for both the data PVC and the single-node results PVC when no more-specific key is set |
+| `storage_class` | string | **`local-path`** (preset) | Broad fallback for the single-node results PVC when no more-specific key is set |
 | `nfs_storage_class` | string | **`nfs-banff`** (preset) | RWX class for shared-data / multi-node results |
-| `local_path_storage_class` | string | `null` (not in preset since 2.0.3; was **`local-path`** in ≤ 2.0.2) | Optional RWO class for single-node `{job}-results`. Still honoured for backward compatibility |
+| `local_path_storage_class` | string | **`local-path`** (preset) | RWO class for single-node `{job}-results` and for a per-pod volume |
 | `data_storage_class` | string | **`nfs-banff`** (preset) | Overrides SC for shared-data only |
+| `results_layout` | string | **`auto`** | `auto` uses a shared results volume when the multi-node class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
+| `data_layout` | string | **`auto`** | `auto` uses `madengine-shared-data` when that class can serve ReadWriteMany; `shared` or `per_pod` force that choice |
 | `single_node_results_storage_class` | string | `null` | Overrides single-node results SC (falls back to `local_path_storage_class`, then `storage_class`) |
 | `multi_node_results_storage_class` | string | `null` | Overrides multi-node results SC (`nfs_storage_class` if unset) |
+| `results_storage_size` | string | `"10Gi"` | Size of the per-job `{job}-results` PVC |
+| `data_storage_size` | string | `"100Gi"` | Size of the shared `madengine-shared-data` PVC |
 | `recreate_shared_data_pvc` | boolean | **`false`** (preset) | If `true`, delete `madengine-shared-data` before create (data loss) |
+
+**Note:** `results_pvc` (the per-job results PVC name) is **not** user-configurable — madengine always creates and uses `{job_name}-results`. There is no config key that overrides this name.
 
 #### Distributed Execution Fields
 
@@ -580,7 +580,7 @@ Configuration for distributed workloads (training and inference):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron`, `primus`, `vllm`, `sglang` |
+| `launcher` | string | - | Launcher type: `torchrun`, `deepspeed`, `torchtitan`, `megatron-lm`, `primus`, `vllm`, `sglang` |
 | `enabled` | boolean | `false` | Enable distributed execution (legacy, prefer `launcher`) |
 | `backend` | string | `"nccl"` | `"nccl"`, `"gloo"`, or `"mpi"` |
 | `nnodes` | integer | `1` | Number of nodes |
@@ -650,7 +650,7 @@ CPU: 16 (request), 32 (limit)
 GPUs: 2 per node (4 total)
 Memory: 64Gi per node
 CPU: 16 per node
-host_ipc: true (required!)
+host_ipc: enabled automatically (nnodes > 1)
 ```
 
 **Multi-Node Advanced (4 nodes × 2 GPUs):**
@@ -658,7 +658,7 @@ host_ipc: true (required!)
 GPUs: 2 per node (8 total)
 Memory: 128Gi per node
 CPU: 24 per node
-host_ipc: true
+host_ipc: enabled automatically (nnodes > 1)
 PVCs: Recommended for data and results
 ```
 
@@ -679,7 +679,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 **Training Launchers:**
 - **torchrun**: Standard PyTorch DDP/FSDP training
 - **deepspeed**: ZeRO optimization for memory efficiency
-- **megatron**: Megatron-LM tensor and pipeline parallelism
+- **megatron-lm**: Megatron-LM tensor and pipeline parallelism
 - **torchtitan**: LLM pre-training with multi-dimensional parallelism (FSDP2+TP+PP)
 - **primus**: Unified Primus pretrain (Megatron / TorchTitan / MaxText experiment YAML; see [Primus on Kubernetes](#primus-on-kubernetes))
 
@@ -714,7 +714,7 @@ Write durable outputs under `/results/<replica-id>/` in the container so each re
 - `HSA_ENABLE_SDMA=0` - Disable SDMA for better P2P
 
 **For multi-node:**
-- `host_ipc: true` - Required for shared memory
+- Shared memory (`host_ipc`) is enabled automatically when `distributed.nnodes > 1` — no config needed
 - `HSA_FORCE_FINE_GRAIN_PCIE=1` - Cross-node communication
 - `TORCH_NCCL_ASYNC_ERROR_HANDLING=1` - Better error handling
 
@@ -833,14 +833,7 @@ NCCL WARN ... Unable to find NCCL communicator
 
 **Solutions:**
 
-1. **Enable host_ipc:**
-```json
-{
-  "k8s": {
-    "host_ipc": true  // Required for multi-node!
-  }
-}
-```
+1. **Host IPC is automatic — no config needed:** madengine always enables shared memory (`hostIPC`) for the pod whenever `distributed.nnodes > 1`; there is no `host_ipc` config key to set, and setting one has no effect. If communication is still failing, confirm `nnodes` in your `distributed` config is actually `> 1` (a value of `1` disables host IPC).
 
 2. **Verify headless service:**
 ```bash
@@ -1008,7 +1001,7 @@ Use Case: Multi-GPU training, testing on busy clusters
 Configuration: 2 nodes × 2 GPUs per node
 Memory: 64Gi per node
 CPU: 16 per node
-host_ipc: true (required!)
+host_ipc: enabled automatically (nnodes > 1)
 Use Case: Distributed training development
 ```
 
@@ -1017,7 +1010,7 @@ Use Case: Distributed training development
 Configuration: 4 nodes × 2 GPUs per node
 Memory: 128Gi per node
 CPU: 24 per node
-host_ipc: true
+host_ipc: enabled automatically (nnodes > 1)
 PVCs: Recommended
 Use Case: Large-scale production training
 ```
@@ -1031,7 +1024,7 @@ Use Case: Large-scale production training
 ```bash
 # Use minimal config (defaults for everything)
 madengine build --tags dummy \
-  --additional-context-file examples/k8s-configs/01-single-node-single-gpu.json \
+  --additional-context-file examples/k8s-configs/basic/01-native-single-node-single-gpu.json \
   --registry dockerhub
 
 madengine run --manifest-file build_manifest.json
@@ -1042,7 +1035,7 @@ madengine run --manifest-file build_manifest.json
 ```bash
 # Use 2 GPUs to avoid scheduling conflicts
 madengine build --tags resnet50 \
-  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu.json \
+  --additional-context-file examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json \
   --registry dockerhub
 
 madengine run --manifest-file build_manifest.json --live-output
@@ -1053,7 +1046,7 @@ madengine run --manifest-file build_manifest.json --live-output
 ```bash
 # Multi-node for large models
 madengine build --tags llama_13b \
-  --additional-context-file examples/k8s-configs/03-multi-node-basic.json \
+  --additional-context-file examples/k8s-configs/basic/03-torchrun-multi-node-basic.json \
   --registry dockerhub
 
 madengine run --manifest-file build_manifest.json --live-output
@@ -1064,7 +1057,7 @@ madengine run --manifest-file build_manifest.json --live-output
 ```bash
 # Data provider with auto-PVC
 madengine build --tags bert_large \
-  --additional-context-file examples/k8s-configs/06-data-provider-with-pvc.json \
+  --additional-context-file examples/k8s-configs/basic/06-data-provider-with-pvc.json \
   --registry dockerhub
 
 madengine run --manifest-file build_manifest.json --live-output
@@ -1079,7 +1072,7 @@ kubectl exec <pod> -- ls -lh /data/
 ```bash
 # Use *-tools.json variant for monitoring
 madengine build --tags model \
-  --additional-context-file examples/k8s-configs/02-single-node-multi-gpu-tools.json \
+  --additional-context-file examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu-tools.json \
   --registry dockerhub
 
 madengine run --manifest-file build_manifest.json --live-output
@@ -1096,7 +1089,7 @@ kubectl cp <pod>:/results/gpu_info_*.csv ./
 
 ```bash
 # Copy closest match
-cp examples/k8s-configs/02-single-node-multi-gpu.json my-custom-config.json
+cp examples/k8s-configs/basic/02-torchrun-single-node-multi-gpu.json my-custom-config.json
 
 # Edit
 vim my-custom-config.json
@@ -1216,25 +1209,25 @@ kubectl logs <pod> | grep NCCL
 ## 🎓 Learning Path
 
 ### Level 1: Beginner
-1. Start with `01-single-node-single-gpu.json`
+1. Start with `basic/01-native-single-node-single-gpu.json`
 2. Test on single GPU
 3. Understand basic K8s concepts
 4. Monitor logs and results
 
 ### Level 2: Intermediate
-1. Try `02-single-node-multi-gpu.json`
+1. Try `basic/02-torchrun-single-node-multi-gpu.json`
 2. Learn distributed execution with torchrun (training workloads)
 3. Understand NCCL configuration
 4. Profile GPU utilization
 
 ### Level 3: Advanced
-1. Deploy `03-multi-node-basic.json`
+1. Deploy `basic/03-torchrun-multi-node-basic.json`
 2. Master multi-node networking
 3. Optimize NCCL parameters
 4. Use PVCs for data and results
 
 ### Level 4: Expert
-1. Customize `04-multi-node-advanced.json`
+1. Customize `basic/04-torchrun-multi-node-advanced.json`
 2. Fine-tune for your cluster
 3. Implement node affinity and tolerations
 4. Scale to 8+ nodes
@@ -1250,7 +1243,7 @@ Before deploying to production:
 - [ ] Set appropriate memory and CPU limits
 - [ ] Configured node selectors (if needed)
 - [ ] Set NCCL environment variables
-- [ ] Enabled `host_ipc` for multi-node
+- [ ] Confirmed `distributed.nnodes > 1` for multi-node (host IPC is enabled automatically)
 - [ ] Tested with small batch size first
 - [ ] Configured PVCs for data (if using data providers)
 - [ ] Set up monitoring and logging
@@ -1271,15 +1264,17 @@ Before deploying to production:
 
 ```
 examples/k8s-configs/
-├── README.md                               # This file
-├── 01-single-node-single-gpu.json         # 1 GPU, basic
-├── 01-single-node-single-gpu-tools.json   # 1 GPU + monitoring
-├── 02-single-node-multi-gpu.json          # 2 GPUs, distributed
-├── 02-single-node-multi-gpu-tools.json    # 2 GPUs + monitoring
-├── 03-multi-node-basic.json               # 2 nodes × 2 GPUs
-├── 04-multi-node-advanced.json            # 4 nodes × 2 GPUs
-├── 05-nvidia-gpu-example.json             # NVIDIA GPUs
-└── 06-data-provider-with-pvc.json         # Data provider + auto-PVC
+├── README.md                                        # This file
+├── basic/
+│   ├── 01-native-single-node-single-gpu.json        # 1 GPU, basic
+│   ├── 01-native-single-node-single-gpu-tools.json  # 1 GPU + monitoring
+│   ├── 02-torchrun-single-node-multi-gpu.json       # 2 GPUs, distributed
+│   ├── 02-torchrun-single-node-multi-gpu-tools.json # 2 GPUs + monitoring
+│   ├── 03-torchrun-multi-node-basic.json            # 2 nodes × 2 GPUs
+│   ├── 04-torchrun-multi-node-advanced.json         # 4 nodes × 2 GPUs
+│   ├── 05-torchrun-nvidia-gpu-example.json          # NVIDIA GPUs
+│   └── 06-data-provider-with-pvc.json               # Data provider + auto-PVC
+└── minimal/                                          # Minimal configs (see minimal/README.md)
 ```
 
 ---

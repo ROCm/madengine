@@ -8,6 +8,10 @@ Extracted so run_container logic is easier to test and maintain.
 import re
 import typing
 
+# Timeout resolution lives in core.timeout so the deployment layer can share it;
+# re-exported here for existing importers.
+from madengine.core.timeout import resolve_run_timeout  # noqa: F401
+
 # Default substrings matched in container run logs post-hoc (see ContainerRunner).
 DEFAULT_LOG_ERROR_PATTERNS: typing.Tuple[str, ...] = (
     "OutOfMemoryError",
@@ -149,33 +153,55 @@ def log_text_has_error_pattern(
     return False
 
 
-def resolve_run_timeout(
-    model_info: typing.Dict,
-    cli_timeout: int,
-    default_cli_timeout: int = 7200,
-) -> int:
+def resolve_run_status(
+    has_performance: bool,
+    has_errors: bool,
+    is_worker_node: bool = False,
+    skip_perf_collection: bool = False,
+) -> typing.Tuple[str, str]:
     """
-    Resolve effective run timeout from model config and CLI.
+    Decide the final run status ("SUCCESS"/"FAILURE") and a short human-readable reason.
 
-    - If model has a timeout and CLI is using default (7200), use model's timeout.
-    - If CLI timeout is explicitly set (not default), it overrides model timeout.
+    Priority (see ROCM-27774):
+
+    1. Valid extracted performance metrics are the strongest evidence a run actually
+       completed successfully. A post-hoc log error-pattern match cannot distinguish
+       madengine/framework diagnostics from a model's own generated stdout (e.g. an LLM
+       benchmark whose response text contains ``"ValueError:"``), so it must not override
+       a run that already produced valid performance data. The match is still reported so
+       it remains visible for triage, without failing an otherwise-successful run.
+    2. Otherwise, a matched error pattern fails the run (no performance data to
+       contradict it).
+    3. Otherwise, worker nodes / deferred perf-collection runs are expected to have no
+       local performance and are not failed for that reason.
+    4. Otherwise, no performance metrics and no exemption applies -> FAILURE.
 
     Args:
-        model_info: Model info dict; may have "timeout" key.
-        cli_timeout: Timeout from CLI.
-        default_cli_timeout: Value considered "default" for CLI (typically 7200).
+        has_performance: Whether valid performance metrics were extracted from the log.
+        has_errors: Whether a configured error pattern was matched in the log.
+        is_worker_node: Whether this is a non-collecting worker node
+            (``MAD_COLLECT_METRICS=false``) in multi-node training.
+        skip_perf_collection: Whether local perf collection is deferred to a login-node
+            aggregator (e.g. multi-node SLURM runs).
 
     Returns:
-        Effective timeout in seconds.
+        (status, reason) tuple, e.g. ``("SUCCESS", "performance metrics found, no errors")``.
     """
-    if (
-        "timeout" in model_info
-        and model_info["timeout"] is not None
-        and model_info["timeout"] > 0
-        and cli_timeout == default_cli_timeout
-    ):
-        return model_info["timeout"]
-    return cli_timeout
+    if has_performance:
+        if has_errors:
+            return (
+                "SUCCESS",
+                "performance metrics found; error pattern also matched in logs "
+                "(likely model-generated output, not treated as failure)",
+            )
+        return "SUCCESS", "performance metrics found, no errors"
+    if has_errors:
+        return "FAILURE", "error patterns detected in logs"
+    if is_worker_node:
+        return "SUCCESS", "worker node, no errors detected"
+    if skip_perf_collection:
+        return "SUCCESS", "perf collection deferred to login-node aggregation"
+    return "FAILURE", "no performance metrics"
 
 
 def _docker_image_ref_for_log_naming(docker_image: str) -> str:
@@ -218,6 +244,37 @@ def _docker_image_ref_for_log_naming(docker_image: str) -> str:
         .replace(":", "_")
         .replace("@", "_")
     )
+
+
+def container_name_from_image_ref(docker_image: str) -> str:
+    """
+    Derive a Docker-legal ``--name`` value from an image reference.
+
+    Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]*`` for container names, so a
+    digest-pinned reference (``repo@sha256:...``, produced when
+    ``require_pinned_image`` is set) cannot be used verbatim: the ``@`` is
+    rejected by the daemon. The digest is dropped rather than encoded because it
+    adds no disambiguation a run needs, and the tag is kept so containers for
+    different tags of the same repo stay distinct.
+
+    Tagged references keep their historical name, e.g. ``registry/ns/img:ci-m_df``
+    -> ``container_registry_ns_img_ci-m_df``. Unlike
+    :func:`_docker_image_ref_for_log_naming`, CI-style tags are *not* collapsed
+    to the bare tag, so existing container names are unchanged.
+
+    Args:
+        docker_image: Image reference, with or without tag/digest.
+
+    Returns:
+        A container name, always prefixed with ``container_``.
+    """
+    ref_without_digest = (docker_image or "").strip().split("@", 1)[0]
+    # Legal image references only contain [a-z0-9._-] plus "/" and ":", so the
+    # final sanitize is a no-op for them; it keeps the Docker-legal invariant
+    # true for anything unexpected instead of failing at `docker run`.
+    safe = ref_without_digest.replace("/", "_").replace(":", "_")
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", safe)
+    return "container_" + safe
 
 
 def make_run_log_file_path(
