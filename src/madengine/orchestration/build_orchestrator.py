@@ -19,7 +19,7 @@ from rich.panel import Panel
 
 from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.auth import has_ambient_docker_auth, load_credentials
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context
 from madengine.core.context import Context
 from madengine.core.errors import (
     BuildError,
@@ -556,7 +556,7 @@ class BuildOrchestrator:
                 # same pre-built use_image) so multi-model --use-image runs work.
                 "built_images": {},
                 "built_models": {},
-                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "credentials_required": [],
                 "summary": {
                     "successful_builds": [],
@@ -1308,7 +1308,7 @@ exit 0
             manifest = {
                 "built_images": built_images,
                 "built_models": built_models,
-                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "deployment_config": {
                     "slurm": slurm_config,
                     "distributed": first_model.get("distributed", {}),
@@ -1557,6 +1557,18 @@ exit 0
             # Get env_vars and filter out MIOPEN_USER_DB_PATH
             # This variable must be set per-process in multi-GPU training to avoid database conflicts
             env_vars = self.additional_context.get("env_vars", {}).copy()
+
+            # Save what the USER supplied, not what a SLURM preset profile filled
+            # in. The run phase re-applies the presets itself; saved here, their
+            # values came back as this run's additional_context.env_vars and could
+            # no longer be told apart from the user's -- which is exactly the
+            # distinction a slurm_multi card needs (see
+            # SlurmDeployment._user_env_vars).
+            from madengine.deployment.config_loader import PRESET_ENV_KEYS
+
+            for key in self.additional_context.get(PRESET_ENV_KEYS, []):
+                env_vars.pop(key, None)
+
             if "MIOPEN_USER_DB_PATH" in env_vars:
                 del env_vars["MIOPEN_USER_DB_PATH"]
                 print(

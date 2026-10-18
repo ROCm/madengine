@@ -164,6 +164,8 @@ class TestDeadManSwitch:
         finally:
             if proc.poll() is None:
                 proc.kill()
+                proc.wait(timeout=10)
+            proc.stdout.close()
 
 
 @requires_docker

@@ -26,6 +26,10 @@ from typing import Any, Dict, List, Optional
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
+from madengine.deployment.layered_config import (
+    LayeredConfigError,
+    resolve_for_model,
+)
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -46,7 +50,7 @@ from .common import (
     resolve_node_count,
     validate_launcher,
 )
-from .config_loader import ConfigLoader, apply_deployment_config
+from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .slurm_node_selector import SlurmNodeSelector
 
@@ -428,6 +432,27 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(f"[red]✗ Error checking madengine: {e}[/red]")
             return False
 
+    @staticmethod
+    def _safe_name(model_info: Dict) -> str:
+        """A model name usable as one path segment.
+
+        Discovery namespaces a card found in a nested models.json with its
+        directory, so `name` is routinely `vllm_multinode/pyt_vllm_kimi-k3_...`.
+        Interpolated straight into a filename that slash becomes a directory
+        separator, and writing the script fails on a parent that was never
+        created:
+
+            [Errno 2] No such file or directory:
+            'slurm_results/madengine_vllm_multinode/pyt_vllm_kimi-k3_....sh'
+
+        Every other layer already guards this -- docker_builder, the container
+        runner helpers and k8s_scripts all do name.replace("/", "_"). This
+        deployment layer was the only one that did not, which is why a card ran
+        under the RCCL team's CI (flat names) and could not be generated for MAD's
+        own cards (namespaced ones).
+        """
+        return str(model_info.get("name", "model")).replace("/", "_")
+
     def prepare(self) -> bool:
         """Generate sbatch script from template."""
         # Escape-hatch early dispatch: slurm_multi is a self-managed launcher that runs the
@@ -435,22 +460,23 @@ class SlurmDeployment(BaseDeployment):
         # Peek at the launcher type; if it's a self-managed launcher, take the bypass path.
         # All other launchers (torchrun, vllm, sglang, deepspeed, megatron, torchtitan,
         # primus) fall through to the standard Jinja2 template flow unchanged.
+        self_managed = False
+        model_info_peek = None
+        model_key_peek = None
+        launcher_peek = None
         try:
             model_keys_peek = list((self.manifest or {}).get("built_models", {}).keys())
             if model_keys_peek:
-                model_info_peek = self.manifest["built_models"][model_keys_peek[0]]
+                model_key_peek = model_keys_peek[0]
+                model_info_peek = self.manifest["built_models"][model_key_peek]
                 # Re-resolve now that the model card is in hand: a card may size its
-                # topology with distributed.nnodes alone.
+                # topology with distributed.nnodes alone. The return stays outside
+                # this try so a failure while writing the self-managed script is not
+                # swallowed and replayed as the templated path.
                 self._resolve_nodes(model_info_peek)
                 launcher_type_peek = self._resolve_launcher(model_info_peek)
-                if is_self_managed_launcher(launcher_type_peek):
-                    self.output_dir.mkdir(parents=True, exist_ok=True)
-                    self.console.print(
-                        f"[cyan]Detected slurm_multi launcher: {launcher_type_peek}[/cyan]"
-                    )
-                    return self._prepare_slurm_multi_script(
-                        model_info_peek, docker_image_name=model_keys_peek[0]
-                    )
+                launcher_peek = launcher_type_peek
+                self_managed = is_self_managed_launcher(launcher_type_peek)
         except ConfigurationError:
             # Enforcement failures (e.g. --require-pinned-image with no recorded
             # digest) are deliberate aborts, not peek errors. Falling through to
@@ -459,6 +485,25 @@ class SlurmDeployment(BaseDeployment):
         except Exception:
             # Fall through to develop's standard flow on any peek error
             pass
+
+        # Generation runs OUTSIDE the peek's except, which was swallowing real
+        # failures. In one run the self-managed generator raised while writing
+        # its script; `except Exception: pass` caught it, execution fell through
+        # to the templated flow, and that path then reported
+        #     Warning: Unknown launcher type 'slurm_multi'
+        # immediately above the real error. The warning is not even true --
+        # slurm_multi reaching the launcher dispatch is correct, because madengine
+        # does not build the command for a self-managed card -- so the log named
+        # a non-problem as the cause and hid the actual one. Only the peek is
+        # allowed to fail quietly; generating the script is not.
+        if self_managed:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.console.print(
+                f"[cyan]Detected slurm_multi launcher: {launcher_peek}[/cyan]"
+            )
+            return self._prepare_slurm_multi_script(
+                model_info_peek, docker_image_name=model_key_peek
+            )
 
         # Validate environment BEFORE generating job scripts
         self.console.print("\n[bold]Validating submission environment...[/bold]")
@@ -487,7 +532,9 @@ class SlurmDeployment(BaseDeployment):
             script_content = template.render(**context)
 
             # Save script
-            self.script_path = self.output_dir / f"madengine_{model_info['name']}.sh"
+            self.script_path = (
+                self.output_dir / f"madengine_{self._safe_name(model_info)}.sh"
+            )
             self.script_path.write_text(script_content)
             self.script_path.chmod(0o755)
 
@@ -540,6 +587,42 @@ class SlurmDeployment(BaseDeployment):
             model_launcher=(model_info.get("distributed") or {}).get("launcher"),
         )
 
+    def _user_env_vars(self) -> Dict[str, str]:
+        """additional_context.env_vars without the keys only a preset set.
+
+        For the self-managed path. load_slurm_config merges the slurm preset
+        profiles' env_vars into additional_context.env_vars, where they become
+        indistinguishable from what the user asked for. The templated launchers
+        rely on them. A slurm_multi card does not: it runs its own launcher
+        script, which owns its environment, and the same card submitted without
+        madengine (plain `sbatch --export=ALL` of the card script)
+        never receives them. Exporting them anyway makes the madengine run a
+        different experiment from the standalone one.
+
+        It is not hypothetical. MAD's run_xPyD_models.slurm sources a connector
+        env that sets HSA_ENABLE_SDMA=1 but forwards `-e K=${K:-default}`, so the
+        multi-node profile's HSA_ENABLE_SDMA=0 won: SDMA was off under madengine
+        and on under plain sbatch. The same profile's NCCL_SOCKET_IFNAME=eth0
+        preempts the card's own fabric detection (eno0 on AINIC, fenic0 on
+        Thor2), and NCCL_IB_DISABLE=1 would push NCCL onto TCP in any launcher
+        that forwards it.
+
+        Only preset-ONLY keys are dropped: a user who sets NCCL_IB_DISABLE
+        themselves still gets exactly their value, and the card's env_vars,
+        docker_env_vars and layered config are untouched.
+        """
+        env = dict(self.config.additional_context.get("env_vars") or {})
+        preset_only = self.config.additional_context.get(PRESET_ENV_KEYS) or []
+        dropped = sorted(k for k in preset_only if k in env)
+        for key in dropped:
+            del env[key]
+        if dropped:
+            self.console.print(
+                f"[dim]Not exporting SLURM preset env to the self-managed script "
+                f"(set them in env_vars to keep them): {', '.join(dropped)}[/dim]"
+            )
+        return env
+
     @staticmethod
     def _normalize_nodelist(nodelist: Optional[str]) -> Optional[str]:
         """Normalize nodelist to comma-separated without spaces for #SBATCH --nodelist."""
@@ -583,14 +666,91 @@ class SlurmDeployment(BaseDeployment):
 
         # Get environment variables
         env_vars = {}
+        user_env = self._user_env_vars()
+
+        # Layered config (the fourth way), when this card has one. Seeded FIRST so
+        # the card's own env_vars and any submit-time override below still win.
+        # Cards using models.yaml / configs/*.yaml / cluster.sh are unaffected:
+        # resolve_for_model returns an empty env when there is no such file, and
+        # madengine never parses those three formats. See docs/distributed-config.md.
+        try:
+            layered_env, layered_warnings = resolve_for_model(
+                model_info,
+                model_script_path.parent,
+                runtime_env=user_env,
+            )
+        except LayeredConfigError as exc:
+            self.console.print(f"[red]✗ {exc}[/red]")
+            return False
+        for warning in layered_warnings:
+            self.console.print(f"[yellow]⚠ {warning}[/yellow]")
+        if layered_env:
+            self.console.print(
+                f"[green]✓ Layered config resolved {len(layered_env)} env var(s)[/green]"
+            )
+            env_vars.update(layered_env)
+
+        # From the manifest's context.docker_env_vars. Placed below the card and
+        # the deployment_config so nothing that already flows changes precedence:
+        # the only effect is that values which used to be dropped on this path now
+        # arrive. This is what lets a manifest declare a variable once instead of
+        # once here and again in deployment_config.env_vars.
+        if "docker_env_vars" in self.config.additional_context:
+            env_vars.update(self.config.additional_context["docker_env_vars"])
 
         # From model_info.env_vars
         if "env_vars" in model_info:
             env_vars.update(model_info["env_vars"])
 
-        # From additional_context.env_vars
-        if "env_vars" in self.config.additional_context:
-            env_vars.update(self.config.additional_context["env_vars"])
+        # From additional_context.env_vars -- the user's, not the preset's.
+        env_vars.update(user_env)
+
+        # Tools (profiling) on the self-managed path.
+        #
+        # prepare() early-dispatches slurm_multi here and returns, so the
+        # templated path's profiling block never runs for these models and a
+        # configured `tools` was silently ignored. madengine cannot wrap a script
+        # it does not control -- that is what self-managed means -- but it can run
+        # the SAME rocprofv3 detection and hand the decision to the script instead
+        # of dropping it. A script that reads MAD_TOOLS profiles; one that does not
+        # is no worse off than before, and either way the log says what happened.
+        _tools = self.config.additional_context.get("tools", []) or []
+        if _tools:
+
+            class _ConsoleLogger:
+                def __init__(self, console):
+                    self.console = console
+
+                def info(self, msg):
+                    self.console.print(f"[cyan]{msg}[/cyan]")
+
+                def warning(self, msg):
+                    self.console.print(f"[yellow]{msg}[/yellow]")
+
+                def debug(self, msg):
+                    pass
+
+            _profiling = configure_multi_node_profiling(
+                nnodes=self.nodes,
+                tools_config=_tools,
+                logger=_ConsoleLogger(self.console),
+            )
+            _resolved = _profiling["tools"] if _profiling["enabled"] else []
+            if _resolved:
+                _names = ",".join(
+                    t.get("name", str(t)) if isinstance(t, dict) else str(t)
+                    for t in _resolved
+                )
+                env_vars.setdefault("MAD_TOOLS", _names)
+                self.console.print(
+                    f"[green]✓ Tools available to the model script via "
+                    f"MAD_TOOLS={_names}[/green]"
+                )
+            else:
+                self.console.print(
+                    "[yellow]⚠ tools were configured but rocprofv3 is not "
+                    "available; running without profiling[/yellow]"
+                )
 
         # From distributed config (model's distributed section)
         model_distributed = model_info.get("distributed", {})
@@ -603,24 +763,47 @@ class SlurmDeployment(BaseDeployment):
             if "yD" not in env_vars:
                 env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
 
-        # Override DOCKER_IMAGE_NAME with the built image from manifest
-        # This ensures the run uses the freshly built image, not the base image
-        # Priority: docker_image_name param > model_info.docker_image > env_vars.DOCKER_IMAGE_NAME
-        if docker_image_name and docker_image_name.startswith("ci-"):
-            # The manifest key IS the built image name for madengine-built images
+        # Resolve the image the COMPUTE NODES will pull.
+        #
+        # docker_builder already does the right thing: after a push it writes the
+        # registry reference into built_models[...]["env_vars"]["DOCKER_IMAGE_NAME"],
+        # with a comment saying it is there "for parallel pull in slurm_multi". By
+        # the time this runs, env_vars therefore already holds the pushed name.
+        #
+        # This block used to overwrite it with the manifest KEY, which is the LOCAL
+        # build name (ci-<model>_<dockerfile>) -- build_info["docker_image"] is set
+        # before the push and never updated, while build_info["registry_image"] is
+        # what the push records. So runs pushed
+        #     rocm/mad-private:ci-vllm_multinode_..._kimi_k3_mi300x.ubuntu.amd
+        # and then ran the ci- name, and the nodes got "pull access denied" for an
+        # image that was already in the registry.
+        #
+        # Order: what the push recorded, then anything already resolved to a
+        # registry reference, then the manifest key -- which is still correct when
+        # nothing was pushed, e.g. a single-node run off a local build.
+        _entry = (self.manifest.get("built_images") or {}).get(docker_image_name, {})
+        _from_push = _entry.get("registry_image") or ""
+        _already = str(env_vars.get("DOCKER_IMAGE_NAME") or "")
+        _recorded = model_info.get("docker_image") or model_info.get("image") or ""
+
+        def _usable(ref):
+            return bool(ref) and not ref.startswith("ci-") and not ref.startswith("<")
+
+        if _usable(_from_push):
+            self.console.print(f"[cyan]Using pushed Docker image: {_from_push}[/cyan]")
+            env_vars["DOCKER_IMAGE_NAME"] = _from_push
+        elif _usable(_already):
+            self.console.print(f"[cyan]Using Docker image: {_already}[/cyan]")
+        elif _usable(_recorded):
+            self.console.print(f"[cyan]Using Docker image: {_recorded}[/cyan]")
+            env_vars["DOCKER_IMAGE_NAME"] = _recorded
+        elif docker_image_name and docker_image_name.startswith("ci-"):
+            # Local build, nothing pushed. Correct for a single-node run; the
+            # multi-node guard below refuses it.
             self.console.print(
                 f"[cyan]Using built Docker image: {docker_image_name}[/cyan]"
             )
             env_vars["DOCKER_IMAGE_NAME"] = docker_image_name
-        elif "docker_image" in model_info:
-            built_image = model_info["docker_image"]
-            self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
-            env_vars["DOCKER_IMAGE_NAME"] = built_image
-        elif "image" in model_info:
-            # Fallback to 'image' field
-            built_image = model_info["image"]
-            self.console.print(f"[cyan]Using Docker image: {built_image}[/cyan]")
-            env_vars["DOCKER_IMAGE_NAME"] = built_image
 
         # Under require_pinned_image, pin DOCKER_IMAGE_NAME to the digest recorded
         # at build time. slurm_multi runs the model's own script (no nested
@@ -659,9 +842,15 @@ class SlurmDeployment(BaseDeployment):
 
         # Generate simple wrapper script
         # IMPORTANT: SBATCH directives MUST be at the top, right after #!/bin/bash
+        # The same one-path-segment rule as the script filename. These spell it
+        # madengine-<name> rather than madengine_<name>, which is why the earlier sweep
+        # missed them: a namespaced card would point --output at
+        # slurm_results/madengine-vllm_multinode/pyt_..._%j_%t.out, a directory nobody
+        # creates, and sbatch cannot write there.
+        _safe = self._safe_name(model_info)
         script_lines = [
             "#!/bin/bash",
-            f"#SBATCH --job-name=madengine-{model_info['name']}",
+            f"#SBATCH --job-name=madengine-{_safe}",
         ]
         if self.IS_SPUR:
             # spur: one single-node task per node via a job array (srun cannot fan out).
@@ -670,8 +859,8 @@ class SlurmDeployment(BaseDeployment):
             # _show_log_summary() can find them by deployment_id. %a is the node rank.
             script_lines.extend(
                 [
-                    f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%A_%a.out",
-                    f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%A_%a.err",
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%A_%a.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%A_%a.err",
                     f"#SBATCH --partition={self.partition}",
                     "#SBATCH --nodes=1",
                     "#SBATCH --ntasks=1",
@@ -681,13 +870,16 @@ class SlurmDeployment(BaseDeployment):
         else:
             script_lines.extend(
                 [
-                    f"#SBATCH --output={self.output_dir}/madengine-{model_info['name']}_%j_%t.out",
-                    f"#SBATCH --error={self.output_dir}/madengine-{model_info['name']}_%j_%t.err",
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%j_%t.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%j_%t.err",
                     f"#SBATCH --partition={self.partition}",
                     f"#SBATCH --nodes={self.nodes}",
                     f"#SBATCH --ntasks={self.nodes}",
                 ]
             )
+        # Carry the submitting environment. A site can default sbatch to
+        # --export=NONE, and registry credentials live only in that environment.
+        script_lines.append("#SBATCH --export=ALL")
         if not self.skip_gpus_directive:
             script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
         script_lines.extend(
@@ -725,6 +917,16 @@ class SlurmDeployment(BaseDeployment):
                 f"# Generated by madengine for slurm_multi",
                 "",
                 "set -e",
+                "",
+                "# sbatch --exclusive exports SLURM_EXCLUSIVE into the job, and every srun",
+                "# inside then re-parses it as a STEP request and rejects the value:",
+                "#     srun: error: Invalid --exclusive specification",
+                "# The allocation is already exclusive -- that was granted at job level and",
+                "# nothing here gives it up. The steps running inside it simply do not need",
+                "# to ask for it again. A run failed every srun in the job this way,",
+                "# including the image pull, and plain sbatch of the card does not hit it because",
+                "# it carries the card's own directives, which do not set --exclusive.",
+                "unset SLURM_EXCLUSIVE",
                 "",
             ]
         )
@@ -776,6 +978,42 @@ class SlurmDeployment(BaseDeployment):
                 render_rendezvous_block(rendezvous_dir, rendezvous_timeout)
             )
             script_lines.append("")
+        else:
+            # Rank-ordered node IPs, computed the same way the sglang-disagg launcher
+            # computes them (_generate_sglang_disagg_command). A self-managed script
+            # needs this to address its peers, and madengine was the only thing that
+            # knew the allocation -- so every such workload has had to rediscover it.
+            # scripts/sglang_disagg/ip_rendezvous.py exists precisely for this: it
+            # rebuilds the list with a stdlib TCP rendezvous because "madengine
+            # forwards MASTER_ADDR/NODE_RANK/NNODES into each container but NOT the
+            # rank-ordered node IP list".
+            #
+            # Exported without overwriting: a script that already sets IPADDRS, or a
+            # card that pins it, keeps its own value.
+            script_lines.extend(
+                [
+                    "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
+                    "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
+                    "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
+                    "# with loopback FOR ITSELF -- one run published",
+                    "#     Node IPs: 127.0.1.1,10.0.0.2",
+                    "# and rank 0 was unreachable from its peer. Ask the node itself when that",
+                    "# happens: hostname -I on the node cannot return anyone else's loopback.",
+                    'MAD_NODE_IPS=$(scontrol show hostname "$SLURM_JOB_NODELIST" 2>/dev/null | while read -r _n; do',
+                    "    _ip=$(getent hosts \"$_n\" | awk '{print $1}' | grep -v '^127\\.' | head -1)",
+                    '    if [ -z "$_ip" ]; then',
+                    '        _ip=$(srun --nodes=1 --ntasks=1 --nodelist="$_n" hostname -I 2>/dev/null \\',
+                    "              | awk '{print $1}')",
+                    "    fi",
+                    '    echo "$_ip"',
+                    "done | tr '\\n' ',' | sed 's/,$//')",
+                    "export MAD_NODE_IPS",
+                    'export IPADDRS="${IPADDRS:-$MAD_NODE_IPS}"',
+                    'export SGLANG_NODE_IPS="${SGLANG_NODE_IPS:-$MAD_NODE_IPS}"',
+                    'export MAD_NODE_RANK="${MAD_NODE_RANK:-${SLURM_PROCID:-0}}"',
+                    "",
+                ]
+            )
         script_lines.extend(
             [
                 "echo '=========================================='",
@@ -786,6 +1024,7 @@ class SlurmDeployment(BaseDeployment):
                 "echo 'SLURM_JOB_ID:' $SLURM_JOB_ID",
                 "echo 'SLURM_NNODES:' $SLURM_NNODES",
                 "echo 'SLURM_NODELIST:' $SLURM_NODELIST",
+                "echo 'Node IPs:' $MAD_NODE_IPS",
                 "echo ''",
             ]
         )
@@ -793,6 +1032,25 @@ class SlurmDeployment(BaseDeployment):
         # Check if image needs parallel pull on all nodes
         # Pull if: image is from registry (contains / or .) and not a local ci-* build
         docker_image = env_vars.get("DOCKER_IMAGE_NAME", "")
+
+        # A local ci-* image exists only on the machine that built it. One node can
+        # run it; the others have nothing to run. One run spent 35 minutes building
+        # the image, failed to push it, carried on with the local name, and the job
+        # then failed on nodes that had never seen it -- a multi-node run with a
+        # local-only image cannot succeed, so say so here rather than after an
+        # allocation.
+        if self.nodes > 1 and docker_image.startswith("ci-"):
+            raise ConfigurationError(
+                f"Image '{docker_image}' is local to the build machine, and this is a "
+                f"{self.nodes}-node run: the other nodes cannot pull it.\n"
+                "  The push to the registry did not happen -- look for 'No credentials "
+                "found for registry' earlier in this log.\n"
+                "  Fix by one of:\n"
+                "    - set the registry to a Docker Hub repository (e.g. rocm/mad-private) "
+                "with MAD_DOCKERHUB_USER and MAD_DOCKERHUB_PASSWORD exported;\n"
+                "    - pass an already-pushed image with --use-image;\n"
+                "    - run single-node, where a local image is enough."
+            )
         is_registry_image = (
             docker_image
             and not docker_image.startswith("ci-")
@@ -804,7 +1062,15 @@ class SlurmDeployment(BaseDeployment):
             script_lines.extend(
                 [
                     "",
-                    "# Pull Docker image on this node (one array task per node)",
+                    "# Pull Docker image on this node (one array task per node).",
+                    # Same credential names as the stock srun fetch. Values arrive via
+                    # --export=ALL; only the names are written into the script.
+                    '_u="${MAD_DOCKERHUB_USER:-${MAD_DOCKER_USER:-}}"',
+                    '_p="${MAD_DOCKERHUB_PASSWORD:-${MAD_DOCKER_TOKEN:-}}"',
+                    'if [ -n "$_u" ] && [ -n "$_p" ]; then',
+                    '    printf %s "$_p" | docker login -u "$_u" --password-stdin >/dev/null 2>&1 \\',
+                    '        || echo "docker login FAILED on $(hostname); a private image will not pull" >&2',
+                    "fi",
                     f"MAD_PULL_IMAGE={shlex.quote(docker_image)}",
                     "echo '=========================================='",
                     'echo "[$(hostname)] Pulling $MAD_PULL_IMAGE..."',
@@ -819,30 +1085,61 @@ class SlurmDeployment(BaseDeployment):
                 ]
             )
         elif is_registry_image:
-            # Add parallel docker pull on all nodes
-            # This ensures all nodes have the image before running
+            # Authenticate before pulling. A private repository -- rocm/mad-private, say --
+            # returns "not found" to an anonymous pull, so without this the parallel pull
+            # below fails on every node for an image that is plainly there.
+            #
+            # madengine already knows these names: core/auth.py reads MAD_DOCKERHUB_USER
+            # and MAD_DOCKERHUB_PASSWORD from the environment. MAD_DOCKER_USER /
+            # MAD_DOCKER_TOKEN are accepted as well because that is what an sbatch
+            # wrapper outside madengine binds, and a card should not need different credential
+            # names depending on which path runs it.
+            #
+            # Only the NAMES are written here. The values arrive through --export=ALL from
+            # the submitting shell, exactly as an sbatch wrapper outside madengine receives them, so this
+            # script stays safe to archive as a build artifact.
+            #
+            # Absent credentials are not an error: a public image pulls fine without them,
+            # and the pull itself reports the failure if the image really was private.
             script_lines.extend(
                 [
                     "",
-                    "# Pull Docker image in parallel on all nodes",
-                    "echo '=========================================='",
-                    "echo 'Pulling Docker image on all nodes in parallel'",
-                    "echo '=========================================='",
-                    f"echo 'Image: {docker_image}'",
-                    "echo ''",
-                    "",
-                    f'srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES bash -c "',
-                    f'    echo \\"[\\$(hostname)] Pulling {docker_image}...\\"',
-                    f"    docker pull {docker_image}",
-                    "    PULL_RC=\\$?",
-                    "    if [ \\$PULL_RC -eq 0 ]; then",
-                    '        echo \\"[\\$(hostname)] Pull SUCCESS\\"',
-                    "    else",
-                    '        echo \\"[\\$(hostname)] Pull FAILED with exit code \\$PULL_RC\\"',
-                    "    fi",
-                    "    exit \\$PULL_RC",
-                    '"',
+                    "# Image staging, in the shape plain sbatch of the card script already proves",
+                    "# on this cluster: build the body in a",
+                    "# SINGLE-QUOTED variable and hand it to bash -c by expansion. Nothing needs",
+                    "# escaping, the $ signs expand on the compute node where the credentials",
+                    "# actually live, and there are no apostrophes to close the string early.",
+                    '# The previous form here nested escaped quotes inside bash -c "..." and had',
+                    "# never once executed -- a run died at the login above it.",
+                    "#",
+                    "# --ntasks-per-node=1 is what the working path uses. Without it nothing",
+                    "# guarantees one task per node, and a node that never ran this step has no",
+                    "# image and no login.",
+                    "MAD_FETCH='",
+                    "set -e",
+                    '_u="${MAD_DOCKERHUB_USER:-${MAD_DOCKER_USER:-}}"',
+                    '_p="${MAD_DOCKERHUB_PASSWORD:-${MAD_DOCKER_TOKEN:-}}"',
+                    'if [ -n "$_u" ] && [ -n "$_p" ]; then',
+                    '  printf %s "$_p" | docker login -u "$_u" --password-stdin >/dev/null 2>&1 \\',
+                    '    || echo "docker login FAILED on $(hostname); a private image will not pull" >&2',
+                    "fi",
+                    f"if docker image inspect {docker_image} >/dev/null 2>&1; then",
+                    f'  echo "[$(hostname)] {docker_image} already present"',
+                    "  exit 0",
+                    "fi",
+                    f'echo "[$(hostname)] pulling {docker_image}"',
+                    f"docker pull {docker_image} \\",
+                    f'  || {{ echo "docker pull {docker_image} FAILED on $(hostname)" >&2; exit 1; }}',
+                    "'",
+                    "# set +e around the call, because `PULL_EXIT=$?` is unreachable without",
+                    "# it: the script runs under `set -e`, so a non-zero srun exits here and",
+                    "# the diagnosis below never prints -- dead exactly when it is needed.",
+                    "# A run stopped dead after the node IPs for this reason, with the real",
+                    "# message going to stderr and the collected stdout showing nothing.",
+                    "set +e",
+                    'srun --ntasks="${SLURM_NNODES}" --ntasks-per-node=1 bash -c "$MAD_FETCH"',
                     "PULL_EXIT=$?",
+                    "set -e",
                     "",
                     "if [ $PULL_EXIT -ne 0 ]; then",
                     "    echo 'Docker pull failed on one or more nodes'",
@@ -865,7 +1162,7 @@ class SlurmDeployment(BaseDeployment):
         marker_rank_suffix = "_rank${SLURM_ARRAY_TASK_ID:-0}" if self.IS_SPUR else ""
         completion_marker_template = (
             completion_marker_dir
-            / f"madengine_{model_info['name']}_${{SLURM_JOB_ID:-local}}{marker_rank_suffix}.complete"
+            / f"madengine_{self._safe_name(model_info)}_${{SLURM_JOB_ID:-local}}{marker_rank_suffix}.complete"
         )
 
         # Disable `set -e` around the model script bash invocation below so a
@@ -939,18 +1236,21 @@ class SlurmDeployment(BaseDeployment):
         # Store marker info for monitor() to reconstruct the path with deployment_id.
         self._completion_marker_dir = completion_marker_dir
         self._completion_marker_basename_template = (
-            f"madengine_{model_info['name']}_{{job_id}}.complete"
+            f"madengine_{self._safe_name(model_info)}_{{job_id}}.complete"
         )
         # Backward-compat: monitor() falls back to this single path when the
         # job-id-aware path is unavailable (e.g. inside_allocation flow).
         self._completion_marker = (
-            completion_marker_dir / f"madengine_{model_info['name']}_local.complete"
+            completion_marker_dir
+            / f"madengine_{self._safe_name(model_info)}_local.complete"
         )
 
         script_content = "\n".join(script_lines)
 
         # Save script
-        self.script_path = self.output_dir / f"madengine_{model_info['name']}.sh"
+        self.script_path = (
+            self.output_dir / f"madengine_{self._safe_name(model_info)}.sh"
+        )
         self.script_path.write_text(script_content)
         self.script_path.chmod(0o755)
 
@@ -1033,7 +1333,12 @@ class SlurmDeployment(BaseDeployment):
         )
 
         return {
-            "model_name": model_info["name"],
+            # job.sh.j2 interpolates model_name into #SBATCH --output and --error,
+            # so it has to be one path segment. Discovery namespaces a nested card
+            # ("sglang/pyt_sglang_kimi-k3") and the raw name would point --output at
+            # a directory nobody creates.
+            "model_name": self._safe_name(model_info),
+            "model_display_name": model_info["name"],
             "job_tag": self.job_tag,
             "in_place": self.runs_in_place,
             "manifest_file": os.path.abspath(self.config.manifest_file),
@@ -1621,11 +1926,24 @@ export MASTER_PORT={master_port}
             and not self.slurm_config.get("nodelist")
         ):
             try:
+                # The probe srun has to WAIT for the scheduler, not just run. 30s is
+                # fine on an idle cluster and far too short on a busy one: with a dozen
+                # jobs queued, every node came back "Unreachable / Timeout" and the
+                # check stood down having learned nothing -- the same blindness the
+                # --exclusive leak caused, arrived at from a different direction.
+                #
+                # 120s by default, and configurable, because the right value is a
+                # property of the cluster's queue and no single number fits both a
+                # quiet cluster and a full one.
+                pull_image, pull_size = self._largest_pull_image()
                 selector = SlurmNodeSelector(
                     console=self.console,
                     auto_cleanup=auto_cleanup,
                     verbose=self.slurm_config.get("verbose_node_check", False),
                     reservation=self.reservation,
+                    timeout=int(self.slurm_config.get("node_check_timeout", 120)),
+                    image=pull_image,
+                    image_size_bytes=pull_size,
                 )
                 clean_nodes, updated_exclude = selector.select_nodes(
                     partition=self.partition,
@@ -1647,10 +1965,24 @@ export MASTER_PORT={master_port}
                     self.slurm_config["exclude"] = updated_exclude
                     self.prepare()
 
+                # An inconclusive check gates nothing. When every node it examined came
+                # back unreachable -- 46 of 46 on OCI amd-rccl, each one "srun failed" --
+                # the clean count is zero because the probe could not see anything, not
+                # because the cluster is full. Treat that exactly like enable_node_check
+                # being off: no exclusion, no gate, no nodelist pin, and let SLURM
+                # schedule.
+                # `is True`, not a truthiness check: a test double that fabricates
+                # attributes must not stand the gate down. Only an explicit True
+                # from SlurmNodeSelector means the probe learned nothing.
+                inconclusive = (
+                    getattr(selector, "health_check_inconclusive", False) is True
+                )
+
                 # Gate: do not submit if not enough clean nodes (multi-node only; single-node always allowed)
                 if (
                     self.nodes > 1
                     and not allow_submit_without_clean
+                    and not inconclusive
                     and len(clean_nodes) < self.nodes
                 ):
                     SlurmNodeSelector.cancel_health_check_jobs(
@@ -1666,7 +1998,7 @@ export MASTER_PORT={master_port}
                     )
 
                 # When we have enough clean nodes, pin the job to them via nodelist
-                if len(clean_nodes) >= self.nodes:
+                if not inconclusive and len(clean_nodes) >= self.nodes:
                     nodelist_str = ",".join(clean_nodes[: self.nodes])
                     self.slurm_config["nodelist"] = nodelist_str
                     self.console.print(f"[dim]Using nodelist: {nodelist_str}[/dim]\n")
@@ -1947,41 +2279,49 @@ export MASTER_PORT={master_port}
         if not hasattr(self, "_output_positions"):
             self._output_positions = {}
 
-        # Find output file
+        # Stream BOTH streams. Only *.out was read here, so a job whose diagnosis
+        # went to stderr showed nothing at all: a run stopped after the node IPs
+        # with an empty-looking log, while the message naming the failure sat in the
+        # .err file nobody opened. Errors are the reason anyone reads this.
+        #
+        # Positions are keyed per FILE rather than per job, since two files are now
+        # tracked for the same job id.
         output_dir = str(self.output_dir)
-        output_pattern = f"{output_dir}/madengine-*_{job_id}_*.out"
 
         try:
             import glob
 
-            output_files = glob.glob(output_pattern)
+            streams = [
+                (
+                    sorted(glob.glob(f"{output_dir}/madengine-*_{job_id}_*.out")),
+                    "│",
+                    "dim cyan",
+                ),
+                (
+                    sorted(glob.glob(f"{output_dir}/madengine-*_{job_id}_*.err")),
+                    "┇",
+                    "yellow",
+                ),
+            ]
+            if not any(files for files, _, _ in streams):
+                return  # Neither file created yet
 
-            if not output_files:
-                return  # Output file not created yet
-
-            output_file = output_files[0]  # Use first match
-
-            # Read new content from file
-            try:
-                with open(output_file, "r") as f:
-                    # Seek to last position
-                    last_pos = self._output_positions.get(job_id, 0)
-                    f.seek(last_pos)
-
-                    # Read new lines
-                    new_content = f.read()
-
-                    if new_content:
-                        # Print new output with prefix
-                        for line in new_content.splitlines():
-                            if line.strip():  # Skip empty lines
-                                self.console.print(f"[dim cyan]│[/dim cyan] {line}")
-
-                    # Update position
-                    self._output_positions[job_id] = f.tell()
-
-            except FileNotFoundError:
-                pass  # File not ready yet
+            for files, marker, style in streams:
+                for output_file in files:
+                    try:
+                        with open(output_file, "r") as f:
+                            last_pos = self._output_positions.get(output_file, 0)
+                            f.seek(last_pos)
+                            new_content = f.read()
+                            if new_content:
+                                for line in new_content.splitlines():
+                                    if line.strip():
+                                        self.console.print(
+                                            f"[{style}]{marker}[/{style}] {line}"
+                                        )
+                            self._output_positions[output_file] = f.tell()
+                    except FileNotFoundError:
+                        pass  # File not ready yet
 
         except Exception as e:
             # Silently ignore streaming errors to not disrupt monitoring
@@ -2898,9 +3238,19 @@ export MASTER_PORT={master_port}
                 reader = csv.DictReader(f)
                 reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
                 rows = [{k.strip(): v for k, v in row.items() if k} for row in reader]
-            if session_start_row is not None and session_start_row < len(rows):
-                rows = rows[session_start_row:]
-            elif session_start_row is not None and session_start_row >= len(rows):
+            # session_start_row counts rows already in the cwd perf.csv. A
+            # per-job or multiple_results CSV is a different file and starts at
+            # record 0; applying the cwd offset to it drops the job's own rows.
+            offset = session_start_row
+            try:
+                same_file = perf_file.resolve() == Path("perf.csv").resolve()
+            except OSError:
+                same_file = False
+            if not same_file:
+                offset = 0
+            if offset is not None and offset < len(rows):
+                rows = rows[offset:]
+            elif offset is not None and offset >= len(rows):
                 rows = []
             for row in rows:
                 run_data = {
@@ -2919,6 +3269,27 @@ export MASTER_PORT={master_port}
                     results["failed_runs"].append(run_data)
         except Exception as e:
             self.console.print(f"[yellow]⚠ Could not parse perf.csv: {e}[/yellow]")
+
+    def _largest_pull_image(self):
+        """(name, size in bytes) of the largest image this deployment's nodes will pull.
+
+        The name is the one a node pulls (the registry reference when the image was
+        pushed); the size is what madengine build measured. (None, None) when the
+        manifest does not record a size, in which case the disk check is skipped.
+        """
+        best_name, best_size = None, None
+        for key, info in (self.manifest.get("built_images") or {}).items():
+            size = info.get("image_size_bytes")
+            if (
+                isinstance(size, int)
+                and size > 0
+                and (best_size is None or size > best_size)
+            ):
+                best_name = (
+                    info.get("registry_image") or info.get("docker_image") or key
+                )
+                best_size = size
+        return best_name, best_size
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
