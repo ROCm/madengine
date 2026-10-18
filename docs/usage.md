@@ -761,6 +761,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
 | `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login is reused | `/etc/docker-oat` |
 | `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login` and always defer to the machine's existing credentials | `"1"` |
+| `MAD_AWS_S3` | AWS S3 credentials for data loading (JSON object). Overrides `credential.json`. | `'{"USERNAME":"username","PASSWORD":"password"}'` |
+| `NAS_NODES` | NAS node credentials for data loading (JSON array). `NAME` is required. Overrides `credential.json`. | `'[{"NAME":"node1","HOST":"hostname","PORT":22,"USERNAME":"username","PASSWORD":"password"}]'` |
 
 ## Best Practices
 

@@ -489,9 +489,9 @@ class TestDockerBuilder:
         # Mock console.sh calls for dockerfile listing
         def mock_sh_side_effect(command, **kwargs):
             if "ls ./docker/Dockerfile1.*" in command:
-                return "./docker/Dockerfile1"
+                return "./docker/Dockerfile1.ubuntu.amd.Dockerfile"
             elif "ls ./docker/Dockerfile2.*" in command:
-                return "./docker/Dockerfile2"
+                return "./docker/Dockerfile2.ubuntu.amd.Dockerfile"
             elif "head -n5" in command:
                 return "# CONTEXT AMD"
             else:
@@ -500,10 +500,10 @@ class TestDockerBuilder:
         # Mock context filter to return only the specific dockerfile for each model
         def mock_filter_side_effect(dockerfiles):
             # Return only the dockerfile that was requested for each model
-            if "./docker/Dockerfile1" in dockerfiles:
-                return {"./docker/Dockerfile1": "AMD"}
-            elif "./docker/Dockerfile2" in dockerfiles:
-                return {"./docker/Dockerfile2": "AMD"}
+            if "./docker/Dockerfile1.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile1.ubuntu.amd.Dockerfile": "AMD"}
+            elif "./docker/Dockerfile2.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile2.ubuntu.amd.Dockerfile": "AMD"}
             return dockerfiles
 
         # Mock successful builds
@@ -542,9 +542,9 @@ class TestDockerBuilder:
         # Mock console.sh calls for dockerfile listing
         def mock_sh_side_effect(command, **kwargs):
             if "ls ./docker/Dockerfile1.*" in command:
-                return "./docker/Dockerfile1"
+                return "./docker/Dockerfile1.ubuntu.amd.Dockerfile"
             elif "ls ./docker/Dockerfile2.*" in command:
-                return "./docker/Dockerfile2"
+                return "./docker/Dockerfile2.ubuntu.amd.Dockerfile"
             elif "head -n5" in command:
                 return "# CONTEXT AMD"
             else:
@@ -553,10 +553,10 @@ class TestDockerBuilder:
         # Mock context filter to return only the specific dockerfile for each model
         def mock_filter_side_effect(dockerfiles):
             # Return only the dockerfile that was requested for each model
-            if "./docker/Dockerfile1" in dockerfiles:
-                return {"./docker/Dockerfile1": "AMD"}
-            elif "./docker/Dockerfile2" in dockerfiles:
-                return {"./docker/Dockerfile2": "AMD"}
+            if "./docker/Dockerfile1.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile1.ubuntu.amd.Dockerfile": "AMD"}
+            elif "./docker/Dockerfile2.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile2.ubuntu.amd.Dockerfile": "AMD"}
             return dockerfiles
 
         # Mock one success, one failure
