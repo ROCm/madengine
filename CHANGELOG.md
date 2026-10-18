@@ -5,7 +5,7 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.4.0] - 2026-10-18
 
 ### Added
 
@@ -19,13 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`llm-d` deployment target** (#181): Benchmarks an [llm-d](https://llm-d.ai) stack — vLLM/SGLang model servers behind a Gateway API Inference Extension `InferencePool` — from an ordinary single-pod Kubernetes Job, so the existing ConfigMap bundling, log streaming, result harvesting and `perf.csv` path are reused unchanged. Two modes: **attach** (`llm_d.endpoint_url` set: madengine benchmarks a stack it did not create and never installs or uninstalls anything) and **managed** (madengine installs three pinned helm releases, waits for model-server readiness, reads the endpoint off the live `Gateway`, benchmarks, then tears the releases down on the way out — on success as well as on failure). Target selection follows the existing Convention over Configuration rule: an `llm_d` key selects it, checked before `k8s` because an llm-d config carries both. The benchmark client itself is CPU-only — `k8s.gpu_count` defaults to `0` under llm-d so the load generator does not compete with the stack it measures. See `docs/llm-d.md`.
 
+- **`--wait-for-gpu-memory`** (#214): A local run can wait until every GPU reports at most 512 MB in use. `0` checks once and fails if any GPU is over that threshold; a positive value is a wall-clock timeout in seconds. A run that cannot query GPU memory fails closed. SLURM and Kubernetes warn and ignore the flag. Documented in `docs/cli-reference.md`.
+
+- **`madengine setup-page`** (#162): Writes a self-contained HTML picker from the current repo's `models.json`. The page lists models and context fields and shows the `madengine run` command to copy. It has no external assets, so it can be published as GitHub Pages. Options are `--output` / `-o` (default `index.html`), `--title`, `--repo-url`, and `--install-cmd`. The external publish workflow checks the model repo out with `persist-credentials: false`.
+
+- **Layered model configuration** (`docs/distributed-config.md`): Run, site, model, and measurement settings are alternatives, not a stack — any one of them is enough, and a missing optional input is skipped. A `site:` block in `mad-config.yaml` is refused, because nothing would apply it.
+
 ### Changed
 
 - **llm-d reporting and model identity**: Result rows stamp `deployment_type=llm-d`, `launcher=vllm`, and `serving_mode=disaggregated|aggregated` (also the CLI Mode column). The selected MAD card's `--model_repo` fills `llm_d.model.hf_repo` / `model.name` when unset; an explicit value that differs from the card is rejected. When the card sets `multiple_results`, that CSV is preferred over log `performance:` lines.
 
 - **SLURM multi-node runs inside an existing allocation** (#213): When `SLURM_JOB_ID` is set, a multi-node templated launcher runs in place with `srun` instead of nesting another `sbatch`. Single-node runs still submit `sbatch`. Each in-place run gets its own workspace and DeepSpeed hostfile (`/tmp/deepspeed_hostfile_<job tag>.txt`). Workspaces are `madengine_job_<job id>_node_<rank>` under `SLURM_TMPDIR` or `/tmp`, removed after a successful artifact copy, and reclaimed after 7 days by a later job from the same user.
 
-- **Stale `multiple_results` files**: A normal run deletes a leftover results CSV before the model script so an appending script cannot report the previous run. `--skip-model-run` leaves the file. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are kept. `MAD_CONTAINER_IMAGE` records the build as skipped and the summary prints which pre-built image was used.
+- **Stale `multiple_results` files**: A normal run deletes a leftover results CSV before the model script so an appending script cannot report the previous run. `--skip-model-run` leaves the file. The Docker path keeps `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename. The `slurm_multi` wrapper keeps those three report names and `perf.csv`; it does not see a custom `--output`. `MAD_CONTAINER_IMAGE` records the build as skipped and the summary prints which pre-built image was used.
 
 ### Fixed
 
@@ -37,11 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Kubernetes Job names longer than 63 characters failed admission**: Batch Jobs require the pod `job-name` label to equal `metadata.name`, and label values are capped at 63. Long card paths (for example llm-d MoE names) are now built with `sanitize_k8s_object_name(..., max_total_len=63)` so the Job name and label stay identical.
 
+- **Copying a model script directory stops when the destination already has that file** (#171): The container copies the model script directory into the model directory. A name that already exists there fails the run instead of being overwritten.
+
+- **A card builds only its own Dockerfile variants**: Prefix matching no longer builds a sibling card whose Dockerfile name merely starts with this card's. Context-specific Dockerfiles that belong to the same card are still built.
+
 ### Docs
 
 - Documented llm-d card-driven model identity, serving_mode / multiple_results reporting, Job naming (≤63), and MI250 path constraints (1 GPU/pod, no RDMA/MoRI/WideEP) in `docs/llm-d.md`, `docs/deployment.md`, `docs/configuration.md`, `deploy/llm-d/mi250/README.md`, and `examples/llm-d-configs/`. Example `model.name` values use full Hugging Face ids.
 
 - Corrected llm-d docs that disagreed with the code: managed `model.name` must be the full Hugging Face id, `hf://` URIs need `model.size`, helm releases use the model-qualified stem (`MAD_LLM_D_RELEASE_PREFIX`), and a failed model-cache Job is left for `kubectl logs`. Documented in-place SLURM workspaces, stale `multiple_results` deletion, and the `MAD_CONTAINER_IMAGE` skip summary.
+
+- CLI reference documents `madengine cleanup` (`--all`, `--dry-run`, exit `5`), `madengine setup-page`, and `MADENGINE_HEARTBEAT_INTERVAL` / `MADENGINE_HEARTBEAT_STALE_AFTER`. The README version badge is 2.4.0. Command lists include `cleanup` and `setup-page`, and the architecture diagrams include the llm-d target. The DeepSpeed hostfile example shows the in-place suffix.
 
 ## [2.3.0] - 2026-10-09
 
