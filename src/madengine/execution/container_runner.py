@@ -583,6 +583,31 @@ class ContainerRunner:
             raise_on_failure=False,
         )
 
+    def _pull_timeout_secs(self) -> int:
+        """Seconds allowed for ``docker pull``.
+
+        ``MAD_DOCKER_PULL_TIMEOUT_SECS`` overrides the 1800s default. A missing,
+        blank, non-integer, or non-positive value keeps the default and, when a
+        value was set, says so. It does not raise: the caller treats any
+        exception from :meth:`pull_image` as a failed pull.
+        """
+        default = 1800
+        raw = os.environ.get("MAD_DOCKER_PULL_TIMEOUT_SECS", "").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        self.rich_console.print(
+            "[yellow]Warning: MAD_DOCKER_PULL_TIMEOUT_SECS="
+            f"{raw!r} is not a positive number of seconds; "
+            f"using {default}.[/yellow]"
+        )
+        return default
+
     def pull_image(
         self,
         registry_image: str,
@@ -620,7 +645,12 @@ class ContainerRunner:
         # multi-gigabyte serving image never finishes inside it, so every such
         # pull raised "Console script timeout" regardless of how healthy the
         # registry was.
-        pull_timeout = int(os.environ.get("MAD_DOCKER_PULL_TIMEOUT_SECS", "1800"))
+        # A bad value must not raise. The caller catches every exception from
+        # this function and reports it as a failed pull, then falls back to the
+        # local tag. int("30m") does that before the pull starts. 0 and negative
+        # values are worse: they parse, the fresh-pull policy below deletes the
+        # cached image, and console.sh then rejects the timeout.
+        pull_timeout = self._pull_timeout_secs()
         attempted_cache_removal = False
 
         if deployment_type == "slurm" and in_slurm_job:

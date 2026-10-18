@@ -1430,6 +1430,32 @@ class TestPullImageTimeout:
             runner.pull_image("registry/ns/img:tag")
         assert self._pull_call(runner.console).kwargs.get("timeout") == 42
 
+    @pytest.mark.parametrize("raw", ["nope", "30m", "0", "-1", "1800.5"])
+    def test_a_bad_timeout_still_pulls(self, raw):
+        """A mistyped knob must not be reported as a failed pull.
+
+        pull_image's caller catches every exception and falls back to the local
+        tag. int() raising, or a non-positive value reaching console.sh, skips
+        the pull -- and on a SLURM node the fresh-pull policy has already
+        deleted the cached copy by the time communicate rejects a negative
+        timeout.
+        """
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": raw}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" in printed
+        assert raw in printed
+
+    def test_an_empty_timeout_uses_the_default_quietly(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "  "}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" not in printed
+
     def test_losing_the_cached_copy_is_reported(self):
         """On the fresh-pull path a failed pull leaves no local image; the message must say so."""
         runner = self._runner()
