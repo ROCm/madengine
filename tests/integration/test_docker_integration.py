@@ -489,9 +489,9 @@ class TestDockerBuilder:
         # Mock console.sh calls for dockerfile listing
         def mock_sh_side_effect(command, **kwargs):
             if "ls ./docker/Dockerfile1.*" in command:
-                return "./docker/Dockerfile1"
+                return "./docker/Dockerfile1.ubuntu.amd.Dockerfile"
             elif "ls ./docker/Dockerfile2.*" in command:
-                return "./docker/Dockerfile2"
+                return "./docker/Dockerfile2.ubuntu.amd.Dockerfile"
             elif "head -n5" in command:
                 return "# CONTEXT AMD"
             else:
@@ -500,10 +500,10 @@ class TestDockerBuilder:
         # Mock context filter to return only the specific dockerfile for each model
         def mock_filter_side_effect(dockerfiles):
             # Return only the dockerfile that was requested for each model
-            if "./docker/Dockerfile1" in dockerfiles:
-                return {"./docker/Dockerfile1": "AMD"}
-            elif "./docker/Dockerfile2" in dockerfiles:
-                return {"./docker/Dockerfile2": "AMD"}
+            if "./docker/Dockerfile1.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile1.ubuntu.amd.Dockerfile": "AMD"}
+            elif "./docker/Dockerfile2.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile2.ubuntu.amd.Dockerfile": "AMD"}
             return dockerfiles
 
         # Mock successful builds
@@ -542,9 +542,9 @@ class TestDockerBuilder:
         # Mock console.sh calls for dockerfile listing
         def mock_sh_side_effect(command, **kwargs):
             if "ls ./docker/Dockerfile1.*" in command:
-                return "./docker/Dockerfile1"
+                return "./docker/Dockerfile1.ubuntu.amd.Dockerfile"
             elif "ls ./docker/Dockerfile2.*" in command:
-                return "./docker/Dockerfile2"
+                return "./docker/Dockerfile2.ubuntu.amd.Dockerfile"
             elif "head -n5" in command:
                 return "# CONTEXT AMD"
             else:
@@ -553,10 +553,10 @@ class TestDockerBuilder:
         # Mock context filter to return only the specific dockerfile for each model
         def mock_filter_side_effect(dockerfiles):
             # Return only the dockerfile that was requested for each model
-            if "./docker/Dockerfile1" in dockerfiles:
-                return {"./docker/Dockerfile1": "AMD"}
-            elif "./docker/Dockerfile2" in dockerfiles:
-                return {"./docker/Dockerfile2": "AMD"}
+            if "./docker/Dockerfile1.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile1.ubuntu.amd.Dockerfile": "AMD"}
+            elif "./docker/Dockerfile2.ubuntu.amd.Dockerfile" in dockerfiles:
+                return {"./docker/Dockerfile2.ubuntu.amd.Dockerfile": "AMD"}
             return dockerfiles
 
         # Mock one success, one failure
@@ -694,7 +694,7 @@ class TestDockerBuilder:
         registry = "dockerhub"
         credentials = {
             "dockerhub": {
-                "repository": "your-repository",
+                "repository": "example-org/ci",
                 "username": "your-dockerhub-username",
                 "password": "your-dockerhub-password-or-token",
             }
@@ -705,8 +705,9 @@ class TestDockerBuilder:
 
         result = builder.push_image(docker_image, registry, credentials)
 
-        # Verify the correct tag and push commands were called
-        expected_tag = "your-repository:ci-dummy_dummy.ubuntu.amd"
+        # Verify the correct tag and push commands were called.
+        # "your-repository" is a template value and is not used as a push target.
+        expected_tag = "example-org/ci:ci-dummy_dummy.ubuntu.amd"
         tag_calls = [
             call for call in mock_sh.call_args_list if "docker tag" in str(call)
         ]
@@ -772,6 +773,7 @@ class TestDockerBuilder:
         assert expected_tag in str(push_calls[0])
         assert result == expected_tag
 
+    @patch("madengine.core.auth.docker_cli_username", return_value=None)
     @patch.object(Context, "get_gpu_vendor", return_value="AMD")
     @patch.object(Context, "get_system_ngpus", return_value=1)
     @patch.object(Context, "get_system_gpu_architecture", return_value="gfx908")
@@ -788,6 +790,7 @@ class TestDockerBuilder:
         mock_arch,
         mock_ngpus,
         mock_vendor,
+        _docker_user,
     ):
         """Test pushing image to DockerHub without repository specified in credentials."""
         context = Context()

@@ -1,6 +1,7 @@
 """Unit tests for DiscoverModels tag selection (including scope/tag)."""
 
 import argparse
+import json
 
 import pytest
 
@@ -454,3 +455,39 @@ class TestNestedSubmoduleDiscovery:
             "MAD/dummy/dummy_multi/model2",
             "MAD/other/dummy_multi/model3"
         ]
+
+
+class TestOptionalDockerfileKey:
+    """A nested models.json may omit dockerfile/scripts; discovery must not die on it.
+
+    v1 walked only one level under scripts/ and defaulted both keys to "" on its
+    ModelInfo dataclass. The recursive walk reaches models.json files v1 never
+    read, so entries that legitimately omit these keys now reach the path
+    rewrite and raised KeyError('dockerfile') during discovery.
+    """
+
+    def _tree(self, tmp_path, nested_entry):
+        (tmp_path / "models.json").write_text(
+            json.dumps([{"name": "root", "dockerfile": "docker/root",
+                         "scripts": "run.sh", "tags": ["all"], "args": ""}])
+        )
+        nested = tmp_path / "scripts" / "sub" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "models.json").write_text(json.dumps([nested_entry]))
+
+    def test_nested_entry_without_dockerfile_is_discovered(self, tmp_path, monkeypatch):
+        self._tree(tmp_path, {"name": "no-dockerfile", "tags": ["all"], "args": ""})
+        monkeypatch.chdir(tmp_path)
+        dm = DiscoverModels(args=argparse.Namespace(tags=["all"]))
+        dm.discover_models()
+        assert "sub/deeper/no-dockerfile" in dm.model_list
+
+    def test_nested_entry_with_dockerfile_still_gets_its_path_rewritten(self, tmp_path, monkeypatch):
+        self._tree(tmp_path, {"name": "has-dockerfile", "dockerfile": "docker/d",
+                              "scripts": "run.sh", "tags": ["all"], "args": ""})
+        monkeypatch.chdir(tmp_path)
+        dm = DiscoverModels(args=argparse.Namespace(tags=["all"]))
+        dm.discover_models()
+        found = [m for m in dm.models if m["name"] == "sub/deeper/has-dockerfile"][0]
+        assert found["dockerfile"] == "scripts/sub/deeper/docker/d"
+        assert found["scripts"] == "scripts/sub/deeper/run.sh"

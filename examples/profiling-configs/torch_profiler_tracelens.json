@@ -1,0 +1,19 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "torch_profiler_dynolog",
+      "env_vars": {
+        "TORCH_PROFILE_ITERATIONS": "5",
+        "TORCH_PROFILE_WARMUP_S": "60"
+      }
+    },
+    {
+      "name": "tracelens",
+      "env_vars": {
+        "TRACELENS_MODE": "pytorch"
+      }
+    }
+  ]
+}

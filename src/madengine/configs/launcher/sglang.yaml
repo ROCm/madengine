@@ -1,0 +1,8 @@
+# @package _global_
+distributed:
+  enabled: true
+  launcher: sglang
+  backend: nccl
+  nnodes: 1
+  nproc_per_node: 8
+  port: 29500
