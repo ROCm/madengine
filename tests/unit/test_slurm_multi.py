@@ -1440,10 +1440,26 @@ class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
         )
 
     def test_the_computed_fields_still_win(self, tmp_path, card_with_run_options):
-        """Keeping the card must not let it override what this path computes."""
+        """Keeping the card must not let it override what this path computes.
+
+        The card carries a conflicting value for every field this path computes.
+        Without those, the assertions pass even when the card is applied last,
+        and a replaced env_vars dict would still look correct.
+        """
+        card = card_with_run_options[0]
+        card["image"] = "card-image:should-lose"
+        card["docker_image"] = "card-docker:should-lose"
+        card["prebuilt"] = False
+        card["env_vars"] = {
+            "MODEL_NAME": "Fake-A",
+            "DOCKER_IMAGE_NAME": "card-env:should-lose",
+        }
         entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
-        assert entry["docker_image"] == "rocm/pytorch-private:fake-tag"
-        assert entry["image"] == "rocm/pytorch-private:fake-tag"
+        image = "rocm/pytorch-private:fake-tag"
+        assert entry["docker_image"] == image
+        assert entry["image"] == image
         assert entry["prebuilt"] is True
-        assert entry["env_vars"]["DOCKER_IMAGE_NAME"] == "rocm/pytorch-private:fake-tag"
+        assert entry["env_vars"]["DOCKER_IMAGE_NAME"] == image
+        assert entry["env_vars"]["MODEL_NAME"] == "Fake-A"
         assert entry["multiple_results"] == "perf_fake_a.csv"
+        assert entry["additional_docker_run_options"] == self.OPTS
