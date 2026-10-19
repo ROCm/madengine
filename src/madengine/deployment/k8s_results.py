@@ -16,7 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import normalize_launcher
+from .common import (
+    is_per_replica_launcher,
+    launcher_for_reporting,
+    resolve_distributed_launch,
+)
+from .k8s_names import pod_job_name_label_selector
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import flatten_tags_in_place, get_build_number, get_pipeline
 
@@ -35,15 +40,232 @@ except ImportError:
     REPORTING_AVAILABLE = False
 
 
-def _pod_job_name_label_selector(deployment_id: str) -> str:
-    """Selector for the ``job-name`` pod label; value must be a valid <=63-char label value."""
-    from .k8s_names import sanitize_k8s_label_value
-    return f"job-name={sanitize_k8s_label_value(deployment_id)}"
+# The model servers are vLLM (`modelCommand: vllmServe`). This is the runtime
+# recorded in perf.csv, not a madengine distributed launcher.
+_LLM_D_REPORTED_LAUNCHER = "vllm"
+
+
+def llm_d_serving_mode(llmd: Dict[str, Any]) -> str:
+    """Return ``disaggregated`` when prefill replicas run, else ``aggregated``.
+
+    Prefill ``replicas`` of 0, or ``create: false``, is aggregated serving:
+    the chart does not create a prefill role. The value describes that
+    topology. It is not a launcher name.
+    """
+    prefill = llmd.get("prefill") or {}
+    if not isinstance(prefill, dict) or prefill.get("create") is False:
+        return "aggregated"
+    try:
+        replicas = int(prefill.get("replicas") or 0)
+    except (TypeError, ValueError):
+        return "aggregated"
+    return "disaggregated" if replicas > 0 else "aggregated"
+
+
+def llm_d_shape_from_roles(llmd: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Serving shape implied by ``prefill`` and ``decode`` replica counts.
+
+    Each replica is one pod. This is the fallback for when those pods are no
+    longer listable: with the hostname anti-affinity used on this cluster,
+    one pod lands on one node. A live pod list is the real node count.
+    """
+    per_node: Dict[str, int] = {}
+    index = 0
+    for role in ("prefill", "decode"):
+        block = llmd.get(role) or {}
+        if not isinstance(block, dict) or block.get("create") is False:
+            continue
+        try:
+            replicas = int(block.get("replicas") or 0)
+            gpus = int(block.get("gpu_count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if replicas < 1 or gpus < 1:
+            continue
+        for _ in range(replicas):
+            per_node[f"{role}-{index}"] = gpus
+            index += 1
+    return _shape_from_node_gpus(per_node)
+
+
+def llm_d_shape_from_pods(
+    pods: List[Any], name_prefix: str, gpu_resource: str
+) -> Optional[Dict[str, int]]:
+    """Distinct nodes and GPUs of this run's inference-serving pods."""
+    per_node: Dict[str, int] = {}
+    for pod in pods:
+        meta = getattr(pod, "metadata", None)
+        spec = getattr(pod, "spec", None)
+        if meta is None or spec is None:
+            continue
+        name = getattr(meta, "name", "") or ""
+        if name_prefix and not name.startswith(name_prefix):
+            continue
+        labels = getattr(meta, "labels", None) or {}
+        if labels.get("llm-d.ai/inference-serving") not in (None, "true"):
+            continue
+        node = getattr(spec, "node_name", None)
+        if not node:
+            continue
+        gpus = 0
+        for container in getattr(spec, "containers", None) or []:
+            gpus += _container_gpu_request(container, gpu_resource)
+        per_node[node] = per_node.get(node, 0) + gpus
+    return _shape_from_node_gpus(per_node)
+
+
+def _container_gpu_request(container: Any, gpu_resource: str) -> int:
+    resources = getattr(container, "resources", None)
+    requests = getattr(resources, "requests", None) if resources is not None else None
+    if not isinstance(requests, dict):
+        return 0
+    raw = requests.get(gpu_resource)
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def gpu_arch_from_product_name(product: str) -> Optional[str]:
+    """Map an AMD GPU product label to the gfx name rocminfo would print.
+
+    The llm-d benchmark client requests no GPU, so its log never contains
+    ``Name : gfx...``. The serving node's product label is the architecture
+    those GPUs actually are.
+    """
+    name = (product or "").upper().replace("-", "").replace("_", "")
+    if "MI300" in name or "MI325" in name or "MI308" in name:
+        return "gfx942"
+    if "MI250" in name or "MI210" in name or "MI200" in name:
+        return "gfx90a"
+    if "MI100" in name:
+        return "gfx908"
+    return None
+
+
+def _shape_from_node_gpus(per_node: Dict[str, int]) -> Optional[Dict[str, int]]:
+    """``nnodes`` is the number of nodes; ``gpus_per_node`` is uniform when it can be."""
+    total = sum(per_node.values())
+    if not per_node or total < 1:
+        return None
+    nnodes = len(per_node)
+    counts = set(per_node.values())
+    if len(counts) == 1:
+        gpus_per_node = next(iter(counts))
+    elif total % nnodes == 0:
+        gpus_per_node = total // nnodes
+    else:
+        gpus_per_node = max(counts, key=lambda count: list(per_node.values()).count(count))
+    return {"nnodes": nnodes, "gpus_per_node": gpus_per_node, "n_gpus": total}
 
 
 def collector_pod_name(deployment_id: str) -> str:
-    """Consistent name for the temporary PVC collector pod."""
-    return f"collector-{deployment_id[:15]}"
+    """Name for the temporary PVC collector pod.
+
+    A raw prefix of the job name can end on a hyphen
+    (``collector-madengine-vllm-``), which Kubernetes rejects. Sanitize the
+    full id so the name is a DNS label that starts and ends with a letter
+    or digit.
+    """
+    from .k8s_names import sanitize_k8s_object_name
+
+    return sanitize_k8s_object_name("collector", deployment_id, max_total_len=63)
+
+
+_PERF_CSV_BLOCK_RE = re.compile(
+    r"^MADENGINE_PERF_CSV_BEGIN ([A-Za-z0-9._-]+)\r?\n"
+    r"(.*?)\r?\nMADENGINE_PERF_CSV_END \1\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def extract_perf_csv_blocks(log_text: str) -> list:
+    """Return ``(filename, csv_text)`` pairs printed into a container log."""
+    if not log_text:
+        return []
+    return [(m.group(1), m.group(2)) for m in _PERF_CSV_BLOCK_RE.finditer(log_text)]
+
+
+def _artifact_dir_has_perf_csv(local_path: str) -> bool:
+    path = Path(local_path)
+    if not path.is_dir():
+        return False
+    return any(path.rglob("perf.csv")) or any(path.rglob("perf_*.csv"))
+
+
+def perf_csv_artifact_sources(artifacts: list) -> list:
+    """Prefer CSVs copied from a shared volume over copies recovered from logs.
+
+    A cluster with ReadWriteMany storage (for example nfs-banff) fills
+    ``pvc_collection``. A local-path cluster has no shared volume, so the
+    only copies are ``log_csv``. Using both would count each pod twice.
+    """
+    pvc = [art for art in artifacts if art.get("type") == "pvc_collection"]
+    if any(_artifact_dir_has_perf_csv(art.get("local_path", "")) for art in pvc):
+        return pvc
+    return [art for art in artifacts if art.get("type") == "log_csv"]
+
+
+def find_perf_csv(local_path: Path, filename: Optional[str]) -> Optional[Path]:
+    """Find a perf CSV at the top of a collected directory or one level down."""
+    if not local_path.is_dir():
+        return None
+    if filename:
+        direct = local_path / filename
+        if direct.is_file():
+            return direct
+        nested = sorted(p for p in local_path.rglob(filename) if p.is_file())
+        if nested:
+            return nested[0]
+    top = sorted(p for p in local_path.glob("perf_*.csv") if p.is_file())
+    if top:
+        return top[0]
+    nested_perf = sorted(p for p in local_path.rglob("perf_*.csv") if p.is_file())
+    return nested_perf[0] if nested_perf else None
+
+
+def materialize_perf_csvs_from_logs(results_dir: Path, results: dict) -> int:
+    """Write perf CSVs that pods printed to stdout into per-pod directories.
+
+    Used when there is no shared results volume. Each pod's local-path disk
+    is deleted with the pod, but the API still has the container log.
+    """
+    artifacts = results.setdefault("artifacts", [])
+    if any(
+        art.get("type") in ("pvc_collection", "log_csv")
+        and _artifact_dir_has_perf_csv(art.get("local_path", ""))
+        for art in artifacts
+    ):
+        return 0
+
+    written = 0
+    for entry in results.get("logs") or []:
+        pod = entry.get("pod") or "pod"
+        blocks = extract_perf_csv_blocks(entry.get("log") or "")
+        if not blocks:
+            continue
+        dest = results_dir / pod / "log_csv"
+        dest.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for name, body in blocks:
+            safe = Path(name).name
+            if not safe or safe in {".", ".."}:
+                continue
+            text = body if body.endswith("\n") else body + "\n"
+            (dest / safe).write_text(text, encoding="utf-8")
+            count += 1
+        if count:
+            artifacts.append(
+                {
+                    "source": f"pod-log:{pod}",
+                    "local_path": str(dest),
+                    "file_count": count,
+                    "type": "log_csv",
+                    "k8s_pod": pod,
+                }
+            )
+            written += count
+    return written
 
 
 class KubernetesResultsMixin:
@@ -55,16 +277,157 @@ class KubernetesResultsMixin:
         "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
         "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
         "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-        "data_download_duration,build_number,additional_docker_run_options"
+        "data_download_duration,build_number,additional_docker_run_options,"
+        "serving_mode"
     )
 
     def _kubectl_cmd(self, *args: str) -> List[str]:
-        """Build a kubectl command, honoring ``k8s.kubeconfig``."""
+        """Build a kubectl command, honoring ``k8s.kubeconfig``.
+
+        Job creation uses the Python client, which reads this path. Result
+        collection shells out to kubectl, which otherwise falls back to
+        localhost:8080 when ``KUBECONFIG`` is unset.
+        """
         cmd = ["kubectl"]
         kubeconfig = self.k8s_config.get("kubeconfig")
         if kubeconfig:
-            cmd += ["--kubeconfig", os.path.expanduser(kubeconfig)]
+            cmd += ["--kubeconfig", os.path.expanduser(str(kubeconfig))]
         return cmd + list(args)
+
+    def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:
+        """Same launcher resolution the job template uses."""
+        return resolve_distributed_launch(
+            getattr(self.config, "additional_context", None),
+            self.manifest,
+            model_info,
+        )
+
+    def _llm_d_result_shape(self) -> Optional[Dict[str, int]]:
+        """Node and GPU counts of the llm-d servers, for the results table.
+
+        The benchmark client is one CPU pod, so the launch settings describe
+        ``1N×1G``. Prefill and decode are separate pods. Their node names, read
+        while they are still scheduled, are the topology the table shows.
+        Replica counts are the fallback once those pods are gone.
+        """
+        llmd = getattr(self, "llmd_config", None)
+        if not isinstance(llmd, dict) or not llmd:
+            return None
+        shape = self._observed_llm_d_shape() or llm_d_shape_from_roles(llmd)
+        if shape and not getattr(self, "_llm_d_shape_reported", False):
+            self._llm_d_shape_reported = True
+            console = getattr(self, "console", None)
+            if console is not None:
+                console.print(
+                    "[cyan]llm-d serving topology: "
+                    f"{shape['nnodes']}N×{shape['gpus_per_node']}G[/cyan]"
+                )
+        return shape
+
+    def _observed_llm_d_shape(self) -> Optional[Dict[str, int]]:
+        core = getattr(self, "core_v1", None)
+        if core is None:
+            return None
+        prefix = ""
+        if hasattr(self, "_release_prefix"):
+            try:
+                prefix = f"{self._release_prefix()}-modelservice"
+            except Exception:
+                prefix = ""
+        gpu_resource = "amd.com/gpu"
+        k8s_config = getattr(self, "k8s_config", None) or {}
+        if isinstance(k8s_config, dict) and k8s_config.get("gpu_resource_name"):
+            gpu_resource = k8s_config["gpu_resource_name"]
+        try:
+            listed = core.list_namespaced_pod(
+                namespace=getattr(self, "namespace", "default"),
+                label_selector="llm-d.ai/inference-serving=true",
+            )
+        except Exception:
+            return None
+        return llm_d_shape_from_pods(
+            getattr(listed, "items", None) or [], prefix, gpu_resource
+        )
+
+    def _llm_d_gpu_architecture(self) -> Optional[str]:
+        """gfx name of the GPU the model pods landed on, or None."""
+        if getattr(self, "_llm_d_gpu_arch_resolved", False):
+            return getattr(self, "_llm_d_gpu_arch", None) or None
+        self._llm_d_gpu_arch_resolved = True
+        self._llm_d_gpu_arch = self._gpu_arch_from_serving_node()
+        return self._llm_d_gpu_arch
+
+    def _gpu_arch_from_serving_node(self) -> Optional[str]:
+        core = getattr(self, "core_v1", None)
+        if core is None or not isinstance(getattr(self, "llmd_config", None), dict):
+            return None
+        prefix = ""
+        if hasattr(self, "_release_prefix"):
+            try:
+                prefix = f"{self._release_prefix()}-modelservice"
+            except Exception:
+                prefix = ""
+        try:
+            listed = core.list_namespaced_pod(
+                namespace=getattr(self, "namespace", "default"),
+                label_selector="llm-d.ai/inference-serving=true",
+            )
+        except Exception:
+            return None
+        node_name = ""
+        for pod in getattr(listed, "items", None) or []:
+            meta = getattr(pod, "metadata", None)
+            spec = getattr(pod, "spec", None)
+            name = getattr(meta, "name", "") or ""
+            if prefix and not name.startswith(prefix):
+                continue
+            node_name = getattr(spec, "node_name", "") or ""
+            if node_name:
+                break
+        if not node_name:
+            return None
+        try:
+            node = core.read_node(node_name)
+        except Exception:
+            return None
+        labels = getattr(getattr(node, "metadata", None), "labels", None) or {}
+        if not isinstance(labels, dict):
+            return None
+        product = (
+            labels.get("amd.com/gpu.product-name")
+            or labels.get("beta.amd.com/gpu.product-name")
+            or ""
+        )
+        return gpu_arch_from_product_name(str(product))
+
+    def _stamp_llm_d_shape(self, record: Dict[str, Any]) -> None:
+        """Replace the client-pod size with the serving size, when this is llm-d.
+
+        The Model column stays the MAD card name (``--tags``). The Hugging Face
+        repository is the card's ``--model_repo``, not a second name for the row.
+
+        The benchmark client has no distributed launcher, so an unstamped row
+        would say ``kubernetes`` / ``native``. The row records the serving
+        stack instead: deployment ``llm-d``, launcher ``vllm``, and
+        ``serving_mode`` ``disaggregated`` or ``aggregated``.
+        """
+        llmd = getattr(self, "llmd_config", None)
+        if isinstance(llmd, dict) and llmd:
+            reported = getattr(self, "DEPLOYMENT_TYPE", "llm-d")
+            if reported in ("k8s", "kubernetes"):
+                reported = "llm-d"
+            record["deployment_type"] = reported
+            record["launcher"] = _LLM_D_REPORTED_LAUNCHER
+            record["serving_mode"] = llm_d_serving_mode(llmd)
+        shape = self._llm_d_result_shape()
+        if shape:
+            record["n_gpus"] = str(shape["n_gpus"])
+            record["nnodes"] = str(shape["nnodes"])
+            record["gpus_per_node"] = str(shape["gpus_per_node"])
+        arch = self._llm_d_gpu_architecture()
+        current = str(record.get("gpu_architecture") or "").strip()
+        if arch and current in ("", "N/A", "nan", "None"):
+            record["gpu_architecture"] = arch
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """
@@ -102,7 +465,7 @@ class KubernetesResultsMixin:
             # Get pods for this job
             pods = self.core_v1.list_namespaced_pod(
                 namespace=self.namespace,
-                label_selector=_pod_job_name_label_selector(deployment_id),
+                label_selector=pod_job_name_label_selector(deployment_id),
             )
 
             # Get model info and build info from manifest
@@ -121,26 +484,17 @@ class KubernetesResultsMixin:
             else:
                 build_info = {}
 
-            # Check if this is a multi-node distributed job
-            deployment_config = self.manifest.get("deployment_config", {})
-            distributed_config = deployment_config.get("distributed", {})
-            is_distributed = distributed_config.get("enabled", False)
-            nnodes = distributed_config.get("nnodes", 1)
-            is_multinode = is_distributed and nnodes > 1
+            # Same resolution as the job template. nnodes > 1 is the multi-node
+            # signal: the documented distributed block does not set "enabled".
+            launch = self._launch_settings(model_info)
+            nnodes = launch["nnodes"]
+            is_multinode = isinstance(nnodes, int) and nnodes > 1
+            launcher_type = launch["launcher"]
 
-            # Determine launcher_type the same way as _prepare_template_context does
-            # (deployment_config doesn't store launcher_type directly)
-            launcher_config = self.config.additional_context.get("launcher", {})
-            launcher_type = (
-                launcher_config.get("type")
-                if launcher_config.get("type") is not None
-                else distributed_config.get("launcher")
-            )
+            # Reporting sentinel only. Validation already ran in BaseDeployment.
+            launcher_type = launcher_for_reporting(launcher_type, "kubernetes")
 
-            # Normalize launcher based on deployment type and validity
-            launcher_type = normalize_launcher(launcher_type, "kubernetes")
-
-            is_ray_launcher = launcher_type in ["vllm", "sglang"]
+            is_per_replica = is_per_replica_launcher(launcher_type)
 
             # Sort pods by name to ensure consistent ordering (pod-0 is master)
             sorted_pods = sorted(pods.items, key=lambda p: p.metadata.name)
@@ -155,9 +509,9 @@ class KubernetesResultsMixin:
             per_node_metrics = []  # Store performance from each node
             results["nodes"] = []  # Store per-node details for display
 
-            # Special handling for Ray-based launchers (vLLM, SGLang)
+            # Special handling for data-parallel launchers (vLLM, SGLang)
             # These report per-replica metrics, need scaling
-            if is_multinode and is_ray_launcher:
+            if is_multinode and is_per_replica:
                 self.console.print(
                     f"[cyan]Multi-node Ray deployment: {nnodes} nodes (Data Parallel mode)[/cyan]"
                 )
@@ -178,9 +532,23 @@ class KubernetesResultsMixin:
 
                 try:
                     # 1. Collect pod logs
-                    log = self.core_v1.read_namespaced_pod_log(
-                        name=pod_name, namespace=self.namespace
+                    # Pods have an extract-scripts init container alongside the main
+                    # workload container, so the container must be named explicitly
+                    # (unlike `kubectl logs`, the API has no defaulting behavior).
+                    primary_container = (
+                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
                     )
+                    # _preload_content=False + manual decode: with the default
+                    # _preload_content=True, this cluster's client returns the raw
+                    # response body stringified (literal "b'...\n...'"), not decoded
+                    # UTF-8 text, which corrupts newline-sensitive performance-log
+                    # parsing below.
+                    log = self.core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self.namespace,
+                        container=primary_container,
+                        _preload_content=False,
+                    ).data.decode("utf-8", errors="replace")
                     log_file = pod_dir / "pod.log"
                     log_file.write_text(log)
                     results["logs"].append({
@@ -216,7 +584,7 @@ class KubernetesResultsMixin:
 
                     if perf_data:
                         # For Ray launchers, this is per-replica metric
-                        if is_multinode and is_ray_launcher:
+                        if is_multinode and is_per_replica:
                             perf_data["is_per_replica"] = True
                         per_node_metrics.append(perf_data)
                         self.console.print(
@@ -262,49 +630,184 @@ class KubernetesResultsMixin:
             # Collect artifacts from PVC before deciding success/failure (needed for multiple_results fallback)
             k8s_pod_names = [p.metadata.name for p in sorted_pods]
             self._collect_from_pvc(deployment_id, results_dir, results, pod_names=k8s_pod_names)
+            n_log_csvs = materialize_perf_csvs_from_logs(results_dir, results)
+            if n_log_csvs:
+                self.console.print(
+                    f"[green]✓ Recovered {n_log_csvs} performance CSV(s) from pod logs[/green]"
+                )
+
+            # Prefer the card's multiple_results CSV when present (same as local
+            # Docker). A log line "performance: ..." is only a fallback for cards
+            # without that CSV. Otherwise llm-d would keep one tokens_per_second
+            # row and drop the serving metric set in the CSV.
+            resolved_csv_path = None
+            if (model_info.get("multiple_results") or "").strip():
+                resolved_csv_path = self._resolve_multiple_results_csv(
+                    results_dir, results, model_info
+                )
 
             # ========================================================================
-            # Aggregate per-node metrics
+            # Record performance: multiple_results CSV, else per-node log metrics
             # ========================================================================
-            if per_node_metrics:
+            if resolved_csv_path and REPORTING_AVAILABLE:
+                # Docker-compatible flow: produce perf.csv, perf_entry.*, perf_super.*
+                gpu_arch = "N/A"
+                if results.get("logs"):
+                    log_content = results["logs"][0].get("log", "")
+                    m = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
+                    if m:
+                        gpu_arch = m.group(1)
+                self._ensure_perf_csv_exists()
+                common_info = self._build_common_info_dict(
+                    model_info, build_info, deployment_id, gpu_arch
+                )
+                common_info_path = Path("common_info.json")
+                with open(common_info_path, "w", encoding="utf-8") as f:
+                    json.dump(common_info, f, indent=2)
+                update_perf_csv(
+                    perf_csv="perf.csv",
+                    multiple_results=str(resolved_csv_path),
+                    common_info=str(common_info_path),
+                    model_name=model_info.get("name", ""),
+                )
+                scripts_path = model_info.get("scripts", "")
+                scripts_base_dir = scripts_base_dir_from(scripts_path)
+                num_entries = update_perf_super_json(
+                    perf_super_json="perf_super.json",
+                    multiple_results=str(resolved_csv_path),
+                    common_info=str(common_info_path),
+                    model_name=model_info.get("name", ""),
+                    scripts_base_dir=scripts_base_dir,
+                )
+                update_perf_super_csv(
+                    perf_super_json="perf_super.json",
+                    perf_super_csv="perf_super.csv",
+                    num_entries=num_entries,
+                )
+                # Build successful_runs for display (one entry per CSV row)
+                import csv as _csv
+
+                model_name = model_info.get("name", "")
+                with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        row = {k.strip(): v for k, v in row.items() if k}
+                        if row.get("performance") and row.get("metric"):
+                            display_model = f"{model_name}_{row.get('model', '')}"
+                            record = self._create_multiple_result_row_record(
+                                model_info,
+                                build_info,
+                                deployment_id,
+                                {
+                                    "model": display_model,
+                                    "performance": row.get("performance"),
+                                    "metric": row.get("metric", ""),
+                                    "gpu_architecture": gpu_arch,
+                                    "duration": row.get("test_duration", "N/A"),
+                                },
+                            )
+                            if record:
+                                results["successful_runs"].append(
+                                    {
+                                        "model": display_model,
+                                        "perf_data": record,
+                                        "nodes": [],
+                                        "per_node_metrics": [
+                                            {
+                                                "model": display_model,
+                                                "performance": row.get("performance"),
+                                                "metric": row.get("metric", ""),
+                                            }
+                                        ],
+                                    }
+                                )
+                self.console.print(
+                    "[green]✓ Updated perf.csv, perf_entry.*, perf_super.* "
+                    "(Docker-compatible)[/green]"
+                )
+            elif resolved_csv_path and not REPORTING_AVAILABLE:
+                # Fallback when reporting module not available: legacy row-by-row write
+                fallback_metrics = self._parse_multiple_results_from_artifacts(
+                    results_dir, results, model_info, build_info
+                )
+                if fallback_metrics:
+                    for item in fallback_metrics:
+                        record = self._create_multiple_result_row_record(
+                            model_info, build_info, deployment_id, item
+                        )
+                        if record:
+                            self._write_to_perf_csv(record)
+                            results["successful_runs"].append(
+                                {
+                                    "model": item["model"],
+                                    "perf_data": record,
+                                    "nodes": [],
+                                    "per_node_metrics": [item],
+                                }
+                            )
+                    self.console.print(
+                        f"[green]✓ Wrote {len(fallback_metrics)} row(s) from "
+                        "multiple_results to perf.csv[/green]"
+                    )
+                else:
+                    error_msg = "No performance metrics found from any node"
+                    failure_record = self._create_failure_record(
+                        model_info, build_info, deployment_id, error_msg
+                    )
+                    self._write_to_perf_csv(failure_record)
+                    results["failed_runs"].append(
+                        {
+                            "model": model_info.get("name", "Unknown"),
+                            "error": error_msg,
+                            "nodes": results["nodes"],
+                        }
+                    )
+                    self.console.print(
+                        "[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
+                    )
+            elif per_node_metrics:
                 # Special handling for Ray launchers - multiply by nnodes
-                if is_multinode and is_ray_launcher:
+                if is_multinode and is_per_replica:
                     original_perf = per_node_metrics[0]["performance"]
                     aggregated_perf = original_perf * nnodes
                     self.console.print(
                         f"[green]  Per-replica: {original_perf:.1f} req/s[/green]"
                     )
                     self.console.print(
-                        f"[green]  Total capacity: {aggregated_perf:.1f} req/s ({nnodes} nodes)[/green]"
+                        f"[green]  Total capacity: {aggregated_perf:.1f} req/s "
+                        f"({nnodes} nodes)[/green]"
                     )
 
-                    # Create aggregated record manually for Ray
                     aggregated_record = {
                         "model": per_node_metrics[0]["model"],
                         "performance": aggregated_perf,
                         "metric": per_node_metrics[0]["metric"],
                         "status": "SUCCESS",
-                        "topology": f"{nnodes}N×{per_node_metrics[0].get('local_gpus', 1)}G",
+                        "topology": (
+                            f"{nnodes}N×{per_node_metrics[0].get('local_gpus', 1)}G"
+                        ),
                         "nnodes": nnodes,
                         "launcher": launcher_type or "N/A",
                         "deployment_type": "kubernetes",
-                        "gpu_architecture": per_node_metrics[0].get("gpu_architecture", "N/A"),
+                        "gpu_architecture": per_node_metrics[0].get(
+                            "gpu_architecture", "N/A"
+                        ),
                         "duration": per_node_metrics[0].get("duration", "N/A"),
                         "data_name": per_node_metrics[0].get("data_name", "N/A"),
-                        "data_provider": per_node_metrics[0].get("data_provider", "N/A"),
+                        "data_provider": per_node_metrics[0].get(
+                            "data_provider", "N/A"
+                        ),
                         "aggregation_method": "scaled_by_nnodes",
-                        "nodes_contributing": nnodes
+                        "nodes_contributing": nnodes,
                     }
                 else:
-                    # Use new aggregation logic for other launchers
                     aggregated_record = self._aggregate_node_metrics(
                         per_node_metrics,
                         nnodes,
-                        launcher_type
+                        launcher_type,
                     )
 
                 if aggregated_record:
-                    # Full reporting pipeline: perf_entry at project root, then update_* (same as local/SLURM)
                     self._ensure_perf_csv_exists()
                     run_details_dict = self._build_perf_entry_from_aggregated(
                         aggregated_record, model_info, build_info, deployment_id
@@ -313,9 +816,15 @@ class KubernetesResultsMixin:
                     with open(perf_entry_path, "w", encoding="utf-8") as f:
                         json.dump(run_details_dict, f, indent=2)
                     if run_details_dict.get("status") == "SUCCESS":
-                        update_perf_csv(perf_csv="perf.csv", single_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv",
+                            single_result=str(perf_entry_path),
+                        )
                     else:
-                        update_perf_csv(perf_csv="perf.csv", exception_result=str(perf_entry_path))
+                        update_perf_csv(
+                            perf_csv="perf.csv",
+                            exception_result=str(perf_entry_path),
+                        )
                     scripts_path = model_info.get("scripts", "")
                     scripts_base_dir = scripts_base_dir_from(scripts_path)
                     try:
@@ -337,140 +846,42 @@ class KubernetesResultsMixin:
                             num_entries=num_entries,
                         )
                     except Exception as e:
-                        self.console.print(f"[yellow]⚠ Could not update perf_super: {e}[/yellow]")
-                    results["successful_runs"].append({
-                        "model": model_info.get("name"),
-                        "perf_data": aggregated_record,
-                        "nodes": results["nodes"],
-                        "per_node_metrics": per_node_metrics
-                    })
-                    self.console.print(
-                        f"[green]✓ Aggregated performance from {len(per_node_metrics)} nodes[/green]"
+                        self.console.print(
+                            f"[yellow]⚠ Could not update perf_super: {e}[/yellow]"
+                        )
+                    results["successful_runs"].append(
+                        {
+                            "model": run_details_dict.get("model")
+                            or model_info.get("name"),
+                            "perf_data": aggregated_record,
+                            "nodes": results["nodes"],
+                            "per_node_metrics": per_node_metrics,
+                        }
                     )
                     self.console.print(
-                        f"[green]✓ Updated perf_entry.json, perf.csv, perf_super.* (Docker-compatible)[/green]"
+                        f"[green]✓ Aggregated performance from "
+                        f"{len(per_node_metrics)} nodes[/green]"
+                    )
+                    self.console.print(
+                        "[green]✓ Updated perf_entry.json, perf.csv, perf_super.* "
+                        "(Docker-compatible)[/green]"
                     )
             else:
-                # No performance from log: try multiple_results CSV (same contract as local Docker)
-                # Resolve single CSV path (one pod) or merged CSV path (multi-pod with sum/avg rules)
-                resolved_csv_path = self._resolve_multiple_results_csv(
-                    results_dir, results, model_info
+                error_msg = "No performance metrics found from any node"
+                failure_record = self._create_failure_record(
+                    model_info, build_info, deployment_id, error_msg
                 )
-                if resolved_csv_path and REPORTING_AVAILABLE:
-                    # Docker-compatible flow: produce perf.csv, perf_entry.*, perf_super.*
-                    gpu_arch = "N/A"
-                    if results.get("logs"):
-                        log_content = results["logs"][0].get("log", "")
-                        m = re.search(r"(?:🔹\s*)?Name\s*:\s*(gfx\w+)", log_content)
-                        if m:
-                            gpu_arch = m.group(1)
-                    self._ensure_perf_csv_exists()
-                    common_info = self._build_common_info_dict(
-                        model_info, build_info, deployment_id, gpu_arch
-                    )
-                    common_info_path = Path("common_info.json")
-                    with open(common_info_path, "w", encoding="utf-8") as f:
-                        json.dump(common_info, f, indent=2)
-                    update_perf_csv(
-                        perf_csv="perf.csv",
-                        multiple_results=str(resolved_csv_path),
-                        common_info=str(common_info_path),
-                        model_name=model_info.get("name", ""),
-                    )
-                    scripts_path = model_info.get("scripts", "")
-                    scripts_base_dir = scripts_base_dir_from(scripts_path)
-                    num_entries = update_perf_super_json(
-                        perf_super_json="perf_super.json",
-                        multiple_results=str(resolved_csv_path),
-                        common_info=str(common_info_path),
-                        model_name=model_info.get("name", ""),
-                        scripts_base_dir=scripts_base_dir,
-                    )
-                    update_perf_super_csv(
-                        perf_super_json="perf_super.json",
-                        perf_super_csv="perf_super.csv",
-                        num_entries=num_entries,
-                    )
-                    # Build successful_runs for display (one entry per CSV row)
-                    import csv as _csv
-                    model_name = model_info.get("name", "")
-                    with open(resolved_csv_path, "r", encoding="utf-8", errors="ignore") as f:
-                        reader = _csv.DictReader(f)
-                        for row in reader:
-                            row = {k.strip(): v for k, v in row.items() if k}
-                            if row.get("performance") and row.get("metric"):
-                                display_model = f"{model_name}_{row.get('model', '')}"
-                                record = self._create_multiple_result_row_record(
-                                    model_info, build_info, deployment_id,
-                                    {
-                                        "model": display_model,
-                                        "performance": row.get("performance"),
-                                        "metric": row.get("metric", ""),
-                                        "gpu_architecture": gpu_arch,
-                                        "duration": row.get("test_duration", "N/A"),
-                                    },
-                                )
-                                if record:
-                                    results["successful_runs"].append({
-                                        "model": display_model,
-                                        "perf_data": record,
-                                        "nodes": [],
-                                        "per_node_metrics": [{"model": display_model, "performance": row.get("performance"), "metric": row.get("metric", "")}],
-                                    })
-                    self.console.print(
-                        f"[green]✓ Updated perf.csv, perf_entry.*, perf_super.* (Docker-compatible)[/green]"
-                    )
-                elif resolved_csv_path and not REPORTING_AVAILABLE:
-                    # Fallback when reporting module not available: legacy row-by-row write
-                    fallback_metrics = self._parse_multiple_results_from_artifacts(
-                        results_dir, results, model_info, build_info
-                    )
-                    if fallback_metrics:
-                        for item in fallback_metrics:
-                            record = self._create_multiple_result_row_record(
-                                model_info, build_info, deployment_id, item
-                            )
-                            if record:
-                                self._write_to_perf_csv(record)
-                                results["successful_runs"].append({
-                                    "model": item["model"],
-                                    "perf_data": record,
-                                    "nodes": [],
-                                    "per_node_metrics": [item],
-                                })
-                        self.console.print(
-                            f"[green]✓ Wrote {len(fallback_metrics)} row(s) from multiple_results to perf.csv[/green]"
-                        )
-                if not resolved_csv_path:
-                    # No multiple_results CSV found: record failure
-                    error_msg = "No performance metrics found from any node"
-                    failure_record = self._create_failure_record(
-                        model_info, build_info, deployment_id, error_msg
-                    )
-                    self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
+                self._write_to_perf_csv(failure_record)
+                results["failed_runs"].append(
+                    {
                         "model": model_info.get("name", "Unknown"),
                         "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
-                    self.console.print(
-                        f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
-                    )
-                elif resolved_csv_path and not REPORTING_AVAILABLE and not results.get("successful_runs"):
-                    # Legacy path ran but produced no valid rows
-                    error_msg = "No performance metrics found from any node"
-                    failure_record = self._create_failure_record(
-                        model_info, build_info, deployment_id, error_msg
-                    )
-                    self._write_to_perf_csv(failure_record)
-                    results["failed_runs"].append({
-                        "model": model_info.get("name", "Unknown"),
-                        "error": error_msg,
-                        "nodes": results["nodes"]
-                    })
-                    self.console.print(
-                        f"[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
-                    )
+                        "nodes": results["nodes"],
+                    }
+                )
+                self.console.print(
+                    "[yellow]⚠ No performance metrics found, recorded as FAILED[/yellow]"
+                )
 
             # 4. Generate summary
             self._generate_results_summary(results, results_dir)
@@ -531,6 +942,7 @@ class KubernetesResultsMixin:
             {"pattern": "results*", "type": "profiling"},
             {"pattern": "*.db", "type": "profiling"},
             {"pattern": "trace.*", "type": "tracing"},
+            {"pattern": "*.pftrace", "type": "tracing"},
             {"pattern": "prof.csv", "type": "profiling"},  # Raw profiler output before post-script renames it
             {"pattern": "gpu_info_*.csv", "type": "profiling"},
             {"pattern": "library_trace.csv", "type": "tracing"},
@@ -561,7 +973,7 @@ class KubernetesResultsMixin:
                         cp_cmd = self._kubectl_cmd(
                             "cp",
                             f"{self.namespace}/{pod_name}:/workspace/{filename}",
-                            str(local_path)
+                            str(local_path),
                         )
 
                         cp_result = subprocess.run(
@@ -590,7 +1002,7 @@ class KubernetesResultsMixin:
                     cp_cmd = self._kubectl_cmd(
                         "cp",
                         f"{self.namespace}/{pod_name}:/workspace/{pattern}",
-                        str(local_path)
+                        str(local_path),
                     )
 
                     cp_result = subprocess.run(
@@ -620,14 +1032,21 @@ class KubernetesResultsMixin:
                 pass  # File not found or not accessible - this is expected
 
         # Try to collect known output directories using kubectl cp directly (during sleep period)
-        output_directories = ["rocprof_output", "rpd_output", "trace_output"]
+        output_directories = [
+            "rocprof_output",
+            "rpd_output",
+            "trace_output",
+            "rocm_trace_lite_output",
+            "torch_profiler_output",
+            "tracelens_output",
+        ]
         for dir_name in output_directories:
             try:
                 local_dir = dest_dir / dir_name
                 cp_cmd = self._kubectl_cmd(
                     "cp",
                     f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
-                    str(local_dir)
+                    str(local_dir),
                 )
 
                 cp_result = subprocess.run(
@@ -681,6 +1100,13 @@ class KubernetesResultsMixin:
             pod_names: Full Kubernetes pod names for this job (ordered)
         """
         from .kubernetes import assign_pvc_subdirs_to_pods
+
+        if getattr(self, "_results_layout", "shared") == "per_pod":
+            self.console.print(
+                "[dim]Per-pod local results volumes; pod logs were collected. "
+                "No shared ReadWriteMany volume to copy.[/dim]"
+            )
+            return
 
         pvc_name = f"{deployment_id}-results"
 
@@ -920,14 +1346,10 @@ class KubernetesResultsMixin:
             Dict with all perf.csv fields marked as FAILED
         """
         # Get topology information for failure record
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
 
         # Create a record with the same structure as successful runs
         # but with performance=0, metric="", and status="FAILED"
@@ -977,6 +1399,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 
@@ -997,13 +1420,10 @@ class KubernetesResultsMixin:
         """Build full run_details dict from aggregated record for perf_entry and update_* pipeline."""
         from madengine.utils.config_parser import ConfigParser
 
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         test_duration = aggregated_record.get("test_duration") or aggregated_record.get("duration", "")
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -1036,6 +1456,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(run_details)
         flatten_tags_in_place(run_details)
         try:
             scripts_path = model_info.get("scripts", "")
@@ -1060,17 +1481,13 @@ class KubernetesResultsMixin:
         Same shape as container_runner create_run_details_dict; model/performance/metric
         are omitted so they are filled from the multiple_results CSV.
         """
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
         total_gpus = nnodes * nproc_per_node
         gpus_per_node = str(nproc_per_node)
         nnodes_str = str(nnodes)
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         result = {
             "n_gpus": str(total_gpus),
             "nnodes": nnodes_str,
@@ -1098,6 +1515,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 
@@ -1112,15 +1530,10 @@ class KubernetesResultsMixin:
         Build one perf.csv row for a single row from a multiple_results CSV.
         Same shape as _create_failure_record but with SUCCESS and item's performance/metric/model.
         """
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        nnodes = distributed_config.get("nnodes", 1)
-        nproc_per_node = distributed_config.get("nproc_per_node")
-        if nproc_per_node is None:
-            nproc_per_node = int(model_info.get("n_gpus", 1))
-
-        # Launcher: use distributed.launcher when set, otherwise "native" for k8s
-        launcher = normalize_launcher(distributed_config.get("launcher"), "kubernetes")
+        launch = self._launch_settings(model_info)
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        launcher = launcher_for_reporting(launch["launcher"], "kubernetes")
         result = {
             "model": item.get("model", model_info.get("name", "")),
             "n_gpus": str(nnodes * nproc_per_node),
@@ -1152,6 +1565,7 @@ class KubernetesResultsMixin:
             "build_number": get_build_number(),
             "additional_docker_run_options": model_info.get("additional_docker_run_options", ""),
         }
+        self._stamp_llm_d_shape(result)
         flatten_tags_in_place(result)
         return result
 
@@ -1181,17 +1595,8 @@ class KubernetesResultsMixin:
             if gpu_arch_match:
                 gpu_arch = gpu_arch_match.group(1)
         parsed_list = []
-        for art in results.get("artifacts", []):
-            if art.get("type") != "pvc_collection":
-                continue
-            local_path = Path(art.get("local_path", ""))
-            if not local_path.is_dir():
-                continue
-            # Prefer exact filename (same as Docker multiple_results); fallback to any perf_*.csv
-            csv_path = (local_path / filename) if filename else None
-            if not csv_path or not csv_path.is_file():
-                perf_csvs = sorted(local_path.glob("perf_*.csv"))
-                csv_path = perf_csvs[0] if perf_csvs else None
+        for art in perf_csv_artifact_sources(results.get("artifacts", [])):
+            csv_path = find_perf_csv(Path(art.get("local_path", "")), filename)
             if not csv_path or not csv_path.is_file():
                 continue
             try:
@@ -1379,16 +1784,8 @@ class KubernetesResultsMixin:
         multiple_results_file = model_info.get("multiple_results")
         filename = Path(multiple_results_file).name if multiple_results_file else None
         csv_paths: List[Path] = []
-        for art in results.get("artifacts", []):
-            if art.get("type") != "pvc_collection":
-                continue
-            local_path = Path(art.get("local_path", ""))
-            if not local_path.is_dir():
-                continue
-            csv_path = (local_path / filename) if filename else None
-            if not csv_path or not csv_path.is_file():
-                perf_csvs = sorted(local_path.glob("perf_*.csv"))
-                csv_path = perf_csvs[0] if perf_csvs else None
+        for art in perf_csv_artifact_sources(results.get("artifacts", [])):
+            csv_path = find_perf_csv(Path(art.get("local_path", "")), filename)
             if csv_path and csv_path.is_file():
                 csv_paths.append(csv_path)
         if not csv_paths:

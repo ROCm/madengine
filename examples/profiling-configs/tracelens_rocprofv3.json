@@ -1,0 +1,15 @@
+{
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "tools": [
+    {
+      "name": "rocprofv3_lightweight"
+    },
+    {
+      "name": "tracelens",
+      "env_vars": {
+        "TRACELENS_MODE": "rocprof"
+      }
+    }
+  ]
+}
