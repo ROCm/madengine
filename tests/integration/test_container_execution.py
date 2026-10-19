@@ -206,7 +206,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
@@ -260,7 +260,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
@@ -305,7 +305,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
