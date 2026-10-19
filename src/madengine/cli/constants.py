@@ -17,6 +17,7 @@ class ExitCode(IntEnum):
     BUILD_FAILURE = 2
     RUN_FAILURE = 3
     INVALID_ARGS = 4
+    GPU_WEDGED = 5
 
 
 # Valid values for validation
