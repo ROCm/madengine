@@ -6,6 +6,10 @@ Complete reference for all distributed execution launchers supported by madengin
 
 ## Overview
 
+> For how a distributed inference workload is *configured* (models.yaml,
+> configs/*.yaml, cluster.sh, or mad-config.yaml), see
+> [Distributed Config](distributed-config.md).
+
 madengine provides unified support for multiple distributed frameworks, enabling seamless execution across training and inference workloads on both Kubernetes and SLURM clusters.
 
 ### Supported Launchers

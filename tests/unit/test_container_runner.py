@@ -1066,6 +1066,26 @@ class TestGitSafeDirectory:
         )
         assert result.returncode == 3
 
+    def test_broken_worktree_gitdir_does_not_fail(self, tmp_path):
+        """A .git file pointing outside the mount must not abort the run."""
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").write_text(
+            "gitdir: /nonexistent/gitdir\n", encoding="utf-8"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command(str(workspace))],
+            cwd=workspace,
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
     def test_path_with_a_space_is_quoted(self):
         from madengine.execution.container_runner import git_safe_directory_command
 
@@ -1373,3 +1393,56 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
             self._run(tmp_path, monkeypatch, "perf_model.csv")
 
         assert "Could not delete the stale results file" in capsys.readouterr().out
+
+
+class TestScriptsDirResolution:
+    """A model's `scripts` entry must not name a directory that holds the copy destination.
+
+    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in a container whose working
+    directory is /myworkspace. Any source equal to or containing the destination copies it into
+    itself: `cp ./. run_directory/` exits 1, while `cp /. run_directory/` does not refuse at all
+    -- it walks the filesystem, measured at 1.8 GB in two minutes.
+
+    Both sides are resolved against the working directory first, so the judgement is about which
+    directory is copied rather than how it is spelled.
+    """
+
+    DEST = "run_directory"
+
+    @pytest.mark.parametrize("entry,why", [
+        ("run.sh", "no directory at all: the source becomes /."),
+        ("", "same"),
+        ("./run.sh", "the working directory, which holds the destination"),
+        ("/run.sh", "the filesystem root"),
+        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
+        ("../run.sh", "the parent of the working directory"),
+        ("/myworkspace/run.sh", "the working directory written absolutely"),
+        ("run_directory/run.sh", "the destination itself"),
+        ("./run_directory/run.sh", "the destination, spelled differently"),
+    ])
+    def test_a_source_holding_the_destination_is_refused(self, entry, why):
+        with pytest.raises(ValueError):
+            ContainerRunner._scripts_dir(entry, self.DEST, "m")
+
+    @pytest.mark.parametrize("entry,expected", [
+        ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
+        ("scripts/m/run.py", "scripts/m"),
+        ("scripts/m/sub/run.sh", "scripts/m/sub"),
+        # Resolves to the same directory as the first case, so it must be judged the same way.
+        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
+        # Outside the workspace entirely: it cannot contain the destination.
+        ("../opt/bench/run.sh", "../opt/bench"),
+        ("/opt/bench/run.sh", "/opt/bench"),
+    ])
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+        assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
+
+    def test_the_caller_never_builds_a_self_copy(self):
+        """Stated on the command the caller builds, not on the helper's return value."""
+        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
+                      "/myworkspace/run.sh", "run_directory/run.sh"):
+            try:
+                src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
+            except ValueError:
+                continue
+            raise AssertionError(f"{entry!r} produced copy source {src + '/.'!r}")

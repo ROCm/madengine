@@ -33,6 +33,11 @@ def apply_deployment_config(config: Any, load_fn: Callable[[Dict[str, Any]], Dic
     return full_config
 
 
+# Key under which load_slurm_config records the env_vars keys that came only
+# from a preset (defaults.json / profiles/*.json), not from the user.
+PRESET_ENV_KEYS = "_preset_env_keys"
+
+
 class ConfigLoader:
     """Smart configuration loader with preset support."""
     
@@ -220,8 +225,24 @@ class ConfigLoader:
             config = cls.deep_merge(config, profile_preset)
         
         # Layer 3: User configuration (highest priority)
+        preset_env = dict(config.get("env_vars") or {})
         config = cls.deep_merge(config, user_config)
-        
+
+        # Once merged, a preset's env_vars are indistinguishable from ones the
+        # user supplied, and a self-managed launcher (slurm_multi) must not be
+        # handed them: it runs the card's own script, which owns its environment.
+        # Record which keys ONLY a preset set, so that path can leave them out.
+        # See SlurmDeployment._user_env_vars for the incident.
+        #
+        # Keys already marked stay marked, so loading an already-loaded config
+        # (whose env_vars now hold the preset values) does not launder them into
+        # user-supplied ones.
+        user_env = user_config.get("env_vars") or {}
+        carried = set(user_config.get(PRESET_ENV_KEYS) or [])
+        config[PRESET_ENV_KEYS] = sorted(
+            k for k in preset_env if k not in user_env or k in carried
+        )
+
         return config
     
     @classmethod

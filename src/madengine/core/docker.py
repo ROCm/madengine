@@ -5,6 +5,7 @@ This module provides a class to run commands inside docker.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import os
 import re
@@ -12,19 +13,41 @@ import shlex
 import typing
 
 # user-defined modules
+from madengine.core import lifecycle
 from madengine.core.console import Console
 
 
 class Docker:
     """Class to run commands inside docker.
 
+    The container's PID 1 is a watchdog that stops the container as soon as
+    madengine stops refreshing a heartbeat file in the bind-mounted workspace.
+    That is what makes a container outliving the run impossible rather than
+    merely unlikely: a cancelled CI job kills madengine's whole process tree
+    without any of our cleanup code running, and a detached container would
+    otherwise keep the GPU busy until someone rebooted the host.
+
+    ``keep_alive`` deliberately opts out of the watchdog, since the point of
+    that flag is to leave the container behind for manual inspection.
+
     Attributes:
         docker_sha (str): The docker sha.
+        container_name (str): The container name.
         keep_alive (bool): The keep alive flag.
         console (Console): The console object.
         userid (str): The user id.
         groupid (str): The group id.
     """
+
+    # Class-level defaults so close() stays safe on a half-built instance --
+    # __del__ reaches objects whose __init__ raised part-way through, and that
+    # is exactly the case where a container may already be running.
+    docker_sha = None
+    container_name = None
+    heartbeat_path = None
+    keep_alive = False
+    docker_run_cmd = ""
+    _closed = False
 
     def __init__(
         self,
@@ -48,12 +71,19 @@ class Docker:
             console (Console): The console object.
 
         Raises:
-            RuntimeError: If the container name already exists.
+            RuntimeError: If the container cannot be started.
         """
         # initialize variables
         self.docker_sha = None
+        self.container_name = container_name
         self.keep_alive = keep_alive
+        self._closed = False
         cwd = os.getcwd()
+        # One file per container. A shared heartbeat would stop every other
+        # container from this workspace when this one is closed, and a later
+        # run would keep a cancelled container's watchdog alive.
+        self.heartbeat_name = lifecycle.heartbeat_filename(container_name)
+        self.heartbeat_path = os.path.join(cwd, self.heartbeat_name)
         self.console = console if console is not None else Console()
         self.userid = self.console.sh("id -u")
         self.groupid = self.console.sh("id -g")
@@ -61,24 +91,14 @@ class Docker:
         # check if container name exists — use an exact-match filter so names
         # containing regex metacharacters (e.g. ".", "[") cannot produce false
         # positives, and substring matches are avoided entirely.
-        container_name_quoted = shlex.quote(container_name)
         container_name_regex = shlex.quote(f"^/{re.escape(container_name)}$")
         container_name_exists = self.console.sh(
             f"docker container ps -aq --filter name={container_name_regex}"
         )
         # if container name exists, clean it up automatically
         if container_name_exists:
-            print(
-                f"⚠️  Container '{container_name}' already exists. Cleaning up..."
-            )
-            # Stop the container (with timeout)
-            self.console.sh(
-                f"docker stop -t 1 {container_name_quoted} 2>/dev/null || true"
-            )
-            # Remove the container
-            self.console.sh(
-                f"docker rm -f {container_name_quoted} 2>/dev/null || true"
-            )
+            print(f"⚠️  Container '{container_name}' already exists. Cleaning up...")
+            lifecycle.reap(container_name)
             print(f"✓ Cleaned up existing container '{container_name}'")
 
         # run docker command
@@ -105,22 +125,108 @@ class Docker:
                     raise ValueError(f"Invalid environment variable name: {evar!r}")
                 command += "-e " + evar + "=" + shlex.quote(str(envVars[evar])) + " "
 
+        # Label the container so `madengine cleanup` can find it later even if
+        # this process died before it could record anything.
+        command += (
+            f"--label {lifecycle.LABEL_SESSION}={shlex.quote(lifecycle.session_id())} "
+            f"--label {lifecycle.LABEL_OWNER_PID}={os.getpid()} "
+        )
         command += "--workdir /myworkspace/ "
         command += "--name " + shlex.quote(container_name) + " "
         command += shlex.quote(image) + " "
-        
-        # Use 'cat' to keep container alive (blocks waiting for stdin)
-        # Works reliably across all deployment types (local, k8s, slurm)
-        # with fresh image pulls preventing corrupted layer issues
-        command += "cat "
-        self.docker_run_cmd = command
-        self.console.sh(command)
 
-        # find container sha — use the same exact-match filter as the existence
-        # check above to avoid false positives from substring/regex matches.
-        self.docker_sha = self.console.sh(
-            f"docker ps -aqf name={container_name_regex}"
+        try:
+            if keep_alive:
+                # No watchdog: the container is meant to outlive this process.
+                self.docker_run_cmd = command + "cat "
+                self.console.sh(self.docker_run_cmd)
+            else:
+                self._start_with_watchdog(command)
+
+            # find container sha
+            self.docker_sha = self._resolve_container_id(container_name)
+            lifecycle.register(self.docker_sha, container_name)
+        except Exception:
+            # The container may already be running. close() reaps by name
+            # even when the id was never resolved.
+            self.close()
+            raise
+
+    def _start_with_watchdog(self, command: str) -> None:
+        """Start the container under the heartbeat watchdog.
+
+        Falls back to the historical ``cat`` if the watchdog cannot run, so an
+        image without a POSIX shell still works -- with a warning, since such
+        a container is once again able to outlive madengine.
+
+        Args:
+            command (str): The ``docker run`` line, up to but excluding the
+                container command.
+
+        Raises:
+            RuntimeError: If the container cannot be started at all.
+        """
+        # The watchdog exits immediately if the heartbeat file is missing, so
+        # the first beat has to land before the container starts.
+        lifecycle.start_heartbeat(self.heartbeat_path)
+        self.docker_run_cmd = command + lifecycle.container_watchdog_command(
+            self.heartbeat_name
         )
+        self.console.sh(self.docker_run_cmd)
+
+        state = lifecycle.container_state(self.container_name)
+        if state == "running":
+            return
+        # None means the daemon did not answer. A live state means the
+        # watchdog container is still up. Either way, starting `cat` would
+        # replace it with a container that survives cancellation.
+        if state is None or state in lifecycle._LIVE_STATES:
+            raise RuntimeError(
+                f"Container '{self.container_name}' state is "
+                f"{state or 'unknown'}; refusing to start an unwatched "
+                "container"
+            )
+
+        print(
+            f"⚠️  Container '{self.container_name}' did not stay up under the "
+            f"heartbeat watchdog; the image may lack a POSIX shell. Falling "
+            f"back to an unwatched container — it will NOT stop by itself if "
+            f"this run is cancelled.",
+            flush=True,
+        )
+        lifecycle.stop_heartbeat(self.heartbeat_path)
+        self.heartbeat_path = None
+        lifecycle.reap(self.container_name)
+        self.docker_run_cmd = command + "cat "
+        self.console.sh(self.docker_run_cmd)
+
+        state = lifecycle.container_state(self.container_name)
+        if state != "running":
+            raise RuntimeError(
+                f"Container '{self.container_name}' failed to start "
+                f"(state: {state or 'gone'})"
+            )
+
+    def _resolve_container_id(self, container_name: str) -> str:
+        """Return the full id of the container.
+
+        Args:
+            container_name (str): The container name.
+
+        Returns:
+            str: The full container id.
+
+        Raises:
+            RuntimeError: If the id cannot be resolved.
+        """
+        code, out = lifecycle.docker(
+            ["inspect", "-f", "{{.Id}}", container_name], lifecycle.INSPECT_TIMEOUT
+        )
+        if code != 0 or not out:
+            raise RuntimeError(
+                f"Could not resolve id of container '{container_name}': {out}"
+            )
+        return out.strip()
 
     def sh(self, command: str, timeout: int = 60, secret: bool = False) -> str:
         """Run shell command inside docker.
@@ -140,22 +246,50 @@ class Docker:
             secret=secret,
         )
 
-    def __del__(self):
-        """Destructor of the Docker class."""
-        # stop and remove docker container, if not keep_alive and docker sha exists, else print docker sha.
-        if not getattr(self, "keep_alive", False) and getattr(self, "docker_sha", None):
-            self.console.sh("docker stop -t 1 " + self.docker_sha)
-            self.console.sh("docker rm -f " + self.docker_sha)
+    def close(self) -> None:
+        """Stop and remove the container, unless it is being kept alive."""
+        if self._closed:
+            return
+        self._closed = True
+
+        if self.keep_alive:
+            if self.docker_sha:
+                lifecycle.unregister(self.docker_sha)
+                print("==========================================")
+                print("Keeping docker alive, sha :", self.docker_sha)
+                print(
+                    "Open a bash session in container : ",
+                    "docker exec -it " + self.docker_sha + " bash",
+                )
+                print("Stop container : ", "docker stop -t 1 " + self.docker_sha)
+                print("Remove container : ", "docker rm -f " + self.docker_sha)
+                print("==========================================")
             return
 
-        # print docker sha
-        if getattr(self, "docker_sha", None):
-            print("==========================================")
-            print("Keeping docker alive, sha :", self.docker_sha)
-            print(
-                "Open a bash session in container : ",
-                "docker exec -it " + self.docker_sha + " bash",
-            )
-            print("Stop container : ", "docker stop -t 1 " + self.docker_sha)
-            print("Remove container : ", "docker rm -f " + self.docker_sha)
-            print("==========================================")
+        # Dropping the heartbeat is what stops the container; the reap below
+        # then removes it and reports if it refused to die. Reap by name when
+        # startup failed before the id was resolved, or the container leaks.
+        if self.heartbeat_path:
+            lifecycle.stop_heartbeat(self.heartbeat_path)
+        ref = self.container_name or self.docker_sha
+        if ref:
+            lifecycle.reap(ref, self.docker_sha)
+        if self.docker_sha:
+            lifecycle.unregister(self.docker_sha)
+
+    def __enter__(self) -> "Docker":
+        """Enter the context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        """Exit the context manager, tearing the container down."""
+        self.close()
+
+    def __del__(self):
+        """Destructor of the Docker class."""
+        try:
+            self.close()
+        except Exception:
+            # Destructors must not raise; close() is called explicitly on
+            # every path that matters.
+            pass

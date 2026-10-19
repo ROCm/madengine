@@ -249,6 +249,31 @@ def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
     assert pull_names[-1] == "dockerhub-rocm"
 
 
+def test_docker_env_vars_reach_the_pod_under_runtime_env(tmp_path):
+    ctx = _k8s_template_context(
+        tmp_path=tmp_path,
+        docker_env_vars={"NCCL_IB_HCA": "from-manifest", "KEEP": "1"},
+        env_vars={"NCCL_IB_HCA": "from-runtime"},
+    )
+    template_dir = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "madengine"
+        / "deployment"
+        / "templates"
+        / "kubernetes"
+    )
+    rendered = create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
+    job = list(yaml.safe_load_all(rendered))[0]
+    env = {
+        item["name"]: item["value"]
+        for item in job["spec"]["template"]["spec"]["containers"][0]["env"]
+        if "value" in item
+    }
+    assert env["NCCL_IB_HCA"] == "from-runtime"
+    assert env["KEEP"] == "1"
+
+
 def test_per_pod_data_volume_is_a_local_claim(tmp_path):
     ctx = _k8s_template_context(tmp_path=tmp_path)
     ctx["data_per_pod"] = True
@@ -533,6 +558,8 @@ def _k8s_template_context(
     tmp_path=None,
     launcher_type=None,
     image_info=None,
+    docker_env_vars=None,
+    env_vars=None,
 ):
     """Template context for a minimal single-node job, without touching a cluster.
 
@@ -581,6 +608,10 @@ def _k8s_template_context(
             "nnodes": 1,
             "nproc_per_node": 1,
         }
+    if docker_env_vars is not None:
+        additional_context["docker_env_vars"] = docker_env_vars
+    if env_vars is not None:
+        additional_context["env_vars"] = env_vars
     harness = _Harness()
     harness.config = DeploymentConfig(
         target="k8s",

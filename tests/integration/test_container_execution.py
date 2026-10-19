@@ -202,17 +202,22 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
-        with patch.object(runner, "get_gpu_arg", return_value="--gpus device=0"):
-            with patch.object(runner, "get_cpu_arg", return_value=""):
-                with patch.object(runner, "get_env_arg", return_value=""):
-                    with patch.object(runner, "get_mount_arg", return_value=""):
-                        result = runner.run_container(
-                            model_info, "test-image", timeout=300
-                        )
+        # gather_system_env_details copies a packaged script with shutil.
+        # This test replaces open() for the whole call, and a MagicMock used as a
+        # file descriptor is stdout. Under pytest capture that is a regular file,
+        # so sendfile appends the capture onto itself and never reaches EOF.
+        with patch.object(runner, "gather_system_env_details"):
+            with patch.object(runner, "get_gpu_arg", return_value="--gpus device=0"):
+                with patch.object(runner, "get_cpu_arg", return_value=""):
+                    with patch.object(runner, "get_env_arg", return_value=""):
+                        with patch.object(runner, "get_mount_arg", return_value=""):
+                            result = runner.run_container(
+                                model_info, "test-image", timeout=300
+                            )
 
         assert result["status"] == "SUCCESS"
         assert "test_duration" in result
@@ -251,7 +256,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
@@ -296,7 +301,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 

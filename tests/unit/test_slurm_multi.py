@@ -1478,3 +1478,70 @@ class TestRuntimeSlurmOverrideProvenance:
         )
         assert cfg["_explicit_slurm_keys"] == ["nodes", "partition"]
         assert cfg["slurm"]["nodes"] == 2
+
+
+class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
+    """`--use-image` must not drop the fields a card declares.
+
+    The manifest entry was assembled from an explicit field list, so anything not named in it
+    disappeared. `additional_docker_run_options` was one: it is where a card declares
+    `--device=/dev/infiniband`, its JIT cache mounts and its backend selection. Without them the
+    container starts in a different configuration, the benchmark still produces numbers, and they
+    are labelled with the card that was not used.
+
+    Observed on a gfx950 run as `re-attached docker run options to 1 entry(ies)` -- a workaround
+    applied by hand after noticing the container had come up without its RDMA device.
+    """
+
+    OPTS = "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2 -v /var/cache/mad:/cache"
+
+    @pytest.fixture
+    def card_with_run_options(self, fake_models_two_sglang_disagg):
+        models = [dict(m) for m in fake_models_two_sglang_disagg]
+        models[0]["additional_docker_run_options"] = self.OPTS
+        models[0]["multiple_results"] = "perf_fake_a.csv"
+        return models
+
+    def _manifest(self, tmp_path, models):
+        orch = self._build_orchestrator_stub(tmp_path)
+        manifest_path = tmp_path / "build_manifest.json"
+        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+            mock_dm.return_value.run.return_value = models
+            with patch.object(orch, "_save_deployment_config", return_value=None):
+                orch._execute_with_prebuilt_image(
+                    use_image="rocm/pytorch-private:fake-tag",
+                    manifest_output=str(manifest_path),
+                )
+        return json.loads(manifest_path.read_text())
+
+    def test_docker_run_options_reach_the_manifest(self, tmp_path, card_with_run_options):
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+        assert entry.get("additional_docker_run_options") == self.OPTS, (
+            "the card's docker run options were dropped, so the container would start without "
+            "its RDMA device and backend selection"
+        )
+
+    def test_the_computed_fields_still_win(self, tmp_path, card_with_run_options):
+        """Keeping the card must not let it override what this path computes.
+
+        The card carries a conflicting value for every field this path computes.
+        Without those, the assertions pass even when the card is applied last,
+        and a replaced env_vars dict would still look correct.
+        """
+        card = card_with_run_options[0]
+        card["image"] = "card-image:should-lose"
+        card["docker_image"] = "card-docker:should-lose"
+        card["prebuilt"] = False
+        card["env_vars"] = {
+            "MODEL_NAME": "Fake-A",
+            "DOCKER_IMAGE_NAME": "card-env:should-lose",
+        }
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+        image = "rocm/pytorch-private:fake-tag"
+        assert entry["docker_image"] == image
+        assert entry["image"] == image
+        assert entry["prebuilt"] is True
+        assert entry["env_vars"]["DOCKER_IMAGE_NAME"] == image
+        assert entry["env_vars"]["MODEL_NAME"] == "Fake-A"
+        assert entry["multiple_results"] == "perf_fake_a.csv"
+        assert entry["additional_docker_run_options"] == self.OPTS
