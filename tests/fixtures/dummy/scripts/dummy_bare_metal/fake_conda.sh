@@ -33,6 +33,16 @@ case "$1" in
       fi
     done
     export CONDA_DEFAULT_ENV="$env_name"
+    # Dependency installs are part of env setup. The shim must not run them
+    # on the host; the model script itself still executes.
+    if [[ "$1" == "pip" ]]; then
+      echo "fake conda: skip $*"
+      exit 0
+    fi
+    if [[ "$1" == "python" || "$1" == "python3" ]] && [[ "${2:-}" == "-m" && "${3:-}" == "pip" ]]; then
+      echo "fake conda: skip $*"
+      exit 0
+    fi
     exec "$@"
     ;;
   *) echo "fake conda: unknown $*" ;;

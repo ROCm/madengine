@@ -34,14 +34,15 @@
     "scripts": "scripts/dummy_bare_metal/run.sh",
     "n_gpus": "1",
     "owner": "mad.support@amd.com",
-    "training_precision": "",
+    "training_precision": "fp32",
     "tags": [
       "dummies",
       "dummy_bare_metal"
     ],
     "args": "",
     "conda_env": "mad_dummy_bare_metal",
-    "python_version": "3.11"
+    "python_version": "3.11",
+    "requirements_file": "scripts/dummy_bare_metal/requirements.txt"
   },
   {
     "name": "dummy3",
