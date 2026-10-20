@@ -28,6 +28,8 @@ dependencies = [
   "click>=8.0.0",
   "jinja2>=3.0.0",
   "pyyaml>=6.0",
+  "hydra-core>=1.3",
+  "omegaconf>=2.3",
   "kubernetes>=28.0.0",
   "pytest>=7.0",
   "pytest-cov",
@@ -57,6 +59,14 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.optional-dependencies]
+# Host-side trace analysis for `madengine report tracelens`. Kept optional
+# because TraceLens pins protobuf>=6.31 and xprof, which can conflict with other
+# packages in a shared environment.
+tracelens = [
+  "TraceLens @ git+https://github.com/AMD-AGI/TraceLens.git@6f9bcdbf6cc9911eb650de57b345917ea4d31a17",
+]
+
 [project.scripts]
 madengine = "madengine.cli.app:cli_main"
 
@@ -67,13 +77,20 @@ Issues = "https://github.com/ROCm/madengine/issues"
 Changelog = "https://github.com/ROCm/madengine/blob/develop/CHANGELOG.md"
 
 
+[tool.hatch.metadata]
+# The tracelens extra installs TraceLens from git; hatchling rejects such direct
+# references during metadata generation unless they are allowed here.
+allow-direct-references = true
+
 [tool.hatch.build]
 # scripts/ is listed in .gitignore (to exclude external MAD project scripts/ dirs during dev).
 # presets/**/*.json are excluded by the blanket *.json gitignore rule (for user models.json etc).
 # artifacts bypasses VCS exclusion without risk of duplicate-file errors from force-include.
+# configs/ Hydra groups must ship in the wheel for --config compose.
 artifacts = [
   "src/madengine/scripts/**",
   "src/madengine/deployment/presets/**/*.json",
+  "src/madengine/configs/**",
 ]
 
 [tool.hatch.version]
@@ -94,7 +111,7 @@ distance-dirty = "{base_version}.post{distance}+{vcs}{rev}.d{build_date:%Y%m%d}"
 # Code formatting and linting configuration
 [tool.black]
 line-length = 88
-target-version = ['py39', 'py310', 'py311', 'py312']
+target-version = ['py39', 'py310', 'py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -140,6 +157,7 @@ module = [
     "jsondiff.*",
     "git.*",
     "kubernetes.*",
+    "yaml.*",
 ]
 ignore_missing_imports = true
 

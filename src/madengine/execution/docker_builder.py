@@ -23,8 +23,9 @@ from madengine.core.auth import (
     explain_registry_denial,
     has_ambient_docker_auth,
     login_to_registry,
+    resolve_dockerhub_repository,
 )
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context, redact_secrets
 from madengine.core.context import Context
 from madengine.core.image_digest import parse_push_digest, parse_repo_digest
 from madengine.execution.dockerfile_utils import (
@@ -32,6 +33,32 @@ from madengine.execution.dockerfile_utils import (
     parse_dockerfile_gpu_variables,
 )
 from madengine.utils.ops import PythonicTee
+
+
+def _is_prefix_variant(prefix: str, path: str) -> bool:
+    """Whether path is a Dockerfile variant of this card, not a sibling card.
+
+    Kept:
+        <prefix>.Dockerfile
+        <prefix>.<os>.<vendor>.Dockerfile
+        <prefix>.<ctx>.<os>.<vendor>.Dockerfile
+
+    ``<ctx>`` is ``noctx`` or ``ctx<token>``, the same-card context files
+    (dummy_ctxtest.ctx1, .ctx2a, .noctx). A sibling such as ``kimik3`` or
+    ``glmv5.1`` does not use that token, so ``ls <prefix>.*`` no longer builds it.
+    """
+    if not path.startswith(prefix + "."):
+        return False
+    rest = path[len(prefix) + 1 :]
+    return (
+        re.fullmatch(
+            r"(?:(?:noctx|ctx[A-Za-z0-9_-]*)\.)?"
+            r"(?:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)?"
+            r"Dockerfile",
+            rest,
+        )
+        is not None
+    )
 
 
 class DockerBuilder:
@@ -113,6 +140,16 @@ class DockerBuilder:
                 )
 
         return build_args
+
+    def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
+        """Size of a local image in bytes, or None when docker cannot say."""
+        try:
+            out = self.console.sh(
+                f"docker image inspect -f '{{{{.Size}}}}' {shlex.quote(image)}", canFail=True
+            )
+            return int(str(out).strip().splitlines()[-1])
+        except Exception:
+            return None
 
     def _resolve_base_docker(self, dockerfile: str) -> str:
         """Resolve the base image the Dockerfile builds ``FROM``.
@@ -293,10 +330,9 @@ class DockerBuilder:
 
         # Execute build with log redirection
         with open(log_file_path, mode="w", buffering=1) as outlog:
-            with (
-                redirect_stdout(PythonicTee(outlog, self.live_output)),
-                redirect_stderr(PythonicTee(outlog, self.live_output)),
-            ):
+            with redirect_stdout(
+                PythonicTee(outlog, self.live_output)
+            ), redirect_stderr(PythonicTee(outlog, self.live_output)):
                 # `docker build --pull` resolves the base image itself, so it only
                 # works if this machine can authenticate to the base image's
                 # registry. Log in when — and only when — there is no existing
@@ -354,10 +390,19 @@ class DockerBuilder:
             "base_docker": base_docker,
             "docker_sha": docker_sha,
             "build_duration": build_duration,
-            "build_command": build_command,
+            # Kept for the record only (nothing re-executes it), so it is stored with
+            # MAD_SECRETS_* build-arg values masked: it lands in build_manifest.json and
+            # build_summary.json, which CI archives.
+            "build_command": redact_secrets(build_command),
             "log_file": log_file_path,
             "gpu_vendor": gpu_vendor,  # Add GPU vendor for filtering
         }
+
+        # How much disk a node needs to pull this image. The SLURM node health check
+        # compares it with each candidate's free space on its docker data root.
+        image_size = self._local_image_size_bytes(docker_image)
+        if image_size:
+            build_info["image_size_bytes"] = image_size
 
         # Store built image info
         self.built_images[docker_image] = build_info
@@ -566,9 +611,12 @@ class DockerBuilder:
             "built_images": self.built_images,
             "built_models": self.built_models,
             "context": {
-                "docker_env_vars": self.context.ctx.get("docker_env_vars", {}),
+                # MAD_SECRETS_* stay out of the manifest; see manifest_safe_context.
+                "docker_env_vars": manifest_safe_context(self.context.ctx)["docker_env_vars"]
+                if "docker_env_vars" in self.context.ctx else {},
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
-                "docker_build_arg": self.context.ctx.get("docker_build_arg", {}),
+                "docker_build_arg": manifest_safe_context(self.context.ctx)["docker_build_arg"]
+                if "docker_build_arg" in self.context.ctx else {},
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
                 "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
@@ -742,6 +790,16 @@ class DockerBuilder:
                         {"model": model_info["name"], "error": str(e)}
                     )
 
+        for build_info in build_summary["successful_builds"]:
+            if build_info.get("push_failed"):
+                build_summary["failed_pushes"].append(
+                    {
+                        "model": build_info.get("model"),
+                        "docker_image": build_info.get("docker_image"),
+                        "error": build_info.get("push_error"),
+                    }
+                )
+
         return build_summary
 
     def _check_dockerfile_has_gpu_variables(
@@ -782,6 +840,18 @@ class DockerBuilder:
             # Quote the dockerfile path to prevent shell injection
             dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
+            # A card's dockerfile is a prefix for its own variants:
+            # <prefix>.Dockerfile, <prefix>.<os>.<vendor>.Dockerfile, or a same-card
+            # context file <prefix>.ctx*.<os>.<vendor>.Dockerfile. `ls <prefix>.*`
+            # also matched sibling cards that share the prefix: every card on
+            # docker/vllm_disagg_inference also built vllm_disagg_inference.glmv5.1
+            # and .kimik3, and ran in the GLM-5.1 image, while a
+            # network error on the Kimi one failed the build. Only the card's own
+            # variants are kept.
+            all_dockerfiles = [
+                f for f in all_dockerfiles
+                if _is_prefix_variant(model_info["dockerfile"], f.strip())
+            ]
 
             dockerfiles = {}
             for cur_docker_file in all_dockerfiles:
@@ -904,6 +974,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             results.append(build_info)
@@ -1041,16 +1112,12 @@ class DockerBuilder:
 
         # Determine registry image name based on registry type
         if registry.lower() in ["docker.io", "dockerhub"]:
-            # For DockerHub, always use format: repository:tag
-            # Try to get repository from credentials, fallback to default if not available
-            if (
-                credentials
-                and "dockerhub" in credentials
-                and "repository" in credentials["dockerhub"]
-            ):
-                registry_image = (
-                    f"{credentials['dockerhub']['repository']}:{docker_image}"
-                )
+            # For DockerHub, always use format: repository:tag.
+            # Placeholder repositories (your-org/your-repo) are ignored so a
+            # template credential.json does not retarget the push.
+            repository = resolve_dockerhub_repository(credentials)
+            if repository:
+                registry_image = f"{repository}:{docker_image}"
             else:
                 registry_image = docker_image
         else:
@@ -1122,6 +1189,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             arch_results.append(build_info)

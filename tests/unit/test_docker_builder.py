@@ -37,8 +37,9 @@ def test_create_registry_image_name_uses_dockerhub_repository(docker_builder):
     assert out == "myorg/ci:ci-dummy_dummy.ubuntu.amd"
 
 
+@patch("madengine.core.auth.docker_cli_username", return_value=None)
 def test_create_registry_image_name_without_credentials_matches_local_tag(
-    docker_builder,
+    _username, docker_builder
 ):
     out = docker_builder._create_registry_image_name(
         "ci-dummy_dummy.ubuntu.amd",
@@ -48,6 +49,27 @@ def test_create_registry_image_name_without_credentials_matches_local_tag(
         None,
     )
     assert out == "ci-dummy_dummy.ubuntu.amd"
+
+
+@patch("madengine.core.auth.docker_cli_username", return_value="rocm")
+def test_placeholder_repository_uses_logged_in_mad_private_repo(
+    _username, docker_builder
+):
+    creds = {
+        "dockerhub": {
+            "repository": "your-org/your-repo",
+            "username": "someone",
+            "password": "not-used",
+        }
+    }
+    out = docker_builder._create_registry_image_name(
+        "ci-dummy_torchrun_dummy_torchrun.ubuntu.amd",
+        "dockerhub",
+        None,
+        {"name": "dummy_torchrun"},
+        creds,
+    )
+    assert out == "rocm/mad-private:ci-dummy_torchrun_dummy_torchrun.ubuntu.amd"
 
 
 class TestPushImageRecordsDigest:
@@ -85,9 +107,7 @@ class TestPushImageRecordsDigest:
             return ""
 
         builder = self._builder(sh)
-        builder.push_image(
-            "ci-dummy", "localhost:5000", None, "localhost:5000/ci-dummy"
-        )
+        builder.push_image("ci-dummy", "localhost:5000", None, "localhost:5000/ci-dummy")
 
         push_calls = [
             c for c in builder.console.sh.call_args_list if "docker push" in c.args[0]
@@ -189,24 +209,18 @@ class TestBuildInfoCarriesImageDigest:
             builder.pushed_digests[explicit_registry_image] = DIGEST
             return explicit_registry_image
 
-        with (
-            patch.object(
-                builder,
-                "_get_dockerfiles_for_model",
-                return_value=["docker/dummy.ubuntu"],
-            ),
-            patch.object(
-                builder,
-                "build_image",
-                return_value={"docker_image": "ci-dummy", "model": "dummy"},
-            ),
-            patch.object(builder, "_get_effective_gpu_architecture", return_value=""),
-            patch.object(
-                builder,
-                "_create_registry_image_name",
-                return_value="localhost:5000/ci-dummy",
-            ),
-            patch.object(builder, "push_image", side_effect=fake_push),
+        with patch.object(
+            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
+        ), patch.object(
+            builder,
+            "build_image",
+            return_value={"docker_image": "ci-dummy", "model": "dummy"},
+        ), patch.object(
+            builder, "_get_effective_gpu_architecture", return_value=""
+        ), patch.object(
+            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
+        ), patch.object(
+            builder, "push_image", side_effect=fake_push
         ):
             results = self._run_single_arch(builder)
 
@@ -218,11 +232,43 @@ class TestBuildInfoCarriesImageDigest:
     def test_single_arch_push_without_digest_omits_key(self):
         builder = self._builder()
 
-        with (
+        with patch.object(
+            builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
+        ), patch.object(
+            builder,
+            "build_image",
+            return_value={"docker_image": "ci-dummy", "model": "dummy"},
+        ), patch.object(
+            builder, "_get_effective_gpu_architecture", return_value=""
+        ), patch.object(
+            builder, "_create_registry_image_name", return_value="localhost:5000/ci-dummy"
+        ), patch.object(
+            builder, "push_image", return_value="localhost:5000/ci-dummy"
+        ):
+            results = self._run_single_arch(builder)
+
+        assert results[0]["registry_image"] == "localhost:5000/ci-dummy"
+        assert "image_digest" not in results[0]
+
+
+class TestPushFailureIsReported:
+    """A failed push must be flagged, not just recorded as push_error.
+
+    Regression: a docker login/push failure left the build "successful" with no
+    registry_image, so a Kubernetes run referenced a local-only image tag.
+    """
+
+    def _builder(self):
+        ctx = MagicMock()
+        ctx.ctx = {}
+        builder = DockerBuilder(ctx, MagicMock())
+        builder.rich_console = MagicMock()
+        return builder
+
+    def _patches(self, builder):
+        return (
             patch.object(
-                builder,
-                "_get_dockerfiles_for_model",
-                return_value=["docker/dummy.ubuntu"],
+                builder, "_get_dockerfiles_for_model", return_value=["docker/dummy.ubuntu"]
             ),
             patch.object(
                 builder,
@@ -231,13 +277,40 @@ class TestBuildInfoCarriesImageDigest:
             ),
             patch.object(builder, "_get_effective_gpu_architecture", return_value=""),
             patch.object(
-                builder,
-                "_create_registry_image_name",
-                return_value="localhost:5000/ci-dummy",
+                builder, "_create_registry_image_name", return_value="myorg/ci:ci-dummy"
             ),
-            patch.object(builder, "push_image", return_value="localhost:5000/ci-dummy"),
-        ):
-            results = self._run_single_arch(builder)
+            patch.object(
+                builder, "push_image", side_effect=RuntimeError("login failed")
+            ),
+        )
 
-        assert results[0]["registry_image"] == "localhost:5000/ci-dummy"
-        assert "image_digest" not in results[0]
+    def test_single_arch_push_failure_sets_push_failed(self):
+        builder = self._builder()
+        p1, p2, p3, p4, p5 = self._patches(builder)
+        with p1, p2, p3, p4, p5:
+            results = builder._build_model_single_arch(
+                model_info={"name": "dummy", "dockerfile": "docker/dummy"},
+                credentials={},
+                clean_cache=False,
+                registry="dockerhub",
+                phase_suffix="",
+                batch_build_metadata=None,
+            )
+
+        assert results[0]["push_failed"] is True
+        assert results[0]["push_error"] == "login failed"
+        assert "registry_image" not in results[0]
+
+    def test_build_all_models_lists_failed_pushes(self):
+        builder = self._builder()
+        p1, p2, p3, p4, p5 = self._patches(builder)
+        with p1, p2, p3, p4, p5:
+            summary = builder.build_all_models(
+                [{"name": "dummy", "dockerfile": "docker/dummy"}],
+                credentials={},
+                registry="dockerhub",
+            )
+
+        assert summary["failed_pushes"] == [
+            {"model": "dummy", "docker_image": "ci-dummy", "error": "login failed"}
+        ]

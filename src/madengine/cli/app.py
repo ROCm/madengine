@@ -19,7 +19,9 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from .commands import build, database, discover, report_app, run
+from madengine.core import lifecycle
+
+from .commands import build, cleanup, database, discover, report_app, run, setup_page
 from .constants import ExitCode
 from .utils import console
 
@@ -40,6 +42,8 @@ app.command()(build)
 app.command()(run)
 app.command()(discover)
 app.command()(database)
+app.command()(cleanup)
+app.command(name="setup-page")(setup_page)
 app.add_typer(report_app, name="report")
 
 
@@ -74,6 +78,10 @@ def main(
 
 def cli_main() -> None:
     """Entry point for the CLI application."""
+    # A cancelled CI job signals us and then kills the process tree ten
+    # seconds later; without these handlers the benchmark container would
+    # outlive the job and keep the GPU busy.
+    lifecycle.install_signal_handlers()
     try:
         app()
     except typer.Exit:
@@ -90,3 +98,4 @@ def cli_main() -> None:
 
 if __name__ == "__main__":
     cli_main()
+

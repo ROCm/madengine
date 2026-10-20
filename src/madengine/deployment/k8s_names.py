@@ -4,7 +4,13 @@ Kubernetes-safe names for metadata.name, label values, and container names.
 
 Model names from data.json may contain ``/``, spaces, or uppercase letters that
 are invalid for ``metadata.name`` (RFC 1123 subdomain) or for label values.
-Container names must be a single DNS label (no dots), stricter than Job names.
+Container names must be a single DNS label (no dots).
+
+**Jobs are special:** the Batch controller requires the pod template label
+``job-name`` to equal ``metadata.name``, and label values are capped at 63
+characters. Callers that build Job names must therefore pass
+``max_total_len=63`` to :func:`sanitize_k8s_object_name`. PVC/ConfigMap names
+may still use the default 253-character subdomain limit.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -15,12 +21,14 @@ import hashlib
 import re
 from typing import Final
 
-# Kubernetes DNS subdomain total length (metadata.name)
+# Kubernetes DNS subdomain total length (metadata.name for PVC, ConfigMap, …)
 _MAX_OBJECT_NAME_LEN: Final[int] = 253
-# Label value max length
+# Label value max length — also the effective max for Job metadata.name
 _MAX_LABEL_VALUE_LEN: Final[int] = 63
 # Container / initContainer names: DNS label only (no dots); see Pod validation.
 _MAX_DNS_LABEL_LEN: Final[int] = 63
+# Batch Job metadata.name must fit the job-name label (≤63).
+_MAX_JOB_NAME_LEN: Final[int] = _MAX_LABEL_VALUE_LEN
 
 
 def _trim_edges_alnum(s: str) -> str:
@@ -45,10 +53,11 @@ def sanitize_k8s_object_name(
     Args:
         prefix: Leading segment (e.g. ``madengine``). May contain only chars valid in the final name.
         raw_model_name: Original model name (may include ``/``, ``_``, spaces).
-        max_total_len: Maximum total length (default 253).
+        max_total_len: Maximum total length (default 253 for PVC/ConfigMap).
+            Use :data:`_MAX_JOB_NAME_LEN` (63) for Batch Job names.
 
     Returns:
-        A lowercase name safe for Kubernetes ``metadata.name`` (Job, PVC, Service, etc.).
+        A lowercase name safe for Kubernetes ``metadata.name``.
     """
     raw = (raw_model_name or "").strip()
     pfx = (prefix or "").strip().lower()
@@ -117,6 +126,11 @@ def sanitize_k8s_container_name(
             out = out[:max_len]
         return _trim_edges_alnum(out) or "m"
     return s
+
+
+def pod_job_name_label_selector(deployment_id: str) -> str:
+    """``job-name=<sanitized>`` selector; value is always a valid ≤63-char label."""
+    return f"job-name={sanitize_k8s_label_value(deployment_id)}"
 
 
 def sanitize_k8s_label_value(raw: str, max_len: int = _MAX_LABEL_VALUE_LEN) -> str:

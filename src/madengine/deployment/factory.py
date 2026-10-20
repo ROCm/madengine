@@ -2,8 +2,8 @@
 """
 Deployment Factory - Creates appropriate deployment instances.
 
-Implements Factory pattern to dynamically create SLURM or Kubernetes
-deployment instances based on target configuration.
+Implements Factory pattern to dynamically create SLURM, Kubernetes, or
+llm-d deployment instances based on target configuration.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -18,7 +18,7 @@ class DeploymentFactory:
     Factory for creating deployment instances.
 
     Supports dynamic registration and creation of deployment types.
-    Currently supports: slurm, k8s/kubernetes
+    Currently supports: slurm, k8s/kubernetes, llm-d
     """
 
     _deployments: Dict[str, Type[BaseDeployment]] = {}
@@ -94,6 +94,23 @@ def register_default_deployments():
             "Kubernetes deployment target is unavailable: the 'kubernetes' library is not "
             "installed. Reinstall madengine (pip install madengine) or install the "
             "library directly with: pip install kubernetes.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Register llm-d in its own try/except: it builds on the Kubernetes target,
+    # so a failure here must never take slurm or k8s down with it.
+    try:
+        from .llm_d import LlmdDeployment
+
+        DeploymentFactory.register("llm-d", LlmdDeployment)
+        DeploymentFactory.register("llm_d", LlmdDeployment)
+    except Exception as e:  # noqa: BLE001 - llm-d must never break registration
+        import warnings
+
+        warnings.warn(
+            f"llm-d deployment target is unavailable: {type(e).__name__}: {e}. "
+            "Other deployment targets are unaffected.",
             UserWarning,
             stacklevel=2,
         )

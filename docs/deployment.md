@@ -4,10 +4,11 @@ Deploy madengine workloads to Kubernetes or SLURM clusters for distributed execu
 
 ## Overview
 
-madengine supports two deployment backends:
+madengine supports these deployment backends:
 
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **llm-d** - Benchmarking a Kubernetes-native distributed inference stack; see [llm-d.md](llm-d.md)
 
 Deployment is configured via `--additional-context` and happens automatically during the run phase.
 
@@ -20,6 +21,7 @@ flowchart LR
     B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
     M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
     D --> T{detect target}
+    T -->|llm_d| I[llm-d benchmark Job]
     T -->|k8s / kubernetes| K[K8s Job]
     T -->|slurm| S[SLURM script]
     T -->|neither| L[Local Docker]
@@ -32,10 +34,22 @@ No explicit `deploy` field is required — the target is inferred from the confi
 ```mermaid
 flowchart TD
     A[additional_context] --> Q{which key?}
+    Q -->|llm_d| I[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
+
+`llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
+
+### Kubernetes Job naming
+
+Batch Jobs force the pod template label `job-name` to equal `metadata.name`, and
+label values are at most 63 characters. madengine therefore builds Job names with
+`sanitize_k8s_object_name(..., max_total_len=63)` so long model card paths (for
+example llm-d MoE cards) hash/truncate instead of failing admission. PVC and
+ConfigMap names append a short suffix (`-results`, `-config`) and may still use
+the longer RFC 1123 subdomain limit (253).
 
 ## Kubernetes Deployment
 
@@ -88,7 +102,6 @@ The deployment target is automatically detected from the `k8s` key in the config
     "gpu_vendor": "AMD",
     "memory": "32Gi",
     "cpu": "16",
-    "service_account": "madengine-sa",
     "image_pull_policy": "Always"
   }
 }
@@ -105,7 +118,7 @@ See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
 ### Secrets and credentials
 
-By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
+By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Pods also reference the pre-created pull secret `dockerhub-rocm` (`k8s.secrets.image_pull_secret_names`). Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
 
 ### Validating rendered manifests
 
@@ -116,6 +129,12 @@ With `"debug": true` in additional context, `madengine run` writes rendered mani
 ```
 
 The script exits successfully if `kubeconform` is missing (skip) or if validation passes.
+
+### Storage and runtime launchers
+
+A multi-node job uses a shared ReadWriteMany volume when `k8s.nfs_storage_class` (default `nfs-banff`) can serve one. On a cluster whose only StorageClass is local-path, each pod gets its own ReadWriteOnce disk (`results_layout` / `data_layout`: `auto`, or force `shared` / `per_pod`). Performance CSVs are then taken from pod logs. See [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#storage-classes-local-path-vs-nfs).
+
+`madengine run --additional-context` `distributed` (launcher, `nnodes`, `nproc_per_node`) is applied at submit time and wins over the copy saved in `build_manifest.json`. `n_gpus: -1` on a model card means "all GPUs on the node", not a process count. Multi-node vLLM and SGLang pods join the headless Service subdomain so pod-0 DNS resolves.
 
 ### Multi-Node Training
 
@@ -143,7 +162,7 @@ This creates:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Megatron-LM training
+- `megatron-lm` - Megatron-LM training
 - `torchtitan` - LLM pre-training
 - `primus` - Primus unified pretrain (Megatron / TorchTitan / MaxText YAML)
 - `vllm` - LLM inference
@@ -333,7 +352,9 @@ Unlike templated launchers, slurm_multi runs the model's `.slurm` script directl
 
 ### Running Inside salloc
 
-When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` even inside `salloc`.
+When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated launchers do the same for multi-node runs: the job script runs in place and starts its tasks with `srun` on the first `nodes` hosts of the allocation (or on `slurm.nodelist`, when set). Each run gets its own paths, so several runs can share one allocation. Single-node runs still submit their own `sbatch`, because in place their script would run on the submitting host.
+
+Those paths are job-scoped directories, not the SLURM submission directory. A single-node job uses `$SLURM_TMPDIR/madengine_job_<job id>` when that directory is writable, otherwise `/tmp/madengine_job_<job id>`. A multi-node task appends `_node_<rank>`, and an in-place run also appends a per-run suffix so two runs in one allocation do not share a directory. A multi-node task removes its workspace only after the task exits 0 and every artifact has been copied out; a failure, or a copy that did not finish, keeps the directory. A later job from the same user deletes `madengine_job_*` directories older than 7 days under that scratch root when `squeue -u` lists this user's jobs and the directory's job id is not among them. An unanswered `squeue` deletes nothing.
 
 ```bash
 salloc --nodes=3 --gpus-per-node=8 --partition=gpu
@@ -353,14 +374,14 @@ scancel -u $USER
 
 ## Deployment Comparison
 
-| Feature | Kubernetes | SLURM |
-|---------|-----------|-------|
-| **Environment** | Cloud, on-premise | HPC clusters |
-| **Orchestration** | Automatic | Job scheduler |
-| **Dependencies** | Python library (`kubernetes`) | CLI commands only |
-| **Multi-node Setup** | Headless service + DNS | SLURM env vars |
-| **Resource Management** | Declarative (YAML) | Batch script |
-| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers |
+| Feature | Kubernetes | SLURM | llm-d |
+|---------|-----------|-------|-------|
+| **Environment** | Cloud, on-premise | HPC clusters | Kubernetes |
+| **Orchestration** | Automatic | Job scheduler | Inference Gateway + helm |
+| **Dependencies** | Python library (`kubernetes`) | CLI commands only | `kubernetes` + `helm` (managed mode) |
+| **Multi-node Setup** | Headless service + DNS | SLURM env vars | `InferencePool` + Endpoint Picker |
+| **Resource Management** | Declarative (YAML) | Batch script | Helm charts |
+| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers | Benchmarking disaggregated serving |
 
 ## Configuration Examples
 
@@ -520,7 +541,9 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 ## Next Steps
 
 - [Launchers Guide](launchers.md) - Distributed training and inference launchers
+- [llm-d Guide](llm-d.md) - Benchmarking the llm-d distributed inference stack
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations
+- [llm-d Examples](../examples/llm-d-configs/) - Complete llm-d configurations
 - [Usage Guide](usage.md) - General usage instructions
 

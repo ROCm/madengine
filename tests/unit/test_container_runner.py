@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, mock_open, patch
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.execution import container_runner
 from madengine.execution.container_runner import ContainerRunner
 
 PERF_PATTERN = PERFORMANCE_LOG_PATTERN
@@ -25,34 +27,19 @@ class TestPerformanceRegex:
     # --- formats that were already handled before the regex change ---
 
     def test_basic_integer(self):
-        assert self._match("performance: 12345 samples_per_second") == (
-            "12345",
-            "samples_per_second",
-        )
+        assert self._match("performance: 12345 samples_per_second") == ("12345", "samples_per_second")
 
     def test_decimal(self):
-        assert self._match("performance: 100.5 samples_per_second") == (
-            "100.5",
-            "samples_per_second",
-        )
+        assert self._match("performance: 100.5 samples_per_second") == ("100.5", "samples_per_second")
 
     def test_scientific_lowercase_e(self):
-        assert self._match("performance: 1.23e+4 samples_per_second") == (
-            "1.23e+4",
-            "samples_per_second",
-        )
+        assert self._match("performance: 1.23e+4 samples_per_second") == ("1.23e+4", "samples_per_second")
 
     def test_scientific_negative_exponent(self):
-        assert self._match("performance: 1.23e-4 samples_per_second") == (
-            "1.23e-4",
-            "samples_per_second",
-        )
+        assert self._match("performance: 1.23e-4 samples_per_second") == ("1.23e-4", "samples_per_second")
 
     def test_zero(self):
-        assert self._match("performance: 0 samples_per_second") == (
-            "0",
-            "samples_per_second",
-        )
+        assert self._match("performance: 0 samples_per_second") == ("0", "samples_per_second")
 
     def test_metric_with_digits(self):
         assert self._match("performance: 123 metric123") == ("123", "metric123")
@@ -64,24 +51,15 @@ class TestPerformanceRegex:
 
     def test_unit_suffix_slash_s(self):
         """Value followed by /s unit suffix: suffix is stripped, metric parsed correctly."""
-        assert self._match("performance: 14164/s samples_per_second") == (
-            "14164",
-            "samples_per_second",
-        )
+        assert self._match("performance: 14164/s samples_per_second") == ("14164", "samples_per_second")
 
     def test_unit_suffix_and_comma(self):
         """Value with /s suffix and comma separator."""
-        assert self._match("performance: 14164.5/s, samples_per_second") == (
-            "14164.5",
-            "samples_per_second",
-        )
+        assert self._match("performance: 14164.5/s, samples_per_second") == ("14164.5", "samples_per_second")
 
     def test_comma_separator_no_suffix(self):
         """Comma after value without a unit suffix."""
-        assert self._match("performance: 100.5, samples_per_second") == (
-            "100.5",
-            "samples_per_second",
-        )
+        assert self._match("performance: 100.5, samples_per_second") == ("100.5", "samples_per_second")
 
     def test_comma_before_suffix(self):
         """Comma immediately before /s suffix: 123,/s metric."""
@@ -95,40 +73,25 @@ class TestPerformanceRegex:
 
     def test_scientific_uppercase_e(self):
         """Uppercase E in scientific notation (v1 supported, old v2 broke on this)."""
-        assert self._match("performance: 1.23E+4 samples_per_second") == (
-            "1.23E+4",
-            "samples_per_second",
-        )
+        assert self._match("performance: 1.23E+4 samples_per_second") == ("1.23E+4", "samples_per_second")
 
     def test_positive_sign(self):
         """Explicitly signed positive value (v1 supported via [+|-]? prefix)."""
-        assert self._match("performance: +123.45 samples_per_second") == (
-            "+123.45",
-            "samples_per_second",
-        )
+        assert self._match("performance: +123.45 samples_per_second") == ("+123.45", "samples_per_second")
 
     def test_negative_sign(self):
         """Signed negative value (v1 supported)."""
-        assert self._match("performance: -123.45 samples_per_second") == (
-            "-123.45",
-            "samples_per_second",
-        )
+        assert self._match("performance: -123.45 samples_per_second") == ("-123.45", "samples_per_second")
 
     def test_leading_dot_decimal(self):
         """Leading-dot decimal without integer part (v1 supported via [0-9]*[.]?[0-9]*)."""
-        assert self._match("performance: .5 samples_per_second") == (
-            ".5",
-            "samples_per_second",
-        )
+        assert self._match("performance: .5 samples_per_second") == (".5", "samples_per_second")
 
     # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
 
     def test_metric_samples_per_sec_slash(self):
         """samples/sec metric (used by _determine_aggregation_method) is parsed."""
-        assert self._match("performance: 1234.5 samples/sec") == (
-            "1234.5",
-            "samples/sec",
-        )
+        assert self._match("performance: 1234.5 samples/sec") == ("1234.5", "samples/sec")
 
     def test_metric_tokens_per_sec_slash(self):
         """tokens/sec metric (used by _determine_aggregation_method) is parsed."""
@@ -175,9 +138,7 @@ class TestCreateSetupFailurePerfEntry:
     def test_returns_dict_with_status_failure(self):
         """Entry has status FAILURE and model name."""
         runner = ContainerRunner(context=MagicMock(), console=MagicMock())
-        runner.context.ctx = {
-            "docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}
-        }
+        runner.context.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
 
         model_info = {"name": "org/model1", "tags": "v1", "n_gpus": "2"}
         build_info = {"dockerfile": "Dockerfile", "docker_image": "img:latest"}
@@ -235,16 +196,9 @@ class TestRunModelsFromManifestSetupFailureRecordsToPerfCsv:
                 )
 
             manifest = {
-                "built_images": {
-                    "img1": {"docker_image": "local/img1", "dockerfile": "D"}
-                },
+                "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
                 "built_models": {
-                    "img1": {
-                        "name": "test/model",
-                        "tags": "t1",
-                        "n_gpus": "1",
-                        "args": "",
-                    }
+                    "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
                 },
             }
             with open(manifest_path, "w") as f:
@@ -346,27 +300,18 @@ class TestGenerateLocalLauncherCommand:
     def _runner(self):
         return ContainerRunner.__new__(ContainerRunner)
 
-    @pytest.mark.parametrize(
-        "launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"]
-    )
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"])
     def test_torchrun_family_emits_torchrun_standalone(self, launcher):
-        cmd = self._runner()._generate_local_launcher_command(
-            launcher, nproc_per_node=8
-        )
+        cmd = self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
         assert cmd == "torchrun --standalone --nproc_per_node=8"
 
     def test_deepspeed_emits_deepspeed_command(self):
-        cmd = self._runner()._generate_local_launcher_command(
-            "deepspeed", nproc_per_node=4
-        )
+        cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
         assert cmd == "deepspeed --num_gpus=4"
 
     @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
     def test_self_managed_launchers_emit_empty(self, launcher):
-        assert (
-            self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
-            == ""
-        )
+        assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
 
     def test_unknown_launcher_falls_back_to_torchrun(self):
         cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
@@ -398,9 +343,7 @@ class TestResolveLocalMultiNodeRunnerEnv:
             additional_context={"distributed": {"launcher": launcher}},
         )
         runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
-        assert (
-            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
-        )
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
 
     def test_does_not_override_user_provided_value(self):
         runner = self._runner(
@@ -415,13 +358,11 @@ class TestResolveLocalMultiNodeRunnerEnv:
 
     @pytest.mark.parametrize(
         "launcher",
-        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+        ["vllm", "sglang", "sglang-disagg", "primus"],
     )
     def test_self_managed_launchers_set_empty_string(self, launcher):
         """Self-managing launchers set the var to "" (defined but empty),
-        so downstream scripts under set -u don't fail referencing it.
-        Covers the ``sglang_disagg`` underscore alias to lock in the
-        canonicalize_distributed_launcher() routing."""
+        so downstream scripts under set -u don't fail referencing it."""
         runner = self._runner(
             additional_context={"distributed": {"launcher": launcher}},
         )
@@ -496,7 +437,9 @@ class TestRunContainerSkipModelRun:
         runner.perf_csv_path = "/tmp/test_perf.csv"
         return runner
 
-    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+    def _run_container_with_mocks(
+        self, runner, model_info, docker_sh_calls, sh_side_effect=None, **kwargs
+    ):
         """Call run_container with all the infrastructure mocked away.
 
         Patches:
@@ -516,28 +459,28 @@ class TestRunContainerSkipModelRun:
         def noop_timeout(_):
             yield
 
-        with (
-            patch.object(
-                ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"
-            ),
-            patch.object(ContainerRunner, "get_gpu_arg", return_value=""),
-            patch.object(ContainerRunner, "get_cpu_arg", return_value=""),
-            patch.object(ContainerRunner, "get_env_arg", return_value=""),
-            patch.object(ContainerRunner, "get_mount_arg", return_value=""),
-            patch.object(ContainerRunner, "gather_system_env_details"),
-            patch.object(ContainerRunner, "ensure_perf_csv_exists"),
-            patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"),
-            patch("madengine.execution.container_runner._print_run_env_table"),
-            patch("madengine.execution.container_runner.Timeout", noop_timeout),
-            patch.object(Docker, "__init__", return_value=None),
-            patch.object(
-                Docker,
-                "sh",
-                side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok",
-            ),
-            patch.object(Docker, "__del__", return_value=None),
-            patch("builtins.open", mock_open(read_data="")),
-        ):
+        def _record_sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            return "ok"
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch("madengine.execution.container_runner.update_perf_csv"), \
+             patch("madengine.execution.container_runner.update_perf_super_json"), \
+             patch("madengine.execution.container_runner.update_perf_super_csv"), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
+             patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
             return runner.run_container(
                 model_info=model_info,
                 docker_image="ci-dummy",
@@ -557,9 +500,7 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         result = self._run_container_with_mocks(
-            runner,
-            model_info,
-            docker_sh_calls,
+            runner, model_info, docker_sh_calls,
             skip_model_run=True,
             keep_alive=True,
         )
@@ -583,15 +524,252 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         self._run_container_with_mocks(
-            runner,
-            model_info,
-            docker_sh_calls,
+            runner, model_info, docker_sh_calls,
             skip_model_run=False,
         )
 
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestPostScriptsAfterWorkloadFailure:
+    """A failed model still runs every post-script, and the run stays failed."""
+
+    def _failed_model(self, fail_scripts):
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        runner.context.ctx["post_scripts"] = [
+            {"path": "scripts/common/post_scripts/collect.sh"},
+            {"path": "scripts/common/post_scripts/analyze.sh"},
+        ]
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        docker_sh_calls = []
+
+        def sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            if "bash run.sh" in cmd:
+                raise RuntimeError("model failed: extractor exit 1")
+            script = next(
+                (name for name in fail_scripts if f"bash {name}" in cmd), None
+            )
+            if script:
+                raise RuntimeError(f"{script} failed")
+            return "ok"
+
+        result = harness._run_container_with_mocks(
+            runner, model_info, docker_sh_calls, sh_side_effect=sh
+        )
+        ran = [
+            c
+            for c in docker_sh_calls
+            if "bash collect.sh" in c or "bash analyze.sh" in c
+        ]
+        return result, ran
+
+    def test_successful_post_scripts_keep_the_model_failure(self):
+        result, ran = self._failed_model(fail_scripts=())
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
+
+    def test_one_failing_post_script_does_not_skip_the_next(self):
+        result, ran = self._failed_model(fail_scripts=("collect.sh",))
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
+
+
+class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
+    """The manifest entry point must forward the sentinel, not a concrete 7200.
+
+    Same regression as run_container(): a DEFAULT_RUN_TIMEOUT default here would
+    reach run_container() as an explicit CLI timeout and outrank every card.
+    """
+
+    def _forwarded_timeout(self, tmp_path, **kwargs):
+        manifest_path = str(tmp_path / "build_manifest.json")
+        manifest = {
+            "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+            "built_models": {
+                "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+            },
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        ctx.ensure_runtime_context = MagicMock()
+        mock_console = MagicMock()
+        mock_console.sh.return_value = "testhost"
+        runner = ContainerRunner(context=ctx, console=mock_console)
+        runner.perf_csv_path = str(tmp_path / "perf.csv")
+        runner.set_credentials({})
+
+        with patch.object(
+            runner, "run_container", return_value={"status": "SUCCESS"}
+        ) as mock_run:
+            runner.run_models_from_manifest(manifest_file=manifest_path, **kwargs)
+
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    def test_omitted_timeout_forwards_the_sentinel(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path) == -1
+
+    def test_explicit_timeout_forwarded_verbatim(self, tmp_path):
+        assert self._forwarded_timeout(tmp_path, timeout=120) == 120
+
+    @pytest.mark.parametrize("sentinel", [0, -1])
+    def test_no_timeout_sentinels_forwarded_verbatim(self, tmp_path, sentinel):
+        assert self._forwarded_timeout(tmp_path, timeout=sentinel) == sentinel
+
+
+class TestRunContainerDefaultTimeoutIsSentinel:
+    """Omitting `timeout` must not outrank a model card.
+
+    Regression: the parameter defaulted to DEFAULT_RUN_TIMEOUT, but
+    resolve_run_timeout() reads any non-negative value as an explicit
+    --timeout, so a programmatic caller that omitted the argument silently
+    forced 7200s over the card. The default is the -1 sentinel instead, which
+    still resolves to 7200s when no card timeout exists.
+    """
+
+    def _resolved_timeout(self, model_info, **kwargs):
+        """Run run_container with mocks and return what reached subprocess."""
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        docker_sh_timeouts = []
+
+        from contextlib import contextmanager
+
+        from madengine.core.docker import Docker
+
+        @contextmanager
+        def noop_timeout(_):
+            yield
+
+        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
+             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
+             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
+             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
+             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
+             patch("madengine.execution.container_runner._print_run_env_table"), \
+             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
+             patch.object(Docker, "sh",
+                          side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
+                              (cmd, kw.get("timeout"))
+                          ) or "ok"), \
+             patch.object(Docker, "__del__", return_value=None), \
+             patch("builtins.open", mock_open(read_data="")):
+            runner.run_container(
+                model_info=model_info, docker_image="ci-dummy", **kwargs
+            )
+
+        model_runs = [
+            t for cmd, t in docker_sh_timeouts if "run.sh" in cmd and cmd.startswith("cd ")
+        ]
+        assert len(model_runs) == 1, docker_sh_timeouts
+        return model_runs[0]
+
+    def _model_info(self, card_timeout=None):
+        info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        if card_timeout is not None:
+            info["timeout"] = card_timeout
+        return info
+
+    def test_model_card_wins_when_timeout_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=360)) == 360
+
+    def test_card_asking_for_no_timeout_is_honored_when_omitted(self):
+        assert self._resolved_timeout(self._model_info(card_timeout=-1)) is None
+
+    def test_default_still_applies_without_a_card_timeout(self):
+        from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
+
+        assert self._resolved_timeout(self._model_info()) == DEFAULT_RUN_TIMEOUT
+
+    def test_explicit_timeout_still_outranks_the_card(self):
+        assert (
+            self._resolved_timeout(self._model_info(card_timeout=360), timeout=120)
+            == 120
+        )
+
+
+class TestSelfManagedLauncherTimeout:
+    """`--timeout 0` (no timeout) must reach subprocess.run as None, not 0.
+
+    Regression: the call site read `timeout if timeout > 0 else None`, which
+    raised TypeError once the CLI started handing down None for "no timeout",
+    and would have expired the run instantly under the int sentinel:
+    subprocess spells "no timeout" as None, and treats 0 as "expire now".
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        return runner
+
+    def _invoke(self, tmp_path, timeout):
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+        run_results = {}
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            return_value=subprocess.CompletedProcess("", 0),
+        ) as mock_run:
+            self._make_runner()._run_self_managed(
+                model_info={"name": "dummy", "scripts": str(script), "args": ""},
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=timeout,
+                run_results=run_results,
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+        mock_run.assert_called_once()
+        return mock_run.call_args.kwargs["timeout"]
+
+    @pytest.mark.parametrize("timeout", [0, -1])
+    def test_no_timeout_sentinels_become_none(self, tmp_path, timeout):
+        assert self._invoke(tmp_path, timeout) is None
+
+    def test_legacy_none_does_not_raise_type_error(self, tmp_path):
+        # The bare `timeout > 0` this replaced raised TypeError on None, which
+        # is what the CLI used to send for --timeout 0. The sentinel contract
+        # keeps None out of here now, but manifests and older callers still
+        # carry it, so the guard must absorb it rather than crash.
+        assert self._invoke(tmp_path, None) is None
+
+    def test_positive_timeout_passed_through(self, tmp_path):
+        assert self._invoke(tmp_path, 120) == 120
 
 
 DIGEST = "sha256:" + "df36ef7e" * 8
@@ -634,11 +812,8 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with (
-                patch.object(runner, "pull_image") as mock_pull,
-                patch.object(
-                    runner, "run_container", return_value={"status": "SUCCESS"}
-                ),
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
@@ -655,12 +830,9 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with (
-                patch.object(runner, "pull_image") as mock_pull,
-                patch.object(
-                    runner, "run_container", return_value={"status": "SUCCESS"}
-                ) as mock_run,
-            ):
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
@@ -683,12 +855,9 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with (
-                patch.object(
-                    runner, "pull_image", side_effect=RuntimeError("manifest unknown")
-                ),
-                patch.object(runner, "run_container") as mock_run,
-            ):
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+            ), patch.object(runner, "run_container") as mock_run:
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -705,12 +874,11 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with (
-                patch.object(runner, "pull_image", side_effect=RuntimeError("offline")),
-                patch.object(
-                    runner, "run_container", return_value={"status": "SUCCESS"}
-                ) as mock_run,
-            ):
+            with patch.object(
+                runner, "pull_image", side_effect=RuntimeError("offline")
+            ), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == "img1"
@@ -723,10 +891,9 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with (
-                patch.object(runner, "pull_image") as mock_pull,
-                patch.object(runner, "run_container") as mock_run,
-            ):
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container"
+            ) as mock_run:
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -758,10 +925,9 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with (
-                patch.object(runner, "_ensure_local_image_available") as mock_ensure,
-                patch.object(runner, "run_container") as mock_run,
-            ):
+            with patch.object(
+                runner, "_ensure_local_image_available"
+            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -783,12 +949,9 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with (
-                patch.object(runner, "_ensure_local_image_available"),
-                patch.object(
-                    runner, "run_container", return_value={"status": "SUCCESS"}
-                ) as mock_run,
-            ):
+            with patch.object(runner, "_ensure_local_image_available"), patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
+            ) as mock_run:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == pinned
@@ -808,12 +971,7 @@ class TestRequirePinnedImageLocalRun:
                             }
                         },
                         "built_models": {
-                            "img1": {
-                                "name": "m",
-                                "tags": "t",
-                                "n_gpus": "1",
-                                "args": "",
-                            }
+                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
                         },
                         "context": {"require_pinned_image": True},
                     },
@@ -822,12 +980,468 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with (
-                patch.object(runner, "pull_image") as mock_pull,
-                patch.object(
-                    runner, "run_container", return_value={"status": "SUCCESS"}
-                ),
+            with patch.object(runner, "pull_image") as mock_pull, patch.object(
+                runner, "run_container", return_value={"status": "SUCCESS"}
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+
+
+class TestSlurmEnvPassthrough:
+    """Launcher variables must reach the container.
+
+    The SLURM job script computes the SGLang topology and peer list, but the
+    model only sees variables named in the passthrough allowlist. Dropping or
+    misspelling one silently restores the single-node fallback
+    (xP=1/yD=1, IPADDRS=localhost) with every other test still green.
+    """
+
+    SGLANG_VARS = {
+        "SGLANG_DISAGG_MODE": "enabled",
+        "SGLANG_DISAGG_PREFILL_NODES": "2",
+        "SGLANG_DISAGG_DECODE_NODES": "2",
+        "SGLANG_DISAGG_TOTAL_NODES": "4",
+        "SGLANG_NODE_IPS": "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+        "SGLANG_NODE_RANK": "0",
+        "SGLANG_TP_SIZE": "8",
+    }
+
+    def test_allowlist_covers_sglang_disagg(self):
+        from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
+
+        missing = [v for v in self.SGLANG_VARS if v not in SLURM_PASSTHROUGH_ENV_VARS]
+        assert not missing, f"not forwarded into the container: {missing}"
+
+    def test_shell_values_reach_docker_env(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, self.SGLANG_VARS, clear=False):
+            merged = runner._merge_slurm_env_from_shell()
+
+        docker_env = ctx.ctx["docker_env_vars"]
+        for name, value in self.SGLANG_VARS.items():
+            assert docker_env.get(name) == value, f"{name} not passed through"
+        assert merged >= len(self.SGLANG_VARS)
+
+    def test_absent_values_are_not_invented(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, {}, clear=True):
+            runner._merge_slurm_env_from_shell()
+
+        assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestGitSafeDirectory:
+    """A container without git must still run. A present git that fails must not."""
+
+    def test_missing_git_does_not_fail(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_git_config_failure_still_fails(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        git = tmp_path / "git"
+        git.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        git.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 3
+
+    def test_broken_worktree_gitdir_does_not_fail(self, tmp_path):
+        """A .git file pointing outside the mount must not abort the run."""
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").write_text(
+            "gitdir: /nonexistent/gitdir\n", encoding="utf-8"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command(str(workspace))],
+            cwd=workspace,
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_path_with_a_space_is_quoted(self):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        command = git_safe_directory_command("/my workspace")
+        assert "safe.directory '/my workspace'" in command
+
+
+class TestStaleMultipleResultsIsDropped:
+    """run_container clears a results CSV an earlier run left at the workspace root.
+
+    `run_directory` is recreated per run; the directory above it is not. It is
+    the submission directory for a single-node SLURM job, a node-local
+    workspace that outlives the job on some clusters, and plain cwd for a local
+    run. Models write `multiple_results` there and append when the file is
+    already present, and `_resolve_multiple_results_path` reads that copy
+    before the one in `run_directory` -- so a leftover is reported as part of
+    this run, carrying this run's metadata.
+    """
+
+    MODEL_SCRIPT_CMD = "bash run.sh"
+
+    def _container_commands(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        sh=None,
+        perf_csv="perf.csv",
+        skip_model_run=False,
+    ):
+        """The commands run_container sends into the container, in order.
+
+        ``sh`` optionally stands in for the container shell, so a test can
+        decide what a command reports back.
+        """
+        monkeypatch.chdir(tmp_path)  # the live log is written to cwd
+
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "8"},
+            "docker_mounts": {},
+            "docker_gpus": "8",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_build_arg": {},
+        }
+        runner = ContainerRunner(context=context, console=MagicMock())
+        runner.rich_console = MagicMock()
+        runner.perf_csv_path = perf_csv
+
+        model_info = {
+            "name": "m",
+            "url": "",
+            "scripts": "scripts/x/run.sh",
+            "n_gpus": "1",
+            "args": "",
+            "tags": [],
+        }
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        with patch(
+            "madengine.execution.container_runner.Docker"
+        ) as mock_docker_cls, patch(
+            "madengine.execution.container_runner._print_run_env_table"
+        ), patch(
+            "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
+            return_value="/opt/rocm",
+        ), patch.object(
+            runner, "_resolve_docker_image", return_value="img:latest"
+        ), patch.object(
+            runner, "get_gpu_arg", return_value=""
+        ):
+            docker = mock_docker_cls.return_value
+            docker.sh = MagicMock(side_effect=sh) if sh else MagicMock(return_value="")
+            runner.run_container(
+                model_info=model_info,
+                docker_image="img:latest",
+                skip_model_run=skip_model_run,
+            )
+
+        return [call.args[0] for call in docker.sh.call_args_list]
+
+    @staticmethod
+    def _index_of(commands, needle):
+        for i, cmd in enumerate(commands):
+            if needle in cmd:
+                return i
+        return None
+
+    def test_the_file_is_deleted(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        assert self._index_of(commands, "rm -f -- perf_model.csv") is not None
+
+    def test_the_deletion_precedes_the_model_script(self, tmp_path, monkeypatch):
+        """Deleting after the model wrote its results would discard this run."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletion = self._index_of(commands, "rm -f -- perf_model.csv")
+        model_run = self._index_of(commands, self.MODEL_SCRIPT_CMD)
+        assert deletion is not None and model_run is not None
+        assert deletion < model_run
+
+    def test_nothing_is_deleted_without_multiple_results(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, None)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_skip_model_run_deletes_nothing(self, tmp_path, monkeypatch):
+        """An inspection run starts no model, so nothing would replace the file."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", skip_model_run=True
+        )
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+        assert self._index_of(commands, self.MODEL_SCRIPT_CMD) is None
+
+    def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "   ")
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    @pytest.mark.parametrize(
+        "multiple_results",
+        ["perf.csv", "./perf.csv", "perf_super.csv", "perf_super.json"],
+    )
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch, multiple_results):
+        """The workspace root is cwd, where madengine keeps every run's rows."""
+        commands = self._container_commands(tmp_path, monkeypatch, multiple_results)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_output_csv_is_kept(self, tmp_path, monkeypatch):
+        """`--output results.csv` makes results.csv the cumulative report."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "results.csv", perf_csv="results.csv"
+        )
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_path_is_quoted(self, tmp_path, monkeypatch):
+        """multiple_results comes from models.json and reaches bash -c."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf;rm -rf /.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        assert shlex.quote("perf;rm -rf /.csv") in deletions[0]
+
+    def test_a_failure_to_delete_does_not_fail_the_run(self, tmp_path, monkeypatch):
+        """The file belongs to container root; an unlink the caller cannot do
+        must not abort the run before the model has a chance to produce data."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        # rm's own failure is discarded and the trailing `if` exits 0 whatever
+        # rm did, so Console.sh sees a success and the run carries on.
+        assert "2>/dev/null" in deletions[0]
+        assert deletions[0].rstrip().endswith("fi")
+
+    def test_a_file_that_survives_the_deletion_is_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """Failing quietly would merge the old rows into this run's results:
+        the file is still what _resolve_multiple_results_path picks."""
+
+        def container_shell(command, *args, **kwargs):
+            if command.startswith("rm -f --"):
+                return container_runner._STALE_LEFT
+            return ""
+
+        self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", sh=container_shell
+        )
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" in logs
+
+    def test_a_deleted_file_is_not_reported(self, tmp_path, monkeypatch):
+        """The warning has to mean something, so it must stay off the happy path."""
+        self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" not in logs
+
+
+class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
+    """A self-managed launcher needs the same cleanup, one layer out.
+
+    `run_container` returns into `_run_self_managed` before it reaches the
+    container-side deletion, so `slurm_multi` never got it. There the script
+    runs on the host in the submission directory -- reused by every run -- and
+    `slurm.collect_results` falls back to that copy when no per-node CSV was
+    collected, so a leftover is reported as this run's.
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        runner.perf_csv_path = "perf.csv"
+        return runner
+
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        on_script_start=None,
+        script_subdir=None,
+    ):
+        monkeypatch.chdir(tmp_path)
+        script_dir = tmp_path / script_subdir if script_subdir else tmp_path
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script = script_dir / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+
+        model_info = {"name": "dummy", "scripts": str(script), "args": ""}
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        def script_run(*args, **kwargs):
+            if on_script_start:
+                on_script_start()
+            return subprocess.CompletedProcess("", 0)
+
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            side_effect=script_run,
+        ):
+            self._make_runner()._run_self_managed(
+                model_info=model_info,
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=60,
+                run_results={},
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+
+    def test_the_file_is_gone_before_the_script_starts(self, tmp_path, monkeypatch):
+        stale = tmp_path / "perf_model.csv"
+        stale.write_text("model,perf\nold,1\n")
+        seen = {}
+
+        self._run(
+            tmp_path,
+            monkeypatch,
+            "perf_model.csv",
+            on_script_start=lambda: seen.update(exists=stale.exists()),
+        )
+
+        assert seen == {"exists": False}
+
+    def test_the_copy_in_the_script_directory_goes_too(self, tmp_path, monkeypatch):
+        """The script is launched with cwd=script_dir, so a relative
+        multiple_results lands there rather than next to the manifest."""
+        beside_script = tmp_path / "scripts" / "perf_model.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nold,1\n")
+        in_cwd = tmp_path / "perf_model.csv"
+        in_cwd.write_text("model,perf\nold,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv", script_subdir="scripts")
+
+        assert not beside_script.exists()
+        assert not in_cwd.exists()
+
+    def test_an_unrelated_file_is_left_alone(self, tmp_path, monkeypatch):
+        """Only the file the model card names may be touched."""
+        other = tmp_path / "perf_other.csv"
+        other.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert other.exists()
+
+    def test_nothing_happens_without_multiple_results(self, tmp_path, monkeypatch):
+        leftover = tmp_path / "perf_model.csv"
+        leftover.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, None)
+
+        assert leftover.exists()
+
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch):
+        """cwd/perf.csv holds every earlier run's rows."""
+        in_cwd = tmp_path / "perf.csv"
+        in_cwd.write_text("model,perf\nkeep,1\n")
+        beside_script = tmp_path / "scripts" / "perf.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf.csv", script_subdir="scripts")
+
+        assert in_cwd.exists()
+        assert beside_script.exists()
+
+    def test_a_file_that_cannot_be_deleted_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Same reason as in the container: the stale copy still wins."""
+        (tmp_path / "perf_model.csv").write_text("model,perf\nold,1\n")
+
+        with patch(
+            "madengine.execution.container_runner.os.remove",
+            side_effect=PermissionError("read-only"),
+        ):
+            self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert "Could not delete the stale results file" in capsys.readouterr().out
+
+
+class TestScriptsDirResolution:
+    """A model's `scripts` entry must not name a directory that holds the copy destination.
+
+    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in a container whose working
+    directory is /myworkspace. Any source equal to or containing the destination copies it into
+    itself: `cp ./. run_directory/` exits 1, while `cp /. run_directory/` does not refuse at all
+    -- it walks the filesystem, measured at 1.8 GB in two minutes.
+
+    Both sides are resolved against the working directory first, so the judgement is about which
+    directory is copied rather than how it is spelled.
+    """
+
+    DEST = "run_directory"
+
+    @pytest.mark.parametrize("entry,why", [
+        ("run.sh", "no directory at all: the source becomes /."),
+        ("", "same"),
+        ("./run.sh", "the working directory, which holds the destination"),
+        ("/run.sh", "the filesystem root"),
+        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
+        ("../run.sh", "the parent of the working directory"),
+        ("/myworkspace/run.sh", "the working directory written absolutely"),
+        ("run_directory/run.sh", "the destination itself"),
+        ("./run_directory/run.sh", "the destination, spelled differently"),
+    ])
+    def test_a_source_holding_the_destination_is_refused(self, entry, why):
+        with pytest.raises(ValueError):
+            ContainerRunner._scripts_dir(entry, self.DEST, "m")
+
+    @pytest.mark.parametrize("entry,expected", [
+        ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
+        ("scripts/m/run.py", "scripts/m"),
+        ("scripts/m/sub/run.sh", "scripts/m/sub"),
+        # Resolves to the same directory as the first case, so it must be judged the same way.
+        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
+        # Outside the workspace entirely: it cannot contain the destination.
+        ("../opt/bench/run.sh", "../opt/bench"),
+        ("/opt/bench/run.sh", "/opt/bench"),
+    ])
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+        assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
+
+    def test_the_caller_never_builds_a_self_copy(self):
+        """Stated on the command the caller builds, not on the helper's return value."""
+        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
+                      "/myworkspace/run.sh", "run_directory/run.sh"):
+            try:
+                src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
+            except ValueError:
+                continue
+            raise AssertionError(f"{entry!r} produced copy source {src + '/.'!r}")

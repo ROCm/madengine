@@ -137,10 +137,11 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 - `container_runner_helpers.py` — Log error pattern scanning, timeout resolution
 
 **Deployment Layer** (`src/madengine/deployment/`)
-- `factory.py` — `DeploymentFactory`: Factory pattern, registers `SlurmDeployment` and `KubernetesDeployment`
+- `factory.py` — `DeploymentFactory`: Factory pattern, registers `SlurmDeployment`, `KubernetesDeployment` and `LlmdDeployment`
 - `base.py` — `BaseDeployment` abstract class, `DeploymentConfig` dataclass
-- `kubernetes.py` / `slurm.py` — Concrete deployments; target is inferred by Convention over Configuration: presence of `"k8s"` or `"kubernetes"` key → K8s; `"slurm"` key → SLURM; neither → local
-- `presets/` — JSON preset files for K8s/SLURM default configurations; auto-merged with minimal user configs
+- `kubernetes.py` / `slurm.py` — Concrete deployments; target is inferred by Convention over Configuration: presence of `"llm_d"` key → llm-d; `"k8s"` or `"kubernetes"` key → K8s; `"slurm"` key → SLURM; neither → local
+- `llm_d.py` / `llm_d_stack.py` — `LlmdDeployment` subclasses `KubernetesDeployment` (the benchmark client is an ordinary single-pod Job); `LlmdStack` drives `helm`. Two modes: attach (`llm_d.endpoint_url` set) and managed (madengine installs/uninstalls the charts). `llm_d` is checked before `k8s` because an llm-d config carries both keys
+- `presets/` — JSON preset files for K8s/SLURM/llm-d default configurations; auto-merged with minimal user configs
 - `config_loader.py` — Loads and merges preset JSON with user-supplied config
 
 **Utils** (`src/madengine/utils/`)
@@ -168,9 +169,15 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 ### Deployment Target Inference
 
 No explicit `"deploy"` field is needed. Target is inferred from config structure:
+- `"llm_d"` key present → llm-d (checked before `k8s`, because llm-d configs carry both)
 - `"k8s"` or `"kubernetes"` key present → Kubernetes deployment
 - `"slurm"` key present → SLURM deployment
 - Neither → local Docker execution
+
+llm-d reporting stamps `deployment_type=llm-d`, `launcher=vllm`, and
+`serving_mode=disaggregated|aggregated`. Card `--model_repo` fills `llm_d.model`
+identity when unset. Batch Job names are capped at 63 characters (label parity).
+See `docs/llm-d.md` and `deploy/llm-d/mi250/` for the MI250 path (1 GPU/pod, no RDMA).
 
 ### Test Structure
 

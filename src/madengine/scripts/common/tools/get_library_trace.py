@@ -153,7 +153,11 @@ def process_miopen_trace(output_lines: list) -> bool:
     Returns:
         matched: Boolean value
     """
-    RE_MATCH = re.compile(r"MIOpen\(HIP\): Command \[.*\] (./bin/MIOpenDriver .*)$")
+    # Older ROCm builds prefix the line "MIOpen(HIP):". TheRock logs "MIOpen:".
+    # Both still carry the MIOpenDriver command the CSV is built from.
+    RE_MATCH = re.compile(
+        r"MIOpen(?:\(HIP\))?: Command \[.*\] (./bin/MIOpenDriver .*)$"
+    )
     matched = False
     config_cnt = {}
     for line in output_lines:

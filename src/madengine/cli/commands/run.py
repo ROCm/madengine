@@ -18,12 +18,10 @@ try:
 except ImportError:
     from typing_extensions import Annotated  # Python 3.8
 
-from madengine.core.errors import (
-    BuildError,
-    ConfigurationError,
-    ExecutionError,
-)
+from madengine.core.errors import BuildError, ConfigurationError, ExecutionError
+from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.orchestration.run_orchestrator import RunOrchestrator
+from madengine.utils.gpu_memory_gate import DEFAULT_THRESHOLD_MB
 
 from ..constants import (
     DEFAULT_DATA_CONFIG,
@@ -78,7 +76,18 @@ def run(
         typer.Option(
             "--additional-context-file",
             "-f",
-            help="File containing additional context JSON",
+            help="File containing additional context JSON; --additional-context is deep-merged over it",
+        ),
+    ] = None,
+    config: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--config",
+            help=(
+                "YAML config file and/or Hydra overrides "
+                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
+                "Cannot be combined with --additional-context or --additional-context-file."
+            ),
         ),
     ] = None,
     keep_alive: Annotated[
@@ -168,6 +177,20 @@ def run(
             help="Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files)",
         ),
     ] = False,
+    wait_for_gpu_memory: Annotated[
+        Optional[int],
+        typer.Option(
+            "--wait-for-gpu-memory",
+            min=0,
+            help=(
+                "Before a local run, require every GPU to report at most "
+                f"{DEFAULT_THRESHOLD_MB} MB of memory in use. "
+                "Pass 0 to check once and fail if any GPU is over that "
+                "threshold, or a number of seconds to poll until memory "
+                "drops or the timeout elapses. Ignored on SLURM and Kubernetes."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """
     🚀 Run model containers in distributed scenarios.
@@ -179,6 +202,60 @@ def run(
 
     # Process tags to handle comma-separated values
     processed_tags = split_comma_separated_tags(tags)
+
+    # --config is mutually exclusive with --additional-context and --additional-context-file
+    if config:
+        if additional_context and additional_context.strip() not in ("", "{}"):
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+        if additional_context_file:
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+
+        from madengine.config import load_config
+
+        config_ctx, config_meta = load_config(config)
+
+        model_meta = config_meta.get("model") or {}
+        build_meta = config_meta.get("build") or {}
+        if not processed_tags and model_meta.get("tags"):
+            processed_tags = model_meta["tags"]
+        model_timeout = model_meta.get("timeout")
+        if timeout == DEFAULT_TIMEOUT and model_timeout is not None:
+            timeout = model_timeout
+        if not manifest_file and model_meta.get("manifest_file"):
+            manifest_file = model_meta["manifest_file"]
+        if not registry and build_meta.get("registry"):
+            registry = build_meta["registry"]
+        if not live_output and config_meta.get("live_output"):
+            live_output = True
+        if output == DEFAULT_PERF_OUTPUT and config_meta.get("output"):
+            output = config_meta["output"]
+        if summary_output is None and config_meta.get("summary_output"):
+            summary_output = config_meta["summary_output"]
+        if data_config_file_name == DEFAULT_DATA_CONFIG and config_meta.get(
+            "data_config"
+        ):
+            data_config_file_name = config_meta["data_config"]
+        if not skip_model_run and model_meta.get("skip_run"):
+            skip_model_run = True
+        if not require_pinned_image and config_ctx.get("require_pinned_image"):
+            require_pinned_image = True
+        if not keep_alive and config_ctx.get("docker_keep_alive"):
+            keep_alive = True
+        if not clean_docker_cache and config_ctx.get("docker_clean_cache"):
+            clean_docker_cache = True
+
+        additional_context = repr(config_ctx)
+        additional_context_file = None
 
     # Input validation
     if timeout < -1:
@@ -200,14 +277,14 @@ def run(
         effective_additional_context = repr(merged)
         effective_additional_context_file = None
 
-    # Convert -1 (default) to actual default timeout value (7200 seconds = 2 hours)
-    if timeout == -1:
-        timeout = 7200
-    # 0 means "no timeout" per the help text — map to None so subprocess never expires
-    elif timeout == 0:
-        timeout = None
-
-    timeout_display = "disabled" if timeout is None else f"{timeout}s"
+    # The sentinel is passed through untouched (-1 unspecified, 0 no timeout);
+    # resolve_run_timeout applies precedence against the model card downstream.
+    if timeout == 0:
+        timeout_display = "disabled"
+    elif timeout == -1:
+        timeout_display = f"{DEFAULT_RUN_TIMEOUT}s (default)"
+    else:
+        timeout_display = f"{timeout}s"
 
     try:
         # Check if we're doing execution-only or full workflow
@@ -247,6 +324,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=True,
             )
 
@@ -358,6 +436,7 @@ def run(
                 cleanup_perf=cleanup_perf,
                 skip_model_run=skip_model_run,
                 require_pinned_image=require_pinned_image,
+                wait_for_gpu_memory=wait_for_gpu_memory,
                 _separate_phases=False,  # Full workflow uses .live.log (not .run.live.log)
             )
 

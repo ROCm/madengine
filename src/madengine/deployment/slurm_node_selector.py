@@ -11,14 +11,80 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.table import Table
+
+# rocminfo lists the CPU agents first ("Name: AMD EPYC ...") and the GPU agents
+# after them ("Name: gfx942"), so the first gfx token is the GPU's ISA name. The
+# suffix is hex -- gfx90a is a real target -- so [0-9] alone would read it as gfx90.
+_GFX_ARCH_RE = re.compile(r"\bgfx[0-9a-f]+\b")
+
+
+def parse_gpu_arch(output: Optional[str]) -> Optional[str]:
+    """Return the first gfx architecture named in rocminfo output, or None."""
+    if not output:
+        return None
+    match = _GFX_ARCH_RE.search(output)
+    return match.group(0) if match else None
+
+
+def parse_node_resources(section: Optional[str]) -> Dict[str, object]:
+    """Parse the ===RESOURCES=== block of the health probe.
+
+    Lines are ``VRAM <used_bytes> <total_bytes>`` (one per GPU, from the amdgpu
+    driver's sysfs), ``DOCKER_AVAIL <bytes>`` and ``IMAGE_PRESENT``. Anything else
+    is ignored, so a node without docker or without amdgpu sysfs simply reports
+    less rather than failing the check.
+    """
+    vram: List[Tuple[int, int]] = []
+    docker_avail: Optional[int] = None
+    image_present = False
+    for line in (section or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            if parts[0] == "VRAM" and len(parts) == 3:
+                vram.append((int(parts[1]), int(parts[2])))
+            elif parts[0] == "DOCKER_AVAIL" and len(parts) == 2:
+                docker_avail = int(parts[1])
+            elif parts[0] == "IMAGE_PRESENT":
+                image_present = True
+        except ValueError:
+            continue
+    return {"vram": vram, "docker_avail": docker_avail, "image_present": image_present}
+
+
+def _hostnames(nodelist: str) -> List[str]:
+    """Expand a SLURM hostlist to individual node names.
+
+    A plain comma-separated list is split here. A bracketed range
+    (``node[01-02]``) cannot be split that way, and passing the whole range to
+    ``srun -N1 --nodelist`` is rejected, so it goes through
+    ``scontrol show hostnames``. An empty result means the list could not be
+    expanded; the caller must not probe some other node instead.
+    """
+    if "[" not in nodelist:
+        return [node.strip() for node in nodelist.split(",") if node.strip()]
+    try:
+        result = subprocess.run(
+            ["scontrol", "show", "hostnames", nodelist],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 class NodeHealth(Enum):
@@ -40,6 +106,8 @@ class NodeStatus:
     gpu_memory_total_gb: float
     process_count: int
     error_message: Optional[str] = None
+    docker_avail_gb: Optional[float] = None
+    image_present: bool = False
 
     @property
     def memory_free_gb(self) -> float:
@@ -73,8 +141,10 @@ class SlurmNodeSelector:
         console: Optional[Console] = None,
         auto_cleanup: bool = False,
         verbose: bool = False,
-        timeout: int = 30,
+        timeout: int = 120,
         reservation: Optional[str] = None,
+        image: Optional[str] = None,
+        image_size_bytes: Optional[int] = None,
     ):
         """
         Initialize node selector.
@@ -83,14 +153,29 @@ class SlurmNodeSelector:
             console: Rich console for output
             auto_cleanup: Automatically clean dirty nodes
             verbose: Enable verbose logging
-            timeout: Timeout for srun commands (seconds)
+            timeout: Seconds to wait for a probe srun. This is a QUEUE wait, not a
+                command runtime: the probe cannot start until the scheduler gives it
+                a slot, so the value has to cover how long that takes on a busy
+                cluster. Override with slurm.node_check_timeout.
             reservation: SLURM reservation name (passed through to srun health/cleanup)
+            image: The image the job will pull on each node. A node that already has
+                it needs no disk for the pull.
+            image_size_bytes: Its size. A node without the image needs at least this
+                much free on its docker data root, or the pull fails with "no space
+                left on device" after the job has started (several runs died that way on
+                the same node, which this check had passed).
         """
         self.console = console or Console()
+        # Set when select_nodes runs. The probe below needs it: a login node with no
+        # default partition rejects a bare srun, and the whole check then reports
+        # every node unreachable.
+        self.partition: Optional[str] = None
         self.auto_cleanup = auto_cleanup
         self.verbose = verbose
         self.timeout = timeout
         self.reservation = reservation
+        self.image = image
+        self.image_size_bytes = image_size_bytes
 
     # Max candidates to check (avoids excessive checks on large clusters)
     MAX_CANDIDATES_CAP = 100
@@ -208,7 +293,29 @@ echo "===END_GPU_INFO==="
 echo "===PROCESSES==="
 ps aux | grep -E "(ray::|RayWorkerWrapper|raylet|vllm)" | grep -v grep || echo "NO_PROCESSES"
 echo "===END_PROCESSES==="
+
+# Measured facts, not the process-name estimate above. Per-GPU VRAM comes from the
+# amdgpu driver's sysfs, which a step that holds no GPU can still read (a GPU-less
+# step may not be allowed to open the devices amd-smi needs). Docker's free space
+# is measured on its data root, where a pull lands.
+echo "===RESOURCES==="
+for d in /sys/class/drm/card*/device; do
+    [ -r "$d/mem_info_vram_used" ] && [ -r "$d/mem_info_vram_total" ] || continue
+    echo "VRAM $(cat "$d/mem_info_vram_used") $(cat "$d/mem_info_vram_total")"
+done
+DR=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+if [ -n "$DR" ]; then
+    echo "DOCKER_AVAIL $(df -B1 --output=avail "$DR" 2>/dev/null | tail -1 | tr -d ' ')"
+fi
+if [ -n "__MAD_CHECK_IMAGE__" ] && docker image inspect "__MAD_CHECK_IMAGE__" >/dev/null 2>&1; then
+    echo "IMAGE_PRESENT"
+fi
+echo "===END_RESOURCES==="
 """
+        # The image name goes into the script as a literal; refuse anything that is
+        # not a plain image reference rather than quote it into shell.
+        image = self.image if self.image and re.fullmatch(r"[A-Za-z0-9._/:@-]+", self.image) else ""
+        check_script = check_script.replace("__MAD_CHECK_IMAGE__", image)
         srun_cmd = [
             "srun",
             f"--nodelist={node}",
@@ -217,6 +324,13 @@ echo "===END_PROCESSES==="
             "--overlap",  # Allow overlap with running jobs
             "--quiet",
         ]
+        # Without this the probe inherits whatever default partition the login node
+        # has -- on OCI amd-rccl there is none, so srun answers "Invalid
+        # specification" and every node is recorded UNREACHABLE. Five builds
+        # reported all 46-50 nodes unreachable for this reason, which is also why
+        # the check has been standing down instead of doing its job.
+        if self.partition:
+            srun_cmd.append(f"--partition={self.partition}")
         if job_name:
             srun_cmd.append(f"--job-name={job_name}")
         if self.reservation:
@@ -244,39 +358,67 @@ echo "===END_PROCESSES==="
             # Parse output
             output = result.stdout
 
-            # Extract GPU info
-            self._extract_section(output, "===GPU_INFO===", "===END_GPU_INFO===")
             processes = self._extract_section(
                 output, "===PROCESSES===", "===END_PROCESSES==="
             )
 
-            # Parse GPU memory (simplified - in production would parse actual output)
-            # For MI300X: typically 192GB per GPU
-            total_memory_gb = 192.0 * 4  # Assume 4 GPUs
+            resources = parse_node_resources(
+                self._extract_section(output, "===RESOURCES===", "===END_RESOURCES===")
+            )
 
             # Count processes
             process_count = 0
             if processes and "NO_PROCESSES" not in processes:
                 process_count = len([l for l in processes.split("\n") if l.strip()])
 
-            # Estimate memory usage
-            # Rough heuristic: each process uses ~45GB (observed from Job 2437)
-            used_memory_gb = process_count * 45.0
-
-            # Determine health
-            if process_count == 0:
-                health = NodeHealth.CLEAN
-            elif used_memory_gb > self.MEMORY_THRESHOLD_GB:
-                health = NodeHealth.DIRTY
+            gib = float(1 << 30)
+            reasons: List[str] = []
+            vram = resources["vram"]
+            if vram:
+                # Measured. The amd-smi output above used to be collected and never
+                # read; memory was estimated as 45 GB per process whose name matched
+                # ray/vllm, so a node whose GPUs were held by anything else -- the
+                # SGLang servers that broke a run with "memory capacity is
+                # unbalanced" -- counted as empty. Judged per GPU against the same
+                # threshold, because one occupied GPU is enough to break a job.
+                used_memory_gb = sum(u for u, _ in vram) / gib
+                total_memory_gb = sum(t for _, t in vram) / gib
+                busy = [(i, u / gib) for i, (u, _) in enumerate(vram) if u / gib > self.MEMORY_THRESHOLD_GB]
+                if busy:
+                    reasons.append(
+                        "GPU memory in use: "
+                        + ", ".join(f"GPU{i} {g:.0f} GB" for i, g in busy)
+                    )
             else:
-                health = NodeHealth.CLEAN  # Minor processes, should be OK
+                # No amdgpu sysfs on this node: keep the old estimate.
+                # For MI300X: typically 192GB per GPU
+                total_memory_gb = 192.0 * 4  # Assume 4 GPUs
+                # Rough heuristic: each process uses ~45GB (observed from Job 2437)
+                used_memory_gb = process_count * 45.0
+                if process_count and used_memory_gb > self.MEMORY_THRESHOLD_GB:
+                    reasons.append(f"{process_count} stale Ray/vLLM process(es)")
+
+            docker_avail = resources["docker_avail"]
+            if (
+                self.image_size_bytes
+                and docker_avail is not None
+                and not resources["image_present"]
+                and docker_avail < self.image_size_bytes
+            ):
+                reasons.append(
+                    f"docker has {docker_avail / gib:.0f} GB free, "
+                    f"the image needs {self.image_size_bytes / gib:.0f} GB"
+                )
 
             return NodeStatus(
                 node=node,
-                health=health,
+                health=NodeHealth.DIRTY if reasons else NodeHealth.CLEAN,
                 gpu_memory_used_gb=used_memory_gb,
                 gpu_memory_total_gb=total_memory_gb,
                 process_count=process_count,
+                error_message="; ".join(reasons) or None,
+                docker_avail_gb=None if docker_avail is None else docker_avail / gib,
+                image_present=bool(resources["image_present"]),
             )
 
         except subprocess.TimeoutExpired:
@@ -298,6 +440,106 @@ echo "===END_PROCESSES==="
                 error_message=str(e)[:100],
             )
 
+    def probe_gpu_arch(
+        self,
+        partition: str,
+        constraint: Optional[str] = None,
+        exclude: Optional[str] = None,
+        nodelist: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Ask one compute node of the partition which GPU architecture it has.
+
+        madengine runs SLURM deployments from the login node, which has no GPUs,
+        so the architecture a model card's skip_gpu_arch is compared against has
+        to come from the nodes the job will land on. One srun of rocminfo on the
+        same partition, reservation and constraint the job uses answers that.
+
+        Uses the same queue-wait timeout as the health probe: it is an srun too,
+        and on a busy cluster it waits for a slot before it runs anything.
+
+        Returns:
+            The gfx name (e.g. "gfx942"), or None if the probe could not run or
+            printed no gfx agent. None means UNKNOWN, never "not this arch".
+        """
+        job_name = f"madengine_archprobe_{os.getpid()}_{int(time.time())}"
+        # The KFD topology in sysfs first, rocminfo only as a fallback. This step
+        # asks for no GPUs, and where SLURM constrains devices a GPU-less step
+        # cannot open /dev/kfd: rocminfo then lists no GPU agent and the probe
+        # came back empty in 1.5s, so a gfx942-excluded card was
+        # submitted to gfx942 nodes. The topology files need no device access.
+        # Same decode as MAD's scripts/common/cluster.sh, which reports
+        # "GPU arch: gfx942" on these nodes from inside the job.
+        # rocminfo is often not on a non-login PATH; /opt/rocm/bin is where ROCm
+        # installs it.
+        probe_script = (
+            'for p in /sys/class/kfd/kfd/topology/nodes/*/properties; do '
+            'v=$(awk \'$1=="gfx_target_version"{print $2}\' "$p" 2>/dev/null); '
+            '[ -n "$v" ] && [ "$v" != 0 ] && '
+            '{ printf "gfx%d%x%x\\n" $((v/10000)) $(((v/100)%100)) $((v%100)); exit 0; }; '
+            'done; '
+            'PATH="$PATH:/opt/rocm/bin" rocminfo 2>/dev/null'
+        )
+        srun_cmd = [
+            "srun",
+            "--nodes=1",
+            "--ntasks=1",
+            "--time=00:01:00",
+            "--overlap",
+            "--quiet",
+            f"--job-name={job_name}",
+        ]
+        # Named for the same reason check_node_health names it: a login node with
+        # no default partition rejects a bare srun.
+        if partition:
+            srun_cmd.append(f"--partition={partition}")
+        if self.reservation:
+            srun_cmd.append(f"--reservation={self.reservation}")
+        if constraint:
+            srun_cmd.append(f"--constraint={constraint}")
+        if nodelist:
+            hosts = _hostnames(nodelist)
+            if not hosts:
+                self.console.print(
+                    "[yellow]⚠ GPU architecture probe skipped: could not expand "
+                    f"nodelist {nodelist}. Set slurm.gpu_arch to name the "
+                    "architecture directly.[/yellow]"
+                )
+                return None
+            # One node is enough, and srun -N1 rejects a multi-node hostlist.
+            srun_cmd.append(f"--nodelist={hosts[0]}")
+        elif exclude:
+            srun_cmd.append(f"--exclude={exclude}")
+        srun_cmd.extend(["bash", "-c", probe_script])
+
+        try:
+            result = subprocess.run(
+                srun_cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            self.console.print(
+                f"[yellow]⚠ GPU architecture probe timed out after {self.timeout}s "
+                f"waiting for a node in {partition}[/yellow]"
+            )
+            return None
+        except Exception as e:
+            self.console.print(f"[yellow]⚠ GPU architecture probe failed: {e}[/yellow]")
+            return None
+        finally:
+            # A probe that timed out is still queued; do not leave it behind.
+            SlurmNodeSelector.cancel_health_check_jobs(job_name, self.console)
+
+        if result.returncode != 0:
+            self.console.print(
+                f"[yellow]⚠ GPU architecture probe srun failed: "
+                f"{(result.stderr or '').strip()[:200]}[/yellow]"
+            )
+            return None
+        return parse_gpu_arch(result.stdout)
+
     def cleanup_node(self, node: str, job_name: Optional[str] = None) -> bool:
         """
         Clean up stale processes on a node using srun.
@@ -311,19 +553,35 @@ echo "===END_PROCESSES==="
         """
         # Cleanup script (consolidated from bash scripts)
         cleanup_script = """
+# Containers first. These workloads run inside docker, and a container outlives
+# the job that started it: scancel kills the job's shell, but the container
+# belongs to the docker daemon and keeps its GPU memory. That is how a node ends
+# up occupied with no SLURM job on it, and why killing host processes alone left
+# a run looking at busy GPUs.
+if command -v docker >/dev/null 2>&1; then
+    # Only containers madengine started. A bare `docker ps` stops every
+    # container on a shared node, including ones this job did not create, and
+    # a node marked dirty only for low disk would take that path too.
+    docker ps -q --filter label=madengine.session \
+        | xargs --no-run-if-empty docker stop --time 10 2>/dev/null || true
+fi
+
 # Kill Ray processes
 pkill -9 -f "ray::" 2>/dev/null || true
 pkill -9 -f "RayWorkerWrapper" 2>/dev/null || true
 pkill -9 -f "raylet" 2>/dev/null || true
 
-# Kill vLLM processes
+# Kill vLLM and SGLang processes. SGLang was missing entirely, so a node dirtied
+# by the sglang_disagg workloads was never cleaned by this.
 pkill -9 -f "vllm" 2>/dev/null || true
+pkill -9 -f "sglang" 2>/dev/null || true
 
 # Kill Ray Python workers
 pgrep -f "ray/_private/workers" | xargs -r kill -9 2>/dev/null || true
 
-# Give processes time to die
-sleep 2
+# Give processes time to die and the driver time to release GPU memory. A
+# container stopped a moment ago still shows its memory as used.
+sleep 5
 
 echo "CLEANUP_OK"
 """
@@ -335,6 +593,10 @@ echo "CLEANUP_OK"
             "--overlap",
             "--quiet",
         ]
+        # Same omission the probe had: without the partition a login node with no
+        # default rejects this outright, so cleanup silently never happens.
+        if self.partition:
+            srun_cmd.append(f"--partition={self.partition}")
         if job_name:
             srun_cmd.append(f"--job-name={job_name}")
         if self.reservation:
@@ -387,6 +649,9 @@ echo "CLEANUP_OK"
             - clean_nodes: List of clean node names (may be empty)
             - updated_exclude_list: Comma-separated list to pass to sbatch
         """
+        # The probe runs before any allocation exists, so it has to name the partition.
+        self.partition = partition
+
         self.console.print("\n[bold cyan]🔍 Checking GPU Node Health[/bold cyan]")
         self.console.print(
             f"Partition: [cyan]{partition}[/cyan] | "
@@ -451,8 +716,9 @@ echo "CLEANUP_OK"
         # Handle dirty nodes (optional auto-cleanup)
         if dirty_nodes:
             self.console.print(
-                f"\n[yellow]⚠ Found {len(dirty_nodes)} dirty node(s) "
-                f"with stale Ray/vLLM processes[/yellow]"
+                f"\n[yellow]⚠ Found {len(dirty_nodes)} node(s) not fit for this job: "
+                + "; ".join(f"{d.node} ({d.error_message})" for d in dirty_nodes)
+                + "[/yellow]"
             )
             if self.auto_cleanup:
                 self.console.print("[yellow]Running automatic cleanup...[/yellow]\n")
@@ -514,6 +780,41 @@ echo "CLEANUP_OK"
                 "[yellow]Recommendation: Wait for nodes to be cleaned or run manual cleanup[/yellow]\n"
             )
 
+        # A probe that could not measure ANY node has failed; the partition has
+        # not. Seen on OCI amd-rccl, where every node came back unreachable or
+        # unknown from the login node. That says something about the probe, not
+        # about the machines, so the check stands down and lets SLURM schedule.
+        #
+        # Measured DIRTY nodes are a different result. Occupied GPU memory or a
+        # full Docker disk is a reason to keep those nodes out, even when every
+        # node that was examined is dirty. Clearing that exclude list would
+        # submit onto the nodes the check just condemned.
+        examined = {st.node for st in statuses}
+        unmeasured = {
+            st.node
+            for st in statuses
+            if st.health in (NodeHealth.UNREACHABLE, NodeHealth.UNKNOWN)
+        }
+        if examined and examined <= unmeasured:
+            # Flag it for the caller as well. Dropping the exclude list alone is half a
+            # stand-down: the caller also gates submission on len(clean_nodes), which is
+            # zero for exactly the same reason the exclude list named everything. One run
+            # cleared the exclusion and then failed anyway on "Not enough clean nodes:
+            # need 2, found 0" -- the check still deciding the outcome after announcing it
+            # had nothing to say.
+            self.health_check_inconclusive = True
+            self.console.print(
+                f"[yellow]⚠ Every one of the {len(examined)} node(s) the health check "
+                f"examined was unreachable or unknown, so the check has no usable "
+                f"signal and is being disregarded.[/yellow]"
+            )
+            self.console.print(
+                "[yellow]  Submitting without a node exclusion and letting SLURM "
+                "schedule. Set slurm.enable_node_check=false to skip this check "
+                "entirely.[/yellow]\n"
+            )
+            return clean_nodes, exclude
+
         return clean_nodes, updated_exclude
 
     def _extract_section(self, text: str, start_marker: str, end_marker: str) -> str:
@@ -527,12 +828,21 @@ echo "CLEANUP_OK"
 
     def _display_status_table(self, statuses: List[NodeStatus]):
         """Display node status in a table."""
-        table = Table(title="Node Health Status")
+        # The table is the evidence for which nodes the job may use, so it shows what
+        # the decision was made on: a run passed a node with an empty
+        # Notes column, and nothing said whether its disk was fine or unmeasured.
+        if self.image_size_bytes:
+            caption = (f"Disk judged against {self.image or 'the image'} "
+                       f"({self.image_size_bytes / float(1 << 30):.0f} GB)")
+        else:
+            caption = "Disk not checked: the manifest records no image size"
+        table = Table(title="Node Health Status", caption=caption)
 
         table.add_column("Node", style="cyan", no_wrap=True)
         table.add_column("Health", style="bold")
         table.add_column("Memory Used", justify="right")
         table.add_column("Processes", justify="right")
+        table.add_column("Docker free", justify="right")
         table.add_column("Notes", style="dim")
 
         for status in statuses:
@@ -559,12 +869,19 @@ echo "CLEANUP_OK"
                 str(status.process_count) if status.process_count > 0 else "-"
             )
             notes = status.error_message if status.error_message else ""
+            if status.docker_avail_gb is None:
+                disk_text = "?"
+            else:
+                disk_text = f"{status.docker_avail_gb:.0f} GB"
+            if status.image_present:
+                disk_text += " (image present)"
 
             table.add_row(
                 status.node,
                 f"[{health_style}]{health_text}[/{health_style}]",
                 memory_text,
                 processes_text,
+                disk_text,
                 notes,
             )
 

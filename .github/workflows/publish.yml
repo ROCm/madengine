@@ -55,23 +55,25 @@ jobs:
         run: python -c "import madengine; print(madengine.__version__)"
       - name: Verify package assets
         run: |
-          python -c "
+          python - <<'PY'
           from pathlib import Path
           import madengine
           pkg = Path(madengine.__file__).parent
           missing = []
           for p in [
-              'scripts/common/tools.json',
-              'deployment/templates/kubernetes/job.yaml.j2',
-              'deployment/templates/slurm/job.sh.j2',
-              'py.typed',
+              "scripts/common/tools.json",
+              "deployment/templates/kubernetes/job.yaml.j2",
+              "deployment/templates/slurm/job.sh.j2",
+              "deployment/presets/k8s/defaults.json",
+              "configs/config.yaml",
+              "py.typed",
           ]:
               if not (pkg / p).exists():
                   missing.append(p)
           if missing:
-              raise SystemExit(f'Missing package assets: {missing}')
-          print('All package assets verified')
-          "
+              raise SystemExit(f"Missing package assets: {missing}")
+          print("All package assets verified")
+          PY
 
   publish-testpypi:
     needs: test-install

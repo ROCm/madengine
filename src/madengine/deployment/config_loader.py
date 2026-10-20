@@ -16,9 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 
-def apply_deployment_config(
-    config: Any, load_fn: Callable[[Dict[str, Any]], Dict[str, Any]]
-) -> Dict[str, Any]:
+def apply_deployment_config(config: Any, load_fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
     """Apply deployment defaults via a loader and set config.additional_context.
 
     Used by SLURM and Kubernetes deployment classes before calling super().__init__(config).
@@ -35,105 +33,104 @@ def apply_deployment_config(
     return full_config
 
 
+# Key under which load_slurm_config records the env_vars keys that came only
+# from a preset (defaults.json / profiles/*.json), not from the user.
+PRESET_ENV_KEYS = "_preset_env_keys"
+
+
 class ConfigLoader:
     """Smart configuration loader with preset support."""
-
+    
     PRESET_DIR = Path(__file__).parent / "presets"
-
+    
     @classmethod
     def load_preset(cls, preset_path: str) -> Dict[str, Any]:
         """
         Load a preset JSON file.
-
+        
         Args:
             preset_path: Relative path to preset file from PRESET_DIR
-
+            
         Returns:
             Dict containing preset configuration, or empty dict if not found
         """
         full_path = cls.PRESET_DIR / preset_path
         if not full_path.exists():
             return {}
-
+        
         try:
-            with open(full_path, "r") as f:
+            with open(full_path, 'r') as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError) as e:
             print(f"Warning: Could not load preset {preset_path}: {e}")
             return {}
-
+    
     @classmethod
     def deep_merge(cls, base: Dict, override: Dict) -> Dict:
         """
         Deep merge two dictionaries. Override wins conflicts.
         Nested dicts are merged, lists/primitives are replaced.
         Special handling: env_vars are merged (not replaced).
-
+        
         Args:
             base: Base dictionary
             override: Override dictionary
-
+            
         Returns:
             Merged dictionary
         """
         result = deepcopy(base)
-
+        
         for key, value in override.items():
             # Skip documentation/comment fields from base if override has them
-            if key.startswith("_"):
+            if key.startswith('_'):
                 result[key] = deepcopy(value)
                 continue
-
-            if (
-                key in result
-                and isinstance(result[key], dict)
-                and isinstance(value, dict)
-            ):
+                
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
                 # Recursively merge nested dicts
                 result[key] = cls.deep_merge(result[key], value)
             else:
                 # Replace with override value
                 result[key] = deepcopy(value)
-
+        
         return result
-
+    
     @classmethod
     def detect_profile_needs(cls, config: Dict) -> Dict[str, bool]:
         """
         Detect what profiles/optimizations are needed.
-
+        
         Args:
             config: Configuration dictionary
-
+            
         Returns:
             Dict with flags: is_single_gpu, is_multi_gpu, is_multi_node, is_distributed
         """
         distributed = config.get("distributed", {})
         gpu_count = config.get("k8s", {}).get("gpu_count", 1)
         nnodes = distributed.get("nnodes", 1)
-
-        is_distributed = distributed.get("enabled", False) or distributed.get(
-            "launcher"
-        )
+        
+        is_distributed = distributed.get("enabled", False) or distributed.get("launcher")
         is_multi_gpu = gpu_count > 1 or is_distributed
         is_multi_node = nnodes > 1
-
+        
         return {
             "is_single_gpu": gpu_count == 1 and not is_distributed,
             "is_multi_gpu": is_multi_gpu and not is_multi_node,
             "is_multi_node": is_multi_node,
-            "is_distributed": is_distributed,
+            "is_distributed": is_distributed
         }
-
+    
     @classmethod
     def select_profile(cls, config: Dict, needs: Dict[str, bool]) -> Optional[str]:
         """
         Auto-select k8s profile based on configuration needs.
-
+        
         Args:
             config: Configuration dictionary
             needs: Profile needs from detect_profile_needs()
-
+            
         Returns:
             Profile filename or None
         """
@@ -143,82 +140,82 @@ class ConfigLoader:
             return "k8s/profiles/multi-gpu.json"
         elif needs["is_single_gpu"]:
             return "k8s/profiles/single-gpu.json"
-
+        
         return None
-
+    
     @classmethod
     def load_k8s_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Load complete k8s configuration with multi-layer merging.
-
+        
         Layers:
         1. Base k8s defaults
         2. GPU vendor base preset
         3. GPU vendor multi-GPU preset (if needed)
         4. Profile preset (single-gpu/multi-gpu/multi-node)
         5. User configuration (already merged from file + CLI)
-
+        
         Args:
             user_config: User-provided configuration (merged from file + CLI)
-
+            
         Returns:
             Complete configuration with all defaults applied
         """
         # Layer 1: Base defaults
         config = cls.load_preset("k8s/defaults.json")
-
+        
         # Merge user config temporarily to detect requirements
         temp_config = cls.deep_merge(config, user_config)
         needs = cls.detect_profile_needs(temp_config)
-
+        
         # Layer 2: GPU vendor base preset
         gpu_vendor = temp_config.get("gpu_vendor", "AMD").upper()
         vendor_file = f"k8s/gpu-vendors/{gpu_vendor.lower()}.json"
         vendor_preset = cls.load_preset(vendor_file)
         config = cls.deep_merge(config, vendor_preset)
-
+        
         # Layer 3: GPU vendor multi-GPU optimizations (AMD only, when needed)
         if gpu_vendor == "AMD" and (needs["is_multi_gpu"] or needs["is_multi_node"]):
             amd_multi_preset = cls.load_preset("k8s/gpu-vendors/amd-multi-gpu.json")
             config = cls.deep_merge(config, amd_multi_preset)
-
+        
         # Layer 4: Profile preset based on detected needs
         profile_file = cls.select_profile(temp_config, needs)
         if profile_file:
             profile_preset = cls.load_preset(profile_file)
             config = cls.deep_merge(config, profile_preset)
-
+        
         # Layer 5: User configuration (highest priority)
         config = cls.deep_merge(config, user_config)
-
+        
         return config
-
+    
     @classmethod
     def load_slurm_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Load complete SLURM configuration with multi-layer merging.
-
+        
         Layers:
         1. Base SLURM defaults
         2. Profile preset (single-node/multi-node)
         3. User configuration (already merged from file + CLI)
-
+        
         Args:
             user_config: User-provided configuration
-
+            
         Returns:
             Complete configuration with defaults applied
         """
         # Layer 1: Base defaults
         config = cls.load_preset("slurm/defaults.json")
-
+        
         # Merge user config temporarily to detect requirements
         temp_config = cls.deep_merge(config, user_config)
-
+        
         # Layer 2: Profile preset based on detected configuration
         slurm_config = temp_config.get("slurm", {})
         nodes = slurm_config.get("nodes", 1)
-
+        
         # Select profile based on node count
         if nodes > 1:
             profile_preset = cls.load_preset("slurm/profiles/multi-node.json")
@@ -226,30 +223,99 @@ class ConfigLoader:
         else:
             profile_preset = cls.load_preset("slurm/profiles/single-node.json")
             config = cls.deep_merge(config, profile_preset)
-
+        
         # Layer 3: User configuration (highest priority)
+        preset_env = dict(config.get("env_vars") or {})
         config = cls.deep_merge(config, user_config)
 
+        # Once merged, a preset's env_vars are indistinguishable from ones the
+        # user supplied, and a self-managed launcher (slurm_multi) must not be
+        # handed them: it runs the card's own script, which owns its environment.
+        # Record which keys ONLY a preset set, so that path can leave them out.
+        # See SlurmDeployment._user_env_vars for the incident.
+        #
+        # Keys already marked stay marked, so loading an already-loaded config
+        # (whose env_vars now hold the preset values) does not launder them into
+        # user-supplied ones.
+        user_env = user_config.get("env_vars") or {}
+        carried = set(user_config.get(PRESET_ENV_KEYS) or [])
+        config[PRESET_ENV_KEYS] = sorted(
+            k for k in preset_env if k not in user_env or k in carried
+        )
+
         return config
+    
+    @classmethod
+    def load_llmd_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Load complete llm-d configuration.
+
+        The llm-d benchmark client is an ordinary single-pod Kubernetes Job, so
+        the full k8s preset stack applies unchanged; llm-d defaults are layered
+        underneath it.
+
+        Layers:
+        1. llm-d defaults (presets/llm-d/defaults.json)
+        2. Everything load_k8s_config produces (k8s defaults, GPU vendor,
+           profile, then user configuration)
+        3. k8s.gpu_count defaulted to 0, unless the user asked for GPUs
+
+        Args:
+            user_config: User-provided configuration
+
+        Returns:
+            Complete configuration with both k8s and llm-d defaults applied
+        """
+        config = cls.load_k8s_config(user_config)
+        llmd_defaults = cls.load_preset("llm-d/defaults.json")
+
+        # llm-d defaults are the base; user configuration still wins.
+        merged = cls.deep_merge(llmd_defaults, config)
+
+        # The benchmark client is a CPU-only pod: the GPUs belong to the llm-d
+        # model servers, not to the load generator. load_k8s_config picks a
+        # profile preset for it anyway, and k8s/profiles/single-gpu.json sets
+        # gpu_count 1 — so without this the client Job requests a GPU it never
+        # uses and competes with the very stack it is benchmarking.
+        #
+        # This cannot live in presets/llm-d/defaults.json: those are the *base*
+        # of the merge above, so the profile's gpu_count would overwrite them.
+        # Keying off user_config instead of the merged result is what separates
+        # "the user asked for GPUs" from "a profile defaulted them" — an
+        # explicit k8s.gpu_count still wins, as do the runtime overrides
+        # resolve_runtime_gpus reads straight off additional_context.
+        #
+        # Only the "k8s" key is read here, not the "kubernetes" alias, because
+        # "k8s" is the only key written below — and the only one that is read
+        # downstream, since KubernetesDeployment and resolve_runtime_gpus both
+        # fall back to "kubernetes" only when "k8s" is empty, which it never is
+        # once k8s/defaults.json has merged. Honouring the alias here alone
+        # produced neither the value the user asked for nor the 0 this wants.
+        user_k8s = user_config.get("k8s") or {}
+        if "gpu_count" not in user_k8s:
+            merged.setdefault("k8s", {})["gpu_count"] = 0
+
+        return merged
 
     @classmethod
     def infer_and_validate_deploy_type(cls, user_config: Dict[str, Any]) -> str:
         """
         Infer deployment type from config structure and validate for conflicts.
-
+        
         Convention over Configuration: Presence of k8s/slurm field indicates deployment intent.
-
+        
         Args:
             user_config: User configuration dictionary
-
+            
         Returns:
             Deployment type: "k8s", "slurm", or "local"
-
+            
         Raises:
             ValueError: If conflicting deployment configs present
         """
         has_k8s = "k8s" in user_config or "kubernetes" in user_config
         has_slurm = "slurm" in user_config
+        has_llm_d = "llm_d" in user_config
         explicit_deploy = user_config.get("deploy", "").lower()
 
         # Validation Rule 1: Can't have both k8s and slurm configs
@@ -259,6 +325,15 @@ class ConfigLoader:
                 "Please specify only one deployment target."
             )
 
+        # Validation Rule 1b: llm-d is a Kubernetes-native stack; can't combine with slurm.
+        # Mirrors the same check in LlmdDeployment.validate(), but here at build time,
+        # before SLURM defaults get merged into the build context.
+        if has_llm_d and has_slurm:
+            raise ValueError(
+                "Conflicting deployment configuration: both 'llm_d' and 'slurm' present. "
+                "llm-d is a Kubernetes-native stack; remove the 'slurm' block."
+            )
+        
         # Validation Rule 2: If explicit deploy set, it must match config presence
         if explicit_deploy:
             if explicit_deploy in ["k8s", "kubernetes"] and not has_k8s:
@@ -276,7 +351,7 @@ class ConfigLoader:
                     f"Conflicting deployment: 'deploy' field is 'local' but k8s/slurm config present. "
                     "Remove k8s/slurm config for local execution."
                 )
-
+        
         # Infer deployment type from config presence
         if has_k8s:
             return "k8s"
@@ -284,34 +359,34 @@ class ConfigLoader:
             return "slurm"
         else:
             return "local"
-
+    
     @classmethod
     def load_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Load configuration with auto-inferred deploy type and validation.
-
+        
         Infers deployment type from presence of k8s/slurm fields.
         Validates for conflicting configurations.
         Applies appropriate defaults based on deployment type.
-
+        
         Convention over Configuration:
         - Presence of "k8s" field → Kubernetes deployment
         - Presence of "slurm" field → SLURM deployment
         - Neither present → Local execution
         - No explicit "deploy" field needed!
-
+        
         Args:
             user_config: User configuration (from file + CLI merge)
-
+            
         Returns:
             Complete configuration with defaults applied (no deploy field added)
-
+            
         Raises:
             ValueError: If conflicting deployment configs present
         """
         # Infer and validate deployment type
         deploy_type = cls.infer_and_validate_deploy_type(user_config)
-
+        
         # Apply appropriate defaults based on deployment type
         # Note: We do NOT add a "deploy" field - type is inferred from structure
         if deploy_type == "k8s":
@@ -321,3 +396,4 @@ class ConfigLoader:
         else:
             # Local - return as-is (no deploy field needed)
             return user_config
+

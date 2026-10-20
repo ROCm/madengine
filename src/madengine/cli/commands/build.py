@@ -86,7 +86,18 @@ def build(
         typer.Option(
             "--additional-context-file",
             "-f",
-            help="File containing additional context JSON",
+            help="File containing additional context JSON; --additional-context is deep-merged over it",
+        ),
+    ] = None,
+    config: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--config",
+            help=(
+                "YAML config file and/or Hydra overrides "
+                "(e.g., --config my_job.yaml, --config scheduler=slurm --config launcher=torchrun). "
+                "Cannot be combined with --additional-context or --additional-context-file."
+            ),
         ),
     ] = None,
     clean_docker_cache: Annotated[
@@ -123,19 +134,55 @@ def build(
     # Supports both: --tags dummy --tags multi AND --tags dummy,multi
     processed_tags = split_comma_separated_tags(tags)
 
+    # --config is mutually exclusive with --additional-context and --additional-context-file
+    if config:
+        if additional_context and additional_context.strip() not in ("", "{}"):
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+        if additional_context_file:
+            console.print(
+                "[red]Error:[/red] --config cannot be used together with --additional-context-file. "
+                "Use one or the other.",
+                style="bold",
+            )
+            raise typer.Exit(code=ExitCode.INVALID_ARGS.value)
+
+        from madengine.config import load_config
+
+        config_ctx, config_meta = load_config(config)
+
+        model_meta = config_meta.get("model") or {}
+        build_meta = config_meta.get("build") or {}
+        if not processed_tags and model_meta.get("tags"):
+            processed_tags = model_meta["tags"]
+        if not registry and build_meta.get("registry"):
+            registry = build_meta["registry"]
+        if not target_archs and build_meta.get("target_archs"):
+            target_archs = build_meta["target_archs"]
+        if manifest_output == DEFAULT_MANIFEST_FILE and build_meta.get(
+            "manifest_output"
+        ):
+            manifest_output = build_meta["manifest_output"]
+        if not live_output and config_meta.get("live_output"):
+            live_output = True
+        if summary_output is None and config_meta.get("summary_output"):
+            summary_output = config_meta["summary_output"]
+        if not clean_docker_cache and config_ctx.get("docker_clean_cache"):
+            clean_docker_cache = True
+
+        additional_context = repr(config_ctx)
+        additional_context_file = None
+
     # Validate mutually exclusive options
     if batch_manifest and processed_tags:
         console.print(
             "❌ [bold red]Error: Cannot specify both --batch-manifest and --tags options[/bold red]"
         )
         raise typer.Exit(ExitCode.INVALID_ARGS)
-
-    if additional_context_file and additional_context != "{}":
-        console.print(
-            "❌ [bold red]Error: Cannot specify both --additional-context-file and --additional-context options[/bold red]"
-        )
-        raise typer.Exit(ExitCode.INVALID_ARGS)
-
     if use_image and registry:
         console.print(
             "❌ [bold red]Error: Cannot specify both --use-image and --registry options[/bold red]\n"
@@ -289,6 +336,20 @@ def build(
         # Check results and exit with appropriate code
         failed_builds = len(build_summary.get("failed_builds", []))
         successful_builds = len(build_summary.get("successful_builds", []))
+        failed_pushes = build_summary.get("failed_pushes", [])
+
+        if failed_pushes:
+            # Built but not pushed: a run would reference a local-only image.
+            console.print(
+                f"💥 [bold red]{len(failed_pushes)} image(s) failed to push "
+                f"to registry {registry}[/bold red]"
+            )
+            for failure in failed_pushes:
+                console.print(
+                    f"  [red]• {failure.get('docker_image')}: "
+                    f"{failure.get('error')}[/red]"
+                )
+            raise typer.Exit(ExitCode.BUILD_FAILURE)
 
         if failed_builds == 0:
             console.print(
@@ -307,7 +368,7 @@ def build(
             raise typer.Exit(ExitCode.BUILD_FAILURE)  # Non-zero exit for CI/CD
         else:
             # All failed
-            console.print(f"💥 [bold red]All builds failed[/bold red]")
+            console.print("💥 [bold red]All builds failed[/bold red]")
             raise typer.Exit(ExitCode.BUILD_FAILURE)
 
     except typer.Exit:

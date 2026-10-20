@@ -1,0 +1,4 @@
+# @package _global_
+env_vars:
+  MIOPEN_FIND_MODE: "1"
+  MIOPEN_USER_DB_PATH: /tmp/.miopen

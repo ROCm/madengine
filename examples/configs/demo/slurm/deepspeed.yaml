@@ -1,0 +1,21 @@
+# SLURM — DeepSpeed ZeRO distributed training (single node)
+# madengine run --config examples/configs/demo/slurm/deepspeed.yaml
+
+model:
+  tags: [dummy_deepspeed]
+
+slurm:
+  partition: amd-rccl
+  nodes: 1
+  gpus_per_node: 4
+  time: "02:00:00"
+  output_dir: ./slurm_results
+
+distributed:
+  enabled: true
+  launcher: deepspeed
+  nnodes: 1
+  nproc_per_node: 4
+
+env_vars:
+  OMP_NUM_THREADS: "8"
