@@ -583,6 +583,31 @@ class ContainerRunner:
             raise_on_failure=False,
         )
 
+    def _pull_timeout_secs(self) -> int:
+        """Seconds allowed for ``docker pull``.
+
+        ``MAD_DOCKER_PULL_TIMEOUT_SECS`` overrides the 1800s default. A missing,
+        blank, non-integer, or non-positive value keeps the default and, when a
+        value was set, says so. It does not raise: the caller treats any
+        exception from :meth:`pull_image` as a failed pull.
+        """
+        default = 1800
+        raw = os.environ.get("MAD_DOCKER_PULL_TIMEOUT_SECS", "").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        self.rich_console.print(
+            "[yellow]Warning: MAD_DOCKER_PULL_TIMEOUT_SECS="
+            f"{raw!r} is not a positive number of seconds; "
+            f"using {default}.[/yellow]"
+        )
+        return default
+
     def pull_image(
         self,
         registry_image: str,
@@ -616,10 +641,31 @@ class ContainerRunner:
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
 
+        # A pull is not a 60-second command. console.sh defaults to that, and a
+        # multi-gigabyte serving image never finishes inside it, so every such
+        # pull raised "Console script timeout" regardless of how healthy the
+        # registry was.
+        # A bad value must not raise. The caller catches every exception from
+        # this function and reports it as a failed pull, then falls back to the
+        # local tag. int("30m") does that before the pull starts. 0 and negative
+        # values are worse: they parse, the fresh-pull policy below deletes the
+        # cached image, and console.sh then rejects the timeout.
+        pull_timeout = self._pull_timeout_secs()
+        attempted_cache_removal = False
+
         if deployment_type == "slurm" and in_slurm_job:
             print(
-                f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)"
+                "🔄 Using fresh pull policy for SLURM compute node "
+                "(prevents cached layer corruption)"
             )
+            # Set before the call, not after. `console.sh` can raise -- its own
+            # timeout, for one -- and the removal may already have deleted the
+            # image by then; recording the attempt afterwards would skip the
+            # diagnostic for exactly the interrupted case that most needs it.
+            # The consequence outlives this function: the caller treats a failed
+            # pull as "fall back to the local image", and this path has just
+            # tried to delete the copy that fallback might have used.
+            attempted_cache_removal = True
             # Remove any existing cached image to force fresh pull
             try:
                 self.console.sh(
@@ -630,7 +676,9 @@ class ContainerRunner:
                 pass  # It's okay if image doesn't exist
 
         try:
-            self.console.sh(f"docker pull {shlex.quote(registry_image)}")
+            self.console.sh(
+                f"docker pull {shlex.quote(registry_image)}", timeout=pull_timeout
+            )
 
             if local_name:
                 self.console.sh(
@@ -653,6 +701,20 @@ class ContainerRunner:
             self.rich_console.print(
                 f"[red]❌ Failed to pull image {registry_image}: {e}[/red]"
             )
+            if attempted_cache_removal:
+                # Deliberately not "there is no fallback": `docker rmi -f` runs
+                # with `|| true` and its result is not inspected, and it names
+                # the registry reference rather than the separate local tag the
+                # caller falls back to. What is certain is that removal was
+                # attempted, which is enough for a reader to know where to look.
+                self.rich_console.print(
+                    "[red]   The fresh-pull policy attempted `docker rmi -f` on "
+                    "this reference before pulling, so a cached copy may no "
+                    "longer be on this node. The caller's fallback uses a "
+                    "separate local tag, which may also be absent. Raise "
+                    f"MAD_DOCKER_PULL_TIMEOUT_SECS (currently {pull_timeout}s) "
+                    "if the pull was still running when it was cut off.[/red]"
+                )
             raise
 
     #: Docker is started with `--workdir /myworkspace/` (core/docker.py), so every relative path
@@ -3535,8 +3597,22 @@ class ContainerRunner:
                                 f"{pull_target} for model "
                                 f"{model_info.get('name', image_name)}: {pull_error}"
                             ) from pull_error
+                        # Named, because "using local image" reads as a recovery
+                        # and often is not one: the local tag may never have
+                        # existed on this node, and on a SLURM compute node the
+                        # fresh-pull policy will have deleted the cached copy
+                        # before the pull was attempted. The run then fails
+                        # further on with "image not found", several steps away
+                        # from the pull that caused it.
                         self.rich_console.print(
-                            f"[yellow]Warning: Could not pull from registry, using local image[/yellow]"
+                            "[yellow]Warning: could not pull "
+                            f"{pull_target}: {pull_error}[/yellow]"
+                        )
+                        self.rich_console.print(
+                            "[yellow]Falling back to local image "
+                            f"'{image_name}'. If that tag is not present on "
+                            "this node, the run will fail at container start."
+                            "[/yellow]"
                         )
                         run_image = image_name
                 else:
