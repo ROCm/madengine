@@ -53,7 +53,14 @@ cleanup() {
     echo "========================================================================"
     echo "Cleanup: Terminating SGLang/GPU processes..."
     echo "========================================================================"
-    pkill -9 -f "sglang" 2>/dev/null || true
+    # Match the inference program only. `pkill -f sglang` also matches this
+    # script (bash .../dummy_sglang/run.sh) and the stdbuf wrapper that re-execs
+    # it, so the container is SIGKILLed and exits 137 after a successful run.
+    trap - EXIT INT TERM SIGINT SIGTERM
+    for pid in $(pgrep -f "run_sglang_inference.py|sglang.launch_server" || true); do
+        [ "$pid" = "$BASHPID" ] && continue
+        kill -9 "$pid" 2>/dev/null || true
+    done
     if command -v rocm-smi &> /dev/null; then
         echo "Final GPU state:"
         rocm-smi 2>/dev/null || true

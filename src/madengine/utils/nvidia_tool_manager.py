@@ -18,7 +18,7 @@ Future enhancements could include:
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-from typing import Optional
+from typing import Dict, List, Optional
 
 from madengine.utils.gpu_tool_manager import BaseGPUToolManager
 
@@ -275,7 +275,47 @@ class NvidiaToolManager(BaseGPUToolManager):
                 f"Error: {e}\n"
                 f"Ensure GPU {gpu_id} exists: nvidia-smi -L"
             )
-    
+
+    def get_gpu_memory_usage_mb(self) -> List[Dict[str, int]]:
+        """Get per-GPU memory usage in MiB, reported as used_mb.
+
+        ``nvidia-smi --query-gpu`` with ``nounits`` reports mebibytes.
+        Callers compare that value with the same MB threshold used for ROCm.
+
+        Returns:
+            List of dicts: [{"gpu": 0, "used_mb": int, "total_mb": int}, ...]
+
+        Raises:
+            RuntimeError: If nvidia-smi fails, a line cannot be parsed, or
+                no GPUs are reported.
+        """
+        output = self.execute_nvidia_smi(
+            "--query-gpu=index,memory.used,memory.total "
+            "--format=csv,noheader,nounits"
+        )
+        usage: List[Dict[str, int]] = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 3:
+                raise RuntimeError(f"Unexpected nvidia-smi memory line: {line!r}")
+            try:
+                gpu_id = int(parts[0])
+                used_mb = int(float(parts[1]))
+                total_mb = int(float(parts[2]))
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Unable to parse nvidia-smi memory line: {line!r}"
+                ) from exc
+            usage.append(
+                {"gpu": gpu_id, "used_mb": used_mb, "total_mb": total_mb}
+            )
+        if not usage:
+            raise RuntimeError("nvidia-smi reported no GPUs")
+        return usage
+
     def get_gpu_architecture(self, gpu_id: int = 0) -> str:
         """Get GPU architecture/compute capability.
         

@@ -1,0 +1,7 @@
+# @package _global_
+data:
+  provider: minio
+  endpoint: null
+  bucket: null
+  access_key: null
+  secret_key: null

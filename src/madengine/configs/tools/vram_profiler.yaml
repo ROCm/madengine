@@ -1,0 +1,9 @@
+# @package _global_
+tools:
+  - name: gpu_info_vram_profiler
+    env_vars:
+      VRAM_DEVICE: all
+      VRAM_SAMPLING_RATE: "0.1"
+      VRAM_MODE: vram
+      VRAM_DUAL_GCD: "false"
+      VRAM_OUTPUT_FILE: gpu_info_vram_profiler_output.csv

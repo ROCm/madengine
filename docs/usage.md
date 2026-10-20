@@ -27,12 +27,16 @@ madengine discover --tags dummy
 # Run locally (full workflow: discover/build/run as configured by the model)
 madengine run --tags dummy
 
-# Or with explicit configuration
+# Or with explicit JSON configuration
 madengine run --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'
+
+# Or with YAML config (composable, Hydra-based)
+madengine run --tags dummy --config scheduler=slurm --config launcher=torchrun
+madengine run --config my_job.yaml
 ```
 
-> **Note**: `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations. For production or non-AMD/Ubuntu environments, specify these values explicitly.
+> **Note**: `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. `gpu_vendor` defaults to `AMD` and `guest_os` defaults to `UBUNTU` for build operations.
 
 Results are saved to `perf_entry.csv`.
 
@@ -46,7 +50,7 @@ madengine provides five main commands:
 | `build` | Build Docker images | `--tags`, `--registry`, `--batch-manifest` |
 | `run` | Execute models | `--tags`, `--manifest-file`, `--timeout` |
 | `report` | Generate HTML reports | `to-html`, `to-email` |
-| `database` | Upload to MongoDB | `--csv-file`, `--database-name` |
+| `database` | Upload to MongoDB | `--file`, `--db` |
 
 For complete command options and detailed examples, see **[CLI Command Reference](cli-reference.md)**.
 
@@ -66,11 +70,11 @@ madengine run --tags model
 # madengine build --tags model --additional-context '{"gpu_vendor": "NVIDIA", "guest_os": "CENTOS"}'
 
 # Generate HTML report
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # Upload to MongoDB
-madengine database --csv-file perf_entry.csv \
-  --database-name mydb --collection-name results
+madengine database --file perf_entry.csv \
+  --database mydb --collection results
 ```
 
 ## Model Discovery
@@ -82,23 +86,23 @@ madengine supports three discovery methods:
 Central model definitions in MAD package root:
 
 ```bash
-madengine discover --tags dummy pyt_huggingface_bert
+madengine discover --tags dummy --tags pyt_huggingface_bert
 ```
 
 ### 2. Directory-Specific Models
 
-Models organized in subdirectories (`scripts/{dir}/models.json`):
+Models organized in subdirectories (`scripts/{dir}/models.json`), selected with scoped tags (`{dir}/{model_or_tag}`):
 
 ```bash
-madengine discover --tags dummy2:dummy_2
+madengine discover --tags dummy2/model1
 ```
 
 ### 3. Dynamic Models with Parameters
 
-Python-generated models (`scripts/{dir}/get_models_json.py`):
+Python-generated models (`scripts/{dir}/get_models_json.py`), with extra args passed after `:`:
 
 ```bash
-madengine discover --tags dummy3:dummy_3:batch_size=512:in=32
+madengine discover --tags dummy3/model3:batch_size=512:in=32
 ```
 
 ## Build Workflow
@@ -117,17 +121,31 @@ Creates `build_manifest.json`:
 
 ```json
 {
-  "models": [
-    {
-      "model_name": "my_model",
-      "image": "localhost:5000/my_model:20240115_123456",
-      "tag": "my_model"
+  "built_images": {
+    "ci-my_model_ubuntu": {
+      "model": "my_model",
+      "docker_image": "ci-my_model_ubuntu",
+      "dockerfile": "docker/my_model.ubuntu.amd.Dockerfile",
+      "build_duration": 42.3,
+      "registry": "localhost:5000"
     }
-  ],
-  "registry": "localhost:5000",
-  "build_timestamp": "2024-01-15T12:34:56Z"
+  },
+  "built_models": {
+    "ci-my_model_ubuntu": {
+      "name": "my_model",
+      "dockerfile": "my_model",
+      "n_gpus": "1"
+    }
+  },
+  "context": {
+    "gpu_vendor": "AMD",
+    "guest_os": "UBUNTU"
+  },
+  "credentials_required": []
 }
 ```
+
+`built_images` and `built_models` are both keyed by the built Docker image name. Depending on the build, the manifest may also include `deployment_config` and `summary` keys.
 
 ### Build with Deployment Config
 
@@ -290,6 +308,7 @@ Pass **`--skip-model-run`** to start containers and run `pre_scripts`, but skip 
 - Exit status is `SKIPPED` (not `FAILURE`) — the overall run exits `0`.
 - Combine with **`--keep-alive`** to leave a fully-set-up, live container for manual inspection or debugging.
 - Has **no effect** on distributed (SLURM/K8s) targets — a warning is printed if used with them.
+- A normal run deletes a leftover `multiple_results` file before the model script, so an appending script cannot report the previous run. `--skip-model-run` leaves that file, because nothing writes a replacement. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are never deleted.
 
 ```bash
 # Skip the model script; container starts and pre_scripts run
@@ -370,6 +389,17 @@ At the start of each container run, madengine prints a side-by-side environment 
 
 The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
 
+### Deploy to llm-d
+
+An `llm_d` block benchmarks an [llm-d](llm-d.md) stack. It is checked before `k8s`, because the same config also carries a `k8s` block for the benchmark-client Job.
+
+```bash
+madengine run --tags my_llm_d_benchmark \
+  --additional-context-file examples/llm-d-configs/02-managed-dry-run.json
+```
+
+See [llm-d](llm-d.md) for attach mode, managed mode, and the MI250 notes.
+
 ### Deploy to Kubernetes
 
 ```bash
@@ -405,12 +435,13 @@ Deployment target is automatically detected from `slurm` key in configuration. T
 
 Use configuration files for complex settings:
 
+**JSON format** (`--additional-context-file`):
+
 **config.json:**
 ```json
 {
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0"
@@ -422,6 +453,42 @@ Use configuration files for complex settings:
 madengine run --tags model --additional-context-file config.json
 ```
 
+**YAML format** (`--config` — same keys as the JSON object, not a Hydra `defaults:` list):
+
+**my_job.yaml:**
+```yaml
+model:
+  tags: [my_model]
+  timeout: 3600
+
+debug: true
+
+env_vars:
+  PYTORCH_TUNABLEOP_ENABLED: "1"
+  HSA_ENABLE_SDMA: "0"
+
+distributed:
+  enabled: true
+  launcher: torchrun
+  nnodes: 2
+  nproc_per_node: 4
+```
+
+```bash
+madengine run --config my_job.yaml
+
+# With additional overrides
+madengine run --config my_job.yaml --config distributed.nnodes=4
+
+# Or use config groups without a file
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config +profile=mi300x_8gpu
+```
+
+> `--config` is mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups and full details, and [`examples/configs/`](../examples/configs/) for annotated templates and ready-to-run demos.
+
 ### Custom Timeouts
 
 ```bash
@@ -431,6 +498,23 @@ madengine run --tags model --timeout 7200
 # No timeout (run indefinitely)
 madengine run --tags model --timeout 0
 ```
+
+Precedence, lowest to highest: the 7200s default, then a model card's `timeout`
+field, then `--timeout`. `--timeout -1` (the default) means "not passed" and
+falls through to the level below, so an explicit `--timeout 7200` still
+overrides a model card timeout even though it equals the default. A resolved
+timeout of `0` or less means no timeout — including a model card that sets
+`"timeout": 0` or `-1`.
+
+The same default and precedence apply to distributed runs. On SLURM the
+submitting process caps its own wait at the resolved timeout, and forwards
+`--timeout` unresolved to the job, so a model card's value still wins there.
+On Kubernetes the timeout is resolved when the Job manifest is rendered — the
+pod has no inner `madengine` to resolve it — and the model script is wrapped in
+`timeout`, so a model that overruns is killed with exit code 124 and logs
+`model script timed out after Ns`. A pod whose model fails or times out still
+runs its post-scripts and copies its artifacts to the results PVC before
+exiting on the model's code, so failed runs remain diagnosable.
 
 ### Debugging
 
@@ -493,7 +577,7 @@ Convert performance CSV files to viewable HTML reports:
 
 ```bash
 # Single CSV to HTML
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # Result: Creates perf_entry.html in same directory
 ```
@@ -532,13 +616,13 @@ export MONGO_PASSWORD=secretpassword
 
 # Upload results
 madengine database \
-  --csv-file perf_entry.csv \
-  --database-name performance_tracking \
-  --collection-name model_runs
+  --file perf_entry.csv \
+  --database performance_tracking \
+  --collection model_runs
 
 # Upload specific results
 madengine database \
-  --csv-file results/perf_mi300.csv \
+  --file results/perf_mi300.csv \
   --db benchmarks \
   --collection mi300_results
 ```
@@ -547,15 +631,15 @@ madengine database \
 
 ```bash
 # 1. Run benchmarks
-madengine run --tags model1 model2 model3 \
+madengine run --tags model1 --tags model2 --tags model3 \
   --output perf_entry.csv
 
 # 2. Generate HTML report
-madengine report to-html --csv-file perf_entry.csv
+madengine report to-html --csv-file-path perf_entry.csv
 
 # 3. Upload to database
 madengine database \
-  --csv-file perf_entry.csv \
+  --file perf_entry.csv \
   --db benchmarks \
   --collection daily_runs
 
@@ -586,10 +670,13 @@ Configure distributed training:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Large transformers (K8s + SLURM)
+- `megatron-lm` - Large transformers (K8s + SLURM)
 - `torchtitan` - LLM pre-training
+- `primus` - Primus unified pretrain
 - `vllm` - LLM inference
 - `sglang` - Structured generation
+- `sglang-disagg` - Disaggregated prefill/decode
+- `slurm_multi` - Self-managed per-node containers (SLURM only)
 
 See [Launchers Guide](launchers.md) for details.
 
@@ -611,6 +698,7 @@ my_model,125.3,98.5,15.2,...
 - Model configurations
 - Deployment configuration
 - Build timestamp
+- After a local run, `docker_run_cmd`: the `docker run` command for that invocation (best-effort; a missing write does not fail the run)
 
 Use this manifest to run pre-built images:
 
@@ -671,6 +759,10 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_USER` | Docker Hub username | `"myusername"` |
 | `MAD_DOCKERHUB_PASSWORD` | Docker Hub password | `"mytoken"` |
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
+| `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login is reused | `/etc/docker-oat` |
+| `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login` and always defer to the machine's existing credentials | `"1"` |
+| `MAD_AWS_S3` | AWS S3 credentials for data loading (JSON object). Overrides `credential.json`. | `'{"USERNAME":"username","PASSWORD":"password"}'` |
+| `NAS_NODES` | NAS node credentials for data loading (JSON array). `NAME` is required. Overrides `credential.json`. | `'[{"NAME":"node1","HOST":"hostname","PORT":22,"USERNAME":"username","PASSWORD":"password"}]'` |
 
 ## Best Practices
 
@@ -694,7 +786,6 @@ cat > config.json << 'EOF'
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "distributed": {
     "launcher": "torchrun",
     "nproc_per_node": 4
@@ -764,7 +855,7 @@ if [ $? -eq 0 ]; then
   # Generate and upload results
   madengine report to-email --output ci_results.html
   madengine database \
-    --csv-file perf.csv \
+    --file perf.csv \
     --db ci_results \
     --collection ${CI_BUILD_ID}
 else

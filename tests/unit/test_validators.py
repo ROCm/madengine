@@ -17,6 +17,7 @@ from madengine.core.additional_context_defaults import (
 )
 from madengine.cli.validators import validate_additional_context
 from madengine.cli.constants import ExitCode
+from unittest.mock import MagicMock, patch
 
 
 class TestValidateAdditionalContext:
@@ -311,3 +312,178 @@ class TestValidateAdditionalContext:
         with pytest.raises(typer.Exit) as exc_info:
             validate_additional_context(additional_context=bad)
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+class TestValidateLauncherContext:
+    """Launcher validation at the CLI boundary.
+
+    A launcher madengine did not recognize used to run the model as a plain
+    single-process job and still report SUCCESS, so the benchmark number was
+    wrong with nothing to indicate it. These lock in loud failure instead.
+    """
+
+    @staticmethod
+    def _context(**extra):
+        return json.dumps({"gpu_vendor": "AMD", "guest_os": "UBUNTU", **extra})
+
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "sglang-disagg"])
+    def test_valid_launcher_is_accepted(self, launcher):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": launcher})
+        )
+        assert result["distributed"]["launcher"] == launcher
+
+    @pytest.mark.parametrize("bad", ["megatron", "megatron_lm"])
+    def test_rejected_spellings_exit_with_invalid_args(self, bad, capsys):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(distributed={"launcher": bad})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    @pytest.mark.parametrize("sentinel", ["docker", "native"])
+    def test_reporting_sentinels_are_rejected_at_the_cli_boundary(self, sentinel):
+        """These are perf.csv output values with no dispatch arm. Accepting one
+        here would let it fall through to the unknown-launcher default at
+        dispatch time — the silent single-process run this validation exists
+        to prevent."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(distributed={"launcher": sentinel})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_slurm_multi_is_rejected_on_an_explicit_kubernetes_target(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(
+                    k8s={"namespace": "default"},
+                    distributed={"launcher": "slurm_multi"},
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_documented_slurm_multi_alias_is_accepted_and_canonicalized(self):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": "slurm-multi"})
+        )
+        assert result["distributed"]["launcher"] == "slurm_multi"
+
+    def test_sglang_disagg_alias_is_accepted_and_canonicalized(self):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": "sglang_disagg"})
+        )
+        assert result["distributed"]["launcher"] == "sglang-disagg"
+
+    def test_case_is_folded(self):
+        result = validate_additional_context(
+            additional_context=self._context(distributed={"launcher": "Torchrun"})
+        )
+        assert result["distributed"]["launcher"] == "torchrun"
+
+    def test_launcher_type_key_is_validated_too(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(launcher={"type": "megatron"})
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+    def test_bare_string_launcher_is_a_clean_error_not_an_attributeerror(self):
+        """{"launcher": "torchrun"} is a natural mistake; it used to crash deep in
+        the K8s template context with AttributeError."""
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(launcher="torchrun")
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
+
+
+class TestBatchManifestFallbackKeepsModelFields:
+    """The fallback entry must not quietly replace a model card with defaults.
+
+    `process_batch_manifest_entries` builds the manifest entry from the discovered card. When
+    anything in that block raised, the handler substituted a hardcoded field list --
+    `additional_docker_run_options`, `env_vars`, `multiple_results` and `data` were dropped. The
+    run then goes ahead against a different configuration than the card describes: no
+    `--device=/dev/infiniband`, no backend selection, no cache mounts, and no sign of it beyond a
+    one-line warning that does not mention the substitution.
+    """
+
+    def _run(self, tmp_path, discovered, raise_after_discovery=True):
+        import json as _json
+        from madengine.cli import validators as V
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+
+        class _Discover:
+            def __init__(self, args=None):
+                pass
+
+            def run(self):
+                return [discovered] if discovered else []
+
+        with patch.object(V, "DiscoverModels", _Discover), \
+             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()), \
+             patch.object(V.glob, "glob",
+                          side_effect=RuntimeError("boom") if raise_after_discovery
+                          else (lambda p: ["docker/m.ubuntu.amd.Dockerfile"])):
+            V.process_batch_manifest_entries(
+                batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
+                manifest_output=str(manifest),
+                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+            )
+        return _json.loads(manifest.read_text())
+
+    def test_discovered_fields_survive_the_fallback(self, tmp_path):
+        card = {
+            "name": "m",
+            "dockerfile": "docker/m",
+            "scripts": "scripts/m/run.sh",
+            "additional_docker_run_options": "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2",
+            "multiple_results": "perf_m.csv",
+            "n_gpus": "-1",
+        }
+        out = self._run(tmp_path, card)
+        entries = list(out["built_models"].values())
+        assert entries, "no manifest entry was written"
+        entry = entries[0]
+        assert "--device=/dev/infiniband" in entry.get("additional_docker_run_options", ""), (
+            "the card's docker run options were dropped, so the run would measure a different "
+            "configuration")
+        assert entry.get("multiple_results") == "perf_m.csv"
+        assert entry.get("n_gpus") == "-1"
+
+    def test_a_defaults_only_entry_says_so(self, tmp_path, capsys):
+        """Discovery itself failing is the case that produces an entry from nothing.
+
+        An exception after the card was matched keeps the card (the test above). One before it --
+        discovery raising -- leaves the entry built from defaults alone, which is a different
+        configuration from the one requested and used to be reported as a single generic warning.
+        """
+        import json as _json
+        from madengine.cli import validators as V
+
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+
+        class _Discover:
+            def __init__(self, args=None):
+                pass
+
+            def run(self):
+                raise RuntimeError("discovery unavailable")
+
+        with patch.object(V, "DiscoverModels", _Discover), \
+             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()):
+            V.process_batch_manifest_entries(
+                batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
+                manifest_output=str(manifest),
+                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+            )
+
+        out = _json.loads(manifest.read_text())
+        assert list(out["built_models"].values()), "no manifest entry was written"
+        printed = capsys.readouterr().out
+        assert "defaults only" in printed, (
+            "a defaults-only entry must say so: it is a different configuration from the card")
