@@ -590,7 +590,14 @@ class BuildOrchestrator:
                     "prebuilt": True,
                 }
 
+                # Start from the card, then overlay what this path computes. An explicit field
+                # list silently dropped everything not named in it --
+                # `additional_docker_run_options` among them, which is where a card declares
+                # `--device=/dev/infiniband`, its cache mounts and its backend selection. The run
+                # then proceeded against a different configuration than the card describes and
+                # still labelled the results with that card.
                 manifest["built_models"][model_name] = {
+                    **model,
                     "name": model_name,
                     "image": use_image,
                     "docker_image": use_image,
