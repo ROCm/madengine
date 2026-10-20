@@ -12,11 +12,11 @@ Launch modes (driven by run.sh):
   Multi-node: One serve per node (TP only on that node), nnodes=1 per process
 """
 
+import argparse
 import os
+import socket
 import sys
 import time
-import argparse
-import socket
 from typing import List, Optional
 
 # Configure environment before importing SGLang
@@ -78,26 +78,26 @@ def generate_prompts(num_prompts: int) -> List[str]:
 def run_inference_sglang(args):
     """
     Run SGLang inference using native Runtime API.
-    
+
     SGLang handles distributed setup automatically via Ray.
     No torchrun needed!
     """
     print("\n" + "=" * 70)
     print("Initializing SGLang Runtime")
     print("=" * 70)
-    
+
     try:
         # Initialize SGLang runtime
         # SGLang automatically handles multi-node setup via Ray
         # when appropriate environment variables are set
-        
+
         runtime_config = {
             "model_path": args.model,
             "tp_size": args.tp_size,
             "trust_remote_code": True,
             "mem_fraction_static": 0.90,
         }
-        
+
         # For multi-node, set Ray init address
         if args.nnodes > 1:
             runtime_config["nccl_init_addr"] = f"{args.master_addr}:{args.master_port}"
@@ -106,19 +106,19 @@ def run_inference_sglang(args):
             print(f"Multi-node setup: {args.nnodes} nodes, rank {args.node_rank}")
         else:
             print(f"Single-node setup: {args.tp_size} GPUs")
-        
+
         # Initialize runtime
         runtime = sgl.Runtime(**runtime_config)
         print("✓ SGLang runtime initialized successfully")
-        
+
     except Exception as e:
         print(f"✗ Failed to initialize SGLang runtime: {e}")
         print("\n⚠️  Falling back to mock inference for testing...")
         return run_inference_mock(args)
-    
+
     # Generate prompts
     prompts = generate_prompts(NUM_PROMPTS)
-    
+
     # Warmup
     print("\nWarmup: Running 10 prompts...")
     warmup_prompts = prompts[:10]
@@ -129,16 +129,16 @@ def run_inference_sglang(args):
                 "max_new_tokens": MAX_TOKENS,
                 "temperature": TEMPERATURE,
                 "top_p": TOP_P,
-            }
+            },
         )
         print("✓ Warmup complete")
     except Exception as e:
         print(f"⚠️  Warmup failed: {e}")
-    
+
     # Benchmark
     print(f"\nBenchmark: Running {NUM_PROMPTS} prompts...")
     start_time = time.time()
-    
+
     try:
         outputs = runtime.generate(
             prompts,
@@ -146,17 +146,19 @@ def run_inference_sglang(args):
                 "max_new_tokens": MAX_TOKENS,
                 "temperature": TEMPERATURE,
                 "top_p": TOP_P,
-            }
+            },
         )
-        
+
         end_time = time.time()
         elapsed_time = end_time - start_time
-        
+
         # Calculate metrics
-        total_tokens = sum(len(output["meta_info"]["completion_tokens"]) for output in outputs)
+        total_tokens = sum(
+            len(output["meta_info"]["completion_tokens"]) for output in outputs
+        )
         throughput = NUM_PROMPTS / elapsed_time
         tokens_per_second = total_tokens / elapsed_time
-        
+
         # Print results
         print(f"\n{'=' * 70}")
         print("Benchmark Results")
@@ -167,7 +169,7 @@ def run_inference_sglang(args):
         print(f"Token generation: {tokens_per_second:.2f} tokens/second")
         print(f"Average latency: {(elapsed_time / NUM_PROMPTS) * 1000:.2f} ms/request")
         print("=" * 70)
-        
+
         # Print sample outputs
         print("\n" + "=" * 70)
         print("Sample Outputs (first 3)")
@@ -177,22 +179,23 @@ def run_inference_sglang(args):
             generated_text = output["text"]
             print(f"\n[Prompt {i+1}]: {prompt}")
             print(f"[Output {i+1}]: {generated_text[:200]}...")
-        
+
         # madengine output format
         print(f"\nperformance: {throughput:.2f} requests_per_second")
         print(f"tokens_per_second: {tokens_per_second:.2f}")
         print(f"model: {args.model}")
         print(f"tp_size: {args.tp_size}")
         print(f"nnodes: {args.nnodes}")
-        
+
         # Cleanup
         runtime.shutdown()
-        
+
         return 0
-        
+
     except Exception as e:
         print(f"✗ Inference failed: {e}")
         import traceback
+
         traceback.print_exc()
         print("\n⚠️  Falling back to mock inference...")
         return run_inference_mock(args)
@@ -207,35 +210,35 @@ def run_inference_mock(args):
     print("=" * 70)
     print("This simulates SGLang inference for testing madengine infrastructure.")
     print("=" * 70)
-    
+
     # Simulate initialization
     print("\nInitializing mock SGLang runtime...")
     time.sleep(1)
     print("✓ Mock runtime initialized")
-    
+
     # Generate prompts
     prompts = generate_prompts(NUM_PROMPTS)
-    
+
     # Warmup
     print("\nWarmup: Running 10 prompts...")
     time.sleep(0.5)
     print("✓ Warmup complete")
-    
+
     # Benchmark
     print(f"\nBenchmark: Running {NUM_PROMPTS} prompts...")
     start_time = time.time()
-    
+
     # Simulate inference
     time.sleep(2.0)
-    
+
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
+
     # Mock metrics
     total_tokens = NUM_PROMPTS * MAX_TOKENS
     throughput = NUM_PROMPTS / elapsed_time
     tokens_per_second = total_tokens / elapsed_time
-    
+
     # Print results
     print(f"\n{'=' * 70}")
     print("Benchmark Results (Mock)")
@@ -246,7 +249,7 @@ def run_inference_mock(args):
     print(f"Token generation: {tokens_per_second:.2f} tokens/second")
     print(f"Average latency: {(elapsed_time / NUM_PROMPTS) * 1000:.2f} ms/request")
     print("=" * 70)
-    
+
     # Print sample outputs
     print("\n" + "=" * 70)
     print("Sample Outputs (Mock - first 3)")
@@ -254,14 +257,14 @@ def run_inference_mock(args):
     for i in range(3):
         print(f"\n[Prompt {i+1}]: {prompts[i]}")
         print(f"[Output {i+1}]: [Mock generated text for infrastructure testing...]")
-    
+
     # madengine output format
     print(f"\nperformance: {throughput:.2f} requests_per_second")
     print(f"tokens_per_second: {tokens_per_second:.2f}")
     print(f"model: {args.model}")
     print(f"tp_size: {args.tp_size}")
     print(f"nnodes: {args.nnodes}")
-    
+
     return 0
 
 
@@ -274,62 +277,56 @@ def main():
         "--model",
         type=str,
         default=DEFAULT_MODEL,
-        help=f"Model name or path (default: {DEFAULT_MODEL})"
+        help=f"Model name or path (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--tp-size",
         type=int,
         default=1,
-        help="Tensor parallel size (GPUs per node, default: 1)"
+        help="Tensor parallel size (GPUs per node, default: 1)",
     )
     parser.add_argument(
-        "--nnodes",
-        type=int,
-        default=1,
-        help="Number of nodes (default: 1)"
+        "--nnodes", type=int, default=1, help="Number of nodes (default: 1)"
     )
     parser.add_argument(
-        "--node-rank",
-        type=int,
-        default=0,
-        help="Node rank (0-indexed, default: 0)"
+        "--node-rank", type=int, default=0, help="Node rank (0-indexed, default: 0)"
     )
     parser.add_argument(
         "--master-addr",
         type=str,
         default="localhost",
-        help="Master node address (default: localhost)"
+        help="Master node address (default: localhost)",
     )
     parser.add_argument(
         "--master-port",
         type=int,
         default=29500,
-        help="Master communication port (default: 29500)"
+        help="Master communication port (default: 29500)",
     )
     parser.add_argument(
         "--mock-only",
         action="store_true",
-        help="Force mock inference (skip real SGLang)"
+        help="Force mock inference (skip real SGLang)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Validate arguments
     if args.tp_size < 1:
         print("Error: tp-size must be >= 1")
         return 1
-    
+
     if args.nnodes < 1:
         print("Error: nnodes must be >= 1")
         return 1
-    
+
     if args.node_rank < 0 or args.node_rank >= args.nnodes:
         print(f"Error: node-rank must be in range [0, {args.nnodes-1}]")
         return 1
-    
+
     # Print configuration
     print_header(args)
-    
+
     # Run inference
     if args.mock_only:
         return run_inference_mock(args)
@@ -346,5 +343,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

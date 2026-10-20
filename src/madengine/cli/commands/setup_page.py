@@ -39,7 +39,9 @@ def setup_page(
     ] = None,
     install_cmd: Annotated[
         str,
-        typer.Option("--install-cmd", help="madengine install command shown on the page"),
+        typer.Option(
+            "--install-cmd", help="madengine install command shown on the page"
+        ),
     ] = DEFAULT_INSTALL_CMD,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")

@@ -30,4 +30,5 @@ def get_madengine_root() -> Path:
         Path to the madengine package root.
     """
     import madengine
+
     return Path(madengine.__file__).resolve().parent

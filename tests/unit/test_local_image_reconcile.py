@@ -121,7 +121,9 @@ class TestPrimaryEnsure:
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
 
         runner._build_or_pull_local_image.assert_called_once()
-        runner._save_local_image_to_tar.assert_called_once_with("img", "/shared/img.tar")
+        runner._save_local_image_to_tar.assert_called_once_with(
+            "img", "/shared/img.tar"
+        )
         # The ensured image ID is what gets broadcast to workers.
         assert sync.call_args.kwargs["master_image_id"] == "sha256:master"
 
@@ -142,7 +144,9 @@ class TestPrimaryEnsure:
 
         runner._build_or_pull_local_image.assert_called_once()
         # Existing (stale) tar must be overwritten with the rebuilt image.
-        runner._save_local_image_to_tar.assert_called_once_with("img", "/shared/img.tar")
+        runner._save_local_image_to_tar.assert_called_once_with(
+            "img", "/shared/img.tar"
+        )
 
     def test_fresh_image_not_rebuilt_and_tar_kept(self, monkeypatch):
         monkeypatch.setenv("NODE_RANK", "0")
@@ -177,15 +181,21 @@ class TestWorkerReconcile:
     def test_mismatch_triggers_tar_reload(self, monkeypatch):
         # local stale before reload, equals master after reload
         runner = self._worker(
-            monkeypatch, "/shared/img.tar", "sha256:master",
+            monkeypatch,
+            "/shared/img.tar",
+            "sha256:master",
             local_ids=["sha256:old", "sha256:master"],
         )
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
-        runner._load_local_image_from_tar.assert_called_once_with("img", "/shared/img.tar")
+        runner._load_local_image_from_tar.assert_called_once_with(
+            "img", "/shared/img.tar"
+        )
 
     def test_match_skips_reload(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, "/shared/img.tar", "sha256:master",
+            monkeypatch,
+            "/shared/img.tar",
+            "sha256:master",
             local_ids=["sha256:master"],
         )
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
@@ -194,7 +204,9 @@ class TestWorkerReconcile:
 
     def test_persistent_mismatch_raises(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, "/shared/img.tar", "sha256:master",
+            monkeypatch,
+            "/shared/img.tar",
+            "sha256:master",
             local_ids=["sha256:old", "sha256:still_old"],
         )
         with pytest.raises(RuntimeError, match="mismatch persists"):
@@ -202,15 +214,21 @@ class TestWorkerReconcile:
 
     def test_missing_tar_when_reload_needed_raises(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, "/shared/img.tar", "sha256:master",
-            local_ids=["sha256:old"], tar_on_disk=False,
+            monkeypatch,
+            "/shared/img.tar",
+            "sha256:master",
+            local_ids=["sha256:old"],
+            tar_on_disk=False,
         )
         with pytest.raises(RuntimeError, match="did not produce image tar"):
             runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
 
     def test_no_tar_missing_image_builds(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, None, "sha256:master", local_ids=[None],
+            monkeypatch,
+            None,
+            "sha256:master",
+            local_ids=[None],
         )
         runner._image_is_stale = MagicMock(return_value=False)
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
@@ -218,7 +236,10 @@ class TestWorkerReconcile:
 
     def test_no_tar_stale_image_rebuilds(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, None, "sha256:master", local_ids=["sha256:x"],
+            monkeypatch,
+            None,
+            "sha256:master",
+            local_ids=["sha256:x"],
         )
         runner._image_is_stale = MagicMock(return_value=True)
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})
@@ -226,7 +247,10 @@ class TestWorkerReconcile:
 
     def test_no_tar_fresh_image_kept(self, monkeypatch):
         runner = self._worker(
-            monkeypatch, None, "sha256:master", local_ids=["sha256:x"],
+            monkeypatch,
+            None,
+            "sha256:master",
+            local_ids=["sha256:x"],
         )
         runner._image_is_stale = MagicMock(return_value=False)
         runner._ensure_local_image_available("img", {"dockerfile": "D"}, {})

@@ -8,11 +8,11 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 from .build import build
-from .run import run
+from .cleanup import cleanup
+from .database import database
 from .discover import discover
 from .report import report_app
-from .database import database
-from .cleanup import cleanup
+from .run import run
 from .setup_page import setup_page
 
 __all__ = [
@@ -24,4 +24,3 @@ __all__ = [
     "cleanup",
     "setup_page",
 ]
-

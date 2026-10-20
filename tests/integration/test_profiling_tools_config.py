@@ -27,7 +27,9 @@ def test_rocm_trace_lite_config_and_apply_tools():
     assert cfg_default["env_vars"].get("RTL_MODE") == "default"
     assert cfg_default["cmd"] == cfg["cmd"]
 
-    wrapper = get_madengine_root() / "scripts" / "common" / "tools" / "rtl_trace_wrapper.sh"
+    wrapper = (
+        get_madengine_root() / "scripts" / "common" / "tools" / "rtl_trace_wrapper.sh"
+    )
     assert wrapper.is_file()
 
     ctx = MagicMock()

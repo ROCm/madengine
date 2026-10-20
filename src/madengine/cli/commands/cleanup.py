@@ -59,7 +59,9 @@ def _list_madengine_containers() -> typing.List[typing.Dict]:
             "--filter",
             f"label={lifecycle.LABEL_SESSION}",
             "--format",
-            '{{.ID}}\t{{.Names}}\t{{.Label "' + lifecycle.LABEL_OWNER_PID + '"}}\t{{.State}}',
+            '{{.ID}}\t{{.Names}}\t{{.Label "'
+            + lifecycle.LABEL_OWNER_PID
+            + '"}}\t{{.State}}',
         ],
         lifecycle.INSPECT_TIMEOUT,
     )

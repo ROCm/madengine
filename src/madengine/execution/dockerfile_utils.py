@@ -32,7 +32,7 @@ def parse_dockerfile_gpu_variables(
 
         all_matches = arg_matches + env_matches
         if all_matches:
-            raw_value = all_matches[-1].strip('"\'')
+            raw_value = all_matches[-1].strip("\"'")
             parsed_values = parse_gpu_variable_value(var_name, raw_value)
             if parsed_values:
                 gpu_variables[var_name] = parsed_values

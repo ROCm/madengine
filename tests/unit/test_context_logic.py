@@ -6,8 +6,9 @@ Pure unit tests for Context class initialization and logic without external depe
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, MagicMock, patch
 
 from madengine.core.context import Context
 from madengine.utils.gpu_validator import GPUVendor
@@ -16,7 +17,7 @@ from madengine.utils.gpu_validator import GPUVendor
 @pytest.mark.unit
 class TestContextInitialization:
     """Test Context object initialization."""
-    
+
     @patch.object(Context, "get_gpu_renderD_nodes", return_value=None)
     @patch.object(Context, "get_docker_gpus", return_value="0")
     @patch.object(Context, "get_system_gpu_product_name", return_value="Test GPU")
@@ -36,11 +37,11 @@ class TestContextInitialization:
     ):
         """Context should initialize with system defaults."""
         context = Context()
-        
+
         assert context.get_gpu_vendor() == "AMD"
         assert context.get_system_ngpus() == 1
         assert context.get_system_gpu_architecture() == "gfx90a"
-    
+
     # REMOVED: test_context_detects_nvidia_gpus and test_context_handles_cpu_only
     # These tests require actual GPU detection and are better suited as integration tests.
     # Context initialization tests are covered in integration/test_platform_integration.py
@@ -49,7 +50,7 @@ class TestContextInitialization:
 @pytest.mark.unit
 class TestBuildArgGeneration:
     """Test Docker build argument generation logic."""
-    
+
     @patch.object(Context, "get_gpu_renderD_nodes", return_value=None)
     @patch.object(Context, "get_docker_gpus", return_value="0")
     @patch.object(Context, "get_system_gpu_product_name", return_value="Test GPU")
@@ -72,12 +73,14 @@ class TestBuildArgGeneration:
         context.ctx = {
             "docker_build_arg": {
                 "MAD_GPU_VENDOR": "AMD",
-                "MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"
+                "MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a",
             }
         }
-        
+
         assert context.ctx["docker_build_arg"]["MAD_GPU_VENDOR"] == "AMD"
-        assert context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] == "gfx90a"
+        assert (
+            context.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] == "gfx90a"
+        )
 
 
 @pytest.mark.unit
@@ -101,9 +104,11 @@ def _make_build_only_ctx(additional_context="{}") -> Context:
     Returns a fully constructed Context whose ctx dict is populated from additional_context
     but whose init_build_context has NOT yet run, so callers can invoke it in a controlled way.
     """
-    with patch.object(Context, "init_build_context"), \
-         patch.object(Context, "get_ctx_test", return_value="test"), \
-         patch.object(Context, "get_host_os", return_value="linux"):
+    with (
+        patch.object(Context, "init_build_context"),
+        patch.object(Context, "get_ctx_test", return_value="test"),
+        patch.object(Context, "get_host_os", return_value="linux"),
+    ):
         ctx = Context(additional_context=additional_context, build_only_mode=True)
     return ctx
 
@@ -122,11 +127,19 @@ class TestBuildContextGpuArchAutoDetect:
         # get_gpu_tool_manager is a module-level import in context.py; patch it there.
         # detect_gpu_vendor / normalize_architecture_name are imported locally inside
         # init_build_context, so patch them at their source modules.
-        with patch("madengine.core.context.get_gpu_tool_manager", return_value=manager), \
-             patch("madengine.utils.gpu_validator.detect_gpu_vendor", return_value=GPUVendor.AMD), \
-             patch("madengine.execution.dockerfile_utils.normalize_architecture_name", return_value="gfx942"), \
-             patch.object(Context, "get_ctx_test", return_value="test"), \
-             patch.object(Context, "get_host_os", return_value="linux"):
+        with (
+            patch("madengine.core.context.get_gpu_tool_manager", return_value=manager),
+            patch(
+                "madengine.utils.gpu_validator.detect_gpu_vendor",
+                return_value=GPUVendor.AMD,
+            ),
+            patch(
+                "madengine.execution.dockerfile_utils.normalize_architecture_name",
+                return_value="gfx942",
+            ),
+            patch.object(Context, "get_ctx_test", return_value="test"),
+            patch.object(Context, "get_host_os", return_value="linux"),
+        ):
             ctx.init_build_context(detect_gpu_arch=True)
 
         assert ctx.ctx["docker_build_arg"]["MAD_SYSTEM_GPU_ARCHITECTURE"] == "gfx942"
@@ -140,11 +153,19 @@ class TestBuildContextGpuArchAutoDetect:
         manager = MagicMock()
         manager.get_gpu_architecture.return_value = "gfx942"
 
-        with patch("madengine.core.context.get_gpu_tool_manager", return_value=manager), \
-             patch("madengine.utils.gpu_validator.detect_gpu_vendor", return_value=GPUVendor.AMD), \
-             patch("madengine.execution.dockerfile_utils.normalize_architecture_name", return_value="gfx942"), \
-             patch.object(Context, "get_ctx_test", return_value="test"), \
-             patch.object(Context, "get_host_os", return_value="linux"):
+        with (
+            patch("madengine.core.context.get_gpu_tool_manager", return_value=manager),
+            patch(
+                "madengine.utils.gpu_validator.detect_gpu_vendor",
+                return_value=GPUVendor.AMD,
+            ),
+            patch(
+                "madengine.execution.dockerfile_utils.normalize_architecture_name",
+                return_value="gfx942",
+            ),
+            patch.object(Context, "get_ctx_test", return_value="test"),
+            patch.object(Context, "get_host_os", return_value="linux"),
+        ):
             ctx.init_build_context(detect_gpu_arch=True)
 
         # User value must be preserved; auto-detect must not overwrite it.
@@ -154,10 +175,15 @@ class TestBuildContextGpuArchAutoDetect:
         """Should warn (not crash) when no supported GPU is detected."""
         ctx = _make_build_only_ctx()
 
-        with patch("madengine.utils.gpu_validator.detect_gpu_vendor", return_value=GPUVendor.UNKNOWN), \
-             patch.object(Context, "get_ctx_test", return_value="test"), \
-             patch.object(Context, "get_host_os", return_value="linux"), \
-             patch("builtins.print") as mock_print:
+        with (
+            patch(
+                "madengine.utils.gpu_validator.detect_gpu_vendor",
+                return_value=GPUVendor.UNKNOWN,
+            ),
+            patch.object(Context, "get_ctx_test", return_value="test"),
+            patch.object(Context, "get_host_os", return_value="linux"),
+            patch("builtins.print") as mock_print,
+        ):
             ctx.init_build_context(detect_gpu_arch=True)
 
         msgs = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
@@ -168,10 +194,15 @@ class TestBuildContextGpuArchAutoDetect:
         """Detection failure should warn, not raise."""
         ctx = _make_build_only_ctx()
 
-        with patch("madengine.utils.gpu_validator.detect_gpu_vendor", side_effect=RuntimeError("rocminfo not found")), \
-             patch.object(Context, "get_ctx_test", return_value="test"), \
-             patch.object(Context, "get_host_os", return_value="linux"), \
-             patch("builtins.print") as mock_print:
+        with (
+            patch(
+                "madengine.utils.gpu_validator.detect_gpu_vendor",
+                side_effect=RuntimeError("rocminfo not found"),
+            ),
+            patch.object(Context, "get_ctx_test", return_value="test"),
+            patch.object(Context, "get_host_os", return_value="linux"),
+            patch("builtins.print") as mock_print,
+        ):
             ctx.init_build_context(detect_gpu_arch=True)
 
         msgs = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
@@ -182,9 +213,11 @@ class TestBuildContextGpuArchAutoDetect:
         """detect_gpu_arch=False should skip detection entirely."""
         ctx = _make_build_only_ctx()
 
-        with patch("madengine.utils.gpu_validator.detect_gpu_vendor") as mock_detect, \
-             patch.object(Context, "get_ctx_test", return_value="test"), \
-             patch.object(Context, "get_host_os", return_value="linux"):
+        with (
+            patch("madengine.utils.gpu_validator.detect_gpu_vendor") as mock_detect,
+            patch.object(Context, "get_ctx_test", return_value="test"),
+            patch.object(Context, "get_host_os", return_value="linux"),
+        ):
             ctx.init_build_context(detect_gpu_arch=False)
 
         mock_detect.assert_not_called()

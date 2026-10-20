@@ -88,11 +88,12 @@ class TestROCmToolManagerMemoryUsage:
     def test_parses_amd_smi_list(self):
         """amd-smi metric JSON is a top-level list, same as amd-smi list."""
         manager = _rocm_manager()
-        with patch.object(
-            manager, "is_tool_available", return_value=True
-        ), patch.object(
-            manager, "execute_command", return_value=AMD_SMI_LIST_JSON
-        ) as execute:
+        with (
+            patch.object(manager, "is_tool_available", return_value=True),
+            patch.object(
+                manager, "execute_command", return_value=AMD_SMI_LIST_JSON
+            ) as execute,
+        ):
             usage = manager.get_gpu_memory_usage_mb()
 
         assert usage == EXPECTED_AMD
@@ -103,11 +104,12 @@ class TestROCmToolManagerMemoryUsage:
     def test_parses_amd_smi_gpu_data_wrapper(self):
         """Older or alternate amd-smi builds wrap the list in gpu_data."""
         manager = _rocm_manager()
-        with patch.object(
-            manager, "is_tool_available", return_value=True
-        ), patch.object(
-            manager, "execute_command", return_value=AMD_SMI_WRAPPED_JSON
-        ) as execute:
+        with (
+            patch.object(manager, "is_tool_available", return_value=True),
+            patch.object(
+                manager, "execute_command", return_value=AMD_SMI_WRAPPED_JSON
+            ) as execute,
+        ):
             usage = manager.get_gpu_memory_usage_mb()
 
         assert usage == EXPECTED_AMD
@@ -121,9 +123,10 @@ class TestROCmToolManagerMemoryUsage:
                 raise RuntimeError("amd-smi not available")
             return ROCM_SMI_MEM_INFO_JSON
 
-        with patch.object(
-            manager, "is_tool_available", return_value=True
-        ), patch.object(manager, "execute_command", side_effect=fake_execute):
+        with (
+            patch.object(manager, "is_tool_available", return_value=True),
+            patch.object(manager, "execute_command", side_effect=fake_execute),
+        ):
             usage = manager.get_gpu_memory_usage_mb()
 
         assert usage == EXPECTED_ROCM
@@ -136,20 +139,22 @@ class TestROCmToolManagerMemoryUsage:
                 return "[]"
             return ROCM_SMI_MEM_INFO_JSON
 
-        with patch.object(
-            manager, "is_tool_available", return_value=True
-        ), patch.object(manager, "execute_command", side_effect=fake_execute):
+        with (
+            patch.object(manager, "is_tool_available", return_value=True),
+            patch.object(manager, "execute_command", side_effect=fake_execute),
+        ):
             usage = manager.get_gpu_memory_usage_mb()
 
         assert usage == EXPECTED_ROCM
 
     def test_uses_rocm_smi_when_amd_smi_is_absent(self):
         manager = _rocm_manager()
-        with patch.object(
-            manager, "is_tool_available", return_value=False
-        ), patch.object(
-            manager, "execute_command", return_value=ROCM_SMI_MEM_INFO_JSON
-        ) as execute:
+        with (
+            patch.object(manager, "is_tool_available", return_value=False),
+            patch.object(
+                manager, "execute_command", return_value=ROCM_SMI_MEM_INFO_JSON
+            ) as execute,
+        ):
             usage = manager.get_gpu_memory_usage_mb()
 
         assert usage == EXPECTED_ROCM
@@ -157,12 +162,12 @@ class TestROCmToolManagerMemoryUsage:
 
     def test_raises_when_both_tools_fail(self):
         manager = _rocm_manager()
-        with patch.object(
-            manager, "is_tool_available", return_value=False
-        ), patch.object(
-            manager, "execute_command", side_effect=RuntimeError("no tools")
-        ), pytest.raises(
-            RuntimeError, match="Unable to determine GPU memory usage"
+        with (
+            patch.object(manager, "is_tool_available", return_value=False),
+            patch.object(
+                manager, "execute_command", side_effect=RuntimeError("no tools")
+            ),
+            pytest.raises(RuntimeError, match="Unable to determine GPU memory usage"),
         ):
             manager.get_gpu_memory_usage_mb()
 
@@ -174,12 +179,10 @@ class TestROCmToolManagerMemoryUsage:
                 return "[]"
             return "{}"
 
-        with patch.object(
-            manager, "is_tool_available", return_value=True
-        ), patch.object(
-            manager, "execute_command", side_effect=fake_execute
-        ), pytest.raises(
-            RuntimeError, match="Unable to determine GPU memory usage"
+        with (
+            patch.object(manager, "is_tool_available", return_value=True),
+            patch.object(manager, "execute_command", side_effect=fake_execute),
+            pytest.raises(RuntimeError, match="Unable to determine GPU memory usage"),
         ):
             manager.get_gpu_memory_usage_mb()
 
@@ -204,16 +207,18 @@ class TestNvidiaToolManagerMemoryUsage:
 
     def test_raises_on_unparseable_line(self):
         manager = NvidiaToolManager()
-        with patch.object(
-            manager, "execute_nvidia_smi", return_value="0, N/A, 81920\n"
-        ), pytest.raises(RuntimeError, match="Unable to parse"):
+        with (
+            patch.object(manager, "execute_nvidia_smi", return_value="0, N/A, 81920\n"),
+            pytest.raises(RuntimeError, match="Unable to parse"),
+        ):
             manager.get_gpu_memory_usage_mb()
 
     def test_raises_when_no_gpus(self):
         manager = NvidiaToolManager()
-        with patch.object(
-            manager, "execute_nvidia_smi", return_value="\n"
-        ), pytest.raises(RuntimeError, match="no GPUs"):
+        with (
+            patch.object(manager, "execute_nvidia_smi", return_value="\n"),
+            pytest.raises(RuntimeError, match="no GPUs"),
+        ):
             manager.get_gpu_memory_usage_mb()
 
 
@@ -272,8 +277,9 @@ class TestCheckGpuMemoryFree:
             [{"gpu": 0, "used_mb": 50000, "total_mb": 294896}],
             [{"gpu": 0, "used_mb": 100, "total_mb": 294896}],
         ]
-        with caplog.at_level(logging.INFO), patch(
-            "madengine.utils.gpu_memory_gate.time.sleep"
+        with (
+            caplog.at_level(logging.INFO),
+            patch("madengine.utils.gpu_memory_gate.time.sleep"),
         ):
             check_gpu_memory_free(manager, timeout_s=10)
 
@@ -290,12 +296,14 @@ class TestCheckGpuMemoryFree:
         def sleep(seconds):
             clock["now"] += seconds
 
-        with patch(
-            "madengine.utils.gpu_memory_gate.time.monotonic", side_effect=monotonic
-        ), patch(
-            "madengine.utils.gpu_memory_gate.time.sleep", side_effect=sleep
-        ) as mock_sleep, patch(
-            "madengine.utils.gpu_memory_gate.DEFAULT_POLL_INTERVAL_S", 1
+        with (
+            patch(
+                "madengine.utils.gpu_memory_gate.time.monotonic", side_effect=monotonic
+            ),
+            patch(
+                "madengine.utils.gpu_memory_gate.time.sleep", side_effect=sleep
+            ) as mock_sleep,
+            patch("madengine.utils.gpu_memory_gate.DEFAULT_POLL_INTERVAL_S", 1),
         ):
             with pytest.raises(ExecutionError, match="Refusing to run") as exc_info:
                 check_gpu_memory_free(manager, timeout_s=2)

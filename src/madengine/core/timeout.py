@@ -12,6 +12,7 @@ which both consumers below already implement.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in modules
 import signal
 import typing

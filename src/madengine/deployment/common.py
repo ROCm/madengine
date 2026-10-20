@@ -153,9 +153,7 @@ def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
     return _LAUNCHER_ALIASES.get(launcher, launcher)
 
 
-def launcher_for_reporting(
-    launcher_type: Optional[str], deployment_type: str
-) -> str:
+def launcher_for_reporting(launcher_type: Optional[str], deployment_type: str) -> str:
     """Return the launcher to record in perf results. Never raises.
 
     Values reaching here have already passed validate_launcher at the config
@@ -441,10 +439,7 @@ def is_rocprofv3_available() -> bool:
     """
     try:
         result = subprocess.run(
-            ["rocprofv3", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
+            ["rocprofv3", "--help"], capture_output=True, text=True, timeout=5
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -452,9 +447,7 @@ def is_rocprofv3_available() -> bool:
 
 
 def configure_multi_node_profiling(
-    nnodes: int,
-    tools_config: List[Dict],
-    logger: Any
+    nnodes: int, tools_config: List[Dict], logger: Any
 ) -> Dict[str, Any]:
     """
     Configure profiling for multi-node runs with rocprofv3 support.
@@ -491,7 +484,7 @@ def configure_multi_node_profiling(
             "enabled": True,
             "mode": "single_node",
             "tools": tools_config,
-            "per_node_collection": False
+            "per_node_collection": False,
         }
 
     if not is_rocprofv3_available():
@@ -499,7 +492,8 @@ def configure_multi_node_profiling(
             filtered_tools: List[Dict] = [
                 t
                 for t in tools_config
-                if isinstance(t, dict) and t.get("name") not in _ROCPROF_FAMILY_TOOL_NAMES
+                if isinstance(t, dict)
+                and t.get("name") not in _ROCPROF_FAMILY_TOOL_NAMES
             ]
             if filtered_tools:
                 logger.warning(
@@ -540,7 +534,7 @@ def configure_multi_node_profiling(
                 "enabled": False,
                 "mode": "multi_node_unsupported",
                 "tools": [],
-                "per_node_collection": False
+                "per_node_collection": False,
             }
         logger.info(
             "Multi-node: rocprofv3 not found on submission host; keeping non-rocprof tools "
@@ -553,7 +547,9 @@ def configure_multi_node_profiling(
             "per_node_collection": True,
         }
 
-    logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
+    logger.info(
+        f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)"
+    )
 
     upgraded_tools: List[Dict] = []
     for tool in tools_config:
@@ -575,9 +571,13 @@ def configure_multi_node_profiling(
         tool_names = [
             t.get("name") if isinstance(t, dict) else str(t) for t in upgraded_tools
         ]
-        logger.info(f"  → Multi-node profiling tools: {', '.join(filter(None, tool_names))}")
+        logger.info(
+            f"  → Multi-node profiling tools: {', '.join(filter(None, tool_names))}"
+        )
         if "rccl_trace" in tool_names:
-            logger.info("  → ✓ rccl_trace enabled (critical for multi-node communication profiling)")
+            logger.info(
+                "  → ✓ rccl_trace enabled (critical for multi-node communication profiling)"
+            )
 
     return {
         "enabled": True,
@@ -585,5 +585,5 @@ def configure_multi_node_profiling(
         "tools": upgraded_tools,
         "per_node_collection": True,
         "profiler": "rocprofv3",
-        "wrapper_mode": "launcher"
+        "wrapper_mode": "launcher",
     }

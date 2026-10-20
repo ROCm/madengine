@@ -45,6 +45,7 @@ from .k8s_secrets import replace_namespaced_secret
 from .kubernetes import KubernetesDeployment
 from .llm_d_stack import COMPONENTS, LlmdStack, LlmdStackError
 
+
 def llm_d_release_prefix(raw_model_name: str, prefix: str = "madengine") -> str:
     """Helm release stem that still names the model.
 

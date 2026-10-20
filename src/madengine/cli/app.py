@@ -8,7 +8,8 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import sys
-from importlib.metadata import PackageNotFoundError, version as pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 
 import typer
 from rich.traceback import install
@@ -20,7 +21,7 @@ except ImportError:
 
 from madengine.core import lifecycle
 
-from .commands import build, run, discover, report_app, database, cleanup, setup_page
+from .commands import build, cleanup, database, discover, report_app, run, setup_page
 from .constants import ExitCode
 from .utils import console
 
@@ -97,4 +98,3 @@ def cli_main() -> None:
 
 if __name__ == "__main__":
     cli_main()
-

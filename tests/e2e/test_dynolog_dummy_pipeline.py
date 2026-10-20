@@ -299,9 +299,9 @@ class TestDaemonLifecycle:
         site_file = Path("/tmp/madengine_kineto_hook.site")
         assert site_file.is_file(), started.stdout
         site = Path(site_file.read_text(encoding="utf-8").strip())
-        assert (site / "madengine_kineto_hook.pth").read_text(encoding="utf-8").strip() == (
-            "import madengine_kineto_hook"
-        )
+        assert (site / "madengine_kineto_hook.pth").read_text(
+            encoding="utf-8"
+        ).strip() == ("import madengine_kineto_hook")
         assert "optimizer.step" in (site / "madengine_kineto_hook.py").read_text(
             encoding="utf-8"
         )

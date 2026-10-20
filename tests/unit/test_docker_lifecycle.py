@@ -46,10 +46,11 @@ def fake_docker(quiet_state):
     sh = MagicMock(side_effect=default_sh)
     state = MagicMock(return_value="running")
     reap = MagicMock(return_value={"removed": True, "wedged": False, "stuck_pids": []})
-    with patch.object(Console, "sh", sh), patch.object(
-        lifecycle, "container_state", state
-    ), patch.object(lifecycle, "reap", reap), patch.object(
-        lifecycle, "docker", return_value=(0, CID)
+    with (
+        patch.object(Console, "sh", sh),
+        patch.object(lifecycle, "container_state", state),
+        patch.object(lifecycle, "reap", reap),
+        patch.object(lifecycle, "docker", return_value=(0, CID)),
     ):
         bundle = MagicMock()
         bundle.sh, bundle.state, bundle.reap = sh, state, reap

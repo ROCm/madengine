@@ -29,11 +29,19 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
+from .base import (
+    BaseDeployment,
+    DeploymentConfig,
+    DeploymentResult,
+    DeploymentStatus,
+    create_jinja_env,
+)
 from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_names import (
     _MAX_JOB_NAME_LEN,
-    pod_job_name_label_selector as _pod_job_name_label_selector,
+)
+from .k8s_names import pod_job_name_label_selector as _pod_job_name_label_selector
+from .k8s_names import (
     sanitize_k8s_container_name,
     sanitize_k8s_object_name,
 )
@@ -53,7 +61,10 @@ from .kubernetes_launcher_mixin import KubernetesLauncherMixin
 def _job_condition_true(job: Any, condition_type: str) -> bool:
     status = getattr(job, "status", None)
     for condition in getattr(status, "conditions", None) or []:
-        if getattr(condition, "type", None) == condition_type and getattr(condition, "status", None) == "True":
+        if (
+            getattr(condition, "type", None) == condition_type
+            and getattr(condition, "status", None) == "True"
+        ):
             return True
     return False
 
@@ -109,7 +120,9 @@ def match_pvc_subdir_to_k8s_pod(
     return sorted(prefixed)[0]
 
 
-def assign_pvc_subdirs_to_pods(pod_dirs: List[str], pod_names: List[str]) -> Dict[str, str]:
+def assign_pvc_subdirs_to_pods(
+    pod_dirs: List[str], pod_names: List[str]
+) -> Dict[str, str]:
     """
     Assign each PVC subdir to at most one pod. Process longest names first so
     short prefixes do not steal pods (e.g. ``foo-0`` before ``foo``).
@@ -171,8 +184,7 @@ class KubernetesDeployment(
 
         if not YAML_AVAILABLE:
             raise ImportError(
-                "PyYAML library not installed.\n"
-                "Install with: pip install pyyaml"
+                "PyYAML library not installed.\n" "Install with: pip install pyyaml"
             )
 
         apply_deployment_config(config, ConfigLoader.load_k8s_config)
@@ -218,7 +230,9 @@ class KubernetesDeployment(
         self.job_name = None
         self.job_label = None  # always equal to job_name (Batch requires job-name label == metadata.name)
         self.service_name = None  # headless Service metadata.name + Pod subdomain; DNS label ≤63 (no dots)
-        self.main_container_name = None  # same string as service_name (container names are DNS labels)
+        self.main_container_name = (
+            None  # same string as service_name (container names are DNS labels)
+        )
         self.configmap_name = None
         self.configmap_yaml = None
         self.job_yaml = None
@@ -371,10 +385,7 @@ class KubernetesDeployment(
         if self.service_yaml:
             (output_dir / "service.yaml").write_text(self.service_yaml)
 
-        self.console.print(
-            f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]"
-        )
-
+        self.console.print(f"[yellow]Debug: Manifests saved to {output_dir}[/yellow]")
 
     def _cleanup_existing_resources(self):
         """Delete existing Job, ConfigMap, and Service if they exist."""
@@ -383,7 +394,7 @@ class KubernetesDeployment(
             self.batch_v1.delete_namespaced_job(
                 name=self.job_name,
                 namespace=self.namespace,
-                propagation_policy="Background"
+                propagation_policy="Background",
             )
             self.console.print(f"[dim]Deleted existing Job: {self.job_name}[/dim]")
         except ApiException as e:
@@ -401,22 +412,24 @@ class KubernetesDeployment(
         # Delete existing ConfigMap
         try:
             self.core_v1.delete_namespaced_config_map(
-                name=self.configmap_name,
-                namespace=self.namespace
+                name=self.configmap_name, namespace=self.namespace
             )
-            self.console.print(f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]")
+            self.console.print(
+                f"[dim]Deleted existing ConfigMap: {self.configmap_name}[/dim]"
+            )
         except ApiException as e:
             if e.status != 404:
                 pass
 
         # Delete existing Service
-        if hasattr(self, 'service_yaml') and self.service_yaml:
+        if hasattr(self, "service_yaml") and self.service_yaml:
             try:
                 self.core_v1.delete_namespaced_service(
-                    name=self.service_name,
-                    namespace=self.namespace
+                    name=self.service_name, namespace=self.namespace
                 )
-                self.console.print(f"[dim]Deleted existing Service: {self.service_name}[/dim]")
+                self.console.print(
+                    f"[dim]Deleted existing Service: {self.service_name}[/dim]"
+                )
             except ApiException as e:
                 if e.status != 404:
                     pass
@@ -425,11 +438,11 @@ class KubernetesDeployment(
         coll_pod_name = collector_pod_name(self.job_name)
         try:
             self.core_v1.delete_namespaced_pod(
-                name=coll_pod_name,
-                namespace=self.namespace,
-                grace_period_seconds=0
+                name=coll_pod_name, namespace=self.namespace, grace_period_seconds=0
             )
-            self.console.print(f"[dim]Deleted existing collector pod: {coll_pod_name}[/dim]")
+            self.console.print(
+                f"[dim]Deleted existing collector pod: {coll_pod_name}[/dim]"
+            )
             # Wait a moment for pod to release the PVC
             time.sleep(2)
         except ApiException as e:
@@ -440,8 +453,7 @@ class KubernetesDeployment(
         pvc_name = f"{self.job_name}-results"
         try:
             self.core_v1.delete_namespaced_persistent_volume_claim(
-                name=pvc_name,
-                namespace=self.namespace
+                name=pvc_name, namespace=self.namespace
             )
             self.console.print(f"[dim]Deleted existing PVC: {pvc_name}[/dim]")
 
@@ -451,8 +463,7 @@ class KubernetesDeployment(
             for i in range(max_wait):
                 try:
                     self.core_v1.read_namespaced_persistent_volume_claim(
-                        name=pvc_name,
-                        namespace=self.namespace
+                        name=pvc_name, namespace=self.namespace
                     )
                     if i > 0 and i % 10 == 0:
                         self.console.print(
@@ -489,7 +500,7 @@ class KubernetesDeployment(
 
             # 1b. Shared data PVC only when that claim is ReadWriteMany.
             # A local disk per pod is already on the pod spec.
-            if hasattr(self, '_data_config') and self._data_config:
+            if hasattr(self, "_data_config") and self._data_config:
                 if getattr(self, "_data_layout", None) == "per_pod":
                     self.console.print(
                         "[blue]Using a local ReadWriteOnce data volume "
@@ -498,7 +509,7 @@ class KubernetesDeployment(
                 else:
                     data_pvc_name = self.k8s_config.get("data_pvc")
                     if data_pvc_name == "madengine-shared-data":
-                        nnodes = getattr(self, '_nnodes', 1)
+                        nnodes = getattr(self, "_nnodes", 1)
                         self._create_or_get_data_pvc(nnodes=nnodes)
 
             # 2. Create Secrets from local credential.json (strategy: from_local_credentials)
@@ -531,14 +542,14 @@ class KubernetesDeployment(
                 self.core_v1.create_namespaced_service(
                     namespace=self.namespace, body=service_dict
                 )
-                self.console.print(f"[green]✓ Created Service: {self.service_name}[/green]")
+                self.console.print(
+                    f"[green]✓ Created Service: {self.service_name}[/green]"
+                )
 
             # 5. Create Job
             self.console.print("[blue]Creating Job...[/blue]")
             job_dict = yaml.safe_load(self.job_yaml)
-            job = self.batch_v1.create_namespaced_job(
-                namespace=self.namespace, body=job_dict
-            )
+            self.batch_v1.create_namespaced_job(namespace=self.namespace, body=job_dict)
 
             # Extract image for display
             image = job_dict["spec"]["template"]["spec"]["containers"][0]["image"]
@@ -630,7 +641,9 @@ class KubernetesDeployment(
 
     def _monitor_with_live_logs(self, deployment_id: str) -> DeploymentResult:
         """Monitor Job and stream logs in real-time."""
-        self.console.print(f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n")
+        self.console.print(
+            f"\n[cyan]═══ Streaming pod logs (--live-output) ═══[/cyan]\n"
+        )
 
         pod_name = None
         container_name = None
@@ -658,7 +671,9 @@ class KubernetesDeployment(
                             if pod.spec and pod.spec.containers
                             else None
                         )
-                        self.console.print(f"[dim]Following logs from pod: {pod_name}[/dim]\n")
+                        self.console.print(
+                            f"[dim]Following logs from pod: {pod_name}[/dim]\n"
+                        )
 
                 # Stream logs if we have a pod
                 if pod_name:
@@ -678,7 +693,7 @@ class KubernetesDeployment(
 
                         # Print new log lines and trigger artifact collection
                         if logs:
-                            log_lines = logs.split('\n')
+                            log_lines = logs.split("\n")
                             if len(log_lines) > log_position:
                                 for line in log_lines[log_position:]:
                                     if line.strip():
@@ -744,7 +759,9 @@ class KubernetesDeployment(
                 pod_name = pod.metadata.name
                 try:
                     primary_container = (
-                        pod.spec.containers[0].name if pod.spec and pod.spec.containers else None
+                        pod.spec.containers[0].name
+                        if pod.spec and pod.spec.containers
+                        else None
                     )
                     logs = self.core_v1.read_namespaced_pod_log(
                         name=pod_name,
@@ -817,7 +834,9 @@ class KubernetesDeployment(
             self.console.print(f"[yellow]Deleted K8s Job: {deployment_id}[/yellow]")
         except ApiException as e:
             if e.status != 404:
-                self.console.print(f"[yellow]⚠ Job cleanup warning: {e.reason}[/yellow]")
+                self.console.print(
+                    f"[yellow]⚠ Job cleanup warning: {e.reason}[/yellow]"
+                )
                 success = False
         except Exception as e:
             self.console.print(f"[yellow]⚠ Job cleanup error: {e}[/yellow]")
@@ -829,9 +848,7 @@ class KubernetesDeployment(
             self.core_v1.delete_namespaced_config_map(
                 name=configmap_name, namespace=self.namespace
             )
-            self.console.print(
-                f"[yellow]Deleted ConfigMap: {configmap_name}[/yellow]"
-            )
+            self.console.print(f"[yellow]Deleted ConfigMap: {configmap_name}[/yellow]")
         except ApiException as e:
             if e.status != 404:
                 self.console.print(

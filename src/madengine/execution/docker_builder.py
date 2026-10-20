@@ -35,7 +35,6 @@ from madengine.execution.dockerfile_utils import (
 from madengine.utils.ops import PythonicTee
 
 
-
 def _is_prefix_variant(prefix: str, path: str) -> bool:
     """Whether path is a Dockerfile variant of this card, not a sibling card.
 
@@ -60,6 +59,7 @@ def _is_prefix_variant(prefix: str, path: str) -> bool:
         )
         is not None
     )
+
 
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
@@ -145,7 +145,8 @@ class DockerBuilder:
         """Size of a local image in bytes, or None when docker cannot say."""
         try:
             out = self.console.sh(
-                f"docker image inspect -f '{{{{.Size}}}}' {shlex.quote(image)}", canFail=True
+                f"docker image inspect -f '{{{{.Size}}}}' {shlex.quote(image)}",
+                canFail=True,
             )
             return int(str(out).strip().splitlines()[-1])
         except Exception:
@@ -330,9 +331,10 @@ class DockerBuilder:
 
         # Execute build with log redirection
         with open(log_file_path, mode="w", buffering=1) as outlog:
-            with redirect_stdout(
-                PythonicTee(outlog, self.live_output)
-            ), redirect_stderr(PythonicTee(outlog, self.live_output)):
+            with (
+                redirect_stdout(PythonicTee(outlog, self.live_output)),
+                redirect_stderr(PythonicTee(outlog, self.live_output)),
+            ):
                 # `docker build --pull` resolves the base image itself, so it only
                 # works if this machine can authenticate to the base image's
                 # registry. Log in when — and only when — there is no existing
@@ -612,11 +614,17 @@ class DockerBuilder:
             "built_models": self.built_models,
             "context": {
                 # MAD_SECRETS_* stay out of the manifest; see manifest_safe_context.
-                "docker_env_vars": manifest_safe_context(self.context.ctx)["docker_env_vars"]
-                if "docker_env_vars" in self.context.ctx else {},
+                "docker_env_vars": (
+                    manifest_safe_context(self.context.ctx)["docker_env_vars"]
+                    if "docker_env_vars" in self.context.ctx
+                    else {}
+                ),
                 "docker_mounts": self.context.ctx.get("docker_mounts", {}),
-                "docker_build_arg": manifest_safe_context(self.context.ctx)["docker_build_arg"]
-                if "docker_build_arg" in self.context.ctx else {},
+                "docker_build_arg": (
+                    manifest_safe_context(self.context.ctx)["docker_build_arg"]
+                    if "docker_build_arg" in self.context.ctx
+                    else {}
+                ),
                 "gpu_vendor": self.context.ctx.get("gpu_vendor", ""),
                 "guest_os": self.context.ctx.get("guest_os", ""),
                 "docker_gpus": self.context.ctx.get("docker_gpus", ""),
@@ -849,7 +857,8 @@ class DockerBuilder:
             # network error on the Kimi one failed the build. Only the card's own
             # variants are kept.
             all_dockerfiles = [
-                f for f in all_dockerfiles
+                f
+                for f in all_dockerfiles
                 if _is_prefix_variant(model_info["dockerfile"], f.strip())
             ]
 

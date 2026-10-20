@@ -11,11 +11,14 @@ import re
 import pytest
 
 # project modules
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
-from tests.fixtures.utils import global_data
-from tests.fixtures.utils import clean_test_temp_files
-from tests.fixtures.utils import DEFAULT_CLEAN_FILES
-from tests.fixtures.utils import is_nvidia
+from tests.fixtures.utils import (
+    BASE_DIR,
+    DEFAULT_CLEAN_FILES,
+    MODEL_DIR,
+    clean_test_temp_files,
+    global_data,
+    is_nvidia,
+)
 
 
 class TestPrePostScriptsFunctionality:

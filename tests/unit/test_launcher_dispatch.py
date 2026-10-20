@@ -26,7 +26,6 @@ from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.common import VALID_LAUNCHERS
 from madengine.deployment.slurm import SlurmDeployment
 
-
 # slurm_multi bypasses the templated launcher chain entirely: it runs the model's own
 # .slurm script on the head node and orchestrates containers via srun itself. It is an
 # escape hatch, not a peer of the templated launchers, so it has no dispatch arm on
@@ -74,7 +73,10 @@ def _write_manifest(tmp_path: Path, distributed: dict) -> Path:
 # ---------------------------------------------------------------------------
 # SLURM
 
-def _slurm_deployment(tmp_path: Path, launcher: str, nnodes: int = 3) -> SlurmDeployment:
+
+def _slurm_deployment(
+    tmp_path: Path, launcher: str, nnodes: int = 3
+) -> SlurmDeployment:
     distributed = {
         "launcher": launcher,
         "nnodes": nnodes,
@@ -109,9 +111,11 @@ class TestSlurmLauncherDispatch:
     def test_every_valid_launcher_has_an_arm(self, tmp_path, launcher):
         deployment = _slurm_deployment(tmp_path, launcher)
         with patch.object(
-            SlurmDeployment, "_generate_basic_env_command", side_effect=AssertionError(
+            SlurmDeployment,
+            "_generate_basic_env_command",
+            side_effect=AssertionError(
                 f"launcher '{launcher}' fell through to the unknown-launcher default"
-            )
+            ),
         ):
             command = deployment._generate_launcher_command(
                 launcher_type=launcher,
@@ -165,7 +169,10 @@ class TestSlurmRayGpuVisibility:
     def test_ray_launchers_take_the_single_variable_branch(self, tmp_path, launcher):
         script = self._render(_slurm_deployment(tmp_path, launcher))
         assert "unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES" in script
-        assert 'unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error' in script
+        assert (
+            'unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error'
+            in script
+        )
 
     def test_non_ray_launchers_do_not(self, tmp_path):
         script = self._render(_slurm_deployment(tmp_path, "torchrun"))
@@ -174,6 +181,7 @@ class TestSlurmRayGpuVisibility:
 
 # ---------------------------------------------------------------------------
 # Kubernetes
+
 
 def _k8s_deployment(tmp_path: Path, launcher: str, nnodes: int = 3):
     """KubernetesDeployment over a minimal manifest, with cluster access stubbed.
@@ -341,8 +349,8 @@ class TestKubernetesLauncherDispatch:
             / "templates"
             / "kubernetes"
         )
-        script = create_jinja_env(template_dir).get_template("job.yaml.j2").render(
-            **context
+        script = (
+            create_jinja_env(template_dir).get_template("job.yaml.j2").render(**context)
         )
         assert "subdomain: test-svc" in script
         assert "completions: 4" in script
@@ -359,16 +367,21 @@ class TestKubernetesLauncherDispatch:
 # ---------------------------------------------------------------------------
 # Cross-backend parity
 
+
 def test_slurm_and_kubernetes_support_the_same_templated_launchers(tmp_path):
     """A launcher valid on one backend must be valid on the other, or be a known exception."""
     for launcher in TEMPLATED_LAUNCHERS:
         slurm = _slurm_deployment(tmp_path, launcher)
         with patch.object(
-            SlurmDeployment, "_generate_basic_env_command",
+            SlurmDeployment,
+            "_generate_basic_env_command",
             side_effect=AssertionError(f"SLURM has no arm for '{launcher}'"),
         ):
             slurm._generate_launcher_command(
-                launcher_type=launcher, nnodes=3, nproc_per_node=8, master_port=29500,
+                launcher_type=launcher,
+                nnodes=3,
+                nproc_per_node=8,
+                master_port=29500,
                 model_name=MODEL_ENTRY["name"],
             )
         k8s = _k8s_deployment(tmp_path, launcher)
@@ -378,6 +391,7 @@ def test_slurm_and_kubernetes_support_the_same_templated_launchers(tmp_path):
 
 # ---------------------------------------------------------------------------
 # The config-boundary chokepoint
+
 
 class TestBaseDeploymentValidatesLaunchers:
     """Launchers are validated in ``BaseDeployment.__init__``, deliberately.
@@ -438,7 +452,10 @@ class TestBaseDeploymentValidatesLaunchers:
 
     def test_the_documented_alias_is_canonicalized_in_place(self, tmp_path):
         deployment = _slurm_deployment(tmp_path, "slurm-multi")
-        assert deployment.config.additional_context["distributed"]["launcher"] == "slurm_multi"
+        assert (
+            deployment.config.additional_context["distributed"]["launcher"]
+            == "slurm_multi"
+        )
 
     def test_kubernetes_rejects_the_slurm_only_launcher(self, tmp_path):
         """slurm_multi has no Kubernetes dispatch arm. An explicit k8s block

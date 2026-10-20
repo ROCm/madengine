@@ -202,8 +202,12 @@ class TestReportStem:
         assert stem == "traces_model_rank0"
 
     def test_distinguishes_same_name_in_different_directories(self, analyzer, tmp_path):
-        a = analyzer._report_stem(str(tmp_path / "node_0" / "trace.json"), str(tmp_path))
-        b = analyzer._report_stem(str(tmp_path / "node_1" / "trace.json"), str(tmp_path))
+        a = analyzer._report_stem(
+            str(tmp_path / "node_0" / "trace.json"), str(tmp_path)
+        )
+        b = analyzer._report_stem(
+            str(tmp_path / "node_1" / "trace.json"), str(tmp_path)
+        )
         assert a != b
 
 
@@ -259,8 +263,16 @@ class TestCollectiveInputs:
     def test_multi_node_glob_does_not_sweep_up_unrelated_json(
         self, analyzer, tmp_path, monkeypatch
     ):
-        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
-        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+        _write(
+            tmp_path,
+            "node_0/torch_profiler_output/libkineto_trace_rank0_1.json",
+            CHROME_TRACE,
+        )
+        _write(
+            tmp_path,
+            "node_1/torch_profiler_output/libkineto_trace_rank1_2.json",
+            CHROME_TRACE,
+        )
         _write(tmp_path, "node_0/rocprof_output/9999_results.json", b"{}")
         _write(tmp_path, "manifest.json", b"{}")
 
@@ -274,8 +286,16 @@ class TestCollectiveInputs:
     def test_same_basename_on_different_nodes_are_both_included(
         self, analyzer, tmp_path, monkeypatch
     ):
-        _write(tmp_path, "node_0/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
-        _write(tmp_path, "node_1/torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(
+            tmp_path,
+            "node_0/torch_profiler_output/libkineto_trace_rank0_1.json",
+            CHROME_TRACE,
+        )
+        _write(
+            tmp_path,
+            "node_1/torch_profiler_output/libkineto_trace_rank0_1.json",
+            CHROME_TRACE,
+        )
 
         seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
 
@@ -289,7 +309,9 @@ class TestCollectiveInputs:
             "torch_profiler_output/libkineto_trace_rank0_1.json",
             b'{"traceEvents": [], "bad": "\xff"}',
         )
-        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE)
+        _write(
+            tmp_path, "torch_profiler_output/libkineto_trace_rank1_2.json", CHROME_TRACE
+        )
 
         seen = self._collective_inputs(analyzer, tmp_path, monkeypatch)
 
@@ -300,7 +322,9 @@ class TestCollectiveInputs:
     def test_skip_reason_counts_how_many_traces_carry_a_rank(
         self, analyzer, tmp_path, monkeypatch
     ):
-        _write(tmp_path, "torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE)
+        _write(
+            tmp_path, "torch_profiler_output/libkineto_trace_rank0_1.json", CHROME_TRACE
+        )
         _write(tmp_path, "torch_profiler_output/libkineto_trace_724.json", CHROME_TRACE)
         monkeypatch.setattr(analyzer, "_run", lambda command, cwd=None: (0, ""))
 
@@ -335,7 +359,9 @@ class TestCollectiveInputs:
         ]
 
     def test_rank_read_from_gzipped_trace(self, analyzer, tmp_path):
-        path = _write(tmp_path, "t/host_1.pt.trace.json.gz", gzip.compress(self._kineto(3)))
+        path = _write(
+            tmp_path, "t/host_1.pt.trace.json.gz", gzip.compress(self._kineto(3))
+        )
         assert analyzer._collective_name(str(path)) == "rank3_host_1.pt.trace.json.gz"
 
     def test_filename_rank_wins_and_unknown_rank_is_none(self, analyzer, tmp_path):
@@ -453,7 +479,9 @@ class TestAnalyze:
         assert len(calls) == 1
         assert any("multi_rank_collective_report" in part for part in calls[0])
 
-    def test_no_collective_report_for_a_single_rank(self, analyzer, tmp_path, monkeypatch):
+    def test_no_collective_report_for_a_single_rank(
+        self, analyzer, tmp_path, monkeypatch
+    ):
         _write(tmp_path, "torch_profiler_output/libkineto_trace_1.json", CHROME_TRACE)
         calls = []
         monkeypatch.setattr(
@@ -478,7 +506,9 @@ class TestAnalyze:
         """
         for pid in (724, 892):
             _write(
-                tmp_path, f"torch_profiler_output/libkineto_trace_{pid}.json", CHROME_TRACE
+                tmp_path,
+                f"torch_profiler_output/libkineto_trace_{pid}.json",
+                CHROME_TRACE,
             )
         calls = []
         monkeypatch.setattr(
@@ -564,7 +594,13 @@ class TestCli:
     ):
         summary_path = trace_tree / "discovery.json"
         code = analyzer.main(
-            ["--root", str(trace_tree), "--discover-only", "--json-summary", str(summary_path)]
+            [
+                "--root",
+                str(trace_tree),
+                "--discover-only",
+                "--json-summary",
+                str(summary_path),
+            ]
         )
         capsys.readouterr()
 
@@ -577,7 +613,9 @@ class TestCli:
         _write(tmp_path, "rocprof_output/1_results.json", b"{}")
         monkeypatch.setattr(analyzer, "_run", lambda command, cwd=None: (1, "failed"))
 
-        code = analyzer.main(["--root", str(tmp_path), "--output-dir", str(tmp_path / "out")])
+        code = analyzer.main(
+            ["--root", str(tmp_path), "--output-dir", str(tmp_path / "out")]
+        )
         capsys.readouterr()
         assert code == 1
 

@@ -58,7 +58,9 @@ class TestScopedTags:
 
     def test_colon_in_tag_not_treated_as_scoped(self):
         """model:arg keeps legacy behavior (no scope/tag split on /)."""
-        dm = DiscoverModels(args=argparse.Namespace(tags=["MAD-private/foo:batch-size=32"]))
+        dm = DiscoverModels(
+            args=argparse.Namespace(tags=["MAD-private/foo:batch-size=32"])
+        )
         dm.models = [
             {"name": "MAD-private/foo", "tags": [], "args": ""},
         ]
@@ -119,7 +121,8 @@ class TestUnscopedTagSelection:
 
     def test_unscoped_tag_matches_scoped_models_by_tag_field(self):
         """--tags inference matches any model carrying that tag, regardless of scope prefix.
-        Tag-list matching is always scope-agnostic; only name-based matching is scope-strict."""
+        Tag-list matching is always scope-agnostic; only name-based matching is scope-strict.
+        """
         dm = DiscoverModels(args=argparse.Namespace(tags=["inference"]))
         dm.models = [
             {"name": "MAD/pyt_foo", "tags": ["inference"], "args": ""},
@@ -127,7 +130,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_bar", "MAD/pyt_foo"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_bar",
+            "MAD/pyt_foo",
+        ]
 
     def test_unscoped_all_selects_every_model(self):
         """--tags all selects every model regardless of scope."""
@@ -138,7 +144,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_bar", "pyt_foo"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_bar",
+            "pyt_foo",
+        ]
 
     def test_unscoped_tag_matches_root_and_scoped_by_tag_field(self):
         """--tags inference selects root AND scoped models that carry that tag."""
@@ -149,7 +158,10 @@ class TestUnscopedTagSelection:
         ]
         dm.custom_models = []
         dm.select_models()
-        assert sorted(m["name"] for m in dm.selected_models) == ["MAD/pyt_foo", "root_model"]
+        assert sorted(m["name"] for m in dm.selected_models) == [
+            "MAD/pyt_foo",
+            "root_model",
+        ]
 
     def test_unscoped_tag_with_extra_args_matches_by_tag_field(self):
         """--tags inference:batch-size=32 selects by tag 'inference', not 'inference:batch-size=32'."""
@@ -247,8 +259,8 @@ class TestNestedSubmoduleDiscovery:
 
     def test_nested_submodule_discovery(self, tmp_path, monkeypatch):
         """Discover models from nested submodule directory structure."""
-        import os
         import json
+        import os
 
         # Create nested directory structure simulating a git submodule
         scripts_dir = tmp_path / "scripts" / "Model-Repo1" / "category1"
@@ -256,16 +268,20 @@ class TestNestedSubmoduleDiscovery:
 
         # Create models.json in nested directory
         models_json = scripts_dir / "models.json"
-        models_json.write_text(json.dumps([
-            {
-                "name": "model1",
-                "dockerfile": "../../docker/dummy",
-                "scripts": "run.sh",
-                "n_gpus": "1",
-                "tags": ["category1", "test"],
-                "args": ""
-            }
-        ]))
+        models_json.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model1",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "n_gpus": "1",
+                        "tags": ["category1", "test"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         # Create root models.json
         root_models = tmp_path / "models.json"
@@ -282,38 +298,46 @@ class TestNestedSubmoduleDiscovery:
         assert len(dm.models) == 1
         model = dm.models[0]
         assert model["name"] == "Model-Repo1/category1/model1"
-        assert model["dockerfile"] == os.path.normpath("scripts/Model-Repo1/category1/../../docker/dummy")
-        assert model["scripts"] == os.path.normpath("scripts/Model-Repo1/category1/run.sh")
+        assert model["dockerfile"] == os.path.normpath(
+            "scripts/Model-Repo1/category1/../../docker/dummy"
+        )
+        assert model["scripts"] == os.path.normpath(
+            "scripts/Model-Repo1/category1/run.sh"
+        )
         assert "category1" in model["tags"]
 
     def test_scoped_tag_selects_nested_submodule_models(self, tmp_path, monkeypatch):
         """Scoped tag Model-Repo1/category1 selects models from scripts/Model-Repo1/category1/ by tag."""
-        import os
         import json
+        import os
 
         # Create nested directory structure
         scripts_dir = tmp_path / "scripts" / "Model-Repo1" / "category1"
         scripts_dir.mkdir(parents=True)
 
         models_json = scripts_dir / "models.json"
-        models_json.write_text(json.dumps([
-            {
-                "name": "model1",
-                "dockerfile": "../../docker/dummy",
-                "scripts": "run.sh",
-                "n_gpus": "1",
-                "tags": ["category1"],
-                "args": ""
-            },
-            {
-                "name": "model2",
-                "dockerfile": "../../docker/dummy",
-                "scripts": "run.sh",
-                "n_gpus": "2",
-                "tags": ["category1"],
-                "args": ""
-            }
-        ]))
+        models_json.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model1",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "n_gpus": "1",
+                        "tags": ["category1"],
+                        "args": "",
+                    },
+                    {
+                        "name": "model2",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "n_gpus": "2",
+                        "tags": ["category1"],
+                        "args": "",
+                    },
+                ]
+            )
+        )
 
         root_models = tmp_path / "models.json"
         root_models.write_text("[]")
@@ -337,16 +361,36 @@ class TestNestedSubmoduleDiscovery:
         # Create Model-Repo1/category1
         repo1_dir = tmp_path / "scripts" / "Model-Repo1" / "category1"
         repo1_dir.mkdir(parents=True)
-        (repo1_dir / "models.json").write_text(json.dumps([
-            {"name": "m1", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["category1"], "args": ""}
-        ]))
+        (repo1_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "m1",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["category1"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         # Create Model-Repo2/inference
         repo2_dir = tmp_path / "scripts" / "Model-Repo2" / "inference"
         repo2_dir.mkdir(parents=True)
-        (repo2_dir / "models.json").write_text(json.dumps([
-            {"name": "m2", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["inference"], "args": ""}
-        ]))
+        (repo2_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "m2",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["inference"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         (tmp_path / "models.json").write_text("[]")
         monkeypatch.chdir(tmp_path)
@@ -365,11 +409,29 @@ class TestNestedSubmoduleDiscovery:
 
         # Create Model-Repo1/scripts/Model-Repo2/scripts/dummy/models.json
         # Expected name: Model-Repo2/dummy/model1 (not Model-Repo1/scripts/Model-Repo2/scripts/dummy/model1)
-        nested_dir = tmp_path / "scripts" / "Model-Repo1" / "scripts" / "Model-Repo2" / "scripts" / "dummy"
+        nested_dir = (
+            tmp_path
+            / "scripts"
+            / "Model-Repo1"
+            / "scripts"
+            / "Model-Repo2"
+            / "scripts"
+            / "dummy"
+        )
         nested_dir.mkdir(parents=True)
-        (nested_dir / "models.json").write_text(json.dumps([
-            {"name": "model1", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["test"], "args": ""}
-        ]))
+        (nested_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model1",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["test"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         (tmp_path / "models.json").write_text("[]")
         monkeypatch.chdir(tmp_path)
@@ -382,7 +444,9 @@ class TestNestedSubmoduleDiscovery:
         model = dm.models[0]
         assert model["name"] == "Model-Repo2/dummy/model1"
         # But filesystem paths should still include "scripts"
-        assert "scripts/Model-Repo1/scripts/Model-Repo2/scripts/dummy" in model["scripts"]
+        assert (
+            "scripts/Model-Repo1/scripts/Model-Repo2/scripts/dummy" in model["scripts"]
+        )
 
     def test_scoped_tag_with_directory_path_matching(self, tmp_path, monkeypatch):
         """Scoped tag with directory path matches models in nested directories (backward compat)."""
@@ -392,10 +456,26 @@ class TestNestedSubmoduleDiscovery:
         # Tag MAD/dummy_multi should match these models for backward compatibility
         category_dir = tmp_path / "scripts" / "MAD" / "dummy_multi"
         category_dir.mkdir(parents=True)
-        (category_dir / "models.json").write_text(json.dumps([
-            {"name": "model1", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""},
-            {"name": "model2", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
-        ]))
+        (category_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model1",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["other"],
+                        "args": "",
+                    },
+                    {
+                        "name": "model2",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["other"],
+                        "args": "",
+                    },
+                ]
+            )
+        )
 
         (tmp_path / "models.json").write_text("[]")
         monkeypatch.chdir(tmp_path)
@@ -419,24 +499,60 @@ class TestNestedSubmoduleDiscovery:
         # Tag MAD/dummy_multi should match because "dummy_multi" is a path component
         nested_dir = tmp_path / "scripts" / "MAD" / "dummy" / "dummy_multi"
         nested_dir.mkdir(parents=True)
-        (nested_dir / "models.json").write_text(json.dumps([
-            {"name": "model1", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""},
-            {"name": "model2", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
-        ]))
+        (nested_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model1",
+                        "dockerfile": "../../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["other"],
+                        "args": "",
+                    },
+                    {
+                        "name": "model2",
+                        "dockerfile": "../../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["other"],
+                        "args": "",
+                    },
+                ]
+            )
+        )
 
         # Also create MAD/other/dummy_multi/models.json - different parent dir
         other_dir = tmp_path / "scripts" / "MAD" / "other" / "dummy_multi"
         other_dir.mkdir(parents=True)
-        (other_dir / "models.json").write_text(json.dumps([
-            {"name": "model3", "dockerfile": "../../../docker/dummy", "scripts": "run.sh", "tags": ["test"], "args": ""}
-        ]))
+        (other_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model3",
+                        "dockerfile": "../../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["test"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         # Create model that shouldn't match
         no_match_dir = tmp_path / "scripts" / "MAD" / "unrelated"
         no_match_dir.mkdir(parents=True)
-        (no_match_dir / "models.json").write_text(json.dumps([
-            {"name": "model4", "dockerfile": "../../docker/dummy", "scripts": "run.sh", "tags": ["other"], "args": ""}
-        ]))
+        (no_match_dir / "models.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "model4",
+                        "dockerfile": "../../docker/dummy",
+                        "scripts": "run.sh",
+                        "tags": ["other"],
+                        "args": "",
+                    }
+                ]
+            )
+        )
 
         (tmp_path / "models.json").write_text("[]")
         monkeypatch.chdir(tmp_path)
@@ -453,7 +569,7 @@ class TestNestedSubmoduleDiscovery:
         assert names == [
             "MAD/dummy/dummy_multi/model1",
             "MAD/dummy/dummy_multi/model2",
-            "MAD/other/dummy_multi/model3"
+            "MAD/other/dummy_multi/model3",
         ]
 
 
@@ -468,8 +584,17 @@ class TestOptionalDockerfileKey:
 
     def _tree(self, tmp_path, nested_entry):
         (tmp_path / "models.json").write_text(
-            json.dumps([{"name": "root", "dockerfile": "docker/root",
-                         "scripts": "run.sh", "tags": ["all"], "args": ""}])
+            json.dumps(
+                [
+                    {
+                        "name": "root",
+                        "dockerfile": "docker/root",
+                        "scripts": "run.sh",
+                        "tags": ["all"],
+                        "args": "",
+                    }
+                ]
+            )
         )
         nested = tmp_path / "scripts" / "sub" / "deeper"
         nested.mkdir(parents=True)
@@ -482,9 +607,19 @@ class TestOptionalDockerfileKey:
         dm.discover_models()
         assert "sub/deeper/no-dockerfile" in dm.model_list
 
-    def test_nested_entry_with_dockerfile_still_gets_its_path_rewritten(self, tmp_path, monkeypatch):
-        self._tree(tmp_path, {"name": "has-dockerfile", "dockerfile": "docker/d",
-                              "scripts": "run.sh", "tags": ["all"], "args": ""})
+    def test_nested_entry_with_dockerfile_still_gets_its_path_rewritten(
+        self, tmp_path, monkeypatch
+    ):
+        self._tree(
+            tmp_path,
+            {
+                "name": "has-dockerfile",
+                "dockerfile": "docker/d",
+                "scripts": "run.sh",
+                "tags": ["all"],
+                "args": "",
+            },
+        )
         monkeypatch.chdir(tmp_path)
         dm = DiscoverModels(args=argparse.Namespace(tags=["all"]))
         dm.discover_models()

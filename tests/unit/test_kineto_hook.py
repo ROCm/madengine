@@ -22,16 +22,14 @@ def _run(tmp_path: Path, daemon: str) -> str:
     profiler.mkdir(parents=True)
     (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
     (profiler / "__init__.py").write_text("IMPORTED = True\n", encoding="utf-8")
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         import os
         import sys
         sys.path.insert(0, os.environ["FAKE_TORCH"])
         sys.path.insert(0, os.path.dirname(os.environ["HOOK"]))
         import madengine_kineto_hook
         print("imported", "torch.profiler" in sys.modules)
-        """
-    )
+        """)
     env = dict(os.environ)
     env["FAKE_TORCH"] = str(fake)
     env["HOOK"] = str(HOOK)
@@ -65,8 +63,7 @@ def test_hook_does_not_register_the_torchrun_launcher(tmp_path):
     profiler.mkdir(parents=True)
     (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
     (profiler / "__init__.py").write_text("IMPORTED = True\n", encoding="utf-8")
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         import os
         import sys
         sys.path.insert(0, os.environ["FAKE_TORCH"])
@@ -76,8 +73,7 @@ def test_hook_does_not_register_the_torchrun_launcher(tmp_path):
         print("imported", "torch.profiler" in sys.modules)
         print("daemon", os.environ.get("KINETO_USE_DAEMON", "<unset>"))
         print("saved", os.environ.get("MADENGINE_KINETO_USE_DAEMON"))
-        """
-    )
+        """)
     env = dict(os.environ)
     env["FAKE_TORCH"] = str(fake)
     env["HOOK"] = str(HOOK)
@@ -106,8 +102,7 @@ def test_hook_does_not_register_startup_helpers(tmp_path):
     profiler.mkdir(parents=True)
     (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
     (profiler / "__init__.py").write_text("IMPORTED = True\n", encoding="utf-8")
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         import os
         import sys
         sys.path.insert(0, os.environ["FAKE_TORCH"])
@@ -116,8 +111,7 @@ def test_hook_does_not_register_startup_helpers(tmp_path):
         import madengine_kineto_hook
         print("imported", "torch.profiler" in sys.modules)
         print("daemon", os.environ.get("KINETO_USE_DAEMON", "<unset>"))
-        """
-    )
+        """)
     env = dict(os.environ)
     env["FAKE_TORCH"] = str(fake)
     env["HOOK"] = str(HOOK)
@@ -140,8 +134,7 @@ def test_hook_restores_the_daemon_for_the_worker(tmp_path):
     profiler.mkdir(parents=True)
     (fake / "torch" / "__init__.py").write_text("", encoding="utf-8")
     (profiler / "__init__.py").write_text("IMPORTED = True\n", encoding="utf-8")
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         import os
         import sys
         sys.path.insert(0, os.environ["FAKE_TORCH"])
@@ -152,8 +145,7 @@ def test_hook_restores_the_daemon_for_the_worker(tmp_path):
         import madengine_kineto_hook
         print("imported", "torch.profiler" in sys.modules)
         print("daemon", os.environ.get("KINETO_USE_DAEMON"))
-        """
-    )
+        """)
     env = dict(os.environ)
     env["FAKE_TORCH"] = str(fake)
     env["HOOK"] = str(HOOK)

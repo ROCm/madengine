@@ -28,7 +28,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 from typing import Any, Dict, List
 
-
 # Mirrors ``madengine.cli.constants.VALID_GPU_VENDORS`` / ``VALID_GUEST_OS``.
 # Duplicated here (instead of imported) to avoid a circular import: importing
 # the ``madengine.cli`` package eagerly loads the CLI app and every command,
@@ -215,7 +214,7 @@ CONTEXT_SCHEMA: List[Dict[str, Any]] = [
         "section": "container",
         "type": "json",
         "default": "",
-        "description": 'Volume mounts {container_path: host_path}.',
+        "description": "Volume mounts {container_path: host_path}.",
         "deploy_scope": "local",
     },
     {

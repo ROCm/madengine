@@ -412,7 +412,9 @@ class TestAnalyzerWithDummyTraceLens:
         assert analyzed != str(trace)
         assert "sanitized copy" in result.stdout
 
-    def test_a_valid_trace_is_analyzed_where_it_lies(self, profiled_run, dummy_tracelens):
+    def test_a_valid_trace_is_analyzed_where_it_lies(
+        self, profiled_run, dummy_tracelens
+    ):
         """Traces TraceLens can already read are not copied; they can be huge."""
         result = run_analyzer(profiled_run, dummy_tracelens)
 

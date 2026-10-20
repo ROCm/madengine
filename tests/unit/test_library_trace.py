@@ -10,11 +10,7 @@ from madengine.utils.path_utils import get_madengine_root
 
 def _load():
     path = (
-        get_madengine_root()
-        / "scripts"
-        / "common"
-        / "tools"
-        / "get_library_trace.py"
+        get_madengine_root() / "scripts" / "common" / "tools" / "get_library_trace.py"
     )
     spec = importlib.util.spec_from_file_location("get_library_trace", path)
     module = importlib.util.module_from_spec(spec)

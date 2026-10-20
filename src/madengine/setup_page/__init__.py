@@ -9,7 +9,7 @@ context-variable schema) and copy the exact ``madengine run`` command.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-from .generator import collect_models, render_setup_page, generate_setup_page
+from .generator import collect_models, generate_setup_page, render_setup_page
 from .schema import CONTEXT_SCHEMA, SECTIONS, WORKLOADS
 
 __all__ = [

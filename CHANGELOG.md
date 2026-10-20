@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **PyPI packaging**: Packaging is `pyproject.toml` only (`hatchling` + `versioningit`). The `setup.py` compatibility shim is removed. Minimum Python is 3.9. Core dependencies declare lower bounds. `py.typed`, classifiers, keywords, and license metadata are included. Wheel and sdist artifacts include `scripts/`, deployment preset JSON, and Hydra `configs/`.
+
 ### Added
+
+- **CI and publish workflows**: `.github/workflows/ci.yml` runs unit tests on Python 3.9–3.12 and lint (black, isort, flake8) on pushes and pull requests to `develop` and `main`. `.github/workflows/publish.yml` builds the sdist and wheel, checks the install and `madengine --help`, and publishes with PyPI trusted publishing (manual dispatch to TestPyPI, or on a GitHub release).
 
 - **Containers no longer outlive a cancelled run**: A cancelled CI job (or any `SIGINT`/`SIGTERM`/`SIGHUP`) left madengine's detached benchmark container running, holding the GPU until the host was rebooted — the GitHub Actions runner signals only the step's top-level shell and then kills that process tree, which a container started with `docker run -d` was never part of. Three layers now cover this, in decreasing order of what they can survive:
 

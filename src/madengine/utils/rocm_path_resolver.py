@@ -75,9 +75,7 @@ class RocmPathResolver:
         environ: Optional[Mapping[str, str]] = None,
         which: Optional[WhichFn] = None,
     ) -> None:
-        self._environ: Mapping[str, str] = (
-            os.environ if environ is None else environ
-        )
+        self._environ: Mapping[str, str] = os.environ if environ is None else environ
         self._which: WhichFn = which if which is not None else shutil.which
 
     @staticmethod
@@ -98,11 +96,17 @@ class RocmPathResolver:
         if (root / "bin" / "rocminfo").is_file():
             return True
         # Versioned apt/tar layouts (e.g. /opt/rocm-7.13.0) and many TheRock images
-        if (root / "bin" / "amd-smi").is_file() and (root / "bin" / "rocm-smi").is_file():
+        if (root / "bin" / "amd-smi").is_file() and (
+            root / "bin" / "rocm-smi"
+        ).is_file():
             return True
-        if (root / "bin" / "rocm-smi").is_file() and (root / ".info" / "version").is_file():
+        if (root / "bin" / "rocm-smi").is_file() and (
+            root / ".info" / "version"
+        ).is_file():
             return True
-        if (root / "bin" / "amd-smi").is_file() and (root / ".info" / "version").is_file():
+        if (root / "bin" / "amd-smi").is_file() and (
+            root / ".info" / "version"
+        ).is_file():
             return True
         if (root / ".info" / "version").is_file():
             return True
@@ -120,7 +124,9 @@ class RocmPathResolver:
 
     def infer_from_path_tools(self) -> OptionalPathStr:
         """Use ``which`` on rocminfo, amd-smi, rocm-smi; return first plausible root."""
-        from madengine.utils import rocm_path_resolver as m  # same module; for patch hooks
+        from madengine.utils import (
+            rocm_path_resolver as m,  # same module; for patch hooks
+        )
 
         for name in ("rocminfo", "amd-smi", "rocm-smi"):
             w = self._which(name)  # type: ignore[operator]
@@ -133,7 +139,9 @@ class RocmPathResolver:
 
     def auto_detect(self) -> OptionalPathStr:
         """Heuristic search for a usable ROCm installation (see class doc + module doc)."""
-        from madengine.utils import rocm_path_resolver as m  # same module; for patch hooks
+        from madengine.utils import (
+            rocm_path_resolver as m,  # same module; for patch hooks
+        )
 
         opt = Path("/opt/rocm")
         if m._looks_like_rocm_root(opt):
@@ -404,9 +412,7 @@ def finalize_container_rocm_path(
     if oci:
         croot = normalize_rocm_path(oci)
         d["ROCM_PATH"] = croot
-        log(
-            f"ROCm container ROCM_PATH from image OCI config ({docker_image}): {croot}"
-        )
+        log(f"ROCm container ROCM_PATH from image OCI config ({docker_image}): {croot}")
         return croot
 
     log(
@@ -428,5 +434,3 @@ def finalize_container_rocm_path(
         f"{croot} (set docker_env_vars.ROCM_PATH if wrong)."
     )
     return croot
-
-

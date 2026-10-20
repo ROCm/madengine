@@ -18,21 +18,36 @@ except ImportError:
 from madengine.utils.discover_models import DiscoverModels
 
 from ..constants import ExitCode
-from ..utils import console, setup_logging, split_comma_separated_tags, create_args_namespace
+from ..utils import (
+    console,
+    create_args_namespace,
+    setup_logging,
+    split_comma_separated_tags,
+)
 
 
 def discover(
     tags: Annotated[
         List[str],
-        typer.Option("--tags", "-t", help="Model tags to discover (can specify multiple)"),
+        typer.Option(
+            "--tags", "-t", help="Model tags to discover (can specify multiple)"
+        ),
     ] = [],
     full: Annotated[
         bool,
-        typer.Option("--full", "-f", help="Output full JSON with all discovered models and their tags"),
+        typer.Option(
+            "--full",
+            "-f",
+            help="Output full JSON with all discovered models and their tags",
+        ),
     ] = False,
     json: Annotated[
         bool,
-        typer.Option("--json", "-j", help="Output plain JSON only (no formatting, no status messages)"),
+        typer.Option(
+            "--json",
+            "-j",
+            help="Output plain JSON only (no formatting, no status messages)",
+        ),
     ] = False,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -81,20 +96,22 @@ def discover(
         # Use DiscoverModels class
         # Note: DiscoverModels prints output directly and returns None
         discover_models_instance = DiscoverModels(args=args)
-        result = discover_models_instance.run()
+        discover_models_instance.run()
 
         # Skip success message if json mode is enabled
         if not json:
-            console.print("✅ [bold green]Model discovery completed successfully[/bold green]")
+            console.print(
+                "✅ [bold green]Model discovery completed successfully[/bold green]"
+            )
 
     except Exception as e:
         # In json mode, write errors to stderr to keep stdout clean
         if json:
             import sys
+
             print(f"Error: {e}", file=sys.stderr)
         else:
             console.print(f"💥 [bold red]Model discovery failed: {e}[/bold red]")
             if verbose:
                 console.print_exception()
         raise typer.Exit(ExitCode.FAILURE)
-

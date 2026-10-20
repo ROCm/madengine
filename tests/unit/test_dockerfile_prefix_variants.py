@@ -41,17 +41,24 @@ def test_a_model_specific_prefix_still_finds_its_own_file():
 
 def test_base_card_builds_only_the_base_image():
     builder = DockerBuilder.__new__(DockerBuilder)
-    listing = "\n".join([
-        "docker/vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile",
-        "docker/vllm_disagg_inference.kimik3.ubuntu.amd.Dockerfile",
-        "docker/vllm_disagg_inference.ubuntu.amd.Dockerfile",
-    ])
+    listing = "\n".join(
+        [
+            "docker/vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile",
+            "docker/vllm_disagg_inference.kimik3.ubuntu.amd.Dockerfile",
+            "docker/vllm_disagg_inference.ubuntu.amd.Dockerfile",
+        ]
+    )
     builder.console = MagicMock()
-    builder.console.sh.side_effect = lambda cmd, **kw: listing if cmd.startswith("ls ") else ""
+    builder.console.sh.side_effect = lambda cmd, **kw: (
+        listing if cmd.startswith("ls ") else ""
+    )
     builder.context = MagicMock()
     builder.context.filter.side_effect = lambda d: d
     builder.rich_console = MagicMock()
     got = builder._get_dockerfiles_for_model(
-        {"name": "pyt_vllm_disagg_nixl_llama-3.3-70b-fp8", "dockerfile": "docker/vllm_disagg_inference"}
+        {
+            "name": "pyt_vllm_disagg_nixl_llama-3.3-70b-fp8",
+            "dockerfile": "docker/vllm_disagg_inference",
+        }
     )
     assert got == ["docker/vllm_disagg_inference.ubuntu.amd.Dockerfile"]

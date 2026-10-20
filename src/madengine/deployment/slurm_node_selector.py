@@ -21,7 +21,6 @@ from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.table import Table
 
-
 # rocminfo lists the CPU agents first ("Name: AMD EPYC ...") and the GPU agents
 # after them ("Name: gfx942"), so the first gfx token is the GPU's ISA name. The
 # suffix is hex -- gfx90a is a real target -- so [0-9] alone would read it as gfx90.
@@ -315,7 +314,11 @@ echo "===END_RESOURCES==="
 """
         # The image name goes into the script as a literal; refuse anything that is
         # not a plain image reference rather than quote it into shell.
-        image = self.image if self.image and re.fullmatch(r"[A-Za-z0-9._/:@-]+", self.image) else ""
+        image = (
+            self.image
+            if self.image and re.fullmatch(r"[A-Za-z0-9._/:@-]+", self.image)
+            else ""
+        )
         check_script = check_script.replace("__MAD_CHECK_IMAGE__", image)
         srun_cmd = [
             "srun",
@@ -359,10 +362,6 @@ echo "===END_RESOURCES==="
             # Parse output
             output = result.stdout
 
-            # Extract GPU info
-            gpu_info = self._extract_section(
-                output, "===GPU_INFO===", "===END_GPU_INFO==="
-            )
             processes = self._extract_section(
                 output, "===PROCESSES===", "===END_PROCESSES==="
             )
@@ -388,7 +387,11 @@ echo "===END_RESOURCES==="
                 # threshold, because one occupied GPU is enough to break a job.
                 used_memory_gb = sum(u for u, _ in vram) / gib
                 total_memory_gb = sum(t for _, t in vram) / gib
-                busy = [(i, u / gib) for i, (u, _) in enumerate(vram) if u / gib > self.MEMORY_THRESHOLD_GB]
+                busy = [
+                    (i, u / gib)
+                    for i, (u, _) in enumerate(vram)
+                    if u / gib > self.MEMORY_THRESHOLD_GB
+                ]
                 if busy:
                     reasons.append(
                         "GPU memory in use: "
@@ -478,11 +481,11 @@ echo "===END_RESOURCES==="
         # rocminfo is often not on a non-login PATH; /opt/rocm/bin is where ROCm
         # installs it.
         probe_script = (
-            'for p in /sys/class/kfd/kfd/topology/nodes/*/properties; do '
+            "for p in /sys/class/kfd/kfd/topology/nodes/*/properties; do "
             'v=$(awk \'$1=="gfx_target_version"{print $2}\' "$p" 2>/dev/null); '
             '[ -n "$v" ] && [ "$v" != 0 ] && '
             '{ printf "gfx%d%x%x\\n" $((v/10000)) $(((v/100)%100)) $((v%100)); exit 0; }; '
-            'done; '
+            "done; "
             'PATH="$PATH:/opt/rocm/bin" rocminfo 2>/dev/null'
         )
         srun_cmd = [
@@ -837,8 +840,10 @@ echo "CLEANUP_OK"
         # the decision was made on: a run passed a node with an empty
         # Notes column, and nothing said whether its disk was fine or unmeasured.
         if self.image_size_bytes:
-            caption = (f"Disk judged against {self.image or 'the image'} "
-                       f"({self.image_size_bytes / float(1 << 30):.0f} GB)")
+            caption = (
+                f"Disk judged against {self.image or 'the image'} "
+                f"({self.image_size_bytes / float(1 << 30):.0f} GB)"
+            )
         else:
             caption = "Disk not checked: the manifest records no image size"
         table = Table(title="Node Health Status", caption=caption)

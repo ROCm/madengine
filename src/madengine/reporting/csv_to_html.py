@@ -6,9 +6,9 @@ for generating performance reports and visualizations.
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
-import os
 import argparse
 import logging
+import os
 from typing import Optional
 
 import pandas as pd
@@ -17,9 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def convert_csv_to_html(
-    file_path: str,
-    output_path: Optional[str] = None,
-    include_index: bool = False
+    file_path: str, output_path: Optional[str] = None, include_index: bool = False
 ) -> str:
     """Convert a CSV file to an HTML file.
 
@@ -39,8 +37,8 @@ def convert_csv_to_html(
     # Validate input
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"CSV file not found: {file_path}")
-    
-    if not file_path.endswith('.csv'):
+
+    if not file_path.endswith(".csv"):
         raise ValueError(f"File must be a CSV file: {file_path}")
 
     # Determine output path
@@ -48,8 +46,12 @@ def convert_csv_to_html(
         base_path = os.path.dirname(file_path)
         base_name = os.path.basename(file_path)
         file_name = os.path.splitext(base_name)[0]
-        
-        output_path = os.path.join(base_path, f"{file_name}.html") if base_path else f"{file_name}.html"
+
+        output_path = (
+            os.path.join(base_path, f"{file_name}.html")
+            if base_path
+            else f"{file_name}.html"
+        )
 
     # Read CSV file
     logger.info(f"Reading CSV file: {file_path}")
@@ -63,6 +65,7 @@ def convert_csv_to_html(
     file_name = os.path.splitext(os.path.basename(file_path))[0]
     try:
         from madengine.utils.log_formatting import print_dataframe_beautiful
+
         print_dataframe_beautiful(df, f"Converting CSV: {file_name}")
     except ImportError:
         # Fallback to basic formatting if utils not available
@@ -74,9 +77,9 @@ def convert_csv_to_html(
     # Convert DataFrame to HTML
     logger.info(f"Converting to HTML: {output_path}")
     df_html = df.to_html(index=include_index)
-    
+
     # Write HTML file
-    with open(output_path, 'w', encoding='utf-8') as html_file:
+    with open(output_path, "w", encoding="utf-8") as html_file:
         html_file.write(df_html)
 
     logger.info(f"✅ Successfully converted {file_path} to {output_path}")
@@ -85,7 +88,7 @@ def convert_csv_to_html(
 
 class ConvertCsvToHtml:
     """Handler class for CSV to HTML conversion command.
-    
+
     This class provides a command-line interface wrapper for converting
     CSV files to HTML format.
     """
@@ -101,12 +104,12 @@ class ConvertCsvToHtml:
 
     def run(self) -> bool:
         """Execute the CSV to HTML conversion.
-        
+
         Returns:
             True if conversion was successful, False otherwise.
         """
         file_path = self.args.csv_file_path
-        
+
         print("\n" + "=" * 80)
         print("🔄 CONVERTING CSV TO HTML REPORT")
         print("=" * 80)
@@ -133,4 +136,3 @@ class ConvertCsvToHtml:
             self.return_status = False
 
         return self.return_status
-

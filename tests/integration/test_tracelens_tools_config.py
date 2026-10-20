@@ -58,7 +58,14 @@ class TestDynologToolConfig:
 
     def test_raises_upstream_process_limit_for_multi_gpu(self, tools):
         """dyno gputrace defaults to 3 processes, which silently drops most ranks."""
-        assert int(tools["torch_profiler_dynolog"]["env_vars"]["TORCH_PROFILE_PROCESS_LIMIT"]) >= 8
+        assert (
+            int(
+                tools["torch_profiler_dynolog"]["env_vars"][
+                    "TORCH_PROFILE_PROCESS_LIMIT"
+                ]
+            )
+            >= 8
+        )
 
     def test_does_not_wrap_the_model_command(self, tools):
         """Tracing is triggered out-of-band, so the workload command is untouched."""
@@ -121,7 +128,8 @@ class TestTraceLensToolConfig:
 
     def test_variants_differ_only_by_mode(self, tools):
         modes = {
-            name: tools[name]["env_vars"]["TRACELENS_MODE"] for name in self.ALL_VARIANTS
+            name: tools[name]["env_vars"]["TRACELENS_MODE"]
+            for name in self.ALL_VARIANTS
         }
         assert modes == {
             "tracelens": "auto",
@@ -199,4 +207,6 @@ class TestTraceLensToolConfig:
     def test_not_in_rocprof_family(self):
         from madengine.deployment.common import tools_include_rocprof_family
 
-        assert not tools_include_rocprof_family([{"name": name} for name in self.ALL_VARIANTS])
+        assert not tools_include_rocprof_family(
+            [{"name": name} for name in self.ALL_VARIANTS]
+        )

@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 from madengine.core.console import Console
 
-
 MALICIOUS_IMAGE = "img:latest; rm -rf /"
 MALICIOUS_PATH = "/data/path; echo pwned"
 SAFE_IMAGE = "registry.io/org/model:ci-tag"
@@ -34,9 +33,7 @@ class TestDockerInitQuoting:
         except Exception:
             pass
 
-        docker_run_calls = [
-            c for c in mock_sh.call_args_list if "docker run" in str(c)
-        ]
+        docker_run_calls = [c for c in mock_sh.call_args_list if "docker run" in str(c)]
         assert docker_run_calls, "Expected at least one docker run call"
         run_cmd = docker_run_calls[0].args[0]
         assert shlex.quote("evil;name") in run_cmd
@@ -58,9 +55,7 @@ class TestDockerInitQuoting:
         except Exception:
             pass
 
-        docker_run_calls = [
-            c for c in mock_sh.call_args_list if "docker run" in str(c)
-        ]
+        docker_run_calls = [c for c in mock_sh.call_args_list if "docker run" in str(c)]
         assert docker_run_calls
         run_cmd = docker_run_calls[0].args[0]
         assert shlex.quote(MALICIOUS_PATH) in run_cmd
@@ -81,9 +76,7 @@ class TestDockerInitQuoting:
         except Exception:
             pass
 
-        docker_run_calls = [
-            c for c in mock_sh.call_args_list if "docker run" in str(c)
-        ]
+        docker_run_calls = [c for c in mock_sh.call_args_list if "docker run" in str(c)]
         assert docker_run_calls
         run_cmd = docker_run_calls[0].args[0]
         assert shlex.quote("/path with spaces/project") in run_cmd
@@ -142,8 +135,7 @@ class TestDockerBuilderQuoting:
             pass
 
         build_calls = [
-            c for c in mock_console.sh.call_args_list
-            if "docker build" in str(c)
+            c for c in mock_console.sh.call_args_list if "docker build" in str(c)
         ]
         assert build_calls, "Expected a docker build call"
         build_cmd = build_calls[0].args[0]
@@ -288,6 +280,7 @@ class TestRunOrchestratorImageQuoting:
         mock_console = MagicMock()
 
         call_count = [0]
+
         def sh_side_effect(cmd, **kwargs):
             call_count[0] += 1
             if "docker image inspect" in cmd:

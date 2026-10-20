@@ -19,8 +19,8 @@ from madengine.deployment.common import (
     validate_launcher,
 )
 
-
 # ---- deployment.base (create_jinja_env) ----
+
 
 class TestCreateJinjaEnv:
     """Test create_jinja_env helper."""
@@ -29,7 +29,9 @@ class TestCreateJinjaEnv:
         """create_jinja_env returns Environment with dirname and basename filters."""
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir)
-            (p / "test.j2").write_text("dir={{ path | dirname }} name={{ path | basename }}")
+            (p / "test.j2").write_text(
+                "dir={{ path | dirname }} name={{ path | basename }}"
+            )
             env = create_jinja_env(p)
             template = env.get_template("test.j2")
             out = template.render(path="/foo/bar/baz.txt")
@@ -46,6 +48,7 @@ class TestCreateJinjaEnv:
 
 
 # ---- deployment.common ----
+
 
 class TestValidLaunchers:
     """VALID_LAUNCHERS constant."""
@@ -118,11 +121,14 @@ class TestValidateLauncher:
     def test_sglang_disagg_alias(self):
         assert validate_launcher("sglang_disagg", source="test") == "sglang-disagg"
 
-    @pytest.mark.parametrize("value,canonical", [
-        ("Torchrun", "torchrun"),
-        ("  torchrun  ", "torchrun"),
-        ("MEGATRON-LM", "megatron-lm"),
-    ])
+    @pytest.mark.parametrize(
+        "value,canonical",
+        [
+            ("Torchrun", "torchrun"),
+            ("  torchrun  ", "torchrun"),
+            ("MEGATRON-LM", "megatron-lm"),
+        ],
+    )
     def test_case_and_whitespace_are_normalized(self, value, canonical):
         assert validate_launcher(value, source="test") == canonical
 
@@ -134,10 +140,13 @@ class TestValidateLauncher:
             validate_launcher(launcher, source="additional_context")
         assert "omit the launcher key" in " ".join(exc_info.value.suggestions)
 
-    @pytest.mark.parametrize("bad,canonical", [
-        ("megatron", "megatron-lm"),
-        ("megatron_lm", "megatron-lm"),
-    ])
+    @pytest.mark.parametrize(
+        "bad,canonical",
+        [
+            ("megatron", "megatron-lm"),
+            ("megatron_lm", "megatron-lm"),
+        ],
+    )
     def test_rejected_spellings_name_the_canonical_one(self, bad, canonical):
         """The did-you-mean is the contract: it fixes the user's config."""
         with pytest.raises(ConfigurationError) as exc_info:
@@ -167,7 +176,9 @@ class TestIsPerReplicaLauncher:
         endpoint — scaling the proxy's number by nnodes would inflate it."""
         assert is_per_replica_launcher("sglang-disagg") is False
 
-    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "docker", None, ""])
+    @pytest.mark.parametrize(
+        "launcher", ["torchrun", "megatron-lm", "docker", None, ""]
+    )
     def test_everything_else_aggregates_normally(self, launcher):
         assert is_per_replica_launcher(launcher) is False
 
@@ -181,7 +192,9 @@ class TestToolsIncludeRocprofFamily:
 
     def test_false_for_rocm_trace_lite(self):
         assert tools_include_rocprof_family([{"name": "rocm_trace_lite"}]) is False
-        assert tools_include_rocprof_family([{"name": "rocm_trace_lite_default"}]) is False
+        assert (
+            tools_include_rocprof_family([{"name": "rocm_trace_lite_default"}]) is False
+        )
 
 
 class TestIsRocprofv3Available:
@@ -209,6 +222,7 @@ class TestIsRocprofv3Available:
 
     def test_returns_false_on_timeout(self):
         import subprocess
+
         with patch("madengine.deployment.common.subprocess.run") as m:
             m.side_effect = subprocess.TimeoutExpired("rocprofv3", 5)
             assert is_rocprofv3_available() is False
@@ -293,17 +307,29 @@ class TestConfigureMultiNodeProfiling:
 
 # ---- BaseDeployment._parse_performance_from_log ----
 
+
 class _ConcreteDeployment(BaseDeployment):
     """Minimal concrete subclass to exercise BaseDeployment methods under test."""
 
     DEPLOYMENT_TYPE = "test"
 
-    def validate(self): pass
-    def prepare(self): pass
-    def deploy(self): pass
-    def monitor(self, deployment_id): pass
-    def collect_results(self, deployment_id): pass
-    def cleanup(self, deployment_id): pass
+    def validate(self):
+        pass
+
+    def prepare(self):
+        pass
+
+    def deploy(self):
+        pass
+
+    def monitor(self, deployment_id):
+        pass
+
+    def collect_results(self, deployment_id):
+        pass
+
+    def cleanup(self, deployment_id):
+        pass
 
 
 def _make_deployment():

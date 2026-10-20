@@ -18,6 +18,7 @@ This module provides the following functions:
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
 # built-in python modules
 import json
 import os
@@ -26,9 +27,9 @@ import typing
 
 # madengine modules
 from madengine.core.console import Console
+from madengine.core.constants import MAD_AWS_S3, MAD_MINIO, NAS_NODES
 from madengine.core.context import Context
 from madengine.core.docker import Docker
-from madengine.core.constants import NAS_NODES, MAD_AWS_S3, MAD_MINIO
 
 
 class DataSourceException(Exception):
@@ -161,9 +162,6 @@ class CustomDataProvider(DataProvider):
                 os.makedirs(
                     self.config["mirrorlocal"] + "/" + self.dataname, exist_ok=True
                 )
-
-        # get the base directory of the current file.
-        BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
         # check if the path exists in the base directory.
         # if os.path.exists(BASE_DIR + "/../" + self.config["path"]):
@@ -589,7 +587,7 @@ def DataProviderFactory(
         if data_provider.provider_type == data_provider_type:
             try:
                 return data_provider(dataname, data_provider_config)
-            except DataSourceException as e:
+            except DataSourceException:
                 print("DataProviderFactory failed with type = ", data_provider_type)
     return None
 

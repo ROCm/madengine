@@ -31,7 +31,6 @@ from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig, DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
 
-
 MODEL_ENTRY = {
     "name": "dummy_torchrun_multinode",
     "url": "",
@@ -115,6 +114,7 @@ def _render(deployment: SlurmDeployment) -> str:
 # ---------------------------------------------------------------------------
 # 1. PATH is re-established inside the job
 
+
 class TestJobScriptPath:
     """The job script must not depend on the submitter's PATH being inherited."""
 
@@ -123,7 +123,10 @@ class TestJobScriptPath:
         assert 'export PATH="$HOME/.local/bin:$PATH"' in script
 
     def test_submission_bin_dir_is_prepended(self, tmp_path):
-        with patch("madengine.deployment.slurm.shutil.which", return_value="/opt/venv/bin/madengine"):
+        with patch(
+            "madengine.deployment.slurm.shutil.which",
+            return_value="/opt/venv/bin/madengine",
+        ):
             script = _render(_build_deployment(tmp_path))
         assert 'export PATH="/opt/venv/bin:$PATH"' in script
 
@@ -136,13 +139,19 @@ class TestJobScriptPath:
 
     def test_path_is_set_before_madengine_is_looked_up(self, tmp_path):
         """The export is useless if it lands after `command -v madengine`."""
-        with patch("madengine.deployment.slurm.shutil.which", return_value="/opt/venv/bin/madengine"):
+        with patch(
+            "madengine.deployment.slurm.shutil.which",
+            return_value="/opt/venv/bin/madengine",
+        ):
             script = _render(_build_deployment(tmp_path))
-        assert script.index('export PATH="/opt/venv/bin:$PATH"') < script.index("command -v madengine")
+        assert script.index('export PATH="/opt/venv/bin:$PATH"') < script.index(
+            "command -v madengine"
+        )
 
 
 # ---------------------------------------------------------------------------
 # 2. Shared-filesystem probe
+
 
 class TestSharedFilesystemProbe:
     """`df -T` reports nfs4 on modern mounts; the probe must not miss it.
@@ -158,20 +167,23 @@ class TestSharedFilesystemProbe:
         assert match, "shared-filesystem probe not found in rendered script"
         return match.group(1)
 
-    @pytest.mark.parametrize("fstype,expected", [
-        ("nfs", True),
-        ("nfs3", True),
-        ("nfs4", True),
-        ("lustre", True),
-        ("gpfs", True),
-        ("ceph", True),
-        ("beegfs", True),
-        ("panfs", True),
-        ("ext4", False),
-        ("xfs", False),
-        ("overlay", False),
-        ("tmpfs", False),
-    ])
+    @pytest.mark.parametrize(
+        "fstype,expected",
+        [
+            ("nfs", True),
+            ("nfs3", True),
+            ("nfs4", True),
+            ("lustre", True),
+            ("gpfs", True),
+            ("ceph", True),
+            ("beegfs", True),
+            ("panfs", True),
+            ("ext4", False),
+            ("xfs", False),
+            ("overlay", False),
+            ("tmpfs", False),
+        ],
+    )
     def test_probe_matches_shared_filesystems(self, tmp_path, fstype, expected):
         # The probe only exists on the single-node branch of the template.
         deployment = _build_deployment(tmp_path, {"nodes": 1}, {"nnodes": 1})
@@ -200,6 +212,7 @@ class TestSharedFilesystemProbe:
 # ---------------------------------------------------------------------------
 # 3. GPU GRES directive opt-out
 
+
 class TestGpusPerNodeDirective:
     """A cluster with GresTypes=(null) rejects any job carrying --gpus-per-node."""
 
@@ -214,6 +227,7 @@ class TestGpusPerNodeDirective:
 
 # ---------------------------------------------------------------------------
 # 4. The --timeout the job script passes back to madengine
+
 
 class TestTimeoutForwarding:
     """The rendered `madengine run --timeout N` must always carry a valid int.
@@ -268,6 +282,7 @@ class TestTimeoutForwarding:
 # ---------------------------------------------------------------------------
 # 5. The timeout handed to subprocess on the in-allocation path
 
+
 class TestInAllocationTimeout:
     """`_run_inside_existing_allocation` must not pass a sentinel to subprocess.
 
@@ -315,6 +330,7 @@ class TestInAllocationTimeout:
 
 # ---------------------------------------------------------------------------
 # 6. SGLang disaggregated peer list resolves to routable addresses
+
 
 class TestSglangDisaggNodeIps:
     """Peers must never be published as loopback.
@@ -475,6 +491,7 @@ class TestMasterPort:
 # ---------------------------------------------------------------------------
 # 7. The node-local workspace is scoped to the job
 
+
 class TestWorkspaceIsJobScoped:
     """A node-local workspace must not be shared by consecutive jobs.
 
@@ -528,9 +545,7 @@ class TestJobScopedWorkspacesAreReclaimed:
     def test_the_removal_follows_the_artifact_copy(self, tmp_path):
         """Removing before collection would throw away the run's results."""
         script = _render(_build_deployment(tmp_path))
-        assert script.index("NODE_COLLECTION_DIR") < script.index(
-            self.POST_RUN_REMOVAL
-        )
+        assert script.index("NODE_COLLECTION_DIR") < script.index(self.POST_RUN_REMOVAL)
 
     def test_a_failed_task_keeps_its_workspace(self, tmp_path):
         """Only the logs are copied out on failure, so the rest has to stay."""
@@ -563,9 +578,7 @@ class TestJobScopedWorkspacesAreReclaimed:
         assert re.search(r'^\s*rm -rf "\$WORKSPACE"\s*$', script, re.M) is None
 
     @pytest.mark.parametrize("nodes", [1, 2])
-    def test_leftovers_are_swept_before_the_workspace_is_created(
-        self, tmp_path, nodes
-    ):
+    def test_leftovers_are_swept_before_the_workspace_is_created(self, tmp_path, nodes):
         """A failed task keeps its workspace; this is what collects it later."""
         script = _render(
             _build_deployment(
@@ -624,8 +637,7 @@ class TestJobScopedWorkspacesAreReclaimed:
         )
         assert "squeue -h -j" not in script
         assert (
-            'if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then'
-            in script
+            'if LIVE_JOBS=$(squeue -h -u "$(id -un)" -o %i 2>/dev/null); then' in script
         )
 
     @pytest.mark.parametrize("nodes", [1, 2])
@@ -713,6 +725,7 @@ class TestJobScopedWorkspacesAreReclaimed:
 # ---------------------------------------------------------------------------
 # 4. Running inside an existing allocation
 
+
 class TestInsideExistingAllocation:
     """A second run in one allocation must not land on the first one's paths.
 
@@ -724,8 +737,11 @@ class TestInsideExistingAllocation:
 
     @staticmethod
     def _inside(tmp_path, nodes=2, job_id="99999", **slurm_overrides):
-        with patch.dict("os.environ", {"SLURM_JOB_ID": job_id}), patch.object(
-            SlurmDeployment, "_get_allocation_node_count", return_value=nodes
+        with (
+            patch.dict("os.environ", {"SLURM_JOB_ID": job_id}),
+            patch.object(
+                SlurmDeployment, "_get_allocation_node_count", return_value=nodes
+            ),
         ):
             dep = _build_deployment(
                 tmp_path, slurm_overrides={"nodes": nodes, **slurm_overrides}
@@ -776,7 +792,9 @@ class TestInsideExistingAllocation:
     def test_srun_is_held_to_the_requested_nodes_inside_an_allocation(self, tmp_path):
         """#SBATCH is inert here, so a bare srun would take the whole allocation."""
         _, script = self._inside(tmp_path, nodes=2)
-        assert 'srun -N 2 -n 2 --nodelist "$STEP_NODELIST" bash "$TASK_SCRIPT"' in script
+        assert (
+            'srun -N 2 -n 2 --nodelist "$STEP_NODELIST" bash "$TASK_SCRIPT"' in script
+        )
 
     @pytest.mark.parametrize(
         "overrides, expected",
@@ -819,7 +837,9 @@ class TestInsideExistingAllocation:
         dep, script = self._inside(tmp_path, nodes=1)
         assert dep.job_tag == "${SLURM_JOB_ID}"
         assert dep.run_id == "99999"
-        assert script == _render(_build_deployment(tmp_path, slurm_overrides={"nodes": 1}))
+        assert script == _render(
+            _build_deployment(tmp_path, slurm_overrides={"nodes": 1})
+        )
 
     def test_the_tag_follows_a_node_count_resolved_later(self, tmp_path):
         """prepare() may still raise the node count from the model card."""
@@ -842,7 +862,9 @@ class TestInsideExistingAllocation:
         "generator, nnodes",
         [("_generate_deepspeed_command", 2), ("_generate_sglang_disagg_command", 3)],
     )
-    def test_launchers_read_the_job_hosts_under_sbatch(self, tmp_path, generator, nnodes):
+    def test_launchers_read_the_job_hosts_under_sbatch(
+        self, tmp_path, generator, nnodes
+    ):
         dep = _build_deployment(tmp_path, slurm_overrides={"nodes": nnodes})
         cmd = getattr(dep, generator)(nnodes, 8, 29500)
         assert "SLURM_JOB_NODELIST" in cmd
@@ -906,8 +928,9 @@ class TestInsideExistingAllocation:
         assert run.call_args.args[0] == ["scancel", "12345"]
 
     def test_multi_node_runs_in_place(self, tmp_path):
-        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
-            SlurmDeployment, "_get_allocation_node_count", return_value=2
+        with (
+            patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}),
+            patch.object(SlurmDeployment, "_get_allocation_node_count", return_value=2),
         ):
             dep = _build_deployment(tmp_path, slurm_overrides={"nodes": 2})
             dep.script_path = tmp_path / "job.sh"
@@ -923,10 +946,14 @@ class TestInsideExistingAllocation:
         allocation means the submitting host -- usually a login node. Submitting
         a fresh sbatch is the right answer there."""
         submitted = subprocess.CompletedProcess(
-            args=["sbatch"], returncode=0, stdout="Submitted batch job 12345\n", stderr=""
+            args=["sbatch"],
+            returncode=0,
+            stdout="Submitted batch job 12345\n",
+            stderr="",
         )
-        with patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}), patch.object(
-            SlurmDeployment, "_get_allocation_node_count", return_value=1
+        with (
+            patch.dict("os.environ", {"SLURM_JOB_ID": "99999"}),
+            patch.object(SlurmDeployment, "_get_allocation_node_count", return_value=1),
         ):
             dep = _build_deployment(
                 tmp_path,
@@ -937,11 +964,14 @@ class TestInsideExistingAllocation:
             )
             dep.script_path = tmp_path / "job.sh"
             dep.script_path.write_text("#!/bin/bash\nexit 0\n")
-            with patch.object(
-                SlurmDeployment, "_run_inside_existing_allocation"
-            ) as in_place, patch(
-                "madengine.deployment.slurm.subprocess.run", return_value=submitted
-            ) as run:
+            with (
+                patch.object(
+                    SlurmDeployment, "_run_inside_existing_allocation"
+                ) as in_place,
+                patch(
+                    "madengine.deployment.slurm.subprocess.run", return_value=submitted
+                ) as run,
+            ):
                 result = dep.deploy()
 
         in_place.assert_not_called()

@@ -21,6 +21,11 @@ import sys
 # third-party modules
 import pytest
 
+from madengine.reporting.tracelens_report import (
+    check_tracelens_available,
+    resolve_python,
+)
+
 # project modules
 from tests.fixtures.utils import (
     BASE_DIR,
@@ -30,10 +35,6 @@ from tests.fixtures.utils import (
     global_data,
     is_nvidia,
     requires_gpu,
-)
-from madengine.reporting.tracelens_report import (
-    check_tracelens_available,
-    resolve_python,
 )
 
 

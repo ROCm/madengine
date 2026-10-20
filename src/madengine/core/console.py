@@ -5,11 +5,12 @@ This module provides a class to run console commands.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
+
+import re
+
 # built-in modules
 import subprocess
 import typing
-import re
-
 
 # Mask secret values (e.g. MAD_SECRETS_HFTOKEN) before printing/raising commands,
 # so they don't leak into SLURM/run logs. The executed command is unchanged.
