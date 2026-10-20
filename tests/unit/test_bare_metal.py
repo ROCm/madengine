@@ -427,6 +427,36 @@ class TestBootstrapMicromamba:
                 mgr.detect_conda_bin()
         boot.assert_not_called()
 
+    def test_rejects_non_executable_conda_bin(self, tmp_path):
+        path = tmp_path / "conda"
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o644)
+        mgr = CondaEnvManager(
+            console=mock.MagicMock(), bm_config={"conda_bin": str(path)}
+        )
+        with pytest.raises(RuntimeError, match="not executable"):
+            mgr.detect_conda_bin()
+
+    def test_resolves_conda_bin_command_name(self):
+        mgr = CondaEnvManager(
+            console=mock.MagicMock(), bm_config={"conda_bin": "conda"}
+        )
+        with mock.patch(
+            "madengine.execution.conda_env.shutil.which", return_value="/usr/bin/conda"
+        ):
+            assert mgr.detect_conda_bin() == "/usr/bin/conda"
+
+    def test_dep_hash_path_cannot_escape_cache(self, tmp_path):
+        mgr = CondaEnvManager(console=mock.MagicMock(), bm_config={})
+        with mock.patch(
+            "madengine.execution.conda_env.os.path.expanduser",
+            return_value=str(tmp_path),
+        ):
+            path = mgr._dep_hash_path("../../etc/passwd")
+        cache = os.path.join(str(tmp_path), ".cache", "madengine", "envhash")
+        assert os.path.commonpath([cache, path]) == cache
+        assert os.sep not in os.path.basename(path)
+
 
 # ---- Opt-in env teardown ----
 
@@ -456,6 +486,20 @@ class TestCleanupEnv:
         with mock.patch("madengine.execution.bare_metal_runner.write_perf_records"):
             runner._record({"name": "m"}, {}, {"status": "SUCCESS"}, 1)
         runner.conda.remove.assert_not_called()
+
+    def test_record_passes_script_directory(self):
+        runner = self._runner({"conda_env": "e"})
+        with mock.patch(
+            "madengine.execution.bare_metal_runner.write_perf_records"
+        ) as write:
+            runner._record(
+                {"name": "m"},
+                {},
+                {"status": "SUCCESS"},
+                1,
+                model_dir="/models/dummy_bare_metal",
+            )
+        assert write.call_args.kwargs["model_dir"] == "/models/dummy_bare_metal"
 
 
 # ---- Preflight GPU validation in bare-metal build ----

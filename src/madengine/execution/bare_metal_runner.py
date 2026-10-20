@@ -448,7 +448,9 @@ class BareMetalRunner:
             run_results["status"] = "FAILURE"
             run_results["status_detail"] = str(e)
             self.rich_console.print(f"[red]✗ {e}[/red]")
-            self._record(model_info, build_info, run_results, resolved_gpu_count)
+            self._record(
+                model_info, build_info, run_results, resolved_gpu_count, model_dir="."
+            )
             return run_results
 
         model_args = (
@@ -522,7 +524,13 @@ class BareMetalRunner:
             run_results["test_duration"] = time.time() - test_start_time
             self.rich_console.print(f"[red]✗ Bare-metal run failed: {e}[/red]")
 
-        self._record(model_info, build_info, run_results, resolved_gpu_count)
+        self._record(
+            model_info,
+            build_info,
+            run_results,
+            resolved_gpu_count,
+            model_dir=working_dir,
+        )
         return run_results
 
     def _record(
@@ -531,8 +539,14 @@ class BareMetalRunner:
         build_info: typing.Dict,
         run_results: typing.Dict,
         resolved_gpu_count: int,
+        model_dir: str = ".",
     ) -> None:
-        """Write perf records for a run (skipped for SKIPPED / deferred perf)."""
+        """Write perf records for a run (skipped for SKIPPED / deferred perf).
+
+        Args:
+            model_dir: Directory the script ran in. ``multiple_results`` CSVs
+                are resolved relative to this directory, matching ContainerRunner.
+        """
         if run_results.get("status") == "SKIPPED":
             return
         if self.additional_context.get("skip_perf_collection", False):
@@ -547,6 +561,7 @@ class BareMetalRunner:
                 model_info,
                 self.perf_csv_path,
                 run_results.get("status", "FAILURE"),
+                model_dir=model_dir,
             )
             print(f"Updated perf.csv with result for {model_info['name']}")
         except Exception as e:

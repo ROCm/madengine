@@ -1402,7 +1402,11 @@ exit 0
         for model in models:
             model_name = model.get("name", "unknown")
             try:
+                import time
+
+                build_started = time.time()
                 env_name = conda.create_or_update(model)
+                build_duration = round(time.time() - build_started, 2)
             except Exception as e:
                 self.rich_console.print(
                     f"[red]✗ Conda env setup failed for {model_name}: {e}[/red]"
@@ -1416,7 +1420,8 @@ exit 0
                 "docker_image": "",
                 "dockerfile": "N/A (bare-metal mode)",
                 "build_status": "SUCCESS",
-                "build_time": 0,
+                "build_time": build_duration,
+                "build_duration": build_duration,
                 "bare_metal": True,
                 "conda_env": env_name,
             }

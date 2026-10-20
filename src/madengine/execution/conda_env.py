@@ -20,9 +20,10 @@ import urllib.request
 
 from madengine.core.console import Console
 
-# Base URL for downloading pinned micromamba static binaries when no
-# conda/mamba is present on the node. micromamba is a drop-in for the
-# conda/mamba CLI surface CondaEnvManager relies on.
+# Base URL for an opt-in micromamba download. The path below appends
+# ``/<platform>/latest``; this is not a pinned build. Bare-metal detection
+# does not download it. micromamba is a drop-in for the conda/mamba CLI
+# surface CondaEnvManager relies on.
 _MICROMAMBA_BASE_URL = "https://micro.mamba.pm/api/micromamba"
 
 # Base URL for TheRock's per-architecture ROCm/torch pip wheel indexes. The
@@ -136,13 +137,14 @@ def bootstrap_micromamba() -> str:
     a conda, mamba, or micromamba already on ``PATH`` (or ``bare_metal.conda_bin``).
     This helper remains for callers that explicitly opt in.
 
-    Fetches the micromamba binary for the host architecture into
-    ``~/.cache/madengine/micromamba/micromamba`` and returns that path.
-    Idempotent: if the cached binary already exists, the download is skipped.
+    Fetches the current micromamba binary for the host architecture from the
+    upstream ``latest`` channel into ``~/.cache/madengine/micromamba/micromamba``
+    and returns that path. This is not a pinned version. Idempotent: if the
+    cached binary already exists, the download is skipped.
 
     micromamba is a drop-in for the ``conda``/``mamba`` CLI surface used by
     :class:`CondaEnvManager` (``env list``, ``create``, ``env update``,
-    ``run -n <env> --no-capture-output``, ``env remove``), so no other code
+    ``run -p <prefix> --no-capture-output``, ``env remove``), so no other code
     needs to branch on which binary is in use.
 
     Returns:
@@ -240,8 +242,16 @@ class CondaEnvManager:
 
         configured = self.bm_config.get("conda_bin")
         if configured:
-            if os.path.isfile(configured) or shutil.which(configured):
-                self._conda_bin = configured
+            if os.path.isfile(configured):
+                if not os.access(configured, os.X_OK):
+                    raise RuntimeError(
+                        f"Configured conda_bin '{configured}' is not executable."
+                    )
+                self._conda_bin = os.path.abspath(configured)
+                return self._conda_bin
+            resolved = shutil.which(configured)
+            if resolved:
+                self._conda_bin = resolved
                 return self._conda_bin
             raise RuntimeError(
                 f"Configured conda_bin '{configured}' not found or not executable."
@@ -272,13 +282,21 @@ class CondaEnvManager:
             return os.path.abspath(str(configured))
         return os.path.join(os.path.expanduser("~"), ".cache", "madengine", "envs")
 
-    def env_prefix(self, env_name: str) -> str:
-        """Return the on-disk prefix for *env_name* under :meth:`env_root`."""
+    def _safe_env_name(self, env_name: str) -> str:
+        """Return a single path segment for *env_name*.
+
+        Slashes and ``..`` are flattened so a user-supplied ``conda_env`` cannot
+        escape :meth:`env_root` or the dependency-hash cache directory.
+        """
         raw = str(env_name).strip().replace("\\", "/")
         safe = raw.replace("/", "_").replace("..", "_")
         if not safe or safe in (".", "_"):
-            safe = "mad_env"
-        return os.path.join(self.env_root(), safe)
+            return "mad_env"
+        return safe
+
+    def env_prefix(self, env_name: str) -> str:
+        """Return the on-disk prefix for *env_name* under :meth:`env_root`."""
+        return os.path.join(self.env_root(), self._safe_env_name(env_name))
 
     def env_exists(self, env_name: str) -> bool:
         """Return True if the prefix for *env_name* is an existing conda env.
@@ -320,7 +338,7 @@ class CondaEnvManager:
         cache_dir = os.path.join(
             os.path.expanduser("~"), ".cache", "madengine", "envhash"
         )
-        return os.path.join(cache_dir, env_name)
+        return os.path.join(cache_dir, self._safe_env_name(env_name))
 
     def _compute_dep_hash(self, files: typing.List[str], extra: str = "") -> str:
         """Hash file-driven dependency inputs plus an optional extra token.
