@@ -130,7 +130,11 @@ def resolve_environment_file(base_path: str, vendor: typing.Optional[str]) -> st
 
 
 def bootstrap_micromamba() -> str:
-    """Download a pinned micromamba static binary when no conda/mamba exists.
+    """Download a micromamba static binary.
+
+    Not used by :meth:`CondaEnvManager.detect_conda_bin`. Bare-metal runs require
+    a conda, mamba, or micromamba already on ``PATH`` (or ``bare_metal.conda_bin``).
+    This helper remains for callers that explicitly opt in.
 
     Fetches the micromamba binary for the host architecture into
     ``~/.cache/madengine/micromamba/micromamba`` and returns that path.
@@ -184,7 +188,7 @@ def bootstrap_micromamba() -> str:
         raise RuntimeError(f"Failed to bootstrap micromamba from {url}: {exc}") from exc
 
     mode = os.stat(target).st_mode
-    os.chmod(target, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.chmod(target, mode | stat.S_IXUSR)
     print(f"✓ micromamba ready: {target}")
     return target
 
@@ -221,16 +225,15 @@ class CondaEnvManager:
         """Locate the conda (or mamba/micromamba) executable.
 
         Respects ``bare_metal.conda_bin`` when set, else searches PATH for
-        ``micromamba``, ``mamba``, then ``conda``. When none is found, bootstraps
-        a pinned micromamba binary (see :func:`bootstrap_micromamba`). Caches the
-        result.
+        ``micromamba``, ``mamba``, then ``conda``. Does not download a conda
+        implementation. Caches the result.
 
         Returns:
             Path to the conda/mamba/micromamba executable.
 
         Raises:
-            RuntimeError: If a configured ``conda_bin`` is invalid, or micromamba
-                bootstrap fails.
+            RuntimeError: If a configured ``conda_bin`` is invalid, or no conda
+                implementation is on ``PATH``.
         """
         if self._conda_bin:
             return self._conda_bin
@@ -250,67 +253,67 @@ class CondaEnvManager:
                 self._conda_bin = found
                 return self._conda_bin
 
-        # Nothing on PATH and no conda_bin configured: bootstrap micromamba so
-        # bare-metal runs work with zero manual conda install.
-        self._conda_bin = bootstrap_micromamba()
-        return self._conda_bin
+        raise RuntimeError(
+            "No conda, mamba, or micromamba executable found on PATH. "
+            "Install one, or set bare_metal.conda_bin to its path. "
+            "madengine does not download a conda implementation."
+        )
+
+    def env_root(self) -> str:
+        """Return the directory that holds bare-metal env prefixes.
+
+        ``bare_metal.env_root`` overrides the default
+        ``~/.cache/madengine/envs``. Envs are prefixes under this directory, not
+        named envs in the user's conda root, so jobs on a shared node do not
+        collide with each other or with the user's interactive environments.
+        """
+        configured = self.bm_config.get("env_root")
+        if configured:
+            return os.path.abspath(str(configured))
+        return os.path.join(os.path.expanduser("~"), ".cache", "madengine", "envs")
+
+    def env_prefix(self, env_name: str) -> str:
+        """Return the on-disk prefix for *env_name* under :meth:`env_root`."""
+        raw = str(env_name).strip().replace("\\", "/")
+        safe = raw.replace("/", "_").replace("..", "_")
+        if not safe or safe in (".", "_"):
+            safe = "mad_env"
+        return os.path.join(self.env_root(), safe)
 
     def env_exists(self, env_name: str) -> bool:
-        """Return True if a conda env with *env_name* already exists.
+        """Return True if the prefix for *env_name* is an existing conda env.
 
-        Matches by exact env name in ``conda env list`` output (the last path
-        component of each env directory, and any explicitly named env).
+        A prefix counts only when it contains ``conda-meta``, which ``conda
+        create -p`` writes. This does not consult ``conda env list``, so a
+        same-named env in the user's conda root is not reused.
 
         Args:
             env_name: The conda environment name.
 
         Returns:
-            True if the environment exists.
+            True if the prefix exists.
         """
-        conda_bin = self.detect_conda_bin()
-        try:
-            output = self.console.sh(f"{shlex.quote(conda_bin)} env list", canFail=True)
-        except Exception:
-            return False
-
-        for line in output.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            # Format: "<name>   [*]   <path>"  OR just a path.
-            parts = line.split()
-            if not parts:
-                continue
-            first = parts[0]
-            if first == env_name:
-                return True
-            # Match on the basename of the env path (last column).
-            last = parts[-1]
-            if os.path.basename(last.rstrip("/")) == env_name:
-                return True
-        return False
+        return os.path.isdir(os.path.join(self.env_prefix(env_name), "conda-meta"))
 
     def conda_run_prefix(self, env_name: str) -> str:
         """Return the ``conda run`` command prefix for executing inside *env_name*.
 
-        Uses ``--no-capture-output`` so the child process streams stdout/stderr
-        directly (matching live-output behavior of the Docker path).
+        Uses ``-p <prefix>`` so the command targets the madengine-owned prefix.
+        ``--no-capture-output`` makes conda/mamba stream the child's
+        stdout/stderr. micromamba does not accept that flag (it streams by
+        default) and would forward it into ``exec``.
 
         Args:
             env_name: The conda environment name.
 
         Returns:
-            Command prefix string, e.g. ``/path/conda run -n env --no-capture-output``.
+            Command prefix string, e.g. ``/path/conda run -p /prefix --no-capture-output``.
         """
         conda_bin = self.detect_conda_bin()
-        # `--no-capture-output` is a conda/mamba flag that makes `run` stream the
-        # child's stdout/stderr instead of buffering. micromamba does not accept
-        # it (it streams by default) and forwards the unrecognized token into its
-        # internal `exec`, producing "exec: --: invalid option". So only add the
-        # flag for conda/mamba.
+        prefix = shlex.quote(self.env_prefix(env_name))
         is_micromamba = "micromamba" in os.path.basename(conda_bin).lower()
         capture_flag = "" if is_micromamba else " --no-capture-output"
-        return f"{shlex.quote(conda_bin)} run -n {shlex.quote(env_name)}{capture_flag}"
+        return f"{shlex.quote(conda_bin)} run -p {prefix}{capture_flag}"
 
     def _dep_hash_path(self, env_name: str) -> str:
         """Return the path of the dependency-hash stamp file for *env_name*."""
@@ -319,18 +322,21 @@ class CondaEnvManager:
         )
         return os.path.join(cache_dir, env_name)
 
-    def _compute_dep_hash(self, files: typing.List[str]) -> str:
-        """Hash the content of file-driven dependency inputs.
+    def _compute_dep_hash(self, files: typing.List[str], extra: str = "") -> str:
+        """Hash file-driven dependency inputs plus an optional extra token.
 
-        Only existing files contribute. Returns ``""`` when no such files are
-        given, which callers treat as "no file-driven deps" (pure reuse).
+        Only existing files contribute. *extra* covers inputs that are not
+        files (the resolved ROCm index, package list, and torch flag). Returns
+        ``""`` when nothing contributed, which callers treat as "no tracked
+        deps" (pure reuse).
 
         Args:
             files: Candidate dependency file paths (environment_file,
-                requirements_file); missing/empty entries are skipped.
+                requirements_file, setup_script); missing entries are skipped.
+            extra: Additional stable text folded into the digest.
 
         Returns:
-            A hex digest, or ``""`` if no existing files were provided.
+            A hex digest, or ``""`` if nothing contributed.
         """
         digest = hashlib.sha256()
         found_any = False
@@ -341,7 +347,36 @@ class CondaEnvManager:
             digest.update(path.encode("utf-8"))
             with open(path, "rb") as f:
                 digest.update(f.read())
+        if extra:
+            found_any = True
+            digest.update(extra.encode("utf-8"))
         return digest.hexdigest() if found_any else ""
+
+    def _rocm_fingerprint(self, rocm_config: typing.Dict) -> str:
+        """Stable token for the ROCm wheel install inputs.
+
+        Included in the dependency hash so a changed index URL, package list,
+        torch flag, or GPU architecture invalidates reuse. Returns ``""`` when
+        the ROCm install is disabled.
+        """
+        if not rocm_config or not rocm_config.get("enabled"):
+            return ""
+        try:
+            index_url = resolve_rocm_index_url(
+                rocm_config.get("index_url", "auto"), self.gpu_arch
+            )
+        except RuntimeError:
+            index_url = str(rocm_config.get("index_url", "auto"))
+        packages = rocm_config.get("packages") or ["rocm[libraries,devel]"]
+        torch_flag = "1" if rocm_config.get("torch") else "0"
+        return "|".join(
+            [
+                index_url,
+                ",".join(str(p) for p in packages),
+                torch_flag,
+                str(self.gpu_arch or ""),
+            ]
+        )
 
     def _write_dep_hash(self, env_name: str, dep_hash: str) -> None:
         """Persist the dependency hash stamp for *env_name* (best-effort)."""
@@ -363,6 +398,14 @@ class CondaEnvManager:
                 return f.read().strip()
         except OSError:
             return ""
+
+    def _delete_dep_hash(self, env_name: str) -> None:
+        """Remove the dependency-hash stamp for *env_name* (best-effort)."""
+        path = self._dep_hash_path(env_name)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     def _install_rocm_wheels(
         self,
@@ -418,14 +461,17 @@ class CondaEnvManager:
           4. If ``setup_script`` -> run it inside the env.
 
         Idempotency:
-          - When the env exists and ``reuse_env`` (default True) is set, steps 1
-            and 3 are skipped *unless* the content of ``environment_file`` /
-            ``requirements_file`` changed since last run (tracked via a content-
-            hash stamp), which forces an env update + requirements reinstall.
-          - The ROCm-wheel install (step 2) is skip-on-reuse regardless of file
-            hashes (it is not file-driven and reinstalling is slow); force a
-            refresh with ``reuse_env: False``.
-          - ``setup_script`` (step 4) always runs.
+          - Envs are created at ``<env_root>/<name>`` via ``conda create -p`` /
+            ``conda env create -p``, not as named envs in the user conda root.
+          - When the prefix exists and ``reuse_env`` (default True) is set,
+            steps 1-4 are skipped unless ``environment_file``,
+            ``requirements_file``, ``setup_script``, or the ROCm wheel inputs
+            (index, packages, torch, GPU arch) changed since last run.
+          - A python-only env that must be recreated is removed first.
+            ``conda create -p`` on an existing prefix fails.
+          - ``setup_script`` runs only when the env is created or its tracked
+            inputs changed. Put a step that must run every invocation in
+            ``pre_scripts``.
 
         Args:
             model_info: Model definition dict (may carry conda_env,
@@ -473,12 +519,17 @@ class CondaEnvManager:
             setup_script = resolve_environment_file(setup_script, self.gpu_vendor)
         rocm_config = self.bm_config.get("rocm") or model_info.get("rocm") or {}
         reuse_env = self.bm_config.get("reuse_env", True)
+        prefix_path = self.env_prefix(env_name)
+        prefix_q = shlex.quote(prefix_path)
 
         already = self.env_exists(env_name)
 
-        # File-driven deps (environment_file/requirements_file) invalidate reuse
-        # when their content changes; ROCm wheels do not (see docstring).
-        dep_hash = self._compute_dep_hash([environment_file, requirements_file])
+        # File contents and ROCm wheel inputs share one stamp. A mismatch
+        # forces the create/update, pip, ROCm, and setup steps together.
+        dep_hash = self._compute_dep_hash(
+            [environment_file, requirements_file, setup_script],
+            extra=self._rocm_fingerprint(rocm_config),
+        )
         deps_changed = bool(dep_hash) and dep_hash != self._read_dep_hash(env_name)
         file_step_needed = (not already) or (not reuse_env) or deps_changed
 
@@ -498,57 +549,71 @@ class CondaEnvManager:
                 # `env update` is idempotent and also creates when missing.
                 verb = "update" if already else "create"
                 self.console.sh(
-                    f"{conda_q} env {verb} -n {shlex.quote(env_name)} "
+                    f"{conda_q} env {verb} -p {prefix_q} "
                     f"-f {shlex.quote(environment_file)}",
                     timeout=timeout,
                 )
             else:
+                # `conda create -p` fails when the prefix already exists.
+                if already:
+                    self.remove(env_name, timeout=timeout)
                 py = f"python={python_version}" if python_version else "python"
+                # conda-forge is explicit so micromamba (no user .condarc) and
+                # conda agree on where the interpreter comes from.
                 self.console.sh(
-                    f"{conda_q} create -y -n {shlex.quote(env_name)} {shlex.quote(py)}",
+                    f"{conda_q} create -y -c conda-forge -p {prefix_q} "
+                    f"{shlex.quote(py)}",
                     timeout=timeout,
                 )
-            print(f"✓ Conda env ready: {env_name}")
+            print(f"✓ Conda env ready: {env_name} ({prefix_path})")
 
-        # ROCm wheels: skip-on-reuse (install only on fresh create or reuse_env=False).
-        if rocm_config.get("enabled") and (not already or not reuse_env):
+        if rocm_config.get("enabled") and file_step_needed:
             self._install_rocm_wheels(env_name, rocm_config, timeout)
 
         if requirements_file and file_step_needed:
             if not os.path.isfile(requirements_file):
                 raise RuntimeError(f"requirements_file not found: {requirements_file}")
-            prefix = self.conda_run_prefix(env_name)
+            run_prefix = self.conda_run_prefix(env_name)
             self.console.sh(
-                f"{prefix} pip install -r {shlex.quote(requirements_file)}",
+                f"{run_prefix} pip install -r {shlex.quote(requirements_file)}",
                 timeout=timeout,
             )
             print(f"✓ Installed requirements in '{env_name}': {requirements_file}")
 
-        if file_step_needed:
-            self._write_dep_hash(env_name, dep_hash)
-
-        if setup_script:
+        if setup_script and file_step_needed:
             if not os.path.isfile(setup_script):
                 raise RuntimeError(f"setup_script not found: {setup_script}")
-            prefix = self.conda_run_prefix(env_name)
+            run_prefix = self.conda_run_prefix(env_name)
             self.console.sh(
-                f"{prefix} bash {shlex.quote(setup_script)}",
+                f"{run_prefix} bash {shlex.quote(setup_script)}",
                 timeout=timeout,
             )
             print(f"✓ Ran setup_script in env '{env_name}': {setup_script}")
 
+        if file_step_needed:
+            self._write_dep_hash(env_name, dep_hash)
+
         return env_name
 
     def remove(self, env_name: str, timeout: typing.Optional[int] = 600) -> None:
-        """Remove a conda environment (best-effort).
+        """Remove a conda environment prefix and its dependency-hash stamp.
+
+        A failed ``conda env remove`` raises. The hash stamp is deleted only
+        after the prefix is gone, so a failed removal is not treated as a
+        clean env on the next run.
 
         Args:
             env_name: The conda environment name.
             timeout: Command timeout in seconds.
+
+        Raises:
+            RuntimeError: If the prefix exists and ``conda env remove`` fails.
         """
-        conda_bin = self.detect_conda_bin()
-        self.console.sh(
-            f"{shlex.quote(conda_bin)} env remove -y -n {shlex.quote(env_name)}",
-            canFail=True,
-            timeout=timeout,
-        )
+        if self.env_exists(env_name):
+            conda_bin = self.detect_conda_bin()
+            self.console.sh(
+                f"{shlex.quote(conda_bin)} env remove -y -p "
+                f"{shlex.quote(self.env_prefix(env_name))}",
+                timeout=timeout,
+            )
+        self._delete_dep_hash(env_name)

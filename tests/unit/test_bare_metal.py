@@ -1,5 +1,6 @@
 """Unit tests for the bare-metal (conda) execution backend."""
 
+import json
 import os
 from unittest import mock
 
@@ -70,44 +71,71 @@ class TestCondaEnvManager:
         mgr._conda_bin = "/opt/conda/bin/conda"  # bypass PATH detection
         return mgr, console
 
-    def test_conda_run_prefix(self):
-        mgr, _ = self._mgr()
+    def test_conda_run_prefix(self, tmp_path):
+        mgr, _ = self._mgr(bm_config={"env_root": str(tmp_path)})
         prefix = mgr.conda_run_prefix("myenv")
-        assert "run -n myenv" in prefix
+        assert f"run -p {tmp_path / 'myenv'}" in prefix
         assert "--no-capture-output" in prefix
+        assert "docker" not in prefix
+        assert " -n " not in prefix
 
-    def test_env_exists_matches_name(self):
-        mgr, console = self._mgr()
-        console.sh.return_value = (
-            "# conda envs\nbase   *  /opt/conda\nmyenv     /opt/conda/envs/myenv"
-        )
+    def test_env_exists_matches_prefix(self, tmp_path):
+        mgr, console = self._mgr(bm_config={"env_root": str(tmp_path)})
+        assert mgr.env_exists("myenv") is False
+        os.makedirs(os.path.join(mgr.env_prefix("myenv"), "conda-meta"))
         assert mgr.env_exists("myenv") is True
         assert mgr.env_exists("absent") is False
+        console.sh.assert_not_called()
 
-    def test_create_with_python_version(self):
-        mgr, console = self._mgr()
-        # env does not exist
-        console.sh.return_value = "# conda envs\nbase * /opt/conda"
+    def test_create_with_python_version(self, tmp_path):
+        mgr, console = self._mgr(bm_config={"env_root": str(tmp_path)})
         name = mgr.create_or_update(
             {"name": "m", "conda_env": "e", "python_version": "3.11"}
         )
         assert name == "e"
-        # Find the create command among the calls.
         create_calls = [
             c.args[0] for c in console.sh.call_args_list if "create" in c.args[0]
         ]
-        assert any("python=3.11" in cmd and "-n e" in cmd for cmd in create_calls)
+        prefix = str(tmp_path / "e")
+        assert any(
+            "python=3.11" in cmd
+            and f"-p {prefix}" in cmd
+            and "-c conda-forge" in cmd
+            and "-n " not in cmd
+            for cmd in create_calls
+        )
 
-    def test_reuse_existing_env_skips_create(self):
-        mgr, console = self._mgr(bm_config={"reuse_env": True})
-        console.sh.return_value = "myenv  /opt/conda/envs/myenv"
+    def test_reuse_existing_env_skips_create(self, tmp_path):
+        mgr, console = self._mgr(
+            bm_config={"reuse_env": True, "env_root": str(tmp_path)}
+        )
+        os.makedirs(os.path.join(mgr.env_prefix("myenv"), "conda-meta"))
         mgr.create_or_update({"name": "m", "conda_env": "myenv"})
         create_calls = [
             c.args[0]
             for c in console.sh.call_args_list
-            if "conda create" in c.args[0] or "env create" in c.args[0]
+            if "create" in c.args[0] or "env update" in c.args[0]
         ]
         assert create_calls == []
+
+    def test_reuse_false_removes_then_creates(self, tmp_path):
+        mgr, console = self._mgr(
+            bm_config={"reuse_env": False, "env_root": str(tmp_path)}
+        )
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"))
+        mgr.create_or_update({"name": "m", "conda_env": "e", "python_version": "3.11"})
+        cmds = [c.args[0] for c in console.sh.call_args_list]
+        assert any(
+            "env remove" in cmd and f"-p {tmp_path / 'e'}" in cmd for cmd in cmds
+        )
+        assert any(
+            "create -y -c conda-forge -p" in cmd and "python=3.11" in cmd
+            for cmd in cmds
+        )
+        assert cmds.index(next(c for c in cmds if "env remove" in c)) < cmds.index(
+            next(c for c in cmds if "create -y -c conda-forge -p" in c)
+        )
+        assert not any("create -y -n" in cmd or "create -n" in cmd for cmd in cmds)
 
 
 # ---- Vendor-aware dependency file resolution ----
@@ -236,23 +264,62 @@ class TestInstallRocmWheels:
         cmds = [c.args[0] for c in console.sh.call_args_list]
         assert any("https://x/whl/" in c and " rocm" in c for c in cmds)
 
-    def test_create_or_update_installs_rocm_on_fresh_env(self):
+    def test_create_or_update_installs_rocm_on_fresh_env(self, tmp_path):
         mgr, console = self._mgr(
-            bm_config={"conda_env": "e", "rocm": {"enabled": True}}
+            bm_config={
+                "conda_env": "e",
+                "rocm": {"enabled": True},
+                "env_root": str(tmp_path / "envs"),
+            }
         )
-        console.sh.return_value = "# conda envs\nbase * /opt/conda"
+        mgr._dep_hash_path = lambda env_name: str(tmp_path / f"hash_{env_name}")
         mgr.create_or_update({"name": "m"})
         cmds = [c.args[0] for c in console.sh.call_args_list]
         assert any("pip install --index-url" in c and "gfx942" in c for c in cmds)
 
-    def test_create_or_update_skips_rocm_on_reuse(self):
+    def test_create_or_update_skips_rocm_when_fingerprint_matches(self, tmp_path):
+        rocm = {"enabled": True}
         mgr, console = self._mgr(
-            bm_config={"conda_env": "e", "rocm": {"enabled": True}, "reuse_env": True}
+            bm_config={
+                "conda_env": "e",
+                "rocm": rocm,
+                "reuse_env": True,
+                "env_root": str(tmp_path / "envs"),
+            }
         )
-        console.sh.return_value = "e  /opt/conda/envs/e"
+        mgr._dep_hash_path = lambda env_name: str(tmp_path / f"hash_{env_name}")
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"))
+        mgr._write_dep_hash(
+            "e", mgr._compute_dep_hash([], extra=mgr._rocm_fingerprint(rocm))
+        )
         mgr.create_or_update({"name": "m"})
         cmds = [c.args[0] for c in console.sh.call_args_list]
         assert not any("pip install --index-url" in c for c in cmds)
+
+    def test_create_or_update_reinstalls_rocm_when_index_changes(self, tmp_path):
+        mgr, console = self._mgr(
+            bm_config={
+                "conda_env": "e",
+                "rocm": {"enabled": True, "index_url": "https://old/whl/"},
+                "reuse_env": True,
+                "env_root": str(tmp_path / "envs"),
+            }
+        )
+        mgr._dep_hash_path = lambda env_name: str(tmp_path / f"hash_{env_name}")
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"))
+        mgr._write_dep_hash(
+            "e",
+            mgr._compute_dep_hash(
+                [],
+                extra=mgr._rocm_fingerprint(
+                    {"enabled": True, "index_url": "https://old/whl/"}
+                ),
+            ),
+        )
+        mgr.bm_config["rocm"] = {"enabled": True, "index_url": "https://new/whl/"}
+        mgr.create_or_update({"name": "m"})
+        cmds = [c.args[0] for c in console.sh.call_args_list]
+        assert any("https://new/whl/" in c for c in cmds)
 
 
 # ---- requirements_file install ----
@@ -269,7 +336,13 @@ class TestRequirementsFile:
     def test_pip_install_requirements(self, tmp_path):
         req = tmp_path / "requirements.txt"
         req.write_text("numpy\n")
-        mgr, console = self._mgr({"conda_env": "e", "requirements_file": str(req)})
+        mgr, console = self._mgr(
+            {
+                "conda_env": "e",
+                "requirements_file": str(req),
+                "env_root": str(tmp_path / "envs"),
+            }
+        )
         with mock.patch.object(mgr, "_dep_hash_path", return_value=str(tmp_path / "h")):
             mgr.create_or_update({"name": "m"})
         cmds = [c.args[0] for c in console.sh.call_args_list]
@@ -299,16 +372,21 @@ class TestDepHashInvalidation:
         envf = tmp_path / "environment.yml"
         envf.write_text("name: base\n")
         mgr, console = self._mgr(
-            {"conda_env": "e", "environment_file": str(envf), "reuse_env": True},
+            {
+                "conda_env": "e",
+                "environment_file": str(envf),
+                "reuse_env": True,
+                "env_root": str(tmp_path / "envs"),
+            },
             tmp_path,
         )
         # First run: env does not exist -> creates and stamps hash.
         console.sh.return_value = "# conda envs\nbase * /opt/conda"
         mgr.create_or_update({"name": "m"})
 
-        # Second run: env now exists; unchanged file -> reuse (no env command).
+        # Second run: prefix exists; unchanged file -> reuse (no env command).
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"))
         console.sh.reset_mock()
-        console.sh.return_value = "e  /opt/conda/envs/e"
         mgr.create_or_update({"name": "m"})
         cmds = [c.args[0] for c in console.sh.call_args_list]
         assert not any("env update" in c or "env create" in c for c in cmds)
@@ -316,7 +394,6 @@ class TestDepHashInvalidation:
         # Third run: change file content -> env update forced despite reuse.
         envf.write_text("name: base\ndependencies: [numpy]\n")
         console.sh.reset_mock()
-        console.sh.return_value = "e  /opt/conda/envs/e"
         mgr.create_or_update({"name": "m"})
         cmds = [c.args[0] for c in console.sh.call_args_list]
         assert any("env update" in c for c in cmds)
@@ -340,17 +417,15 @@ class TestBootstrapMicromamba:
         assert result == str(binary)
         dl.assert_not_called()
 
-    def test_detect_conda_bin_bootstraps_when_nothing_found(self, tmp_path):
+    def test_detect_conda_bin_does_not_download(self):
         console = mock.MagicMock()
         mgr = CondaEnvManager(console=console, bm_config={})
         with mock.patch(
             "madengine.execution.conda_env.shutil.which", return_value=None
-        ), mock.patch(
-            "madengine.execution.conda_env.bootstrap_micromamba",
-            return_value="/cache/micromamba",
-        ) as boot:
-            assert mgr.detect_conda_bin() == "/cache/micromamba"
-        boot.assert_called_once()
+        ), mock.patch("madengine.execution.conda_env.bootstrap_micromamba") as boot:
+            with pytest.raises(RuntimeError, match="does not download"):
+                mgr.detect_conda_bin()
+        boot.assert_not_called()
 
 
 # ---- Opt-in env teardown ----
@@ -417,6 +492,172 @@ class TestBareMetalBuildPreflight:
 
 
 # ---- Performance extraction ----
+
+
+class TestRemoveDepHash:
+    def test_remove_deletes_stamp_so_rebuild_is_not_reused(self, tmp_path):
+        req = tmp_path / "requirements.txt"
+        req.write_text("numpy\n")
+        console = mock.MagicMock()
+        mgr = CondaEnvManager(
+            console=console,
+            bm_config={
+                "conda_env": "e",
+                "env_root": str(tmp_path / "envs"),
+                "requirements_file": str(req),
+                "reuse_env": True,
+            },
+        )
+        mgr._conda_bin = "/opt/conda/bin/conda"
+        mgr._dep_hash_path = lambda env_name: str(tmp_path / f"hash_{env_name}")
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"))
+        mgr._write_dep_hash("e", mgr._compute_dep_hash([str(req)]))
+
+        mgr.remove("e")
+        assert not os.path.exists(tmp_path / "hash_e")
+
+        # Simulate a prefix that was recreated outside this process.
+        os.makedirs(os.path.join(mgr.env_prefix("e"), "conda-meta"), exist_ok=True)
+        console.sh.reset_mock()
+        mgr.create_or_update({"name": "m"})
+        cmds = [c.args[0] for c in console.sh.call_args_list]
+        assert any("pip install -r" in cmd for cmd in cmds)
+
+
+class TestGpuVisibility:
+    def _runner(self, vendor):
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        runner = BareMetalRunner.__new__(BareMetalRunner)
+        runner.context = mock.Mock()
+        runner.context.ctx = {"gpu_vendor": vendor}
+        return runner
+
+    def test_all_gpus_keeps_host_mask(self, monkeypatch):
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
+        runner = self._runner("AMD")
+        assert runner._gpu_env(-1) == {}
+
+    def test_slices_existing_amd_mask(self, monkeypatch):
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3,5")
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+        runner = self._runner("AMD")
+        env = runner._gpu_env(1)
+        assert env == {
+            "HIP_VISIBLE_DEVICES": "2",
+            "ROCR_VISIBLE_DEVICES": "2",
+        }
+
+    def test_no_mask_uses_first_n_devices(self, monkeypatch):
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        runner = self._runner("AMD")
+        assert runner._gpu_env(2) == {
+            "HIP_VISIBLE_DEVICES": "0,1",
+            "ROCR_VISIBLE_DEVICES": "0,1",
+        }
+
+    def test_nvidia_slices_cuda_mask(self, monkeypatch):
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+        runner = self._runner("NVIDIA")
+        assert runner._gpu_env(2)["CUDA_VISIBLE_DEVICES"] == "4,5"
+
+
+class TestCredentialsAndCommand:
+    def test_model_cred_is_exported(self):
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        runner = BareMetalRunner.__new__(BareMetalRunner)
+        runner.context = mock.Mock()
+        runner.context.ctx = {}
+        runner.additional_context = {}
+        runner.credentials = {"hf": {"token": "secret"}}
+        env = runner._build_run_env({"name": "m", "cred": "hf"}, -1)
+        assert env["hf_TOKEN"] == "secret"
+
+    def test_model_command_is_conda_run_not_docker(self, tmp_path):
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        runner = BareMetalRunner.__new__(BareMetalRunner)
+        runner.context = mock.Mock()
+        runner.context.ctx = {
+            "gpu_vendor": "AMD",
+            "pre_scripts": [],
+            "post_scripts": [],
+            "docker_env_vars": {},
+        }
+        runner.additional_context = {"bare_metal": {"conda_env": "e"}}
+        runner.bm_config = runner.additional_context["bare_metal"]
+        runner.console = mock.Mock()
+        runner.console.sh.return_value = "host"
+        runner.rich_console = mock.Mock()
+        runner.live_output = True
+        runner.credentials = None
+        runner.conda = mock.Mock()
+        runner.conda.conda_run_prefix.return_value = (
+            "/opt/conda/bin/conda run -p /tmp/envs/e --no-capture-output"
+        )
+        runner._record = mock.Mock()
+        script = tmp_path / "run.sh"
+        script.write_text("#!/bin/bash\necho performance: 1 samples_per_second\n")
+        captured = {}
+
+        def sh_in_dir(cmd, env, working_dir, timeout, can_fail):
+            captured["cmd"] = cmd
+            return "performance: 1 samples_per_second\n"
+
+        runner._sh_in_dir = sh_in_dir
+        log_path = tmp_path / "run.log"
+        with mock.patch(
+            "madengine.execution.bare_metal_runner.make_run_log_file_path",
+            return_value=str(log_path),
+        ), mock.patch(
+            "madengine.execution.bare_metal_runner.resolve_runtime_gpus",
+            return_value=1,
+        ):
+            runner.run_model(
+                {"name": "m", "scripts": str(script), "n_gpus": "1", "args": ""},
+                build_info={},
+                timeout=30,
+            )
+        assert captured["cmd"].startswith("/opt/conda/bin/conda run -p /tmp/envs/e")
+        assert "docker" not in captured["cmd"]
+
+
+class TestManifestBareMetalOverride:
+    def test_runtime_bare_metal_wins_over_manifest(self, tmp_path):
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        manifest = {
+            "built_images": {"m": {}},
+            "built_models": {"m": {"name": "m", "scripts": "run.sh"}},
+            "context": {
+                "gpu_vendor": "AMD",
+                "bare_metal": {
+                    "conda_env": "from_build",
+                    "cleanup_env": False,
+                    "env_root": "/from/build",
+                },
+            },
+        }
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps(manifest))
+        runner = BareMetalRunner.__new__(BareMetalRunner)
+        runner.additional_context = {
+            "bare_metal": {"cleanup_env": True, "conda_env": "from_run"}
+        }
+        runner.bm_config = dict(runner.additional_context["bare_metal"])
+        runner.conda = mock.Mock()
+        runner.rich_console = mock.Mock()
+        runner.run_model = mock.Mock(
+            return_value={"status": "SUCCESS", "performance": "1", "test_duration": 1}
+        )
+        runner.run_models_from_manifest(str(path))
+        assert runner.bm_config["cleanup_env"] is True
+        assert runner.bm_config["conda_env"] == "from_run"
+        assert runner.bm_config["env_root"] == "/from/build"
+        assert runner.conda.bm_config is runner.bm_config
 
 
 class TestExtractPerformance:

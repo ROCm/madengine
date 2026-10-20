@@ -5,9 +5,9 @@
 #
 # Minimal fake conda for e2e-testing the bare-metal runner without a real
 # conda/mamba install. Supports the subcommands CondaEnvManager invokes:
-#   conda env list | conda env create | conda env update | conda env remove
-#   conda create  | conda run -n <env> --no-capture-output <cmd...>
-# `run` execs the wrapped command with CONDA_DEFAULT_ENV set to <env>.
+#   conda env create | conda env update | conda env remove
+#   conda create -p <prefix> | conda run -p <prefix> --no-capture-output <cmd...>
+# `run` execs the wrapped command with CONDA_DEFAULT_ENV set to the prefix.
 
 case "$1" in
   env)
@@ -24,8 +24,8 @@ case "$1" in
   run)
     shift
     env_name=""
-    while [[ "$1" == -* || "$1" == "-n" ]]; do
-      if [[ "$1" == "-n" ]]; then
+    while [[ "$1" == -* ]]; do
+      if [[ "$1" == "-n" || "$1" == "-p" ]]; then
         env_name="$2"
         shift 2
       else

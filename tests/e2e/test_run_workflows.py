@@ -8,6 +8,9 @@ import json
 
 # built-in modules
 import os
+import shlex
+import shutil
+import subprocess
 
 # third-party modules
 import pytest
@@ -579,3 +582,103 @@ class TestBareMetalExecution:
                     break
             else:
                 pytest.fail("dummy_bare_metal not found in perf.csv")
+
+
+def _docker_container_ids():
+    """Return ``docker ps -aq`` output, or None when the daemon is unreachable."""
+    try:
+        return subprocess.check_output(
+            ["docker", "ps", "-aq"], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+class TestBareMetalRealConda:
+    """Run dummy_bare_metal through a real conda prefix on this node.
+
+    The fake-conda test above only checks routing. This one creates a prefix
+    with the conda on PATH, runs the model script inside it, and checks that
+    the Docker daemon's container list does not change.
+    """
+
+    @requires_gpu("bare-metal build validates the host GPU installation")
+    @pytest.mark.parametrize(
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_bare_metal_real.csv"]],
+        indirect=True,
+    )
+    def test_dummy_bare_metal_real_conda_does_not_use_docker(
+        self, global_data, clean_test_temp_files, tmp_path
+    ):
+        conda_bin = None
+        for candidate in ("micromamba", "mamba", "conda"):
+            conda_bin = shutil.which(candidate)
+            if conda_bin:
+                break
+        if not conda_bin:
+            # This host may not have conda installed. The test bootstraps
+            # micromamba itself; madengine's own detection does not.
+            from madengine.execution.conda_env import bootstrap_micromamba
+
+            conda_bin = bootstrap_micromamba()
+
+        env_name = f"mad_dummy_bare_metal_e2e_{os.getpid()}"
+        env_root = tmp_path / "envs"
+        env_root.mkdir()
+        log_name = f"dummy_bare_metal_bare_metal_{env_name}.run.live.log"
+        context = {
+            "bare_metal": {
+                "conda_bin": conda_bin,
+                "conda_env": env_name,
+                "env_root": str(env_root),
+                "reuse_env": False,
+                "cleanup_env": True,
+            }
+        }
+        before = _docker_container_ids()
+        mamba_root = tmp_path / "mamba-root"
+        mamba_root.mkdir()
+        try:
+            command = build_run_command(
+                "dummy_bare_metal",
+                output_file="perf_bare_metal_real.csv",
+                additional_context=context,
+            )
+            global_data["console"].sh(
+                f"export MAMBA_ROOT_PREFIX={shlex.quote(str(mamba_root))}; {command}"
+            )
+            perf_csv = os.path.join(BASE_DIR, "perf_bare_metal_real.csv")
+            assert_model_in_perf_csv(perf_csv, "dummy_bare_metal", status="SUCCESS")
+            with open(perf_csv, "r") as csv_file:
+                row = next(
+                    r
+                    for r in csv.DictReader(csv_file)
+                    if r["model"] == "dummy_bare_metal"
+                )
+            assert row["deployment_type"] == "bare_metal"
+            assert row["launcher"] == "conda"
+            assert row["performance"]
+            assert row["docker_image"] == ""
+            after = _docker_container_ids()
+            if before is not None and after is not None:
+                assert before == after, "bare-metal run created a Docker container"
+            log_path = os.path.join(BASE_DIR, log_name)
+            if os.path.exists(log_path):
+                with open(log_path, "r", errors="replace") as log_file:
+                    log_text = log_file.read()
+                assert "docker run" not in log_text
+                assert "docker build" not in log_text
+                assert "conda run -p" in log_text or "micromamba run -p" in log_text
+        finally:
+            prefix = env_root / env_name
+            if prefix.exists():
+                subprocess.call(
+                    [conda_bin, "env", "remove", "-y", "-p", str(prefix)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                shutil.rmtree(prefix, ignore_errors=True)
+            log_path = os.path.join(BASE_DIR, log_name)
+            if os.path.exists(log_path):
+                os.remove(log_path)

@@ -4,7 +4,7 @@
 Runs a model's scripts directly on the host inside a conda environment, without
 Docker. The conda env (created in the build phase by :class:`CondaEnvManager`)
 provides dependency isolation; this runner wraps each script invocation in
-``conda run -n <env>`` and reuses madengine's pre/post-script, performance
+``conda run -p <prefix>`` and reuses madengine's pre/post-script, performance
 extraction, and ``perf.csv`` reporting.
 
 This is the non-Docker sibling of ``ContainerRunner``. It is single-node/local
@@ -102,12 +102,27 @@ class BareMetalRunner:
             file_print(PERF_CSV_HEADER, filename=self.perf_csv_path, mode="w")
             print(f"Created performance CSV file: {self.perf_csv_path}")
 
+    def _visible_device_keys(self) -> typing.Tuple[str, ...]:
+        """Env vars that select GPUs for the detected vendor."""
+        vendor = ""
+        if self.context:
+            vendor = str(self.context.ctx.get("gpu_vendor", "")).upper()
+        if "AMD" in vendor:
+            return ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+        if "NVIDIA" in vendor:
+            return ("CUDA_VISIBLE_DEVICES",)
+        return ()
+
     def _gpu_env(self, resolved_gpu_count: int) -> typing.Dict[str, str]:
         """Build GPU-visibility env vars for the resolved GPU count.
 
-        On bare metal there is no Docker ``--device`` flag; instead we expose a
-        GPU subset via ``HIP_VISIBLE_DEVICES`` (AMD) / ``CUDA_VISIBLE_DEVICES``
-        (NVIDIA). A count of -1 (all) leaves visibility unrestricted.
+        On bare metal there is no Docker ``--device`` flag. A count of -1
+        (all) leaves any scheduler mask untouched. Otherwise the first N
+        devices are taken from an already-exported ``HIP_VISIBLE_DEVICES`` /
+        ``CUDA_VISIBLE_DEVICES`` / ``ROCR_VISIBLE_DEVICES`` list, so a shared
+        node that was given GPU 2 is not rewritten to GPU 0. With no mask,
+        devices ``0..N-1`` are used. One process sees those devices; this does
+        not launch ``torchrun`` or ``mpirun``.
 
         Args:
             resolved_gpu_count: Number of GPUs requested.
@@ -115,19 +130,31 @@ class BareMetalRunner:
         Returns:
             Dict of GPU env vars (possibly empty).
         """
-        env: typing.Dict[str, str] = {}
         if resolved_gpu_count is None or resolved_gpu_count < 0:
-            return env
-        vendor = ""
-        if self.context:
-            vendor = str(self.context.ctx.get("gpu_vendor", "")).upper()
-        device_list = ",".join(str(i) for i in range(resolved_gpu_count))
-        if "AMD" in vendor:
-            env["HIP_VISIBLE_DEVICES"] = device_list
-            env["ROCR_VISIBLE_DEVICES"] = device_list
-        elif "NVIDIA" in vendor:
-            env["CUDA_VISIBLE_DEVICES"] = device_list
-        return env
+            return {}
+        keys = self._visible_device_keys()
+        if not keys:
+            return {}
+
+        existing = ""
+        for key in keys:
+            current = os.environ.get(key, "").strip()
+            if current:
+                existing = current
+                break
+        if existing:
+            devices = [part.strip() for part in existing.split(",") if part.strip()]
+            selected = devices[:resolved_gpu_count]
+            if len(selected) < resolved_gpu_count:
+                print(
+                    f"⚠️  Requested {resolved_gpu_count} GPU(s) but the current "
+                    f"visible-device mask only lists {len(selected)}: {existing}"
+                )
+            device_list = ",".join(selected)
+        else:
+            device_list = ",".join(str(i) for i in range(resolved_gpu_count))
+
+        return {key: device_list for key in keys}
 
     def _build_run_env(
         self, model_info: typing.Dict, resolved_gpu_count: int
@@ -165,6 +192,13 @@ class BareMetalRunner:
             for key, value in self.additional_context["env_vars"].items():
                 env[key] = str(value)
                 print(f"  ENV: {key}=<set>")
+
+        if model_info.get("cred") and self.credentials:
+            cred_key = model_info["cred"]
+            if cred_key not in self.credentials:
+                raise RuntimeError(f"Credentials({cred_key}) not found")
+            for key_cred, value_cred in self.credentials[cred_key].items():
+                env[f"{cred_key}_{str(key_cred).upper()}"] = str(value_cred)
 
         env["MAD_MODEL_NAME"] = model_info["name"]
         env["JENKINS_BUILD_NUMBER"] = get_build_number()
@@ -574,10 +608,19 @@ class BareMetalRunner:
         built_models = manifest.get("built_models", {})
 
         if "context" in manifest and isinstance(manifest["context"], dict):
-            self.additional_context = {
-                **(self.additional_context or {}),
-                **manifest["context"],
-            }
+            # Build-time context fills keys the run did not set. A bare_metal
+            # block passed to this run wins over the copy saved in the manifest,
+            # so `madengine run -m manifest` can still change conda_bin,
+            # cleanup_env, or env_root.
+            incoming = manifest["context"]
+            current = dict(self.additional_context or {})
+            merged = {**current, **incoming}
+            if isinstance(current.get("bare_metal"), dict):
+                merged["bare_metal"] = {
+                    **(incoming.get("bare_metal") or {}),
+                    **current["bare_metal"],
+                }
+            self.additional_context = merged
             self.bm_config = self.additional_context.get("bare_metal", {}) or {}
             self.conda.bm_config = self.bm_config
 
