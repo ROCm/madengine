@@ -15,6 +15,8 @@ in the contract points that make that work:
    `%A_%a` log names, and the fail-fast rendezvous.
 4. `SpurDeployment.monitor()` reports completion from the per-rank markers and
    cannot hang when squeue is empty or unavailable.
+5. sglang-disagg builds its peer list from the IPs every rank published, since
+   each array task's SLURM_JOB_NODELIST holds only its own node.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
@@ -172,6 +174,18 @@ class TestRendezvousBlock:
         assert "_MAD_REND_TIMEOUT=42" in "\n".join(
             render_rendezvous_block("/shared/rendezvous", 42)
         )
+
+    def test_every_rank_publishes_its_ip(self):
+        """Peers need the full address list, not only rank 0's (sglang-disagg)."""
+        block = "\n".join(render_rendezvous_block("/shared/rendezvous", 600))
+        assert 'mv -f "$_MAD_REND_DIR/ip_rank${SLURM_PROCID}.tmp" "$_MAD_REND_DIR/ip_rank${SLURM_PROCID}"' in block
+        # Publishing must not depend on the rank: it precedes the rank-0 branch.
+        assert block.index("ip_rank${SLURM_PROCID}") < block.index('if [ "${SLURM_PROCID}" = "0" ]')
+
+    def test_exports_rendezvous_dir_to_the_task_script(self):
+        """The task script runs as a child bash and only sees exported variables."""
+        block = "\n".join(render_rendezvous_block("/shared/rendezvous", 600))
+        assert "export _MAD_REND_DIR _MAD_MY_IP" in block
 
 
 # ---------------------------------------------------------------------------
@@ -809,3 +823,123 @@ class TestRendezvousConfig:
         slurm = _make_deployment(tmp_path / "slurm", SlurmDeployment, "torchrun")
         assert spur._prepare_template_context(model(spur))["scheduler"] == "spur"
         assert slurm._prepare_template_context(model(slurm))["scheduler"] == "slurm"
+
+
+# ---------------------------------------------------------------------------
+# 12. sglang-disagg peer list
+
+
+def _run_bash(script: str, env: dict, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+class TestSpurSglangNodeIps:
+    """Each spur array task sees only its own node in SLURM_JOB_NODELIST, so
+    resolving it gives every rank a one-node SGLANG_NODE_IPS and the router
+    starts without its decode peers."""
+
+    def test_spur_does_not_resolve_the_per_task_nodelist(self, tmp_path):
+        script = _render_job_script(
+            _make_deployment(tmp_path, SpurDeployment, "sglang-disagg", nodes=3)
+        )
+        assert '_MAD_NODELIST="${SLURM_JOB_NODELIST}"' not in script
+        assert '_MAD_IP_FILE="$_MAD_REND_DIR/ip_rank$_r"' in script
+        assert 'export SGLANG_NODE_IPS="$SLURM_NODE_IPS"' in script
+
+    def test_stock_slurm_still_resolves_the_nodelist(self, tmp_path):
+        script = _render_job_script(
+            _make_deployment(tmp_path, SlurmDeployment, "sglang-disagg", nodes=3)
+        )
+        assert '_MAD_NODELIST="${SLURM_JOB_NODELIST}"' in script
+        assert "ip_rank" not in script
+
+    def test_peer_list_is_in_rank_order(self, tmp_path):
+        rend = tmp_path / "rend"
+        rend.mkdir()
+        for rank in (2, 0, 1):
+            (rend / f"ip_rank{rank}").write_text(f"10.0.0.{rank + 1}\n")
+        snippet = _make_deployment(
+            tmp_path, SpurDeployment, "sglang-disagg", nodes=3
+        )._sglang_node_ips_script(3)
+        result = _run_bash(
+            snippet + 'echo "$SLURM_NODE_IPS"\n',
+            env={"PATH": "/usr/bin:/bin", "_MAD_REND_DIR": str(rend), "SLURM_PROCID": "1"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "10.0.0.1,10.0.0.2,10.0.0.3"
+
+    def test_missing_rank_fails_within_the_timeout(self, tmp_path):
+        rend = tmp_path / "rend"
+        rend.mkdir()
+        (rend / "ip_rank0").write_text("10.0.0.1\n")
+        snippet = _make_deployment(
+            tmp_path, SpurDeployment, "sglang-disagg", nodes=2, rendezvous_timeout=1
+        )._sglang_node_ips_script(2)
+        result = _run_bash(
+            snippet + "echo reached\n",
+            env={"PATH": "/usr/bin:/bin", "_MAD_REND_DIR": str(rend), "SLURM_PROCID": "0"},
+        )
+        assert result.returncode == 1
+        assert "reached" not in result.stdout
+        assert "ip_rank1" in result.stderr
+
+    def test_unset_rendezvous_dir_fails(self, tmp_path):
+        snippet = _make_deployment(
+            tmp_path, SpurDeployment, "sglang-disagg", nodes=2
+        )._sglang_node_ips_script(2)
+        result = _run_bash(snippet + "echo reached\n", env={"PATH": "/usr/bin:/bin"})
+        assert result.returncode == 1
+        assert "reached" not in result.stdout
+        assert "_MAD_REND_DIR is not set" in result.stderr
+
+    def test_ranks_agree_on_the_full_list(self, tmp_path):
+        """Rendezvous in the outer script, peer list in a child bash, as in the
+        rendered job: every rank must end up with all three addresses."""
+        nodes = 3
+        deployment = _make_deployment(
+            tmp_path, SpurDeployment, "sglang-disagg", nodes=nodes, rendezvous_timeout=20
+        )
+        stub_bin = tmp_path / "bin"
+        stub_bin.mkdir()
+        fake_ip = stub_bin / "ip"
+        fake_ip.write_text(
+            '#!/bin/bash\necho "2: ens3    inet $FAKE_IP/24 brd 10.0.0.255 scope global ens3"\n'
+        )
+        fake_ip.chmod(0o755)
+        task_script = tmp_path / "task.sh"
+        task_script.write_text(
+            deployment._sglang_node_ips_script(nodes) + 'echo "IPS=$SLURM_NODE_IPS"\n'
+        )
+        outer = (
+            "\n".join(render_rendezvous_block(str(tmp_path / "rend"), 20))
+            + f'\nbash "{task_script}"\n'
+        )
+        procs = []
+        for rank in reversed(range(nodes)):
+            env = {
+                "PATH": f"{stub_bin}:/usr/bin:/bin",
+                "SLURM_PROCID": str(rank),
+                "SLURM_ARRAY_JOB_ID": "77",
+                "NCCL_SOCKET_IFNAME": "ens3",
+                "FAKE_IP": f"10.0.0.{rank + 1}",
+            }
+            procs.append(
+                subprocess.Popen(
+                    ["bash", "-c", outer],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+        for proc in procs:
+            out, err = proc.communicate(timeout=60)
+            assert proc.returncode == 0, err
+            assert "IPS=10.0.0.1,10.0.0.2,10.0.0.3" in out

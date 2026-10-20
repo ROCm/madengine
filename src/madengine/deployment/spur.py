@@ -48,7 +48,9 @@ def render_rendezvous_block(rendezvous_dir: str, timeout: int) -> List[str]:
     Rank 0 publishes its transport IP to ``<rendezvous_dir>/<array job
     id>/master_addr``; the other ranks poll for it. Requires ``SLURM_PROCID``
     to already hold the array task id; exports ``_MAD_REND_DIR`` (reused for
-    the per-rank ``done_rank`` markers) and ``MASTER_ADDR``.
+    the per-rank ``done_rank`` markers) and ``MASTER_ADDR``. Every rank also
+    publishes its own IP as ``ip_rank<N>`` for the peer list built by
+    :meth:`SpurDeployment._sglang_node_ips_script`.
 
     A peer that times out fails fast rather than continuing with an empty
     MASTER_ADDR (which fails obscurely inside the launcher): it prints a
@@ -68,6 +70,11 @@ def render_rendezvous_block(rendezvous_dir: str, timeout: int) -> List[str]:
         '_MAD_IFACE="${NCCL_SOCKET_IFNAME:-ens3}"; _MAD_IFACE="${_MAD_IFACE%%,*}"',
         '_MAD_MY_IP="$(ip -4 -o addr show "$_MAD_IFACE" 2>/dev/null | awk \'{print $4}\' | cut -d/ -f1 | head -n1)"',
         '[ -z "$_MAD_MY_IP" ] && _MAD_MY_IP="$(hostname -I | awk \'{print $1}\')"',
+        # The per-task nodelist holds only this node, so every rank publishes its
+        # address for launchers that need the whole peer list (sglang-disagg).
+        'echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/ip_rank${SLURM_PROCID}.tmp" && mv -f "$_MAD_REND_DIR/ip_rank${SLURM_PROCID}.tmp" "$_MAD_REND_DIR/ip_rank${SLURM_PROCID}"',
+        # Read again by the generated task script, which runs as a child bash.
+        'export _MAD_REND_DIR _MAD_MY_IP',
         'if [ "${SLURM_PROCID}" = "0" ]; then',
         '    echo "$_MAD_MY_IP" > "$_MAD_REND_DIR/master_addr"',
         '    export MASTER_ADDR="$_MAD_MY_IP"',
@@ -128,6 +135,35 @@ class SpurDeployment(SlurmDeployment):
             render_rendezvous_block(self.rendezvous_dir, self.rendezvous_timeout)
         )
         return context
+
+    def _sglang_node_ips_script(self, nnodes: int) -> str:
+        """Bash that sets SLURM_NODE_IPS from the IPs the ranks published.
+
+        Each array task's nodelist holds only its own node, so resolving it
+        would hand every container a one-node peer list. Waits for all
+        ``ip_rank<N>`` files within ``rendezvous_timeout`` and fails the task
+        when a rank never publishes.
+        """
+        timeout = int(self.rendezvous_timeout)
+        return f"""# Spur: SLURM_JOB_NODELIST holds only this array task's node, so the peer
+# list is assembled from the IPs every rank published to the rendezvous dir.
+if [ -z "${{_MAD_REND_DIR:-}}" ]; then
+    echo "[spur-rendezvous] ERROR: _MAD_REND_DIR is not set; cannot build the sglang peer list" >&2
+    exit 1
+fi
+SLURM_NODE_IPS=""
+_MAD_IPS_DEADLINE=$((SECONDS + {timeout}))
+for _r in $(seq 0 {nnodes - 1}); do
+    _MAD_IP_FILE="$_MAD_REND_DIR/ip_rank$_r"
+    while [ ! -s "$_MAD_IP_FILE" ] && [ "$SECONDS" -lt "$_MAD_IPS_DEADLINE" ]; do sleep 1; done
+    if [ ! -s "$_MAD_IP_FILE" ]; then
+        echo "[spur-rendezvous] ERROR: rank ${{SLURM_PROCID}} timed out after {timeout}s waiting for $_MAD_IP_FILE" >&2
+        echo "[spur-rendezvous] Rank $_r never started or died before publishing its address." >&2
+        exit 1
+    fi
+    SLURM_NODE_IPS="${{SLURM_NODE_IPS:+$SLURM_NODE_IPS,}}$(cat "$_MAD_IP_FILE")"
+done
+"""
 
     def _model_job_name(self) -> str:
         """The #SBATCH --job-name used by the template (madengine-<model name>)."""
