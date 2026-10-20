@@ -191,14 +191,17 @@ class TestContainerRunner:
         mock_sh.return_value = "hostname"
 
         # Mock log file with performance metrics
-        log_content = "Running test...\nperformance: 100.5 samples_per_second\nTest completed"
+        log_content = (
+            "Running test...\nperformance: 100.5 samples_per_second\nTest completed"
+        )
         mock_file.return_value.read.return_value = log_content
-        
+
         # Mock os.path.exists to return True for log file
         def exists_side_effect(path):
             if path.endswith(".live.log"):
                 return True
             return False
+
         mock_exists.side_effect = exists_side_effect
 
         model_info = {

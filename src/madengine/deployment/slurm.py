@@ -1060,11 +1060,13 @@ class SlurmDeployment(BaseDeployment):
         # captured and the completion marker is written. monitor() relies on the
         # marker to distinguish 'failed' from 'still running'; without this,
         # a failed model run would look like a hang.
-        script_lines.extend([
-            "",
-            "# Change to script directory",
-            f"cd {model_script_path.parent}",
-        ])
+        script_lines.extend(
+            [
+                "",
+                "# Change to script directory",
+                f"cd {model_script_path.parent}",
+            ]
+        )
 
         # Drop a results file an earlier run left behind. This wrapper bypasses
         # ContainerRunner, so the cleanup in run_container/_run_self_managed
@@ -1078,33 +1080,37 @@ class SlurmDeployment(BaseDeployment):
             manifest_copy = str(manifest_dir / multiple_results)
             if manifest_copy != multiple_results:
                 stale_paths.append(shlex.quote(manifest_copy))
-            script_lines.extend([
-                "",
-                "# Drop a results file an earlier run left behind",
-                f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
-            ])
+            script_lines.extend(
+                [
+                    "",
+                    "# Drop a results file an earlier run left behind",
+                    f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
+                ]
+            )
 
-        script_lines.extend([
-            "",
-            "# Run the model script directly on the host (with -e disabled so we",
-            "# can capture the exit code and write the completion marker even on failure).",
-            f"echo 'Executing: {_bash_invocation}'",
-            "set +e",
-            _bash_invocation,
-            "SCRIPT_EXIT_CODE=$?",
-            "set -e",
-            "",
-            "echo ''",
-            "echo 'Script completed.'",
-            "",
-            "# Write completion marker for madengine to detect (job-id namespaced)",
-            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker_template}",
-            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker_template}",
-            f"echo \"Completion marker written: {completion_marker_template}\"",
-            "",
-            "exit $SCRIPT_EXIT_CODE",
-        ])
-        
+        script_lines.extend(
+            [
+                "",
+                "# Run the model script directly on the host (with -e disabled so we",
+                "# can capture the exit code and write the completion marker even on failure).",
+                f"echo 'Executing: {_bash_invocation}'",
+                "set +e",
+                _bash_invocation,
+                "SCRIPT_EXIT_CODE=$?",
+                "set -e",
+                "",
+                "echo ''",
+                "echo 'Script completed.'",
+                "",
+                "# Write completion marker for madengine to detect (job-id namespaced)",
+                f'echo "exit_code=$SCRIPT_EXIT_CODE" > {completion_marker_template}',
+                f'echo "timestamp=$(date -Iseconds)" >> {completion_marker_template}',
+                f'echo "Completion marker written: {completion_marker_template}"',
+                "",
+                "exit $SCRIPT_EXIT_CODE",
+            ]
+        )
+
         # Store marker info for monitor() to reconstruct the path with deployment_id.
         self._completion_marker_dir = completion_marker_dir
         self._completion_marker_basename_template = (
@@ -1140,7 +1146,7 @@ class SlurmDeployment(BaseDeployment):
         additional_context = self.config.additional_context.copy()
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
-        
+
         # Same resolver as the self-managed peek in prepare(), so the path taken
         # and the env block cannot disagree. Validation replaces the old silent
         # rewrite to "docker": an unknown name fails here instead of running as
@@ -1154,7 +1160,9 @@ class SlurmDeployment(BaseDeployment):
         self.distributed_config["launcher"] = launcher_type
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
-        nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
+        nproc_per_node = self.distributed_config.get(
+            "nproc_per_node", resolved_gpus_per_node
+        )
         # ``port`` is the SLURM key. ``master_port`` is what Kubernetes and the
         # Hydra launcher groups write. Honor an explicit port, otherwise the
         # master_port alias, otherwise 29500.
@@ -1162,7 +1170,7 @@ class SlurmDeployment(BaseDeployment):
             master_port = self.distributed_config["port"]
         else:
             master_port = self.distributed_config.get("master_port", 29500)
-        
+
         # Apply multi-node profiling logic if tools are configured
         tools = additional_context.get("tools", [])
         if nnodes > 1 and tools:
@@ -1920,7 +1928,9 @@ export MASTER_PORT={master_port}
         self.console.print(f"  Job ID: {self.existing_job_id}")
         if run_id != self.existing_job_id:
             self.console.print(f"  Run ID: {run_id}")
-        self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
+        self.console.print(
+            f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes"
+        )
         self.console.print(f"  GPUs per node: {self.gpus_per_node}")
         self.console.print(f"  Script: {self.script_path}")
         self.console.print(f"\n[dim]Executing: bash {self.script_path}[/dim]\n")
@@ -1967,9 +1977,7 @@ export MASTER_PORT={master_port}
                 )
 
         except subprocess.TimeoutExpired:
-            self.console.print(
-                f"\n[red]✗ Script timed out after {timeout}s[/red]"
-            )
+            self.console.print(f"\n[red]✗ Script timed out after {timeout}s[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
                 deployment_id=run_id,
@@ -2859,7 +2867,9 @@ export MASTER_PORT={master_port}
         # so a script writing to $(pwd) lands here.
         scripts_rel = (model_info or {}).get("scripts", "")
         if scripts_rel and self.config.manifest_file:
-            script_path = Path(self.config.manifest_file).parent.absolute() / scripts_rel
+            script_path = (
+                Path(self.config.manifest_file).parent.absolute() / scripts_rel
+            )
             search_dirs.append(script_path.parent)
         search_dirs.extend(
             [
@@ -3001,8 +3011,13 @@ export MASTER_PORT={master_port}
                     )
                 else:
                     if cwd_perf.exists():
-                        with open(perf_csv_path, "r") as src, open(cwd_perf, "a") as dst:
-                            next(src, None)  # skip per-job header so cwd CSV stays single-headed
+                        with (
+                            open(perf_csv_path, "r") as src,
+                            open(cwd_perf, "a") as dst,
+                        ):
+                            next(
+                                src, None
+                            )  # skip per-job header so cwd CSV stays single-headed
                             for line in src:
                                 dst.write(line)
                     else:
@@ -3083,8 +3098,14 @@ export MASTER_PORT={master_port}
         best_name, best_size = None, None
         for key, info in (self.manifest.get("built_images") or {}).items():
             size = info.get("image_size_bytes")
-            if isinstance(size, int) and size > 0 and (best_size is None or size > best_size):
-                best_name = info.get("registry_image") or info.get("docker_image") or key
+            if (
+                isinstance(size, int)
+                and size > 0
+                and (best_size is None or size > best_size)
+            ):
+                best_name = (
+                    info.get("registry_image") or info.get("docker_image") or key
+                )
                 best_size = size
         return best_name, best_size
 

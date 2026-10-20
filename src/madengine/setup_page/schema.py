@@ -214,7 +214,7 @@ CONTEXT_SCHEMA: List[Dict[str, Any]] = [
         "section": "container",
         "type": "json",
         "default": "",
-        "description": 'Volume mounts {container_path: host_path}.',
+        "description": "Volume mounts {container_path: host_path}.",
         "deploy_scope": "local",
     },
     {

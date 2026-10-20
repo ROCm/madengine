@@ -85,7 +85,9 @@ class KubernetesTemplateContextMixin:
 
         # Load model scripts directory content (entire folder, not just one file)
         # This matches local execution which mounts the entire MODEL_DIR/scripts folder
-        model_script_path = model_info.get("scripts")  # e.g., "scripts/dummy/run_data_minio.sh"
+        model_script_path = model_info.get(
+            "scripts"
+        )  # e.g., "scripts/dummy/run_data_minio.sh"
         model_script_dir = None
         model_script_filename = None
         model_scripts_contents = {}  # Store all scripts in the directory
@@ -94,7 +96,7 @@ class KubernetesTemplateContextMixin:
             script_file = Path(model_script_path)
             # Extract directory and filename
             model_script_dir = str(script_file.parent)  # e.g., "scripts/dummy"
-            model_script_filename = script_file.name     # e.g., "run_data_minio.sh"
+            model_script_filename = script_file.name  # e.g., "run_data_minio.sh"
 
             # Bundle entire scripts/<model> directory recursively for reliability across
             # different model types (vllm, sglang, etc.) with varying file types and subdirs
@@ -123,9 +125,13 @@ class KubernetesTemplateContextMixin:
                 # Fallback: load single file if directory doesn't exist
                 with open(script_file, "r") as f:
                     model_scripts_contents[model_script_path] = f.read()
-                self.console.print(f"[dim]Loaded single script: {model_script_path}[/dim]")
+                self.console.print(
+                    f"[dim]Loaded single script: {model_script_path}[/dim]"
+                )
             else:
-                self.console.print(f"[yellow]Warning: Script not found: {model_script_path}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Script not found: {model_script_path}[/yellow]"
+                )
 
         # Load K8s tools configuration
         k8s_tools_config = self._load_k8s_tools()
@@ -185,9 +191,13 @@ class KubernetesTemplateContextMixin:
                 if k8s_script_path.exists():
                     with open(k8s_script_path, "r") as f:
                         data_provider_script_content = f.read()
-                    self.console.print(f"[dim]Loaded K8s data provider: {data_provider_script['script']}[/dim]")
+                    self.console.print(
+                        f"[dim]Loaded K8s data provider: {data_provider_script['script']}[/dim]"
+                    )
                 else:
-                    self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
+                    self.console.print(
+                        f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]"
+                    )
 
         # Runtime additional_context.distributed is the documented CLI shape
         # (madengine run --additional-context). launcher.type overrides it.
@@ -206,59 +216,101 @@ class KubernetesTemplateContextMixin:
         # Validate configuration
         if launcher_type == "torchrun":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring torchrun: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "deepspeed":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring DeepSpeed: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring DeepSpeed: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "torchtitan":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring TorchTitan: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring TorchTitan: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "vllm":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring vLLM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring vLLM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "sglang":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "megatron-lm":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring Megatron-LM: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
 
         elif launcher_type == "primus":
             if not isinstance(nnodes, int) or nnodes < 1:
-                raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nnodes: {nnodes}. Must be positive integer >= 1"
+                )
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
-                raise ValueError(f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1")
+                raise ValueError(
+                    f"Invalid nproc_per_node: {nproc_per_node}. Must be positive integer >= 1"
+                )
 
-            self.console.print(f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
+            self.console.print(
+                f"[cyan]Configuring Primus: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]"
+            )
             self._bundle_primus_k8s_examples_overlay(model_scripts_contents, model_name)
 
         # Determine if we need multi-node setup
@@ -268,32 +320,38 @@ class KubernetesTemplateContextMixin:
         if launcher_type == "torchrun":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node detected: Creating headless service for pod discovery[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node detected: Creating headless service for pod discovery[/dim]"
+                )
 
             # Generate torchrun launcher command
             launcher_command = self._generate_torchrun_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "deepspeed":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node DeepSpeed: Creating headless service for pod discovery[/dim]"
+                )
 
             model_script = model_info.get("scripts", "run.sh")
 
             # Check if script is a bash script - if so, execute it directly
             # as it will handle the launcher internally
-            if model_script.endswith('.sh'):
-                self.console.print(f"[dim]Detected bash script ({model_script}), will execute directly[/dim]")
+            if model_script.endswith(".sh"):
+                self.console.print(
+                    f"[dim]Detected bash script ({model_script}), will execute directly[/dim]"
+                )
                 launcher_command = self._generate_bash_script_command(
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
                 )
             else:
                 # Python script - use DeepSpeed launcher
@@ -301,26 +359,30 @@ class KubernetesTemplateContextMixin:
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
                 )
 
         elif launcher_type == "torchtitan":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node TorchTitan: Creating headless service for pod discovery[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node TorchTitan: Creating headless service for pod discovery[/dim]"
+                )
 
             # Generate TorchTitan launcher command
             launcher_command = self._generate_torchtitan_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "vllm":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node vLLM: Creating headless service for Ray cluster[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node vLLM: Creating headless service for Ray cluster[/dim]"
+                )
 
             # Generate vLLM launcher command (pass model args so run.sh gets --model_repo etc.)
             launcher_command = self._generate_vllm_command(
@@ -334,7 +396,9 @@ class KubernetesTemplateContextMixin:
         elif launcher_type == "sglang":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node SGLang: Creating headless service for Ray cluster[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node SGLang: Creating headless service for Ray cluster[/dim]"
+                )
 
             # Generate SGLang launcher command (pass model args so run.sh gets CLI args)
             launcher_command = self._generate_sglang_command(
@@ -354,34 +418,42 @@ class KubernetesTemplateContextMixin:
 
             # Always create headless service for disaggregated architecture
             create_headless_service = True
-            self.console.print(f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]")
-            self.console.print(f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]")
+            self.console.print(
+                f"[dim]SGLang Disaggregated: Creating headless service for {nnodes} pods[/dim]"
+            )
+            self.console.print(
+                f"[dim]  Architecture: 1 proxy + {max(1, (nnodes-1)*2//5)} prefill + {nnodes-1-max(1, (nnodes-1)*2//5)} decode[/dim]"
+            )
 
             # Generate SGLang Disaggregated launcher command
             launcher_command = self._generate_sglang_disagg_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "megatron-lm":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]"
+                )
 
             # Generate Megatron-LM launcher command
             launcher_command = self._generate_megatron_command(
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
             )
 
         elif launcher_type == "primus":
             if nnodes > 1:
                 create_headless_service = True
-                self.console.print(f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]")
+                self.console.print(
+                    f"[dim]Multi-node Primus: Creating headless service for pod discovery[/dim]"
+                )
 
             # Generate Primus launcher command (env-only: PRIMUS_CONFIG_PATH, PRIMUS_CLI_EXTRA)
             launcher_command = self._generate_primus_command(
@@ -392,7 +464,9 @@ class KubernetesTemplateContextMixin:
                 model_args=model_info.get("args", "") or "",
                 model_name=model_info.get("name", "") or "",
             )
-            primus_cfg = merged_primus_config(self.manifest, self.config.additional_context)
+            primus_cfg = merged_primus_config(
+                self.manifest, self.config.additional_context
+            )
             backend_hint = (primus_cfg.get("backend") or "").strip().lower()
             inferred_backend = infer_primus_backend_from_model_name(
                 model_info.get("name", "") or ""
@@ -423,12 +497,17 @@ class KubernetesTemplateContextMixin:
 
         # Add system environment collection (rocEnvTool) - same as local execution
         # This is controlled by generate_sys_env_details flag (default: True)
-        generate_sys_env_details = self.config.additional_context.get("generate_sys_env_details", True)
+        generate_sys_env_details = self.config.additional_context.get(
+            "generate_sys_env_details", True
+        )
         if generate_sys_env_details:
             rocenv_mode = self.config.additional_context.get("rocenv_mode", "lite")
-            guest_os = str(
-                self.config.additional_context.get("guest_os") or DEFAULT_GUEST_OS
-            ).strip().upper() or DEFAULT_GUEST_OS
+            guest_os = (
+                str(self.config.additional_context.get("guest_os") or DEFAULT_GUEST_OS)
+                .strip()
+                .upper()
+                or DEFAULT_GUEST_OS
+            )
             self.gather_system_env_details(
                 pre_scripts,
                 model_info["name"],
@@ -514,9 +593,7 @@ class KubernetesTemplateContextMixin:
             # Job metadata
             "job_name": self.job_name,
             "job_label": self.job_label,
-            "main_container_name": getattr(
-                self, "main_container_name", None
-            )
+            "main_container_name": getattr(self, "main_container_name", None)
             or sanitize_k8s_container_name(self.job_name),
             "namespace": self.namespace,
             "model_name": model_name,
@@ -561,7 +638,9 @@ class KubernetesTemplateContextMixin:
             "host_ipc": nnodes > 1,  # Enable for multi-node
             "subdomain": subdomain_val,
             # Execution
-            "gpu_visibility": ",".join(str(i) for i in range(gpu_count)),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
+            "gpu_visibility": ",".join(
+                str(i) for i in range(gpu_count)
+            ),  # e.g., "0" for 1 GPU, "0,1" for 2 GPUs
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
@@ -582,7 +661,7 @@ class KubernetesTemplateContextMixin:
             "secret_env": [],
             # Volumes
             "results_pvc": f"{self.job_name}-results",  # Shared results PVC when layout is shared
-            "pvc_name": f"{self.job_name}-results",      # PVC name for template
+            "pvc_name": f"{self.job_name}-results",  # PVC name for template
             "results_per_pod": self._results_use_per_pod(nnodes),
             "results_storage_class": self._k8s_local_results_storage_class(),
             "results_storage_size": self.k8s_config.get("results_storage_size", "10Gi"),
@@ -599,9 +678,13 @@ class KubernetesTemplateContextMixin:
             # Tools configuration - from manifest.context or additional_context
             "tools_config": self._get_tools_config(),
             # Tool command chains (pre-built for template)
-            "launcher_tool_chain": self._build_tool_command_chain(
-                self._get_tools_config(), "bash /tmp/run_launcher.sh"
-            ) if launcher_command else None,
+            "launcher_tool_chain": (
+                self._build_tool_command_chain(
+                    self._get_tools_config(), "bash /tmp/run_launcher.sh"
+                )
+                if launcher_command
+                else None
+            ),
             "direct_script_tool_chain": self._build_tool_command_chain(
                 self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
             ),
@@ -638,7 +721,7 @@ class KubernetesTemplateContextMixin:
             List of tool configurations (enriched with cmd from tools.json)
         """
         # Cache the result to avoid repeated expensive checks and duplicate warnings
-        if hasattr(self, '_cached_tools_config'):
+        if hasattr(self, "_cached_tools_config"):
             return self._cached_tools_config
 
         # Check runtime additional_context first (allows runtime override)
@@ -669,9 +752,7 @@ class KubernetesTemplateContextMixin:
                     pass  # Skip debug messages in console
 
             profiling_config = configure_multi_node_profiling(
-                nnodes=nnodes,
-                tools_config=tools,
-                logger=ConsoleLogger(self.console)
+                nnodes=nnodes, tools_config=tools, logger=ConsoleLogger(self.console)
             )
 
             if profiling_config["enabled"]:
@@ -687,7 +768,9 @@ class KubernetesTemplateContextMixin:
         self._cached_tools_config = result
         return result
 
-    def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
+    def _build_tool_command_chain(
+        self, tools_config: List[Dict], base_command: str
+    ) -> str:
         """
         Build a command chain from multiple tools, wrapping the base command.
 
@@ -744,9 +827,13 @@ class KubernetesTemplateContextMixin:
             return tools
 
         # Load tools.json
-        tools_json_path = Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        tools_json_path = (
+            Path(__file__).parent.parent / "scripts" / "common" / "tools.json"
+        )
         if not tools_json_path.exists():
-            self.console.print(f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: tools.json not found at {tools_json_path}[/yellow]"
+            )
             return tools
 
         with open(tools_json_path, "r") as f:
@@ -761,7 +848,9 @@ class KubernetesTemplateContextMixin:
 
             # Get tool definition from tools.json
             if tool_name not in tools_definitions.get("tools", {}):
-                self.console.print(f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Tool '{tool_name}' not found in tools.json[/yellow]"
+                )
                 enriched_tools.append(tool)
                 continue
 
@@ -819,7 +908,11 @@ class KubernetesTemplateContextMixin:
         if data_config:
             if "env_vars" in data_config:
                 # Exclude MAD_DATAHOME from data provider's env vars (we set it explicitly below for K8s)
-                data_provider_env = {k: v for k, v in data_config["env_vars"].items() if k != "MAD_DATAHOME"}
+                data_provider_env = {
+                    k: v
+                    for k, v in data_config["env_vars"].items()
+                    if k != "MAD_DATAHOME"
+                }
                 env_vars.update(data_provider_env)
             # Always set MAD_DATAHOME for K8s (PVC mount point /data, not /data_dlm_0)
             if "datahome" in data_config:
@@ -834,7 +927,9 @@ class KubernetesTemplateContextMixin:
         for tool in tools_config:
             if "env_vars" in tool:
                 # Skip OUTPUT_FILE as it's set inline in command chain to avoid conflicts
-                tool_env_vars = {k: v for k, v in tool["env_vars"].items() if k != "OUTPUT_FILE"}
+                tool_env_vars = {
+                    k: v for k, v in tool["env_vars"].items() if k != "OUTPUT_FILE"
+                }
                 env_vars.update(tool_env_vars)
 
         return env_vars
@@ -861,20 +956,25 @@ class KubernetesTemplateContextMixin:
                 if os.path.exists(data_json_file):
                     # Import Context and create minimal instance
                     # Data provider needs this to function
-                    self.context_for_data = type('obj', (object,), {
-                        'ctx': {},
-                        'sh': lambda cmd: os.popen(cmd).read().strip()
-                    })()
+                    self.context_for_data = type(
+                        "obj",
+                        (object,),
+                        {"ctx": {}, "sh": lambda cmd: os.popen(cmd).read().strip()},
+                    )()
                     self.data = Data(
                         self.context_for_data,
                         filename=data_json_file,
-                        force_mirrorlocal=False
+                        force_mirrorlocal=False,
                     )
                 else:
-                    self.console.print("[yellow]Warning: data.json not found, data provider unavailable[/yellow]")
+                    self.console.print(
+                        "[yellow]Warning: data.json not found, data provider unavailable[/yellow]"
+                    )
                     return None
             except Exception as e:
-                self.console.print(f"[yellow]Warning: Could not initialize data provider: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Could not initialize data provider: {e}[/yellow]"
+                )
                 return None
 
         try:
@@ -884,12 +984,16 @@ class KubernetesTemplateContextMixin:
             # Find data provider for this data
             dp = self.data.find_dataprovider(model_info["data"])
             if not dp:
-                self.console.print(f"[yellow]Warning: Data provider not found for {model_info['data']}[/yellow]")
+                self.console.print(
+                    f"[yellow]Warning: Data provider not found for {model_info['data']}[/yellow]"
+                )
                 return None
 
             # Get provider type and source path
-            provider_type = dp.provider_type if hasattr(dp, 'provider_type') else "local"
-            source_url = dp.config.get("path", "") if hasattr(dp, 'config') else ""
+            provider_type = (
+                dp.provider_type if hasattr(dp, "provider_type") else "local"
+            )
+            source_url = dp.config.get("path", "") if hasattr(dp, "config") else ""
 
             # K8s best practice: Always use /data (PVC mount point)
             # PVC provides persistent, shared storage across all pods/nodes
@@ -897,7 +1001,9 @@ class KubernetesTemplateContextMixin:
             # FORCE datahome to /data for K8s (override data provider's default /data_dlm_0)
 
             # Filter out MAD_DATAHOME from data provider env vars (will be set explicitly below)
-            filtered_data_env = {k: v for k, v in (data_env or {}).items() if k != "MAD_DATAHOME"}
+            filtered_data_env = {
+                k: v for k, v in (data_env or {}).items() if k != "MAD_DATAHOME"
+            }
             # Add MAD_DATAHOME with correct K8s value
             filtered_data_env["MAD_DATAHOME"] = "/data"
 
@@ -909,5 +1015,7 @@ class KubernetesTemplateContextMixin:
                 "datahome": "/data",  # Always use PVC mount point for K8s
             }
         except Exception as e:
-            self.console.print(f"[yellow]Warning: Could not prepare data config: {e}[/yellow]")
+            self.console.print(
+                f"[yellow]Warning: Could not prepare data config: {e}[/yellow]"
+            )
             return None

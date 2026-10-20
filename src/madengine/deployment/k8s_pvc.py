@@ -63,9 +63,7 @@ def provisioner_supports_rwx(provisioner: Optional[str]) -> bool:
     return False
 
 
-def resolve_results_layout(
-    layout: Optional[str], nnodes: int, rwx_usable: bool
-) -> str:
+def resolve_results_layout(layout: Optional[str], nnodes: int, rwx_usable: bool) -> str:
     """Choose how multi-pod results are stored.
 
     ``shared`` is one ReadWriteMany claim. ``per_pod`` is a ReadWriteOnce

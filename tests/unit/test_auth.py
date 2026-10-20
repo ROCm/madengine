@@ -266,7 +266,9 @@ class TestLoginToRegistryWithAmbientAuth:
         console, rich_console = self._mocks()
         console.sh.side_effect = RuntimeError("unauthorized")
         credentials = {"dockerhub": {"username": "user", "password": "pass"}}
-        login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
+        login_to_registry(
+            "docker.io", credentials, console, rich_console, raise_on_failure=True
+        )
         console.sh.assert_called_once()
 
     @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
@@ -312,7 +314,9 @@ class TestDockerCliUsername:
         mock_check.return_value = "Server Version: 27.3.1\n Username: rocm\n"
         assert docker_cli_username() == "rocm"
 
-    @patch("madengine.core.auth.subprocess.check_output", side_effect=OSError("no docker"))
+    @patch(
+        "madengine.core.auth.subprocess.check_output", side_effect=OSError("no docker")
+    )
     def test_missing_docker_returns_none(self, _mock_check):
         from madengine.core.auth import docker_cli_username
 

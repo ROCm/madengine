@@ -35,7 +35,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -e .
+        run: |
+          pip install -e .
+          # Pin the formatters. `black>=21` otherwise floats to a newer
+          # release and fails --check on code the previous release accepted.
+          pip install 'black==26.5.1' 'isort==8.0.1' 'flake8==7.3.0'
       - name: Check formatting (black)
         run: black --check src/ tests/
       - name: Check imports (isort)

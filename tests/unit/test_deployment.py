@@ -121,11 +121,14 @@ class TestValidateLauncher:
     def test_sglang_disagg_alias(self):
         assert validate_launcher("sglang_disagg", source="test") == "sglang-disagg"
 
-    @pytest.mark.parametrize("value,canonical", [
-        ("Torchrun", "torchrun"),
-        ("  torchrun  ", "torchrun"),
-        ("MEGATRON-LM", "megatron-lm"),
-    ])
+    @pytest.mark.parametrize(
+        "value,canonical",
+        [
+            ("Torchrun", "torchrun"),
+            ("  torchrun  ", "torchrun"),
+            ("MEGATRON-LM", "megatron-lm"),
+        ],
+    )
     def test_case_and_whitespace_are_normalized(self, value, canonical):
         assert validate_launcher(value, source="test") == canonical
 
@@ -137,10 +140,13 @@ class TestValidateLauncher:
             validate_launcher(launcher, source="additional_context")
         assert "omit the launcher key" in " ".join(exc_info.value.suggestions)
 
-    @pytest.mark.parametrize("bad,canonical", [
-        ("megatron", "megatron-lm"),
-        ("megatron_lm", "megatron-lm"),
-    ])
+    @pytest.mark.parametrize(
+        "bad,canonical",
+        [
+            ("megatron", "megatron-lm"),
+            ("megatron_lm", "megatron-lm"),
+        ],
+    )
     def test_rejected_spellings_name_the_canonical_one(self, bad, canonical):
         """The did-you-mean is the contract: it fixes the user's config."""
         with pytest.raises(ConfigurationError) as exc_info:
@@ -170,7 +176,9 @@ class TestIsPerReplicaLauncher:
         endpoint — scaling the proxy's number by nnodes would inflate it."""
         assert is_per_replica_launcher("sglang-disagg") is False
 
-    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "docker", None, ""])
+    @pytest.mark.parametrize(
+        "launcher", ["torchrun", "megatron-lm", "docker", None, ""]
+    )
     def test_everything_else_aggregates_normally(self, launcher):
         assert is_per_replica_launcher(launcher) is False
 

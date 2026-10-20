@@ -153,9 +153,7 @@ def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
     return _LAUNCHER_ALIASES.get(launcher, launcher)
 
 
-def launcher_for_reporting(
-    launcher_type: Optional[str], deployment_type: str
-) -> str:
+def launcher_for_reporting(launcher_type: Optional[str], deployment_type: str) -> str:
     """Return the launcher to record in perf results. Never raises.
 
     Values reaching here have already passed validate_launcher at the config

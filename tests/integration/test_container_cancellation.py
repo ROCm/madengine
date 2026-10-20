@@ -88,13 +88,21 @@ class TestDeadManSwitch:
         """Start a watchdog container bind-mounting workspace."""
         code, out = lifecycle.docker(
             [
-                "run", "-t", "-d",
-                "--label", f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
-                "--label", f"{lifecycle.LABEL_OWNER_PID}={os.getpid()}",
-                "-v", f"{workspace}:/myworkspace/",
-                "--name", name,
+                "run",
+                "-t",
+                "-d",
+                "--label",
+                f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
+                "--label",
+                f"{lifecycle.LABEL_OWNER_PID}={os.getpid()}",
+                "-v",
+                f"{workspace}:/myworkspace/",
+                "--name",
+                name,
                 TEST_IMAGE,
-                "sh", "-c", lifecycle.watchdog_script(),
+                "sh",
+                "-c",
+                lifecycle.watchdog_script(),
             ],
             60,
         )
@@ -133,15 +141,13 @@ class TestDeadManSwitch:
         the container can save us -- and on a cancelled CI job the runner
         eventually does exactly this to the whole process tree.
         """
-        script = textwrap.dedent(
-            f"""
+        script = textwrap.dedent(f"""
             import time
             from madengine.core import lifecycle
             lifecycle.start_heartbeat({str(tmp_path / lifecycle.HEARTBEAT_FILENAME)!r})
             print("ready", flush=True)
             time.sleep(600)
-            """
-        )
+            """)
         proc = subprocess.Popen(
             [sys.executable, "-c", script],
             stdout=subprocess.PIPE,
@@ -208,12 +214,18 @@ class TestCleanupCommand:
     def test_removes_a_labelled_container_whose_owner_is_gone(self, container_name):
         code, out = lifecycle.docker(
             [
-                "run", "-d",
-                "--label", f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
+                "run",
+                "-d",
+                "--label",
+                f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
                 # A pid that cannot be running: cleanup must treat it as orphaned.
-                "--label", f"{lifecycle.LABEL_OWNER_PID}=999999999",
-                "--name", container_name,
-                TEST_IMAGE, "sleep", "600",
+                "--label",
+                f"{lifecycle.LABEL_OWNER_PID}=999999999",
+                "--name",
+                container_name,
+                TEST_IMAGE,
+                "sleep",
+                "600",
             ],
             60,
         )
@@ -221,8 +233,10 @@ class TestCleanupCommand:
 
         proc = subprocess.run(
             [sys.executable, "-m", "madengine.cli.app", "cleanup"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            timeout=120,
         )
         assert proc.returncode == 0, proc.stdout
         assert lifecycle.container_state(container_name) == ""
@@ -230,11 +244,17 @@ class TestCleanupCommand:
     def test_leaves_a_container_owned_by_a_live_process(self, container_name):
         code, out = lifecycle.docker(
             [
-                "run", "-d",
-                "--label", f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
-                "--label", f"{lifecycle.LABEL_OWNER_PID}={os.getpid()}",
-                "--name", container_name,
-                TEST_IMAGE, "sleep", "600",
+                "run",
+                "-d",
+                "--label",
+                f"{lifecycle.LABEL_SESSION}={lifecycle.session_id()}",
+                "--label",
+                f"{lifecycle.LABEL_OWNER_PID}={os.getpid()}",
+                "--name",
+                container_name,
+                TEST_IMAGE,
+                "sleep",
+                "600",
             ],
             60,
         )
@@ -242,7 +262,9 @@ class TestCleanupCommand:
 
         subprocess.run(
             [sys.executable, "-m", "madengine.cli.app", "cleanup"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            timeout=120,
         )
         assert lifecycle.container_state(container_name) == "running"

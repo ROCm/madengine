@@ -48,15 +48,18 @@ class TestSlurmMultiRegistration:
     def test_slurm_multi_in_valid_launchers(self):
         assert "slurm_multi" in VALID_LAUNCHERS
 
-    @pytest.mark.parametrize("launcher,expected", [
-        ("slurm_multi", True),
-        ("slurm-multi", True),   # documented hyphen alias (docs/launchers.md)
-        ("torchrun", False),
-        ("vllm", False),
-        ("sglang-disagg", False),
-        ("", False),
-        (None, False),
-    ])
+    @pytest.mark.parametrize(
+        "launcher,expected",
+        [
+            ("slurm_multi", True),
+            ("slurm-multi", True),  # documented hyphen alias (docs/launchers.md)
+            ("torchrun", False),
+            ("vllm", False),
+            ("sglang-disagg", False),
+            ("", False),
+            (None, False),
+        ],
+    )
     def test_is_self_managed_launcher(self, launcher, expected):
         """is_self_managed_launcher must accept both aliases and reject all other launchers."""
         assert is_self_managed_launcher(launcher) is expected
@@ -64,6 +67,7 @@ class TestSlurmMultiRegistration:
 
 # ---------------------------------------------------------------------------
 # 2. Hyphen alias normalization
+
 
 class TestNormalizeSlurmMultiAliases:
     """slurm-multi (hyphen) normalizes to slurm_multi."""
@@ -96,8 +100,13 @@ PR186_MODEL_ENTRY = {
     "training_precision": "",
     "multiple_results": "perf_Qwen3-32B.csv",
     "tags": [
-        "pyt", "sglang", "sglang_disagg", "inference",
-        "qwen3", "disaggregated", "short",
+        "pyt",
+        "sglang",
+        "sglang_disagg",
+        "inference",
+        "qwen3",
+        "disaggregated",
+        "short",
     ],
     "timeout": -1,
     "args": "--model_name Qwen3-32B --model_path /shared_inference/models_blog/Qwen3-32B --tp_size 8",
@@ -149,7 +158,9 @@ class TestSlurmMultiPrepareScript:
         script_rel = PR186_MODEL_ENTRY["scripts"]
         script_abs = tmp_path / script_rel
         script_abs.parent.mkdir(parents=True, exist_ok=True)
-        script_abs.write_text("#!/bin/bash\n# placeholder slurm_multi model script for unit test\n")
+        script_abs.write_text(
+            "#!/bin/bash\n# placeholder slurm_multi model script for unit test\n"
+        )
 
         # Use the model image-name as the manifest key (matches manifest convention).
         image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
@@ -183,7 +194,9 @@ class TestSlurmMultiPrepareScript:
             "deploy": "slurm",
             "gpu_vendor": "AMD",
             "guest_os": "UBUNTU",
-            "slurm": dict(PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")),
+            "slurm": dict(
+                PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")
+            ),
             "distributed": PR186_MODEL_ENTRY["distributed"],
         }
 
@@ -212,7 +225,9 @@ class TestSlurmMultiPrepareScript:
             # in _prepare_slurm_multi_script; values match in this fixture so the
             # assertion still holds, but the source of truth is the model card.
             expected = f"export {key}={shlex.quote(str(value))}"
-            assert expected in script_text, f"missing export for {key!r}: expected {expected!r}"
+            assert (
+                expected in script_text
+            ), f"missing export for {key!r}: expected {expected!r}"
 
     def test_wrapper_is_slurm_multi_flag_set(self, slurm_deployment):
         """`_is_slurm_multi` flag must be set so deploy() can choose the bash branch."""
@@ -244,21 +259,39 @@ class TestSlurmMultiPrepareScript:
         # surrounding set +e / SCRIPT_EXIT_CODE / set -e ordering.
         lines = script_text.splitlines()
         bash_line_idx = next(
-            (i for i, line in enumerate(lines) if line.strip().startswith("bash run_xPyD_models.slurm")),
+            (
+                i
+                for i, line in enumerate(lines)
+                if line.strip().startswith("bash run_xPyD_models.slurm")
+            ),
             None,
         )
-        assert bash_line_idx is not None, "wrapper must invoke the model script via bash"
+        assert (
+            bash_line_idx is not None
+        ), "wrapper must invoke the model script via bash"
 
         # The two preceding non-empty/non-comment lines must include `set +e`
-        prelude = [l.strip() for l in lines[max(0, bash_line_idx - 5):bash_line_idx] if l.strip() and not l.strip().startswith("#")]
-        assert "set +e" in prelude, (
-            f"`set +e` must appear immediately before bash invocation, got prelude {prelude!r}"
-        )
+        prelude = [
+            l.strip()
+            for l in lines[max(0, bash_line_idx - 5) : bash_line_idx]
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        assert (
+            "set +e" in prelude
+        ), f"`set +e` must appear immediately before bash invocation, got prelude {prelude!r}"
 
         # SCRIPT_EXIT_CODE must be captured immediately after, and -e re-enabled before exit
-        suffix = [l.strip() for l in lines[bash_line_idx + 1:bash_line_idx + 5] if l.strip() and not l.strip().startswith("#")]
-        assert suffix[0] == "SCRIPT_EXIT_CODE=$?", f"first non-comment line after bash must capture $?, got {suffix!r}"
-        assert "set -e" in suffix, f"`set -e` must be re-enabled after capture, got {suffix!r}"
+        suffix = [
+            l.strip()
+            for l in lines[bash_line_idx + 1 : bash_line_idx + 5]
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        assert (
+            suffix[0] == "SCRIPT_EXIT_CODE=$?"
+        ), f"first non-comment line after bash must capture $?, got {suffix!r}"
+        assert (
+            "set -e" in suffix
+        ), f"`set -e` must be re-enabled after capture, got {suffix!r}"
 
         # And the final exit must use the captured exit code
         assert "exit $SCRIPT_EXIT_CODE" in script_text
@@ -369,6 +402,7 @@ class TestSlurmMultiDropsStaleResults:
 # ---------------------------------------------------------------------------
 # 4. _execute_with_prebuilt_image manifest-shape contract (Copilot C2 + C3)
 
+
 class TestPrebuiltImageManifestShape:
     """Regression tests for the manifest produced by `_execute_with_prebuilt_image`.
 
@@ -425,7 +459,10 @@ class TestPrebuiltImageManifestShape:
                 "args": "--model_b",
                 "slurm": common_slurm,
                 # Differing nested-dict to trigger the warning + dedup path
-                "distributed": {**common_distributed, "sglang_disagg": {"prefill_nodes": 2, "decode_nodes": 1}},
+                "distributed": {
+                    **common_distributed,
+                    "sglang_disagg": {"prefill_nodes": 2, "decode_nodes": 1},
+                },
                 "env_vars": {"MODEL_NAME": "Fake-B"},
             },
         ]
@@ -436,6 +473,7 @@ class TestPrebuiltImageManifestShape:
         etc.). We populate only the attributes `_execute_with_prebuilt_image`
         and `_save_deployment_config` actually read."""
         from madengine.orchestration.build_orchestrator import BuildOrchestrator
+
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
         # Required attributes
         orch.args = MagicMock()
@@ -448,7 +486,9 @@ class TestPrebuiltImageManifestShape:
         orch.credentials = {}
         return orch
 
-    def test_built_images_and_models_share_keys(self, tmp_path, fake_models_two_sglang_disagg):
+    def test_built_images_and_models_share_keys(
+        self, tmp_path, fake_models_two_sglang_disagg
+    ):
         """Copilot C2: built_images and built_models must use the same keys
         (model_name) so ContainerRunner.run_models_from_manifest() finds
         each model_info via `built_models.get(image_name, {})`."""
@@ -456,24 +496,31 @@ class TestPrebuiltImageManifestShape:
         manifest_path = tmp_path / "build_manifest.json"
         use_image = "rocm/pytorch-private:fake-tag"
 
-        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+        with patch(
+            "madengine.orchestration.build_orchestrator.DiscoverModels"
+        ) as mock_dm:
             mock_dm.return_value.run.return_value = fake_models_two_sglang_disagg
             # _save_deployment_config writes a sidecar file we don't care about;
             # patch it to a no-op so we don't depend on its filesystem behavior.
             with patch.object(orch, "_save_deployment_config", return_value=None):
-                orch._execute_with_prebuilt_image(use_image=use_image, manifest_output=str(manifest_path))
+                orch._execute_with_prebuilt_image(
+                    use_image=use_image, manifest_output=str(manifest_path)
+                )
 
         manifest = json.loads(manifest_path.read_text())
 
-        assert set(manifest["built_images"].keys()) == set(manifest["built_models"].keys()), (
-            "built_images and built_models must share the same key set"
-        )
+        assert set(manifest["built_images"].keys()) == set(
+            manifest["built_models"].keys()
+        ), "built_images and built_models must share the same key set"
         assert set(manifest["built_models"].keys()) == {"pyt_fake_a", "pyt_fake_b"}
 
         for model_name in ("pyt_fake_a", "pyt_fake_b"):
             assert manifest["built_images"][model_name]["docker_image"] == use_image
             assert manifest["built_images"][model_name]["prebuilt"] is True
-            assert manifest["built_models"][model_name]["env_vars"]["DOCKER_IMAGE_NAME"] == use_image
+            assert (
+                manifest["built_models"][model_name]["env_vars"]["DOCKER_IMAGE_NAME"]
+                == use_image
+            )
 
     def test_multi_model_nested_dict_distributed_does_not_raise(
         self, tmp_path, fake_models_two_sglang_disagg
@@ -486,7 +533,9 @@ class TestPrebuiltImageManifestShape:
         orch = self._build_orchestrator_stub(tmp_path)
         manifest_path = tmp_path / "build_manifest.json"
 
-        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+        with patch(
+            "madengine.orchestration.build_orchestrator.DiscoverModels"
+        ) as mock_dm:
             mock_dm.return_value.run.return_value = fake_models_two_sglang_disagg
             with patch.object(orch, "_save_deployment_config", return_value=None):
                 # Must not raise TypeError
@@ -502,6 +551,7 @@ class TestPrebuiltImageManifestShape:
 
 # ---------------------------------------------------------------------------
 # 5. xP/yD skip-if-set: model card wins over distributed.sglang_disagg
+
 
 class TestXpYdSkipIfSet:
     """xP/yD in model card env_vars must not be overwritten by distributed.sglang_disagg."""
@@ -523,11 +573,17 @@ class TestXpYdSkipIfSet:
 
         image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
         manifest = {
-            "built_images": {image_key: {"image_name": image_key, "docker_image": image_key}},
+            "built_images": {
+                image_key: {"image_name": image_key, "docker_image": image_key}
+            },
             "built_models": {image_key: model_info},
             "context": {
-                "docker_env_vars": {}, "docker_mounts": {}, "docker_build_arg": {},
-                "gpu_vendor": "AMD", "guest_os": "UBUNTU", "docker_gpus": "all",
+                "docker_env_vars": {},
+                "docker_mounts": {},
+                "docker_build_arg": {},
+                "gpu_vendor": "AMD",
+                "guest_os": "UBUNTU",
+                "docker_gpus": "all",
             },
         }
         manifest_path = tmp_path / "build_manifest.json"
@@ -537,11 +593,16 @@ class TestXpYdSkipIfSet:
             "deploy": "slurm",
             "gpu_vendor": "AMD",
             "guest_os": "UBUNTU",
-            "slurm": dict(PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")),
+            "slurm": dict(
+                PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")
+            ),
             "distributed": model_info["distributed"],
         }
-        cfg = DeploymentConfig(target="slurm", manifest_file=str(manifest_path),
-                               additional_context=additional_context)
+        cfg = DeploymentConfig(
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context=additional_context,
+        )
         return SlurmDeployment(cfg)
 
     def test_model_card_xp_yd_wins(self, slurm_deployment):
@@ -549,14 +610,23 @@ class TestXpYdSkipIfSet:
         slurm_deployment.prepare()
         script_text = Path(slurm_deployment.script_path).read_text()
 
-        assert f"export xP={shlex.quote('2')}" in script_text, "model card xP=2 must not be overwritten"
-        assert f"export yD={shlex.quote('3')}" in script_text, "model card yD=3 must not be overwritten"
-        assert f"export xP={shlex.quote('1')}" not in script_text, "distributed.sglang_disagg xP=1 must not win"
-        assert f"export yD={shlex.quote('1')}" not in script_text, "distributed.sglang_disagg yD=1 must not win"
+        assert (
+            f"export xP={shlex.quote('2')}" in script_text
+        ), "model card xP=2 must not be overwritten"
+        assert (
+            f"export yD={shlex.quote('3')}" in script_text
+        ), "model card yD=3 must not be overwritten"
+        assert (
+            f"export xP={shlex.quote('1')}" not in script_text
+        ), "distributed.sglang_disagg xP=1 must not win"
+        assert (
+            f"export yD={shlex.quote('1')}" not in script_text
+        ), "distributed.sglang_disagg yD=1 must not win"
 
 
 # ---------------------------------------------------------------------------
 # 6. _execute_build_on_compute manifest-shape contract (multi-model parity)
+
 
 class TestBuildOnComputeManifestShape:
     """_execute_build_on_compute must produce the same key contract as _execute_with_prebuilt_image.
@@ -567,6 +637,7 @@ class TestBuildOnComputeManifestShape:
 
     def _build_orchestrator_stub(self, tmp_path: Path):
         from madengine.orchestration.build_orchestrator import BuildOrchestrator
+
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
         orch.args = MagicMock()
         orch.console = MagicMock()
@@ -612,10 +683,13 @@ class TestBuildOnComputeManifestShape:
         orch = self._build_orchestrator_stub(tmp_path)
 
         import os
+
         orig_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+            with patch(
+                "madengine.orchestration.build_orchestrator.DiscoverModels"
+            ) as mock_dm:
                 mock_dm.return_value.run.return_value = fake_models
                 with patch("subprocess.run") as mock_run:
                     mock_run.return_value = MagicMock(returncode=0)
@@ -631,9 +705,9 @@ class TestBuildOnComputeManifestShape:
             os.chdir(orig_cwd)
 
         manifest = json.loads(manifest_path.read_text())
-        assert set(manifest["built_images"].keys()) == set(manifest["built_models"].keys()), (
-            "built_images and built_models must share the same key set"
-        )
+        assert set(manifest["built_images"].keys()) == set(
+            manifest["built_models"].keys()
+        ), "built_images and built_models must share the same key set"
         assert set(manifest["built_models"].keys()) == {"model_a", "model_b"}
         for mn in ("model_a", "model_b"):
             assert manifest["built_models"][mn]["built_on_compute"] is True
@@ -690,10 +764,16 @@ class TestSglangDisaggDefaultSplit:
             nnodes=2, nproc_per_node=8, master_port=12345
         )
         xP, yD, total = self._parse_split(script)
-        assert (xP, yD, total) == (1, 1, 2), f"expected xP=1,yD=1,total=2, got {(xP, yD, total)}"
+        assert (xP, yD, total) == (
+            1,
+            1,
+            2,
+        ), f"expected xP=1,yD=1,total=2, got {(xP, yD, total)}"
 
     @pytest.mark.parametrize("nnodes", [2, 3, 4, 5, 6, 8])
-    def test_default_split_always_has_prefill_and_decode(self, deployment_factory, nnodes):
+    def test_default_split_always_has_prefill_and_decode(
+        self, deployment_factory, nnodes
+    ):
         """Every supported nnodes must yield at least one prefill and one decode node."""
         script = deployment_factory._generate_sglang_disagg_command(
             nnodes=nnodes, nproc_per_node=8, master_port=12345
@@ -864,18 +944,21 @@ class TestResolveLauncherFromSources:
     def test_default_when_neither_declared(self):
         assert resolve_launcher_from_sources(None, None) == "torchrun"
 
-    @pytest.mark.parametrize("deployment,card,expected", [
-        (None, "vllm", "vllm"),
-        ("sglang", "vllm", "sglang"),
-        (None, None, "torchrun"),
-        ("sglang", None, "sglang"),
-        ("slurm_multi", "torchrun", "slurm_multi"),
-        # A falsy deployment value is "not declared", not "declared as empty":
-        # ConfigLoader materializes distributed.launcher as "" when the preset
-        # carries the key but neither the user nor the card filled it in.
-        ("", "slurm_multi", "slurm_multi"),
-        ("", None, "torchrun"),
-    ])
+    @pytest.mark.parametrize(
+        "deployment,card,expected",
+        [
+            (None, "vllm", "vllm"),
+            ("sglang", "vllm", "sglang"),
+            (None, None, "torchrun"),
+            ("sglang", None, "sglang"),
+            ("slurm_multi", "torchrun", "slurm_multi"),
+            # A falsy deployment value is "not declared", not "declared as empty":
+            # ConfigLoader materializes distributed.launcher as "" when the preset
+            # carries the key but neither the user nor the card filled it in.
+            ("", "slurm_multi", "slurm_multi"),
+            ("", None, "torchrun"),
+        ],
+    )
     def test_dispatch_and_env_block_cannot_disagree(self, deployment, card, expected):
         """
         prepare() used to read the card while _prepare_template_context() read the
@@ -907,22 +990,28 @@ class TestExplicitSlurmKeysManifestProvenance:
     def test_persisted_default_is_not_treated_as_explicit(self, tmp_path):
         """Regression: slurm.nodes=1 came from a ConfigLoader preset default at build
         time, not from the user or model card, so distributed.nnodes must still win."""
-        d = self._deployment(tmp_path, {
-            "slurm": {"nodes": 1, "output_dir": str(tmp_path / "slurm_results")},
-            "distributed": {"nnodes": 4},
-            "_explicit_slurm_keys": ["output_dir"],
-        })
+        d = self._deployment(
+            tmp_path,
+            {
+                "slurm": {"nodes": 1, "output_dir": str(tmp_path / "slurm_results")},
+                "distributed": {"nnodes": 4},
+                "_explicit_slurm_keys": ["output_dir"],
+            },
+        )
         assert "nodes" not in d._explicit_slurm_keys
         assert d.nodes == 4
 
     def test_manifest_provenance_respects_real_explicit_conflict(self, tmp_path):
         """When the manifest says slurm.nodes really was explicit, an explicit
         conflict with distributed.nnodes must still win (with a warning)."""
-        d = self._deployment(tmp_path, {
-            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
-            "distributed": {"nnodes": 4},
-            "_explicit_slurm_keys": ["nodes", "output_dir"],
-        })
+        d = self._deployment(
+            tmp_path,
+            {
+                "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+                "distributed": {"nnodes": 4},
+                "_explicit_slurm_keys": ["nodes", "output_dir"],
+            },
+        )
         assert "nodes" in d._explicit_slurm_keys
         assert d.nodes == 6
 
@@ -930,10 +1019,13 @@ class TestExplicitSlurmKeysManifestProvenance:
         """Direct --additional-context (no manifest round trip) has no
         "_explicit_slurm_keys" key; behavior falls back to inferring from the
         slurm dict's own keys, as before this fix."""
-        d = self._deployment(tmp_path, {
-            "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
-            "distributed": {"nnodes": 4},
-        })
+        d = self._deployment(
+            tmp_path,
+            {
+                "slurm": {"nodes": 6, "output_dir": str(tmp_path / "slurm_results")},
+                "distributed": {"nnodes": 4},
+            },
+        )
         assert d._explicit_slurm_keys == {"nodes", "output_dir"}
         assert d.nodes == 6
 
@@ -985,12 +1077,17 @@ class TestSlurmMultiDeclaredResultsCsv:
 
     def test_ignores_empty_file(self, deployment):
         (deployment._script_dir_for_test / "perf_WL.csv").write_text("")
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) is None
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            is None
+        )
 
     def test_returns_none_without_declaration(self, deployment):
-        assert deployment._slurm_multi_declared_result_csv({"name": "wl"}, "12345") is None
+        assert (
+            deployment._slurm_multi_declared_result_csv({"name": "wl"}, "12345") is None
+        )
 
     def test_returns_none_when_model_info_missing(self, deployment):
         assert deployment._slurm_multi_declared_result_csv(None, "12345") is None
@@ -1007,26 +1104,35 @@ class TestSlurmMultiDeclaredResultsCsv:
         self._write_csv_with_mtime(
             deployment._script_dir_for_test / "perf_WL.csv", 1_000_000.0 - 3600
         )
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) is None
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            is None
+        )
 
     def test_accepts_csv_written_after_submission(self, deployment):
         deployment._job_submitted_at = 1_000_000.0
         target = deployment._script_dir_for_test / "perf_WL.csv"
         self._write_csv_with_mtime(target, 1_000_000.0 + 600)
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) == target
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            == target
+        )
 
     def test_tolerates_small_clock_skew_with_shared_filesystem(self, deployment):
         """File mtimes come from the compute node / NFS server, not the login node."""
         deployment._job_submitted_at = 1_000_000.0
         target = deployment._script_dir_for_test / "perf_WL.csv"
         self._write_csv_with_mtime(target, 1_000_000.0 - 5)
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) == target
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            == target
+        )
 
     def test_stale_csv_in_one_dir_does_not_hide_fresh_one_in_another(self, deployment):
         """Only the stale candidate is skipped; later search dirs are still tried."""
@@ -1038,25 +1144,35 @@ class TestSlurmMultiDeclaredResultsCsv:
         fresh_dir.mkdir(parents=True, exist_ok=True)
         fresh = fresh_dir / "perf_WL.csv"
         self._write_csv_with_mtime(fresh, 1_000_000.0 + 60)
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) == fresh
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            == fresh
+        )
 
     def test_no_freshness_filter_before_submission(self, deployment):
         """Without a recorded submit time there is nothing to compare against."""
         assert deployment._job_submitted_at is None
         target = deployment._script_dir_for_test / "perf_WL.csv"
         self._write_csv_with_mtime(target, 1.0)
-        assert deployment._slurm_multi_declared_result_csv(
-            deployment._model_for_test, "12345"
-        ) == target
+        assert (
+            deployment._slurm_multi_declared_result_csv(
+                deployment._model_for_test, "12345"
+            )
+            == target
+        )
 
     def test_deploy_records_submission_time(self, deployment, monkeypatch):
         """deploy() stamps the submit time that collection later compares against."""
         deployment.script_path = deployment._script_dir_for_test / "run.slurm"
         deployment.slurm_config["enable_node_check"] = False
-        completed = MagicMock(returncode=0, stdout="Submitted batch job 12345\n", stderr="")
-        monkeypatch.setattr("madengine.deployment.slurm.subprocess.run", lambda *a, **k: completed)
+        completed = MagicMock(
+            returncode=0, stdout="Submitted batch job 12345\n", stderr=""
+        )
+        monkeypatch.setattr(
+            "madengine.deployment.slurm.subprocess.run", lambda *a, **k: completed
+        )
         before = time.time()
         result = deployment.deploy()
         assert result.deployment_id == "12345"
@@ -1074,7 +1190,9 @@ class TestSlurmMultiPerfAggregation:
         cfg = DeploymentConfig(
             target="slurm",
             manifest_file=str(manifest_path),
-            additional_context={"slurm": {"output_dir": str(tmp_path / "slurm_results")}},
+            additional_context={
+                "slurm": {"output_dir": str(tmp_path / "slurm_results")}
+            },
         )
         d = SlurmDeployment(cfg)
         d.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1091,7 +1209,9 @@ class TestSlurmMultiPerfAggregation:
         Path("perf.csv").write_text(rows)
 
         deployment._collect_slurm_multi_results(
-            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+            "12345",
+            {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []},
+            None,
         )
 
         assert Path("perf.csv").read_text() == rows
@@ -1099,14 +1219,18 @@ class TestSlurmMultiPerfAggregation:
     def test_distinct_source_is_appended(self, deployment, tmp_path, monkeypatch):
         """A genuinely separate per-job CSV still aggregates, minus its header."""
         monkeypatch.chdir(tmp_path)
-        Path("perf.csv").write_text("model,performance,metric,status\nold,1.0,tok/s,SUCCESS\n")
+        Path("perf.csv").write_text(
+            "model,performance,metric,status\nold,1.0,tok/s,SUCCESS\n"
+        )
         job_csv = tmp_path / "job" / "perf.csv"
         job_csv.parent.mkdir()
         job_csv.write_text("model,performance,metric,status\nnew,2.0,tok/s,SUCCESS\n")
         deployment.slurm_config["results_dir"] = str(job_csv.parent)
 
         deployment._collect_slurm_multi_results(
-            "12345", {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []}, None
+            "12345",
+            {"perf_files": [], "logs": [], "successful_runs": [], "failed_runs": []},
+            None,
         )
 
         text = Path("perf.csv").read_text()
@@ -1166,9 +1290,7 @@ class TestSlurmMultiAccountingDirectives:
         assert "#SBATCH --account=amd-ml" in text
 
     def test_modules_loaded(self, tmp_path):
-        text = self._script(
-            self._deployment(tmp_path, modules=["rocm/6.2", "openmpi"])
-        )
+        text = self._script(self._deployment(tmp_path, modules=["rocm/6.2", "openmpi"]))
         assert "module load rocm/6.2" in text
         assert "module load openmpi" in text
 
@@ -1179,7 +1301,9 @@ class TestSlurmMultiAccountingDirectives:
         lines = text.splitlines()
         module_idx = next(i for i, l in enumerate(lines) if l == "module load rocm/6.2")
         script_idx = next(
-            i for i, l in enumerate(lines) if "run_xPyD_models.slurm" in l and l.startswith("bash ")
+            i
+            for i, l in enumerate(lines)
+            if "run_xPyD_models.slurm" in l and l.startswith("bash ")
         )
         assert module_idx < script_idx
 
@@ -1189,7 +1313,8 @@ class TestSlurmMultiAccountingDirectives:
         text = self._script(self._deployment(tmp_path, qos="high", account="amd-ml"))
         lines = text.splitlines()
         first_body = next(
-            i for i, l in enumerate(lines)
+            i
+            for i, l in enumerate(lines)
             if l.strip() and not l.startswith("#") and not l.startswith("#!")
         )
         for directive in ("#SBATCH --qos=high", "#SBATCH --account=amd-ml"):
@@ -1225,8 +1350,9 @@ class TestBuildOnComputeModelFieldParity:
         "env_vars": {},
     }
 
-    def _run_build_on_compute(self, tmp_path: Path, card: dict, context_slurm: dict,
-                              user_slurm_keys: set) -> dict:
+    def _run_build_on_compute(
+        self, tmp_path: Path, card: dict, context_slurm: dict, user_slurm_keys: set
+    ) -> dict:
         from madengine.orchestration.build_orchestrator import BuildOrchestrator
 
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
@@ -1246,10 +1372,13 @@ class TestBuildOnComputeModelFieldParity:
 
         manifest_path = tmp_path / "build_manifest.json"
         import os
+
         orig_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+            with patch(
+                "madengine.orchestration.build_orchestrator.DiscoverModels"
+            ) as mock_dm:
                 mock_dm.return_value.run.return_value = [card]
                 with patch("subprocess.run") as mock_run:
                     mock_run.return_value = MagicMock(returncode=0)
@@ -1265,17 +1394,22 @@ class TestBuildOnComputeModelFieldParity:
         """Without multiple_results the run has no declared CSV to collect and
         falls back to log scraping, which a slurm_multi model produces nothing for."""
         manifest = self._run_build_on_compute(
-            tmp_path, self.CARD,
+            tmp_path,
+            self.CARD,
             context_slurm={"partition": "amd-rccl", "nodes": 1},
             user_slurm_keys={"partition"},
         )
-        assert manifest["built_models"]["model_a"]["multiple_results"] == "perf_model_a.csv"
+        assert (
+            manifest["built_models"]["model_a"]["multiple_results"]
+            == "perf_model_a.csv"
+        )
 
     def test_preset_default_does_not_outrank_model_card(self, tmp_path):
         """nodes=1 is a ConfigLoader preset default, not a user choice, so the
         card's nodes=4 must survive into the persisted slurm config."""
         manifest = self._run_build_on_compute(
-            tmp_path, self.CARD,
+            tmp_path,
+            self.CARD,
             context_slurm={"partition": "amd-rccl", "nodes": 1, "time": "24:00:00"},
             user_slurm_keys={"partition"},
         )
@@ -1285,7 +1419,8 @@ class TestBuildOnComputeModelFieldParity:
 
     def test_user_explicit_key_still_wins_over_model_card(self, tmp_path):
         manifest = self._run_build_on_compute(
-            tmp_path, self.CARD,
+            tmp_path,
+            self.CARD,
             context_slurm={"partition": "amd-rccl", "nodes": 2},
             user_slurm_keys={"partition", "nodes"},
         )
@@ -1293,7 +1428,8 @@ class TestBuildOnComputeModelFieldParity:
 
     def test_explicit_slurm_keys_provenance_is_recorded(self, tmp_path):
         manifest = self._run_build_on_compute(
-            tmp_path, self.CARD,
+            tmp_path,
+            self.CARD,
             context_slurm={"partition": "amd-rccl", "nodes": 1, "time": "24:00:00"},
             user_slurm_keys={"partition"},
         )
@@ -1306,7 +1442,8 @@ class TestBuildOnComputeModelFieldParity:
         default and distributed.nnodes must still be free to size the allocation."""
         card = dict(self.CARD, slurm={"partition": "amd-rccl"})
         manifest = self._run_build_on_compute(
-            tmp_path, card,
+            tmp_path,
+            card,
             context_slurm={"partition": "amd-rccl", "nodes": 1},
             user_slurm_keys={"partition"},
         )
@@ -1315,7 +1452,8 @@ class TestBuildOnComputeModelFieldParity:
     def test_model_card_distributed_reaches_deployment_config(self, tmp_path):
         """run --manifest-file infers the SLURM target from deployment_config."""
         manifest = self._run_build_on_compute(
-            tmp_path, self.CARD,
+            tmp_path,
+            self.CARD,
             context_slurm={"partition": "amd-rccl", "nodes": 1},
             user_slurm_keys={"partition"},
         )
@@ -1340,10 +1478,16 @@ class TestRuntimeSlurmOverrideProvenance:
         orch.additional_context = runtime
 
         manifest_path = tmp_path / "build_manifest.json"
-        manifest_path.write_text(json.dumps({
-            "built_images": {}, "built_models": {}, "context": {},
-            "deployment_config": stored,
-        }))
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "built_images": {},
+                    "built_models": {},
+                    "context": {},
+                    "deployment_config": stored,
+                }
+            )
+        )
         orch._load_and_merge_manifest(str(manifest_path))
         return json.loads(manifest_path.read_text())["deployment_config"]
 
@@ -1371,16 +1515,20 @@ class TestRuntimeSlurmOverrideProvenance:
             runtime={"slurm": {"partition": "new"}, "distributed": {"nnodes": 4}},
         )
         manifest_path = tmp_path / "m.json"
-        manifest_path.write_text(json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
-        dep = SlurmDeployment(DeploymentConfig(
-            target="slurm",
-            manifest_file=str(manifest_path),
-            additional_context={
-                "slurm": dict(cfg["slurm"], output_dir=str(tmp_path / "out")),
-                "distributed": cfg["distributed"],
-                "_explicit_slurm_keys": cfg["_explicit_slurm_keys"],
-            },
-        ))
+        manifest_path.write_text(
+            json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
+        dep = SlurmDeployment(
+            DeploymentConfig(
+                target="slurm",
+                manifest_file=str(manifest_path),
+                additional_context={
+                    "slurm": dict(cfg["slurm"], output_dir=str(tmp_path / "out")),
+                    "distributed": cfg["distributed"],
+                    "_explicit_slurm_keys": cfg["_explicit_slurm_keys"],
+                },
+            )
+        )
         assert "nodes" not in dep._explicit_slurm_keys
         assert dep.nodes == 4
 
@@ -1411,7 +1559,9 @@ class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
     applied by hand after noticing the container had come up without its RDMA device.
     """
 
-    OPTS = "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2 -v /var/cache/mad:/cache"
+    OPTS = (
+        "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2 -v /var/cache/mad:/cache"
+    )
 
     @pytest.fixture
     def card_with_run_options(self, fake_models_two_sglang_disagg):
@@ -1423,7 +1573,9 @@ class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
     def _manifest(self, tmp_path, models):
         orch = self._build_orchestrator_stub(tmp_path)
         manifest_path = tmp_path / "build_manifest.json"
-        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+        with patch(
+            "madengine.orchestration.build_orchestrator.DiscoverModels"
+        ) as mock_dm:
             mock_dm.return_value.run.return_value = models
             with patch.object(orch, "_save_deployment_config", return_value=None):
                 orch._execute_with_prebuilt_image(
@@ -1432,8 +1584,12 @@ class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
                 )
         return json.loads(manifest_path.read_text())
 
-    def test_docker_run_options_reach_the_manifest(self, tmp_path, card_with_run_options):
-        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+    def test_docker_run_options_reach_the_manifest(
+        self, tmp_path, card_with_run_options
+    ):
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"][
+            "pyt_fake_a"
+        ]
         assert entry.get("additional_docker_run_options") == self.OPTS, (
             "the card's docker run options were dropped, so the container would start without "
             "its RDMA device and backend selection"
@@ -1454,7 +1610,9 @@ class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
             "MODEL_NAME": "Fake-A",
             "DOCKER_IMAGE_NAME": "card-env:should-lose",
         }
-        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"][
+            "pyt_fake_a"
+        ]
         image = "rocm/pytorch-private:fake-tag"
         assert entry["docker_image"] == image
         assert entry["image"] == image

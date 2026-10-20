@@ -839,9 +839,7 @@ class TestRenderedJob:
         assert "secretKeyRef:" not in rendered
         assert "HF_TOKEN" not in rendered
 
-    def test_client_references_the_context_hf_token_secret(
-        self, tmp_path, monkeypatch
-    ):
+    def test_client_references_the_context_hf_token_secret(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("MAD_SECRETS_HFTOKEN", raising=False)
         monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -865,9 +863,7 @@ class TestRenderedJob:
         assert "key: HF_TOKEN" in rendered
         deployment.core_v1.create_namespaced_secret.assert_not_called()
 
-    def test_host_mad_secrets_token_is_stored_not_inlined(
-        self, tmp_path, monkeypatch
-    ):
+    def test_host_mad_secrets_token_is_stored_not_inlined(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("MAD_SECRETS_HFTOKEN", "hf-test-token-value")
         monkeypatch.delenv("HF_TOKEN", raising=False)
@@ -1099,9 +1095,7 @@ class TestModelRepoFromCard:
                     "k8s": {},
                     "llm_d": {"model": {"hf_repo": "Qwen/Qwen3-0.6B"}},
                 },
-                model_entry=self._card(
-                    "--model_repo meta-llama/Llama-3.1-8B-Instruct"
-                ),
+                model_entry=self._card("--model_repo meta-llama/Llama-3.1-8B-Instruct"),
             )
 
     def test_a_different_context_name_is_rejected(self, tmp_path):

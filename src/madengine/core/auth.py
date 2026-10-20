@@ -471,8 +471,6 @@ def login_to_registry(
                 "instead.[/yellow]"
             )
             return
-        rich_console.print(
-            f"[red]Failed to login to registry {registry}: {e}[/red]"
-        )
+        rich_console.print(f"[red]Failed to login to registry {registry}: {e}[/red]")
         if raise_on_failure:
             raise

@@ -391,7 +391,9 @@ class TestRunOrchestrator:
         fake_result.logs_path = None
         fake_result.metrics = {"successful_runs": [], "failed_runs": []}
 
-        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create"
+        ) as mock_create:
             mock_deploy = MagicMock()
             mock_deploy.execute.return_value = fake_result
             mock_create.return_value = mock_deploy
@@ -417,12 +419,13 @@ class TestRunOrchestrator:
 
         orchestrator = RunOrchestrator(mock_args)
         manager = object()
-        with patch(
-            "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
-            return_value=manager,
-        ) as get_manager, patch(
-            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
-        ) as check:
+        with (
+            patch(
+                "madengine.utils.gpu_tool_factory.get_gpu_tool_manager",
+                return_value=manager,
+            ) as get_manager,
+            patch("madengine.utils.gpu_memory_gate.check_gpu_memory_free") as check,
+        ):
             orchestrator._wait_for_gpu_memory()
 
         get_manager.assert_called_once_with()
@@ -440,9 +443,7 @@ class TestRunOrchestrator:
         mock_args.output = str(tmp_path / "perf.csv")
 
         orchestrator = RunOrchestrator(mock_args)
-        with patch(
-            "madengine.utils.gpu_memory_gate.check_gpu_memory_free"
-        ) as check:
+        with patch("madengine.utils.gpu_memory_gate.check_gpu_memory_free") as check:
             orchestrator._wait_for_gpu_memory()
 
         check.assert_not_called()
@@ -483,16 +484,19 @@ class TestRunOrchestrator:
 
         runner.run_models_from_manifest.side_effect = record_run
 
-        with patch.object(orchestrator, "_init_runtime_context"), patch.object(
-            orchestrator, "_show_node_info"
-        ), patch.object(orchestrator, "_copy_scripts"), patch.object(
-            orchestrator, "_wait_for_gpu_memory", side_effect=record_wait
-        ), patch(
-            "madengine.orchestration.run_orchestrator.load_credentials",
-            return_value={},
-        ), patch(
-            "madengine.execution.container_runner.ContainerRunner",
-            return_value=runner,
+        with (
+            patch.object(orchestrator, "_init_runtime_context"),
+            patch.object(orchestrator, "_show_node_info"),
+            patch.object(orchestrator, "_copy_scripts"),
+            patch.object(orchestrator, "_wait_for_gpu_memory", side_effect=record_wait),
+            patch(
+                "madengine.orchestration.run_orchestrator.load_credentials",
+                return_value={},
+            ),
+            patch(
+                "madengine.execution.container_runner.ContainerRunner",
+                return_value=runner,
+            ),
         ):
             orchestrator._execute_local(str(manifest), 60)
 
@@ -565,7 +569,9 @@ class TestRunOrchestrator:
         fake_result.logs_path = None
         fake_result.metrics = {"successful_runs": [], "failed_runs": []}
 
-        with patch("madengine.deployment.factory.DeploymentFactory.create") as mock_create:
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create"
+        ) as mock_create:
             mock_deploy = MagicMock()
             mock_deploy.execute.return_value = fake_result
             mock_create.return_value = mock_deploy
@@ -637,8 +643,10 @@ class TestRunOrchestrator:
 
         orchestrator = RunOrchestrator(mock_args)
 
-        with patch.object(RunOrchestrator, "_cleanup_model_dir_copies"), \
-             patch.object(RunOrchestrator, "_execute_local") as mock_local:
+        with (
+            patch.object(RunOrchestrator, "_cleanup_model_dir_copies"),
+            patch.object(RunOrchestrator, "_execute_local") as mock_local,
+        ):
             mock_local.return_value = {"successful_runs": [], "failed_runs": []}
             orchestrator.execute(manifest_file=str(manifest_path), **kwargs)
 
@@ -800,7 +808,9 @@ class TestMergeModelConfigIntoManifest:
         models = [{"name": "m1", "slurm": model_slurm}]
         orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
 
-        saved_slurm = json.loads(manifest_file.read_text())["deployment_config"]["slurm"]
+        saved_slurm = json.loads(manifest_file.read_text())["deployment_config"][
+            "slurm"
+        ]
         for key, value in model_slurm.items():
             assert saved_slurm[key] == value
 
@@ -840,7 +850,9 @@ class TestMergeModelConfigIntoManifest:
         target and allocation from a model that is not runnable."""
         orchestrator = self._make_orchestrator()
         manifest_file = tmp_path / "build_manifest.json"
-        manifest_file.write_text(json.dumps({"built_models": {"img-ok": {"name": "ok"}}}))
+        manifest_file.write_text(
+            json.dumps({"built_models": {"img-ok": {"name": "ok"}}})
+        )
 
         models = [
             {
@@ -888,7 +900,9 @@ class TestMergeModelConfigIntoManifest:
         ]
         orchestrator._merge_model_config_into_manifest(str(manifest_file), models)
 
-        printed = " ".join(str(c) for c in orchestrator.rich_console.print.call_args_list)
+        printed = " ".join(
+            str(c) for c in orchestrator.rich_console.print.call_args_list
+        )
         assert "differing" not in printed
 
 
@@ -1122,24 +1136,30 @@ class TestPlaceholderImageRejection:
     `docker pull <supply-your-image>` instead of the user getting told at submit time.
     """
 
-    @pytest.mark.parametrize("value", [
-        "<supply-your-image>",
-        "<your-image-here>",
-        "  <supply-your-image>  ",
-        "",
-        "   ",
-        "\t\n",
-        None,
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "<supply-your-image>",
+            "<your-image-here>",
+            "  <supply-your-image>  ",
+            "",
+            "   ",
+            "\t\n",
+            None,
+        ],
+    )
     def test_placeholders_detected(self, value):
         assert BuildOrchestrator._is_placeholder_image(value) is True
 
-    @pytest.mark.parametrize("value", [
-        "rocm/vllm:latest",
-        "docker.io/myorg/img:tag",
-        "ci-pyt_vllm_kimi_k3_mi300x",
-        "localhost:5000/img",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "rocm/vllm:latest",
+            "docker.io/myorg/img:tag",
+            "ci-pyt_vllm_kimi_k3_mi300x",
+            "localhost:5000/img",
+        ],
+    )
     def test_real_images_accepted(self, value):
         assert BuildOrchestrator._is_placeholder_image(value) is False
 
@@ -1163,19 +1183,22 @@ class TestSelfManagedLauncherImpliesSlurm:
     was never reached and the model's .slurm script was run as a local workload.
     """
 
-    @pytest.mark.parametrize("config,expected", [
-        ({}, "local"),
-        ({"slurm": {}}, "slurm"),
-        ({"k8s": {}}, "k8s"),
-        ({"distributed": {"launcher": "slurm_multi"}}, "slurm"),
-        ({"distributed": {"launcher": "slurm-multi"}}, "slurm"),
-        ({"distributed": {"launcher": "torchrun"}}, "local"),
-        ({"distributed": {"launcher": "vllm"}}, "local"),
-        ({"distributed": {}}, "local"),
-        # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
-        # but the explicit target is the user's stated intent.
-        ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
-    ])
+    @pytest.mark.parametrize(
+        "config,expected",
+        [
+            ({}, "local"),
+            ({"slurm": {}}, "slurm"),
+            ({"k8s": {}}, "k8s"),
+            ({"distributed": {"launcher": "slurm_multi"}}, "slurm"),
+            ({"distributed": {"launcher": "slurm-multi"}}, "slurm"),
+            ({"distributed": {"launcher": "torchrun"}}, "local"),
+            ({"distributed": {"launcher": "vllm"}}, "local"),
+            ({"distributed": {}}, "local"),
+            # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
+            # but the explicit target is the user's stated intent.
+            ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
+        ],
+    )
     def test_inference(self, config, expected):
         assert RunOrchestrator._infer_deployment_target(None, config) == expected
 
@@ -1184,22 +1207,28 @@ class TestSelfManagedLauncherImpliesSlurm:
     # the build stored. Inference must still see the model card's launcher, resolved
     # the same way SlurmDeployment._resolve_launcher does (deployment first, card
     # second), or the run is handed to the local container runner.
-    @pytest.mark.parametrize("config,card_launcher,expected", [
-        ({"distributed": {"nnodes": 4}}, "slurm_multi", "slurm"),
-        ({}, "slurm_multi", "slurm"),
-        ({"distributed": {"launcher": ""}}, "slurm_multi", "slurm"),
-        # An explicit deployment launcher outranks the card, as in the deployment.
-        ({"distributed": {"launcher": "torchrun"}}, "slurm_multi", "local"),
-        ({"distributed": {"launcher": "slurm_multi"}}, "torchrun", "slurm"),
-        ({"distributed": {"nnodes": 4}}, "torchrun", "local"),
-        ({"distributed": {"nnodes": 4}}, None, "local"),
-        # An explicit k8s/slurm block still decides first.
-        ({"k8s": {}}, "slurm_multi", "k8s"),
-    ])
+    @pytest.mark.parametrize(
+        "config,card_launcher,expected",
+        [
+            ({"distributed": {"nnodes": 4}}, "slurm_multi", "slurm"),
+            ({}, "slurm_multi", "slurm"),
+            ({"distributed": {"launcher": ""}}, "slurm_multi", "slurm"),
+            # An explicit deployment launcher outranks the card, as in the deployment.
+            ({"distributed": {"launcher": "torchrun"}}, "slurm_multi", "local"),
+            ({"distributed": {"launcher": "slurm_multi"}}, "torchrun", "slurm"),
+            ({"distributed": {"nnodes": 4}}, "torchrun", "local"),
+            ({"distributed": {"nnodes": 4}}, None, "local"),
+            # An explicit k8s/slurm block still decides first.
+            ({"k8s": {}}, "slurm_multi", "k8s"),
+        ],
+    )
     def test_inference_uses_model_card_launcher(self, config, card_launcher, expected):
-        model_info = {"distributed": {"launcher": card_launcher}} if card_launcher else {}
+        model_info = (
+            {"distributed": {"launcher": card_launcher}} if card_launcher else {}
+        )
         assert (
-            RunOrchestrator._infer_deployment_target(None, config, model_info) == expected
+            RunOrchestrator._infer_deployment_target(None, config, model_info)
+            == expected
         )
 
     @patch.object(RunOrchestrator, "_cleanup_model_dir_copies")
@@ -1234,12 +1263,17 @@ class TestSelfManagedLauncherImpliesSlurm:
         orchestrator.additional_context = {"distributed": {"nnodes": 4}}
 
         summary = {"successful_runs": [], "failed_runs": []}
-        with patch.object(
-            RunOrchestrator, "_execute_distributed", return_value=summary
-        ) as mock_dist, patch.object(
-            RunOrchestrator, "_execute_local", return_value=summary
-        ) as mock_local:
-            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+        with (
+            patch.object(
+                RunOrchestrator, "_execute_distributed", return_value=summary
+            ) as mock_dist,
+            patch.object(
+                RunOrchestrator, "_execute_local", return_value=summary
+            ) as mock_local,
+        ):
+            orchestrator.execute(
+                manifest_file=str(manifest_path), tags=None, timeout=60
+            )
 
         mock_local.assert_not_called()
         assert mock_dist.call_args.args[0] == "slurm"
@@ -1279,12 +1313,17 @@ class TestSelfManagedLauncherImpliesSlurm:
         orchestrator = RunOrchestrator(mock_args)
 
         summary = {"successful_runs": [], "failed_runs": []}
-        with patch.object(
-            RunOrchestrator, "_execute_distributed", return_value=summary
-        ) as mock_dist, patch.object(
-            RunOrchestrator, "_execute_local", return_value=summary
-        ) as mock_local:
-            orchestrator.execute(manifest_file=str(manifest_path), tags=None, timeout=60)
+        with (
+            patch.object(
+                RunOrchestrator, "_execute_distributed", return_value=summary
+            ) as mock_dist,
+            patch.object(
+                RunOrchestrator, "_execute_local", return_value=summary
+            ) as mock_local,
+        ):
+            orchestrator.execute(
+                manifest_file=str(manifest_path), tags=None, timeout=60
+            )
 
         mock_local.assert_not_called()
         assert mock_dist.call_args.args[0] == "slurm"

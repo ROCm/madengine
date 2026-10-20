@@ -636,9 +636,7 @@ class TestReadiness:
             deployment._wait_for_model_servers()
 
         assert release == "madengine-dummy-llm-d-modelservice"
-        assert "label_selector" not in (
-            api.list_namespaced_deployment.call_args.kwargs
-        )
+        assert "label_selector" not in (api.list_namespaced_deployment.call_args.kwargs)
 
     def test_polls_until_ready(self, tmp_path):
         deployment = _managed_deployment(tmp_path)

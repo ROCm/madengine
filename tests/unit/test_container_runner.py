@@ -27,19 +27,34 @@ class TestPerformanceRegex:
     # --- formats that were already handled before the regex change ---
 
     def test_basic_integer(self):
-        assert self._match("performance: 12345 samples_per_second") == ("12345", "samples_per_second")
+        assert self._match("performance: 12345 samples_per_second") == (
+            "12345",
+            "samples_per_second",
+        )
 
     def test_decimal(self):
-        assert self._match("performance: 100.5 samples_per_second") == ("100.5", "samples_per_second")
+        assert self._match("performance: 100.5 samples_per_second") == (
+            "100.5",
+            "samples_per_second",
+        )
 
     def test_scientific_lowercase_e(self):
-        assert self._match("performance: 1.23e+4 samples_per_second") == ("1.23e+4", "samples_per_second")
+        assert self._match("performance: 1.23e+4 samples_per_second") == (
+            "1.23e+4",
+            "samples_per_second",
+        )
 
     def test_scientific_negative_exponent(self):
-        assert self._match("performance: 1.23e-4 samples_per_second") == ("1.23e-4", "samples_per_second")
+        assert self._match("performance: 1.23e-4 samples_per_second") == (
+            "1.23e-4",
+            "samples_per_second",
+        )
 
     def test_zero(self):
-        assert self._match("performance: 0 samples_per_second") == ("0", "samples_per_second")
+        assert self._match("performance: 0 samples_per_second") == (
+            "0",
+            "samples_per_second",
+        )
 
     def test_metric_with_digits(self):
         assert self._match("performance: 123 metric123") == ("123", "metric123")
@@ -51,15 +66,24 @@ class TestPerformanceRegex:
 
     def test_unit_suffix_slash_s(self):
         """Value followed by /s unit suffix: suffix is stripped, metric parsed correctly."""
-        assert self._match("performance: 14164/s samples_per_second") == ("14164", "samples_per_second")
+        assert self._match("performance: 14164/s samples_per_second") == (
+            "14164",
+            "samples_per_second",
+        )
 
     def test_unit_suffix_and_comma(self):
         """Value with /s suffix and comma separator."""
-        assert self._match("performance: 14164.5/s, samples_per_second") == ("14164.5", "samples_per_second")
+        assert self._match("performance: 14164.5/s, samples_per_second") == (
+            "14164.5",
+            "samples_per_second",
+        )
 
     def test_comma_separator_no_suffix(self):
         """Comma after value without a unit suffix."""
-        assert self._match("performance: 100.5, samples_per_second") == ("100.5", "samples_per_second")
+        assert self._match("performance: 100.5, samples_per_second") == (
+            "100.5",
+            "samples_per_second",
+        )
 
     def test_comma_before_suffix(self):
         """Comma immediately before /s suffix: 123,/s metric."""
@@ -73,25 +97,40 @@ class TestPerformanceRegex:
 
     def test_scientific_uppercase_e(self):
         """Uppercase E in scientific notation (v1 supported, old v2 broke on this)."""
-        assert self._match("performance: 1.23E+4 samples_per_second") == ("1.23E+4", "samples_per_second")
+        assert self._match("performance: 1.23E+4 samples_per_second") == (
+            "1.23E+4",
+            "samples_per_second",
+        )
 
     def test_positive_sign(self):
         """Explicitly signed positive value (v1 supported via [+|-]? prefix)."""
-        assert self._match("performance: +123.45 samples_per_second") == ("+123.45", "samples_per_second")
+        assert self._match("performance: +123.45 samples_per_second") == (
+            "+123.45",
+            "samples_per_second",
+        )
 
     def test_negative_sign(self):
         """Signed negative value (v1 supported)."""
-        assert self._match("performance: -123.45 samples_per_second") == ("-123.45", "samples_per_second")
+        assert self._match("performance: -123.45 samples_per_second") == (
+            "-123.45",
+            "samples_per_second",
+        )
 
     def test_leading_dot_decimal(self):
         """Leading-dot decimal without integer part (v1 supported via [0-9]*[.]?[0-9]*)."""
-        assert self._match("performance: .5 samples_per_second") == (".5", "samples_per_second")
+        assert self._match("performance: .5 samples_per_second") == (
+            ".5",
+            "samples_per_second",
+        )
 
     # --- slash-containing metric names (e.g. samples/sec, tokens/sec) ---
 
     def test_metric_samples_per_sec_slash(self):
         """samples/sec metric (used by _determine_aggregation_method) is parsed."""
-        assert self._match("performance: 1234.5 samples/sec") == ("1234.5", "samples/sec")
+        assert self._match("performance: 1234.5 samples/sec") == (
+            "1234.5",
+            "samples/sec",
+        )
 
     def test_metric_tokens_per_sec_slash(self):
         """tokens/sec metric (used by _determine_aggregation_method) is parsed."""
@@ -138,7 +177,9 @@ class TestCreateSetupFailurePerfEntry:
     def test_returns_dict_with_status_failure(self):
         """Entry has status FAILURE and model name."""
         runner = ContainerRunner(context=MagicMock(), console=MagicMock())
-        runner.context.ctx = {"docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}}
+        runner.context.ctx = {
+            "docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx90a"}
+        }
 
         model_info = {"name": "org/model1", "tags": "v1", "n_gpus": "2"}
         build_info = {"dockerfile": "Dockerfile", "docker_image": "img:latest"}
@@ -196,9 +237,16 @@ class TestRunModelsFromManifestSetupFailureRecordsToPerfCsv:
                 )
 
             manifest = {
-                "built_images": {"img1": {"docker_image": "local/img1", "dockerfile": "D"}},
+                "built_images": {
+                    "img1": {"docker_image": "local/img1", "dockerfile": "D"}
+                },
                 "built_models": {
-                    "img1": {"name": "test/model", "tags": "t1", "n_gpus": "1", "args": ""}
+                    "img1": {
+                        "name": "test/model",
+                        "tags": "t1",
+                        "n_gpus": "1",
+                        "args": "",
+                    }
                 },
             }
             with open(manifest_path, "w") as f:
@@ -300,18 +348,27 @@ class TestGenerateLocalLauncherCommand:
     def _runner(self):
         return ContainerRunner.__new__(ContainerRunner)
 
-    @pytest.mark.parametrize("launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"])
+    @pytest.mark.parametrize(
+        "launcher", ["torchrun", "megatron", "megatron-lm", "torchtitan"]
+    )
     def test_torchrun_family_emits_torchrun_standalone(self, launcher):
-        cmd = self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+        cmd = self._runner()._generate_local_launcher_command(
+            launcher, nproc_per_node=8
+        )
         assert cmd == "torchrun --standalone --nproc_per_node=8"
 
     def test_deepspeed_emits_deepspeed_command(self):
-        cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
+        cmd = self._runner()._generate_local_launcher_command(
+            "deepspeed", nproc_per_node=4
+        )
         assert cmd == "deepspeed --num_gpus=4"
 
     @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
     def test_self_managed_launchers_emit_empty(self, launcher):
-        assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
+        assert (
+            self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
+            == ""
+        )
 
     def test_unknown_launcher_falls_back_to_torchrun(self):
         cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
@@ -343,7 +400,9 @@ class TestResolveLocalMultiNodeRunnerEnv:
             additional_context={"distributed": {"launcher": launcher}},
         )
         runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
-        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+        assert (
+            runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == expected
+        )
 
     def test_does_not_override_user_provided_value(self):
         runner = self._runner(
@@ -463,24 +522,28 @@ class TestRunContainerSkipModelRun:
             docker_sh_calls.append(cmd)
             return "ok"
 
-        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
-             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
-             patch.object(ContainerRunner, "gather_system_env_details"), \
-             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
-             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
-             patch("madengine.execution.container_runner._print_run_env_table"), \
-             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
-             patch("madengine.execution.container_runner.update_perf_csv"), \
-             patch("madengine.execution.container_runner.update_perf_super_json"), \
-             patch("madengine.execution.container_runner.update_perf_super_csv"), \
-             patch.object(Docker, "__init__", return_value=None), \
-             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
-             patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
-             patch.object(Docker, "__del__", return_value=None), \
-             patch("builtins.open", mock_open(read_data="")):
+        with (
+            patch.object(
+                ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"
+            ),
+            patch.object(ContainerRunner, "get_gpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_cpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_env_arg", return_value=""),
+            patch.object(ContainerRunner, "get_mount_arg", return_value=""),
+            patch.object(ContainerRunner, "gather_system_env_details"),
+            patch.object(ContainerRunner, "ensure_perf_csv_exists"),
+            patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"),
+            patch("madengine.execution.container_runner._print_run_env_table"),
+            patch("madengine.execution.container_runner.Timeout", noop_timeout),
+            patch("madengine.execution.container_runner.update_perf_csv"),
+            patch("madengine.execution.container_runner.update_perf_super_json"),
+            patch("madengine.execution.container_runner.update_perf_super_csv"),
+            patch.object(Docker, "__init__", return_value=None),
+            patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True),
+            patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh),
+            patch.object(Docker, "__del__", return_value=None),
+            patch("builtins.open", mock_open(read_data="")),
+        ):
             return runner.run_container(
                 model_info=model_info,
                 docker_image="ci-dummy",
@@ -500,7 +563,9 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         result = self._run_container_with_mocks(
-            runner, model_info, docker_sh_calls,
+            runner,
+            model_info,
+            docker_sh_calls,
             skip_model_run=True,
             keep_alive=True,
         )
@@ -524,7 +589,9 @@ class TestRunContainerSkipModelRun:
 
         docker_sh_calls = []
         self._run_container_with_mocks(
-            runner, model_info, docker_sh_calls,
+            runner,
+            model_info,
+            docker_sh_calls,
             skip_model_run=False,
         )
 
@@ -660,30 +727,40 @@ class TestRunContainerDefaultTimeoutIsSentinel:
         def noop_timeout(_):
             yield
 
-        with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
-             patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_env_arg", return_value=""), \
-             patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
-             patch.object(ContainerRunner, "gather_system_env_details"), \
-             patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
-             patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
-             patch("madengine.execution.container_runner._print_run_env_table"), \
-             patch("madengine.execution.container_runner.Timeout", noop_timeout), \
-             patch.object(Docker, "__init__", return_value=None), \
-             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
-             patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
-                              (cmd, kw.get("timeout"))
-                          ) or "ok"), \
-             patch.object(Docker, "__del__", return_value=None), \
-             patch("builtins.open", mock_open(read_data="")):
+        with (
+            patch.object(
+                ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"
+            ),
+            patch.object(ContainerRunner, "get_gpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_cpu_arg", return_value=""),
+            patch.object(ContainerRunner, "get_env_arg", return_value=""),
+            patch.object(ContainerRunner, "get_mount_arg", return_value=""),
+            patch.object(ContainerRunner, "gather_system_env_details"),
+            patch.object(ContainerRunner, "ensure_perf_csv_exists"),
+            patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"),
+            patch("madengine.execution.container_runner._print_run_env_table"),
+            patch("madengine.execution.container_runner.Timeout", noop_timeout),
+            patch.object(Docker, "__init__", return_value=None),
+            patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True),
+            patch.object(
+                Docker,
+                "sh",
+                side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
+                    (cmd, kw.get("timeout"))
+                )
+                or "ok",
+            ),
+            patch.object(Docker, "__del__", return_value=None),
+            patch("builtins.open", mock_open(read_data="")),
+        ):
             runner.run_container(
                 model_info=model_info, docker_image="ci-dummy", **kwargs
             )
 
         model_runs = [
-            t for cmd, t in docker_sh_timeouts if "run.sh" in cmd and cmd.startswith("cd ")
+            t
+            for cmd, t in docker_sh_timeouts
+            if "run.sh" in cmd and cmd.startswith("cd ")
         ]
         assert len(model_runs) == 1, docker_sh_timeouts
         return model_runs[0]
@@ -812,8 +889,11 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ),
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
@@ -830,9 +910,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
@@ -855,9 +938,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(
-                runner, "pull_image", side_effect=RuntimeError("manifest unknown")
-            ), patch.object(runner, "run_container") as mock_run:
+            with (
+                patch.object(
+                    runner, "pull_image", side_effect=RuntimeError("manifest unknown")
+                ),
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -874,11 +960,12 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(
-                runner, "pull_image", side_effect=RuntimeError("offline")
-            ), patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image", side_effect=RuntimeError("offline")),
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == "img1"
@@ -891,9 +978,10 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container"
-            ) as mock_run:
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -925,9 +1013,10 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(
-                runner, "_ensure_local_image_available"
-            ) as mock_ensure, patch.object(runner, "run_container") as mock_run:
+            with (
+                patch.object(runner, "_ensure_local_image_available") as mock_ensure,
+                patch.object(runner, "run_container") as mock_run,
+            ):
                 result = runner.run_models_from_manifest(
                     manifest_file=manifest_path, timeout=60
                 )
@@ -949,9 +1038,12 @@ class TestRequirePinnedImageLocalRun:
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
             runner.additional_context = {"require_pinned_image": True}
 
-            with patch.object(runner, "_ensure_local_image_available"), patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
-            ) as mock_run:
+            with (
+                patch.object(runner, "_ensure_local_image_available"),
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ) as mock_run,
+            ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             assert mock_run.call_args[1]["docker_image"] == pinned
@@ -971,7 +1063,12 @@ class TestRequirePinnedImageLocalRun:
                             }
                         },
                         "built_models": {
-                            "img1": {"name": "m", "tags": "t", "n_gpus": "1", "args": ""}
+                            "img1": {
+                                "name": "m",
+                                "tags": "t",
+                                "n_gpus": "1",
+                                "args": "",
+                            }
                         },
                         "context": {"require_pinned_image": True},
                     },
@@ -980,8 +1077,11 @@ class TestRequirePinnedImageLocalRun:
             runner = self._runner()
             runner.perf_csv_path = os.path.join(tmpdir, "perf.csv")
 
-            with patch.object(runner, "pull_image") as mock_pull, patch.object(
-                runner, "run_container", return_value={"status": "SUCCESS"}
+            with (
+                patch.object(runner, "pull_image") as mock_pull,
+                patch.object(
+                    runner, "run_container", return_value={"status": "SUCCESS"}
+                ),
             ):
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
@@ -1146,17 +1246,15 @@ class TestStaleMultipleResultsIsDropped:
         if multiple_results is not None:
             model_info["multiple_results"] = multiple_results
 
-        with patch(
-            "madengine.execution.container_runner.Docker"
-        ) as mock_docker_cls, patch(
-            "madengine.execution.container_runner._print_run_env_table"
-        ), patch(
-            "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
-            return_value="/opt/rocm",
-        ), patch.object(
-            runner, "_resolve_docker_image", return_value="img:latest"
-        ), patch.object(
-            runner, "get_gpu_arg", return_value=""
+        with (
+            patch("madengine.execution.container_runner.Docker") as mock_docker_cls,
+            patch("madengine.execution.container_runner._print_run_env_table"),
+            patch(
+                "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
+                return_value="/opt/rocm",
+            ),
+            patch.object(runner, "_resolve_docker_image", return_value="img:latest"),
+            patch.object(runner, "get_gpu_arg", return_value=""),
         ):
             docker = mock_docker_cls.return_value
             docker.sh = MagicMock(side_effect=sh) if sh else MagicMock(return_value="")
@@ -1237,9 +1335,7 @@ class TestStaleMultipleResultsIsDropped:
         assert "2>/dev/null" in deletions[0]
         assert deletions[0].rstrip().endswith("fi")
 
-    def test_a_file_that_survives_the_deletion_is_reported(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_file_that_survives_the_deletion_is_reported(self, tmp_path, monkeypatch):
         """Failing quietly would merge the old rows into this run's results:
         the file is still what _resolve_multiple_results_path picks."""
 
@@ -1408,38 +1504,60 @@ class TestScriptsDirResolution:
 
     DEST = "run_directory"
 
-    @pytest.mark.parametrize("entry,why", [
-        ("run.sh", "no directory at all: the source becomes /."),
-        ("", "same"),
-        ("./run.sh", "the working directory, which holds the destination"),
-        ("/run.sh", "the filesystem root"),
-        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
-        ("../run.sh", "the parent of the working directory"),
-        ("/myworkspace/run.sh", "the working directory written absolutely"),
-        ("run_directory/run.sh", "the destination itself"),
-        ("./run_directory/run.sh", "the destination, spelled differently"),
-    ])
+    @pytest.mark.parametrize(
+        "entry,why",
+        [
+            ("run.sh", "no directory at all: the source becomes /."),
+            ("", "same"),
+            ("./run.sh", "the working directory, which holds the destination"),
+            ("/run.sh", "the filesystem root"),
+            (
+                "//run.sh",
+                "POSIX normpath keeps '//', so a test against '/' alone misses it",
+            ),
+            ("../run.sh", "the parent of the working directory"),
+            ("/myworkspace/run.sh", "the working directory written absolutely"),
+            ("run_directory/run.sh", "the destination itself"),
+            ("./run_directory/run.sh", "the destination, spelled differently"),
+        ],
+    )
     def test_a_source_holding_the_destination_is_refused(self, entry, why):
         with pytest.raises(ValueError):
             ContainerRunner._scripts_dir(entry, self.DEST, "m")
 
-    @pytest.mark.parametrize("entry,expected", [
-        ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
-        ("scripts/m/run.py", "scripts/m"),
-        ("scripts/m/sub/run.sh", "scripts/m/sub"),
-        # Resolves to the same directory as the first case, so it must be judged the same way.
-        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
-        # Outside the workspace entirely: it cannot contain the destination.
-        ("../opt/bench/run.sh", "../opt/bench"),
-        ("/opt/bench/run.sh", "/opt/bench"),
-    ])
-    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+    @pytest.mark.parametrize(
+        "entry,expected",
+        [
+            ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
+            ("scripts/m/run.py", "scripts/m"),
+            ("scripts/m/sub/run.sh", "scripts/m/sub"),
+            # Resolves to the same directory as the first case, so it must be judged the same way.
+            (
+                "../myworkspace/scripts/sglang_disagg/run.sh",
+                "../myworkspace/scripts/sglang_disagg",
+            ),
+            # Outside the workspace entirely: it cannot contain the destination.
+            ("../opt/bench/run.sh", "../opt/bench"),
+            ("/opt/bench/run.sh", "/opt/bench"),
+        ],
+    )
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(
+        self, entry, expected
+    ):
         assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
 
     def test_the_caller_never_builds_a_self_copy(self):
         """Stated on the command the caller builds, not on the helper's return value."""
-        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
-                      "/myworkspace/run.sh", "run_directory/run.sh"):
+        for entry in (
+            "run.sh",
+            "",
+            "./run.sh",
+            "/run.sh",
+            "//run.sh",
+            "../run.sh",
+            "/myworkspace/run.sh",
+            "run_directory/run.sh",
+        ):
             try:
                 src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
             except ValueError:

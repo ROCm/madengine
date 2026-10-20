@@ -96,9 +96,12 @@ class TestCleanupCommand:
                 "stuck_pids": [],
             }
 
-        with patch.object(
-            cleanup_module, "_list_madengine_containers", return_value=containers
-        ), patch.object(lifecycle, "reap", fake_reap):
+        with (
+            patch.object(
+                cleanup_module, "_list_madengine_containers", return_value=containers
+            ),
+            patch.object(lifecycle, "reap", fake_reap),
+        ):
             result = runner.invoke(app, ["cleanup"] + (args or []))
         return result, reaped
 
@@ -139,7 +142,14 @@ class TestCleanupCommand:
 
     def test_dry_run_removes_nothing(self):
         result, reaped = self._invoke(
-            [{"id": "abcdef123456", "name": "c1", "owner_pid": DEAD_PID, "state": "running"}],
+            [
+                {
+                    "id": "abcdef123456",
+                    "name": "c1",
+                    "owner_pid": DEAD_PID,
+                    "state": "running",
+                }
+            ],
             args=["--dry-run"],
         )
         assert result.exit_code == ExitCode.SUCCESS

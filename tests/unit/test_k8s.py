@@ -237,13 +237,10 @@ def test_default_job_yaml_references_dockerhub_rocm(tmp_path):
         / "templates"
         / "kubernetes"
     )
-    rendered = (
-        create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
-    )
+    rendered = create_jinja_env(template_dir).get_template("job.yaml.j2").render(**ctx)
     job = list(yaml.safe_load_all(rendered))[0]
     pull_names = [
-        s["name"]
-        for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
+        s["name"] for s in job["spec"]["template"]["spec"]["imagePullSecrets"]
     ]
     assert pull_names[-1] == "dockerhub-rocm"
 
@@ -354,9 +351,7 @@ def test_resolve_runtime_secret_name_existing():
 
 
 def test_resolve_runtime_secret_name_omit_optional():
-    assert (
-        resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
-    )
+    assert resolve_runtime_secret_name(SECRETS_STRATEGY_OMIT, {}, None) is None
 
 
 def test_estimate_skips_credential_when_not_in_configmap():
@@ -375,9 +370,15 @@ def test_estimate_skips_credential_when_not_in_configmap():
 
 def test_pvc_match_exact():
     assigned: set = set()
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod"
+    )
     assigned.add("my-pod")
-    assert match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned) == "my-pod-0-abc"
+    assert (
+        match_pvc_subdir_to_k8s_pod("my-pod", ["my-pod", "my-pod-0-abc"], assigned)
+        == "my-pod-0-abc"
+    )
 
 
 def test_pvc_match_prefix_indexed_job():
@@ -774,8 +775,12 @@ def _run_model_invocation_block(script, model_exit_code, tmp_path, name):
     container would go on to run post-scripts and copy artifacts).
     """
     lines = script.splitlines()
-    start = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME="))
-    end = next(i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME="))
+    start = next(
+        i for i, l in enumerate(lines) if l.strip().startswith("MODEL_START_TIME=")
+    )
+    end = next(
+        i for i, l in enumerate(lines) if l.strip().startswith("MODEL_END_TIME=")
+    )
     block = "\n".join(l.strip() for l in lines[start:end])
 
     stub = tmp_path / f"run_model_{name}.sh"
@@ -941,7 +946,13 @@ class TestK8sPodLogContainerParam:
             manifest_file="build_manifest.json",
             additional_context={"k8s": {"namespace": "default"}},
         )
-        deployment = KubernetesDeployment(cfg)
+        # __init__ loads a real kubeconfig. GitHub runners have none, and this
+        # class only checks how pod logs are requested.
+        with (
+            patch("madengine.deployment.kubernetes.k8s_config.load_kube_config"),
+            patch("madengine.deployment.kubernetes.k8s_config.load_incluster_config"),
+        ):
+            deployment = KubernetesDeployment(cfg)
         deployment.core_v1 = MagicMock()
         return deployment
 
@@ -967,8 +978,8 @@ class TestK8sPodLogContainerParam:
         pod = self._fake_pod("job-0", "main-container")
 
         deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
-        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
-            "log output"
+        deployment.core_v1.read_namespaced_pod_log.return_value = (
+            self._fake_log_response("log output")
         )
         deployment.core_v1.read_namespaced_pod.return_value = pod
 
@@ -986,8 +997,8 @@ class TestK8sPodLogContainerParam:
         pod = self._fake_pod("job-0", "main-container")
 
         deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
-        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
-            "log output"
+        deployment.core_v1.read_namespaced_pod_log.return_value = (
+            self._fake_log_response("log output")
         )
 
         deployment._print_pod_logs_on_failure("job")
@@ -1010,10 +1021,12 @@ class TestK8sPodLogContainerParam:
             "Llama,84.3,median_ttft,ms\n",
             encoding="utf-8",
         )
-        deployment.manifest["built_models"]["img1"]["multiple_results"] = "perf_Llama.csv"
+        deployment.manifest["built_models"]["img1"][
+            "multiple_results"
+        ] = "perf_Llama.csv"
         deployment.core_v1.list_namespaced_pod.return_value = MagicMock(items=[pod])
-        deployment.core_v1.read_namespaced_pod_log.return_value = self._fake_log_response(
-            "performance: 122.1 tokens_per_second\n"
+        deployment.core_v1.read_namespaced_pod_log.return_value = (
+            self._fake_log_response("performance: 122.1 tokens_per_second\n")
         )
         deployment.core_v1.read_namespaced_pod.return_value = pod
         deployment._collect_from_pvc = MagicMock()
@@ -1022,13 +1035,15 @@ class TestK8sPodLogContainerParam:
         deployment._refresh_pod_until_terminal_phase = MagicMock(return_value=pod)
         deployment._primary_workload_container_exit_code = MagicMock(return_value=0)
 
-        with patch(
-            "madengine.deployment.k8s_results.update_perf_csv"
-        ) as mock_update_csv, patch(
-            "madengine.deployment.k8s_results.update_perf_super_json",
-            return_value=3,
-        ), patch(
-            "madengine.deployment.k8s_results.update_perf_super_csv"
+        with (
+            patch(
+                "madengine.deployment.k8s_results.update_perf_csv"
+            ) as mock_update_csv,
+            patch(
+                "madengine.deployment.k8s_results.update_perf_super_json",
+                return_value=3,
+            ),
+            patch("madengine.deployment.k8s_results.update_perf_super_csv"),
         ):
             results = deployment.collect_results("job")
 
@@ -1084,7 +1099,9 @@ def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
         f"{csv_body}"
         "MADENGINE_PERF_CSV_END perf_Qwen3-8B.csv\n"
     )
-    assert extract_perf_csv_blocks(log) == [("perf_Qwen3-8B.csv", csv_body.rstrip("\n"))]
+    assert extract_perf_csv_blocks(log) == [
+        ("perf_Qwen3-8B.csv", csv_body.rstrip("\n"))
+    ]
 
     results = {
         "logs": [
@@ -1096,8 +1113,10 @@ def test_perf_csvs_in_pod_logs_are_recovered_without_a_shared_volume(tmp_path):
     written = materialize_perf_csvs_from_logs(tmp_path, results)
     assert written == 2
     assert (tmp_path / "job-0-abc" / "log_csv" / "perf_Qwen3-8B.csv").is_file()
-    assert (tmp_path / "job-1-def" / "log_csv" / "perf_Qwen3-8B.csv").read_text().startswith(
-        "model,performance,metric"
+    assert (
+        (tmp_path / "job-1-def" / "log_csv" / "perf_Qwen3-8B.csv")
+        .read_text()
+        .startswith("model,performance,metric")
     )
     assert results["artifacts"][0]["type"] == "log_csv"
 
@@ -1216,8 +1235,7 @@ class TestLlmdResultTopology:
         )
 
         assert (
-            gpu_arch_from_product_name("AMD_INSTINCT_MI250_MCM_OAM_AC_MBA")
-            == "gfx90a"
+            gpu_arch_from_product_name("AMD_INSTINCT_MI250_MCM_OAM_AC_MBA") == "gfx90a"
         )
         prefix = "madengine-model"
         deployment = KubernetesResultsMixin()

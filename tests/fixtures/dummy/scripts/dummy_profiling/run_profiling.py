@@ -44,9 +44,13 @@ def main():
     if world_size > 1:
         dist.init_process_group(backend="nccl")
 
-    model = nn.Sequential(
-        nn.Linear(HIDDEN, 4 * HIDDEN), nn.GELU(), nn.Linear(4 * HIDDEN, HIDDEN)
-    ).cuda().to(torch.bfloat16)
+    model = (
+        nn.Sequential(
+            nn.Linear(HIDDEN, 4 * HIDDEN), nn.GELU(), nn.Linear(4 * HIDDEN, HIDDEN)
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -61,11 +65,19 @@ def main():
                 f"dummy_profiling: profiler window is {window} steps but DUMMY_PROF_STEPS is {STEPS}"
             )
         prof = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
             schedule=torch.profiler.schedule(
-                wait=PROFILE_WAIT, warmup=PROFILE_WARMUP, active=PROFILE_ACTIVE, repeat=1
+                wait=PROFILE_WAIT,
+                warmup=PROFILE_WARMUP,
+                active=PROFILE_ACTIVE,
+                repeat=1,
             ),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(PROFILE_DIR, worker_name=f"rank{rank}"),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                PROFILE_DIR, worker_name=f"rank{rank}"
+            ),
             record_shapes=RECORD_SHAPES,
             with_stack=False,
         )
@@ -84,14 +96,20 @@ def main():
         if prof:
             prof.step()
         if rank == 0:
-            print(f"step {step + 1}/{STEPS} | step time (ms): {times[-1] * 1000:.2f}", flush=True)
+            print(
+                f"step {step + 1}/{STEPS} | step time (ms): {times[-1] * 1000:.2f}",
+                flush=True,
+            )
     if prof:
         prof.stop()
 
     steady = sorted(times[5:]) or times
     median = steady[len(steady) // 2]
     if rank == 0:
-        print(f"performance: {BATCH * world_size / median:.2f} samples_per_second", flush=True)
+        print(
+            f"performance: {BATCH * world_size / median:.2f} samples_per_second",
+            flush=True,
+        )
     if world_size > 1:
         dist.destroy_process_group()
 

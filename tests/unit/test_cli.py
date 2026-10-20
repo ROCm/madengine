@@ -160,8 +160,16 @@ class TestDisplayResultsTable:
         """Multi-arch builds record gpu_architecture; table must show it, not N/A."""
         summary = {
             "successful_builds": [
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a", "gpu_architecture": "gfx90a"},
-                {"model": "dummy", "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942", "gpu_architecture": "gfx942"},
+                {
+                    "model": "dummy",
+                    "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx90a",
+                    "gpu_architecture": "gfx90a",
+                },
+                {
+                    "model": "dummy",
+                    "docker_image": "ci-dummy_dummy.ubuntu.amd_gfx942",
+                    "gpu_architecture": "gfx942",
+                },
             ],
             "failed_builds": [],
         }
@@ -229,7 +237,9 @@ class TestDisplayResultsTable:
             assert "pyt_vllm_disagg_llmd_qwen3-0.6b" in rendered
             assert "Skipped" in rendered
             assert "No items" not in rendered
-            notes = [str(call.args[0]) for call in mock_console.print.call_args_list[1:]]
+            notes = [
+                str(call.args[0]) for call in mock_console.print.call_args_list[1:]
+            ]
             assert any("rocm/example:tag" in note for note in notes)
 
     def test_performance_table_shows_llm_d_deployment_and_mode(self, tmp_path):
@@ -270,6 +280,7 @@ class TestDisplayResultsTable:
 # ============================================================================
 # CLI Validation Tests
 # ============================================================================
+
 
 class TestValidateAdditionalContext:
     """Test the validate_additional_context function."""
@@ -345,20 +356,20 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_valid_mixed_build_new(self):
         """Test processing batch manifest with mixed build_new values - core functionality."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {"model_name": "model1", "build_new": True},
             {"model_name": "model2", "build_new": False},
             {"model_name": "model3", "build_new": True},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # Only models with build_new=True should be in build_tags
             assert result["build_tags"] == ["model1", "model3"]
             # All models should be in all_tags
@@ -370,19 +381,19 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_default_build_new_false(self):
         """Test that build_new defaults to false when not specified."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {"model_name": "model1"},  # No build_new field
             {"model_name": "model2", "build_new": True},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # model1 should not be in build_tags (defaults to false)
             assert result["build_tags"] == ["model2"]
             assert result["all_tags"] == ["model1", "model2"]
@@ -392,28 +403,24 @@ class TestProcessBatchManifest:
     def test_process_batch_manifest_with_registry_fields(self):
         """Test per-model registry override - key feature."""
         from madengine.cli.validators import process_batch_manifest
-        
+
         batch_data = [
             {
                 "model_name": "model1",
                 "build_new": True,
                 "registry": "docker.io/myorg",
-                "registry_image": "myorg/model1"
+                "registry_image": "myorg/model1",
             },
-            {
-                "model_name": "model2",
-                "build_new": True,
-                "registry": "gcr.io/myproject"
-            },
+            {"model_name": "model2", "build_new": True, "registry": "gcr.io/myproject"},
         ]
-        
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             result = process_batch_manifest(temp_file)
-            
+
             # Verify registry metadata is preserved
             assert result["manifest_data"][0]["registry"] == "docker.io/myorg"
             assert result["manifest_data"][0]["registry_image"] == "myorg/model1"
@@ -429,12 +436,12 @@ class TestProcessBatchManifest:
         with pytest.raises(FileNotFoundError) as exc_info:
             process_batch_manifest("non_existent_file.json")
         assert "Batch manifest file not found" in str(exc_info.value)
-        
+
         # Invalid JSON
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("invalid json content{")
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
@@ -451,20 +458,20 @@ class TestProcessBatchManifest:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
             assert "must be a list" in str(exc_info.value)
         finally:
             os.unlink(temp_file)
-        
+
         # Missing model_name
         batch_data = [{"build_new": True}]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(batch_data, f)
             temp_file = f.name
-        
+
         try:
             with pytest.raises(ValueError) as exc_info:
                 process_batch_manifest(temp_file)
@@ -476,6 +483,7 @@ class TestProcessBatchManifest:
 # ============================================================================
 # CLI exit code and error handling tests (CI / Jenkins smoke)
 # ============================================================================
+
 
 @pytest.fixture
 def runner() -> CliRunner:

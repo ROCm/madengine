@@ -66,13 +66,19 @@ def parse_csv(path: Path) -> dict:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("Usage: rocprof_counter_csv_to_instruction_histogram.py <output_dir>", file=sys.stderr)
+        print(
+            "Usage: rocprof_counter_csv_to_instruction_histogram.py <output_dir>",
+            file=sys.stderr,
+        )
         return 1
     out_dir = Path(sys.argv[1])
     if not out_dir.is_dir():
         return 0  # no dir, skip silently
     aggregated = {}
-    for name in ("rocprofv3_output_counter_collection.csv", "rocprofv3_output_domain_stats.csv"):
+    for name in (
+        "rocprofv3_output_counter_collection.csv",
+        "rocprofv3_output_domain_stats.csv",
+    ):
         path = out_dir / name
         if not path.exists():
             continue

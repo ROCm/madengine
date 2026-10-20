@@ -18,7 +18,9 @@ from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.config_loader import PRESET_ENV_KEYS, ConfigLoader
 from madengine.deployment.slurm import SlurmDeployment
 
-MULTI_NODE_PRESET_ENV = ConfigLoader.load_preset("slurm/profiles/multi-node.json")["env_vars"]
+MULTI_NODE_PRESET_ENV = ConfigLoader.load_preset("slurm/profiles/multi-node.json")[
+    "env_vars"
+]
 DEFAULTS_PRESET_ENV = ConfigLoader.load_preset("slurm/defaults.json")["env_vars"]
 ALL_PRESET_KEYS = set(MULTI_NODE_PRESET_ENV) | set(DEFAULTS_PRESET_ENV)
 
@@ -65,7 +67,9 @@ def _deployment(tmp_path: Path, launcher="slurm_multi", env_vars=None, card_env=
         additional_context["env_vars"] = env_vars
     return SlurmDeployment(
         DeploymentConfig(
-            target="slurm", manifest_file=str(manifest_path), additional_context=additional_context
+            target="slurm",
+            manifest_file=str(manifest_path),
+            additional_context=additional_context,
         )
     )
 
@@ -80,7 +84,7 @@ def _exports(script: str) -> dict:
     for line in script.splitlines():
         line = line.strip()
         if line.startswith("export ") and "=" in line:
-            key, _, value = line[len("export "):].partition("=")
+            key, _, value = line[len("export ") :].partition("=")
             out[key] = value.strip("'\"")
     return out
 
@@ -134,7 +138,9 @@ class TestSlurmMultiDoesNotExportPresetEnv:
 class TestTemplatedLauncherKeepsPresetEnv:
     def test_torchrun_job_script_receives_preset_env(self, tmp_path):
         deployment = _deployment(tmp_path, launcher="torchrun")
-        context = deployment._prepare_template_context(deployment.manifest["built_models"]["img"])
+        context = deployment._prepare_template_context(
+            deployment.manifest["built_models"]["img"]
+        )
         script = deployment.jinja_env.get_template("job.sh.j2").render(**context)
         for key, value in MULTI_NODE_PRESET_ENV.items():
             assert key in context["env_vars"]
@@ -153,7 +159,10 @@ class TestBuildManifestSavesOnlyUserEnv:
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
         orch.rich_console = MagicMock()
         orch.additional_context = ConfigLoader.load_slurm_config(
-            {"slurm": {"nodes": 2, "partition": "p"}, "env_vars": {"NCCL_IB_DISABLE": "0"}}
+            {
+                "slurm": {"nodes": 2, "partition": "p"},
+                "env_vars": {"NCCL_IB_DISABLE": "0"},
+            }
         )
         manifest = tmp_path / "build_manifest.json"
         manifest.write_text(json.dumps({"built_images": {}, "built_models": {}}))

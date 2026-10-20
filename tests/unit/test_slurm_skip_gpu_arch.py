@@ -51,7 +51,11 @@ def _manifest(tmp_path, models):
     manifest = {
         "built_images": {k: {"docker_image": k} for k, _ in models},
         "built_models": {
-            k: {"name": k, "skip_gpu_arch": skip, "distributed": {"launcher": "slurm_multi"}}
+            k: {
+                "name": k,
+                "skip_gpu_arch": skip,
+                "distributed": {"launcher": "slurm_multi"},
+            }
             for k, skip in models
         },
         "context": {},
@@ -75,7 +79,9 @@ def _orchestrator(tmp_path, slurm=None, disable=False):
         disable_skip_gpu_arch=disable,
         require_pinned_image=False,
     )
-    orch = RunOrchestrator(args, additional_context={"slurm": slurm or {"partition": "mi355"}})
+    orch = RunOrchestrator(
+        args, additional_context={"slurm": slurm or {"partition": "mi355"}}
+    )
     orch.rich_console = RichConsole(file=io.StringIO(), width=400)
     return orch
 
@@ -123,9 +129,7 @@ class TestProbeGpuArch:
         selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
         ok = subprocess.CompletedProcess([], 0, stdout=ROCMINFO, stderr="")
         with patch(SELECTOR_RUN, return_value=ok) as run:
-            arch = selector.probe_gpu_arch(
-                partition="mi355", nodelist="node01,node02"
-            )
+            arch = selector.probe_gpu_arch(partition="mi355", nodelist="node01,node02")
         assert arch == "gfx950"
         srun = run.call_args_list[0].args[0]
         assert srun[0] == "srun"
@@ -133,14 +137,10 @@ class TestProbeGpuArch:
 
     def test_bracketed_nodelist_is_expanded_before_the_probe(self):
         selector = SlurmNodeSelector(console=MagicMock(), timeout=5)
-        hosts = subprocess.CompletedProcess(
-            [], 0, stdout="node01\nnode02\n", stderr=""
-        )
+        hosts = subprocess.CompletedProcess([], 0, stdout="node01\nnode02\n", stderr="")
         ok = subprocess.CompletedProcess([], 0, stdout=ROCMINFO, stderr="")
         with patch(SELECTOR_RUN, side_effect=[hosts, ok]) as run:
-            arch = selector.probe_gpu_arch(
-                partition="mi355", nodelist="node[01-02]"
-            )
+            arch = selector.probe_gpu_arch(partition="mi355", nodelist="node[01-02]")
         assert arch == "gfx950"
         assert run.call_args_list[0].args[0] == [
             "scontrol",
@@ -240,7 +240,9 @@ class TestSlurmSkipGpuArch:
     def test_probe_that_finds_no_gpu_keeps_card(self, tmp_path):
         manifest = _manifest(tmp_path, [("m1", "gfx950")])
         orch = _orchestrator(tmp_path)
-        cpu_only = subprocess.CompletedProcess([], 0, stdout="Name: AMD EPYC\n", stderr="")
+        cpu_only = subprocess.CompletedProcess(
+            [], 0, stdout="Name: AMD EPYC\n", stderr=""
+        )
 
         with patch(SELECTOR_RUN, return_value=cpu_only):
             assert orch._apply_skip_gpu_arch_for_slurm(str(manifest)) == (1, [])
@@ -248,7 +250,9 @@ class TestSlurmSkipGpuArch:
 
     def test_disable_flag_bypasses_check_and_probe(self, tmp_path):
         manifest = _manifest(tmp_path, [("m1", "gfx950")])
-        orch = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"}, disable=True)
+        orch = _orchestrator(
+            tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"}, disable=True
+        )
         before = manifest.read_text()
 
         with patch(SELECTOR_RUN) as run:
@@ -289,7 +293,8 @@ class TestExecuteDistributedSlurm:
         deployment.execute.return_value = MagicMock(is_success=True, metrics=None)
 
         with patch(
-            "madengine.deployment.factory.DeploymentFactory.create", return_value=deployment
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
         ) as create:
             orch._execute_distributed("slurm", str(manifest))
 
@@ -350,9 +355,7 @@ class TestExecuteDistributedSlurm:
         assert _perf_rows(tmp_path)[0]["model"] == "sub/model"
 
     def test_each_run_keeps_its_own_filtered_copy(self, tmp_path):
-        manifest = _manifest(
-            tmp_path, [("only950", "gfx950"), ("only942", "gfx942")]
-        )
+        manifest = _manifest(tmp_path, [("only950", "gfx950"), ("only942", "gfx942")])
         first = _orchestrator(tmp_path, {"partition": "mi355", "gpu_arch": "gfx950"})
         second = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
 
@@ -378,33 +381,53 @@ class TestFailedDeploymentIsAFailure:
         deployment = MagicMock()
         deployment.execute.return_value = result
         with patch(
-            "madengine.deployment.factory.DeploymentFactory.create", return_value=deployment
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
         ):
             return orch._execute_distributed("slurm", str(manifest))
 
     def test_failed_job_without_perf_rows_fails_every_submitted_model(self, tmp_path):
         summary = self._run(
             tmp_path,
-            MagicMock(is_success=False, metrics={"successful_runs": [], "failed_runs": []},
-                      message="Job 123456 failed: FAILED", deployment_id="123456"),
+            MagicMock(
+                is_success=False,
+                metrics={"successful_runs": [], "failed_runs": []},
+                message="Job 123456 failed: FAILED",
+                deployment_id="123456",
+            ),
         )
-        assert [(r["model"], r["status"]) for r in summary["failed_runs"]] == [("m1", "FAILURE")]
+        assert [(r["model"], r["status"]) for r in summary["failed_runs"]] == [
+            ("m1", "FAILURE")
+        ]
         assert summary["failed_runs"][0]["error"] == "Job 123456 failed: FAILED"
 
     def test_failed_job_with_no_metrics_at_all_still_fails(self, tmp_path):
         summary = self._run(
             tmp_path,
-            MagicMock(is_success=False, metrics=None, message="Job 123457 failed: TIMEOUT",
-                      deployment_id="123457"),
+            MagicMock(
+                is_success=False,
+                metrics=None,
+                message="Job 123457 failed: TIMEOUT",
+                deployment_id="123457",
+            ),
         )
         assert [r["status"] for r in summary["failed_runs"]] == ["FAILURE"]
 
     def test_existing_failure_rows_are_not_duplicated(self, tmp_path):
-        row = {"model": "m1", "status": "FAILURE", "performance": None, "duration": None}
+        row = {
+            "model": "m1",
+            "status": "FAILURE",
+            "performance": None,
+            "duration": None,
+        }
         summary = self._run(
             tmp_path,
-            MagicMock(is_success=False, metrics={"successful_runs": [], "failed_runs": [row]},
-                      message="x", deployment_id="1"),
+            MagicMock(
+                is_success=False,
+                metrics={"successful_runs": [], "failed_runs": [row]},
+                message="x",
+                deployment_id="1",
+            ),
         )
         assert summary["failed_runs"] == [row]
 
@@ -412,8 +435,12 @@ class TestFailedDeploymentIsAFailure:
         ok = {"model": "m1", "status": "SUCCESS", "performance": "1", "duration": "2"}
         summary = self._run(
             tmp_path,
-            MagicMock(is_success=True, metrics={"successful_runs": [ok], "failed_runs": []},
-                      message="", deployment_id="1"),
+            MagicMock(
+                is_success=True,
+                metrics={"successful_runs": [ok], "failed_runs": []},
+                message="",
+                deployment_id="1",
+            ),
         )
         assert summary == {"successful_runs": [ok], "failed_runs": []}
 
@@ -426,10 +453,14 @@ class TestOutputHoldsThisRun:
 
     HEADER = "model,status,performance\n"
 
-    def test_only_this_runs_rows_reach_output_and_start_row_is_the_working_files(self, tmp_path):
+    def test_only_this_runs_rows_reach_output_and_start_row_is_the_working_files(
+        self, tmp_path
+    ):
         from madengine.orchestration import run_orchestrator as ro
 
-        (tmp_path / "perf.csv").write_text(self.HEADER + "old1,SUCCESS,1\nold2,SUCCESS,2\n")
+        (tmp_path / "perf.csv").write_text(
+            self.HEADER + "old1,SUCCESS,1\nold2,SUCCESS,2\n"
+        )
         manifest = _manifest(tmp_path, [("m1", None)])
         out = tmp_path / "perf_oci-64.csv"
         orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
@@ -441,11 +472,16 @@ class TestOutputHoldsThisRun:
             seen["start"] = orch.additional_context["session_start_row"]
             with open("perf.csv", "a") as f:
                 f.write("m1,SUCCESS,42\n")
-            return MagicMock(is_success=True, metrics=None, message="", deployment_id="1")
+            return MagicMock(
+                is_success=True, metrics=None, message="", deployment_id="1"
+            )
 
         deployment = MagicMock()
         deployment.execute.side_effect = execute
-        with patch("madengine.deployment.factory.DeploymentFactory.create", return_value=deployment):
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ):
             orch._execute_distributed("slurm", str(manifest))
 
         assert seen["start"] == 2
@@ -465,7 +501,10 @@ class TestOutputHoldsThisRun:
 
         deployment = MagicMock()
         deployment.execute.side_effect = execute
-        with patch("madengine.deployment.factory.DeploymentFactory.create", return_value=deployment):
+        with patch(
+            "madengine.deployment.factory.DeploymentFactory.create",
+            return_value=deployment,
+        ):
             with pytest.raises(RuntimeError):
                 orch._execute_distributed("slurm", str(manifest))
         assert out.read_text() == self.HEADER + "m1,FAILURE,\n"
@@ -484,7 +523,11 @@ class TestOutputHoldsThisRun:
         out = tmp_path / "o.csv"
         out.write_text("status,model\nSKIPPED,s\n")
         assert _export_session_rows("perf.csv", 0, str(out)) == 1
-        assert out.read_text().splitlines() == ["status,model", "SKIPPED,s", "SUCCESS,a"]
+        assert out.read_text().splitlines() == [
+            "status,model",
+            "SKIPPED,s",
+            "SUCCESS,a",
+        ]
 
     def test_another_path_to_the_working_csv_is_not_appended(self, tmp_path):
         from madengine.orchestration.run_orchestrator import _export_session_rows
@@ -546,10 +589,13 @@ class TestManifestDockerEnvReachesDistributed:
 
         deployment = MagicMock()
         deployment.execute.return_value = MagicMock(is_success=True, metrics=None)
-        with patch("builtins.open", guarded), patch(
-            "madengine.deployment.factory.DeploymentFactory.create",
-            return_value=deployment,
-        ) as create:
+        with (
+            patch("builtins.open", guarded),
+            patch(
+                "madengine.deployment.factory.DeploymentFactory.create",
+                return_value=deployment,
+            ) as create,
+        ):
             orch._execute_distributed("slurm", str(manifest))
         create.assert_called_once()
         assert create.call_args.args[0].manifest_file == str(manifest)
@@ -565,10 +611,13 @@ class TestManifestDockerEnvReachesDistributed:
             return real_open(path, mode, *args, **kwargs)
 
         deployment = MagicMock()
-        with patch("builtins.open", guarded), patch(
-            "madengine.deployment.factory.DeploymentFactory.create",
-            return_value=deployment,
-        ) as create:
+        with (
+            patch("builtins.open", guarded),
+            patch(
+                "madengine.deployment.factory.DeploymentFactory.create",
+                return_value=deployment,
+            ) as create,
+        ):
             with pytest.raises(OSError, match="read-only file system"):
                 orch._execute_distributed("slurm", str(manifest))
         create.assert_not_called()
@@ -602,16 +651,19 @@ class TestLocalManifestEnvDoesNotOverrideRuntime:
             "failed_runs": [],
         }
 
-        with patch.object(orch, "_init_runtime_context"), patch.object(
-            orch, "_show_node_info"
-        ), patch.object(orch, "_copy_scripts"), patch.object(
-            orch, "_wait_for_gpu_memory"
-        ), patch(
-            "madengine.orchestration.run_orchestrator.load_credentials",
-            return_value={},
-        ), patch(
-            "madengine.execution.container_runner.ContainerRunner",
-            return_value=runner,
+        with (
+            patch.object(orch, "_init_runtime_context"),
+            patch.object(orch, "_show_node_info"),
+            patch.object(orch, "_copy_scripts"),
+            patch.object(orch, "_wait_for_gpu_memory"),
+            patch(
+                "madengine.orchestration.run_orchestrator.load_credentials",
+                return_value={},
+            ),
+            patch(
+                "madengine.execution.container_runner.ContainerRunner",
+                return_value=runner,
+            ),
         ):
             orch._execute_local(str(manifest), 60)
 
@@ -625,9 +677,7 @@ class TestCwdOffsetStaysOnCwdPerf:
     def test_per_job_csv_is_not_sliced_by_the_cwd_offset(self, tmp_path):
         from madengine.deployment.slurm import SlurmDeployment
 
-        (tmp_path / "perf.csv").write_text(
-            "model,status\n" + "old,SUCCESS\n" * 10
-        )
+        (tmp_path / "perf.csv").write_text("model,status\n" + "old,SUCCESS\n" * 10)
         job = tmp_path / "job.csv"
         job.write_text("model,status\nm1,SUCCESS\n")
         dep = SlurmDeployment.__new__(SlurmDeployment)
@@ -681,13 +731,17 @@ class TestProbeReadsKfdTopology:
     )
     def test_kfd_topology_decodes_the_gpu(self, tmp_path, versions, want):
         script = self._script(self._topology(tmp_path, versions))
-        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                             env={"PATH": "/usr/bin:/bin"}).stdout
+        out = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin"},
+        ).stdout
         assert parse_gpu_arch(out) == want
 
     def test_cpu_only_topology_falls_through_to_rocminfo(self, tmp_path):
         script = self._script(self._topology(tmp_path, [0]))
-        assert script.rstrip().endswith('rocminfo 2>/dev/null')
+        assert script.rstrip().endswith("rocminfo 2>/dev/null")
         # A stub, not the host rocminfo: this machine's rocminfo reports a GPU
         # and would hide the "CPU-only topology yields no arch" case.
         stub = tmp_path / "bin"
@@ -710,7 +764,9 @@ class TestEmptyManifestIsAFailure:
 
     def test_no_built_images_fails_and_submits_nothing(self, tmp_path):
         manifest = tmp_path / "build_manifest.json"
-        manifest.write_text(json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+        manifest.write_text(
+            json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
         orch = _orchestrator(tmp_path, {"partition": "mi300", "gpu_arch": "gfx942"})
         with patch("madengine.deployment.factory.DeploymentFactory.create") as create:
             summary = orch._execute_distributed("slurm", str(manifest))

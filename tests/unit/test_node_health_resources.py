@@ -43,7 +43,9 @@ def _probe_output(resources, processes="NO_PROCESSES"):
 
 def _health(sel, resources, processes="NO_PROCESSES"):
     with patch(RUN) as run:
-        run.return_value = MagicMock(returncode=0, stdout=_probe_output(resources, processes), stderr="")
+        run.return_value = MagicMock(
+            returncode=0, stdout=_probe_output(resources, processes), stderr=""
+        )
         return sel.check_node_health("n1"), run.call_args[0][0][-1]
 
 
@@ -54,11 +56,18 @@ def _vram(*used_gb, total_gb=192):
 class TestParse:
     def test_reads_every_field(self):
         r = parse_node_resources("VRAM 1 2\nVRAM 3 4\nDOCKER_AVAIL 99\nIMAGE_PRESENT\n")
-        assert r == {"vram": [(1, 2), (3, 4)], "docker_avail": 99, "image_present": True}
+        assert r == {
+            "vram": [(1, 2), (3, 4)],
+            "docker_avail": 99,
+            "image_present": True,
+        }
 
     def test_ignores_noise_and_missing_sections(self):
         assert parse_node_resources("VRAM x y\nDOCKER_AVAIL \ngarbage") == {
-            "vram": [], "docker_avail": None, "image_present": False}
+            "vram": [],
+            "docker_avail": None,
+            "image_present": False,
+        }
         assert parse_node_resources(None)["vram"] == []
 
 
@@ -75,7 +84,9 @@ class TestGpuMemory:
 
     def test_occupied_by_a_process_the_name_filter_misses(self):
         # SGLang held the memory; no ray/vllm process was running.
-        status, _ = _health(_selector(), _vram(80, 80, 80, 80), processes="NO_PROCESSES")
+        status, _ = _health(
+            _selector(), _vram(80, 80, 80, 80), processes="NO_PROCESSES"
+        )
         assert status.health == NodeHealth.DIRTY
 
     def test_without_sysfs_the_old_estimate_still_applies(self):
@@ -94,7 +105,9 @@ class TestDockerDisk:
 
     def test_image_already_on_the_node_needs_no_space(self):
         sel = _selector(image="rocm/mad-private:x", image_size_bytes=40 * GIB)
-        status, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {2 * GIB}\nIMAGE_PRESENT")
+        status, _ = _health(
+            sel, _vram(0.3) + f"\nDOCKER_AVAIL {2 * GIB}\nIMAGE_PRESENT"
+        )
         assert status.health == NodeHealth.CLEAN
 
     def test_enough_space_is_clean(self):
@@ -111,7 +124,9 @@ class TestDockerDisk:
         assert status.health == NodeHealth.CLEAN
 
     def test_image_name_is_put_into_the_probe_only_when_plain(self):
-        _, script = _health(_selector(image="rocm/mad-private:ci-a_b.c-1", image_size_bytes=1), "")
+        _, script = _health(
+            _selector(image="rocm/mad-private:ci-a_b.c-1", image_size_bytes=1), ""
+        )
         assert 'docker image inspect "rocm/mad-private:ci-a_b.c-1"' in script
         _, script = _health(_selector(image="x; rm -rf /", image_size_bytes=1), "")
         assert "rm -rf" not in script
@@ -119,29 +134,47 @@ class TestDockerDisk:
 
 class TestProbeScriptRuns:
     def test_resources_section_reads_amdgpu_sysfs(self, tmp_path):
-        for i, (used, total) in enumerate([(300 << 20, 192 * GIB), (130 * GIB, 192 * GIB)]):
+        for i, (used, total) in enumerate(
+            [(300 << 20, 192 * GIB), (130 * GIB, 192 * GIB)]
+        ):
             d = tmp_path / f"card{i}" / "device"
             d.mkdir(parents=True)
             (d / "mem_info_vram_used").write_text(f"{used}\n")
             (d / "mem_info_vram_total").write_text(f"{total}\n")
         (tmp_path / "card9" / "device").mkdir(parents=True)  # a non-amdgpu card
         _, script = _health(_selector(), "")
-        script = script.replace("/sys/class/drm/card*/device", f"{tmp_path}/card*/device")
-        script = script.replace('GPU_INFO=$(amd-smi list 2>/dev/null || echo "GPU_CHECK_FAILED")', "GPU_INFO=x")
+        script = script.replace(
+            "/sys/class/drm/card*/device", f"{tmp_path}/card*/device"
+        )
+        script = script.replace(
+            'GPU_INFO=$(amd-smi list 2>/dev/null || echo "GPU_CHECK_FAILED")',
+            "GPU_INFO=x",
+        )
         env = {"PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "amd-smi").write_text("#!/bin/sh\necho gpu\n")
         (tmp_path / "bin" / "amd-smi").chmod(0o755)
-        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env).stdout
+        out = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, env=env
+        ).stdout
         section = out.split("===RESOURCES===")[1].split("===END_RESOURCES===")[0]
-        assert parse_node_resources(section)["vram"] == [(300 << 20, 192 * GIB), (130 * GIB, 192 * GIB)]
+        assert parse_node_resources(section)["vram"] == [
+            (300 << 20, 192 * GIB),
+            (130 * GIB, 192 * GIB),
+        ]
 
 
 class TestManifestCarriesNoSecrets:
     def test_secret_keys_are_dropped_everything_else_kept(self):
         ctx = {
-            "docker_env_vars": {"MAD_SECRETS_HFTOKEN": "hf_abcdefghijklmnopqrstuvwxyz", "NCCL_DEBUG": "WARN"},
-            "docker_build_arg": {"MAD_SECRETS_HFTOKEN": "hf_abcdefghijklmnopqrstuvwxyz", "ARCH": "gfx942"},
+            "docker_env_vars": {
+                "MAD_SECRETS_HFTOKEN": "hf_abcdefghijklmnopqrstuvwxyz",
+                "NCCL_DEBUG": "WARN",
+            },
+            "docker_build_arg": {
+                "MAD_SECRETS_HFTOKEN": "hf_abcdefghijklmnopqrstuvwxyz",
+                "ARCH": "gfx942",
+            },
             "gpu_vendor": "AMD",
         }
         safe = manifest_safe_context(ctx)
@@ -163,11 +196,17 @@ class TestLargestPullImage:
         from madengine.deployment.slurm import SlurmDeployment
 
         dep = SlurmDeployment.__new__(SlurmDeployment)
-        dep.manifest = {"built_images": {
-            "a": {"docker_image": "a", "registry_image": "rocm/mad-private:a", "image_size_bytes": 10},
-            "b": {"docker_image": "b", "image_size_bytes": 30},
-            "c": {"docker_image": "c"},
-        }}
+        dep.manifest = {
+            "built_images": {
+                "a": {
+                    "docker_image": "a",
+                    "registry_image": "rocm/mad-private:a",
+                    "image_size_bytes": 10,
+                },
+                "b": {"docker_image": "b", "image_size_bytes": 30},
+                "c": {"docker_image": "c"},
+            }
+        }
         assert dep._largest_pull_image() == ("b", 30)
         dep.manifest = {"built_images": {"c": {"docker_image": "c"}}}
         assert dep._largest_pull_image() == (None, None)
@@ -187,7 +226,9 @@ class TestTableShowsTheEvidence:
     def test_free_space_image_presence_and_what_it_was_judged_against(self):
         sel = _selector(image="rocm/mad-private:x", image_size_bytes=27 * GIB)
         ok, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {300 * GIB}")
-        present, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {1 * GIB}\nIMAGE_PRESENT")
+        present, _ = _health(
+            sel, _vram(0.3) + f"\nDOCKER_AVAIL {1 * GIB}\nIMAGE_PRESENT"
+        )
         unread, _ = _health(sel, _vram(0.3))
         out = self._render(sel, [ok, present, unread])
         assert "300 GB" in out
@@ -198,4 +239,6 @@ class TestTableShowsTheEvidence:
     def test_says_when_the_disk_was_not_checked(self):
         sel = _selector()
         st, _ = _health(sel, _vram(0.3) + f"\nDOCKER_AVAIL {5 * GIB}")
-        assert "Disk not checked: the manifest records no image size" in self._render(sel, [st])
+        assert "Disk not checked: the manifest records no image size" in self._render(
+            sel, [st]
+        )

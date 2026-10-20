@@ -177,10 +177,11 @@ class TestReap:
     def test_escalates_to_host_pids(self, state_dir):
         fake = FakeDocker(["running", "running", "running", ""])
         killed = []
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[4242]
-        ), patch.object(lifecycle, "_kill_host_pids", killed.extend), patch.object(
-            lifecycle.time, "sleep"
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[4242]),
+            patch.object(lifecycle, "_kill_host_pids", killed.extend),
+            patch.object(lifecycle.time, "sleep"),
         ):
             result = lifecycle.reap("c", "cid", verbose=False)
         assert killed == [4242]
@@ -189,12 +190,12 @@ class TestReap:
 
     def test_d_state_pids_are_reported_as_wedged(self, state_dir):
         fake = FakeDocker(["running"])
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[4242]
-        ), patch.object(lifecycle, "_kill_host_pids", lambda pids: None), patch.object(
-            lifecycle, "uninterruptible_pids", return_value=[4242]
-        ), patch.object(
-            lifecycle.time, "sleep"
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[4242]),
+            patch.object(lifecycle, "_kill_host_pids", lambda pids: None),
+            patch.object(lifecycle, "uninterruptible_pids", return_value=[4242]),
+            patch.object(lifecycle.time, "sleep"),
         ):
             result = lifecycle.reap("c", "cid", verbose=False)
 
@@ -210,8 +211,9 @@ class TestReap:
         # "docker isn't answering" is not evidence that the host needs a
         # reboot; crying wolf here would make the marker worthless.
         fake = FakeDocker([None])
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[]
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[]),
         ):
             result = lifecycle.reap("c", verbose=False)
 
@@ -223,8 +225,9 @@ class TestReap:
         # `exited` means the container is not holding the GPU. A failed `rm`
         # is a Docker error, not a reason to demand a host reboot.
         fake = FakeDocker(["exited"])
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[]
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[]),
         ):
             result = lifecycle.reap("c", verbose=False)
         assert result["removed"] is False
@@ -248,8 +251,9 @@ class TestReap:
                 return 0, "running"
             return 0, ""
 
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[]
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[]),
         ):
             lifecycle.reap("c", verbose=False, deadline=time.time() + 3)
         assert seen
@@ -257,8 +261,9 @@ class TestReap:
 
     def test_every_docker_call_is_bounded(self, state_dir):
         fake = FakeDocker(["running", "running", "running", "running"])
-        with patch.object(lifecycle, "docker", fake), patch.object(
-            lifecycle, "container_host_pids", return_value=[]
+        with (
+            patch.object(lifecycle, "docker", fake),
+            patch.object(lifecycle, "container_host_pids", return_value=[]),
         ):
             lifecycle.reap("c", verbose=False)
         # A wedged GPU blocks the daemon too, so an unbounded call here would

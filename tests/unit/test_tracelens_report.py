@@ -62,7 +62,9 @@ class TestGenerateReports:
 
     def test_requires_tracelens_to_be_installed(self, tmp_path):
         with patch.object(tlr, "check_tracelens_available", return_value=False):
-            with pytest.raises(tlr.TraceLensNotInstalledError, match="madengine\\[tracelens\\]"):
+            with pytest.raises(
+                tlr.TraceLensNotInstalledError, match="madengine\\[tracelens\\]"
+            ):
                 tlr.generate_tracelens_reports(root=str(tmp_path))
 
     def test_passes_options_through_to_the_analyzer(self, tmp_path):
@@ -74,8 +76,9 @@ class TestGenerateReports:
             summary_path.write_text(json.dumps({"succeeded": 2}), encoding="utf-8")
             return MagicMock(returncode=0)
 
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", side_effect=fake_run
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", side_effect=fake_run),
         ):
             summary = tlr.generate_tracelens_reports(
                 root=str(tmp_path),
@@ -97,8 +100,9 @@ class TestGenerateReports:
         assert summary["exit_code"] == 0
 
     def test_analyzer_crash_without_a_summary_raises(self, tmp_path):
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", return_value=MagicMock(returncode=2)
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", return_value=MagicMock(returncode=2)),
         ):
             with pytest.raises(RuntimeError, match="exited with code 2"):
                 tlr.generate_tracelens_reports(root=str(tmp_path))
@@ -110,8 +114,9 @@ class TestGenerateReports:
             captured["command"] = list(command)
             return MagicMock(returncode=0)
 
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", side_effect=fake_run
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", side_effect=fake_run),
         ):
             tlr.generate_tracelens_reports(
                 root=str(tmp_path), output_dir=str(tmp_path / "out")
@@ -122,17 +127,21 @@ class TestGenerateReports:
 
     def test_creates_the_output_directory(self, tmp_path):
         out = tmp_path / "nested" / "out"
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", return_value=MagicMock(returncode=0)
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", return_value=MagicMock(returncode=0)),
         ):
             tlr.generate_tracelens_reports(root=str(tmp_path), output_dir=str(out))
         assert out.is_dir()
 
     def test_discovery_does_not_require_tracelens(self, tmp_path):
         """Users must be able to see what traces exist before installing TraceLens."""
-        with patch.object(tlr, "check_tracelens_available", return_value=False), patch.object(
-            tlr.subprocess, "run", return_value=MagicMock(returncode=0)
-        ) as run:
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=False),
+            patch.object(
+                tlr.subprocess, "run", return_value=MagicMock(returncode=0)
+            ) as run,
+        ):
             tlr.discover_traces(root=str(tmp_path))
         assert "--discover-only" in run.call_args[0][0]
 
@@ -158,15 +167,18 @@ class TestCompareReports:
             captured["command"] = list(command)
             return MagicMock(returncode=0)
 
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", side_effect=fake_run
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", side_effect=fake_run),
         ):
             tlr.compare_tracelens_reports(
                 ["base.xlsx", "cand.xlsx"], output="diff.xlsx", names=["base", "cand"]
             )
 
         command = captured["command"]
-        assert command[command.index("--compare") + 1 : command.index("--compare") + 3] == [
+        assert command[
+            command.index("--compare") + 1 : command.index("--compare") + 3
+        ] == [
             "base.xlsx",
             "cand.xlsx",
         ]
@@ -247,8 +259,9 @@ class TestReportTraceLensCli:
     def test_analyzer_crash_is_not_reported_as_an_empty_run(
         self, runner, report_app, tmp_path
     ):
-        with patch.object(tlr, "check_tracelens_available", return_value=True), patch.object(
-            tlr.subprocess, "run", return_value=MagicMock(returncode=2)
+        with (
+            patch.object(tlr, "check_tracelens_available", return_value=True),
+            patch.object(tlr.subprocess, "run", return_value=MagicMock(returncode=2)),
         ):
             result = runner.invoke(report_app, ["tracelens", "--root", str(tmp_path)])
         assert result.exit_code != 0
