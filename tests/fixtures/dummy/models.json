@@ -42,7 +42,11 @@
     "args": "",
     "conda_env": "mad_dummy_bare_metal",
     "python_version": "3.11",
-    "requirements_file": "scripts/dummy_bare_metal/requirements.txt"
+    "requirements_file": "scripts/dummy_bare_metal/requirements.txt",
+    "distributed": {
+      "launcher": "torchrun",
+      "nnodes": 1
+    }
   },
   {
     "name": "dummy3",

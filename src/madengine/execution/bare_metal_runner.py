@@ -34,6 +34,7 @@ from madengine.execution.container_runner_helpers import (
 from madengine.execution.run_reporting import (
     determine_status,
     extract_performance_from_log,
+    resolve_workload_launcher,
     write_perf_records,
 )
 from madengine.reporting.update_perf_csv import PERF_CSV_HEADER, flatten_tags
@@ -349,8 +350,13 @@ class BareMetalRunner:
             "docker_image": "",
             "git_commit": run_results.get("git_commit", ""),
             "machine_name": run_results.get("machine_name", ""),
-            "deployment_type": "bare_metal",
-            "launcher": "conda",
+            # platform is the environment. deployment_type is the scheduler.
+            # conda created the env; it is not the launcher.
+            "platform": "bare_metal",
+            "deployment_type": "local",
+            "launcher": resolve_workload_launcher(
+                self.additional_context, model_info
+            ),
             "gpu_architecture": gpu_arch,
             "performance": run_results.get("performance", ""),
             "metric": run_results.get("metric", ""),

@@ -16,7 +16,9 @@ from madengine.execution.conda_env import (
 from madengine.execution.run_reporting import (
     determine_status,
     extract_performance_from_log,
+    resolve_workload_launcher,
 )
+from madengine.reporting.update_perf_csv import apply_result_axes
 from madengine.orchestration.run_orchestrator import RunOrchestrator
 
 # ---- Deployment target inference ----
@@ -92,6 +94,70 @@ class TestBareMetalInference:
         orch = self._make_orch()
         with pytest.raises(ConfigurationError, match="podman"):
             orch._infer_deployment_target({"platform": "podman"})
+
+
+class TestBareMetalResultAxes:
+    """Perf rows record platform, scheduler, and the workload launcher."""
+
+    def test_torchrun_is_the_launcher_not_conda(self):
+        assert (
+            resolve_workload_launcher(
+                {"platform": "bare_metal", "conda": {"conda_env": "e"}},
+                {"distributed": {"launcher": "torchrun"}},
+            )
+            == "torchrun"
+        )
+
+    def test_unset_launcher_is_native(self):
+        assert resolve_workload_launcher({"platform": "bare_metal"}, {}) == "native"
+
+    def test_runtime_launcher_overrides_the_model_card(self):
+        assert (
+            resolve_workload_launcher(
+                {"distributed": {"launcher": "vllm"}},
+                {"distributed": {"launcher": "torchrun"}},
+            )
+            == "vllm"
+        )
+
+    def test_run_details_split_platform_and_scheduler(self):
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        runner = BareMetalRunner.__new__(BareMetalRunner)
+        runner.context = mock.Mock()
+        runner.context.ctx = {
+            "docker_env_vars": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}
+        }
+        runner.additional_context = {"platform": "bare_metal", "conda": {}}
+        details = runner._create_run_details(
+            {
+                "name": "dummy_bare_metal",
+                "tags": [],
+                "args": "",
+                "scripts": "",
+                "distributed": {"launcher": "torchrun"},
+            },
+            {},
+            {"status": "SUCCESS", "performance": "1", "metric": "tokens_per_second"},
+            1,
+        )
+        assert details["platform"] == "bare_metal"
+        assert details["deployment_type"] == "local"
+        assert details["launcher"] == "torchrun"
+
+    def test_legacy_row_is_rewritten(self):
+        row = {"deployment_type": "bare_metal", "launcher": "conda"}
+        apply_result_axes(row)
+        assert row["platform"] == "bare_metal"
+        assert row["deployment_type"] == "local"
+        assert row["launcher"] == "native"
+
+    def test_docker_row_gains_platform_without_changing_scheduler(self):
+        row = {"deployment_type": "slurm", "launcher": "torchrun"}
+        apply_result_axes(row)
+        assert row["platform"] == "docker"
+        assert row["deployment_type"] == "slurm"
+        assert row["launcher"] == "torchrun"
 
 
 # ---- Conda env name resolution ----

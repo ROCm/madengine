@@ -187,6 +187,63 @@ def resolve_multiple_results_path(
     return None
 
 
+_NOT_A_WORKLOAD_LAUNCHER = frozenset({"", "conda", "docker", "native"})
+
+
+def resolve_workload_launcher(
+    additional_context: typing.Optional[typing.Dict],
+    model_info: typing.Optional[typing.Dict],
+) -> str:
+    """Return the training or inference launcher for a bare-metal result row.
+
+    Precedence matches the container runner: runtime ``launcher.type``, then
+    ``distributed.launcher``, then the model card, then ``MAD_LAUNCHER_TYPE``.
+    ``conda`` and ``docker`` name the environment, not a launcher, so an unset
+    or non-workload value is recorded as ``native``.
+
+    Args:
+        additional_context: Run context. May carry ``distributed`` or ``launcher``.
+        model_info: Model card. May carry ``distributed.launcher``.
+
+    Returns:
+        A launcher name from the supported set, or ``native``.
+    """
+    from madengine.deployment.common import (
+        VALID_LAUNCHERS,
+        canonicalize_distributed_launcher,
+    )
+
+    ctx = additional_context or {}
+    card = model_info or {}
+    distributed = ctx.get("distributed") or {}
+    if not isinstance(distributed, dict):
+        distributed = {}
+    launcher_obj = ctx.get("launcher") or {}
+    if not isinstance(launcher_obj, dict):
+        launcher_obj = {}
+    card_distributed = card.get("distributed") or {}
+    if not isinstance(card_distributed, dict):
+        card_distributed = {}
+
+    raw = (
+        launcher_obj.get("type")
+        or distributed.get("launcher")
+        or card_distributed.get("launcher")
+        or os.environ.get("MAD_LAUNCHER_TYPE")
+        or os.environ.get("MAD_LAUNCHER")
+        or ""
+    )
+    if not isinstance(raw, str):
+        return "native"
+    raw = raw.strip().lower()
+    if raw in _NOT_A_WORKLOAD_LAUNCHER:
+        return "native"
+    raw = canonicalize_distributed_launcher(raw) or raw
+    if raw in VALID_LAUNCHERS:
+        return raw
+    return "native"
+
+
 def write_perf_records(
     run_details: typing.Dict,
     model_info: typing.Dict,

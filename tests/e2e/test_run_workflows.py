@@ -577,8 +577,9 @@ class TestBareMetalExecution:
         with open(perf_csv, "r") as csv_file:
             for row in csv.DictReader(csv_file):
                 if row["model"] == "dummy_bare_metal":
-                    assert row["deployment_type"] == "bare_metal"
-                    assert row["launcher"] == "conda"
+                    assert row["platform"] == "bare_metal"
+                    assert row["deployment_type"] == "local"
+                    assert row["launcher"] == "torchrun"
                     assert row["performance"], "expected a performance value"
                     break
             else:
@@ -658,8 +659,9 @@ class TestBareMetalRealConda:
                     for r in csv.DictReader(csv_file)
                     if r["model"] == "dummy_bare_metal"
                 )
-            assert row["deployment_type"] == "bare_metal"
-            assert row["launcher"] == "conda"
+            assert row["platform"] == "bare_metal"
+            assert row["deployment_type"] == "local"
+            assert row["launcher"] == "torchrun"
             assert row["performance"]
             assert row["docker_image"] == ""
             after = _docker_container_ids()
