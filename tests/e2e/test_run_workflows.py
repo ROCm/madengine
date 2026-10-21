@@ -535,7 +535,7 @@ class TestBareMetalExecution:
     """E2E tests for the bare-metal (conda) execution backend.
 
     These run without a real conda/mamba install by pointing
-    ``bare_metal.conda_bin`` at a checked-in fake-conda shim that execs the
+    ``conda.conda_bin`` at a checked-in fake-conda shim that execs the
     wrapped command directly. The conda_bin path must be absolute because the
     runner cd's into the model's working directory before invoking it.
     """
@@ -561,10 +561,11 @@ class TestBareMetalExecution:
         launcher) and that performance was extracted from the model log.
         """
         context = {
-            "bare_metal": {
+            "platform": "bare_metal",
+            "conda": {
                 "conda_bin": os.path.abspath(self.FAKE_CONDA),
                 "reuse_env": True,
-            }
+            },
         }
         global_data["console"].sh(
             build_run_command("dummy_bare_metal", additional_context=context)
@@ -628,13 +629,14 @@ class TestBareMetalRealConda:
         env_root.mkdir()
         log_name = f"dummy_bare_metal_bare_metal_{env_name}.run.live.log"
         context = {
-            "bare_metal": {
+            "platform": "bare_metal",
+            "conda": {
                 "conda_bin": conda_bin,
                 "conda_env": env_name,
                 "env_root": str(env_root),
                 "reuse_env": False,
                 "cleanup_env": True,
-            }
+            },
         }
         before = _docker_container_ids()
         mamba_root = tmp_path / "mamba-root"

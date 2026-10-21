@@ -38,12 +38,12 @@ def resolve_conda_env_name(
 ) -> str:
     """Resolve the conda env name for a model.
 
-    Priority: bare_metal config ``conda_env`` > model card ``conda_env`` >
+    Priority: conda config ``conda_env`` > model card ``conda_env`` >
     derived from the model name (``/`` replaced with ``_``).
 
     Args:
         model_info: Model definition dict.
-        bm_config: The ``bare_metal`` block from additional_context.
+        bm_config: The ``conda`` block from additional_context.
 
     Returns:
         The conda environment name.
@@ -134,7 +134,7 @@ def bootstrap_micromamba() -> str:
     """Download a micromamba static binary.
 
     Not used by :meth:`CondaEnvManager.detect_conda_bin`. Bare-metal runs require
-    a conda, mamba, or micromamba already on ``PATH`` (or ``bare_metal.conda_bin``).
+    a conda, mamba, or micromamba already on ``PATH`` (or ``conda.conda_bin``).
     This helper remains for callers that explicitly opt in.
 
     Fetches the current micromamba binary for the host architecture from the
@@ -209,13 +209,13 @@ class CondaEnvManager:
 
         Args:
             console: Console for shell execution (created if not provided).
-            bm_config: The ``bare_metal`` block from additional_context.
+            bm_config: The ``conda`` block from additional_context.
             gpu_vendor: Detected GPU vendor (e.g. ``"AMD"``/``"NVIDIA"``) used to
                 pick vendor-specific dependency files. Falls back to
-                ``bare_metal.gpu_vendor`` when not given.
+                ``conda.gpu_vendor`` when not given.
             gpu_arch: Detected GPU architecture (e.g. ``"gfx942"``) used to
                 resolve ``rocm.index_url=auto``. Falls back to
-                ``bare_metal.gpu_arch`` when not given.
+                ``conda.gpu_arch`` when not given.
         """
         self.console = console or Console()
         self.bm_config = bm_config or {}
@@ -226,7 +226,7 @@ class CondaEnvManager:
     def detect_conda_bin(self) -> str:
         """Locate the conda (or mamba/micromamba) executable.
 
-        Respects ``bare_metal.conda_bin`` when set, else searches PATH for
+        Respects ``conda.conda_bin`` when set, else searches PATH for
         ``micromamba``, ``mamba``, then ``conda``. Does not download a conda
         implementation. Caches the result.
 
@@ -265,14 +265,14 @@ class CondaEnvManager:
 
         raise RuntimeError(
             "No conda, mamba, or micromamba executable found on PATH. "
-            "Install one, or set bare_metal.conda_bin to its path. "
+            "Install one, or set conda.conda_bin to its path. "
             "madengine does not download a conda implementation."
         )
 
     def env_root(self) -> str:
         """Return the directory that holds bare-metal env prefixes.
 
-        ``bare_metal.env_root`` overrides the default
+        ``conda.env_root`` overrides the default
         ``~/.cache/madengine/envs``. Envs are prefixes under this directory, not
         named envs in the user's conda root, so jobs on a shared node do not
         collide with each other or with the user's interactive environments.

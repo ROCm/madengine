@@ -223,10 +223,10 @@ class BuildOrchestrator:
             )
 
         # Handle bare-metal (conda) build: create conda envs, no Docker build.
-        # Use membership, not truthiness: an empty dict ({'bare_metal': {}}) means
-        # "bare-metal with defaults" and must still route here. This mirrors the
-        # run-phase check in RunOrchestrator._infer_deployment_target.
-        if "bare_metal" in self.additional_context:
+        # platform "bare_metal" selects this path. Omitted platform stays Docker.
+        from madengine.orchestration.platform import resolve_context_platform
+
+        if resolve_context_platform(self.additional_context) == "bare_metal":
             return self._execute_bare_metal_build(manifest_output=manifest_output)
 
         # Handle pre-built image mode
@@ -1330,7 +1330,7 @@ exit 0
         )
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
-        bm_config = self.additional_context.get("bare_metal", {}) or {}
+        bm_config = self.additional_context.get("conda", {}) or {}
 
         # Preflight: bare-metal runs the workload directly on the host, so the
         # GPU driver/runtime must be healthy before we spend time solving conda
@@ -1633,7 +1633,9 @@ exit 0
                 # Auto-detect based on config presence
                 # llm-d is checked first: its config also carries a "k8s" block,
                 # which configures the benchmark-client Job.
-                if "bare_metal" in self.additional_context:
+                from madengine.orchestration.platform import resolve_context_platform
+
+                if resolve_context_platform(self.additional_context) == "bare_metal":
                     target = "bare_metal"
                 elif self.additional_context.get("llm_d"):
                     target = "llm-d"
@@ -1665,7 +1667,8 @@ exit 0
             
             deployment_config = {
                 "target": target,
-                "bare_metal": self.additional_context.get("bare_metal"),
+                "platform": self.additional_context.get("platform"),
+                "conda": self.additional_context.get("conda"),
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),

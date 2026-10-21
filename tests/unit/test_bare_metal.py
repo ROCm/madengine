@@ -23,7 +23,7 @@ from madengine.orchestration.run_orchestrator import RunOrchestrator
 
 
 class TestBareMetalInference:
-    """_infer_deployment_target routes bare_metal before slurm/k8s/local."""
+    """platform selects the conda backend. A bare_metal key does not."""
 
     def _make_orch(self):
         args = mock.MagicMock()
@@ -31,20 +31,67 @@ class TestBareMetalInference:
         args.output = "perf.csv"
         return RunOrchestrator(args)
 
-    def test_bare_metal_key_selects_bare_metal(self):
-        orch = self._make_orch()
-        assert orch._infer_deployment_target({"bare_metal": {}}) == "bare_metal"
-
-    def test_bare_metal_wins_over_slurm(self):
+    def test_platform_bare_metal_selects_conda(self):
         orch = self._make_orch()
         assert (
-            orch._infer_deployment_target({"bare_metal": {}, "slurm": {}})
+            orch._infer_deployment_target({"platform": "bare_metal"})
             == "bare_metal"
         )
 
-    def test_no_key_is_local(self):
+    def test_platform_bare_metal_reads_conda_block(self):
+        orch = self._make_orch()
+        assert (
+            orch._infer_deployment_target(
+                {
+                    "platform": "bare_metal",
+                    "conda": {"conda_bin": "/opt/conda/bin/conda"},
+                }
+            )
+            == "bare_metal"
+        )
+
+    def test_omitted_platform_is_local_docker(self):
         orch = self._make_orch()
         assert orch._infer_deployment_target({}) == "local"
+
+    def test_explicit_docker_with_slurm_stays_slurm(self):
+        orch = self._make_orch()
+        assert (
+            orch._infer_deployment_target(
+                {"platform": "docker", "slurm": {"nodes": 1}}
+            )
+            == "slurm"
+        )
+
+    def test_bare_metal_key_alone_is_rejected(self):
+        from madengine.core.errors import ConfigurationError
+
+        orch = self._make_orch()
+        with pytest.raises(ConfigurationError, match="platform"):
+            orch._infer_deployment_target({"bare_metal": {}})
+
+    def test_platform_bare_metal_with_slurm_is_rejected(self):
+        from madengine.core.errors import ConfigurationError
+
+        orch = self._make_orch()
+        with pytest.raises(ConfigurationError, match="slurm"):
+            orch._infer_deployment_target(
+                {"platform": "bare_metal", "slurm": {}}
+            )
+
+    def test_conda_block_without_bare_metal_platform_is_rejected(self):
+        from madengine.core.errors import ConfigurationError
+
+        orch = self._make_orch()
+        with pytest.raises(ConfigurationError, match="conda"):
+            orch._infer_deployment_target({"conda": {"conda_env": "e"}})
+
+    def test_unknown_platform_is_rejected(self):
+        from madengine.core.errors import ConfigurationError
+
+        orch = self._make_orch()
+        with pytest.raises(ConfigurationError, match="podman"):
+            orch._infer_deployment_target({"platform": "podman"})
 
 
 # ---- Conda env name resolution ----
@@ -466,7 +513,7 @@ class TestCleanupEnv:
         from madengine.execution.bare_metal_runner import BareMetalRunner
 
         runner = BareMetalRunner.__new__(BareMetalRunner)
-        runner.additional_context = {"bare_metal": bm_config}
+        runner.additional_context = {"platform": "bare_metal", "conda": bm_config}
         runner.bm_config = bm_config
         runner.perf_csv_path = "perf.csv"
         runner.rich_console = mock.MagicMock()
@@ -516,7 +563,7 @@ class TestBareMetalBuildPreflight:
         )
 
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
-        orch.additional_context = {"bare_metal": {}}
+        orch.additional_context = {"platform": "bare_metal"}
         orch.args = mock.MagicMock()
         orch.console = mock.MagicMock()
         orch.rich_console = mock.MagicMock()
@@ -631,8 +678,11 @@ class TestCredentialsAndCommand:
             "post_scripts": [],
             "docker_env_vars": {},
         }
-        runner.additional_context = {"bare_metal": {"conda_env": "e"}}
-        runner.bm_config = runner.additional_context["bare_metal"]
+        runner.additional_context = {
+            "platform": "bare_metal",
+            "conda": {"conda_env": "e"},
+        }
+        runner.bm_config = runner.additional_context["conda"]
         runner.console = mock.Mock()
         runner.console.sh.return_value = "host"
         runner.rich_console = mock.Mock()
@@ -678,7 +728,8 @@ class TestManifestBareMetalOverride:
             "built_models": {"m": {"name": "m", "scripts": "run.sh"}},
             "context": {
                 "gpu_vendor": "AMD",
-                "bare_metal": {
+                "platform": "bare_metal",
+                "conda": {
                     "conda_env": "from_build",
                     "cleanup_env": False,
                     "env_root": "/from/build",
@@ -689,9 +740,10 @@ class TestManifestBareMetalOverride:
         path.write_text(json.dumps(manifest))
         runner = BareMetalRunner.__new__(BareMetalRunner)
         runner.additional_context = {
-            "bare_metal": {"cleanup_env": True, "conda_env": "from_run"}
+            "platform": "bare_metal",
+            "conda": {"cleanup_env": True, "conda_env": "from_run"},
         }
-        runner.bm_config = dict(runner.additional_context["bare_metal"])
+        runner.bm_config = dict(runner.additional_context["conda"])
         runner.conda = mock.Mock()
         runner.rich_console = mock.Mock()
         runner.run_model = mock.Mock(

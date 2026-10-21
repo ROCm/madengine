@@ -321,7 +321,7 @@ class RunOrchestrator:
             # explicit vs. ConfigLoader preset default) captured at build time — see
             # BuildOrchestrator._merge_model_config_into_manifest.
             for key in [
-                "slurm", "k8s", "kubernetes", "llm_d", "bare_metal", "distributed", "vllm", "env_vars",
+                "slurm", "k8s", "kubernetes", "llm_d", "platform", "conda", "distributed", "vllm", "env_vars",
                 "debug", "_explicit_slurm_keys",
             ]:
                 if key in deployment_config and key not in self.additional_context:
@@ -603,7 +603,7 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "bare_metal", "distributed", "vllm", "env_vars", "debug"]:
+                for key in ["deploy", "slurm", "k8s", "kubernetes", "llm_d", "platform", "conda", "distributed", "vllm", "env_vars", "debug"]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
                 # "_explicit_slurm_keys" describes the slurm block it was recorded
@@ -1657,7 +1657,8 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
 
         Convention over Configuration:
-        - Presence of "bare_metal" field → bare-metal (conda, no Docker)
+        - ``platform`` of ``bare_metal`` → bare-metal (conda, no Docker).
+          Omitted ``platform`` means Docker. A ``bare_metal`` key is rejected.
         - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
@@ -1674,7 +1675,9 @@ class RunOrchestrator:
         Returns:
             Deployment target: "bare_metal", "llm-d", "k8s", "slurm", or "local"
         """
-        if "bare_metal" in config:
+        from madengine.orchestration.platform import resolve_context_platform
+
+        if resolve_context_platform(config) == "bare_metal":
             return "bare_metal"
         # Checked next: an llm-d config also carries a "k8s" block, which
         # configures the benchmark-client Job.

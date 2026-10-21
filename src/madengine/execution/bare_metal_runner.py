@@ -72,7 +72,7 @@ class BareMetalRunner:
         self.credentials = None
         self.perf_csv_path = "perf.csv"
         self.additional_context = additional_context or {}
-        self.bm_config = self.additional_context.get("bare_metal", {}) or {}
+        self.bm_config = self.additional_context.get("conda", {}) or {}
         gpu_vendor = self.context.ctx.get("gpu_vendor") if self.context else None
         gpu_arch = (
             (self.context.ctx.get("docker_env_vars") or {}).get(
@@ -623,20 +623,20 @@ class BareMetalRunner:
         built_models = manifest.get("built_models", {})
 
         if "context" in manifest and isinstance(manifest["context"], dict):
-            # Build-time context fills keys the run did not set. A bare_metal
+            # Build-time context fills keys the run did not set. A conda
             # block passed to this run wins over the copy saved in the manifest,
             # so `madengine run -m manifest` can still change conda_bin,
             # cleanup_env, or env_root.
             incoming = manifest["context"]
             current = dict(self.additional_context or {})
             merged = {**current, **incoming}
-            if isinstance(current.get("bare_metal"), dict):
-                merged["bare_metal"] = {
-                    **(incoming.get("bare_metal") or {}),
-                    **current["bare_metal"],
+            if isinstance(current.get("conda"), dict):
+                merged["conda"] = {
+                    **(incoming.get("conda") or {}),
+                    **current["conda"],
                 }
             self.additional_context = merged
-            self.bm_config = self.additional_context.get("bare_metal", {}) or {}
+            self.bm_config = self.additional_context.get("conda", {}) or {}
             self.conda.bm_config = self.bm_config
 
         if not built_models:
