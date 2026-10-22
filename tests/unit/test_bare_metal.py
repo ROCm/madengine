@@ -720,6 +720,30 @@ class TestGpuVisibility:
         runner = self._runner("NVIDIA")
         assert runner._gpu_env(2)["CUDA_VISIBLE_DEVICES"] == "4,5"
 
+    def test_all_gpus_sets_runtime_nproc_from_system_count(self, monkeypatch):
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+        runner = self._runner("AMD")
+        runner.context.ctx = {
+            "gpu_vendor": "AMD",
+            "docker_env_vars": {"MAD_SYSTEM_NGPUS": "8"},
+        }
+        runner.additional_context = {}
+        runner.credentials = {}
+        env = runner._build_run_env({"name": "m"}, -1)
+        assert env["MAD_RUNTIME_NGPUS"] == "8"
+        assert "HIP_VISIBLE_DEVICES" not in env
+
+    def test_all_gpus_counts_existing_visible_mask(self, monkeypatch):
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+        runner = self._runner("AMD")
+        runner.additional_context = {}
+        runner.credentials = {}
+        env = runner._build_run_env({"name": "m"}, -1)
+        assert env["MAD_RUNTIME_NGPUS"] == "2"
+        assert env["HIP_VISIBLE_DEVICES"] == "2,3"
+
 
 class TestCredentialsAndCommand:
     def test_model_cred_is_exported(self):

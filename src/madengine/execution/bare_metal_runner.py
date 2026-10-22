@@ -157,6 +157,51 @@ class BareMetalRunner:
 
         return {key: device_list for key in keys}
 
+    def _runtime_nproc(
+        self, resolved_gpu_count: int, env: typing.Dict[str, str]
+    ) -> int:
+        """Return the process count model scripts should pass to torchrun.
+
+        A model card ``n_gpus`` of -1 means every GPU visible to this run.
+        The Docker path converts that to a positive ``MAD_RUNTIME_NGPUS``.
+        ``torchrun --nproc_per_node`` rejects -1, so bare metal does the same
+        conversion without rewriting an existing device mask.
+
+        Args:
+            resolved_gpu_count: GPU count from the model card or override.
+            env: Environment the model process will see, after GPU masking.
+
+        Returns:
+            Positive process count, or the unresolved count when the host GPU
+            count cannot be determined.
+        """
+        if resolved_gpu_count is not None and resolved_gpu_count >= 0:
+            return resolved_gpu_count
+
+        for key in self._visible_device_keys():
+            current = str(env.get(key, "")).strip()
+            if current:
+                devices = [part.strip() for part in current.split(",") if part.strip()]
+                if devices:
+                    print(f"ℹ️  Converted n_gpus=-1 to {len(devices)} visible GPU(s).")
+                    return len(devices)
+
+        if self.context:
+            try:
+                system_ngpus = int(
+                    self.context.ctx["docker_env_vars"]["MAD_SYSTEM_NGPUS"]
+                )
+                if system_ngpus > 0:
+                    print(
+                        "ℹ️  Converted n_gpus=-1 to actual system GPU count: "
+                        f"{system_ngpus}"
+                    )
+                    return system_ngpus
+            except (KeyError, ValueError, TypeError):
+                pass
+
+        return resolved_gpu_count if resolved_gpu_count is not None else 1
+
     def _build_run_env(
         self, model_info: typing.Dict, resolved_gpu_count: int
     ) -> typing.Dict[str, str]:
@@ -181,7 +226,7 @@ class BareMetalRunner:
 
         env.update(self._gpu_env(resolved_gpu_count))
         env["MAD_RUNTIME_NGPUS"] = str(
-            resolved_gpu_count if resolved_gpu_count is not None else ""
+            self._runtime_nproc(resolved_gpu_count, env)
         )
 
         if model_info.get("env_vars"):
@@ -436,6 +481,7 @@ class BareMetalRunner:
 
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         env = self._build_run_env(model_info, resolved_gpu_count)
+        launch_gpu_count = int(env.get("MAD_RUNTIME_NGPUS") or resolved_gpu_count)
 
         # Collect pre/post scripts from context (populated from scripts/common).
         pre_scripts = (
@@ -455,7 +501,7 @@ class BareMetalRunner:
             run_results["status_detail"] = str(e)
             self.rich_console.print(f"[red]✗ {e}[/red]")
             self._record(
-                model_info, build_info, run_results, resolved_gpu_count, model_dir="."
+                model_info, build_info, run_results, launch_gpu_count, model_dir="."
             )
             return run_results
 
@@ -534,7 +580,7 @@ class BareMetalRunner:
             model_info,
             build_info,
             run_results,
-            resolved_gpu_count,
+            launch_gpu_count,
             model_dir=working_dir,
         )
         return run_results
