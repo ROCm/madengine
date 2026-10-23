@@ -193,12 +193,13 @@ def _write_registry(path: str, entries: typing.List[typing.Dict]) -> None:
         pass
 
 
-def register(container_id: str, container_name: str) -> None:
+def register(container_id: str, container_name: str, keep_alive: bool = False) -> None:
     """Record a container as owned by this process.
 
     Args:
         container_id (str): The full container id.
         container_name (str): The container name.
+        keep_alive (bool): When true, a cancel leaves this container running.
     """
     path = _registry_path()
     entries = [e for e in _read_registry(path) if e.get("id") != container_id]
@@ -209,6 +210,7 @@ def register(container_id: str, container_name: str) -> None:
             "session": _SESSION_ID,
             "owner_pid": os.getpid(),
             "started": time.time(),
+            "keep_alive": bool(keep_alive),
         }
     )
     _write_registry(path, entries)
@@ -233,6 +235,57 @@ def registered() -> typing.List[typing.Dict]:
         list: The recorded container entries.
     """
     return _read_registry(_registry_path())
+
+
+# Callables run by the signal handler before os._exit. os._exit does not
+# unwind finally blocks, so a SLURM job, an in-place srun, or an llm-d stack
+# has to be registered here to be torn down on cancel.
+_cancel_hooks: typing.List[typing.Tuple[str, typing.Callable[[], None]]] = []
+_cancel_hook_lock = threading.RLock()
+
+
+def register_cancel_hook(hook: typing.Callable[[], None]) -> str:
+    """Register a hook the signal handler runs before it exits.
+
+    Hooks run newest first, matching nested ``finally`` blocks. The returned
+    token removes the hook. A hook that raises is reported and does not skip
+    the hooks registered before it.
+
+    Args:
+        hook (Callable): Zero-argument teardown. It must return quickly.
+
+    Returns:
+        str: Token for :func:`unregister_cancel_hook`.
+    """
+    token = uuid.uuid4().hex
+    with _cancel_hook_lock:
+        _cancel_hooks.append((token, hook))
+    return token
+
+
+def unregister_cancel_hook(token: str) -> None:
+    """Drop a hook registered with :func:`register_cancel_hook`.
+
+    Args:
+        token (str): The token that registration returned.
+    """
+    with _cancel_hook_lock:
+        _cancel_hooks[:] = [item for item in _cancel_hooks if item[0] != token]
+
+
+def run_cancel_hooks() -> None:
+    """Run registered cancel hooks, newest first.
+
+    A failure in one hook is printed and does not stop the others. The signal
+    handler still exits afterwards.
+    """
+    with _cancel_hook_lock:
+        hooks = [hook for _, hook in reversed(_cancel_hooks)]
+    for hook in hooks:
+        try:
+            hook()
+        except Exception as exc:
+            print(f"cancel hook failed: {exc}", flush=True)
 
 
 def docker(
@@ -612,6 +665,8 @@ def reap_registered(
     deadline = (time.time() + budget) if budget else None
     results = []
     for entry in registered():
+        if entry.get("keep_alive"):
+            continue
         if deadline is not None and time.time() >= deadline:
             if verbose:
                 print(
@@ -813,10 +868,15 @@ def install_signal_handlers() -> None:
         try:
             reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)
         finally:
-            # os._exit skips interpreter shutdown deliberately: atexit hooks
-            # and destructors here would re-enter the teardown we just did,
-            # and any one of them could block past the grace period.
-            os._exit(130)
+            # os._exit skips finally blocks in the rest of the process, so
+            # cluster teardown has to run here, before that exit.
+            try:
+                run_cancel_hooks()
+            finally:
+                # os._exit skips interpreter shutdown deliberately: atexit hooks
+                # and destructors here would re-enter the teardown we just did,
+                # and any one of them could block past the grace period.
+                os._exit(130)
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:

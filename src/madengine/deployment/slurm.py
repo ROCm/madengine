@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from madengine.core import lifecycle
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
@@ -2138,24 +2139,29 @@ export MASTER_PORT={master_port}
             proc = subprocess.Popen(
                 ["bash", str(self.script_path)], start_new_session=True
             )
+            # os._exit on SIGINT never raises into the wait() handler below.
+            cancel_hook = lifecycle.register_cancel_hook(
+                lambda: self._signal_process_group(proc)
+            )
             try:
-                proc.wait(timeout=subprocess_timeout(timeout))
-            except BaseException:
-                self._stop_process_group(proc)
-                raise
-            result = subprocess.CompletedProcess(proc.args, proc.returncode)
-            if result.returncode == 0:
-                self.console.print(
-                    f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
-                )
-                return DeploymentResult(
-                    status=DeploymentStatus.SUCCESS,
-                    deployment_id=run_id,
-                    message=f"Completed inside existing allocation {self.existing_job_id}",
-                    logs_path=str(self.output_dir),
-                    skip_monitoring=True,  # Already ran synchronously, no need to poll
-                )
-            else:
+                try:
+                    proc.wait(timeout=subprocess_timeout(timeout))
+                except BaseException:
+                    self._stop_process_group(proc)
+                    raise
+                result = subprocess.CompletedProcess(proc.args, proc.returncode)
+
+                if result.returncode == 0:
+                    self.console.print(
+                        f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
+                    )
+                    return DeploymentResult(
+                        status=DeploymentStatus.SUCCESS,
+                        deployment_id=run_id,
+                        message=f"Completed inside existing allocation {self.existing_job_id}",
+                        logs_path=str(self.output_dir),
+                        skip_monitoring=True,  # Already ran synchronously, no need to poll
+                    )
                 self.console.print(
                     f"\n[red]✗ Script failed with exit code {result.returncode}[/red]"
                 )
@@ -2166,6 +2172,8 @@ export MASTER_PORT={master_port}
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
                 )
+            finally:
+                lifecycle.unregister_cancel_hook(cancel_hook)
 
         except subprocess.TimeoutExpired:
             self.console.print(f"\n[red]✗ Script timed out after {timeout}s[/red]")
@@ -2192,6 +2200,20 @@ export MASTER_PORT={master_port}
         models = (self.manifest or {}).get("built_models") or {}
         model_info = next(iter(models.values()), {})
         return resolve_run_timeout(model_info, self.config.cli_timeout)
+
+    @staticmethod
+    def _signal_process_group(proc: subprocess.Popen) -> None:
+        """Stop an in-place step immediately.
+
+        The signal handler cannot wait out ``_stop_process_group``'s grace
+        period. SIGTERM lets srun relay the cancel; SIGKILL follows at once
+        for tasks that ignore it.
+        """
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, OSError):
+                return
 
     @staticmethod
     def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:
