@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-green.svg)](https://github.com/ROCm/madengine/actions)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Version](https://img.shields.io/badge/version-2.3.0-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.0-brightgreen.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **AI model automation and benchmarking platform for local and distributed execution**
@@ -20,7 +20,7 @@ madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep
 
 - **🚀 Modern CLI** — Rich terminal output with Typer and Rich
 - **📝 YAML Config** — Composable [Hydra-based YAML configs](docs/configuration.md#yaml-configuration-config) with config groups, hardware profiles, and CLI overrides — alternative to `--additional-context` JSON
-- **🎯 Simple Deployment** — Run locally or deploy to Kubernetes/SLURM by adding a config key; no code changes
+- **🎯 Simple Deployment** — Run locally, on Kubernetes, on SLURM, or against an [llm-d](docs/llm-d.md) stack by adding a config key; no code changes
 - **🔧 Distributed Launchers** — torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** — Docker-based execution with GPU support (ROCm, CUDA)
 - **📊 Performance Tools** — rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite), on-demand Kineto traces, and [TraceLens](docs/profiling.md#tracelens---tracelens-trace-analysis) reports → see [Profiling](docs/profiling.md)
@@ -62,6 +62,8 @@ flowchart TB
         C3[run]
         C4[report]
         C5[database]
+        C6[cleanup]
+        C7[setup-page]
     end
 
     subgraph ORC["Orchestration Layer"]
@@ -76,6 +78,7 @@ flowchart TB
         E2[DeploymentFactory]
         K8S[Kubernetes Jobs]
         SLURM[SLURM Jobs]
+        LLMD[llm-d]
     end
 
     subgraph LAUNCH["Launcher Layer"]
@@ -94,6 +97,8 @@ flowchart TB
     O3 --> E2
     E2 --> K8S
     E2 --> SLURM
+    E2 --> LLMD
+    LLMD --> OUT
     E1 --> LAUNCH
     K8S --> LAUNCH
     SLURM --> LAUNCH

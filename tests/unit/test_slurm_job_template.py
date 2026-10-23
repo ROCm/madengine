@@ -21,16 +21,17 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from madengine.core import lifecycle
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig, DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
-
 
 MODEL_ENTRY = {
     "name": "dummy_torchrun_multinode",
@@ -883,6 +884,37 @@ class TestInsideExistingAllocation:
             time.sleep(0.1)
         os.kill(step, signal.SIGKILL)
         pytest.fail("the step outlived the timeout")
+
+    def test_cancel_hook_stops_the_in_place_step(self, tmp_path):
+        """SIGINT exits with os._exit, so the wait() handler never runs."""
+        dep, _ = self._inside(tmp_path)
+        pid_file = tmp_path / "step.pid"
+        dep.script_path = tmp_path / "job.sh"
+        dep.script_path.write_text(
+            "#!/bin/bash\n"
+            f"bash -c 'echo $$ > {pid_file}; exec sleep 300'\n"
+        )
+        dep.config.cli_timeout = 5
+
+        def fire_when_ready():
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                if pid_file.exists():
+                    lifecycle.run_cancel_hooks()
+                    try:
+                        os.kill(int(pid_file.read_text()), 0)
+                    except (ProcessLookupError, ValueError):
+                        return
+                time.sleep(0.05)
+
+        threading.Thread(target=fire_when_ready, daemon=True).start()
+        started = time.monotonic()
+        result = dep._run_inside_existing_allocation()
+        assert time.monotonic() - started < 4
+        assert result.status is DeploymentStatus.FAILED
+        step = int(pid_file.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(step, 0)
 
     def test_rendezvous_is_unchanged_outside_an_allocation(self, tmp_path):
         script = _render(_build_deployment(tmp_path))

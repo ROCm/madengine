@@ -118,9 +118,9 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 ### Layer Structure
 
 **CLI Layer** (`src/madengine/cli/`)
-- `app.py` — Typer app wiring, registers 5 commands: `discover`, `build`, `run`, `report`, `database`
-- `commands/` — One file per command (build, run, discover, report, database)
-- `constants.py` — `ExitCode` enum (`SUCCESS=0`, `FAILURE=1`, `BUILD_FAILURE=2`, `RUN_FAILURE=3`, `INVALID_ARGS=4`)
+- `app.py` — Typer app wiring, registers 7 commands: `discover`, `build`, `run`, `report`, `database`, `cleanup`, `setup-page`
+- `commands/` — One file per command (build, run, discover, report, database, cleanup, setup_page)
+- `constants.py` — `ExitCode` enum (`SUCCESS=0`, `FAILURE=1`, `BUILD_FAILURE=2`, `RUN_FAILURE=3`, `INVALID_ARGS=4`, `GPU_WEDGED=5`)
 
 **Orchestration Layer** (`src/madengine/orchestration/`)
 - `build_orchestrator.py` — `BuildOrchestrator`: discovers models, builds Docker images, writes `build_manifest.json`
@@ -130,6 +130,7 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 - `context.py` — `Context` class: merges `additional_context` with system detection (GPU vendor, architecture, OS, ROCm path). Uses `ast.literal_eval()` to parse additional_context strings (not `json.loads` — pass Python dict repr, not JSON)
 - `console.py` — `Console`: shell execution wrapper with live output support
 - `docker.py` — Docker command wrapper
+- `lifecycle.py` — Heartbeat watchdog, signal-handler container reap, and `madengine cleanup` support. `MADENGINE_HEARTBEAT_INTERVAL` (default 15s) and `MADENGINE_HEARTBEAT_STALE_AFTER` (default 120s) tune the watchdog
 
 **Execution Layer** (`src/madengine/execution/`)
 - `container_runner.py` — `ContainerRunner`: runs models from manifest via `docker run`, writes results to `perf.csv`
@@ -148,6 +149,7 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 - `discover_models.py` — `DiscoverModels`: three discovery methods: root `models.json`, `scripts/{dir}/models.json`, or `scripts/{dir}/get_models_json.py` (dynamic)
 - `gpu_tool_factory.py` / `gpu_tool_manager.py` — GPU vendor abstraction (AMD/NVIDIA)
 - `gpu_validator.py` — ROCm installation detection, GPU vendor detection
+- `gpu_memory_gate.py` — `--wait-for-gpu-memory`: local runs wait until every GPU reports at most 512 MB in use
 - `config_parser.py` — `ConfigParser`: parses `--additional-context` and tools config
 
 **Reporting** (`src/madengine/reporting/`)

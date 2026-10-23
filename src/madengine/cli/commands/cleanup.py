@@ -24,6 +24,10 @@ from ..constants import ExitCode
 from ..utils import console
 
 
+class DockerUnreachable(Exception):
+    """``docker ps`` timed out or returned a non-zero status."""
+
+
 def _pid_alive(pid: int) -> bool:
     """Report whether a process id is still running.
 
@@ -59,11 +63,15 @@ def _list_madengine_containers() -> typing.List[typing.Dict]:
             "--filter",
             f"label={lifecycle.LABEL_SESSION}",
             "--format",
-            '{{.ID}}\t{{.Names}}\t{{.Label "' + lifecycle.LABEL_OWNER_PID + '"}}\t{{.State}}',
+            '{{.ID}}\t{{.Names}}\t{{.Label "'
+            + lifecycle.LABEL_OWNER_PID
+            + '"}}\t{{.State}}',
         ],
         lifecycle.INSPECT_TIMEOUT,
     )
-    if code != 0 or not out:
+    if code is None or code != 0:
+        raise DockerUnreachable(out or "docker ps failed")
+    if not out:
         return []
 
     containers = []
@@ -105,7 +113,11 @@ def cleanup(
     removed, so this is safe to run from an ``if: always()`` CI step or from
     cron while other benchmarks are in flight.
     """
-    containers = _list_madengine_containers()
+    try:
+        containers = _list_madengine_containers()
+    except DockerUnreachable as exc:
+        console.print(f"💥 [bold red]Docker did not answer: {exc}[/bold red]")
+        raise typer.Exit(ExitCode.FAILURE)
     if not containers:
         console.print("🧹 [green]No madengine containers found.[/green]")
         raise typer.Exit(ExitCode.SUCCESS)
