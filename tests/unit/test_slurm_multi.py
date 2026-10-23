@@ -136,63 +136,68 @@ PR186_MODEL_ENTRY = {
 }
 
 
+def _slurm_multi_deployment(tmp_path: Path, model_entry: dict) -> SlurmDeployment:
+    """Build a SlurmDeployment whose manifest contains model_entry."""
+    # _prepare_slurm_multi_script resolves model_info["scripts"] against the
+    # manifest's directory and bails (returns False) if the script doesn't exist.
+    # Create a placeholder so the existence check passes; contents are irrelevant
+    # because prepare() never executes it.
+    script_rel = model_entry["scripts"]
+    script_abs = tmp_path / script_rel
+    script_abs.parent.mkdir(parents=True, exist_ok=True)
+    script_abs.write_text("#!/bin/bash\n# placeholder slurm_multi model script for unit test\n")
+
+    # Use the model image-name as the manifest key (matches manifest convention).
+    image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
+
+    manifest = {
+        "built_images": {
+            image_key: {
+                "image_name": image_key,
+                "docker_image": image_key,
+                "registry_image": image_key,
+            },
+        },
+        "built_models": {
+            image_key: model_entry,
+        },
+        "context": {
+            "docker_env_vars": {},
+            "docker_mounts": {},
+            "docker_build_arg": {},
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_gpus": "all",
+        },
+    }
+    manifest_path = tmp_path / "build_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    # Additional context drives the slurm config: point output_dir at tmp_path
+    # so we can read the generated script back.
+    additional_context = {
+        "deploy": "slurm",
+        "gpu_vendor": "AMD",
+        "guest_os": "UBUNTU",
+        "slurm": dict(model_entry["slurm"], output_dir=str(tmp_path / "slurm_results")),
+        "distributed": model_entry["distributed"],
+    }
+
+    cfg = DeploymentConfig(
+        target="slurm",
+        manifest_file=str(manifest_path),
+        additional_context=additional_context,
+    )
+    return SlurmDeployment(cfg)
+
+
 class TestSlurmMultiPrepareScript:
     """`_prepare_slurm_multi_script` emits every model_info.env_vars as `export`."""
 
     @pytest.fixture
     def slurm_deployment(self, tmp_path: Path) -> SlurmDeployment:
         """Build a SlurmDeployment whose manifest contains the MAD-private #186 entry."""
-        # _prepare_slurm_multi_script resolves model_info["scripts"] against the
-        # manifest's directory and bails (returns False) if the script doesn't exist.
-        # Create a placeholder so the existence check passes; contents are irrelevant
-        # because prepare() never executes it.
-        script_rel = PR186_MODEL_ENTRY["scripts"]
-        script_abs = tmp_path / script_rel
-        script_abs.parent.mkdir(parents=True, exist_ok=True)
-        script_abs.write_text("#!/bin/bash\n# placeholder slurm_multi model script for unit test\n")
-
-        # Use the model image-name as the manifest key (matches manifest convention).
-        image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
-
-        manifest = {
-            "built_images": {
-                image_key: {
-                    "image_name": image_key,
-                    "docker_image": image_key,
-                    "registry_image": image_key,
-                },
-            },
-            "built_models": {
-                image_key: PR186_MODEL_ENTRY,
-            },
-            "context": {
-                "docker_env_vars": {},
-                "docker_mounts": {},
-                "docker_build_arg": {},
-                "gpu_vendor": "AMD",
-                "guest_os": "UBUNTU",
-                "docker_gpus": "all",
-            },
-        }
-        manifest_path = tmp_path / "build_manifest.json"
-        manifest_path.write_text(json.dumps(manifest))
-
-        # Additional context drives the slurm config: point output_dir at tmp_path
-        # so we can read the generated script back.
-        additional_context = {
-            "deploy": "slurm",
-            "gpu_vendor": "AMD",
-            "guest_os": "UBUNTU",
-            "slurm": dict(PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")),
-            "distributed": PR186_MODEL_ENTRY["distributed"],
-        }
-
-        cfg = DeploymentConfig(
-            target="slurm",
-            manifest_file=str(manifest_path),
-            additional_context=additional_context,
-        )
-        return SlurmDeployment(cfg)
+        return _slurm_multi_deployment(tmp_path, PR186_MODEL_ENTRY)
 
     def test_prepare_dispatches_to_slurm_multi(self, slurm_deployment, tmp_path):
         """prepare() must take the slurm_multi early-dispatch path and return True."""
@@ -364,6 +369,36 @@ class TestSlurmMultiDropsStaleResults:
     def test_a_cumulative_report_is_not_dropped(self, wrapper_script):
         """The copy next to the manifest is the project's cumulative perf.csv."""
         assert "rm -f -- " not in wrapper_script("perf.csv")
+
+
+class TestSlurmMultiNamespacedModelName:
+    """A card discovered under scripts/<dir>/ is named "<dir>/<name>"; every file
+    the wrapper names must still land directly in output_dir."""
+
+    NAMESPACED_ENTRY = dict(PR186_MODEL_ENTRY, name="sglang_disagg/pyt_sglang_disagg_qwen3-32b_short")
+    SAFE_NAME = "sglang_disagg_pyt_sglang_disagg_qwen3-32b_short"
+
+    @pytest.fixture
+    def slurm_deployment(self, tmp_path: Path) -> SlurmDeployment:
+        return _slurm_multi_deployment(tmp_path, self.NAMESPACED_ENTRY)
+
+    def test_prepare_writes_script_into_output_dir(self, slurm_deployment, tmp_path):
+        assert slurm_deployment.prepare() is True
+        script_path = Path(slurm_deployment.script_path)
+        assert script_path.parent == tmp_path / "slurm_results"
+        assert script_path.name == f"madengine_{self.SAFE_NAME}.sh"
+
+    def test_sbatch_logs_and_markers_use_safe_name(self, slurm_deployment, tmp_path):
+        slurm_deployment.prepare()
+        script_text = Path(slurm_deployment.script_path).read_text()
+        output_dir = tmp_path / "slurm_results"
+        assert f"#SBATCH --output={output_dir}/madengine-{self.SAFE_NAME}_%j_%t.out" in script_text
+        assert f"#SBATCH --error={output_dir}/madengine-{self.SAFE_NAME}_%j_%t.err" in script_text
+        assert f"madengine_{self.SAFE_NAME}_${{SLURM_JOB_ID:-local}}.complete" in script_text
+        assert slurm_deployment._completion_marker_basename_template == (
+            f"madengine_{self.SAFE_NAME}_{{job_id}}.complete"
+        )
+        assert slurm_deployment._completion_marker.parent == output_dir.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +673,53 @@ class TestBuildOnComputeManifestShape:
         for mn in ("model_a", "model_b"):
             assert manifest["built_models"][mn]["built_on_compute"] is True
             assert "DOCKER_IMAGE_NAME" in manifest["built_models"][mn]["env_vars"]
+
+    def test_namespaced_model_name_yields_valid_image_tag(self, tmp_path):
+        """A "<dir>/<name>" card must not put its slash into the image tag."""
+        model_name = "kvcache_transfer_bench/pyt_kvcache_transfer_bench_all"
+        fake_models = [
+            {
+                "name": model_name,
+                "dockerfile": "docker/kvcache_transfer_bench",
+                "scripts": "scripts/kvcache_transfer_bench/scripts/run.slurm",
+                "n_gpus": "-1",
+                "tags": ["kvcache"],
+                "slurm": {"partition": "gpu", "time": "01:00:00"},
+                "distributed": {"launcher": "slurm_multi"},
+                "env_vars": {},
+            },
+        ]
+        df = tmp_path / "docker/kvcache_transfer_bench.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text("FROM scratch\n")
+
+        manifest_path = tmp_path / "build_manifest.json"
+        orch = self._build_orchestrator_stub(tmp_path)
+
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+                mock_dm.return_value.run.return_value = fake_models
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(
+                        registry="localhost:5000/myrepo",
+                        manifest_output=str(manifest_path),
+                    )
+        finally:
+            os.chdir(orig_cwd)
+
+        manifest = json.loads(manifest_path.read_text())
+        image = manifest["built_images"][model_name]
+        assert image["docker_image"] == (
+            "localhost:5000/myrepo:kvcache_transfer_bench_pyt_kvcache_transfer_bench_all"
+        )
+        assert image["local_image"] == (
+            "ci-kvcache_transfer_bench_pyt_kvcache_transfer_bench_all_kvcache_transfer_bench"
+        )
+        assert manifest["built_models"][model_name]["docker_image"] == image["docker_image"]
 
 
 # ---------------------------------------------------------------------------
