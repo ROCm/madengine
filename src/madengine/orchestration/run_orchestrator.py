@@ -343,6 +343,8 @@ class RunOrchestrator:
                 "k8s",
                 "kubernetes",
                 "llm_d",
+                "platform",
+                "conda",
                 "distributed",
                 "vllm",
                 "env_vars",
@@ -399,7 +401,9 @@ class RunOrchestrator:
 
             # Step 4: Execute based on target
             try:
-                if target == "local" or target == "docker":
+                if target == "bare_metal":
+                    results = self._execute_bare_metal(manifest_file, timeout)
+                elif target == "local" or target == "docker":
                     results = self._execute_local(manifest_file, timeout)
                 else:
                     results = self._execute_distributed(target, manifest_file)
@@ -675,6 +679,8 @@ class RunOrchestrator:
                     "k8s",
                     "kubernetes",
                     "llm_d",
+                    "platform",
+                    "conda",
                     "distributed",
                     "vllm",
                     "env_vars",
@@ -981,6 +987,67 @@ class RunOrchestrator:
         self.rich_console.print(f"\n[green]✓ Local execution complete[/green]")
         self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
 
+        return results
+
+    def _execute_bare_metal(self, manifest_file: str, timeout: int) -> Dict:
+        """Execute models on bare metal (conda env, no Docker).
+
+        Like ``_execute_local`` but skips Docker-image GPU filtering (images are
+        synthetic bare-metal entries) and uses ``BareMetalRunner`` instead of
+        ``ContainerRunner``.
+        """
+        self.rich_console.print("[cyan]Executing on bare metal (conda)...[/cyan]\n")
+
+        with open(manifest_file, "r") as f:
+            manifest = json.load(f)
+
+        self._init_runtime_context()
+        self._show_node_info()
+
+        from madengine.core.auth import load_credentials
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        credentials = load_credentials()
+
+        if "context" in manifest:
+            manifest_context = manifest["context"]
+            for key in (
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                "guest_os",
+            ):
+                if key in manifest_context and key not in self.context.ctx:
+                    self.context.ctx[key] = manifest_context[key]
+
+        if self.additional_context:
+            for key in ("tools", "pre_scripts", "post_scripts", "encapsulate_script"):
+                if key in self.additional_context:
+                    self.context.ctx[key] = self.additional_context[key]
+
+        self._copy_scripts()
+
+        runner = BareMetalRunner(
+            self.context,
+            self.data,
+            self.console,
+            live_output=getattr(self.args, "live_output", False),
+            additional_context=self.additional_context,
+        )
+        runner.set_credentials(credentials)
+        if hasattr(self.args, "output") and self.args.output:
+            runner.set_perf_csv_path(self.args.output)
+
+        results = runner.run_models_from_manifest(
+            manifest_file=manifest_file,
+            timeout=timeout,
+            skip_model_run=getattr(self.args, "skip_model_run", False),
+            phase_suffix=".run",
+        )
+
+        self.rich_console.print("\n[green]✓ Bare-metal execution complete[/green]")
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
         return results
 
     def _execute_distributed(self, target: str, manifest_file: str) -> Dict:
@@ -1765,6 +1832,8 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
 
         Convention over Configuration:
+        - ``platform`` of ``bare_metal`` → bare-metal (conda, no Docker).
+          Omitted ``platform`` means Docker. A ``bare_metal`` key is rejected.
         - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
@@ -1780,9 +1849,13 @@ class RunOrchestrator:
                 launcher the model card declared.
 
         Returns:
-            Deployment target: "llm-d", "k8s", "spur", "slurm", or "local"
+            Deployment target: "bare_metal", "llm-d", "k8s", "spur", "slurm", or "local"
         """
-        # Checked first: an llm-d config also carries a "k8s" block, which
+        from madengine.orchestration.platform import resolve_context_platform
+
+        if resolve_context_platform(config) == "bare_metal":
+            return "bare_metal"
+        # Checked next: an llm-d config also carries a "k8s" block, which
         # configures the benchmark-client Job.
         if "llm_d" in config:
             return "llm-d"

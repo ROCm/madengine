@@ -424,8 +424,9 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
+        perf_table.add_column("Platform", justify="center", style="cyan")
+        perf_table.add_column("Scheduler", justify="center", style="cyan")
         perf_table.add_column("Launcher", justify="center", style="magenta")
-        perf_table.add_column("Deployment", justify="center", style="cyan")
         perf_table.add_column("Mode", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
@@ -504,7 +505,29 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
             
             # Get launcher value as-is from the CSV (don't default to "docker" here)
             launcher = str(row.get("launcher", "")) if not pd.isna(row.get("launcher")) and row.get("launcher") != "" else "N/A"
-            deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
+            deployment_raw = row.get("deployment_type", "local")
+            deployment_type = (
+                "local"
+                if pd.isna(deployment_raw) or str(deployment_raw).strip() in ("", "nan")
+                else str(deployment_raw)
+            )
+            platform_raw = row.get("platform", "")
+            platform_blank = pd.isna(platform_raw) or str(platform_raw).strip() in (
+                "",
+                "nan",
+                "None",
+            )
+            if platform_blank and deployment_type == "bare_metal":
+                # Rows written before platform existed stored the environment
+                # in deployment_type. The scheduler for that path is this machine.
+                platform = "bare_metal"
+                scheduler = "local"
+            elif platform_blank:
+                platform = "docker"
+                scheduler = deployment_type
+            else:
+                platform = str(platform_raw)
+                scheduler = "local" if deployment_type == "bare_metal" else deployment_type
             serving_mode_val = row.get("serving_mode", "")
             blank_mode = pd.isna(serving_mode_val) or str(serving_mode_val).strip() in (
                 "",
@@ -539,8 +562,9 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
-                launcher,           # Model runtime (vllm, torchrun, sglang, ...)
-                deployment_type,
+                platform,           # docker, bare_metal, ...
+                scheduler,          # local, slurm, kubernetes, llm-d
+                launcher,           # torchrun, vllm, sglang, native, ...
                 serving_mode,       # disaggregated/aggregated for llm-d; blank otherwise
                 gpu_arch,
                 performance,

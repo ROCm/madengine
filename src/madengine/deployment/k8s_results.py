@@ -277,7 +277,7 @@ class KubernetesResultsMixin:
         "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
         "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
         "data_download_duration,build_number,additional_docker_run_options,"
-        "serving_mode"
+        "serving_mode,platform"
     )
 
     def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:

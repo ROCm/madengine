@@ -698,7 +698,7 @@ class BaseDeployment(ABC):
             "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
             "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
             "data_download_duration,build_number,additional_docker_run_options,"
-            "serving_mode"
+            "serving_mode,platform"
         )
         perf_csv_path.write_text(standard_header + "\n", encoding="utf-8")
 

@@ -239,6 +239,13 @@ class BuildOrchestrator:
                 ],
             )
 
+        # Handle bare-metal (conda) build: create conda envs, no Docker build.
+        # platform "bare_metal" selects this path. Omitted platform stays Docker.
+        from madengine.orchestration.platform import resolve_context_platform
+
+        if resolve_context_platform(self.additional_context) == "bare_metal":
+            return self._execute_bare_metal_build(manifest_output=manifest_output)
+
         # Handle pre-built image mode
         if use_image:
             # If use_image is "auto", resolve from model card
@@ -1375,6 +1382,184 @@ exit 0
                 ),
             ) from e
 
+    def _execute_bare_metal_build(
+        self, manifest_output: str = "build_manifest.json"
+    ) -> str:
+        """Create conda environments for discovered models (no Docker build).
+
+        The conda env replaces the Docker image as the dependency-isolation unit.
+        For each model this creates/updates the env (via CondaEnvManager) and
+        writes a synthetic manifest whose entries mark ``bare_metal: True`` so the
+        run phase routes to BareMetalRunner.
+        """
+        from madengine.execution.conda_env import CondaEnvManager
+        from madengine.utils.gpu_validator import (
+            GPUInstallationError,
+            validate_gpu_installation,
+        )
+
+        self.rich_console.print(f"\n[dim]{'=' * 60}[/dim]")
+        self.rich_console.print(
+            "[bold blue]🔨 BUILD PHASE (Bare-Metal / Conda)[/bold blue]"
+        )
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+
+        bm_config = self.additional_context.get("conda", {}) or {}
+
+        # Preflight: bare-metal runs the workload directly on the host, so the
+        # GPU driver/runtime must be healthy before we spend time solving conda
+        # envs.
+        self.context.init_gpu_context()
+        gpu_vendor = self.context.ctx.get("gpu_vendor")
+        gpu_arch = (self.context.ctx.get("docker_env_vars") or {}).get(
+            "MAD_SYSTEM_GPU_ARCHITECTURE"
+        )
+        rocm_path = getattr(self.context, "_rocm_path", None)
+        self.rich_console.print(
+            "[bold cyan]🔍 Validating GPU installation...[/bold cyan]"
+        )
+        try:
+            validate_gpu_installation(
+                rocm_path=rocm_path,
+                raise_on_error=True,
+            )
+        except GPUInstallationError as gpu_err:
+            raise BuildError(
+                str(gpu_err),
+                context=create_error_context(
+                    operation="bare_metal_build",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Check that GPU drivers and the ROCm/CUDA runtime are installed",
+                    "Verify ROCM_PATH points at a valid ROCm installation (AMD)",
+                ],
+            ) from gpu_err
+        self.rich_console.print("[green]✓ GPU installation validated[/green]\n")
+
+        self.rich_console.print("[bold cyan]🔍 Discovering models...[/bold cyan]")
+        discover_models = DiscoverModels(args=self.args)
+        models = discover_models.run()
+        if not models:
+            raise DiscoveryError(
+                "No models discovered for bare-metal build",
+                context=create_error_context(
+                    operation="bare_metal_build",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Check if models.json exists",
+                    "Verify --tags parameter is correct",
+                ],
+            )
+        self.rich_console.print(f"[green]✓ Found {len(models)} model(s)[/green]\n")
+
+        conda = CondaEnvManager(
+            console=self.console,
+            bm_config=bm_config,
+            gpu_vendor=gpu_vendor,
+            gpu_arch=gpu_arch,
+        )
+
+        manifest = {
+            "built_images": {},
+            "built_models": {},
+            "context": self.context.ctx if hasattr(self.context, "ctx") else {},
+            "bare_metal": True,
+            "credentials_required": [],
+            "summary": {
+                "successful_builds": [],
+                "failed_builds": [],
+                "total_build_time": 0,
+                "successful_pushes": [],
+                "failed_pushes": [],
+            },
+        }
+
+        for model in models:
+            model_name = model.get("name", "unknown")
+            try:
+                import time
+
+                build_started = time.time()
+                env_name = conda.create_or_update(model)
+                build_duration = round(time.time() - build_started, 2)
+            except Exception as e:
+                self.rich_console.print(
+                    f"[red]✗ Conda env setup failed for {model_name}: {e}[/red]"
+                )
+                manifest["summary"]["failed_builds"].append(
+                    {"model": model_name, "error": str(e)}
+                )
+                continue
+
+            manifest["built_images"][model_name] = {
+                "docker_image": "",
+                "dockerfile": "N/A (bare-metal mode)",
+                "build_status": "SUCCESS",
+                "build_time": build_duration,
+                "build_duration": build_duration,
+                "bare_metal": True,
+                "conda_env": env_name,
+            }
+
+            data_field = model.get("data", [])
+            if isinstance(data_field, list):
+                data_str = ",".join(data_field) if data_field else ""
+            else:
+                data_str = data_field if data_field else ""
+
+            manifest["built_models"][model_name] = {
+                "name": model_name,
+                "tags": model.get("tags", []),
+                "scripts": model.get("scripts", ""),
+                "n_gpus": model.get("n_gpus", "1"),
+                "owner": model.get("owner", ""),
+                "training_precision": model.get("training_precision", ""),
+                "args": model.get("args", ""),
+                "timeout": model.get("timeout", None),
+                "data": data_str,
+                "cred": model.get("cred", ""),
+                "multiple_results": model.get("multiple_results", ""),
+                "skip_gpu_arch": model.get("skip_gpu_arch", []),
+                "env_vars": model.get("env_vars", {}),
+                "conda_env": env_name,
+                "environment_file": model.get("environment_file", ""),
+                "requirements_file": model.get("requirements_file", ""),
+                "python_version": model.get("python_version", ""),
+                "setup_script": model.get("setup_script", ""),
+                "rocm": model.get("rocm", {}),
+                "bare_metal": True,
+            }
+            manifest["summary"]["successful_builds"].append(model_name)
+            self.rich_console.print(
+                f"[green]✓ {model_name} -> conda env '{env_name}'[/green]"
+            )
+
+        with open(manifest_output, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        self._save_deployment_config(manifest_output)
+
+        if not manifest["summary"]["successful_builds"]:
+            raise BuildError(
+                "All bare-metal env setups failed - no models ready to run",
+                context=create_error_context(
+                    operation="bare_metal_build",
+                    component="BuildOrchestrator",
+                ),
+                suggestions=[
+                    "Check conda/mamba is installed and on PATH",
+                    "Verify environment_file / setup_script paths in models.json",
+                ],
+            )
+
+        self.rich_console.print(
+            f"[green]✓ Bare-metal build complete: {manifest_output}[/green]"
+        )
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+        return manifest_output
+
     def _save_build_summary(self, manifest_file: str, build_summary: Dict):
         """Save build summary to manifest for display purposes."""
         try:
@@ -1549,7 +1734,11 @@ exit 0
                 # Auto-detect based on config presence
                 # llm-d is checked first: its config also carries a "k8s" block,
                 # which configures the benchmark-client Job.
-                if self.additional_context.get("llm_d"):
+                from madengine.orchestration.platform import resolve_context_platform
+
+                if resolve_context_platform(self.additional_context) == "bare_metal":
+                    target = "bare_metal"
+                elif self.additional_context.get("llm_d"):
                     target = "llm-d"
                 elif self.additional_context.get("slurm"):
                     # Spur reuses the "slurm" block; slurm.scheduler picks the flavor.
@@ -1587,6 +1776,8 @@ exit 0
 
             deployment_config = {
                 "target": target,
+                "platform": self.additional_context.get("platform"),
+                "conda": self.additional_context.get("conda"),
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),

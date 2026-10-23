@@ -21,6 +21,8 @@ class TestPerfCsvHeader:
         assert "status" in PERF_CSV_HEADER
         assert "performance" in PERF_CSV_HEADER
         assert "gpu_architecture" in PERF_CSV_HEADER
+        assert "platform" in PERF_CSV_HEADER
+        assert "deployment_type" in PERF_CSV_HEADER
 
     def test_perf_csv_header_is_comma_separated(self):
         """Header is a single line of comma-separated column names."""

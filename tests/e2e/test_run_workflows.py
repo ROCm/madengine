@@ -3,35 +3,40 @@
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
+import csv
+import json
+
 # built-in modules
 import os
-import csv
+import shlex
+import shutil
+import subprocess
 
 # third-party modules
 import pytest
-import json
-
-# project modules
-from tests.fixtures.utils import BASE_DIR, MODEL_DIR
-from tests.fixtures.utils import global_data
-from tests.fixtures.utils import clean_test_temp_files
-from tests.fixtures.utils import get_gpu_nodeid_map
-from tests.fixtures.utils import get_num_gpus
-from tests.fixtures.utils import get_num_cpus
-from tests.fixtures.utils import requires_gpu
-from tests.fixtures.utils import generate_additional_context_for_machine
-from tests.fixtures.utils import (
-    DEFAULT_CLEAN_FILES,
-    build_run_command,
-    assert_model_in_perf_csv,
-)
 
 from madengine.core.context import Context
 
+# project modules
+from tests.fixtures.utils import (
+    BASE_DIR,
+    DEFAULT_CLEAN_FILES,
+    MODEL_DIR,
+    assert_model_in_perf_csv,
+    build_run_command,
+    clean_test_temp_files,
+    generate_additional_context_for_machine,
+    get_gpu_nodeid_map,
+    get_num_cpus,
+    get_num_gpus,
+    global_data,
+    requires_gpu,
+)
 
 # ============================================================================
 # Context Handling Tests
 # ============================================================================
+
 
 class TestContexts:
 
@@ -331,9 +336,7 @@ class TestContexts:
             )
 
     @requires_gpu("docker gpus requires GPU hardware")
-    @pytest.mark.skipif(
-        get_num_gpus() < 8, reason="test requires atleast 8 gpus"
-    )
+    @pytest.mark.skipif(get_num_gpus() < 8, reason="test requires atleast 8 gpus")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
         [["perf.csv", "perf.html", "results_dummy_gpubind.csv"]],
@@ -364,24 +367,24 @@ class TestContexts:
                         gpu_node_ids.append(row["performance"])
                     else:
                         pytest.fail("model in perf_test.csv did not run successfully.")
-        
+
         # Debug information
         print(f"GPU node IDs from performance: {gpu_node_ids}")
         print(f"GPU nodeid map: {gpu_nodeid_map}")
         mapped_gpus = [gpu_nodeid_map.get(node_id) for node_id in gpu_node_ids]
         print(f"Mapped GPUs: {mapped_gpus}")
-        
+
         # Filter out None values and sort
         valid_mapped_gpus = [gpu for gpu in mapped_gpus if gpu is not None]
         sorted_gpus = sorted(valid_mapped_gpus)
         print(f"Sorted valid GPUs: {sorted_gpus}")
-        
-        if sorted_gpus != [0, 2, 3, 4, 5, 7]:
-            pytest.fail(f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}")
 
-    @pytest.mark.skipif(
-        get_num_cpus() < 64, reason="test requires atleast 64 cpus"
-    )
+        if sorted_gpus != [0, 2, 3, 4, 5, 7]:
+            pytest.fail(
+                f"docker_gpus did not bind expected gpus in docker container. Expected: [0, 2, 3, 4, 5, 7], Got: {sorted_gpus}, Raw node IDs: {gpu_node_ids}, Mapping: {gpu_nodeid_map}"
+            )
+
+    @pytest.mark.skipif(get_num_cpus() < 64, reason="test requires atleast 64 cpus")
     @pytest.mark.parametrize(
         "clean_test_temp_files",
         [["perf.csv", "perf.html", "results_dummy_cpubind.csv"]],
@@ -425,24 +428,24 @@ class TestContexts:
         """
 
         context = Context()
-        product_name = context.ctx['docker_env_vars']["MAD_SYSTEM_GPU_PRODUCT_NAME"]
+        product_name = context.ctx["docker_env_vars"]["MAD_SYSTEM_GPU_PRODUCT_NAME"]
 
-        #fail the test if GPU product name is empty
+        # fail the test if GPU product name is empty
         if not product_name or not product_name.strip():
             pytest.fail("GPU product name is empty or just whitespaces")
 
         product_name = product_name.upper()
 
-        #if product name has AMD or NVIDIA in it then it's a safe bet
-        #that it was parsed properly
+        # if product name has AMD or NVIDIA in it then it's a safe bet
+        # that it was parsed properly
         if not ("AMD" in product_name or "NVIDIA" in product_name):
             pytest.fail(f"Incorrect product name={product_name!r}")
-
 
 
 # ============================================================================
 # Tag Filtering Tests
 # ============================================================================
+
 
 class TestTagsFunctionality:
 
@@ -463,7 +466,7 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            +             f"python3 -m madengine.cli.app run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
+            + f"python3 -m madengine.cli.app run --tags dummy_group_1 --live-output --additional-context '{json.dumps(context)}'"
         )
 
         # Check for model execution (handles ANSI codes in output)
@@ -520,7 +523,7 @@ class TestTagsFunctionality:
             + "MODEL_DIR="
             + MODEL_DIR
             + " "
-            +             f"python3 -m madengine.cli.app run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
+            + f"python3 -m madengine.cli.app run --tags dummy --live-output --additional-context '{json.dumps(context)}'"
         )
 
         # Check for model execution (handles ANSI codes in output)
@@ -528,3 +531,158 @@ class TestTagsFunctionality:
             pytest.fail("dummy tag not selected with commandline --tags argument")
 
 
+class TestBareMetalExecution:
+    """E2E tests for the bare-metal (conda) execution backend.
+
+    These run without a real conda/mamba install by pointing
+    ``conda.conda_bin`` at a checked-in fake-conda shim that execs the
+    wrapped command directly. The conda_bin path must be absolute because the
+    runner cd's into the model's working directory before invoking it.
+    """
+
+    FAKE_CONDA = os.path.join(
+        BASE_DIR,
+        MODEL_DIR,
+        "scripts",
+        "dummy_bare_metal",
+        "fake_conda.sh",
+    )
+    RUN_LOG = "dummy_bare_metal_bare_metal_mad_dummy_bare_metal.run.live.log"
+
+    @pytest.mark.parametrize(
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + [RUN_LOG]],
+        indirect=True,
+    )
+    def test_bare_metal_run_succeeds(self, global_data, clean_test_temp_files):
+        """dummy_bare_metal runs via the conda backend and reports SUCCESS.
+
+        Verifies the run routed to the bare-metal path (deployment_type,
+        launcher) and that performance was extracted from the model log.
+        """
+        context = {
+            "platform": "bare_metal",
+            "conda": {
+                "conda_bin": os.path.abspath(self.FAKE_CONDA),
+                "reuse_env": True,
+            },
+        }
+        global_data["console"].sh(
+            build_run_command("dummy_bare_metal", additional_context=context)
+        )
+
+        perf_csv = os.path.join(BASE_DIR, "perf.csv")
+        assert_model_in_perf_csv(perf_csv, "dummy_bare_metal", status="SUCCESS")
+
+        with open(perf_csv, "r") as csv_file:
+            for row in csv.DictReader(csv_file):
+                if row["model"] == "dummy_bare_metal":
+                    assert row["platform"] == "bare_metal"
+                    assert row["deployment_type"] == "local"
+                    assert row["launcher"] == "torchrun"
+                    assert row["performance"], "expected a performance value"
+                    break
+            else:
+                pytest.fail("dummy_bare_metal not found in perf.csv")
+
+
+def _docker_container_ids():
+    """Return ``docker ps -aq`` output, or None when the daemon is unreachable."""
+    try:
+        return subprocess.check_output(
+            ["docker", "ps", "-aq"], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+class TestBareMetalRealConda:
+    """Run dummy_bare_metal through a real conda prefix on this node.
+
+    The fake-conda test above only checks routing. This one creates a prefix
+    with the conda on PATH, runs the model script inside it, and checks that
+    the Docker daemon's container list does not change.
+    """
+
+    @requires_gpu("bare-metal build validates the host GPU installation")
+    @pytest.mark.parametrize(
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES + ["perf_bare_metal_real.csv"]],
+        indirect=True,
+    )
+    def test_dummy_bare_metal_real_conda_does_not_use_docker(
+        self, global_data, clean_test_temp_files, tmp_path
+    ):
+        conda_bin = None
+        for candidate in ("micromamba", "mamba", "conda"):
+            conda_bin = shutil.which(candidate)
+            if conda_bin:
+                break
+        if not conda_bin:
+            # This host may not have conda installed. The test bootstraps
+            # micromamba itself; madengine's own detection does not.
+            from madengine.execution.conda_env import bootstrap_micromamba
+
+            conda_bin = bootstrap_micromamba()
+
+        env_name = f"mad_dummy_bare_metal_e2e_{os.getpid()}"
+        env_root = tmp_path / "envs"
+        env_root.mkdir()
+        log_name = f"dummy_bare_metal_bare_metal_{env_name}.run.live.log"
+        context = {
+            "platform": "bare_metal",
+            "conda": {
+                "conda_bin": conda_bin,
+                "conda_env": env_name,
+                "env_root": str(env_root),
+                "reuse_env": False,
+                "cleanup_env": True,
+            },
+        }
+        before = _docker_container_ids()
+        mamba_root = tmp_path / "mamba-root"
+        mamba_root.mkdir()
+        try:
+            command = build_run_command(
+                "dummy_bare_metal",
+                output_file="perf_bare_metal_real.csv",
+                additional_context=context,
+            )
+            global_data["console"].sh(
+                f"export MAMBA_ROOT_PREFIX={shlex.quote(str(mamba_root))}; {command}"
+            )
+            perf_csv = os.path.join(BASE_DIR, "perf_bare_metal_real.csv")
+            assert_model_in_perf_csv(perf_csv, "dummy_bare_metal", status="SUCCESS")
+            with open(perf_csv, "r") as csv_file:
+                row = next(
+                    r
+                    for r in csv.DictReader(csv_file)
+                    if r["model"] == "dummy_bare_metal"
+                )
+            assert row["platform"] == "bare_metal"
+            assert row["deployment_type"] == "local"
+            assert row["launcher"] == "torchrun"
+            assert row["performance"]
+            assert row["docker_image"] == ""
+            after = _docker_container_ids()
+            if before is not None and after is not None:
+                assert before == after, "bare-metal run created a Docker container"
+            log_path = os.path.join(BASE_DIR, log_name)
+            if os.path.exists(log_path):
+                with open(log_path, "r", errors="replace") as log_file:
+                    log_text = log_file.read()
+                assert "docker run" not in log_text
+                assert "docker build" not in log_text
+                assert "conda run -p" in log_text or "micromamba run -p" in log_text
+        finally:
+            prefix = env_root / env_name
+            if prefix.exists():
+                subprocess.call(
+                    [conda_bin, "env", "remove", "-y", "-p", str(prefix)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                shutil.rmtree(prefix, ignore_errors=True)
+            log_path = os.path.join(BASE_DIR, log_name)
+            if os.path.exists(log_path):
+                os.remove(log_path)
