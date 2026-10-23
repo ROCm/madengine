@@ -854,8 +854,11 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 # Kubernetes
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
 
-# SLURM — the hostfile is per job, and an in-place salloc run adds a suffix
+# SLURM — one hostfile per job
 MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."
+
+# In-place salloc run — the same path plus _<YYYYMMDDHHMMSS>_<hex>
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}_<timestamp>_<hex>.txt ..."
 ```
 
 **Megatron-LM**:

@@ -42,7 +42,7 @@ Results are saved to `perf_entry.csv`.
 
 ## Commands Overview
 
-madengine provides five main commands:
+madengine provides seven commands:
 
 | Command | Purpose | Common Options |
 |---------|---------|----------------|
@@ -51,6 +51,8 @@ madengine provides five main commands:
 | `run` | Execute models | `--tags`, `--manifest-file`, `--timeout` |
 | `report` | Generate HTML reports | `to-html`, `to-email` |
 | `database` | Upload to MongoDB | `--file`, `--db` |
+| `cleanup` | Remove orphaned benchmark containers | `--all`, `--dry-run` |
+| `setup-page` | Write an HTML setup picker from `models.json` | `--output`, `--title` |
 
 For complete command options and detailed examples, see **[CLI Command Reference](cli-reference.md)**.
 
@@ -75,6 +77,12 @@ madengine report to-html --csv-file-path perf_entry.csv
 # Upload to MongoDB
 madengine database --file perf_entry.csv \
   --database mydb --collection results
+
+# Remove containers left behind by a cancelled run
+madengine cleanup
+
+# Write a setup picker from this repo's models.json
+madengine setup-page -o index.html
 ```
 
 ## Model Discovery
@@ -337,6 +345,12 @@ madengine run --tags model \
 **Required for Local:**
 - `gpu_vendor`: "AMD", "NVIDIA"
 - `guest_os`: "UBUNTU", "CENTOS"
+
+On a shared machine, `--wait-for-gpu-memory` blocks the local run until every GPU reports at most 512 MB in use. `0` checks once. A positive value is a wall-clock timeout in seconds. SLURM and Kubernetes warn and ignore the flag.
+
+```bash
+madengine run --tags model --wait-for-gpu-memory 30
+```
 
 ### ROCm path (host and container)
 
@@ -831,7 +845,7 @@ madengine discover --tags model --verbose
 
 ### CI/CD Integration
 
-madengine uses consistent exit codes (0=success, 2=build failure, 3=run failure, 4=invalid args). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
+madengine uses consistent exit codes (0=success, 1=general failure, 2=build failure, 3=run failure, 4=invalid args, 5=GPU wedged during `cleanup`). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
 
 ```bash
 #!/bin/bash
