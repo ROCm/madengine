@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.core import lifecycle
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
-
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
@@ -253,6 +253,7 @@ class BaseDeployment(ABC):
             DeploymentResult with status and metrics
         """
         result = None
+        cancel_hook = None
         try:
             # Step 1: Validate
             self.console.print(
@@ -283,6 +284,14 @@ class BaseDeployment(ABC):
                     self.cleanup(result.deployment_id)
                 return result
 
+            # A cancel calls os._exit and never reaches the KeyboardInterrupt
+            # handler below. Register the same cleanup for that path.
+            if result.deployment_id:
+                deployment_id = result.deployment_id
+                cancel_hook = lifecycle.register_cancel_hook(
+                    lambda deployment_id=deployment_id: self.cleanup(deployment_id)
+                )
+
             # Step 4: Monitor (optional)
             # Skip monitoring if deploy() already ran synchronously (e.g., inside salloc)
             if self.config.monitor and not result.skip_monitoring:
@@ -312,6 +321,9 @@ class BaseDeployment(ABC):
                 deployment_id="",
                 message=f"Exception: {str(e)}",
             )
+        finally:
+            if cancel_hook is not None:
+                lifecycle.unregister_cancel_hook(cancel_hook)
 
     def _monitor_until_complete(self, deployment_id: str) -> DeploymentResult:
         """
@@ -685,7 +697,8 @@ class BaseDeployment(ABC):
             "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
             "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
             "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-            "data_download_duration,build_number,additional_docker_run_options"
+            "data_download_duration,build_number,additional_docker_run_options,"
+            "serving_mode"
         )
         perf_csv_path.write_text(standard_header + "\n", encoding="utf-8")
 
@@ -726,6 +739,7 @@ class BaseDeployment(ABC):
             "data_download_duration",
             "build_number",
             "additional_docker_run_options",
+            "serving_mode",
         ]
         file_exists = perf_csv_path.exists()
         existing_header = None

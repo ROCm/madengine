@@ -577,6 +577,8 @@ class KubernetesTemplateContextMixin:
             "timeout": resolve_run_timeout(model_info, self.config.cli_timeout),
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
+            # Env vars whose values come from a Secret. Empty for ordinary jobs.
+            "secret_env": [],
             # Volumes
             "results_pvc": f"{self.job_name}-results",  # Shared results PVC when layout is shared
             "pvc_name": f"{self.job_name}-results",      # PVC name for template
@@ -793,6 +795,13 @@ class KubernetesTemplateContextMixin:
             Merged environment variables dict
         """
         env_vars = {}
+
+        # Manifest docker_env_vars are below every other source. The deployment
+        # reads additional_context, and this is the map the pod template renders.
+        docker_env = self.config.additional_context.get("docker_env_vars") or {}
+        if isinstance(docker_env, dict):
+            for key, value in docker_env.items():
+                env_vars[str(key)] = "" if value is None else str(value)
 
         # 1. Base environment variables from additional_context
         base_env = self.config.additional_context.get("env_vars", {})

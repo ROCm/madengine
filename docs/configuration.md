@@ -4,6 +4,10 @@ Complete guide to configuring madengine for various use cases and environments.
 
 ## Configuration Methods
 
+> Configuring a **distributed inference** workload? See
+> [Distributed Config](distributed-config.md) for how the formats divide by scope and
+> how they layer.
+
 ### 1. Inline JSON String
 
 ```bash
@@ -478,8 +482,13 @@ madengine run --tags my_model \
 ```
 
 `--tags` is required in this mode — without it madengine has no models to map
-onto the image and fails with a configuration error. Note this is an
-`--additional-context` key, not an environment variable.
+onto the image and fails with a configuration error. The build summary marks
+those models skipped and prints `Build skipped: using pre-built image …`.
+Note this is an `--additional-context` key, not an environment variable.
+
+On Kubernetes the same reference is what the cluster pulls (`registry_image`
+is set to that name). A tag that exists only in the local Docker daemon is
+not visible to the cluster.
 
 ### Custom Base Image
 
@@ -742,12 +751,23 @@ See [`examples/configs/templates/k8s.yaml`](../examples/configs/templates/k8s.ya
 - `modules` - Array of environment modules to `module load` in the job (default: `[]`)
 - `network_interface` - Interface exported as `NCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` (e.g. `ib0`)
 - `output_dir` - Directory for SLURM `.out`/`.err` files (default: `./slurm_results`)
+- `gpu_arch` - GPU architecture of the compute nodes (e.g. `"gfx942"`), used to enforce a model card's `skip_gpu_arch` before submission. madengine runs on the login node, which has no GPUs, so when this is unset it probes one node of `partition` with `srun ... rocminfo` (waiting up to `node_check_timeout`). If the probe cannot run, the model is submitted anyway with a warning that `skip_gpu_arch` was not enforced. `--disable-skip-gpu-arch` bypasses the check and the probe.
 - `skip_gpus_directive` - Omit the `#SBATCH --gpus-per-node` directive (default: `false`). Set `true` on clusters that expose no GPU GRES and reject any job script carrying it; allocation then relies on `exclusive` / `nproc_per_node`.
 
 Node health preflight, shared-storage, and results-collection keys (`enable_node_check`,
 `auto_cleanup_nodes`, `allow_submit_without_clean_nodes`, `verbose_node_check`,
 `shared_workspace`, `results_dir`) are documented in
 [examples/slurm-configs/README.md](../examples/slurm-configs/README.md).
+
+Job-local workspaces are separate from `output_dir`. A single-node job uses
+`$SLURM_TMPDIR/madengine_job_<job id>` (or `/tmp/madengine_job_<job id>`). A
+multi-node task uses `madengine_job_<job tag>_node_<rank>` under the same root;
+inside an existing allocation the tag also carries a per-run suffix. A
+multi-node task deletes its workspace after a successful artifact copy and
+keeps it when the task fails or the copy is incomplete. A later job on that
+node deletes this user's `madengine_job_*` directories older than 7 days when
+`squeue -u` succeeds and the job id is no longer listed. See
+[Running inside salloc](deployment.md#running-inside-salloc).
 
 ### Multi-Node SLURM
 
@@ -768,6 +788,57 @@ Node health preflight, shared-storage, and results-collection keys (`enable_node
 ```
 
 See [`examples/configs/templates/slurm.yaml`](../examples/configs/templates/slurm.yaml) for the complete annotated YAML template, or [`examples/configs/demo/slurm/`](../examples/configs/demo/slurm/) for ready-to-run examples.
+
+## llm-d Deployment
+
+Adding an `llm_d` key benchmarks a [llm-d](https://github.com/llm-d/llm-d) inference
+stack. The config also carries a `k8s` block, which configures the benchmark-client Job;
+`llm_d` is checked first during target inference, so it wins.
+
+**Attach mode** — benchmark a stack that already exists:
+
+```json
+{
+  "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
+  "llm_d": {
+    "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
+    "model": {"name": "Qwen/Qwen3-32B"}
+  }
+}
+```
+
+**Managed mode** — madengine installs the stack with `helm` and removes it afterwards:
+
+```json
+{
+  "k8s": {"namespace": "llm-d-bench", "gpu_count": 0},
+  "llm_d": {
+    "model": {"uri": "hf://Qwen/Qwen3-32B", "name": "Qwen/Qwen3-32B", "size": "80Gi", "hf_token_secret": "hf-token"},
+    "prefill": {"replicas": 2, "tensor_parallel": 8, "gpu_count": 8},
+    "decode": {"replicas": 1, "tensor_parallel": 8, "gpu_count": 8},
+    "charts": {
+      "infra": {"version": "<pin>"},
+      "gaie": {"version": "<pin>"},
+      "modelservice": {"version": "<pin>"}
+    }
+  }
+}
+```
+
+When the MAD card has `--model_repo`, you can omit `model.name` / `model.hf_repo` and
+madengine fills them from the card; if you set them, they must match that id exactly.
+`perf.csv` records `deployment_type=llm-d`, `launcher=vllm`, and
+`serving_mode=disaggregated|aggregated` (also the CLI Mode column). A card's
+`multiple_results` CSV is preferred over log `performance:` lines.
+
+Managed mode requires `helm` on `PATH`, Gateway API + Inference Extension CRDs, and
+**pinned chart versions** — it refuses to run on a floating version. Set
+`llm_d.dry_run: true` to render the values and `helm template` output without installing
+anything.
+
+The full key reference, reliability behaviour and troubleshooting are in
+[llm-d.md](llm-d.md); ready-made configs are in
+[examples/llm-d-configs/](../examples/llm-d-configs/).
 
 ## Distributed Training
 
@@ -1007,9 +1078,23 @@ For Kubernetes/SLURM deployments:
 2. User config file (`--additional-context-file`)
 3. Profile presets (single-gpu/multi-gpu/multi-node)
 4. GPU vendor presets (AMD/NVIDIA optimizations)
-5. Base defaults (k8s/defaults.json)
+5. Base defaults (k8s/defaults.json; llm-d layers `llm-d/defaults.json` beneath these)
 6. Environment variables
 7. Built-in fallbacks - Lowest
+
+Layers merge key by key: a nested object in a higher layer overrides only the keys it names.
+So a file that describes a cluster and a command-line string that describes one run combine
+into both:
+
+```bash
+# cluster.json: {"slurm": {"partition": "amd-rccl", "gpus_per_node": 8, "exclusive": true}}
+madengine run --tags model --additional-context-file cluster.json \
+    --additional-context '{"slurm": {"nodes": 4, "time": "06:00:00"}}'
+# -> slurm: partition amd-rccl, gpus_per_node 8, exclusive, nodes 4, time 06:00:00
+```
+
+`madengine build` and `madengine run` accept the two options together and combine them the
+same way.
 
 ## Complete Examples
 

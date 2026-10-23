@@ -18,7 +18,9 @@ Complete documentation for madengine - AI model automation and distributed bench
 | [Configuration](configuration.md) | JSON and [YAML `--config`](configuration.md#yaml-configuration-config); includes [run log error pattern scan](configuration.md#run-phase-log-error-pattern-scan) |
 | [Batch Build](batch-build.md) | Selective builds with batch manifests |
 | [Deployment](deployment.md) | Kubernetes and SLURM deployment |
+| [llm-d](llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Launchers](launchers.md) | Multi-node training frameworks |
+| [Distributed Config](distributed-config.md) | Where each kind of setting belongs: run, site, model, measurement |
 
 ### Advanced Topics
 
@@ -45,6 +47,8 @@ flowchart TB
         C3[run]
         C4[report]
         C5[database]
+        C6[cleanup]
+        C7[setup-page]
     end
 
     subgraph ORC["Orchestration Layer"]
@@ -59,6 +63,7 @@ flowchart TB
         E2[DeploymentFactory]
         K8S[Kubernetes Jobs]
         SLURM[SLURM Jobs]
+        LLMD[llm-d]
     end
 
     subgraph LAUNCH["Launcher Layer"]
@@ -77,6 +82,8 @@ flowchart TB
     O3 --> E2
     E2 --> K8S
     E2 --> SLURM
+    E2 --> LLMD
+    LLMD --> OUT
     E1 --> LAUNCH
     K8S --> LAUNCH
     SLURM --> LAUNCH
@@ -85,10 +92,10 @@ flowchart TB
     OUT --> C5
 ```
 
-1. **CLI Layer** - User interface with 5 commands (discover, build, run, report, database)
+1. **CLI Layer** - User interface with 7 commands (discover, build, run, report, database, cleanup, setup-page)
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
-4. **Execution Targets** - Local Docker, Kubernetes Jobs, or SLURM Jobs
+4. **Execution Targets** - Local Docker, Kubernetes Jobs, SLURM Jobs, or llm-d
 5. **Distributed Launchers** - Training (torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
@@ -149,6 +156,7 @@ madengine operates within the MAD (Model Automation and Dashboarding) ecosystem.
 - **Local** - Docker containers on local machine
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **llm-d** - Distributed inference stack, benchmarked from a Kubernetes Job
 
 ### Distributed Launchers
 

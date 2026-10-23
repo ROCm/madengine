@@ -33,6 +33,11 @@ def apply_deployment_config(config: Any, load_fn: Callable[[Dict[str, Any]], Dic
     return full_config
 
 
+# Key under which load_slurm_config records the env_vars keys that came only
+# from a preset (defaults.json / profiles/*.json), not from the user.
+PRESET_ENV_KEYS = "_preset_env_keys"
+
+
 class ConfigLoader:
     """Smart configuration loader with preset support."""
     
@@ -220,10 +225,78 @@ class ConfigLoader:
             config = cls.deep_merge(config, profile_preset)
         
         # Layer 3: User configuration (highest priority)
+        preset_env = dict(config.get("env_vars") or {})
         config = cls.deep_merge(config, user_config)
-        
+
+        # Once merged, a preset's env_vars are indistinguishable from ones the
+        # user supplied, and a self-managed launcher (slurm_multi) must not be
+        # handed them: it runs the card's own script, which owns its environment.
+        # Record which keys ONLY a preset set, so that path can leave them out.
+        # See SlurmDeployment._user_env_vars for the incident.
+        #
+        # Keys already marked stay marked, so loading an already-loaded config
+        # (whose env_vars now hold the preset values) does not launder them into
+        # user-supplied ones.
+        user_env = user_config.get("env_vars") or {}
+        carried = set(user_config.get(PRESET_ENV_KEYS) or [])
+        config[PRESET_ENV_KEYS] = sorted(
+            k for k in preset_env if k not in user_env or k in carried
+        )
+
         return config
     
+    @classmethod
+    def load_llmd_config(cls, user_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Load complete llm-d configuration.
+
+        The llm-d benchmark client is an ordinary single-pod Kubernetes Job, so
+        the full k8s preset stack applies unchanged; llm-d defaults are layered
+        underneath it.
+
+        Layers:
+        1. llm-d defaults (presets/llm-d/defaults.json)
+        2. Everything load_k8s_config produces (k8s defaults, GPU vendor,
+           profile, then user configuration)
+        3. k8s.gpu_count defaulted to 0, unless the user asked for GPUs
+
+        Args:
+            user_config: User-provided configuration
+
+        Returns:
+            Complete configuration with both k8s and llm-d defaults applied
+        """
+        config = cls.load_k8s_config(user_config)
+        llmd_defaults = cls.load_preset("llm-d/defaults.json")
+
+        # llm-d defaults are the base; user configuration still wins.
+        merged = cls.deep_merge(llmd_defaults, config)
+
+        # The benchmark client is a CPU-only pod: the GPUs belong to the llm-d
+        # model servers, not to the load generator. load_k8s_config picks a
+        # profile preset for it anyway, and k8s/profiles/single-gpu.json sets
+        # gpu_count 1 — so without this the client Job requests a GPU it never
+        # uses and competes with the very stack it is benchmarking.
+        #
+        # This cannot live in presets/llm-d/defaults.json: those are the *base*
+        # of the merge above, so the profile's gpu_count would overwrite them.
+        # Keying off user_config instead of the merged result is what separates
+        # "the user asked for GPUs" from "a profile defaulted them" — an
+        # explicit k8s.gpu_count still wins, as do the runtime overrides
+        # resolve_runtime_gpus reads straight off additional_context.
+        #
+        # Only the "k8s" key is read here, not the "kubernetes" alias, because
+        # "k8s" is the only key written below — and the only one that is read
+        # downstream, since KubernetesDeployment and resolve_runtime_gpus both
+        # fall back to "kubernetes" only when "k8s" is empty, which it never is
+        # once k8s/defaults.json has merged. Honouring the alias here alone
+        # produced neither the value the user asked for nor the 0 this wants.
+        user_k8s = user_config.get("k8s") or {}
+        if "gpu_count" not in user_k8s:
+            merged.setdefault("k8s", {})["gpu_count"] = 0
+
+        return merged
+
     @classmethod
     def infer_and_validate_deploy_type(cls, user_config: Dict[str, Any]) -> str:
         """
@@ -242,13 +315,23 @@ class ConfigLoader:
         """
         has_k8s = "k8s" in user_config or "kubernetes" in user_config
         has_slurm = "slurm" in user_config
+        has_llm_d = "llm_d" in user_config
         explicit_deploy = user_config.get("deploy", "").lower()
-        
+
         # Validation Rule 1: Can't have both k8s and slurm configs
         if has_k8s and has_slurm:
             raise ValueError(
                 "Conflicting deployment configuration: Both 'k8s' and 'slurm' fields present. "
                 "Please specify only one deployment target."
+            )
+
+        # Validation Rule 1b: llm-d is a Kubernetes-native stack; can't combine with slurm.
+        # Mirrors the same check in LlmdDeployment.validate(), but here at build time,
+        # before SLURM defaults get merged into the build context.
+        if has_llm_d and has_slurm:
+            raise ValueError(
+                "Conflicting deployment configuration: both 'llm_d' and 'slurm' present. "
+                "llm-d is a Kubernetes-native stack; remove the 'slurm' block."
             )
         
         # Validation Rule 2: If explicit deploy set, it must match config presence

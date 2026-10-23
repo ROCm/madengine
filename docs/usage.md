@@ -42,7 +42,7 @@ Results are saved to `perf_entry.csv`.
 
 ## Commands Overview
 
-madengine provides five main commands:
+madengine provides seven commands:
 
 | Command | Purpose | Common Options |
 |---------|---------|----------------|
@@ -51,6 +51,8 @@ madengine provides five main commands:
 | `run` | Execute models | `--tags`, `--manifest-file`, `--timeout` |
 | `report` | Generate HTML reports | `to-html`, `to-email` |
 | `database` | Upload to MongoDB | `--file`, `--db` |
+| `cleanup` | Remove orphaned benchmark containers | `--all`, `--dry-run` |
+| `setup-page` | Write an HTML setup picker from `models.json` | `--output`, `--title` |
 
 For complete command options and detailed examples, see **[CLI Command Reference](cli-reference.md)**.
 
@@ -75,6 +77,12 @@ madengine report to-html --csv-file-path perf_entry.csv
 # Upload to MongoDB
 madengine database --file perf_entry.csv \
   --database mydb --collection results
+
+# Remove containers left behind by a cancelled run
+madengine cleanup
+
+# Write a setup picker from this repo's models.json
+madengine setup-page -o index.html
 ```
 
 ## Model Discovery
@@ -308,6 +316,7 @@ Pass **`--skip-model-run`** to start containers and run `pre_scripts`, but skip 
 - Exit status is `SKIPPED` (not `FAILURE`) — the overall run exits `0`.
 - Combine with **`--keep-alive`** to leave a fully-set-up, live container for manual inspection or debugging.
 - Has **no effect** on distributed (SLURM/K8s) targets — a warning is printed if used with them.
+- A normal run deletes a leftover `multiple_results` file before the model script, so an appending script cannot report the previous run. `--skip-model-run` leaves that file, because nothing writes a replacement. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the `--output` basename are never deleted.
 
 ```bash
 # Skip the model script; container starts and pre_scripts run
@@ -336,6 +345,12 @@ madengine run --tags model \
 **Required for Local:**
 - `gpu_vendor`: "AMD", "NVIDIA"
 - `guest_os`: "UBUNTU", "CENTOS"
+
+On a shared machine, `--wait-for-gpu-memory` blocks the local run until every GPU reports at most 512 MB in use. `0` checks once. A positive value is a wall-clock timeout in seconds. SLURM and Kubernetes warn and ignore the flag.
+
+```bash
+madengine run --tags model --wait-for-gpu-memory 30
+```
 
 ### ROCm path (host and container)
 
@@ -387,6 +402,17 @@ At the start of each container run, madengine prints a side-by-side environment 
 | ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
 
 The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+
+### Deploy to llm-d
+
+An `llm_d` block benchmarks an [llm-d](llm-d.md) stack. It is checked before `k8s`, because the same config also carries a `k8s` block for the benchmark-client Job.
+
+```bash
+madengine run --tags my_llm_d_benchmark \
+  --additional-context-file examples/llm-d-configs/02-managed-dry-run.json
+```
+
+See [llm-d](llm-d.md) for attach mode, managed mode, and the MI250 notes.
 
 ### Deploy to Kubernetes
 
@@ -749,6 +775,8 @@ madengine build --tags model --clean-docker-cache --verbose
 | `MAD_DOCKERHUB_REPO` | Docker Hub repository | `"myorg"` |
 | `DOCKER_CONFIG` | Directory holding the Docker `config.json` whose existing login is reused | `/etc/docker-oat` |
 | `MAD_SKIP_DOCKER_LOGIN` | Set to `1` to never run `docker login` and always defer to the machine's existing credentials | `"1"` |
+| `MAD_AWS_S3` | AWS S3 credentials for data loading (JSON object). Overrides `credential.json`. | `'{"USERNAME":"username","PASSWORD":"password"}'` |
+| `NAS_NODES` | NAS node credentials for data loading (JSON array). `NAME` is required. Overrides `credential.json`. | `'[{"NAME":"node1","HOST":"hostname","PORT":22,"USERNAME":"username","PASSWORD":"password"}]'` |
 
 ## Best Practices
 
@@ -817,7 +845,7 @@ madengine discover --tags model --verbose
 
 ### CI/CD Integration
 
-madengine uses consistent exit codes (0=success, 2=build failure, 3=run failure, 4=invalid args). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
+madengine uses consistent exit codes (0=success, 1=general failure, 2=build failure, 3=run failure, 4=invalid args, 5=GPU wedged during `cleanup`). Failed runs are still written to `perf.csv` with status `FAILURE`. See [CLI Reference — Exit Codes](cli-reference.md#exit-codes) for the full table.
 
 ```bash
 #!/bin/bash

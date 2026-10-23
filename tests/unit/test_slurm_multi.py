@@ -136,63 +136,68 @@ PR186_MODEL_ENTRY = {
 }
 
 
+def _slurm_multi_deployment(tmp_path: Path, model_entry: dict) -> SlurmDeployment:
+    """Build a SlurmDeployment whose manifest contains model_entry."""
+    # _prepare_slurm_multi_script resolves model_info["scripts"] against the
+    # manifest's directory and bails (returns False) if the script doesn't exist.
+    # Create a placeholder so the existence check passes; contents are irrelevant
+    # because prepare() never executes it.
+    script_rel = model_entry["scripts"]
+    script_abs = tmp_path / script_rel
+    script_abs.parent.mkdir(parents=True, exist_ok=True)
+    script_abs.write_text("#!/bin/bash\n# placeholder slurm_multi model script for unit test\n")
+
+    # Use the model image-name as the manifest key (matches manifest convention).
+    image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
+
+    manifest = {
+        "built_images": {
+            image_key: {
+                "image_name": image_key,
+                "docker_image": image_key,
+                "registry_image": image_key,
+            },
+        },
+        "built_models": {
+            image_key: model_entry,
+        },
+        "context": {
+            "docker_env_vars": {},
+            "docker_mounts": {},
+            "docker_build_arg": {},
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_gpus": "all",
+        },
+    }
+    manifest_path = tmp_path / "build_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    # Additional context drives the slurm config: point output_dir at tmp_path
+    # so we can read the generated script back.
+    additional_context = {
+        "deploy": "slurm",
+        "gpu_vendor": "AMD",
+        "guest_os": "UBUNTU",
+        "slurm": dict(model_entry["slurm"], output_dir=str(tmp_path / "slurm_results")),
+        "distributed": model_entry["distributed"],
+    }
+
+    cfg = DeploymentConfig(
+        target="slurm",
+        manifest_file=str(manifest_path),
+        additional_context=additional_context,
+    )
+    return SlurmDeployment(cfg)
+
+
 class TestSlurmMultiPrepareScript:
     """`_prepare_slurm_multi_script` emits every model_info.env_vars as `export`."""
 
     @pytest.fixture
     def slurm_deployment(self, tmp_path: Path) -> SlurmDeployment:
         """Build a SlurmDeployment whose manifest contains the MAD-private #186 entry."""
-        # _prepare_slurm_multi_script resolves model_info["scripts"] against the
-        # manifest's directory and bails (returns False) if the script doesn't exist.
-        # Create a placeholder so the existence check passes; contents are irrelevant
-        # because prepare() never executes it.
-        script_rel = PR186_MODEL_ENTRY["scripts"]
-        script_abs = tmp_path / script_rel
-        script_abs.parent.mkdir(parents=True, exist_ok=True)
-        script_abs.write_text("#!/bin/bash\n# placeholder slurm_multi model script for unit test\n")
-
-        # Use the model image-name as the manifest key (matches manifest convention).
-        image_key = "rocm/pytorch-private:sglang_disagg_mori_20260502"
-
-        manifest = {
-            "built_images": {
-                image_key: {
-                    "image_name": image_key,
-                    "docker_image": image_key,
-                    "registry_image": image_key,
-                },
-            },
-            "built_models": {
-                image_key: PR186_MODEL_ENTRY,
-            },
-            "context": {
-                "docker_env_vars": {},
-                "docker_mounts": {},
-                "docker_build_arg": {},
-                "gpu_vendor": "AMD",
-                "guest_os": "UBUNTU",
-                "docker_gpus": "all",
-            },
-        }
-        manifest_path = tmp_path / "build_manifest.json"
-        manifest_path.write_text(json.dumps(manifest))
-
-        # Additional context drives the slurm config: point output_dir at tmp_path
-        # so we can read the generated script back.
-        additional_context = {
-            "deploy": "slurm",
-            "gpu_vendor": "AMD",
-            "guest_os": "UBUNTU",
-            "slurm": dict(PR186_MODEL_ENTRY["slurm"], output_dir=str(tmp_path / "slurm_results")),
-            "distributed": PR186_MODEL_ENTRY["distributed"],
-        }
-
-        cfg = DeploymentConfig(
-            target="slurm",
-            manifest_file=str(manifest_path),
-            additional_context=additional_context,
-        )
-        return SlurmDeployment(cfg)
+        return _slurm_multi_deployment(tmp_path, PR186_MODEL_ENTRY)
 
     def test_prepare_dispatches_to_slurm_multi(self, slurm_deployment, tmp_path):
         """prepare() must take the slurm_multi early-dispatch path and return True."""
@@ -262,6 +267,138 @@ class TestSlurmMultiPrepareScript:
 
         # And the final exit must use the captured exit code
         assert "exit $SCRIPT_EXIT_CODE" in script_text
+
+
+class TestSlurmMultiDropsStaleResults:
+    """The wrapper has to clear the results file itself.
+
+    `prepare()` dispatches to `_prepare_slurm_multi_script` before the standard
+    template path, so the model script here never passes through
+    ContainerRunner and never gets its cleanup. The script appends when the
+    file is already there, and `collect_results` falls back to the copies next
+    to the manifest and in the script's own directory, so a leftover from an
+    earlier run is reported as this run's.
+    """
+
+    MODEL_INVOCATION = "bash run_xPyD_models.slurm"
+
+    @pytest.fixture
+    def wrapper_script(self, tmp_path: Path):
+        def build(multiple_results="perf_Qwen3-32B.csv"):
+            entry = dict(PR186_MODEL_ENTRY)
+            if multiple_results is None:
+                entry.pop("multiple_results", None)
+            else:
+                entry["multiple_results"] = multiple_results
+
+            script_abs = tmp_path / entry["scripts"]
+            script_abs.parent.mkdir(parents=True, exist_ok=True)
+            script_abs.write_text("#!/bin/bash\n# placeholder model script\n")
+
+            image_key = entry["env_vars"]["DOCKER_IMAGE_NAME"]
+            manifest_path = tmp_path / "build_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "built_images": {image_key: {"image_name": image_key}},
+                        "built_models": {image_key: entry},
+                        "context": {
+                            "docker_env_vars": {},
+                            "docker_mounts": {},
+                            "docker_build_arg": {},
+                            "gpu_vendor": "AMD",
+                            "guest_os": "UBUNTU",
+                            "docker_gpus": "all",
+                        },
+                    }
+                )
+            )
+
+            deployment = SlurmDeployment(
+                DeploymentConfig(
+                    target="slurm",
+                    manifest_file=str(manifest_path),
+                    additional_context={
+                        "deploy": "slurm",
+                        "gpu_vendor": "AMD",
+                        "guest_os": "UBUNTU",
+                        "slurm": dict(
+                            entry["slurm"],
+                            output_dir=str(tmp_path / "slurm_results"),
+                        ),
+                        "distributed": entry["distributed"],
+                    },
+                )
+            )
+            assert deployment.prepare() is True
+            return Path(deployment.script_path).read_text()
+
+        return build
+
+    def test_the_file_is_dropped_before_the_model_runs(self, wrapper_script):
+        script = wrapper_script()
+        deletion = script.index("rm -f -- ")
+        assert script.index("cd ") < deletion
+        assert deletion < script.index(self.MODEL_INVOCATION)
+
+    def test_the_copy_next_to_the_manifest_goes_too(self, wrapper_script, tmp_path):
+        """That is the one collect_results falls back to."""
+        script = wrapper_script()
+        deletion = next(
+            line for line in script.splitlines() if line.startswith("rm -f -- ")
+        )
+        assert str(tmp_path / "perf_Qwen3-32B.csv") in deletion
+
+    def test_the_unlink_cannot_fail_the_job(self, wrapper_script):
+        """`set -e` is on here, and the file may belong to container root."""
+        deletion = next(
+            line
+            for line in wrapper_script().splitlines()
+            if line.startswith("rm -f -- ")
+        )
+        assert deletion.endswith("2>/dev/null || true")
+
+    def test_the_path_is_quoted(self, wrapper_script):
+        """multiple_results comes from the model card and reaches a host shell."""
+        script = wrapper_script("perf;rm -rf /.csv")
+        assert shlex.quote("perf;rm -rf /.csv") in script
+
+    def test_nothing_is_dropped_without_multiple_results(self, wrapper_script):
+        assert "rm -f -- " not in wrapper_script(None)
+
+    def test_a_cumulative_report_is_not_dropped(self, wrapper_script):
+        """The copy next to the manifest is the project's cumulative perf.csv."""
+        assert "rm -f -- " not in wrapper_script("perf.csv")
+
+
+class TestSlurmMultiNamespacedModelName:
+    """A card discovered under scripts/<dir>/ is named "<dir>/<name>"; every file
+    the wrapper names must still land directly in output_dir."""
+
+    NAMESPACED_ENTRY = dict(PR186_MODEL_ENTRY, name="sglang_disagg/pyt_sglang_disagg_qwen3-32b_short")
+    SAFE_NAME = "sglang_disagg_pyt_sglang_disagg_qwen3-32b_short"
+
+    @pytest.fixture
+    def slurm_deployment(self, tmp_path: Path) -> SlurmDeployment:
+        return _slurm_multi_deployment(tmp_path, self.NAMESPACED_ENTRY)
+
+    def test_prepare_writes_script_into_output_dir(self, slurm_deployment, tmp_path):
+        assert slurm_deployment.prepare() is True
+        script_path = Path(slurm_deployment.script_path)
+        assert script_path.parent == tmp_path / "slurm_results"
+        assert script_path.name == f"madengine_{self.SAFE_NAME}.sh"
+
+    def test_sbatch_logs_and_markers_use_safe_name(self, slurm_deployment, tmp_path):
+        slurm_deployment.prepare()
+        script_text = Path(slurm_deployment.script_path).read_text()
+        output_dir = tmp_path / "slurm_results"
+        assert f"#SBATCH --output={output_dir}/madengine-{self.SAFE_NAME}_%j_%t.out" in script_text
+        assert f"#SBATCH --error={output_dir}/madengine-{self.SAFE_NAME}_%j_%t.err" in script_text
+        assert f"madengine_{self.SAFE_NAME}_${{SLURM_JOB_ID:-local}}.complete" in script_text
+        assert slurm_deployment._completion_marker_basename_template == (
+            f"madengine_{self.SAFE_NAME}_{{job_id}}.complete"
+        )
+        assert slurm_deployment._completion_marker.parent == output_dir.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +673,53 @@ class TestBuildOnComputeManifestShape:
         for mn in ("model_a", "model_b"):
             assert manifest["built_models"][mn]["built_on_compute"] is True
             assert "DOCKER_IMAGE_NAME" in manifest["built_models"][mn]["env_vars"]
+
+    def test_namespaced_model_name_yields_valid_image_tag(self, tmp_path):
+        """A "<dir>/<name>" card must not put its slash into the image tag."""
+        model_name = "kvcache_transfer_bench/pyt_kvcache_transfer_bench_all"
+        fake_models = [
+            {
+                "name": model_name,
+                "dockerfile": "docker/kvcache_transfer_bench",
+                "scripts": "scripts/kvcache_transfer_bench/scripts/run.slurm",
+                "n_gpus": "-1",
+                "tags": ["kvcache"],
+                "slurm": {"partition": "gpu", "time": "01:00:00"},
+                "distributed": {"launcher": "slurm_multi"},
+                "env_vars": {},
+            },
+        ]
+        df = tmp_path / "docker/kvcache_transfer_bench.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text("FROM scratch\n")
+
+        manifest_path = tmp_path / "build_manifest.json"
+        orch = self._build_orchestrator_stub(tmp_path)
+
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+                mock_dm.return_value.run.return_value = fake_models
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(
+                        registry="localhost:5000/myrepo",
+                        manifest_output=str(manifest_path),
+                    )
+        finally:
+            os.chdir(orig_cwd)
+
+        manifest = json.loads(manifest_path.read_text())
+        image = manifest["built_images"][model_name]
+        assert image["docker_image"] == (
+            "localhost:5000/myrepo:kvcache_transfer_bench_pyt_kvcache_transfer_bench_all"
+        )
+        assert image["local_image"] == (
+            "ci-kvcache_transfer_bench_pyt_kvcache_transfer_bench_all_kvcache_transfer_bench"
+        )
+        assert manifest["built_models"][model_name]["docker_image"] == image["docker_image"]
 
 
 # ---------------------------------------------------------------------------
@@ -1294,3 +1478,70 @@ class TestRuntimeSlurmOverrideProvenance:
         )
         assert cfg["_explicit_slurm_keys"] == ["nodes", "partition"]
         assert cfg["slurm"]["nodes"] == 2
+
+
+class TestPrebuiltImageKeepsCardFields(TestPrebuiltImageManifestShape):
+    """`--use-image` must not drop the fields a card declares.
+
+    The manifest entry was assembled from an explicit field list, so anything not named in it
+    disappeared. `additional_docker_run_options` was one: it is where a card declares
+    `--device=/dev/infiniband`, its JIT cache mounts and its backend selection. Without them the
+    container starts in a different configuration, the benchmark still produces numbers, and they
+    are labelled with the card that was not used.
+
+    Observed on a gfx950 run as `re-attached docker run options to 1 entry(ies)` -- a workaround
+    applied by hand after noticing the container had come up without its RDMA device.
+    """
+
+    OPTS = "--device=/dev/infiniband -e ALL2ALL_BACKEND=deepep_v2 -v /var/cache/mad:/cache"
+
+    @pytest.fixture
+    def card_with_run_options(self, fake_models_two_sglang_disagg):
+        models = [dict(m) for m in fake_models_two_sglang_disagg]
+        models[0]["additional_docker_run_options"] = self.OPTS
+        models[0]["multiple_results"] = "perf_fake_a.csv"
+        return models
+
+    def _manifest(self, tmp_path, models):
+        orch = self._build_orchestrator_stub(tmp_path)
+        manifest_path = tmp_path / "build_manifest.json"
+        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as mock_dm:
+            mock_dm.return_value.run.return_value = models
+            with patch.object(orch, "_save_deployment_config", return_value=None):
+                orch._execute_with_prebuilt_image(
+                    use_image="rocm/pytorch-private:fake-tag",
+                    manifest_output=str(manifest_path),
+                )
+        return json.loads(manifest_path.read_text())
+
+    def test_docker_run_options_reach_the_manifest(self, tmp_path, card_with_run_options):
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+        assert entry.get("additional_docker_run_options") == self.OPTS, (
+            "the card's docker run options were dropped, so the container would start without "
+            "its RDMA device and backend selection"
+        )
+
+    def test_the_computed_fields_still_win(self, tmp_path, card_with_run_options):
+        """Keeping the card must not let it override what this path computes.
+
+        The card carries a conflicting value for every field this path computes.
+        Without those, the assertions pass even when the card is applied last,
+        and a replaced env_vars dict would still look correct.
+        """
+        card = card_with_run_options[0]
+        card["image"] = "card-image:should-lose"
+        card["docker_image"] = "card-docker:should-lose"
+        card["prebuilt"] = False
+        card["env_vars"] = {
+            "MODEL_NAME": "Fake-A",
+            "DOCKER_IMAGE_NAME": "card-env:should-lose",
+        }
+        entry = self._manifest(tmp_path, card_with_run_options)["built_models"]["pyt_fake_a"]
+        image = "rocm/pytorch-private:fake-tag"
+        assert entry["docker_image"] == image
+        assert entry["image"] == image
+        assert entry["prebuilt"] is True
+        assert entry["env_vars"]["DOCKER_IMAGE_NAME"] == image
+        assert entry["env_vars"]["MODEL_NAME"] == "Fake-A"
+        assert entry["multiple_results"] == "perf_fake_a.csv"
+        assert entry["additional_docker_run_options"] == self.OPTS

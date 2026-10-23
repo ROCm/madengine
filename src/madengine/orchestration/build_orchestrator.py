@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from rich.console import Console as RichConsole
 from rich.panel import Panel
 
-from madengine.core.console import Console
+from madengine.core.console import Console, manifest_safe_context
 from madengine.core.context import Context
 from madengine.core.additional_context_defaults import apply_build_context_defaults
 from madengine.core.auth import has_ambient_docker_auth, load_credentials
@@ -522,7 +522,7 @@ class BuildOrchestrator:
                 # same pre-built use_image) so multi-model --use-image runs work.
                 "built_images": {},
                 "built_models": {},
-                "context": self.context.ctx if hasattr(self.context, 'ctx') else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "credentials_required": [],
                 "summary": {
                     "successful_builds": [],
@@ -556,7 +556,14 @@ class BuildOrchestrator:
                     "prebuilt": True,
                 }
 
+                # Start from the card, then overlay what this path computes. An explicit field
+                # list silently dropped everything not named in it --
+                # `additional_docker_run_options` among them, which is where a card declares
+                # `--device=/dev/infiniband`, its cache mounts and its backend selection. The run
+                # then proceeded against a different configuration than the card describes and
+                # still labelled the results with that card.
                 manifest["built_models"][model_name] = {
+                    **model,
                     "name": model_name,
                     "image": use_image,
                     "docker_image": use_image,
@@ -1042,11 +1049,14 @@ class BuildOrchestrator:
             dockerfile_basename = (
                 Path(dockerfile_path).name.replace(".Dockerfile", "").replace(".ubuntu.amd", "")
             )
-            local_image_name = f"ci-{model_name}_{dockerfile_basename}".lower()
+            # Cards discovered under scripts/<dir>/ are named "<dir>/<name>", and an
+            # image tag cannot contain a slash.
+            image_model_name = model_name.replace("/", "_")
+            local_image_name = f"ci-{image_model_name}_{dockerfile_basename}".lower()
             if len(registry_parts) >= 2:
-                registry_image_name = f"{registry}:{model_name}"
+                registry_image_name = f"{registry}:{image_model_name}"
             else:
-                registry_image_name = f"{registry}/{model_name}:latest"
+                registry_image_name = f"{registry}/{image_model_name}:latest"
             self.rich_console.print(f"  {model_name}: {dockerfile_path} -> {registry_image_name}")
             per_model_data.append({
                 "model": model,
@@ -1238,7 +1248,7 @@ exit 0
             manifest = {
                 "built_images": built_images,
                 "built_models": built_models,
-                "context": self.context.ctx if hasattr(self.context, "ctx") else {},
+                "context": manifest_safe_context(getattr(self.context, "ctx", {})),
                 "deployment_config": {
                     "slurm": slurm_config,
                     "distributed": first_model.get("distributed", {}),
@@ -1435,7 +1445,11 @@ exit 0
             target = self.additional_context.get("deploy")
             if not target:
                 # Auto-detect based on config presence
-                if self.additional_context.get("slurm"):
+                # llm-d is checked first: its config also carries a "k8s" block,
+                # which configures the benchmark-client Job.
+                if self.additional_context.get("llm_d"):
+                    target = "llm-d"
+                elif self.additional_context.get("slurm"):
                     target = "slurm"
                 elif self.additional_context.get("k8s") or self.additional_context.get("kubernetes"):
                     target = "k8s"
@@ -1445,6 +1459,18 @@ exit 0
             # Get env_vars and filter out MIOPEN_USER_DB_PATH
             # This variable must be set per-process in multi-GPU training to avoid database conflicts
             env_vars = self.additional_context.get("env_vars", {}).copy()
+
+            # Save what the USER supplied, not what a SLURM preset profile filled
+            # in. The run phase re-applies the presets itself; saved here, their
+            # values came back as this run's additional_context.env_vars and could
+            # no longer be told apart from the user's -- which is exactly the
+            # distinction a slurm_multi card needs (see
+            # SlurmDeployment._user_env_vars).
+            from madengine.deployment.config_loader import PRESET_ENV_KEYS
+
+            for key in self.additional_context.get(PRESET_ENV_KEYS, []):
+                env_vars.pop(key, None)
+
             if "MIOPEN_USER_DB_PATH" in env_vars:
                 del env_vars["MIOPEN_USER_DB_PATH"]
                 print("ℹ️  Filtered MIOPEN_USER_DB_PATH from env_vars (will be set per-process in training)")
@@ -1454,6 +1480,7 @@ exit 0
                 "slurm": self.additional_context.get("slurm"),
                 "k8s": self.additional_context.get("k8s"),
                 "kubernetes": self.additional_context.get("kubernetes"),
+                "llm_d": self.additional_context.get("llm_d"),
                 "distributed": self.additional_context.get("distributed"),
                 "vllm": self.additional_context.get("vllm"),
                 "env_vars": env_vars,

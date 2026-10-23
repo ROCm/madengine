@@ -91,7 +91,12 @@ def filter_images_by_skip_gpu_arch(
             compatible[model_name] = image_info
             continue
 
-        skip_list = [arch.strip() for arch in skip_gpu_arch_str.split(",")]
+        # A card spells it "gfx942,gfx950"; the --use-image synthetic manifest
+        # copies the card field through as a list. Both mean the same thing.
+        if isinstance(skip_gpu_arch_str, (list, tuple)):
+            skip_list = [str(arch).strip() for arch in skip_gpu_arch_str]
+        else:
+            skip_list = [arch.strip() for arch in skip_gpu_arch_str.split(",")]
         sys_gpu_arch = runtime_gpu_arch
         if sys_gpu_arch and "NVIDIA" in sys_gpu_arch:
             # Normalize "NVIDIA A100-SXM4-40GB" -> "A100", "NVIDIA H100 PCIe" -> "H100"

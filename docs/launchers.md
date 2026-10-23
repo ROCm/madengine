@@ -6,6 +6,10 @@ Complete reference for all distributed execution launchers supported by madengin
 
 ## Overview
 
+> For how a distributed inference workload is *configured* (models.yaml,
+> configs/*.yaml, cluster.sh, or mad-config.yaml), see
+> [Distributed Config](distributed-config.md).
+
 madengine provides unified support for multiple distributed frameworks, enabling seamless execution across training and inference workloads on both Kubernetes and SLURM clusters.
 
 ### Supported Launchers
@@ -21,6 +25,8 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
+
+> **llm-d is not a launcher.** A launcher is a way madengine starts a workload *inside its own container*. [llm-d](llm-d.md) is a deployment target: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`, not `distributed.launcher`. Result rows record that split: `deployment_type` is `llm-d`, `launcher` is the model server (`vllm`), and `serving_mode` is `disaggregated` or `aggregated`. When the card sets `multiple_results`, that CSV is preferred over log `performance:` aggregation, same as local Docker and plain Kubernetes.
 
 ---
 
@@ -644,7 +650,7 @@ madengine build --tags my_model --build-on-compute --registry docker.io/myorg
 
 **Run Phase — salloc support**:
 
-When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` inside `salloc` (no behavior change).
+When `madengine run` detects `SLURM_JOB_ID` (running inside an existing `salloc` allocation), the slurm_multi launcher runs the wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated multi-node launchers also run in place inside `salloc`, while single-node runs still submit `sbatch`; see [Running Inside salloc](deployment.md#running-inside-salloc).
 
 ```bash
 # Inside salloc: runs synchronously with bash
@@ -664,7 +670,7 @@ fields are honoured identically on both paths:
 | `distributed.launcher` | Selects the path. Resolved deployment-config-first, model-card-second — the same resolution used to emit the launcher env block, so the two can never disagree. |
 | `distributed.nnodes` | Sizes the allocation (`#SBATCH --nodes` / `--ntasks`) when `slurm.nodes` is not set explicitly. If both are set and differ, `slurm.nodes` wins and a warning is printed. Non-numeric or non-positive values are ignored with a warning — `slurm.nodes` is used instead. |
 | `slurm.*` | `partition`, `nodes`, `gpus_per_node`, `time`, `exclusive`, `reservation`, `output_dir`, `nodelist`, `account`, `qos`, `modules`, `skip_gpus_directive`, `results_dir` — the full set every build path (normal build, prebuilt image, `--build-on-compute`) promotes into `deployment_config.slurm`. Other `slurm.*` fields documented in [configuration.md](configuration.md) are read at deploy time but are not copied from the model card into a manifest's `deployment_config`. |
-| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. |
+| `multiple_results` | Names the results CSV. Searched next to the model script (where the wrapper `cd`s, so `$(pwd)` writes land there), then the job dir, output dir and cwd, before falling back to the conventional locations. A normal run deletes a leftover file with that name first, so a script that appends cannot report the previous run. `perf.csv`, `perf_super.csv`, `perf_super.json`, and the basename of `--output` are kept. `--skip-model-run` does not delete it, because nothing writes a replacement. The `slurm_multi` wrapper applies the same rule but only knows the default output name `perf.csv`. |
 
 > **`args` is not sbatch flags.** On the templated path `args` goes to the
 > containerised `run.sh`; on this path it is appended to `bash <model>.slurm`. It is
@@ -786,6 +792,7 @@ Structured generation      → SGLang or SGLang Disaggregated
 Memory constrained         → vLLM (PagedAttention)
 Large-scale clusters (5+)  → SGLang Disaggregated
 Workload-specific tuning   → SGLang Disaggregated
+Gateway-routed serving     → llm-d (deployment target, see llm-d.md)
 ```
 
 ### 2. Resource Allocation
@@ -844,7 +851,14 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 
 **DeepSpeed**:
 ```bash
+# Kubernetes
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
+
+# SLURM — one hostfile per job
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."
+
+# In-place salloc run — the same path plus _<YYYYMMDDHHMMSS>_<hex>
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}_<timestamp>_<hex>.txt ..."
 ```
 
 **Megatron-LM**:
