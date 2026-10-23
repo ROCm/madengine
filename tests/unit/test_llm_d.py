@@ -206,6 +206,24 @@ FIXTURE_MODELS_JSON = (
 ROOT_MODELS_JSON = Path(__file__).resolve().parents[2] / "models.json"
 
 
+def _root_models_are_dummy_catalog() -> bool:
+    """True when the gitignored root file is the madengine dummy catalog.
+
+    Developers often keep a MAD ``models.json`` (sometimes an empty list) at
+    the repo root. That file is not this contract. The model named ``dummy``
+    identifies the fixture catalog.
+    """
+    if not ROOT_MODELS_JSON.exists():
+        return False
+    try:
+        models = json.loads(ROOT_MODELS_JSON.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(models, list):
+        return False
+    return any(isinstance(m, dict) and m.get("name") == "dummy" for m in models)
+
+
 class _ReferenceModelTagChecks:
     """dummy_llm_d needs an llm-d cluster, so no shared tag may reach it."""
 
@@ -241,11 +259,14 @@ class TestFixtureReferenceModelTags(_ReferenceModelTagChecks):
 
 
 @pytest.mark.skipif(
-    not ROOT_MODELS_JSON.exists(),
-    reason="root models.json is a gitignored dev fixture; absent on a clean checkout",
+    not _root_models_are_dummy_catalog(),
+    reason=(
+        "root models.json is absent or is not the madengine dummy catalog; "
+        "the tag contract is enforced on tests/fixtures/dummy/models.json"
+    ),
 )
 class TestRootReferenceModelTags(_ReferenceModelTagChecks):
-    """A local dev checkout mirroring a MAD repo, used for ad-hoc manual runs."""
+    """The gitignored root copy of the dummy catalog, used for ad-hoc runs."""
 
     models_json = ROOT_MODELS_JSON
 
