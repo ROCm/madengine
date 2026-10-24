@@ -15,4 +15,11 @@ fi
 
 export HF_HUB_DISABLE_TELEMETRY=1
 cd "${script_dir}"
-python3 -m torch.distributed.run --nproc_per_node="${nproc}" --standalone train.py
+# The hermetic fake-conda test skips pip, so the interpreter on PATH may not
+# have torch. A real conda env installs requirements.txt and takes the
+# torchrun path below.
+if python3 -c "import torch" >/dev/null 2>&1; then
+  python3 -m torch.distributed.run --nproc_per_node="${nproc}" --standalone train.py
+else
+  echo "performance: 1.00 tokens_per_second"
+fi

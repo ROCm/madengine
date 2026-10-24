@@ -1529,6 +1529,7 @@ exit 0
                 "python_version": model.get("python_version", ""),
                 "setup_script": model.get("setup_script", ""),
                 "rocm": model.get("rocm", {}),
+                "distributed": model.get("distributed", {}),
                 "bare_metal": True,
             }
             manifest["summary"]["successful_builds"].append(model_name)
