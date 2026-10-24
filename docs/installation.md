@@ -5,7 +5,7 @@ Complete installation instructions for madengine.
 ## Prerequisites
 
 - **Python 3.8+** with pip
-- **Docker** with GPU support (ROCm for AMD, CUDA for NVIDIA)
+- **Docker** with GPU support (ROCm for AMD, CUDA for NVIDIA) for the container path. A bare-metal run uses conda, mamba, or micromamba instead of Docker; see [Bare metal](bare-metal.md)
 - **Git** for repository management
 - **MAD package** - Required for model discovery and execution
 
@@ -40,7 +40,7 @@ pre-commit install
 
 All dependencies — including Kubernetes deployment support and development tools (pytest, black, mypy, etc.) — are installed by default. There are no optional extras to select.
 
-**Note**: SLURM deployment requires no additional Python dependencies (uses CLI commands).
+**Note**: SLURM and Spur deployment require no additional Python dependencies (they use the SLURM CLI shims). Spur is selected with `slurm.scheduler: spur`. See [Deployment](deployment.md#spur-crusoe-scheduler).
 
 ## MAD Package Setup
 
@@ -144,6 +144,7 @@ madengine discover
 ## Next Steps
 
 - [Usage Guide](usage.md) - Learn how to use madengine
-- [Deployment Guide](deployment.md) - Deploy to Kubernetes or SLURM
+- [Deployment Guide](deployment.md) - Deploy to Kubernetes, SLURM, or Spur
+- [Bare metal](bare-metal.md) - Run on this machine in a conda prefix
 - [Quick Start](usage.md#quick-start) - Run your first model
 

@@ -70,7 +70,7 @@ madengine ships with pre-built config groups under `src/madengine/configs/`:
 
 | Group | Default | Options | Description |
 |-------|---------|---------|-------------|
-| `platform` | `docker` | `docker` (only; `bare_metal` / `singularity` / `podman` files exist but validation rejects them) | Execution platform |
+| `platform` | `docker` | `docker` only. `bare_metal`, `singularity`, and `podman` files exist, and validation still rejects them. Bare metal is selected with `"platform": "bare_metal"` on `--additional-context`, not with this group. See [Bare metal](bare-metal.md) | Execution platform |
 | `scheduler` | `local` | `local`, `slurm`, `k8s` | Job scheduler — `slurm` and `k8s` add root `slurm:` / `k8s:` sections (same keys as JSON) |
 | `hardware` | `amd` | `amd`, `nvidia`, `cpu` | Sets `gpu_vendor` and `guest_os` (same keys as JSON). Docker device flags still come from `gpu_vendor` in the engine, not from a `runtime` context key. |
 | `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (Hydra alias of `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native` (omits `distributed.launcher`; single-process), `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
@@ -189,7 +189,7 @@ madengine validates the composed config and reports errors for:
 - `distributed.enabled: true` without a `distributed.launcher`
 - Invalid `distributed.nnodes` (must be a positive integer)
 - An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is Kubernetes. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
-- Unsupported `platform.type` (currently only `docker` is supported)
+- Unsupported `platform.type` in a Hydra config (currently only `docker` is supported). `"platform": "bare_metal"` on `--additional-context` is supported and is a different path. See [Bare metal](bare-metal.md)
 - Unknown top-level config keys (catches typos)
 
 ## Default Configuration Values
@@ -789,6 +789,24 @@ node deletes this user's `madengine_job_*` directories older than 7 days when
 
 See [`examples/configs/templates/slurm.yaml`](../examples/configs/templates/slurm.yaml) for the complete annotated YAML template, or [`examples/configs/demo/slurm/`](../examples/configs/demo/slurm/) for ready-to-run examples.
 
+## Bare-Metal Execution
+
+`"platform": "bare_metal"` runs the model on this machine inside a conda, mamba, or micromamba prefix. Omitted `platform` stays Docker. Conda settings live in a `conda` object. A top-level `bare_metal` key is rejected.
+
+```json
+{
+  "platform": "bare_metal",
+  "conda": {
+    "conda_bin": "/path/to/micromamba",
+    "reuse_env": true
+  }
+}
+```
+
+The card supplies `conda_env`, `python_version`, `environment_file`, `requirements_file`, `setup_script`, and an optional `rocm` wheel install. A matching key in `conda` overrides the card for that invocation. Prefixes are created under `~/.cache/madengine/envs` unless `conda.env_root` is set. `n_gpus: "-1"` is exported as a positive `MAD_RUNTIME_NGPUS`. The result row records `platform=bare_metal`, `deployment_type=local`, and the card's `distributed.launcher`.
+
+Bare metal cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. The full field list, GPU masking, dependency stamp, and result columns are in [bare-metal.md](bare-metal.md).
+
 ## llm-d Deployment
 
 Adding an `llm_d` key benchmarks a [llm-d](https://github.com/llm-d/llm-d) inference
@@ -1110,6 +1128,20 @@ same way.
   }
 }
 ```
+
+### Bare metal (conda, no Docker)
+
+```json
+{
+  "platform": "bare_metal",
+  "conda": {
+    "conda_bin": "/path/to/micromamba",
+    "reuse_env": true
+  }
+}
+```
+
+See [bare-metal.md](bare-metal.md) for the card fields, `MAD_RUNTIME_NGPUS`, and the result columns.
 
 ### Kubernetes Single-GPU
 

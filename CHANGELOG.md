@@ -5,6 +5,16 @@ All notable changes to madengine will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Bare-metal conda execution**: `"platform": "bare_metal"` runs the model on this machine inside a conda, mamba, or micromamba prefix. Omitted `platform` stays Docker. A retired top-level `bare_metal` object is rejected, and a `conda` block on a Docker run is rejected. The prefix lives under `~/.cache/madengine/envs/<name>` (override with `conda.env_root`). Build creates or updates it from the card's `environment_file`, `requirements_file`, `python_version`, `setup_script`, and optional `rocm` wheel install, and writes a manifest with an empty `docker_image`. Run enters the prefix with `conda run -p` and does not wrap the script in `torchrun`. `n_gpus: "-1"` becomes a real `MAD_RUNTIME_NGPUS`, because `torchrun --nproc_per_node` rejects `-1`. Result rows record `platform=bare_metal`, `deployment_type=local`, and the card's workload launcher. `reuse_env` (default true) keeps a prefix whose dependency stamp still matches. `cleanup_env` (default false) removes it after the run. Bare metal cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. The Hydra group `platform=bare_metal` is still rejected; pass the string through `--additional-context`. See `docs/bare-metal.md`.
+
+### Changed
+
+- **Spur `sglang-disagg` peer list**: Each Spur array task's nodelist contains only that task's node, so expanding it produced a one-IP `SGLANG_NODE_IPS` and the router started without `--decode`. Every rank now publishes `ip_rank<N>` in the shared rendezvous directory, and Spur builds the list in rank order within `slurm.rendezvous_timeout`. Stock SLURM still expands the job nodelist and skips `127.*` addresses.
+
 ## [2.4.0] - 2026-10-18
 
 ### Added

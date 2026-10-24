@@ -9,7 +9,7 @@ Complete guide to using madengine for running AI models locally and in distribut
 ### Prerequisites
 
 - Python 3.8+ with madengine installed
-- Docker with GPU support  
+- Docker with GPU support for the container path. A bare-metal run needs conda, mamba, or micromamba instead; see [Bare metal](bare-metal.md)
 - MAD package cloned locally
 
 ```bash
@@ -402,6 +402,20 @@ At the start of each container run, madengine prints a side-by-side environment 
 | ROCm / CUDA Version | From `amd-smi` / `rocm-sdk version` / `.info/version` | From `nvcc --version` / `nvidia-smi` |
 
 The host column uses the same resolution as top-level `MAD_ROCM_PATH` in additional context. The container column queries the container's own `PATH` at runtime, so it correctly reflects TheRock images where tools live in a Python venv rather than `/opt/rocm/bin/`.
+
+### Run on bare metal
+
+`"platform": "bare_metal"` skips Docker and runs the model script inside a conda prefix on this machine. conda, mamba, or micromamba must already be installed. The full field list is in [Bare metal](bare-metal.md).
+
+```bash
+madengine run --tags my_model --live-output \
+  --additional-context '{
+    "platform": "bare_metal",
+    "conda": {"conda_bin": "/path/to/micromamba"}
+  }'
+```
+
+The model card names the prefix, the Python version, and the requirements or setup script. `distributed.launcher` on the card is written to `perf.csv`. The script itself starts `torchrun` and should pass `MAD_RUNTIME_NGPUS` as `--nproc_per_node`. `--config platform=bare_metal` is rejected. Use `--additional-context`.
 
 ### Deploy to llm-d
 
