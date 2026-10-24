@@ -14,13 +14,13 @@
 
 > **AI model automation and benchmarking platform for local and distributed execution**
 
-madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep Learning models across local and distributed environments. Built for the [MAD (Model Automation and Dashboarding)](https://github.com/ROCm/MAD) ecosystem, it provides seamless execution from single GPUs to multi-node clusters — with the same command working locally, on Kubernetes, and on SLURM.
+madengine is a modern CLI tool for running Large Language Models (LLMs) and Deep Learning models across local and distributed environments. Built for the [MAD (Model Automation and Dashboarding)](https://github.com/ROCm/MAD) ecosystem, it provides seamless execution from single GPUs to multi-node clusters — with the same command working locally in Docker or a conda prefix, on Kubernetes, on SLURM or Spur, and against an llm-d stack.
 
 ## ✨ Key Features
 
 - **🚀 Modern CLI** — Rich terminal output with Typer and Rich
 - **📝 YAML Config** — Composable [Hydra-based YAML configs](docs/configuration.md#yaml-configuration-config) with config groups, hardware profiles, and CLI overrides — alternative to `--additional-context` JSON
-- **🎯 Simple Deployment** — Run locally, on Kubernetes, on SLURM, or against an [llm-d](docs/llm-d.md) stack by adding a config key; no code changes
+- **🎯 Simple Deployment** — Run locally in Docker, on the host in a [conda prefix](docs/bare-metal.md), on Kubernetes, on SLURM or [Spur](docs/deployment.md#spur-crusoe-scheduler), or against an [llm-d](docs/llm-d.md) stack by adding a config key; no code changes
 - **🔧 Distributed Launchers** — torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus, vLLM, SGLang
 - **🐳 Container-Native** — Docker-based execution with GPU support (ROCm, CUDA)
 - **📊 Performance Tools** — rocprof/rocprofv3, [rocm-trace-lite](https://github.com/sunway513/rocm-trace-lite), on-demand Kineto traces, and [TraceLens](docs/profiling.md#tracelens---tracelens-trace-analysis) reports → see [Profiling](docs/profiling.md)
@@ -75,9 +75,11 @@ flowchart TB
 
     subgraph EXEC["Execution / Deployment Layer"]
         E1[ContainerRunner<br/>local Docker]
+        E0[BareMetalRunner<br/>conda]
         E2[DeploymentFactory]
         K8S[Kubernetes Jobs]
         SLURM[SLURM Jobs]
+        SPUR[Spur job arrays]
         LLMD[llm-d]
     end
 
@@ -94,22 +96,26 @@ flowchart TB
     O2 --> MAN --> O3
     O1 --> O2
     O3 --> E1
+    O3 --> E0
     O3 --> E2
     E2 --> K8S
     E2 --> SLURM
+    E2 --> SPUR
     E2 --> LLMD
     LLMD --> OUT
+    E0 --> OUT
     E1 --> LAUNCH
     K8S --> LAUNCH
     SLURM --> LAUNCH
+    SPUR --> LAUNCH
     LAUNCH --> OUT
     OUT --> C4
     OUT --> C5
 ```
 
-1. **CLI Layer** — five commands: `discover`, `build`, `run`, `report`, `database`
-2. **Orchestration** — `DiscoverModels` finds models; `BuildOrchestrator` builds images and writes `build_manifest.json`; `RunOrchestrator` reads/triggers the build and infers the target
-3. **Execution / Deployment** — local `ContainerRunner`, or `DeploymentFactory` → Kubernetes / SLURM
+1. **CLI Layer** — seven commands: `discover`, `build`, `run`, `report`, `database`, `cleanup`, `setup-page`
+2. **Orchestration** — `DiscoverModels` finds models; `BuildOrchestrator` builds images or conda prefixes and writes `build_manifest.json`; `RunOrchestrator` reads/triggers the build and infers the target
+3. **Execution / Deployment** — local `ContainerRunner` or `BareMetalRunner`, or `DeploymentFactory` → Kubernetes / SLURM / Spur / llm-d
 4. **Launchers** — distributed training and inference frameworks
 5. **Output & Post-Processing** — `perf.csv`/JSON results → `report` (HTML/email) and `database` (MongoDB)
 
@@ -119,7 +125,7 @@ The core pipeline is the same everywhere: discover models, build images once, ru
 
 ```mermaid
 flowchart LR
-    D[discover<br/>find models by tag] --> B[build<br/>Docker images]
+    D[discover<br/>find models by tag] --> B[build<br/>Docker images or conda prefixes]
     B --> M[(build_manifest.json)]
     M --> R[run<br/>infer target + execute]
     R --> P[(perf.csv)]
@@ -131,14 +137,17 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[additional_context] --> Q{which key?}
+    A[additional_context] --> P{platform bare_metal?}
+    P -->|yes| B[Bare metal conda]
+    P -->|no| Q{which key?}
     Q -->|llm_d| D[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
+    Q -->|slurm scheduler spur, or deploy spur| U[Spur job array]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
 
-`llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
+`platform: bare_metal` is checked first and runs conda on this machine. `llm_d` is checked next: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job. A `slurm` block whose `scheduler` is `spur`, or `deploy: spur`, selects Spur. Omitted `platform` stays Docker.
 
 ## 📋 Commands
 
@@ -149,6 +158,8 @@ flowchart TD
 | **[run](docs/usage.md#run-workflow)** | Execute models | Local and distributed execution |
 | **[report](docs/cli-reference.md#report---generate-reports)** | Generate HTML/email reports | Convert CSV to viewable reports |
 | **[database](docs/cli-reference.md#database---upload-to-mongodb)** | Upload to MongoDB | Store results in a database |
+| **[cleanup](docs/cli-reference.md#cleanup---remove-orphaned-containers)** | Remove orphaned containers | Cancelled runs and shared runners |
+| **[setup-page](docs/cli-reference.md#setup-page---generate-a-setup-picker)** | Write an HTML setup picker | Publish a model catalog page |
 
 ```bash
 madengine discover --tags dummy          # Find models
@@ -189,7 +200,8 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | [Usage Guide](docs/usage.md) | Commands, workflows, and examples |
 | **[CLI Reference](docs/cli-reference.md)** | **Detailed command options and examples** |
 | [Configuration](docs/configuration.md) | Advanced options; [YAML config (`--config`)](docs/configuration.md#yaml-configuration-config); ROCm path; log error scan |
-| [Deployment](docs/deployment.md) | Kubernetes and SLURM deployment |
+| [Deployment](docs/deployment.md) | Kubernetes, SLURM, and Spur deployment |
+| [Bare metal](docs/bare-metal.md) | Conda execution on this machine, with no Docker |
 | [llm-d](docs/llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Batch Build](docs/batch-build.md) | Selective builds for CI/CD |
 | [Launchers](docs/launchers.md) | Distributed frameworks + capability matrices |
@@ -212,6 +224,8 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 All launchers support single-GPU, multi-GPU, and multi-node (where infrastructure allows). See the [Launchers Guide](docs/launchers.md) for the full **parallelism** and **infrastructure** capability matrices.
 
 **[llm-d](docs/llm-d.md)** is a deployment target rather than a launcher: madengine benchmarks a Kubernetes-native llm-d stack (vLLM servers behind an Inference Gateway) over HTTP, either attaching to one you already run or standing it up with `helm`.
+
+**[Bare metal](docs/bare-metal.md)** is also a target rather than a launcher. `"platform": "bare_metal"` runs the model script inside a conda prefix on this machine. The script starts `torchrun` or another launcher, and the result row records that launcher.
 
 ## 📊 Profiling
 

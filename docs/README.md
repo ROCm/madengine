@@ -17,7 +17,8 @@ Complete documentation for madengine - AI model automation and distributed bench
 |-------|-------------|
 | [Configuration](configuration.md) | JSON and [YAML `--config`](configuration.md#yaml-configuration-config); includes [run log error pattern scan](configuration.md#run-phase-log-error-pattern-scan) |
 | [Batch Build](batch-build.md) | Selective builds with batch manifests |
-| [Deployment](deployment.md) | Kubernetes and SLURM deployment |
+| [Deployment](deployment.md) | Kubernetes, SLURM, and Spur deployment |
+| [Bare metal](bare-metal.md) | Conda execution on this machine, with no Docker |
 | [llm-d](llm-d.md) | Benchmarking the llm-d distributed inference stack |
 | [Launchers](launchers.md) | Multi-node training frameworks |
 | [Distributed Config](distributed-config.md) | Where each kind of setting belongs: run, site, model, measurement |
@@ -60,9 +61,11 @@ flowchart TB
 
     subgraph EXEC["Execution / Deployment Layer"]
         E1[ContainerRunner<br/>local Docker]
+        E0[BareMetalRunner<br/>conda]
         E2[DeploymentFactory]
         K8S[Kubernetes Jobs]
         SLURM[SLURM Jobs]
+        SPUR[Spur job arrays]
         LLMD[llm-d]
     end
 
@@ -79,14 +82,18 @@ flowchart TB
     O2 --> MAN --> O3
     O1 --> O2
     O3 --> E1
+    O3 --> E0
     O3 --> E2
     E2 --> K8S
     E2 --> SLURM
+    E2 --> SPUR
     E2 --> LLMD
     LLMD --> OUT
+    E0 --> OUT
     E1 --> LAUNCH
     K8S --> LAUNCH
     SLURM --> LAUNCH
+    SPUR --> LAUNCH
     LAUNCH --> OUT
     OUT --> C4
     OUT --> C5
@@ -95,7 +102,7 @@ flowchart TB
 1. **CLI Layer** - User interface with 7 commands (discover, build, run, report, database, cleanup, setup-page)
 2. **Model Discovery** - Find and validate models from MAD package
 3. **Orchestration** - BuildOrchestrator & RunOrchestrator manage workflows
-4. **Execution Targets** - Local Docker, Kubernetes Jobs, SLURM Jobs, or llm-d
+4. **Execution Targets** - Local Docker, bare-metal conda, Kubernetes Jobs, SLURM Jobs, Spur job arrays, or llm-d
 5. **Distributed Launchers** - Training (torchrun, DeepSpeed, Megatron-LM, TorchTitan, Primus) and Inference (vLLM, SGLang)
 6. **Performance Output** - CSV/JSON results with metrics
 7. **Post-Processing** - Report generation (HTML/Email) and database upload (MongoDB)
@@ -114,10 +121,13 @@ flowchart TB
 **Run a model locally**
 → [Installation](installation.md) → [Usage Guide](usage.md)
 
+**Run on this machine without Docker**
+→ [Bare metal](bare-metal.md)
+
 **Deploy to Kubernetes**
 → [Configuration](configuration.md) → [Deployment](deployment.md)
 
-**Deploy to SLURM**
+**Deploy to SLURM or Spur**
 → [Configuration](configuration.md) → [Deployment](deployment.md)
 
 **Build multiple models selectively (CI/CD)**
@@ -153,9 +163,11 @@ madengine operates within the MAD (Model Automation and Dashboarding) ecosystem.
 
 ### Deployment Targets
 
-- **Local** - Docker containers on local machine
+- **Local Docker** - Containers on this machine
+- **Bare metal** - A conda prefix on this machine, with no Docker. See [Bare metal](bare-metal.md)
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **Spur** - Crusoe's SLURM-compatible scheduler. Multi-node runs are a job array plus a shared-filesystem rendezvous. See [Deployment](deployment.md#spur-crusoe-scheduler)
 - **llm-d** - Distributed inference stack, benchmarked from a Kubernetes Job
 
 ### Distributed Launchers

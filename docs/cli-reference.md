@@ -381,10 +381,14 @@ madengine run --config my_job.yaml --config distributed.nnodes=8
 
 **Deployment Targets:**
 
-- **Local** - Docker containers on local machine
-- **llm-d** - Detected when an `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
-- **Kubernetes** - Detected when `k8s` key present in context
-- **SLURM** - Detected when `slurm` key present in context
+Checked in this order:
+
+- **Bare metal** - `"platform": "bare_metal"`. A conda prefix on this machine. Omitted `platform` stays Docker. See [Bare metal](bare-metal.md)
+- **llm-d** - An `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
+- **Kubernetes** - A `k8s` or `kubernetes` key is present
+- **Spur** - A `slurm` block with `scheduler: spur`, or `deploy: spur` next to a `slurm` block. See [Deployment](deployment.md#spur-crusoe-scheduler)
+- **SLURM** - A `slurm` key is present, or the launcher is `slurm_multi`
+- **Local Docker** - None of the above
 
 **Performance Output:**
 
