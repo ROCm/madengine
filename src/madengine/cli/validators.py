@@ -23,13 +23,10 @@ from madengine.core.additional_context_defaults import (
 from .constants import ExitCode, VALID_GPU_VENDORS, VALID_GUEST_OS
 from .utils import create_args_namespace
 
-
 # Initialize Rich console
 console = Console()
 
-_EXAMPLE_ADDITIONAL_CONTEXT = (
-    '--additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}}\''
-)
+_EXAMPLE_ADDITIONAL_CONTEXT = '--additional-context \'{"docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"}}\''
 
 
 def parse_additional_context_cli_string(additional_context: str) -> Dict[str, Any]:
@@ -44,9 +41,7 @@ def parse_additional_context_cli_string(additional_context: str) -> Dict[str, An
         try:
             parsed = ast.literal_eval(additional_context)
         except (ValueError, SyntaxError) as e:
-            console.print(
-                f"❌ Invalid additional_context format: [red]{e}[/red]"
-            )
+            console.print(f"❌ Invalid additional_context format: [red]{e}[/red]")
             console.print(
                 "💡 Use JSON or a Python dict literal, e.g. "
                 + _EXAMPLE_ADDITIONAL_CONTEXT
@@ -201,9 +196,7 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
 
     if "log_error_benign_patterns" in context:
         lebp = context["log_error_benign_patterns"]
-        if not isinstance(lebp, list) or not all(
-            isinstance(x, str) for x in lebp
-        ):
+        if not isinstance(lebp, list) or not all(isinstance(x, str) for x in lebp):
             _fail_structure(
                 "log_error_benign_patterns",
                 "an array of strings",
@@ -211,8 +204,10 @@ def validate_additional_context_structure(context: Dict[str, Any]) -> None:
 
     if "log_error_patterns" in context:
         lep = context["log_error_patterns"]
-        if not isinstance(lep, list) or not lep or not all(
-            isinstance(x, str) for x in lep
+        if (
+            not isinstance(lep, list)
+            or not lep
+            or not all(isinstance(x, str) for x in lep)
         ):
             _fail_structure(
                 "log_error_patterns",
@@ -265,7 +260,11 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     so the benchmark number was wrong with nothing to indicate it.
     """
     from madengine.core.errors import ConfigurationError
-    from madengine.deployment.common import ensure_launcher_allowed, validate_launcher
+    from madengine.deployment.common import (
+        ensure_launcher_allowed,
+        launcher_deployment_type,
+        validate_launcher,
+    )
 
     launcher_cfg = context.get("launcher")
     if launcher_cfg is not None and not isinstance(launcher_cfg, dict):
@@ -288,11 +287,10 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
         targets.append((launcher_cfg, "type"))
 
-    # An explicit k8s block wins target inference over slurm_multi, and
-    # Kubernetes has no dispatch arm for that launcher.
-    deployment_type = (
-        "k8s" if ("k8s" in context or "kubernetes" in context) else "slurm"
-    )
+    # Use the same keys as run-target inference. Guessing "slurm" whenever
+    # k8s is absent rejected a legal local primus run and accepted a
+    # disaggregated launcher on a single node.
+    deployment_type = launcher_deployment_type(context)
     for holder, key in targets:
         try:
             holder[key] = validate_launcher(holder[key], source="additional_context")
@@ -344,7 +342,9 @@ def finalize_additional_context_dict(
         defaults_applied.append(("guest_os", DEFAULT_GUEST_OS))
 
     if print_defaults_banner and defaults_applied:
-        console.print("\nℹ️  [cyan]Using default values for build configuration:[/cyan]")
+        console.print(
+            "\nℹ️  [cyan]Using default values for build configuration:[/cyan]"
+        )
         for field, value in defaults_applied:
             console.print(f"   • {field}: [green]{value}[/green] (default)")
         console.print(

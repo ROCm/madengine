@@ -310,9 +310,16 @@ class TestGenerateLocalLauncherCommand:
         cmd = self._runner()._generate_local_launcher_command("deepspeed", nproc_per_node=4)
         assert cmd == "deepspeed --num_gpus=4"
 
-    @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg", "primus"])
+    @pytest.mark.parametrize("launcher", ["vllm", "sglang", "primus"])
     def test_self_managed_launchers_emit_empty(self, launcher):
         assert self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8) == ""
+
+    @pytest.mark.parametrize("launcher", ["sglang-disagg", "vllm-disagg"])
+    def test_disaggregated_launchers_are_rejected_on_one_node(self, launcher):
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="single node"):
+            self._runner()._generate_local_launcher_command(launcher, nproc_per_node=8)
 
     def test_unknown_launcher_falls_back_to_torchrun(self):
         cmd = self._runner()._generate_local_launcher_command("bogus", nproc_per_node=2)
@@ -359,7 +366,7 @@ class TestResolveLocalMultiNodeRunnerEnv:
 
     @pytest.mark.parametrize(
         "launcher",
-        ["vllm", "sglang", "sglang-disagg", "primus"],
+        ["vllm", "sglang", "primus"],
     )
     def test_self_managed_launchers_set_empty_string(self, launcher):
         """Self-managing launchers set the var to "" (defined but empty),
@@ -369,6 +376,26 @@ class TestResolveLocalMultiNodeRunnerEnv:
         )
         runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=4)
         assert "MAD_MULTI_NODE_RUNNER" in runner.context.ctx["docker_env_vars"]
+        assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == ""
+
+    def test_vllm_disagg_is_rejected_before_a_local_container_starts(self):
+        from madengine.core.errors import ConfigurationError
+
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": "vllm-disagg"}},
+        )
+        with pytest.raises(ConfigurationError, match="single node"):
+            runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=4)
+
+    @pytest.mark.parametrize("launcher", ["sglang-disagg", "vllm-disagg"])
+    def test_disagg_inside_a_slurm_task_keeps_the_empty_runner(self, monkeypatch, launcher):
+        """Each SLURM node re-enters madengine as a local Docker run. The job
+        script already exported the topology; the model script must still start."""
+        monkeypatch.setenv("MAD_IN_SLURM_JOB", "1")
+        runner = self._runner(
+            additional_context={"distributed": {"launcher": launcher}},
+        )
+        runner._resolve_local_multi_node_runner_env({}, resolved_gpu_count=8)
         assert runner.context.ctx["docker_env_vars"]["MAD_MULTI_NODE_RUNNER"] == ""
 
     def test_falls_back_to_model_info_launcher(self):
@@ -1012,6 +1039,21 @@ class TestSlurmEnvPassthrough:
         from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
 
         missing = [v for v in self.SGLANG_VARS if v not in SLURM_PASSTHROUGH_ENV_VARS]
+        assert not missing, f"not forwarded into the container: {missing}"
+
+    def test_allowlist_covers_vllm_disagg(self):
+        from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
+
+        required = [
+            "VLLM_DISAGG_MODE",
+            "VLLM_DISAGG_PREFILL_NODES",
+            "VLLM_DISAGG_DECODE_NODES",
+            "VLLM_DISAGG_TOTAL_NODES",
+            "VLLM_NODE_IPS",
+            "VLLM_NODE_RANK",
+            "VLLM_TP_SIZE",
+        ]
+        missing = [v for v in required if v not in SLURM_PASSTHROUGH_ENV_VARS]
         assert not missing, f"not forwarded into the container: {missing}"
 
     def test_shell_values_reach_docker_env(self):

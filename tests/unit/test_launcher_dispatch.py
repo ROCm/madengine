@@ -26,15 +26,18 @@ from madengine.deployment.base import DeploymentConfig
 from madengine.deployment.common import VALID_LAUNCHERS
 from madengine.deployment.slurm import SlurmDeployment
 
-
 # slurm_multi bypasses the templated launcher chain entirely: it runs the model's own
 # .slurm script on the head node and orchestrates containers via srun itself. It is an
 # escape hatch, not a peer of the templated launchers, so it has no dispatch arm on
 # either backend. Writing the exception down is the point — an *unexplained* absence
 # is exactly what the megatron bug looked like.
 SELF_MANAGED = {"slurm_multi"}
+# primus is a local single-node contract. Cluster construction rejects it.
+LOCAL_ONLY = {"primus"}
 
-TEMPLATED_LAUNCHERS = [lt for lt in VALID_LAUNCHERS if lt not in SELF_MANAGED]
+TEMPLATED_LAUNCHERS = [
+    lt for lt in VALID_LAUNCHERS if lt not in SELF_MANAGED | LOCAL_ONLY
+]
 
 MODEL_ENTRY = {
     "name": "dummy_multinode",
@@ -74,7 +77,10 @@ def _write_manifest(tmp_path: Path, distributed: dict) -> Path:
 # ---------------------------------------------------------------------------
 # SLURM
 
-def _slurm_deployment(tmp_path: Path, launcher: str, nnodes: int = 3) -> SlurmDeployment:
+
+def _slurm_deployment(
+    tmp_path: Path, launcher: str, nnodes: int = 3
+) -> SlurmDeployment:
     distributed = {
         "launcher": launcher,
         "nnodes": nnodes,
@@ -109,9 +115,11 @@ class TestSlurmLauncherDispatch:
     def test_every_valid_launcher_has_an_arm(self, tmp_path, launcher):
         deployment = _slurm_deployment(tmp_path, launcher)
         with patch.object(
-            SlurmDeployment, "_generate_basic_env_command", side_effect=AssertionError(
+            SlurmDeployment,
+            "_generate_basic_env_command",
+            side_effect=AssertionError(
                 f"launcher '{launcher}' fell through to the unknown-launcher default"
-            )
+            ),
         ):
             command = deployment._generate_launcher_command(
                 launcher_type=launcher,
@@ -121,6 +129,50 @@ class TestSlurmLauncherDispatch:
                 model_name=MODEL_ENTRY["name"],
             )
         assert command is not None
+
+    @pytest.mark.parametrize(
+        "launcher",
+        ["torchrun", "deepspeed", "megatron-lm", "torchtitan", "vllm", "sglang"],
+    )
+    @pytest.mark.parametrize("nnodes", [1, 4])
+    def test_templated_launchers_cover_one_node_and_many(
+        self, tmp_path, launcher, nnodes
+    ):
+        deployment = _slurm_deployment(tmp_path, launcher, nnodes=nnodes)
+        command = deployment._generate_launcher_command(
+            launcher_type=launcher,
+            nnodes=nnodes,
+            nproc_per_node=8,
+            master_port=29500,
+            model_name=MODEL_ENTRY["name"],
+        )
+        assert command
+        if launcher == "torchrun" and nnodes == 1:
+            assert "--standalone" in command
+        if launcher == "torchrun" and nnodes > 1:
+            assert f"--nnodes={nnodes}" in command
+
+    def test_disagg_rejects_a_single_slurm_node_and_accepts_two(self, tmp_path):
+        deployment = _slurm_deployment(tmp_path, "sglang-disagg", nnodes=2)
+        with pytest.raises(ValueError):
+            deployment._generate_launcher_command(
+                launcher_type="sglang-disagg",
+                nnodes=1,
+                nproc_per_node=8,
+                master_port=29500,
+            )
+        two = deployment._generate_vllm_disagg_command(2, 8, 29500)
+        assert "VLLM_DISAGG_PREFILL_NODES=1" in two
+        assert "VLLM_DISAGG_DECODE_NODES=1" in two
+
+    def test_vllm_disagg_two_nodes_are_one_prefill_and_one_decode(self, tmp_path):
+        deployment = _slurm_deployment(tmp_path, "vllm-disagg", nnodes=2)
+        script = deployment._generate_vllm_disagg_command(
+            nnodes=2, nproc_per_node=8, master_port=29500
+        )
+        assert "export VLLM_DISAGG_PREFILL_NODES=1" in script
+        assert "export VLLM_DISAGG_DECODE_NODES=1" in script
+        assert 'export VLLM_DISAGG_MODE="enabled"' in script
 
     def test_the_documented_megatron_spelling_reaches_megatron(self, tmp_path):
         """The original bug: this returned the basic-env fallback, silently."""
@@ -161,11 +213,16 @@ class TestSlurmRayGpuVisibility:
         context = deployment._prepare_template_context(MODEL_ENTRY)
         return deployment.jinja_env.get_template("job.sh.j2").render(**context)
 
-    @pytest.mark.parametrize("launcher", ["vllm", "sglang", "sglang-disagg"])
+    @pytest.mark.parametrize(
+        "launcher", ["vllm", "sglang", "sglang-disagg", "vllm-disagg"]
+    )
     def test_ray_launchers_take_the_single_variable_branch(self, tmp_path, launcher):
         script = self._render(_slurm_deployment(tmp_path, launcher))
         assert "unset RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES" in script
-        assert 'unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error' in script
+        assert (
+            'unset CUDA_VISIBLE_DEVICES  # Unset to avoid "Inconsistent values" error'
+            in script
+        )
 
     def test_non_ray_launchers_do_not(self, tmp_path):
         script = self._render(_slurm_deployment(tmp_path, "torchrun"))
@@ -174,6 +231,7 @@ class TestSlurmRayGpuVisibility:
 
 # ---------------------------------------------------------------------------
 # Kubernetes
+
 
 def _k8s_deployment(tmp_path: Path, launcher: str, nnodes: int = 3):
     """KubernetesDeployment over a minimal manifest, with cluster access stubbed.
@@ -231,6 +289,24 @@ class TestKubernetesLauncherDispatch:
             f"dispatch arm in the K8s chain"
         )
 
+    def test_single_node_vllm_stays_single_node_and_disagg_needs_three(self, tmp_path):
+        single = _k8s_deployment(tmp_path, "vllm", nnodes=1)
+        context = single._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
+        assert "Single Node" in context["launcher_command"]
+        assert context["create_headless_service"] is False
+
+        multi = _k8s_deployment(tmp_path, "torchrun", nnodes=4)
+        multi_context = multi._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
+        assert "--nnodes=4" in multi_context["launcher_command"]
+
+        disagg = _k8s_deployment(tmp_path, "vllm-disagg", nnodes=3)
+        disagg_context = disagg._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
+        assert "VLLM_DISAGG_PREFILL_NODES=" in disagg_context["launcher_command"]
+        assert "bash run.sh" in disagg_context["launcher_command"]
+        with pytest.raises(ValueError):
+            one = _k8s_deployment(tmp_path, "vllm-disagg", nnodes=1)
+            one._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
+
     def test_the_documented_megatron_spelling_reaches_megatron(self, tmp_path):
         """The original bug: this produced no launcher command and no headless service."""
         deployment = _k8s_deployment(tmp_path, "megatron-lm")
@@ -239,7 +315,7 @@ class TestKubernetesLauncherDispatch:
         assert context["create_headless_service"] is True
 
     @pytest.mark.parametrize(
-        "launcher", ["torchrun", "deepspeed", "torchtitan", "megatron-lm", "primus"]
+        "launcher", ["torchrun", "deepspeed", "torchtitan", "megatron-lm"]
     )
     def test_pytorch_native_launchers_get_a_pod_subdomain(self, tmp_path, launcher):
         """Multi-node PyTorch-native launchers need DNS for rank discovery."""
@@ -341,8 +417,8 @@ class TestKubernetesLauncherDispatch:
             / "templates"
             / "kubernetes"
         )
-        script = create_jinja_env(template_dir).get_template("job.yaml.j2").render(
-            **context
+        script = (
+            create_jinja_env(template_dir).get_template("job.yaml.j2").render(**context)
         )
         assert "subdomain: test-svc" in script
         assert "completions: 4" in script
@@ -359,16 +435,21 @@ class TestKubernetesLauncherDispatch:
 # ---------------------------------------------------------------------------
 # Cross-backend parity
 
+
 def test_slurm_and_kubernetes_support_the_same_templated_launchers(tmp_path):
     """A launcher valid on one backend must be valid on the other, or be a known exception."""
     for launcher in TEMPLATED_LAUNCHERS:
         slurm = _slurm_deployment(tmp_path, launcher)
         with patch.object(
-            SlurmDeployment, "_generate_basic_env_command",
+            SlurmDeployment,
+            "_generate_basic_env_command",
             side_effect=AssertionError(f"SLURM has no arm for '{launcher}'"),
         ):
             slurm._generate_launcher_command(
-                launcher_type=launcher, nnodes=3, nproc_per_node=8, master_port=29500,
+                launcher_type=launcher,
+                nnodes=3,
+                nproc_per_node=8,
+                master_port=29500,
                 model_name=MODEL_ENTRY["name"],
             )
         k8s = _k8s_deployment(tmp_path, launcher)
@@ -378,6 +459,7 @@ def test_slurm_and_kubernetes_support_the_same_templated_launchers(tmp_path):
 
 # ---------------------------------------------------------------------------
 # The config-boundary chokepoint
+
 
 class TestBaseDeploymentValidatesLaunchers:
     """Launchers are validated in ``BaseDeployment.__init__``, deliberately.
@@ -438,7 +520,21 @@ class TestBaseDeploymentValidatesLaunchers:
 
     def test_the_documented_alias_is_canonicalized_in_place(self, tmp_path):
         deployment = _slurm_deployment(tmp_path, "slurm-multi")
-        assert deployment.config.additional_context["distributed"]["launcher"] == "slurm_multi"
+        assert (
+            deployment.config.additional_context["distributed"]["launcher"]
+            == "slurm_multi"
+        )
+
+    def test_cluster_rejects_local_only_primus(self, tmp_path):
+        """primus is a local single-node runner. A cluster deployment must not
+        render a Primus job that the Primus project does not support."""
+        from madengine.core.errors import ConfigurationError
+
+        with pytest.raises(ConfigurationError) as exc_info:
+            _slurm_deployment(tmp_path, "primus")
+        assert "local single node" in str(exc_info.value)
+        with pytest.raises(ConfigurationError):
+            _k8s_deployment(tmp_path, "primus")
 
     def test_kubernetes_rejects_the_slurm_only_launcher(self, tmp_path):
         """slurm_multi has no Kubernetes dispatch arm. An explicit k8s block
