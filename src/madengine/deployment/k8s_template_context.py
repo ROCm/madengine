@@ -364,6 +364,24 @@ class KubernetesTemplateContextMixin:
                 model_script=model_info.get("scripts", "run.sh")
             )
 
+        elif canonicalize_distributed_launcher(launcher_type) == "vllm-disagg":
+            if nnodes < 3:
+                raise ValueError(
+                    f"vLLM Disaggregated requires minimum 3 nodes "
+                    f"(1 proxy + 1 prefill + 1 decode), got {nnodes}"
+                )
+            create_headless_service = True
+            self.console.print(
+                f"[dim]vLLM Disaggregated: Creating headless service for {nnodes} pods[/dim]"
+            )
+            launcher_command = self._generate_vllm_disagg_command(
+                nnodes=nnodes,
+                nproc_per_node=nproc_per_node,
+                master_port=master_port,
+                model_script=model_info.get("scripts", "run.sh"),
+                model_args=model_info.get("args", "") or "",
+            )
+
         elif launcher_type == "megatron-lm":
             if nnodes > 1:
                 create_headless_service = True

@@ -227,7 +227,8 @@ or a `multiple_results` CSV. When the card sets `multiple_results`, that CSV is 
 over `performance:` lines in the log (same rule as local Docker and plain Kubernetes).
 
 Reporting stamps llm-d-specific identity on each row: `deployment_type=llm-d`,
-`launcher=vllm` (the model server), and `serving_mode=disaggregated|aggregated`, plus
+`launcher=vllm` for aggregated serving or `launcher=vllm-disagg` when prefill
+replicas run, and `serving_mode=aggregated` or `disaggregated`, plus
 live prefill/decode topology in the node/GPU columns. See
 [What perf.csv records](#what-perfcsv-records).
 
@@ -386,13 +387,10 @@ result. An llm-d row records the serving stack:
 | Column | Value | Meaning |
 |---|---|---|
 | `deployment_type` | `llm-d` | Helm-managed llm-d stack. A plain Kubernetes Job stays `kubernetes`. |
-| `launcher` | `vllm` | Model server. Managed llm-d currently generates `modelCommand: vllmServe`. |
+| `launcher` | `vllm` or `vllm-disagg` | Model server. Aggregated serving records `vllm`. Disaggregated serving (prefill replicas above 0) records `vllm-disagg`. Managed llm-d generates `modelCommand: vllmServe`. |
 | `serving_mode` | `disaggregated` or `aggregated` | `disaggregated` when prefill replicas are above 0. `aggregated` when prefill is disabled. Also shown in the CLI Mode column. |
 
-`launcher` here is the runtime, the same kind of value as `torchrun` or `sglang`
-on a plain Kubernetes job. It is not `distributed.launcher`, and `vllm-disagg`
-is not a launcher name. Topology (`4N×1G` and so on) stays in the node and GPU
-columns.
+`launcher` here names the serving shape. It is the same kind of value as `torchrun` or `sglang` on a plain Kubernetes job, and it is not the benchmark client's `distributed.launcher`. Topology (`4N×1G` and so on) stays in the node and GPU columns.
 
 The benchmark client Job uses the shared Kubernetes naming rule: Job
 `metadata.name` is capped at 63 characters and equals the pod `job-name` label

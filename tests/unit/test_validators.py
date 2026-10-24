@@ -326,12 +326,31 @@ class TestValidateLauncherContext:
     def _context(**extra):
         return json.dumps({"gpu_vendor": "AMD", "guest_os": "UBUNTU", **extra})
 
-    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "sglang-disagg"])
+    @pytest.mark.parametrize("launcher", ["torchrun", "megatron-lm", "primus"])
     def test_valid_launcher_is_accepted(self, launcher):
         result = validate_additional_context(
             additional_context=self._context(distributed={"launcher": launcher})
         )
         assert result["distributed"]["launcher"] == launcher
+
+    @pytest.mark.parametrize("launcher", ["sglang-disagg", "vllm-disagg"])
+    def test_disaggregated_launcher_is_accepted_on_slurm(self, launcher):
+        result = validate_additional_context(
+            additional_context=self._context(
+                slurm={"partition": "gpu"},
+                distributed={"launcher": launcher},
+            )
+        )
+        assert result["distributed"]["launcher"] == launcher
+
+    def test_disaggregated_launcher_is_rejected_on_a_local_run(self):
+        with pytest.raises(typer.Exit) as exc_info:
+            validate_additional_context(
+                additional_context=self._context(
+                    distributed={"launcher": "vllm-disagg"}
+                )
+            )
+        assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
 
     @pytest.mark.parametrize("bad", ["megatron", "megatron_lm"])
     def test_rejected_spellings_exit_with_invalid_args(self, bad, capsys):
@@ -371,7 +390,10 @@ class TestValidateLauncherContext:
 
     def test_sglang_disagg_alias_is_accepted_and_canonicalized(self):
         result = validate_additional_context(
-            additional_context=self._context(distributed={"launcher": "sglang_disagg"})
+            additional_context=self._context(
+                slurm={"partition": "gpu"},
+                distributed={"launcher": "sglang_disagg"},
+            )
         )
         assert result["distributed"]["launcher"] == "sglang-disagg"
 
@@ -414,7 +436,9 @@ class TestBatchManifestFallbackKeepsModelFields:
         from madengine.cli import validators as V
 
         manifest = tmp_path / "build_manifest.json"
-        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+        manifest.write_text(
+            _json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
 
         class _Discover:
             def __init__(self, args=None):
@@ -423,15 +447,23 @@ class TestBatchManifestFallbackKeepsModelFields:
             def run(self):
                 return [discovered] if discovered else []
 
-        with patch.object(V, "DiscoverModels", _Discover), \
-             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()), \
-             patch.object(V.glob, "glob",
-                          side_effect=RuntimeError("boom") if raise_after_discovery
-                          else (lambda p: ["docker/m.ubuntu.amd.Dockerfile"])):
+        with patch.object(V, "DiscoverModels", _Discover), patch.object(
+            V, "create_args_namespace", lambda **kw: MagicMock()
+        ), patch.object(
+            V.glob,
+            "glob",
+            side_effect=(
+                RuntimeError("boom")
+                if raise_after_discovery
+                else (lambda p: ["docker/m.ubuntu.amd.Dockerfile"])
+            ),
+        ):
             V.process_batch_manifest_entries(
                 batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
                 manifest_output=str(manifest),
-                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+                registry=None,
+                guest_os="UBUNTU",
+                gpu_vendor="AMD",
             )
         return _json.loads(manifest.read_text())
 
@@ -448,9 +480,12 @@ class TestBatchManifestFallbackKeepsModelFields:
         entries = list(out["built_models"].values())
         assert entries, "no manifest entry was written"
         entry = entries[0]
-        assert "--device=/dev/infiniband" in entry.get("additional_docker_run_options", ""), (
+        assert "--device=/dev/infiniband" in entry.get(
+            "additional_docker_run_options", ""
+        ), (
             "the card's docker run options were dropped, so the run would measure a different "
-            "configuration")
+            "configuration"
+        )
         assert entry.get("multiple_results") == "perf_m.csv"
         assert entry.get("n_gpus") == "-1"
 
@@ -465,7 +500,9 @@ class TestBatchManifestFallbackKeepsModelFields:
         from madengine.cli import validators as V
 
         manifest = tmp_path / "build_manifest.json"
-        manifest.write_text(_json.dumps({"built_images": {}, "built_models": {}, "context": {}}))
+        manifest.write_text(
+            _json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
 
         class _Discover:
             def __init__(self, args=None):
@@ -474,16 +511,20 @@ class TestBatchManifestFallbackKeepsModelFields:
             def run(self):
                 raise RuntimeError("discovery unavailable")
 
-        with patch.object(V, "DiscoverModels", _Discover), \
-             patch.object(V, "create_args_namespace", lambda **kw: MagicMock()):
+        with patch.object(V, "DiscoverModels", _Discover), patch.object(
+            V, "create_args_namespace", lambda **kw: MagicMock()
+        ):
             V.process_batch_manifest_entries(
                 batch_data={"manifest_data": [{"model_name": "m", "build_new": False}]},
                 manifest_output=str(manifest),
-                registry=None, guest_os="UBUNTU", gpu_vendor="AMD",
+                registry=None,
+                guest_os="UBUNTU",
+                gpu_vendor="AMD",
             )
 
         out = _json.loads(manifest.read_text())
         assert list(out["built_models"].values()), "no manifest entry was written"
         printed = capsys.readouterr().out
-        assert "defaults only" in printed, (
-            "a defaults-only entry must say so: it is a different configuration from the card")
+        assert (
+            "defaults only" in printed
+        ), "a defaults-only entry must say so: it is a different configuration from the card"

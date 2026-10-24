@@ -28,6 +28,7 @@ from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
 from madengine.core.docker import Docker
+from madengine.core.errors import ConfigurationError, create_error_context
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import Timeout, subprocess_timeout
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
@@ -82,6 +83,10 @@ SLURM_PASSTHROUGH_ENV_VARS = [
     'SGLANG_DISAGG_MODE', 'SGLANG_DISAGG_PREFILL_NODES',
     'SGLANG_DISAGG_DECODE_NODES', 'SGLANG_DISAGG_TOTAL_NODES',
     'SGLANG_NODE_IPS', 'SGLANG_NODE_RANK', 'SGLANG_TP_SIZE',
+    # vLLM disaggregated topology, same job-script-to-container hop as SGLang.
+    'VLLM_DISAGG_MODE', 'VLLM_DISAGG_PREFILL_NODES',
+    'VLLM_DISAGG_DECODE_NODES', 'VLLM_DISAGG_TOTAL_NODES',
+    'VLLM_NODE_IPS', 'VLLM_NODE_RANK', 'VLLM_TP_SIZE',
 ]
 
 
@@ -913,7 +918,27 @@ class ContainerRunner:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
         elif launcher_type == "deepspeed":
             return f"deepspeed --num_gpus={nproc_per_node}"
-        elif launcher_type in ("vllm", "sglang", "sglang-disagg", "primus"):
+        elif launcher_type in ("sglang-disagg", "vllm-disagg"):
+            # A SLURM/Spur task re-enters madengine as a local Docker run on
+            # each node. The job script already published the topology; the
+            # model script consumes it. Rejecting here would stop that job.
+            if os.environ.get("MAD_IN_SLURM_JOB", "0") == "1":
+                return ""
+            raise ConfigurationError(
+                f"Launcher '{launcher_type}' needs a SLURM, Spur, or Kubernetes "
+                "deployment. Local Docker is a single node and cannot host "
+                "prefill and decode.",
+                context=create_error_context(
+                    operation="local_launcher",
+                    component="ContainerRunner",
+                    additional_info={"launcher": launcher_type},
+                ),
+                suggestions=[
+                    "Add a slurm or k8s block. Disaggregated serving needs at "
+                    "least 2 nodes on SLURM or Spur, and 3 on Kubernetes",
+                ],
+            )
+        elif launcher_type in ("vllm", "sglang", "primus"):
             return ""
         else:
             return f"torchrun --standalone --nproc_per_node={nproc_per_node}"
@@ -930,14 +955,18 @@ class ContainerRunner:
 
         No-op if the env var is already set. Resolves the launcher via
         :meth:`_resolve_launcher`, falling back to ``torchrun``. Self-managing
-        launchers (vllm/sglang/sglang-disagg/primus) set the var to an empty
+        launchers (vllm/sglang/primus) set the var to an empty
         string so downstream scripts under ``set -u`` don't fail.
+        Disaggregated launchers are rejected: this path is one node.
         """
         if "MAD_MULTI_NODE_RUNNER" in self.context.ctx["docker_env_vars"]:
             return
         launcher = canonicalize_distributed_launcher(
             self._resolve_launcher(model_info)
         ) or ""
+        in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
+        if launcher in ("sglang-disagg", "vllm-disagg") and not in_slurm_job:
+            self._generate_local_launcher_command(launcher, resolved_gpu_count)
         valid_local_launchers = (
             "torchrun",
             "megatron",
@@ -946,8 +975,9 @@ class ContainerRunner:
             "deepspeed",
             "vllm",
             "sglang",
-            "sglang-disagg",
             "primus",
+            "sglang-disagg",
+            "vllm-disagg",
         )
         if launcher in valid_local_launchers:
             dist_launcher = launcher

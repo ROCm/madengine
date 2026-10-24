@@ -73,7 +73,7 @@ madengine ships with pre-built config groups under `src/madengine/configs/`:
 | `platform` | `docker` | `docker` only. `bare_metal`, `singularity`, and `podman` files exist, and validation still rejects them. Bare metal is selected with `"platform": "bare_metal"` on `--additional-context`, not with this group. See [Bare metal](bare-metal.md) | Execution platform |
 | `scheduler` | `local` | `local`, `slurm`, `k8s` | Job scheduler — `slurm` and `k8s` add root `slurm:` / `k8s:` sections (same keys as JSON) |
 | `hardware` | `amd` | `amd`, `nvidia`, `cpu` | Sets `gpu_vendor` and `guest_os` (same keys as JSON). Docker device flags still come from `gpu_vendor` in the engine, not from a `runtime` context key. |
-| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (Hydra alias of `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `primus`, `native` (omits `distributed.launcher`; single-process), `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
+| `launcher` | `none` | `none`, `torchrun`, `deepspeed`, `megatron` (Hydra alias of `megatron-lm`), `torchtitan`, `vllm`, `sglang`, `sglang_disagg`, `vllm_disagg`, `primus` (local single node), `native` (omits `distributed.launcher`; single-process), `slurm_multi` | Distributed launcher — sets `distributed.enabled`, `distributed.launcher`, and launcher-specific defaults |
 
 #### Append-Only Groups (added via `+group=option`)
 
@@ -188,7 +188,7 @@ madengine validates the composed config and reports errors for:
 - Conflicting scheduler selections (e.g., both `slurm` and `k8s` sections present)
 - `distributed.enabled: true` without a `distributed.launcher`
 - Invalid `distributed.nnodes` (must be a positive integer)
-- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is Kubernetes. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
+- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), `vllm-disagg` (`vllm_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` runs on SLURM or Spur and is rejected on Kubernetes and llm-d. `primus` is a local single-node run and is rejected on a cluster. `vllm-disagg` and `sglang-disagg` need a cluster. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
 - Unsupported `platform.type` in a Hydra config (currently only `docker` is supported). `"platform": "bare_metal"` on `--additional-context` is supported and is a different path. See [Bare metal](bare-metal.md)
 - Unknown top-level config keys (catches typos)
 
@@ -845,8 +845,9 @@ stack. The config also carries a `k8s` block, which configures the benchmark-cli
 
 When the MAD card has `--model_repo`, you can omit `model.name` / `model.hf_repo` and
 madengine fills them from the card; if you set them, they must match that id exactly.
-`perf.csv` records `deployment_type=llm-d`, `launcher=vllm`, and
-`serving_mode=disaggregated|aggregated` (also the CLI Mode column). A card's
+`perf.csv` records `deployment_type=llm-d`, `launcher=vllm` for aggregated
+serving or `launcher=vllm-disagg` when prefill replicas run, and
+`serving_mode=aggregated` or `disaggregated` (also the CLI Mode column). A card's
 `multiple_results` CSV is preferred over log `performance:` lines.
 
 Managed mode requires `helm` on `PATH`, Gateway API + Inference Extension CRDs, and

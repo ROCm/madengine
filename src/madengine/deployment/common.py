@@ -27,6 +27,7 @@ VALID_LAUNCHERS = [
     "vllm",
     "sglang",
     "sglang-disagg",
+    "vllm-disagg",
     "slurm_multi",
 ]
 
@@ -37,7 +38,16 @@ VALID_LAUNCHERS = [
 _LAUNCHER_ALIASES: Dict[str, str] = {
     "slurm-multi": "slurm_multi",
     "sglang_disagg": "sglang-disagg",
+    "vllm_disagg": "vllm-disagg",
 }
+
+# Where each contract may run. ``local`` is this machine (Docker or bare metal).
+# ``slurm_multi`` is also accepted on ``local`` here: a card that names it and
+# has no scheduler block is promoted to a SLURM deployment at run time.
+_SELF_MANAGED_TARGETS = frozenset({"slurm", "spur", "local", "docker"})
+_LOCAL_TARGETS = frozenset({"local", "docker", "bare_metal"})
+_CLUSTER_TARGETS = frozenset({"slurm", "spur", "k8s", "kubernetes", "llm-d"})
+DISAGG_LAUNCHERS = frozenset({"sglang-disagg", "vllm-disagg"})
 
 # Deployment-mode sentinels meaning "no distributed launcher". They are produced
 # by launcher_for_reporting() for the perf.csv ``launcher`` column and are never
@@ -111,35 +121,158 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     )
 
 
+def launcher_deployment_type(config: Optional[Dict[str, Any]]) -> str:
+    """Return the deployment a launcher check should use.
+
+    Matches the keys that change which launcher contract is legal. A missing
+    scheduler block is ``local``. ``slurm_multi`` with no block is still
+    promoted to SLURM later; this function does not do that promotion.
+    """
+    config = config or {}
+    if "llm_d" in config:
+        return "llm-d"
+    if "k8s" in config or "kubernetes" in config:
+        return "k8s"
+    if "slurm" in config:
+        slurm_config = config.get("slurm") or {}
+        if not isinstance(slurm_config, dict):
+            slurm_config = {}
+        scheduler = str(slurm_config.get("scheduler", "")).lower()
+        if scheduler == "spur" or str(config.get("deploy", "")).lower() == "spur":
+            return "spur"
+        return "slurm"
+    platform = config.get("platform", "docker")
+    if isinstance(platform, str) and platform.strip().lower() == "bare_metal":
+        return "bare_metal"
+    return "local"
+
+
 def ensure_launcher_allowed(
     launcher: Optional[str], deployment_type: str, *, source: str
 ) -> None:
     """Reject a launcher that has no dispatch arm on this deployment.
 
-    ``slurm_multi`` runs the model's own ``.slurm`` script through sbatch. An
-    explicit Kubernetes config wins target inference, and the Kubernetes
-    template has no arm for it, so the job would render with no launcher
-    command and still look successful.
+    Three contracts share ``distributed.launcher``:
+
+    * Templated names (``torchrun``, ``vllm``, ``vllm-disagg``, …) are rendered
+      by the SLURM, Spur, and Kubernetes templates. Disaggregated names need a
+      cluster. ``vllm-disagg`` is also the llm-d serving name.
+    * ``slurm_multi`` runs the model's own script. Kubernetes and llm-d have
+      no arm for it.
+    * ``primus`` is a local single-node runner. Cluster templates must not
+      claim to start it.
     """
-    if launcher != "slurm_multi" or deployment_type not in ("k8s", "kubernetes"):
+    if not launcher:
         return
-    raise ConfigurationError(
-        f"Launcher 'slurm_multi' in {source} only runs on SLURM",
-        context=create_error_context(
-            operation="ensure_launcher_allowed",
-            component="deployment.common",
-            additional_info={
-                "launcher": launcher,
-                "deployment_type": deployment_type,
-                "source": source,
-            },
-        ),
-        suggestions=[
-            "Drop the k8s/kubernetes block so this job is submitted to SLURM",
-            "Or pick a Kubernetes launcher such as torchrun, megatron-lm, "
-            "vllm, or sglang",
-        ],
-    )
+
+    def _reject(message: str, suggestions: List[str]) -> None:
+        raise ConfigurationError(
+            message,
+            context=create_error_context(
+                operation="ensure_launcher_allowed",
+                component="deployment.common",
+                additional_info={
+                    "launcher": launcher,
+                    "deployment_type": deployment_type,
+                    "source": source,
+                },
+            ),
+            suggestions=suggestions,
+        )
+
+    if launcher == "slurm_multi" and deployment_type not in _SELF_MANAGED_TARGETS:
+        _reject(
+            f"Launcher 'slurm_multi' in {source} only runs on SLURM or Spur",
+            [
+                "Drop the k8s/kubernetes/llm_d block so this job is submitted to SLURM",
+                "Or pick a templated launcher such as torchrun, megatron-lm, "
+                "vllm, or sglang",
+            ],
+        )
+    if launcher == "primus" and deployment_type not in _LOCAL_TARGETS:
+        _reject(
+            f"Launcher 'primus' in {source} runs on a local single node",
+            [
+                "Remove the slurm, k8s, or llm_d block for a local Primus run",
+                "Or pick a templated training launcher such as torchrun, "
+                "megatron-lm, or torchtitan",
+            ],
+        )
+    if launcher in DISAGG_LAUNCHERS and deployment_type not in _CLUSTER_TARGETS:
+        _reject(
+            f"Launcher '{launcher}' in {source} needs a SLURM, Spur, or "
+            "Kubernetes deployment",
+            [
+                "Add a slurm or k8s block. Disaggregated serving needs at least "
+                "2 nodes on SLURM or Spur, and 3 on Kubernetes",
+                "A local Docker run is a single node and cannot host prefill "
+                "and decode",
+            ],
+        )
+    if launcher == "sglang-disagg" and deployment_type == "llm-d":
+        _reject(
+            f"Launcher 'sglang-disagg' in {source} is not an llm-d serving stack",
+            [
+                "llm-d disaggregated vLLM uses launcher 'vllm-disagg'",
+                "Or drop the llm_d block and deploy SGLang on SLURM or Kubernetes",
+            ],
+        )
+
+
+def resolve_disagg_topology(
+    nnodes: int,
+    prefill_nodes: Optional[int],
+    decode_nodes: Optional[int],
+    *,
+    min_nodes: int,
+    allow_colocated_proxy: bool,
+    launcher_name: str,
+) -> tuple:
+    """Return ``(prefill_nodes, decode_nodes)`` for a disaggregated launcher.
+
+    SLURM and Spur allow a co-located proxy (``prefill + decode == nnodes``)
+    or a dedicated proxy node (``prefill + decode + 1 == nnodes``), with a
+    minimum of 2 nodes. Kubernetes requires a dedicated proxy and at least
+    3 nodes. The default split keeps one proxy aside and divides the workers
+    about 40/60 between prefill and decode. Two nodes with a co-located proxy
+    are 1 prefill and 1 decode. The general formula would give that case no
+    decode nodes.
+    """
+    if not isinstance(nnodes, int) or nnodes < min_nodes:
+        raise ValueError(
+            f"{launcher_name} requires minimum {min_nodes} nodes, got {nnodes}"
+        )
+    if prefill_nodes is not None and decode_nodes is not None:
+        if prefill_nodes < 1 or decode_nodes < 1:
+            raise ValueError(
+                f"{launcher_name} requires at least 1 prefill and 1 decode node, "
+                f"got prefill={prefill_nodes}, decode={decode_nodes}"
+            )
+        worker_sum = prefill_nodes + decode_nodes
+        if allow_colocated_proxy:
+            if worker_sum != nnodes and worker_sum + 1 != nnodes:
+                raise ValueError(
+                    f"Custom split validation failed: prefill_nodes ({prefill_nodes}) + "
+                    f"decode_nodes ({decode_nodes}) = {worker_sum} must equal "
+                    f"nnodes ({nnodes}) for a co-located proxy, or nnodes-1 "
+                    f"({nnodes - 1}) for a dedicated proxy node"
+                )
+        elif worker_sum + 1 != nnodes:
+            raise ValueError(
+                f"Custom split validation failed: "
+                f"prefill_nodes ({prefill_nodes}) + decode_nodes ({decode_nodes}) + 1 proxy "
+                f"must equal nnodes ({nnodes}), but got {worker_sum + 1}"
+            )
+        return prefill_nodes, decode_nodes
+    if allow_colocated_proxy and nnodes == 2:
+        return 1, 1
+    prefill = max(1, (nnodes - 1) * 2 // 5)
+    decode = nnodes - 1 - prefill
+    if decode < 1:
+        raise ValueError(
+            f"{launcher_name} default split produced no decode nodes for nnodes={nnodes}"
+        )
+    return prefill, decode
 
 
 def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
@@ -153,9 +286,7 @@ def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
     return _LAUNCHER_ALIASES.get(launcher, launcher)
 
 
-def launcher_for_reporting(
-    launcher_type: Optional[str], deployment_type: str
-) -> str:
+def launcher_for_reporting(launcher_type: Optional[str], deployment_type: str) -> str:
     """Return the launcher to record in perf results. Never raises.
 
     Values reaching here have already passed validate_launcher at the config
@@ -441,10 +572,7 @@ def is_rocprofv3_available() -> bool:
     """
     try:
         result = subprocess.run(
-            ["rocprofv3", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
+            ["rocprofv3", "--help"], capture_output=True, text=True, timeout=5
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -452,9 +580,7 @@ def is_rocprofv3_available() -> bool:
 
 
 def configure_multi_node_profiling(
-    nnodes: int,
-    tools_config: List[Dict],
-    logger: Any
+    nnodes: int, tools_config: List[Dict], logger: Any
 ) -> Dict[str, Any]:
     """
     Configure profiling for multi-node runs with rocprofv3 support.
@@ -491,7 +617,7 @@ def configure_multi_node_profiling(
             "enabled": True,
             "mode": "single_node",
             "tools": tools_config,
-            "per_node_collection": False
+            "per_node_collection": False,
         }
 
     if not is_rocprofv3_available():
@@ -499,7 +625,8 @@ def configure_multi_node_profiling(
             filtered_tools: List[Dict] = [
                 t
                 for t in tools_config
-                if isinstance(t, dict) and t.get("name") not in _ROCPROF_FAMILY_TOOL_NAMES
+                if isinstance(t, dict)
+                and t.get("name") not in _ROCPROF_FAMILY_TOOL_NAMES
             ]
             if filtered_tools:
                 logger.warning(
@@ -540,7 +667,7 @@ def configure_multi_node_profiling(
                 "enabled": False,
                 "mode": "multi_node_unsupported",
                 "tools": [],
-                "per_node_collection": False
+                "per_node_collection": False,
             }
         logger.info(
             "Multi-node: rocprofv3 not found on submission host; keeping non-rocprof tools "
@@ -553,7 +680,9 @@ def configure_multi_node_profiling(
             "per_node_collection": True,
         }
 
-    logger.info(f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)")
+    logger.info(
+        f"✓ Multi-node profiling enabled for {nnodes} nodes (rocprofv3 detected)"
+    )
 
     upgraded_tools: List[Dict] = []
     for tool in tools_config:
@@ -575,9 +704,13 @@ def configure_multi_node_profiling(
         tool_names = [
             t.get("name") if isinstance(t, dict) else str(t) for t in upgraded_tools
         ]
-        logger.info(f"  → Multi-node profiling tools: {', '.join(filter(None, tool_names))}")
+        logger.info(
+            f"  → Multi-node profiling tools: {', '.join(filter(None, tool_names))}"
+        )
         if "rccl_trace" in tool_names:
-            logger.info("  → ✓ rccl_trace enabled (critical for multi-node communication profiling)")
+            logger.info(
+                "  → ✓ rccl_trace enabled (critical for multi-node communication profiling)"
+            )
 
     return {
         "enabled": True,
@@ -585,5 +718,5 @@ def configure_multi_node_profiling(
         "tools": upgraded_tools,
         "per_node_collection": True,
         "profiler": "rocprofv3",
-        "wrapper_mode": "launcher"
+        "wrapper_mode": "launcher",
     }
