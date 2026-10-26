@@ -125,3 +125,22 @@ class HydraConfigLoader:
             else:
                 overrides.append(arg)
         return user_file, overrides
+
+    @staticmethod
+    def distributed_enabled_is_explicit(config_args: List[str]) -> bool:
+        """True when the user file or an override sets ``distributed.enabled``.
+
+        The default ``launcher=none`` group also sets ``enabled: false``. That
+        default must not count, or a user YAML that only names a launcher
+        stays single-process.
+        """
+        user_file, overrides = HydraConfigLoader._parse_args(config_args)
+        for override in overrides:
+            key = override.split("=", 1)[0].lstrip("+").lstrip("~")
+            if key == "distributed.enabled":
+                return True
+        if not user_file:
+            return False
+        loaded = OmegaConf.load(user_file)
+        distributed = loaded.get("distributed") if loaded is not None else None
+        return isinstance(distributed, (dict, DictConfig)) and "enabled" in distributed

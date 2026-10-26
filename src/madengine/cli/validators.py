@@ -14,13 +14,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import typer
 from rich.console import Console
 
-from madengine.utils.discover_models import DiscoverModels
 from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
     DEFAULT_GUEST_OS,
     apply_build_context_defaults,
 )
-from .constants import ExitCode, VALID_GPU_VENDORS, VALID_GUEST_OS
+from madengine.utils.discover_models import DiscoverModels
+
+from .constants import VALID_GPU_VENDORS, VALID_GUEST_OS, ExitCode
 from .utils import create_args_namespace
 
 # Initialize Rich console
@@ -261,6 +262,7 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     """
     from madengine.core.errors import ConfigurationError
     from madengine.deployment.common import (
+        check_context_block,
         ensure_launcher_allowed,
         launcher_deployment_type,
         validate_launcher,
@@ -302,6 +304,38 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
             for suggestion in exc.suggestions or []:
                 console.print(f"💡 [green]{suggestion}[/green]")
             raise typer.Exit(ExitCode.INVALID_ARGS)
+
+    try:
+        warnings = check_context_block(context)
+    except ConfigurationError as exc:
+        console.print(f"❌ Invalid context: [red]{exc}[/red]")
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+    for warning in warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    _print_context_summary(context)
+
+
+def _print_context_summary(context: Dict[str, Any]) -> None:
+    """One line so a copied block shows which Deployment it actually selected."""
+    from madengine.deployment.common import launcher_deployment_type
+
+    distributed = context.get("distributed")
+    if not isinstance(distributed, dict):
+        distributed = {}
+    launcher_obj = context.get("launcher")
+    if not isinstance(launcher_obj, dict):
+        launcher_obj = {}
+    launcher = distributed.get("launcher") or launcher_obj.get("type") or "none"
+    nnodes = distributed.get("nnodes", launcher_obj.get("nnodes", 1))
+    nproc = distributed.get(
+        "nproc_per_node", launcher_obj.get("nproc_per_node", "unset")
+    )
+    deployment = launcher_deployment_type(context)
+    console.print(
+        "Context: "
+        f"deployment={deployment} launcher={launcher} "
+        f"nodes={nnodes} processes_per_node={nproc}"
+    )
 
 
 def _validate_platform(context: Dict[str, Any]) -> None:

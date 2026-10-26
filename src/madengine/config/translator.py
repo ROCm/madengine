@@ -4,7 +4,14 @@ from typing import Any, Dict, Tuple, cast
 
 from omegaconf import DictConfig, OmegaConf
 
-from madengine.deployment.common import canonicalize_distributed_launcher
+from madengine.deployment.common import (
+    VALID_LAUNCHERS,
+    canonicalize_distributed_launcher,
+)
+
+_TEMPLATED_OR_PRIMUS = frozenset(
+    name for name in VALID_LAUNCHERS if name != "slurm_multi"
+)
 
 # perf.csv values, not launchers. Drop them so a Hydra group such as
 # launcher=native does not fail validation; omitting the key is how a run
@@ -45,7 +52,7 @@ class ConfigTranslator:
 
     @classmethod
     def to_additional_context(
-        cls, cfg: DictConfig
+        cls, cfg: DictConfig, *, enabled_explicit: bool = False
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Convert DictConfig to (additional_context, metadata) tuple.
 
@@ -114,6 +121,10 @@ class ConfigTranslator:
         if model and model.get("container_image"):
             context["MAD_CONTAINER_IMAGE"] = model["container_image"]
 
+        platform = metadata.get("platform")
+        if isinstance(platform, str) and platform.strip().lower() == "bare_metal":
+            context["platform"] = "bare_metal"
+
         dist = context.get("distributed")
         if isinstance(dist, dict) and dist.get("launcher"):
             launcher = dist["launcher"]
@@ -130,5 +141,11 @@ class ConfigTranslator:
                 dist["launcher"] = (
                     canonicalize_distributed_launcher(launcher) or launcher
                 )
+                if (
+                    not enabled_explicit
+                    and dist.get("launcher") in _TEMPLATED_OR_PRIMUS
+                    and dist.get("enabled") is not True
+                ):
+                    dist["enabled"] = True
 
         return context, metadata

@@ -15,6 +15,7 @@ import csv
 import gzip
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -43,6 +44,23 @@ def tracelens_installed() -> bool:
         return check_tracelens_available(resolve_python())
     except Exception:
         return False
+
+
+def python_without_tracelens() -> str:
+    """An interpreter that cannot import TraceLens, so the install hint still runs.
+
+    The developer machine often has ``madengine[tracelens]`` on the test
+    interpreter. ``/usr/bin/python3`` is the usual interpreter that does not.
+    """
+    candidates = ["/usr/bin/python3", shutil.which("python3") or ""]
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or not os.path.isfile(candidate):
+            continue
+        seen.add(candidate)
+        if not check_tracelens_available(candidate):
+            return candidate
+    return ""
 
 
 def run_report_cli(*args: str) -> subprocess.CompletedProcess:
@@ -180,7 +198,8 @@ class TestTraceLensHostSideReporting:
         assert "collective" in output
 
     @pytest.mark.skipif(
-        tracelens_installed(), reason="test covers the TraceLens-missing path"
+        not python_without_tracelens(),
+        reason="no interpreter without TraceLens is available",
     )
     def test_analysis_without_tracelens_explains_how_to_install(self, tmp_path):
         """Without TraceLens the command fails with install guidance, not a crash."""
@@ -192,6 +211,8 @@ class TestTraceLensHostSideReporting:
             str(tmp_path),
             "--output-dir",
             str(tmp_path / "tracelens_output"),
+            "--python",
+            python_without_tracelens(),
         )
 
         assert result.returncode != 0
@@ -218,7 +239,8 @@ class TestTraceLensHostSideReporting:
         assert "missing.xlsx" in output
 
     @pytest.mark.skipif(
-        tracelens_installed(), reason="test covers the TraceLens-missing path"
+        not python_without_tracelens(),
+        reason="no interpreter without TraceLens is available",
     )
     def test_compare_without_tracelens_explains_how_to_install(self, tmp_path):
         """tracelens-compare surfaces the same install guidance as analysis."""
@@ -233,6 +255,8 @@ class TestTraceLensHostSideReporting:
             str(second),
             "--output",
             str(tmp_path / "diff.xlsx"),
+            "--python",
+            python_without_tracelens(),
         )
 
         assert result.returncode != 0

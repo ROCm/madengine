@@ -2,10 +2,9 @@
 distributed:
   enabled: true
   launcher: vllm-disagg
-  backend: nccl
   nnodes: 2
   nproc_per_node: 8
-  port: 29500
+  master_port: 29500
   vllm_disagg:
     prefill_nodes: null
     decode_nodes: null

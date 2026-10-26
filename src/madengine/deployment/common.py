@@ -275,6 +275,232 @@ def resolve_disagg_topology(
     return prefill, decode
 
 
+_DISAGG_BLOCK_KEYS = {
+    "vllm-disagg": "vllm_disagg",
+    "sglang-disagg": "sglang_disagg",
+}
+
+
+def sglang_disagg_block(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the SGLang disagg split the templated generator should publish.
+
+    ``distributed.sglang_disagg`` wins when it names a prefill or decode count.
+    A top-level ``sglang_disagg`` object is the older place and is used only
+    when the nested block does not name a split.
+    """
+    context = context or {}
+    distributed = context.get("distributed") or {}
+    nested: Dict[str, Any] = {}
+    if isinstance(distributed, dict):
+        raw = distributed.get("sglang_disagg")
+        if isinstance(raw, dict) and _block_names_a_split(raw):
+            nested = raw
+    if nested:
+        return nested
+    top = context.get("sglang_disagg")
+    if isinstance(top, dict):
+        return top
+    if isinstance(distributed, dict) and isinstance(
+        distributed.get("sglang_disagg"), dict
+    ):
+        return distributed["sglang_disagg"]
+    return {}
+
+
+def _block_names_a_split(block: Dict[str, Any]) -> bool:
+    return (
+        block.get("prefill_nodes") is not None or block.get("decode_nodes") is not None
+    )
+
+
+def _canonical_launcher_name(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return canonicalize_distributed_launcher(value.strip()) or value.strip()
+
+
+def _context_launcher_names(context: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    distributed = context.get("distributed")
+    launcher_obj = context.get("launcher")
+    if isinstance(distributed, dict):
+        name = _canonical_launcher_name(distributed.get("launcher"))
+        if name:
+            names.append(name)
+    if isinstance(launcher_obj, dict):
+        name = _canonical_launcher_name(launcher_obj.get("type"))
+        if name:
+            names.append(name)
+    return names
+
+
+def _shared_fields_differ(left: Any, right: Any) -> bool:
+    if isinstance(left, dict) and isinstance(right, dict):
+        return any(
+            _shared_fields_differ(left[key], right[key])
+            for key in left.keys() & right.keys()
+        )
+    return left != right
+
+
+def _reject_context(message: str) -> None:
+    raise ConfigurationError(
+        message,
+        context=create_error_context(
+            operation="check_context_block",
+            component="deployment.common",
+        ),
+        suggestions=[message],
+    )
+
+
+def check_context_block(context: Optional[Dict[str, Any]]) -> List[str]:
+    """Reject two disagreeing copies of one fact. Return warnings.
+
+    ``slurm_multi`` skips the launcher-copy checks. A file that sets only one
+    copy of ``port``, ``launcher.type``, or a top-level ``sglang_disagg``
+    block still passes.
+    """
+    context = context or {}
+    warnings: List[str] = []
+    k8s = context.get("k8s")
+    kubernetes = context.get("kubernetes")
+    if (
+        isinstance(k8s, dict)
+        and isinstance(kubernetes, dict)
+        and _shared_fields_differ(k8s, kubernetes)
+    ):
+        _reject_context("k8s and kubernetes disagree")
+
+    distributed = context.get("distributed")
+    if not isinstance(distributed, dict):
+        distributed = {}
+    launcher_obj = context.get("launcher")
+    if not isinstance(launcher_obj, dict):
+        launcher_obj = {}
+
+    names = _context_launcher_names(context)
+    if "llm_d" in context and names:
+        _reject_context(
+            "llm_d does not take distributed.launcher; scale lives in "
+            "llm_d.prefill and llm_d.decode"
+        )
+
+    self_managed = "slurm_multi" in names
+    if not self_managed:
+        if len(set(names)) > 1:
+            _reject_context(
+                "launcher.type and distributed.launcher disagree: " + ", ".join(names)
+            )
+        node_counts = [
+            value
+            for value in (distributed.get("nnodes"), launcher_obj.get("nnodes"))
+            if value is not None
+        ]
+        if len(set(node_counts)) > 1:
+            _reject_context(
+                "launcher.nnodes and distributed.nnodes disagree: "
+                + ", ".join(str(value) for value in node_counts)
+            )
+        ports = [
+            value
+            for value in (
+                distributed.get("port"),
+                distributed.get("master_port"),
+                launcher_obj.get("master_port"),
+            )
+            if value is not None
+        ]
+        if len(set(ports)) > 1:
+            _reject_context(
+                "port and master_port disagree: "
+                + ", ".join(str(value) for value in ports)
+            )
+        nested = distributed.get("sglang_disagg")
+        top = context.get("sglang_disagg")
+        if (
+            isinstance(nested, dict)
+            and isinstance(top, dict)
+            and _block_names_a_split(nested)
+            and _block_names_a_split(top)
+            and (
+                nested.get("prefill_nodes") != top.get("prefill_nodes")
+                or nested.get("decode_nodes") != top.get("decode_nodes")
+            )
+        ):
+            _reject_context("sglang_disagg and distributed.sglang_disagg disagree")
+        launcher = names[0] if names else None
+        if launcher in DISAGG_LAUNCHERS:
+            deployment = launcher_deployment_type(context)
+            if deployment in ("slurm", "spur", "k8s", "kubernetes"):
+                _check_disagg_node_count(
+                    context, distributed, launcher_obj, launcher, deployment
+                )
+
+    warnings.extend(_context_scale_warnings(context, distributed))
+    return warnings
+
+
+def _check_disagg_node_count(
+    context: Dict[str, Any],
+    distributed: Dict[str, Any],
+    launcher_obj: Dict[str, Any],
+    launcher: str,
+    deployment: str,
+) -> None:
+    nnodes = distributed.get("nnodes", launcher_obj.get("nnodes", 1))
+    if not isinstance(nnodes, int):
+        return
+    key = _DISAGG_BLOCK_KEYS[launcher]
+    block = distributed.get(key)
+    if launcher == "sglang-disagg":
+        block = sglang_disagg_block(context)
+    if not isinstance(block, dict):
+        block = {}
+    minimum = 3 if deployment in ("k8s", "kubernetes") else 2
+    try:
+        resolve_disagg_topology(
+            nnodes,
+            block.get("prefill_nodes"),
+            block.get("decode_nodes"),
+            min_nodes=minimum,
+            allow_colocated_proxy=deployment in ("slurm", "spur"),
+            launcher_name=launcher,
+        )
+    except ValueError as exc:
+        _reject_context(str(exc))
+
+
+def _context_scale_warnings(
+    context: Dict[str, Any], distributed: Dict[str, Any]
+) -> List[str]:
+    warnings: List[str] = []
+    nproc = distributed.get("nproc_per_node")
+    slurm = context.get("slurm")
+    if isinstance(slurm, dict):
+        gpus = slurm.get("gpus_per_node")
+        if nproc is not None and gpus is not None and nproc != gpus:
+            warnings.append(
+                f"nproc_per_node={nproc} differs from slurm.gpus_per_node={gpus}"
+            )
+        nodes = slurm.get("nodes")
+        nnodes = distributed.get("nnodes")
+        if nodes is not None and nnodes is not None and nodes != nnodes:
+            warnings.append(
+                f"slurm.nodes={nodes} conflicts with distributed.nnodes={nnodes}"
+            )
+    k8s = context.get("k8s")
+    if not isinstance(k8s, dict):
+        k8s = context.get("kubernetes")
+    if isinstance(k8s, dict):
+        gpu_count = k8s.get("gpu_count")
+        if nproc is not None and gpu_count is not None and nproc != gpu_count:
+            warnings.append(
+                f"nproc_per_node={nproc} differs from k8s.gpu_count={gpu_count}"
+            )
+    return warnings
+
+
 def canonicalize_distributed_launcher(launcher: Optional[str]) -> Optional[str]:
     """Normalize alternate launcher spellings to their canonical form.
 

@@ -1,3 +1,2 @@
 # @package _global_
-platform:
-  type: bare_metal
+platform: bare_metal

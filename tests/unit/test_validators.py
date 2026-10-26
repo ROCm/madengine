@@ -337,8 +337,8 @@ class TestValidateLauncherContext:
     def test_disaggregated_launcher_is_accepted_on_slurm(self, launcher):
         result = validate_additional_context(
             additional_context=self._context(
-                slurm={"partition": "gpu"},
-                distributed={"launcher": launcher},
+                slurm={"partition": "gpu", "nodes": 2},
+                distributed={"launcher": launcher, "nnodes": 2},
             )
         )
         assert result["distributed"]["launcher"] == launcher
@@ -391,8 +391,8 @@ class TestValidateLauncherContext:
     def test_sglang_disagg_alias_is_accepted_and_canonicalized(self):
         result = validate_additional_context(
             additional_context=self._context(
-                slurm={"partition": "gpu"},
-                distributed={"launcher": "sglang_disagg"},
+                slurm={"partition": "gpu", "nodes": 2},
+                distributed={"launcher": "sglang_disagg", "nnodes": 2},
             )
         )
         assert result["distributed"]["launcher"] == "sglang-disagg"

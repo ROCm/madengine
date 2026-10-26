@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from .common import resolve_disagg_topology
+from .common import resolve_disagg_topology, sglang_disagg_block
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 
 
@@ -441,8 +441,7 @@ torchrun \\
         if not model_script or not isinstance(model_script, str):
             raise ValueError(f"model_script must be non-empty string")
         
-        # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        sglang_disagg_config = sglang_disagg_block(self.config.additional_context)
         prefill_nodes = sglang_disagg_config.get("prefill_nodes")
         decode_nodes = sglang_disagg_config.get("decode_nodes")
         

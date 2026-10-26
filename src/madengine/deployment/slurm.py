@@ -43,14 +43,15 @@ from .base import (
     create_jinja_env,
 )
 from .common import (
+    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_cumulative_report,
-    canonicalize_distributed_launcher,
     is_self_managed_launcher,
     launcher_for_reporting,
     resolve_disagg_topology,
     resolve_launcher_from_sources,
     resolve_node_count,
+    sglang_disagg_block,
     validate_launcher,
 )
 from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
@@ -1626,14 +1627,7 @@ esac
         """
         # Co-located proxy (xP + yD == nnodes) or a dedicated proxy node.
         # The model run.sh assigns ranks. This launcher only publishes the split.
-        distributed = self.config.additional_context.get("distributed") or {}
-        sglang_disagg_config = (
-            distributed.get("sglang_disagg", {})
-            if isinstance(distributed, dict)
-            else {}
-        )
-        if not isinstance(sglang_disagg_config, dict):
-            sglang_disagg_config = {}
+        sglang_disagg_config = sglang_disagg_block(self.config.additional_context)
         xP, yD = resolve_disagg_topology(
             nnodes,
             sglang_disagg_config.get("prefill_nodes"),
