@@ -295,6 +295,57 @@ class TestNativeGitRef:
         assert self._ref(bin_dir, "exit 1\n") == "v0.3.3"
 
 
+_PINNED_RTL_WHEEL = (
+    "https://github.com/sunway513/rocm-trace-lite/releases/download/"
+    "v0.3.3/rocm_trace_lite-0.3.3-py3-none-linux_x86_64.whl"
+)
+
+
+class TestRocmTraceLiteWheelUrl:
+    def _url(self, bin_dir, **env):
+        res = subprocess.run(
+            ["/bin/bash", str(PRE_SCRIPTS / "trace.sh"), "--print-wheel-url"],
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **env},
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        return res.stdout.strip(), res.stderr
+
+    def test_latest_release_wheel_is_the_default(self, bin_dir):
+        _stub(
+            bin_dir,
+            "curl",
+            """
+            cat <<'EOF'
+            {"assets":[{"name":"rocm_trace_lite-9.9.9-py3-none-linux_x86_64.whl","browser_download_url":"https://example.invalid/rtl-latest.whl"}]}
+            EOF
+            """,
+        )
+        url, err = self._url(bin_dir)
+        assert url == "https://example.invalid/rtl-latest.whl"
+        assert "pinned wheel" not in err
+
+    def test_explicit_wheel_url_skips_the_release_lookup(self, bin_dir):
+        _stub(bin_dir, "curl", "echo called >&2\nexit 1\n")
+        url, err = self._url(
+            bin_dir, ROCM_TRACE_LITE_WHEEL_URL="https://example.invalid/custom.whl"
+        )
+        assert url == "https://example.invalid/custom.whl"
+        assert "called" not in err
+
+    def test_failed_lookup_falls_back_to_the_pin(self, bin_dir):
+        _stub(bin_dir, "curl", "echo 'not-json'\nexit 1\n")
+        url, err = self._url(bin_dir)
+        assert url == _PINNED_RTL_WHEEL
+        assert "pinned wheel" in err
+
+    def test_missing_curl_falls_back_to_the_pin(self, bin_dir):
+        url, err = self._url(bin_dir, PATH=str(bin_dir))
+        assert url == _PINNED_RTL_WHEEL
+        assert "pinned wheel" in err
+
+
 class TestTracelensCurlInstall:
     def test_package_manager_failure_does_not_abort_setup(self, tmp_path, bin_dir):
         venv_bin = tmp_path / "tl-venv" / "bin"
