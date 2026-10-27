@@ -25,9 +25,9 @@ if [ "${1:-}" = "--publish-native-librtl" ]; then
 fi
 
 # Git tag for the native librtl.so rebuild. An explicit ref wins. Otherwise
-# use the release tag of the wheel just installed, so a latest-release or
-# WHEEL_URL install is rebuilt from matching sources. Fall back to the pinned
-# wheel's tag when the package version cannot be read.
+# use the release tag of the wheel just installed, so a WHEEL_URL or
+# FOLLOW_LATEST install is rebuilt from matching sources. Fall back to the
+# pinned wheel's tag when the package version cannot be read.
 _rtl_native_git_ref() {
 	if [ -n "${ROCM_TRACE_LITE_GIT_REF:-}" ]; then
 		printf '%s\n' "${ROCM_TRACE_LITE_GIT_REF}"
@@ -48,7 +48,7 @@ for name in ("rocm-trace-lite", "rocm_trace_lite"):
 	_rtl_ver="${_rtl_ver%.dev*}"
 	case "${_rtl_ver}" in
 		[0-9]*) printf 'v%s\n' "${_rtl_ver}" ;;
-		*) printf '%s\n' 'v0.3.3' ;;
+		*) printf '%s\n' 'v0.3.7' ;;
 	esac
 }
 if [ "${1:-}" = "--print-native-git-ref" ]; then
@@ -57,17 +57,18 @@ if [ "${1:-}" = "--print-native-git-ref" ]; then
 fi
 
 # Wheel installed by the rocm_trace_lite pre-script. An explicit URL wins.
-# Otherwise the latest linux_x86_64 GitHub Release wheel. The pinned URL is
-# only used when that lookup fails (no curl, or the API returns nothing).
-_ROTL_PINNED_WHEEL='https://github.com/sunway513/rocm-trace-lite/releases/download/v0.3.3/rocm_trace_lite-0.3.3-py3-none-linux_x86_64.whl'
+# ROCM_TRACE_LITE_FOLLOW_LATEST=1 resolves the latest linux_x86_64 GitHub
+# Release wheel. Otherwise the pinned v0.3.7 wheel is the default.
+_ROTL_PINNED_WHEEL='https://github.com/sunway513/rocm-trace-lite/releases/download/v0.3.7/rocm_trace_lite-0.3.7-py3-none-linux_x86_64.whl'
 _rtl_resolve_wheel_url() {
 	if [ -n "${ROCM_TRACE_LITE_WHEEL_URL:-}" ]; then
 		printf '%s\n' "${ROCM_TRACE_LITE_WHEEL_URL}"
 		return 0
 	fi
-	_rtl_latest=""
-	if command -v curl >/dev/null 2>&1; then
-		_rtl_latest=$(curl -fsSL 'https://api.github.com/repos/sunway513/rocm-trace-lite/releases/latest' 2>/dev/null | python3 -c '
+	if [ "${ROCM_TRACE_LITE_FOLLOW_LATEST:-}" = "1" ]; then
+		_rtl_latest=""
+		if command -v curl >/dev/null 2>&1; then
+			_rtl_latest=$(curl -fsSL 'https://api.github.com/repos/sunway513/rocm-trace-lite/releases/latest' 2>/dev/null | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -79,12 +80,13 @@ try:
 except (json.JSONDecodeError, KeyError, TypeError, ValueError):
     pass
 ' 2>/dev/null) || true
+		fi
+		if [ -n "$_rtl_latest" ]; then
+			printf '%s\n' "$_rtl_latest"
+			return 0
+		fi
+		echo "Warning: could not resolve the latest rocm-trace-lite release; installing the pinned wheel." >&2
 	fi
-	if [ -n "$_rtl_latest" ]; then
-		printf '%s\n' "$_rtl_latest"
-		return 0
-	fi
-	echo "Warning: could not resolve the latest rocm-trace-lite release; installing the pinned wheel." >&2
 	printf '%s\n' "$_ROTL_PINNED_WHEEL"
 }
 if [ "${1:-}" = "--print-wheel-url" ]; then

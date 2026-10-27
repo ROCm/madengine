@@ -292,12 +292,12 @@ class TestNativeGitRef:
         ) == "v0.9.1"
 
     def test_unreadable_version_falls_back_to_the_pin(self, bin_dir):
-        assert self._ref(bin_dir, "exit 1\n") == "v0.3.3"
+        assert self._ref(bin_dir, "exit 1\n") == "v0.3.7"
 
 
 _PINNED_RTL_WHEEL = (
     "https://github.com/sunway513/rocm-trace-lite/releases/download/"
-    "v0.3.3/rocm_trace_lite-0.3.3-py3-none-linux_x86_64.whl"
+    "v0.3.7/rocm_trace_lite-0.3.7-py3-none-linux_x86_64.whl"
 )
 
 
@@ -312,7 +312,13 @@ class TestRocmTraceLiteWheelUrl:
         assert res.returncode == 0, res.stderr
         return res.stdout.strip(), res.stderr
 
-    def test_latest_release_wheel_is_the_default(self, bin_dir):
+    def test_pinned_wheel_is_the_default(self, bin_dir):
+        _stub(bin_dir, "curl", "echo called >&2\nexit 1\n")
+        url, err = self._url(bin_dir)
+        assert url == _PINNED_RTL_WHEEL
+        assert "called" not in err
+
+    def test_follow_latest_uses_the_release_wheel(self, bin_dir):
         _stub(
             bin_dir,
             "curl",
@@ -322,26 +328,30 @@ class TestRocmTraceLiteWheelUrl:
             EOF
             """,
         )
-        url, err = self._url(bin_dir)
+        url, err = self._url(bin_dir, ROCM_TRACE_LITE_FOLLOW_LATEST="1")
         assert url == "https://example.invalid/rtl-latest.whl"
         assert "pinned wheel" not in err
 
     def test_explicit_wheel_url_skips_the_release_lookup(self, bin_dir):
         _stub(bin_dir, "curl", "echo called >&2\nexit 1\n")
         url, err = self._url(
-            bin_dir, ROCM_TRACE_LITE_WHEEL_URL="https://example.invalid/custom.whl"
+            bin_dir,
+            ROCM_TRACE_LITE_WHEEL_URL="https://example.invalid/custom.whl",
+            ROCM_TRACE_LITE_FOLLOW_LATEST="1",
         )
         assert url == "https://example.invalid/custom.whl"
         assert "called" not in err
 
     def test_failed_lookup_falls_back_to_the_pin(self, bin_dir):
         _stub(bin_dir, "curl", "echo 'not-json'\nexit 1\n")
-        url, err = self._url(bin_dir)
+        url, err = self._url(bin_dir, ROCM_TRACE_LITE_FOLLOW_LATEST="1")
         assert url == _PINNED_RTL_WHEEL
         assert "pinned wheel" in err
 
     def test_missing_curl_falls_back_to_the_pin(self, bin_dir):
-        url, err = self._url(bin_dir, PATH=str(bin_dir))
+        url, err = self._url(
+            bin_dir, PATH=str(bin_dir), ROCM_TRACE_LITE_FOLLOW_LATEST="1"
+        )
         assert url == _PINNED_RTL_WHEEL
         assert "pinned wheel" in err
 
