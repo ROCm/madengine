@@ -23,6 +23,7 @@ from madengine.core.auth import (
     explain_registry_denial,
     has_ambient_docker_auth,
     login_to_registry,
+    resolve_dockerhub_repository,
 )
 from madengine.core.console import Console, manifest_safe_context, redact_secrets
 from madengine.core.context import Context
@@ -36,11 +37,29 @@ from madengine.utils.ops import PythonicTee
 
 
 def _is_prefix_variant(prefix: str, path: str) -> bool:
-    """Whether path is <prefix>.Dockerfile or <prefix>.<os>.<vendor>.Dockerfile."""
+    """Whether path is a Dockerfile variant of this card, not a sibling card.
+
+    Kept:
+        <prefix>.Dockerfile
+        <prefix>.<os>.<vendor>.Dockerfile
+        <prefix>.<ctx>.<os>.<vendor>.Dockerfile
+
+    ``<ctx>`` is ``noctx`` or ``ctx<token>``, the same-card context files
+    (dummy_ctxtest.ctx1, .ctx2a, .noctx). A sibling such as ``kimik3`` or
+    ``glmv5.1`` does not use that token, so ``ls <prefix>.*`` no longer builds it.
+    """
     if not path.startswith(prefix + "."):
         return False
-    rest = path[len(prefix) + 1:]
-    return re.fullmatch(r"(?:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)?Dockerfile", rest) is not None
+    rest = path[len(prefix) + 1 :]
+    return (
+        re.fullmatch(
+            r"(?:(?:noctx|ctx[A-Za-z0-9_-]*)\.)?"
+            r"(?:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)?"
+            r"Dockerfile",
+            rest,
+        )
+        is not None
+    )
 
 class DockerBuilder:
     """Class responsible for building Docker images for models."""
@@ -771,6 +790,16 @@ class DockerBuilder:
                         {"model": model_info["name"], "error": str(e)}
                     )
 
+        for build_info in build_summary["successful_builds"]:
+            if build_info.get("push_failed"):
+                build_summary["failed_pushes"].append(
+                    {
+                        "model": build_info.get("model"),
+                        "docker_image": build_info.get("docker_image"),
+                        "error": build_info.get("push_error"),
+                    }
+                )
+
         return build_summary
 
     def _check_dockerfile_has_gpu_variables(
@@ -811,10 +840,10 @@ class DockerBuilder:
             # Quote the dockerfile path to prevent shell injection
             dockerfile_quoted = shlex.quote(model_info["dockerfile"])
             all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
-            # A card's dockerfile is a prefix for its OS/vendor variants:
-            # <prefix>.Dockerfile or <prefix>.<os>.<vendor>.Dockerfile, the two names
-            # BuildOrchestrator resolves. `ls <prefix>.*` also matched model-specific
-            # siblings that share the prefix: every card on
+            # A card's dockerfile is a prefix for its own variants:
+            # <prefix>.Dockerfile, <prefix>.<os>.<vendor>.Dockerfile, or a same-card
+            # context file <prefix>.ctx*.<os>.<vendor>.Dockerfile. `ls <prefix>.*`
+            # also matched sibling cards that share the prefix: every card on
             # docker/vllm_disagg_inference also built vllm_disagg_inference.glmv5.1
             # and .kimik3, and ran in the GLM-5.1 image, while a
             # network error on the Kimi one failed the build. Only the card's own
@@ -945,6 +974,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             results.append(build_info)
@@ -1082,16 +1112,12 @@ class DockerBuilder:
 
         # Determine registry image name based on registry type
         if registry.lower() in ["docker.io", "dockerhub"]:
-            # For DockerHub, always use format: repository:tag
-            # Try to get repository from credentials, fallback to default if not available
-            if (
-                credentials
-                and "dockerhub" in credentials
-                and "repository" in credentials["dockerhub"]
-            ):
-                registry_image = (
-                    f"{credentials['dockerhub']['repository']}:{docker_image}"
-                )
+            # For DockerHub, always use format: repository:tag.
+            # Placeholder repositories (your-org/your-repo) are ignored so a
+            # template credential.json does not retarget the push.
+            repository = resolve_dockerhub_repository(credentials)
+            if repository:
+                registry_image = f"{repository}:{docker_image}"
             else:
                 registry_image = docker_image
         else:
@@ -1163,6 +1189,7 @@ class DockerBuilder:
                     if pushed_digest:
                         build_info["image_digest"] = pushed_digest
                 except Exception as e:
+                    build_info["push_failed"] = True
                     build_info["push_error"] = str(e)
 
             arch_results.append(build_info)

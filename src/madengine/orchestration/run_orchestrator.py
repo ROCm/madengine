@@ -15,29 +15,35 @@ import json
 import os
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from rich.console import Console as RichConsole
 from rich.panel import Panel
 
-from madengine.core.console import Console
 from madengine.core.auth import load_credentials
+from madengine.core.console import Console
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
-from madengine.core.timeout import resolve_run_timeout
 from madengine.core.errors import (
     BuildError,
     ConfigurationError,
     ExecutionError,
     create_error_context,
 )
-from madengine.utils.session_tracker import SessionTracker
+from madengine.core.timeout import resolve_run_timeout
+from madengine.deployment.common import (
+    is_self_managed_launcher,
+    resolve_launcher_from_sources,
+)
 from madengine.orchestration.image_filtering import (
     filter_images_by_gpu_compatibility as _filter_by_gpu_compat,
+)
+from madengine.orchestration.image_filtering import (
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
-
+from madengine.utils.session_tracker import SessionTracker
 
 
 # The perf CSV the SLURM and k8s deployments append to. It is also what an
@@ -47,10 +53,17 @@ DEPLOYMENT_PERF_CSV = "perf.csv"
 
 
 def _csv_data_row_count(path: str) -> int:
-    """Data rows (excluding the header) in a CSV, 0 if it does not exist."""
+    """Data records (excluding the header) in a CSV, 0 if it does not exist.
+
+    Counts records the way ``csv.DictReader`` does. A quoted field that contains
+    a newline is one record, and counting physical lines would make the session
+    offset skip rows that were actually written.
+    """
+    import csv
+
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return max(sum(1 for line in f if line.strip()) - 1, 0)
+        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            return sum(1 for _ in csv.DictReader(f))
     except OSError:
         return 0
 
@@ -67,8 +80,14 @@ def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
 
     if not dst or not os.path.exists(src):
         return 0
-    if os.path.abspath(dst) == os.path.abspath(src):
-        return 0
+    # abspath misses a symlink or hard link to the working CSV. Appending
+    # those rows back onto the same file duplicates the session.
+    try:
+        if os.path.samefile(src, dst):
+            return 0
+    except OSError:
+        if os.path.abspath(dst) == os.path.abspath(src):
+            return 0
     with open(src, "r", encoding="utf-8", errors="ignore", newline="") as f:
         reader = csv.DictReader(f)
         fields = reader.fieldnames or []
@@ -79,13 +98,27 @@ def _export_session_rows(src: str, start_row: int, dst: Optional[str]) -> int:
         with open(dst, "r", encoding="utf-8", errors="ignore", newline="") as f:
             dst_fields = csv.DictReader(f).fieldnames or fields
         with open(dst, "a", encoding="utf-8", newline="") as f:
-            csv.DictWriter(f, fieldnames=dst_fields, extrasaction="ignore").writerows(rows)
+            csv.DictWriter(f, fieldnames=dst_fields, extrasaction="ignore").writerows(
+                rows
+            )
     else:
         with open(dst, "w", encoding="utf-8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(rows)
     return len(rows)
+
+
+def _skip_gpu_arch_manifest_path(manifest_file: str) -> str:
+    """A new path beside the build manifest for this run's filtered copy.
+
+    The deployment reads the path back, including from a job script, so the
+    file has to stay. A fixed suffix would let a concurrent run of the same
+    manifest replace it before that read.
+    """
+    source = Path(manifest_file)
+    token = f"{os.getpid()}.{uuid.uuid4().hex}"
+    return str(source.with_name(f"{source.stem}.skip_gpu_arch.{token}.json"))
 
 
 class RunOrchestrator:
@@ -119,14 +152,19 @@ class RunOrchestrator:
                     # Use ast.literal_eval for Python dict syntax (single quotes)
                     # This matches what Context class expects
                     import ast
+
                     parsed = ast.literal_eval(args.additional_context)
                     merged_context = parsed if isinstance(parsed, dict) else {}
                 elif isinstance(args.additional_context, dict):
                     merged_context = args.additional_context
             except (ValueError, SyntaxError) as e:
-                self.rich_console.print(f"[yellow]Warning: Could not parse additional_context: {e}[/yellow]")
+                self.rich_console.print(
+                    f"[yellow]Warning: Could not parse additional_context: {e}[/yellow]"
+                )
                 if args.additional_context:
-                    self.rich_console.print(f"[dim]Raw (first 200 chars): {str(args.additional_context)[:200]}[/dim]")
+                    self.rich_console.print(
+                        f"[dim]Raw (first 200 chars): {str(args.additional_context)[:200]}[/dim]"
+                    )
                 pass
 
         if additional_context:
@@ -140,19 +178,25 @@ class RunOrchestrator:
         if getattr(args, "require_pinned_image", False):
             self.additional_context["require_pinned_image"] = True
 
-        keys_str = ", ".join(sorted(self.additional_context.keys())) if self.additional_context else "(none)"
-        self.rich_console.print(f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]")
+        keys_str = (
+            ", ".join(sorted(self.additional_context.keys()))
+            if self.additional_context
+            else "(none)"
+        )
+        self.rich_console.print(
+            f"[dim]Run additional context (CLI):[/dim] [cyan]{keys_str}[/cyan]"
+        )
 
         # Track if we copied MODEL_DIR contents (for cleanup)
         self._copied_from_model_dir = False
-        
+
         # Track if we ran build phase in this workflow (for log combination)
         self._did_build_phase = False
-        
+
         # Initialize session tracker for filtering current run results
         perf_csv_path = getattr(args, "output", "perf.csv")
         self.session_tracker = SessionTracker(perf_csv_path)
-        
+
         # Initialize context in runtime mode (with GPU detection for local)
         # This will be lazy-initialized only when needed
         self.context = None
@@ -162,14 +206,14 @@ class RunOrchestrator:
         """Initialize runtime context (with GPU detection)."""
         # Always reinitialize context in runtime mode for run phase
         # This ensures GPU detection and proper runtime context even after build phase
-        
+
         # Context expects additional_context as a string representation of Python dict
         # Use repr() instead of json.dumps() because Context uses ast.literal_eval()
         if self.additional_context:
             context_string = repr(self.additional_context)
         else:
             context_string = None
-            
+
         self.context = Context(
             additional_context=context_string,
             build_only_mode=False,
@@ -230,7 +274,7 @@ class RunOrchestrator:
             mad_container_image = None
             if self.additional_context:
                 mad_container_image = self.additional_context.get("MAD_CONTAINER_IMAGE")
-            
+
             if mad_container_image:
                 # Local image mode: Skip build, create synthetic manifest
                 if not tags:
@@ -245,14 +289,16 @@ class RunOrchestrator:
                             "Example: --tags model_name --additional-context \"{'MAD_CONTAINER_IMAGE': 'rocm/tensorflow:latest'}\"",
                         ],
                     )
-                
+
                 # Generate synthetic manifest using the provided image
                 manifest_file = self._create_manifest_from_local_image(
                     image_name=mad_container_image,
                     tags=tags,
-                    manifest_output=getattr(self.args, "manifest_output", "build_manifest.json"),
+                    manifest_output=getattr(
+                        self.args, "manifest_output", "build_manifest.json"
+                    ),
                 )
-            
+
             # Step 1: Ensure we have a manifest (build if needed)
             elif not manifest_file or not os.path.exists(manifest_file):
                 if not tags:
@@ -268,7 +314,9 @@ class RunOrchestrator:
                         ],
                     )
 
-                self.rich_console.print("[cyan]No manifest found, building first...[/cyan]\n")
+                self.rich_console.print(
+                    "[cyan]No manifest found, building first...[/cyan]\n"
+                )
                 manifest_file = self._build_phase(tags, registry)
                 self._did_build_phase = True  # Mark that we built in this workflow
 
@@ -279,73 +327,114 @@ class RunOrchestrator:
             # (with optional runtime override)
             with open(manifest_file) as f:
                 manifest = json.load(f)
-            
+
             deployment_config = manifest.get("deployment_config", {})
-            
+
             # Update additional_context with deployment_config for deployment layer
             if not self.additional_context:
                 self.additional_context = {}
-            
-            # Merge deployment_config into additional_context (for deployment layer to use)
-            for key in ["slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+
+            # Merge deployment_config into additional_context (for deployment layer to use).
+            # "_explicit_slurm_keys" carries provenance for slurm.* fields (user/model-card
+            # explicit vs. ConfigLoader preset default) captured at build time — see
+            # BuildOrchestrator._merge_model_config_into_manifest.
+            for key in [
+                "slurm",
+                "k8s",
+                "kubernetes",
+                "llm_d",
+                "platform",
+                "conda",
+                "distributed",
+                "vllm",
+                "env_vars",
+                "debug",
+                "_explicit_slurm_keys",
+            ]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
-            
+
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
             manifest_context = manifest.get("context", {})
-            self.rich_console.print(Panel(
-                json.dumps(manifest_context, indent=2) if manifest_context else "(empty)",
-                title="[bold]Manifest context[/bold] (from build additional context)",
-                border_style="dim",
-                padding=(0, 1),
-            ))
-            self.rich_console.print(Panel(
-                json.dumps(deployment_config, indent=2) if deployment_config else "(empty)",
-                title="[bold]Manifest deployment_config[/bold]",
-                border_style="dim",
-                padding=(0, 1),
-            ))
+            self.rich_console.print(
+                Panel(
+                    (
+                        json.dumps(manifest_context, indent=2)
+                        if manifest_context
+                        else "(empty)"
+                    ),
+                    title="[bold]Manifest context[/bold] (from build additional context)",
+                    border_style="dim",
+                    padding=(0, 1),
+                )
+            )
+            self.rich_console.print(
+                Panel(
+                    (
+                        json.dumps(deployment_config, indent=2)
+                        if deployment_config
+                        else "(empty)"
+                    ),
+                    title="[bold]Manifest deployment_config[/bold]",
+                    border_style="dim",
+                    padding=(0, 1),
+                )
+            )
             self.rich_console.print()
 
             # Infer deployment target from config structure (Convention over Configuration)
             # No explicit "deploy" field needed - presence of k8s/slurm indicates deployment type
-            target = self._infer_deployment_target(self.additional_context)
-            
+            # SlurmDeployment sizes and launches from the first built model, so that
+            # is the card whose launcher decides the target as well.
+            first_model = next(
+                iter((manifest.get("built_models") or {}).values()), None
+            )
+            target = self._infer_deployment_target(self.additional_context, first_model)
             # Legacy support: check manifest for explicit target
             if not target or target == "local":
                 target = deployment_config.get("target", "local")
-            
-            self.rich_console.print(f"[bold cyan]Deployment target: {target}[/bold cyan]\n")
+
+            self.rich_console.print(
+                f"[bold cyan]Deployment target: {target}[/bold cyan]\n"
+            )
 
             # Step 4: Execute based on target
             try:
-                if target == "local" or target == "docker":
+                if target == "bare_metal":
+                    results = self._execute_bare_metal(manifest_file, timeout)
+                elif target == "local" or target == "docker":
                     results = self._execute_local(manifest_file, timeout)
                 else:
                     results = self._execute_distributed(target, manifest_file)
-                
+
                 # Combine build and run logs for full workflow
                 if self._did_build_phase and (target == "local" or target == "docker"):
                     self._combine_build_and_run_logs(manifest_file)
-                
+
                 # Add session information to results for filtering
                 results["session_start_row"] = session_start_row
-                results["session_row_count"] = self.session_tracker.get_session_row_count()
-                
+                results["session_row_count"] = (
+                    self.session_tracker.get_session_row_count()
+                )
+
                 # Always cleanup madengine package files after execution
-                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self.rich_console.print(
+                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
+                )
                 self._cleanup_model_dir_copies()
-                
+
                 # NOTE: Do NOT cleanup session marker here!
                 # It's needed by display functions in CLI layer
                 # Cleanup happens in CLI after display (via perf_csv_path)
-                
+
                 return results
-                
+
             except Exception as e:
                 # Always cleanup madengine package files even on error
-                self.rich_console.print("\n[dim]🧹 Cleaning up madengine package files...[/dim]")
+                self.rich_console.print(
+                    "\n[dim]🧹 Cleaning up madengine package files...[/dim]"
+                )
                 self._cleanup_model_dir_copies()
                 raise
 
@@ -391,59 +480,68 @@ class RunOrchestrator:
         return manifest_file
 
     def _create_manifest_from_local_image(
-        self, 
-        image_name: str, 
-        tags: list, 
-        manifest_output: str = "build_manifest.json"
+        self, image_name: str, tags: list, manifest_output: str = "build_manifest.json"
     ) -> str:
         """
         Create a synthetic manifest for a user-provided local image.
-        
+
         This enables MAD_CONTAINER_IMAGE functionality where users can skip
         the build phase and directly run models using a pre-existing Docker image.
-        
+
         Args:
             image_name: Docker image name/tag (e.g., 'rocm/tensorflow:latest')
             tags: Model tags to discover
             manifest_output: Output path for the manifest file
-            
+
         Returns:
             Path to the generated manifest file
-            
+
         Raises:
             DiscoveryError: If no models are found
             RuntimeError: If image validation fails
         """
-        from madengine.utils.discover_models import DiscoverModels
         from madengine.core.errors import DiscoveryError
-        
-        self.rich_console.print(f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]")
-        self.rich_console.print(f"[dim]Skipping build phase, creating synthetic manifest...[/dim]\n")
-        
+        from madengine.utils.discover_models import DiscoverModels
+
+        self.rich_console.print(
+            f"[yellow]🏠 Local Image Mode: Using {image_name}[/yellow]"
+        )
+        self.rich_console.print(
+            f"[dim]Skipping build phase, creating synthetic manifest...[/dim]\n"
+        )
+
         # Validate that the image exists locally or can be pulled.
         # image_name is interpolated into shell commands run with shell=True,
         # so shell-escape it to avoid command injection / breakage on special chars.
         quoted_image_name = shlex.quote(image_name)
         try:
-            self.console.sh(f"docker image inspect {quoted_image_name} > /dev/null 2>&1")
-            self.rich_console.print(f"[green]✓ Image {image_name} found locally[/green]")
+            self.console.sh(
+                f"docker image inspect {quoted_image_name} > /dev/null 2>&1"
+            )
+            self.rich_console.print(
+                f"[green]✓ Image {image_name} found locally[/green]"
+            )
         except (subprocess.CalledProcessError, RuntimeError) as e:
-            self.rich_console.print(f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]")
+            self.rich_console.print(
+                f"[yellow]⚠️  Image {image_name} not found locally, attempting to pull...[/yellow]"
+            )
             try:
                 self.console.sh(f"docker pull {quoted_image_name}")
-                self.rich_console.print(f"[green]✓ Successfully pulled {image_name}[/green]")
+                self.rich_console.print(
+                    f"[green]✓ Successfully pulled {image_name}[/green]"
+                )
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to find or pull image {image_name}. "
                     f"Ensure the image exists locally or can be pulled from a registry. "
                     f"Error: {e}"
                 )
-        
+
         # Discover models by tags (without building)
         self.args.tags = tags
         discover_models = DiscoverModels(args=self.args)
         models = discover_models.run()
-        
+
         if not models:
             raise DiscoveryError(
                 "No models discovered for local image mode",
@@ -457,17 +555,21 @@ class RunOrchestrator:
                     "Ensure model definitions have matching tags",
                 ],
             )
-        
-        self.rich_console.print(f"[green]✓ Discovered {len(models)} model(s) for tags: {tags}[/green]\n")
-        
+
+        self.rich_console.print(
+            f"[green]✓ Discovered {len(models)} model(s) for tags: {tags}[/green]\n"
+        )
+
         # Initialize build-only context for manifest generation
         # (we need context structure, but skip GPU detection since we're not building)
-        context_string = repr(self.additional_context) if self.additional_context else None
+        context_string = (
+            repr(self.additional_context) if self.additional_context else None
+        )
         build_context = Context(
             additional_context=context_string,
             build_only_mode=True,
         )
-        
+
         # Create manifest structure
         manifest = {
             "built_images": {},
@@ -476,38 +578,50 @@ class RunOrchestrator:
             "local_image_mode": True,
             "local_image_name": image_name,
             "deployment_config": self.additional_context.get("deployment_config", {}),
+            "summary": {
+                "successful_builds": [],
+                "failed_builds": [],
+                "skipped_builds": [],
+            },
         }
-        
+
         # For each model, create a synthetic entry using the provided image
         for model in models:
             model_name = model["name"]
             # Create a synthetic image identifier (not an actual built image)
             synthetic_image_id = f"local-{model_name.replace('/', '_')}"
-            
+
             manifest["built_images"][synthetic_image_id] = {
                 "docker_image": image_name,  # Use user-provided image
                 "dockerfile": "N/A (local image mode)",
                 "build_status": "SKIPPED",
                 "build_time": 0,
                 "local_image": True,
-                "registry_image": None,
+                # Kubernetes cannot see a node-local Docker image. The name the
+                # user passed is what the cluster pulls, so it is the registry
+                # image as well.
+                "registry_image": image_name,
             }
-            
+
             # Convert data list to comma-separated string (required by dataprovider)
             data_field = model.get("data", [])
             if isinstance(data_field, list):
                 data_str = ",".join(data_field) if data_field else ""
             else:
                 data_str = data_field if data_field else ""
-            
+
             # Build model info dict with all fields that ContainerRunner expects
             # Use exact field names from models.json format
             manifest["built_models"][synthetic_image_id] = {
                 "name": model_name,
                 "tags": model.get("tags", []),
                 "dockerfile": "N/A (local image mode)",
-                "scripts": model.get("scripts", ""),  # models.json uses "scripts" (plural)
-                "n_gpus": model.get("n_gpus", "1"),  # models.json uses "n_gpus" (string format)
+                "scripts": model.get(
+                    "scripts", ""
+                ),  # models.json uses "scripts" (plural)
+                "n_gpus": model.get(
+                    "n_gpus", "1"
+                ),  # models.json uses "n_gpus" (string format)
                 "owner": model.get("owner", ""),
                 "training_precision": model.get("training_precision", ""),
                 "args": model.get("args", ""),  # Required field for docker run
@@ -518,17 +632,29 @@ class RunOrchestrator:
                 "cred": model.get("cred", ""),
                 "deprecated": model.get("deprecated", False),
                 "skip_gpu_arch": model.get("skip_gpu_arch", []),
-                "additional_docker_run_options": model.get("additional_docker_run_options", ""),
+                "additional_docker_run_options": model.get(
+                    "additional_docker_run_options", ""
+                ),
                 "multiple_results": model.get("multiple_results", ""),
             }
-        
-        # Write manifest to file
+            manifest["summary"]["skipped_builds"].append(
+                {
+                    "model": model_name,
+                    "docker_image": image_name,
+                    "status": "SKIPPED",
+                }
+            )
+            # Write manifest to file
         with open(manifest_output, "w") as f:
             json.dump(manifest, f, indent=2)
-        
-        self.rich_console.print(f"[green]✓ Generated synthetic manifest: {manifest_output}[/green]")
-        self.rich_console.print(f"[yellow]⚠️  Warning: User-provided image {image_name}. Model support not guaranteed.[/yellow]\n")
-        
+
+        self.rich_console.print(
+            f"[green]✓ Generated synthetic manifest: {manifest_output}[/green]"
+        )
+        self.rich_console.print(
+            f"[yellow]⚠️  Warning: User-provided image {image_name}. Model support not guaranteed.[/yellow]\n"
+        )
+
         return manifest_output
 
     def _load_and_merge_manifest(self, manifest_file: str) -> str:
@@ -547,15 +673,39 @@ class RunOrchestrator:
             if "deployment_config" in manifest:
                 stored_config = manifest["deployment_config"]
                 # Runtime --additional-context overrides stored config
-                for key in ["deploy", "slurm", "k8s", "kubernetes", "distributed", "vllm", "env_vars", "debug"]:
+                for key in [
+                    "deploy",
+                    "slurm",
+                    "k8s",
+                    "kubernetes",
+                    "llm_d",
+                    "platform",
+                    "conda",
+                    "distributed",
+                    "vllm",
+                    "env_vars",
+                    "debug",
+                ]:
                     if key in self.additional_context:
                         stored_config[key] = self.additional_context[key]
+                # "_explicit_slurm_keys" describes the slurm block it was recorded
+                # against. Replacing that block above makes the build-time
+                # provenance stale: a manifest built with an explicit slurm.nodes
+                # would keep "nodes" marked explicit even though the runtime slurm
+                # block never sets it, so SlurmDeployment would treat its own
+                # default nodes=1 as deliberate and ignore distributed.nnodes.
+                # RunOrchestrator does not run --additional-context through
+                # ConfigLoader, so the runtime keys are exactly what the user set.
+                if "slurm" in self.additional_context:
+                    stored_config["_explicit_slurm_keys"] = sorted(
+                        self.additional_context.get("slurm") or {}
+                    )
                 manifest["deployment_config"] = stored_config
-            
+
             # Merge context (tools, pre_scripts, post_scripts, encapsulate_script)
             if "context" not in manifest:
                 manifest["context"] = {}
-            
+
             merge_keys = [
                 "tools",
                 "pre_scripts",
@@ -570,7 +720,7 @@ class RunOrchestrator:
                 if key in self.additional_context:
                     manifest["context"][key] = self.additional_context[key]
                     context_updated = True
-            
+
             if context_updated or "deployment_config" in manifest:
                 # Write back merged config
                 with open(manifest_file, "w") as f:
@@ -579,6 +729,43 @@ class RunOrchestrator:
 
         return manifest_file
 
+    def _gpu_memory_wait_seconds(self) -> Optional[int]:
+        """Return --wait-for-gpu-memory when it is a real integer.
+
+        MagicMock-style objects and omitted attributes count as unset so
+        tests and callers that never passed the flag do not query GPUs.
+        """
+        raw = getattr(self.args, "wait_for_gpu_memory", None)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw
+
+    def _wait_for_gpu_memory(self) -> None:
+        """Block local execution until GPU memory is under the threshold."""
+        timeout_s = self._gpu_memory_wait_seconds()
+        if timeout_s is None:
+            return
+
+        from madengine.utils.gpu_memory_gate import check_gpu_memory_free
+        from madengine.utils.gpu_tool_factory import get_gpu_tool_manager
+
+        try:
+            tool_manager = get_gpu_tool_manager()
+        except Exception as exc:
+            raise ExecutionError(
+                "Refusing to run: unable to query GPU memory before the run.",
+                context=create_error_context(
+                    operation="check_gpu_memory_free",
+                    component="RunOrchestrator",
+                ),
+                suggestions=[
+                    "Confirm the GPU vendor tools are installed "
+                    "(amd-smi, rocm-smi, or nvidia-smi).",
+                ],
+            ) from exc
+
+        check_gpu_memory_free(tool_manager, timeout_s=timeout_s)
+
     def _execute_local(self, manifest_file: str, timeout: int) -> Dict:
         """Execute locally using container_runner."""
         self.rich_console.print("[cyan]Executing locally...[/cyan]\n")
@@ -586,16 +773,18 @@ class RunOrchestrator:
         # Load manifest first to check if we have Docker images
         with open(manifest_file, "r") as f:
             manifest = json.load(f)
-        
+
         has_docker_images = bool(manifest.get("built_images", {}))
-        
+
         if has_docker_images:
             # Using Docker containers - containers have GPU support built-in
-            self.rich_console.print("[dim cyan]Using Docker containers with built-in GPU support[/dim cyan]\n")
-        
+            self.rich_console.print(
+                "[dim cyan]Using Docker containers with built-in GPU support[/dim cyan]\n"
+            )
+
         # Initialize runtime context (runs full GPU detection on compute nodes)
         self._init_runtime_context()
-        
+
         # Show node info
         self._show_node_info()
 
@@ -614,7 +803,9 @@ class RunOrchestrator:
             if "docker_mounts" in manifest_context:
                 if "docker_mounts" not in self.context.ctx:
                     self.context.ctx["docker_mounts"] = {}
-                for container_path, host_path in manifest_context["docker_mounts"].items():
+                for container_path, host_path in manifest_context[
+                    "docker_mounts"
+                ].items():
                     if container_path not in self.context.ctx["docker_mounts"]:
                         self.context.ctx["docker_mounts"][container_path] = host_path
             if "docker_build_arg" in manifest_context:
@@ -623,9 +814,15 @@ class RunOrchestrator:
                 for key, value in manifest_context["docker_build_arg"].items():
                     if key not in self.context.ctx["docker_build_arg"]:
                         self.context.ctx["docker_build_arg"][key] = value
-            if "docker_gpus" in manifest_context and "docker_gpus" not in self.context.ctx:
+            if (
+                "docker_gpus" in manifest_context
+                and "docker_gpus" not in self.context.ctx
+            ):
                 self.context.ctx["docker_gpus"] = manifest_context["docker_gpus"]
-            if "gpu_vendor" in manifest_context and "gpu_vendor" not in self.context.ctx:
+            if (
+                "gpu_vendor" in manifest_context
+                and "gpu_vendor" not in self.context.ctx
+            ):
                 self.context.ctx["gpu_vendor"] = manifest_context["gpu_vendor"]
             if "guest_os" in manifest_context and "guest_os" not in self.context.ctx:
                 self.context.ctx["guest_os"] = manifest_context["guest_os"]
@@ -636,30 +833,28 @@ class RunOrchestrator:
             if "post_scripts" in manifest_context:
                 self.context.ctx["post_scripts"] = manifest_context["post_scripts"]
             if "encapsulate_script" in manifest_context:
-                self.context.ctx["encapsulate_script"] = manifest_context["encapsulate_script"]
+                self.context.ctx["encapsulate_script"] = manifest_context[
+                    "encapsulate_script"
+                ]
             # Restore docker_env_vars from build context (e.g. MAD_SECRETS_HFTOKEN for Primus HF-backed configs).
             # Keep runtime-detected values as priority (consistent with docker_mounts / docker_build_arg):
             # values already populated by Context (e.g. MAD_SECRETS_* read from os.environ) must not be
             # overwritten by manifest entries that may still contain unexpanded "${VAR}" placeholders.
-            if "docker_env_vars" in manifest_context and manifest_context["docker_env_vars"]:
+            if (
+                "docker_env_vars" in manifest_context
+                and manifest_context["docker_env_vars"]
+            ):
                 if "docker_env_vars" not in self.context.ctx:
                     self.context.ctx["docker_env_vars"] = {}
                 for k, v in manifest_context["docker_env_vars"].items():
                     if k not in self.context.ctx["docker_env_vars"]:
                         self.context.ctx["docker_env_vars"][k] = v
 
-            # Also hand docker_env_vars to the deployment layer, which receives
-            # only additional_context. Without this a manifest's docker_env_vars
-            # reaches a local `docker run -e` but is silently dropped on the SLURM
-            # path, so the same variable has had to be declared twice -- once in
-            # context.docker_env_vars and again in deployment_config.env_vars.
-            # Two copies of a NIC list drift, and a wrong one does not fail: RCCL
-            # falls back to TCP and the benchmark still reports a number.
-            # setdefault, so an explicit runtime value still wins.
-            if self.context.ctx.get("docker_env_vars"):
-                self.additional_context.setdefault(
-                    "docker_env_vars", self.context.ctx["docker_env_vars"]
-                )
+            # Leave additional_context alone. The loop above already fills keys
+            # the runtime context does not have. Copying the manifest into
+            # additional_context.docker_env_vars would undo that: run_container
+            # copies that map over the context unconditionally, so a token saved
+            # at build time would replace the one Context just read.
 
         # Merge runtime additional_context (takes precedence over manifest)
         # This allows users to override tools/scripts at runtime
@@ -672,9 +867,13 @@ class RunOrchestrator:
             if "pre_scripts" in self.additional_context:
                 self.context.ctx["pre_scripts"] = self.additional_context["pre_scripts"]
             if "post_scripts" in self.additional_context:
-                self.context.ctx["post_scripts"] = self.additional_context["post_scripts"]
+                self.context.ctx["post_scripts"] = self.additional_context[
+                    "post_scripts"
+                ]
             if "encapsulate_script" in self.additional_context:
-                self.context.ctx["encapsulate_script"] = self.additional_context["encapsulate_script"]
+                self.context.ctx["encapsulate_script"] = self.additional_context[
+                    "encapsulate_script"
+                ]
 
         # Filter images by GPU vendor and architecture
         # Filter images by GPU compatibility
@@ -687,10 +886,14 @@ class RunOrchestrator:
 
             if has_docker_images:
                 # Docker images: filter by GPU vendor at runtime to avoid cross-vendor execution
-                self.rich_console.print("[dim cyan]Filtering Docker images by runtime GPU compatibility...[/dim cyan]")
+                self.rich_console.print(
+                    "[dim cyan]Filtering Docker images by runtime GPU compatibility...[/dim cyan]"
+                )
             else:
                 # Bare-metal execution: filter by runtime GPU
-                self.rich_console.print("[dim cyan]Filtering bare-metal images by runtime GPU compatibility...[/dim cyan]")
+                self.rich_console.print(
+                    "[dim cyan]Filtering bare-metal images by runtime GPU compatibility...[/dim cyan]"
+                )
 
             compatible_images = self._filter_images_by_gpu_compatibility(
                 manifest["built_images"], runtime_gpu_vendor, runtime_gpu_arch
@@ -712,30 +915,37 @@ class RunOrchestrator:
 
             manifest["built_images"] = compatible_images
             print(f"Filtered to {len(compatible_images)} compatible images\n")
-            
+
             # Filter by skip_gpu_arch from model definitions (applies to both Docker and bare-metal)
             runtime_gpu_arch = self.context.get_system_gpu_architecture()
             if "built_models" in manifest and compatible_images:
-                self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
+                self.rich_console.print(
+                    "[cyan]Checking skip_gpu_arch model restrictions...[/cyan]"
+                )
                 compatible_images = self._filter_images_by_skip_gpu_arch(
                     compatible_images, manifest["built_models"], runtime_gpu_arch
                 )
             manifest["built_images"] = compatible_images
-            print(f"After skip_gpu_arch filtering: {len(compatible_images)} images to run\n")
-            
+            print(
+                f"After skip_gpu_arch filtering: {len(compatible_images)} images to run\n"
+            )
+
             # NOTE: Dockerfile context filtering is already done during build phase
             # Re-filtering during run phase causes issues because:
             # 1. The build phase already filtered dockerfiles based on build-time context
             # 2. All built images should be runnable on the runtime node
             # 3. Legacy behavior: filtering happens once (either build or run, not both)
-            
+
             # Write filtered manifest back to file so runner sees the filtered list
             with open(manifest_file, "w") as f:
                 json.dump(manifest, f, indent=2)
 
         except Exception as e:
             import traceback
-            self.rich_console.print(f"[yellow]Warning: GPU/Context filtering failed: {e}[/yellow]")
+
+            self.rich_console.print(
+                f"[yellow]Warning: GPU/Context filtering failed: {e}[/yellow]"
+            )
             self.rich_console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
             self.rich_console.print("[yellow]Proceeding with all images[/yellow]\n")
 
@@ -759,6 +969,10 @@ class RunOrchestrator:
         # For full workflow, logs are combined later by _combine_build_and_run_logs()
         phase_suffix = ".run"
 
+        # After the image build, and before any container starts. A slow
+        # driver release from the previous job is the failure this waits out.
+        self._wait_for_gpu_memory()
+
         # Run models
         results = runner.run_models_from_manifest(
             manifest_file=manifest_file,
@@ -775,6 +989,67 @@ class RunOrchestrator:
 
         return results
 
+    def _execute_bare_metal(self, manifest_file: str, timeout: int) -> Dict:
+        """Execute models on bare metal (conda env, no Docker).
+
+        Like ``_execute_local`` but skips Docker-image GPU filtering (images are
+        synthetic bare-metal entries) and uses ``BareMetalRunner`` instead of
+        ``ContainerRunner``.
+        """
+        self.rich_console.print("[cyan]Executing on bare metal (conda)...[/cyan]\n")
+
+        with open(manifest_file, "r") as f:
+            manifest = json.load(f)
+
+        self._init_runtime_context()
+        self._show_node_info()
+
+        from madengine.core.auth import load_credentials
+        from madengine.execution.bare_metal_runner import BareMetalRunner
+
+        credentials = load_credentials()
+
+        if "context" in manifest:
+            manifest_context = manifest["context"]
+            for key in (
+                "tools",
+                "pre_scripts",
+                "post_scripts",
+                "encapsulate_script",
+                "guest_os",
+            ):
+                if key in manifest_context and key not in self.context.ctx:
+                    self.context.ctx[key] = manifest_context[key]
+
+        if self.additional_context:
+            for key in ("tools", "pre_scripts", "post_scripts", "encapsulate_script"):
+                if key in self.additional_context:
+                    self.context.ctx[key] = self.additional_context[key]
+
+        self._copy_scripts()
+
+        runner = BareMetalRunner(
+            self.context,
+            self.data,
+            self.console,
+            live_output=getattr(self.args, "live_output", False),
+            additional_context=self.additional_context,
+        )
+        runner.set_credentials(credentials)
+        if hasattr(self.args, "output") and self.args.output:
+            runner.set_perf_csv_path(self.args.output)
+
+        results = runner.run_models_from_manifest(
+            manifest_file=manifest_file,
+            timeout=timeout,
+            skip_model_run=getattr(self.args, "skip_model_run", False),
+            phase_suffix=".run",
+        )
+
+        self.rich_console.print("\n[green]✓ Bare-metal execution complete[/green]")
+        self.rich_console.print(f"[dim]{'=' * 60}[/dim]\n")
+        return results
+
     def _execute_distributed(self, target: str, manifest_file: str) -> Dict:
         """Execute on distributed infrastructure."""
         self.rich_console.print(f"[cyan]Deploying to {target}...[/cyan]\n")
@@ -784,6 +1059,7 @@ class RunOrchestrator:
             "--keep-alive": getattr(self.args, "keep_alive", False),
             "--keep-model-dir": getattr(self.args, "keep_model_dir", False),
             "--skip-model-run": getattr(self.args, "skip_model_run", False),
+            "--wait-for-gpu-memory": self._gpu_memory_wait_seconds() is not None,
         }
         _active_local_flags = [name for name, val in _local_only_flags.items() if val]
         if _active_local_flags:
@@ -800,46 +1076,65 @@ class RunOrchestrator:
         # script with no madengine on the compute node to catch it later.
         skipped_runs = []
         # A missing manifest is the deployment's error to report, with its own
-        # message; this check only filters one that exists.
+        # message; this check only filters one that exists. An unreadable
+        # manifest returns (None, []) from the filter. A failure to save the
+        # filtered copy is not that case: it propagates, so incompatible cards
+        # are not submitted from the original file.
         if target == "slurm" and os.path.exists(manifest_file):
             remaining, skipped = self._apply_skip_gpu_arch_for_slurm(manifest_file)
-            # Same shape container_runner reports a skipped run in, so the
-            # Execution Results table lists the model instead of omitting it.
-            skipped_runs = [
-                {"model": name, "status": "SKIPPED", "performance": None, "duration": None}
-                for name in skipped
-            ]
-            if not remaining and not skipped:
-                # Nothing was skipped because there was nothing to run: the build
-                # produced no images. A run reported this as "All models skipped by
-                # skip_gpu_arch", an empty results table, and exit 0.
-                self.rich_console.print(
-                    f"[red]✗ {manifest_file} has no built images; nothing to submit.[/red]\n"
-                )
-                return {
-                    "successful_runs": [],
-                    "failed_runs": [{
-                        "model": f"build manifest {os.path.basename(manifest_file)}",
-                        "status": "FAILURE",
+            if remaining is not None:
+                # Same shape container_runner reports a skipped run in, so the
+                # Execution Results table lists the model instead of omitting it.
+                skipped_runs = [
+                    {
+                        "model": name,
+                        "status": "SKIPPED",
                         "performance": None,
                         "duration": None,
-                        "error": "the manifest has no built images",
-                    }],
-                }
-            if not remaining:
-                self.rich_console.print(
-                    "[yellow]All models skipped by skip_gpu_arch; nothing to submit.[/yellow]\n"
-                )
-                return {"successful_runs": skipped_runs, "failed_runs": []}
+                    }
+                    for name in skipped
+                ]
+                if not remaining and not skipped:
+                    # Nothing was skipped because there was nothing to run: the
+                    # build produced no images. A run reported this as "All
+                    # models skipped by skip_gpu_arch", an empty results table,
+                    # and exit 0.
+                    self.rich_console.print(
+                        f"[red]✗ {manifest_file} has no built images; "
+                        "nothing to submit.[/red]\n"
+                    )
+                    return {
+                        "successful_runs": [],
+                        "failed_runs": [
+                            {
+                                "model": (
+                                    f"build manifest "
+                                    f"{os.path.basename(manifest_file)}"
+                                ),
+                                "status": "FAILURE",
+                                "performance": None,
+                                "duration": None,
+                                "error": "the manifest has no built images",
+                            }
+                        ],
+                    }
+                if not remaining:
+                    self.rich_console.print(
+                        "[yellow]All models skipped by skip_gpu_arch; "
+                        "nothing to submit.[/yellow]\n"
+                    )
+                    return {"successful_runs": skipped_runs, "failed_runs": []}
 
         # Import from deployment layer
-        from madengine.deployment.factory import DeploymentFactory
         from madengine.deployment.base import DeploymentConfig
+        from madengine.deployment.factory import DeploymentFactory
 
         # Add runtime flags to additional_context for deployment layer
         if "live_output" not in self.additional_context:
-            self.additional_context["live_output"] = getattr(self.args, "live_output", False)
-        
+            self.additional_context["live_output"] = getattr(
+                self.args, "live_output", False
+            )
+
         # The deployment layer writes its rows to the working perf.csv (the file the
         # in-allocation madengine also writes on a shared workspace), whatever --output
         # says. The session tracker counts rows in --output, so its start row described a
@@ -852,23 +1147,34 @@ class RunOrchestrator:
         if "session_start_row" not in self.additional_context:
             self.additional_context["session_start_row"] = working_start
 
+        # Manifest-only docker_env_vars (NCCL_IB_HCA and the like) are copied
+        # into context on the local path. SLURM and Kubernetes never enter that
+        # path, and the deployment reads additional_context, so the copy has to
+        # happen here as well. A runtime key still wins.
+        try:
+            with open(manifest_file, "r") as f:
+                self._handoff_manifest_docker_env_vars(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+        # skip_gpu_arch may have written a filtered copy. The build manifest
+        # itself is left as the build wrote it, so a later run can still see
+        # the models this one skipped.
+        submit_manifest = getattr(self, "_slurm_submit_manifest", manifest_file)
+
         # Create deployment configuration
         deployment_config = DeploymentConfig(
             target=target,
-            manifest_file=manifest_file,
+            manifest_file=submit_manifest,
             additional_context=self.additional_context,
-            # Two different values, deliberately. `timeout` caps this process's
-            # own wait on the deployment, so the sentinel has to be resolved
-            # here -- left raw, subprocess_timeout(-1) is None and the SLURM
-            # in-allocation path runs unbounded. `cli_timeout` is what the
-            # generated job script forwards to the madengine it re-invokes, and
-            # must stay verbatim: that inner run resolves against the model card
-            # itself, and a concrete value here would read as an explicit
-            # --timeout and outrank the card. No model card is consulted at this
-            # level, hence the empty dict.
-            timeout=resolve_run_timeout(
-                {}, getattr(self.args, "timeout", -1)
-            ),
+            # Two different values, deliberately. `timeout` is the CLI value
+            # resolved against the default, for consumers that see no model
+            # card, hence the empty dict. `cli_timeout` is what the generated
+            # job script forwards to the madengine it re-invokes, and must stay
+            # verbatim: that inner run resolves against the model card itself,
+            # and a concrete value here would read as an explicit --timeout and
+            # outrank the card.
+            timeout=resolve_run_timeout({}, getattr(self.args, "timeout", -1)),
             cli_timeout=getattr(self.args, "timeout", -1),
             monitor=self.additional_context.get("monitor", True),
             cleanup_on_failure=self.additional_context.get("cleanup_on_failure", True),
@@ -896,47 +1202,71 @@ class RunOrchestrator:
 
         # Return metrics in the format expected by display_results_table
         # Extract successful_runs and failed_runs from metrics if available
-        metrics = result.metrics or {}
-        successful_runs = skipped_runs + metrics.get("successful_runs", [])
-        failed_runs = list(metrics.get("failed_runs", []))
+        if result.metrics:
+            summary = {
+                "successful_runs": skipped_runs
+                + list(result.metrics.get("successful_runs", [])),
+                "failed_runs": list(result.metrics.get("failed_runs", [])),
+            }
+        else:
+            summary = {"successful_runs": list(skipped_runs), "failed_runs": []}
 
-        # The CLI's exit code is "any failed_runs?", and failed_runs only ever held
-        # rows parsed from a perf CSV. A job that died before writing one -- FAILED,
-        # TIMEOUT, a docker pull that ran out of disk -- therefore reported no
-        # failures, printed "All model executions completed successfully", and
-        # exited 0 after "Deployment to slurm failed". A failed deployment is a
-        # failure of every model it submitted unless a row already says so.
-        if not result.is_success and not failed_runs:
-            failed_runs = [
-                {
-                    "model": name,
-                    "status": "FAILURE",
-                    "performance": None,
-                    "duration": None,
-                    "error": result.message,
-                }
-                for name in self._submitted_model_names(manifest_file)
-            ] or [
-                {
-                    "model": f"deployment {result.deployment_id or target}",
-                    "status": "FAILURE",
-                    "performance": None,
-                    "duration": None,
-                    "error": result.message,
-                }
+        # A scheduler that never got far enough to report per-model metrics still
+        # failed. The CLI decides the exit code from len(failed_runs), so leaving
+        # this empty reports a failed SLURM job as a successful run.
+        if not result.is_success and not summary["failed_runs"]:
+            error = result.message or f"Deployment to {target} failed"
+            reported = {
+                run.get("model")
+                for run in summary["successful_runs"]
+                if isinstance(run, dict) and isinstance(run.get("model"), str)
+            }
+            models = [
+                model
+                for model in self._manifest_model_names(manifest_file)
+                if not self._model_reported(model, reported)
+            ]
+            summary["failed_runs"] = [
+                {"model": model, "status": "FAILURE", "error": error}
+                for model in models or [f"{target} deployment"]
             ]
 
-        return {"successful_runs": successful_runs, "failed_runs": failed_runs}
+        return summary
 
     @staticmethod
-    def _submitted_model_names(manifest_file: str) -> List[str]:
-        """Names of the models a deployment was handed (after skip_gpu_arch filtering)."""
+    def _model_reported(model: str, reported: Set[str]) -> bool:
+        """Did this manifest model appear among the successful runs?
+
+        A model with a multiple-results CSV is reported once per row, under the
+        manifest name decorated with the row's own model: ``<model>_<row>`` in
+        both ``slurm.py`` and ``k8s_results.py``. Matching the name alone would
+        blame a model that did run.
+        """
+        return any(name == model or name.startswith(f"{model}_") for name in reported)
+
+    def _manifest_model_names(self, manifest_file: str) -> List[str]:
+        """Models listed in the build manifest, empty if it cannot be read."""
         try:
-            with open(manifest_file, "r") as f:
-                built_models = json.load(f).get("built_models", {}) or {}
+            with open(manifest_file) as f:
+                manifest = json.load(f)
         except (OSError, ValueError):
             return []
-        return [m.get("name") or key for key, m in built_models.items()]
+
+        # built_images is keyed by docker image when the model was built here and
+        # by model name when it was pre-built, so the key is only a last resort.
+        built_models = manifest.get("built_models", {})
+        names = []
+        for key, build_info in manifest.get("built_images", {}).items():
+            name = build_info.get("model") if isinstance(build_info, dict) else None
+            if not name:
+                model_info = built_models.get(key)
+                name = model_info.get("name") if isinstance(model_info, dict) else None
+            name = name or key
+            # One model can own several images (multi-arch, several Dockerfiles),
+            # and blaming it once per image would inflate the failure count.
+            if name not in names:
+                names.append(name)
+        return names
 
     def _show_node_info(self):
         """Show node ROCm information."""
@@ -955,37 +1285,40 @@ class RunOrchestrator:
         elif "HOST_AZURE" in host_os:
             print(self.console.sh("timeout 10 tdnf info rocm-libs", canFail=True))
         else:
-            self.rich_console.print("[yellow]Warning: Unable to detect host OS[/yellow]")
+            self.rich_console.print(
+                "[yellow]Warning: Unable to detect host OS[/yellow]"
+            )
 
     def _cleanup_model_dir_copies(self):
         """Clean up only madengine package files from scripts/common directory.
-        
+
         This cleanup removes ONLY the files that were copied from madengine package:
         - scripts/common/tools.json
         - scripts/common/test_echo.sh
         - scripts/common/pre_scripts/
         - scripts/common/post_scripts/
         - scripts/common/tools/
-        
+        - scripts/common/entrypoints/
         This preserves the user's actual scripts/ and docker/ directories in MAD project.
         """
         import shutil
         import subprocess
-        
+
         # Only clean up scripts/common/ subdirectories that came from madengine package
         common_dir = Path("scripts/common")
         if not common_dir.exists():
             return
-        
+
         # List of items to clean up (from madengine package)
         items_to_cleanup = [
             "tools.json",
             "test_echo.sh",
             "pre_scripts",
             "post_scripts",
-            "tools"
+            "tools",
+            "entrypoints",
         ]
-        
+
         for item_name in items_to_cleanup:
             item_path = common_dir / item_name
             if item_path.exists():
@@ -996,14 +1329,20 @@ class RunOrchestrator:
                             subprocess.run(
                                 ["chmod", "-R", "+w", str(item_path)],
                                 capture_output=True,
-                                timeout=10
+                                timeout=10,
                             )
-                        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
+                        except (
+                            subprocess.TimeoutExpired,
+                            subprocess.CalledProcessError,
+                            OSError,
+                        ) as e:
                             print(f"Warning: chmod failed for {item_path}: {e}")
                         shutil.rmtree(item_path)
                     else:
                         item_path.unlink()
-                    self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name}[/dim]")
+                    self.rich_console.print(
+                        f"[dim]  Cleaned up: scripts/common/{item_name}[/dim]"
+                    )
                 except Exception as e:
                     # Try with sudo for permission issues
                     try:
@@ -1011,9 +1350,11 @@ class RunOrchestrator:
                             ["sudo", "rm", "-rf", str(item_path)],
                             check=True,
                             capture_output=True,
-                            timeout=10
+                            timeout=10,
                         )
-                        self.rich_console.print(f"[dim]  Cleaned up: scripts/common/{item_name} (elevated)[/dim]")
+                        self.rich_console.print(
+                            f"[dim]  Cleaned up: scripts/common/{item_name} (elevated)[/dim]"
+                        )
                     except Exception as e2:
                         self.rich_console.print(
                             f"[yellow]⚠️  Warning: Could not clean up {item_path}: {e2}[/yellow]"
@@ -1021,84 +1362,88 @@ class RunOrchestrator:
 
     def _combine_build_and_run_logs(self, manifest_file: str):
         """Combine build.live.log and run.live.log into live.log for full workflow.
-        
+
         For full workflow (build + run), this creates a unified log file by:
         1. Reading the manifest to find models that were actually executed in this session
         2. Finding corresponding *.build.live.log and *.run.live.log files for those models
         3. Concatenating them into *.live.log
         4. Keeping the original build and run logs for reference
-        
+
         Args:
             manifest_file: Path to the manifest file containing executed models
         """
         import json
-        
+
         # Load manifest to get list of build log files
         try:
             with open(manifest_file, "r") as f:
                 manifest = json.load(f)
-            
+
             built_images = manifest.get("built_images", {})
             if not built_images:
                 return  # No models to process
         except Exception as e:
-            self.rich_console.print(f"[yellow]⚠️  Warning: Could not load manifest for log combining: {e}[/yellow]")
+            self.rich_console.print(
+                f"[yellow]⚠️  Warning: Could not load manifest for log combining: {e}[/yellow]"
+            )
             return
-        
+
         self.rich_console.print("\n[dim]📝 Combining build and run logs...[/dim]")
         combined_count = 0
-        
+
         # Process each built image
         for image_name, image_info in built_images.items():
             # Get build log file name from manifest
             build_log = image_info.get("log_file")
             if not build_log or not os.path.exists(build_log):
                 continue  # Skip if build log doesn't exist
-            
+
             # Derive the base name and corresponding run log
             base_name = build_log.replace(".build.live.log", "")
             run_log = f"{base_name}.run.live.log"
             combined_log = f"{base_name}.live.log"
-            
+
             # Check if run log exists
             if not os.path.exists(run_log):
                 continue  # Skip if run log doesn't exist
-            
+
             try:
                 # Combine build and run logs
-                with open(combined_log, 'w') as outfile:
+                with open(combined_log, "w") as outfile:
                     # Add build log
-                    with open(build_log, 'r') as infile:
+                    with open(build_log, "r") as infile:
                         outfile.write(infile.read())
-                    
+
                     # Add separator
                     outfile.write("\n" + "=" * 80 + "\n")
                     outfile.write("RUN PHASE LOG\n")
                     outfile.write("=" * 80 + "\n\n")
-                    
+
                     # Add run log
-                    with open(run_log, 'r') as infile:
+                    with open(run_log, "r") as infile:
                         outfile.write(infile.read())
-                
+
                 combined_count += 1
                 self.rich_console.print(f"[dim]  Combined: {combined_log}[/dim]")
-                
+
             except Exception as e:
                 self.rich_console.print(
                     f"[yellow]⚠️  Warning: Could not combine logs for {base_name}: {e}[/yellow]"
                 )
-        
+
         if combined_count > 0:
-            self.rich_console.print(f"[dim]✓ Combined {combined_count} log file(s)[/dim]")
+            self.rich_console.print(
+                f"[dim]✓ Combined {combined_count} log file(s)[/dim]"
+            )
 
     def _copy_scripts(self):
         """Copy common scripts to model directories.
-        
+
         Handles scenarios:
         1. MAD Project: scripts/ already exists in current directory - just add madengine common files
         2. External MODEL_DIR: Copy from external path to current directory
         3. madengine Testing: Copy from src/madengine/scripts/common
-        
+
         NOTE: Does NOT delete existing scripts/ or docker/ directories in current working directory.
         """
         import shutil
@@ -1106,19 +1451,27 @@ class RunOrchestrator:
         # Define ignore function for cache files (used for all copy operations)
         def ignore_cache_files(directory, files):
             """Ignore Python cache files and directories."""
-            return [f for f in files if f.endswith('.pyc') or f == '__pycache__' or f.endswith('.pyo')]
-        
+            return [
+                f
+                for f in files
+                if f.endswith(".pyc") or f == "__pycache__" or f.endswith(".pyo")
+            ]
+
         # Step 1: Check if MODEL_DIR points to external directory and copy if needed
         # MODEL_DIR default is "." (current directory), so only copy if it's different
         model_dir_env = os.environ.get("MODEL_DIR", ".")
         model_dir_abs = os.path.abspath(model_dir_env)
         current_dir_abs = os.path.abspath(".")
-        
+
         # Only copy if MODEL_DIR points to a different directory (not current dir)
         if model_dir_abs != current_dir_abs and os.path.exists(model_dir_env):
-            self.rich_console.print(f"[yellow]📁 External MODEL_DIR detected: {model_dir_env}[/yellow]")
-            self.rich_console.print("[yellow]Copying MODEL_DIR contents for run phase...[/yellow]")
-            
+            self.rich_console.print(
+                f"[yellow]📁 External MODEL_DIR detected: {model_dir_env}[/yellow]"
+            )
+            self.rich_console.print(
+                "[yellow]Copying MODEL_DIR contents for run phase...[/yellow]"
+            )
+
             # Copy docker/ and scripts/ from MODEL_DIR (without deleting existing ones first)
             for subdir in ["docker", "scripts"]:
                 src_path = Path(model_dir_env) / subdir
@@ -1127,18 +1480,29 @@ class RunOrchestrator:
                     # Use copytree with dirs_exist_ok=True to merge instead of replace
                     if dest_path.exists():
                         # Only warn, don't delete existing directories
-                        self.rich_console.print(f"[dim]  Note: Merging {subdir}/ from MODEL_DIR with existing directory[/dim]")
-                    shutil.copytree(src_path, dest_path, dirs_exist_ok=True, ignore=ignore_cache_files)
-            
-            self.rich_console.print("[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]")
+                        self.rich_console.print(
+                            f"[dim]  Note: Merging {subdir}/ from MODEL_DIR with existing directory[/dim]"
+                        )
+                    shutil.copytree(
+                        src_path,
+                        dest_path,
+                        dirs_exist_ok=True,
+                        ignore=ignore_cache_files,
+                    )
+
+            self.rich_console.print(
+                "[green]✓ MODEL_DIR structure copied (docker/, scripts/)[/green]"
+            )
         elif not os.path.exists(model_dir_env):
-            self.rich_console.print(f"[yellow]⚠️  Warning: MODEL_DIR '{model_dir_env}' does not exist, using current directory[/yellow]")
+            self.rich_console.print(
+                f"[yellow]⚠️  Warning: MODEL_DIR '{model_dir_env}' does not exist, using current directory[/yellow]"
+            )
 
         # Step 2: Copy madengine's common scripts (pre_scripts, post_scripts, tools)
         # This provides the execution framework scripts
         # Find madengine installation path (works for both development and installed package)
         madengine_common = None
-        
+
         # Option 1: Development mode - check if running from source
         dev_path = Path("src/madengine/scripts/common")
         if dev_path.exists():
@@ -1148,23 +1512,34 @@ class RunOrchestrator:
             # Option 2: Installed package - find via module location
             try:
                 import madengine
+
                 madengine_module_path = Path(madengine.__file__).parent
                 installed_path = madengine_module_path / "scripts" / "common"
                 if installed_path.exists():
                     madengine_common = installed_path
-                    print(f"Found madengine scripts in installed package: {madengine_common}")
+                    print(
+                        f"Found madengine scripts in installed package: {madengine_common}"
+                    )
             except Exception as e:
                 print(f"Could not locate madengine scripts: {e}")
-        
+
         if madengine_common and madengine_common.exists():
-            print(f"Copying madengine common scripts from {madengine_common} to scripts/common")
-            
+            print(
+                f"Copying madengine common scripts from {madengine_common} to scripts/common"
+            )
+
             dest_common = Path("scripts/common")
             # Ensure the destination directory exists before copying
             dest_common.mkdir(parents=True, exist_ok=True)
-            
-            # Copy pre_scripts, post_scripts, tools if they exist
-            for item in ["pre_scripts", "post_scripts", "tools", "tools.json", "test_echo.sh"]:
+            # Copy pre_scripts, post_scripts, tools, entrypoints if they exist
+            for item in [
+                "pre_scripts",
+                "post_scripts",
+                "tools",
+                "entrypoints",
+                "tools.json",
+                "test_echo.sh",
+            ]:
                 src_item = madengine_common / item
                 if src_item.exists():
                     dest_item = dest_common / item
@@ -1173,19 +1548,21 @@ class RunOrchestrator:
                             shutil.rmtree(dest_item)
                         else:
                             dest_item.unlink()
-                    
+
                     if src_item.is_dir():
                         shutil.copytree(src_item, dest_item, ignore=ignore_cache_files)
                     else:
                         shutil.copy2(src_item, dest_item)
                     print(f"  Copied {item}")
         else:
-            self.rich_console.print("[yellow]⚠️  Could not find madengine scripts directory[/yellow]")
+            self.rich_console.print(
+                "[yellow]⚠️  Could not find madengine scripts directory[/yellow]"
+            )
 
         # Step 3: REMOVED - Distribution to model directories is incorrect
         # scripts/common should remain at <cwd>/scripts/common/ for proper relative path access
         # Model scripts reference it via ../scripts/common/ from their directory (e.g., scripts/dummy/)
-        # 
+        #
         # This ensures compatibility with legacy workflow where:
         # - scripts/common/ stays at working directory root
         # - Model scripts use ../scripts/common/ relative paths
@@ -1206,7 +1583,9 @@ class RunOrchestrator:
                 )
                 compatible_images[model_name] = image_info
                 continue
-        built_with_vendor = {k: v for k, v in built_images.items() if v.get("gpu_vendor")}
+        built_with_vendor = {
+            k: v for k, v in built_images.items() if v.get("gpu_vendor")
+        }
         compat, skipped = _filter_by_gpu_compat(
             built_with_vendor, runtime_gpu_vendor, runtime_gpu_arch
         )
@@ -1214,7 +1593,7 @@ class RunOrchestrator:
         for model_name, reason in skipped:
             self.rich_console.print(f"[dim]  Skipping {model_name}: {reason}[/dim]")
         return compatible_images
-    
+
     def _filter_images_by_gpu_architecture(
         self, built_images: Dict, runtime_gpu_arch: str
     ) -> Dict:
@@ -1238,7 +1617,11 @@ class RunOrchestrator:
         compatible_images, skipped = _filter_by_skip_gpu_arch(
             built_images, built_models, runtime_gpu_arch, disable_skip=False
         )
-        for model_name, image_info, gpu_arch in skipped:
+        for key, image_info, gpu_arch in skipped:
+            # built_images is keyed by the Docker image tag. The card name is
+            # what the execution summary and perf.csv both have to record.
+            card = built_models.get(key) or {}
+            model_name = card.get("name") or key
             self.rich_console.print(
                 f"[yellow]  Skipping model {model_name} as it is not supported on {gpu_arch} architecture.[/yellow]"
             )
@@ -1283,24 +1666,35 @@ class RunOrchestrator:
             nodelist=slurm_config.get("nodelist"),
         )
         if arch:
-            self.rich_console.print(f"[dim]  Compute node GPU architecture: {arch}[/dim]")
+            self.rich_console.print(
+                f"[dim]  Compute node GPU architecture: {arch}[/dim]"
+            )
         return arch
 
-    def _apply_skip_gpu_arch_for_slurm(self, manifest_file: str) -> Tuple[int, List[str]]:
+    def _apply_skip_gpu_arch_for_slurm(
+        self, manifest_file: str
+    ) -> Tuple[int, List[str]]:
         """
         Drop models whose skip_gpu_arch names the SLURM nodes' architecture.
 
         Same rule and same SKIPPED rows as the local path, applied before sbatch.
-        The manifest file is rewritten because the deployment reads it back and
-        submits built_models' first entry: a skipped model has to leave
-        built_models as well as built_images, or it is the one that gets
-        submitted.
+        The deployment reads the manifest back and submits built_models' first
+        entry, so a skipped model has to leave both built_models and
+        built_images. That filtered view is a per-run copy. The build manifest
+        stays as the build wrote it: rewriting it in place made the next run,
+        and ``--disable-skip-gpu-arch``, see an empty manifest.
 
         Returns:
             (number of models left to submit, names of the models skipped)
         """
-        with open(manifest_file, "r") as f:
-            manifest = json.load(f)
+        self._slurm_submit_manifest = manifest_file
+        try:
+            with open(manifest_file, "r") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            # Unreadable is the deployment's error to report, same as a
+            # missing file. Filtering cannot run, so do not abort here.
+            return None, []
         built_images = manifest.get("built_images", {})
         built_models = manifest.get("built_models", {})
 
@@ -1319,12 +1713,18 @@ class RunOrchestrator:
 
         # Resolved through the same loader SlurmDeployment uses, so the probe
         # targets the partition the job will be submitted to, defaults included.
-        slurm_config = ConfigLoader.load_slurm_config(self.additional_context).get("slurm", {})
+        slurm_config = ConfigLoader.load_slurm_config(self.additional_context).get(
+            "slurm", {}
+        )
 
-        self.rich_console.print("[cyan]Checking skip_gpu_arch model restrictions...[/cyan]")
+        self.rich_console.print(
+            "[cyan]Checking skip_gpu_arch model restrictions...[/cyan]"
+        )
         gpu_arch = self._resolve_slurm_gpu_arch(slurm_config)
         if not gpu_arch:
-            restricted = [k for k in built_images if built_models.get(k, {}).get("skip_gpu_arch")]
+            restricted = [
+                k for k in built_images if built_models.get(k, {}).get("skip_gpu_arch")
+            ]
             self.rich_console.print(
                 "[bold yellow]⚠️  skip_gpu_arch could NOT be enforced: the compute nodes' "
                 "GPU architecture is unknown (probe failed or found no gfx agent). "
@@ -1333,30 +1733,67 @@ class RunOrchestrator:
             )
             return len(built_images), []
 
-        compatible = self._filter_images_by_skip_gpu_arch(built_images, built_models, gpu_arch)
+        compatible = self._filter_images_by_skip_gpu_arch(
+            built_images, built_models, gpu_arch
+        )
         skipped = [k for k in built_images if k not in compatible]
         if not skipped:
             return len(compatible), []
 
-        manifest["built_images"] = compatible
-        manifest["built_models"] = {k: v for k, v in built_models.items() if k not in skipped}
-        with open(manifest_file, "w") as f:
-            json.dump(manifest, f, indent=2)
-        return len(compatible), [built_models.get(k, {}).get("name", k) for k in skipped]
+        skipped_names = [built_models.get(k, {}).get("name", k) for k in skipped]
+        if not compatible:
+            # Nothing is submitted, so there is no filtered copy to hand over.
+            return 0, skipped_names
 
-    def _write_skipped_status(self, model_name: str, image_info: Dict, gpu_arch: str) -> None:
+        filtered = dict(manifest)
+        filtered["built_images"] = compatible
+        filtered["built_models"] = {
+            k: v for k, v in built_models.items() if k not in skipped
+        }
+        # A shared name lets two runs of this manifest overwrite each other's
+        # submission copy. The write is outside the read handler above: if it
+        # fails, the caller must not fall through to the original manifest.
+        filtered_path = _skip_gpu_arch_manifest_path(manifest_file)
+        with open(filtered_path, "w") as f:
+            json.dump(filtered, f, indent=2)
+        self._slurm_submit_manifest = filtered_path
+        return len(compatible), skipped_names
+
+    def _handoff_manifest_docker_env_vars(self, manifest: Dict) -> None:
+        """Copy ``context.docker_env_vars`` into ``additional_context``.
+
+        The deployment layer never sees the manifest context. Keys already set
+        at runtime stay; keys that exist only in the manifest are filled in.
+        """
+        context = manifest.get("context") if isinstance(manifest, dict) else None
+        manifest_env = (
+            context.get("docker_env_vars") if isinstance(context, dict) else None
+        )
+        if not isinstance(manifest_env, dict) or not manifest_env:
+            return
+        dest = self.additional_context.get("docker_env_vars")
+        if not isinstance(dest, dict):
+            self.additional_context["docker_env_vars"] = dict(manifest_env)
+            return
+        for key, value in manifest_env.items():
+            dest.setdefault(key, value)
+
+    def _write_skipped_status(
+        self, model_name: str, image_info: Dict, gpu_arch: str
+    ) -> None:
         """Write SKIPPED status to perf CSV for models that were skipped.
-        
+
         Args:
             model_name: Name of the model that was skipped
             image_info: Image information dictionary
             gpu_arch: GPU architecture that caused the skip
         """
         try:
-            from madengine.reporting.update_perf_csv import update_perf_csv
             import json
             import tempfile
-            
+
+            from madengine.reporting.update_perf_csv import update_perf_csv
+
             # Create a perf entry for the skipped model
             perf_entry = {
                 "model": model_name,
@@ -1364,45 +1801,91 @@ class RunOrchestrator:
                 "reason": f"Model not supported on {gpu_arch} architecture",
                 "gpu_architecture": gpu_arch,
             }
-            
+
             # Write to temporary JSON file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as f:
                 json.dump(perf_entry, f)
                 temp_file = f.name
-            
+
             # Get output CSV path from args
-            output_csv = getattr(self.args, 'output', 'perf.csv')
-            
+            output_csv = getattr(self.args, "output", "perf.csv")
+
             # Update perf CSV with skipped entry
             update_perf_csv(exception_result=temp_file, perf_csv=output_csv)
-            
+
             # Clean up temp file
             import os
-            os.unlink(temp_file)
-            
-        except Exception as e:
-            self.rich_console.print(f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]")
 
-    def _infer_deployment_target(self, config: Dict) -> str:
+            os.unlink(temp_file)
+
+        except Exception as e:
+            self.rich_console.print(
+                f"[dim]  Warning: Could not write SKIPPED status to CSV: {e}[/dim]"
+            )
+
+    def _infer_deployment_target(
+        self, config: Dict, model_info: Optional[Dict] = None
+    ) -> str:
         """
         Infer deployment target from configuration structure.
-        
+
         Convention over Configuration:
+        - ``platform`` of ``bare_metal`` → bare-metal (conda, no Docker).
+          Omitted ``platform`` means Docker. A ``bare_metal`` key is rejected.
+        - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment
         - Presence of "slurm" field → slurm deployment
-        - Neither present → local execution
-        
+          - ...with slurm.scheduler == "spur" (or deploy == "spur") → spur deployment
+        - A self-managed SLURM launcher (slurm_multi) → slurm deployment
+        - None of the above → local execution
+
         Args:
             config: Configuration dictionary
-            
+            model_info: The manifest's model card, consulted for the launcher when
+                ``config`` does not name one. A runtime ``distributed`` override
+                replaces the stored block wholesale, so ``config`` alone can lose a
+                launcher the model card declared.
+
         Returns:
-            Deployment target: "k8s", "slurm", or "local"
+            Deployment target: "bare_metal", "llm-d", "k8s", "spur", "slurm", or "local"
         """
-        if "k8s" in config or "kubernetes" in config:
+        from madengine.orchestration.platform import resolve_context_platform
+
+        if resolve_context_platform(config) == "bare_metal":
+            return "bare_metal"
+        # Checked next: an llm-d config also carries a "k8s" block, which
+        # configures the benchmark-client Job.
+        if "llm_d" in config:
+            return "llm-d"
+        elif "k8s" in config or "kubernetes" in config:
             return "k8s"
         elif "slurm" in config:
+            # Spur reuses the "slurm" config block (it ships SLURM-compatible
+            # CLI shims), so the flavor is distinguished by an inner key rather
+            # than by a top-level one.
+            slurm_config = config.get("slurm") or {}
+            # An explicit deploy == "spur" is accepted too: ConfigLoader validates
+            # that form (build honours it), so the run path must agree or the same
+            # config would build for spur and run the stock SLURM template.
+            if (
+                str(slurm_config.get("scheduler", "")).lower() == "spur"
+                or str(config.get("deploy", "")).lower() == "spur"
+            ):
+                return "spur"
             return "slurm"
-        else:
-            return "local"
-    
-
+        # slurm_multi runs the model's own .slurm script through sbatch/srun, so it is
+        # a SLURM deployment by construction. Without this a model card that declared
+        # the launcher but no `slurm` block inferred "local" and was handed to the
+        # container runner, which never reaches the slurm_multi path at all.
+        # Resolve the launcher exactly as SlurmDeployment._resolve_launcher does
+        # (deployment config first, model card second) so the two cannot disagree.
+        launcher = resolve_launcher_from_sources(
+            (config.get("distributed") or {}).get("launcher"),
+            ((model_info or {}).get("distributed") or {}).get("launcher"),
+            default="",
+        )
+        if is_self_managed_launcher(launcher):
+            return "slurm"
+        return "local"

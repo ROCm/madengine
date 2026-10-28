@@ -150,6 +150,7 @@ def test_other_launchers_keep_the_template_path(tmp_path, monkeypatch):
     card["distributed"] = {"launcher": "torchrun", "nnodes": 1}
     card["n_gpus"] = "1"
     d = _deployment(tmp_path, monkeypatch, card=card, image_info={"registry_image": "r/i:t"})
+    d.storage_v1 = None  # no cluster: the template path keeps the shared results layout
     assert d.prepare() is True
     assert d._slurm_multi is False
     assert "madengine-launcher" not in d.job_yaml

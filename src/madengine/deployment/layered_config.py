@@ -216,6 +216,33 @@ def _benchmark_entries(
     return defaults + specific
 
 
+def _benchmark_kind(
+    config: Dict[str, Any],
+    model_env: Dict[str, Any],
+    runtime: Dict[str, Any],
+) -> Optional[str]:
+    """Which benchmark block to merge, before that block is applied.
+
+    Lowest precedence first: the file's ``model.env``, then a kind-less
+    benchmark entry, then the card, then the submit-time override. Selecting
+    only from the card and the runtime leaves a file that names ``niah`` with
+    ``BENCHMARK_SCRIPT=niah`` and without the niah block's settings.
+    """
+    kind = _env_of(config.get("model")).get("BENCHMARK_SCRIPT")
+    for entry in _benchmark_entries(config, None):
+        selected = _env_of(entry).get("BENCHMARK_SCRIPT")
+        if selected:
+            kind = selected
+    if model_env.get("BENCHMARK_SCRIPT"):
+        kind = model_env.get("BENCHMARK_SCRIPT")
+    if runtime.get("BENCHMARK_SCRIPT"):
+        kind = runtime.get("BENCHMARK_SCRIPT")
+    if kind is None:
+        return None
+    text = str(kind).strip()
+    return text or None
+
+
 def resolve_env(
     config: Dict[str, Any],
     model_env: Optional[Dict[str, Any]] = None,
@@ -310,10 +337,24 @@ def resolve_for_model(
         return {}, warnings
 
     config = load_config(path)
+    serve = (config.get("model") or {}).get("serve")
+    if serve:
+        # Same rule as a site: block. resolve_serve_args can merge the map, but
+        # no launcher receives the selected role and mode, so leaving the
+        # section in place would run a different recipe than the file describes.
+        raise LayeredConfigError(
+            f"{path}: model.serve is not applied to the workload. "
+            "No launcher receives these flags, so the section is refused rather "
+            "than dropped. Remove it until a runtime applies it, or put the "
+            "flags in the file the workload script already reads (models.yaml)."
+        )
+    model_env = model_info.get("env_vars") or {}
+    runtime = runtime_env or {}
+    benchmark = _benchmark_kind(config, model_env, runtime)
     env = resolve_env(
         config,
-        model_env=model_info.get("env_vars") or {},
-        runtime_env=runtime_env or {},
-        benchmark=(model_info.get("env_vars") or {}).get("BENCHMARK_SCRIPT"),
+        model_env=model_env,
+        runtime_env=runtime,
+        benchmark=benchmark,
     )
     return env, warnings

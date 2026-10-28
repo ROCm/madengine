@@ -63,17 +63,29 @@ def parse_node_resources(section: Optional[str]) -> Dict[str, object]:
     return {"vram": vram, "docker_avail": docker_avail, "image_present": image_present}
 
 
-def _first_plain_node(nodelist: Optional[str]) -> Optional[str]:
-    """First node of a comma-separated nodelist, or None if it is not plain.
+def _hostnames(nodelist: str) -> List[str]:
+    """Expand a SLURM hostlist to individual node names.
 
-    A bracketed range ("node[01-04]") cannot be split on commas, and passing the
-    whole list with -N1 is rejected by srun, so such a list is left out and the
-    probe falls back to the partition's choice.
+    A plain comma-separated list is split here. A bracketed range
+    (``node[01-02]``) cannot be split that way, and passing the whole range to
+    ``srun -N1 --nodelist`` is rejected, so it goes through
+    ``scontrol show hostnames``. An empty result means the list could not be
+    expanded; the caller must not probe some other node instead.
     """
-    if not nodelist or "[" in nodelist:
-        return None
-    first = nodelist.split(",")[0].strip()
-    return first or None
+    if "[" not in nodelist:
+        return [node.strip() for node in nodelist.split(",") if node.strip()]
+    try:
+        result = subprocess.run(
+            ["scontrol", "show", "hostnames", nodelist],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 class NodeHealth(Enum):
@@ -490,9 +502,17 @@ echo "===END_RESOURCES==="
             srun_cmd.append(f"--reservation={self.reservation}")
         if constraint:
             srun_cmd.append(f"--constraint={constraint}")
-        node = _first_plain_node(nodelist)
-        if node:
-            srun_cmd.append(f"--nodelist={node}")
+        if nodelist:
+            hosts = _hostnames(nodelist)
+            if not hosts:
+                self.console.print(
+                    "[yellow]⚠ GPU architecture probe skipped: could not expand "
+                    f"nodelist {nodelist}. Set slurm.gpu_arch to name the "
+                    "architecture directly.[/yellow]"
+                )
+                return None
+            # One node is enough, and srun -N1 rejects a multi-node hostlist.
+            srun_cmd.append(f"--nodelist={hosts[0]}")
         elif exclude:
             srun_cmd.append(f"--exclude={exclude}")
         srun_cmd.extend(["bash", "-c", probe_script])
@@ -544,7 +564,11 @@ echo "===END_RESOURCES==="
 # up occupied with no SLURM job on it, and why killing host processes alone left
 # a run looking at busy GPUs.
 if command -v docker >/dev/null 2>&1; then
-    docker ps -q | xargs --no-run-if-empty docker stop --time 10 2>/dev/null || true
+    # Only containers madengine started. A bare `docker ps` stops every
+    # container on a shared node, including ones this job did not create, and
+    # a node marked dirty only for low disk would take that path too.
+    docker ps -q --filter label=madengine.session \
+        | xargs --no-run-if-empty docker stop --time 10 2>/dev/null || true
 fi
 
 # Kill Ray processes
@@ -761,18 +785,22 @@ echo "CLEANUP_OK"
                 "[yellow]Recommendation: Wait for nodes to be cleaned or run manual cleanup[/yellow]\n"
             )
 
-        # A check that condemns the WHOLE partition has failed; the partition has
-        # not. Returning an exclude list naming every node hands sbatch a job that
-        # can never be scheduled, which is strictly worse than not checking: the
-        # job does not wait for a node, it waits forever.
+        # A probe that could not measure ANY node has failed; the partition has
+        # not. Seen on OCI amd-rccl, where every node came back unreachable or
+        # unknown from the login node. That says something about the probe, not
+        # about the machines, so the check stands down and lets SLURM schedule.
         #
-        # Seen on OCI amd-rccl, where all 51 nodes came back unreachable/unknown
-        # from the login node -- the probe could not reach any of them, which says
-        # something about the probe, not about 51 machines. The value of this check
-        # is steering around a few known-bad nodes; with no node left standing it
-        # has no signal to offer, so it stands down and lets SLURM schedule.
+        # Measured DIRTY nodes are a different result. Occupied GPU memory or a
+        # full Docker disk is a reason to keep those nodes out, even when every
+        # node that was examined is dirty. Clearing that exclude list would
+        # submit onto the nodes the check just condemned.
         examined = {st.node for st in statuses}
-        if examined and examined.issubset(set(existing_exclude)):
+        unmeasured = {
+            st.node
+            for st in statuses
+            if st.health in (NodeHealth.UNREACHABLE, NodeHealth.UNKNOWN)
+        }
+        if examined and examined <= unmeasured:
             # Flag it for the caller as well. Dropping the exclude list alone is half a
             # stand-down: the caller also gates submission on len(clean_nodes), which is
             # zero for exactly the same reason the exclude list named everything. One run
@@ -781,8 +809,9 @@ echo "CLEANUP_OK"
             # had nothing to say.
             self.health_check_inconclusive = True
             self.console.print(
-                f"[yellow]⚠ The health check excluded all {len(examined)} node(s) it "
-                f"examined, so it has no usable signal and is being disregarded.[/yellow]"
+                f"[yellow]⚠ Every one of the {len(examined)} node(s) the health check "
+                f"examined was unreachable or unknown, so the check has no usable "
+                f"signal and is being disregarded.[/yellow]"
             )
             self.console.print(
                 "[yellow]  Submitting without a node exclusion and letting SLURM "

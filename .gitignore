@@ -25,6 +25,8 @@ Thumbs.db
 # Distribution / packaging
 .Python
 build/
+!src/madengine/configs/build/
+!src/madengine/configs/build/**
 develop-eggs/
 dist/
 downloads/
@@ -101,6 +103,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Local agent planning artifacts
+docs/superpowers/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -128,9 +133,12 @@ venv/
 .venv/
 
 # model relatives
+# Anchored to the repo root: these are a MAD project's own model files, and the
+# directories madengine populates in the working directory during a run. Left
+# unanchored they also swallow packaged source such as src/madengine/scripts/.
 docker/
-scripts/
-*.json
+/scripts/
+/*.json
 .*_env/
 .vscode/
 

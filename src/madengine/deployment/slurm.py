@@ -14,16 +14,19 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from madengine.core import lifecycle
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
-from madengine.core.timeout import subprocess_timeout
+from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
 from madengine.deployment.layered_config import (
     LayeredConfigError,
     resolve_for_model,
@@ -40,10 +43,13 @@ from .base import (
     create_jinja_env,
 )
 from .common import (
-    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
+    is_cumulative_report,
     is_self_managed_launcher,
-    normalize_launcher,
+    launcher_for_reporting,
+    resolve_launcher_from_sources,
+    resolve_node_count,
+    validate_launcher,
 )
 from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
@@ -71,6 +77,14 @@ class SlurmDeployment(BaseDeployment):
 
     DEPLOYMENT_TYPE = "slurm"
     REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
+    # Set by the spur subclass. When True, multi-node fan-out is achieved with a
+    # job array (one single-node task per node) instead of `srun`, because spur's
+    # srun cannot dispatch tasks to other nodes. See SpurDeployment.
+    IS_SPUR = False
+
+    # Result-file mtimes are stamped by the compute node / shared filesystem while
+    # the submit time comes from the login node, so allow for clock skew.
+    _DECLARED_CSV_MTIME_SLACK_S = 30
 
     def __init__(self, config: DeploymentConfig):
         """
@@ -79,6 +93,28 @@ class SlurmDeployment(BaseDeployment):
         Args:
             config: Deployment configuration
         """
+        # Capture which slurm keys were actually supplied (by --additional-context or
+        # by the model card, which BuildOrchestrator merges into the manifest's
+        # deployment_config) BEFORE ConfigLoader layers its presets on top. Once the
+        # defaults are applied every key looks "set", and nodes=1 from a preset is
+        # indistinguishable from nodes=1 the user asked for.
+        #
+        # A build_manifest.json persists the slurm dict *after* BuildOrchestrator's
+        # own ConfigLoader defaulting, so inferring explicitness from present keys
+        # here would treat a persisted preset default (e.g. nodes=1) as explicit.
+        # Prefer the "_explicit_slurm_keys" provenance BuildOrchestrator recorded at
+        # build time when present; only fall back to inferring from dict keys for a
+        # config that never went through a manifest (e.g. direct --additional-context).
+        explicit_keys_from_manifest = (config.additional_context or {}).get(
+            "_explicit_slurm_keys"
+        )
+        if explicit_keys_from_manifest is not None:
+            self._explicit_slurm_keys = set(explicit_keys_from_manifest)
+        else:
+            self._explicit_slurm_keys = set(
+                (config.additional_context or {}).get("slurm") or {}
+            )
+
         apply_deployment_config(config, ConfigLoader.load_slurm_config)
         super().__init__(config)
 
@@ -89,6 +125,15 @@ class SlurmDeployment(BaseDeployment):
         # SLURM parameters
         self.partition = self.slurm_config.get("partition", "gpu")
         self.nodes = self.slurm_config.get("nodes", 1)
+
+        # Baseline allocation size, before any distributed.nnodes reconciliation.
+        # _resolve_nodes() always recomputes from this so that prepare(), which
+        # deploy() re-runs after node preflight, stays idempotent.
+        self._configured_nodes = self.nodes
+        self._resolve_nodes()
+        # Set by deploy(); lets collection tell this job's results from files a
+        # previous run left in a preserved directory.
+        self._job_submitted_at: Optional[float] = None
         self.gpus_per_node = self.slurm_config.get("gpus_per_node", 8)
         self.time_limit = self.slurm_config.get("time", "24:00:00")
         self.output_dir = Path(self.slurm_config.get("output_dir", "./slurm_results"))
@@ -109,6 +154,17 @@ class SlurmDeployment(BaseDeployment):
         self.existing_job_id = os.environ.get("SLURM_JOB_ID", "")
         self.allocation_nodes = self._get_allocation_node_count()
 
+        # Everything the job script writes -- node workspaces, per-node logs, the
+        # task script, the collection directory -- is keyed on the job id, and so
+        # is collect_results() on this side. That is unique per sbatch, but every
+        # run inside one allocation shares a single SLURM_JOB_ID, so a second run
+        # would land on the first one's paths. Add a per-run discriminator there,
+        # and only there: a run that gets its own sbatch keeps the bare job id
+        # and the rendered script is unchanged. The random part keeps two runs
+        # started within the same second apart.
+        self._run_discriminator = (
+            f"_{time.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
+        )
         if self.inside_allocation:
             self.console.print(
                 f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
@@ -148,6 +204,39 @@ class SlurmDeployment(BaseDeployment):
             pass
         # Best-effort fallback (cannot expand ranges without scontrol).
         return [h for h in re.split(r"[,\s]+", nodelist) if h]
+
+    # Evaluated on use rather than in __init__: prepare() may still change
+    # self.nodes from the model card.
+    @property
+    def runs_in_place(self) -> bool:
+        """True if deploy() runs the templated script inside this allocation.
+
+        Only a multi-node run does; a single-node one submits its own sbatch.
+        """
+        return self.inside_allocation and self.nodes > 1
+
+    # One discriminator, two renderings: job_tag for the paths the script writes,
+    # and run_id for what those expand to once it runs, which is what
+    # collect_results() needs to find this run's artifacts.
+    @property
+    def run_suffix(self) -> str:
+        return self._run_discriminator if self.runs_in_place else ""
+
+    @property
+    def job_tag(self) -> str:
+        return "${SLURM_JOB_ID}" + self.run_suffix
+
+    @property
+    def run_id(self) -> str:
+        return self.existing_job_id + self.run_suffix
+
+    @property
+    def _launch_nodelist_var(self) -> str:
+        """Variable a launcher reads its hosts from inside the srun step.
+
+        An in-place step may cover only part of the allocation.
+        """
+        return "SLURM_STEP_NODELIST" if self.runs_in_place else "SLURM_JOB_NODELIST"
 
     def _get_allocation_node_count(self) -> int:
         """
@@ -381,11 +470,13 @@ class SlurmDeployment(BaseDeployment):
             if model_keys_peek:
                 model_key_peek = model_keys_peek[0]
                 model_info_peek = self.manifest["built_models"][model_key_peek]
-                model_distributed_peek = model_info_peek.get("distributed", {})
-                launcher_peek = model_distributed_peek.get(
-                    "launcher"
-                ) or self.distributed_config.get("launcher", "torchrun")
-                launcher_type_peek = launcher_peek
+                # Re-resolve now that the model card is in hand: a card may size its
+                # topology with distributed.nnodes alone. The return stays outside
+                # this try so a failure while writing the self-managed script is not
+                # swallowed and replayed as the templated path.
+                self._resolve_nodes(model_info_peek)
+                launcher_type_peek = self._resolve_launcher(model_info_peek)
+                launcher_peek = launcher_type_peek
                 self_managed = is_self_managed_launcher(launcher_type_peek)
         except ConfigurationError:
             # Enforcement failures (e.g. --require-pinned-image with no recorded
@@ -456,6 +547,46 @@ class SlurmDeployment(BaseDeployment):
         except Exception as e:
             self.console.print(f"[red]✗ Failed to generate script: {e}[/red]")
             return False
+
+    def _resolve_nodes(self, model_info: Optional[Dict] = None) -> int:
+        """Size the allocation from slurm.nodes reconciled with distributed.nnodes.
+
+        ``nnodes`` is read from the deployment config first (BuildOrchestrator copies
+        the model card's value there at build time) and from the model card second, so
+        a card is honoured even when the manifest was not produced by that merge — for
+        example a hand-written manifest, or `madengine run` against a card whose
+        topology changed after the build.
+
+        Recomputes from ``self._configured_nodes`` rather than from ``self.nodes``, so
+        repeated calls converge instead of ratcheting.
+        """
+        nnodes = self.distributed_config.get("nnodes")
+        if nnodes is None and model_info:
+            nnodes = (model_info.get("distributed") or {}).get("nnodes")
+
+        resolved, note = resolve_node_count(
+            configured_nodes=self._configured_nodes,
+            nnodes=nnodes,
+            nodes_explicitly_set="nodes" in self._explicit_slurm_keys,
+        )
+        if note and note != getattr(self, "_nodes_note_shown", None):
+            self.console.print(f"[yellow]⚠ {note}[/yellow]")
+            self._nodes_note_shown = note
+
+        self.nodes = resolved
+        self.slurm_config["nodes"] = resolved
+        return resolved
+
+    def _resolve_launcher(self, model_info: Dict) -> str:
+        """Resolve the effective launcher for a model, deployment config first.
+
+        Single source of truth for both dispatch sites: the self-managed peek in
+        prepare() and the launcher-command generation in _prepare_template_context().
+        """
+        return resolve_launcher_from_sources(
+            deployment_launcher=self.distributed_config.get("launcher"),
+            model_launcher=(model_info.get("distributed") or {}).get("launcher"),
+        )
 
     def _user_env_vars(self) -> Dict[str, str]:
         """additional_context.env_vars without the keys only a preset set.
@@ -721,23 +852,42 @@ class SlurmDeployment(BaseDeployment):
         script_lines = [
             "#!/bin/bash",
             f"#SBATCH --job-name=madengine-{_safe}",
-            f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%j_%t.out",
-            f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%j_%t.err",
-            f"#SBATCH --partition={self.partition}",
-            f"#SBATCH --nodes={self.nodes}",
-            f"#SBATCH --ntasks={self.nodes}",
-            # Carry the submitting environment to the compute nodes. A site can default
-            # sbatch to --export=NONE -- this file's own PATH comment says so -- and the
-            # registry credentials live in that environment and nowhere else. They are
-            # never written into this script: only variable NAMES appear below, and the
-            # values travel the same way an sbatch wrapper outside madengine sends them.
-            "#SBATCH --export=ALL",
         ]
+        if self.IS_SPUR:
+            # spur: one single-node task per node via a job array (srun cannot fan out).
+            # Log names MUST use %A (array job id, == the id sbatch returns) rather
+            # than %j (each array task's own job id), so collect_results() and
+            # _show_log_summary() can find them by deployment_id. %a is the node rank.
+            script_lines.extend(
+                [
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%A_%a.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%A_%a.err",
+                    f"#SBATCH --partition={self.partition}",
+                    "#SBATCH --nodes=1",
+                    "#SBATCH --ntasks=1",
+                    f"#SBATCH --array=0-{self.nodes - 1}",
+                ]
+            )
+        else:
+            script_lines.extend(
+                [
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%j_%t.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%j_%t.err",
+                    f"#SBATCH --partition={self.partition}",
+                    f"#SBATCH --nodes={self.nodes}",
+                    f"#SBATCH --ntasks={self.nodes}",
+                ]
+            )
+        # Carry the submitting environment. A site can default sbatch to
+        # --export=NONE, and registry credentials live only in that environment.
+        script_lines.append("#SBATCH --export=ALL")
         if not self.skip_gpus_directive:
             script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
-        script_lines += [
-            f"#SBATCH --time={self.time_limit}",
-        ]
+        script_lines.extend(
+            [
+                f"#SBATCH --time={self.time_limit}",
+            ]
+        )
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
         if self.slurm_config.get("exclusive", True):
             script_lines.append("#SBATCH --exclusive")
@@ -746,18 +896,20 @@ class SlurmDeployment(BaseDeployment):
         if self.reservation:
             script_lines.append(f"#SBATCH --reservation={self.reservation}")
 
-        # qos and account, as the standard job template already honours them.
-        # Without them a slurm_multi job ran under the user's defaults, so a site
-        # whose default QOS was at its group node limit left it pending.
-        if self.slurm_config.get("qos"):
-            script_lines.append(f"#SBATCH --qos={self.slurm_config['qos']}")
-        if self.slurm_config.get("account"):
-            script_lines.append(f"#SBATCH --account={self.slurm_config['account']}")
-
         # Add nodelist if specified (from model card or --additional-context)
         nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
         if nodelist:
             script_lines.append(f"#SBATCH --nodelist={nodelist}")
+
+        # Accounting directives, same as job.sh.j2. Sites that bill jobs reject a
+        # submission without them, so a model card declaring qos/account has to be
+        # honoured here too or the self-managed path silently drops it.
+        qos = self.slurm_config.get("qos")
+        if qos:
+            script_lines.append(f"#SBATCH --qos={qos}")
+        account = self.slurm_config.get("account")
+        if account:
+            script_lines.append(f"#SBATCH --account={account}")
 
         script_lines.extend(
             [
@@ -777,57 +929,100 @@ class SlurmDeployment(BaseDeployment):
                 "# it carries the card's own directives, which do not set --exclusive.",
                 "unset SLURM_EXCLUSIVE",
                 "",
-                "# Environment variables",
             ]
         )
 
+        # `module load` before anything else runs, matching job.sh.j2: these bring
+        # the site's docker/rocm/mpi into PATH for the model's own srun calls.
+        modules = self.slurm_config.get("modules", []) or []
+        if modules:
+            script_lines.append("# Load required modules")
+            for module in modules:
+                script_lines.append(f"module load {shlex.quote(str(module))}")
+            script_lines.append("")
+
+        script_lines.append("# Environment variables")
         for key, value in env_vars.items():
             script_lines.append(f"export {key}={shlex.quote(str(value))}")
 
         script_lines.append("")
-        # Rank-ordered node IPs, computed the same way the sglang-disagg launcher
-        # computes them (_generate_sglang_disagg_command). A self-managed script
-        # needs this to address its peers, and madengine was the only thing that
-        # knew the allocation -- so every such workload has had to rediscover it.
-        # scripts/sglang_disagg/ip_rendezvous.py exists precisely for this: it
-        # rebuilds the list with a stdlib TCP rendezvous because "madengine
-        # forwards MASTER_ADDR/NODE_RANK/NNODES into each container but NOT the
-        # rank-ordered node IP list".
-        #
-        # Exported without overwriting: a script that already sets IPADDRS, or a
-        # card that pins it, keeps its own value.
-        script_lines.extend(
-            [
-                "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
-                "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
-                "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
-                "# with loopback FOR ITSELF -- one run published",
-                "#     Node IPs: 127.0.1.1,10.0.0.2",
-                "# and rank 0 was unreachable from its peer. Ask the node itself when that",
-                "# happens: hostname -I on the node cannot return anyone else's loopback.",
-                "# Expanded the scheduler-portable way: spur's SLURM_JOB_NODELIST is already a",
-                "# comma list and it has no `scontrol show hostname[s]`.",
-                'if [[ "$SLURM_JOB_NODELIST" != *"["* ]]; then',
-                "    _MAD_NODES=$(echo \"$SLURM_JOB_NODELIST\" | tr ',' '\\n')",
-                "else",
-                '    _MAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null)',
-                "fi",
-                'MAD_NODE_IPS=$(echo "$_MAD_NODES" | while read -r _n; do',
-                '    [ -n "$_n" ] || continue',
-                "    _ip=$(getent hosts \"$_n\" | awk '{print $1}' | grep -v '^127\\.' | head -1)",
-                '    if [ -z "$_ip" ]; then',
-                '        _ip=$(srun --nodes=1 --ntasks=1 --nodelist="$_n" hostname -I 2>/dev/null \\',
-                "              | awk '{print $1}')",
-                "    fi",
-                '    echo "$_ip"',
-                "done | tr '\\n' ',' | sed 's/,$//')",
-                "export MAD_NODE_IPS",
-                'export IPADDRS="${IPADDRS:-$MAD_NODE_IPS}"',
-                'export SGLANG_NODE_IPS="${SGLANG_NODE_IPS:-$MAD_NODE_IPS}"',
-                'export MAD_NODE_RANK="${MAD_NODE_RANK:-${SLURM_PROCID:-0}}"',
-                "",
-            ]
-        )
+        if self.IS_SPUR:
+            # spur job-array rank + shared-filesystem rendezvous. Each array task
+            # is one node: SLURM_ARRAY_TASK_ID is the node rank. Pin SLURM_JOB_ID to
+            # the shared SLURM_ARRAY_JOB_ID so the launcher's rendezvous port and
+            # /run_logs/<id> dir match across nodes. rank 0 publishes its transport
+            # IP; peers read it as MASTER_ADDR (see also job.sh.j2 spur branch).
+            # Imported lazily: spur.SpurDeployment subclasses this module.
+            from .spur import DEFAULT_RENDEZVOUS_TIMEOUT, render_rendezvous_block
+
+            rendezvous_dir = getattr(
+                self,
+                "rendezvous_dir",
+                str(self.output_dir.resolve() / "spur_rendezvous"),
+            )
+            rendezvous_timeout = getattr(
+                self, "rendezvous_timeout", DEFAULT_RENDEZVOUS_TIMEOUT
+            )
+            script_lines.extend(
+                [
+                    "# --- spur job-array rank + rendezvous ---",
+                    'export NODE_RANK="${SLURM_ARRAY_TASK_ID:-0}"',
+                    'export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"',
+                    f"export NNODES={self.nodes}",
+                    f"export SLURM_NNODES={self.nodes}",
+                    f"export WORLD_SIZE={self.nodes}",
+                    'export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"',
+                    f'export SLURM_SUBMIT_DIR="${{SLURM_SUBMIT_DIR:-{manifest_dir}}}"',
+                ]
+            )
+            script_lines.extend(
+                render_rendezvous_block(rendezvous_dir, rendezvous_timeout)
+            )
+            script_lines.append("")
+        else:
+            # Rank-ordered node IPs, computed the same way the sglang-disagg launcher
+            # computes them (_generate_sglang_disagg_command). A self-managed script
+            # needs this to address its peers, and madengine was the only thing that
+            # knew the allocation -- so every such workload has had to rediscover it.
+            # scripts/sglang_disagg/ip_rendezvous.py exists precisely for this: it
+            # rebuilds the list with a stdlib TCP rendezvous because "madengine
+            # forwards MASTER_ADDR/NODE_RANK/NNODES into each container but NOT the
+            # rank-ordered node IP list".
+            #
+            # Exported without overwriting: a script that already sets IPADDRS, or a
+            # card that pins it, keeps its own value.
+            script_lines.extend(
+                [
+                    "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
+                    "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
+                    "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
+                    "# with loopback FOR ITSELF -- one run published",
+                    "#     Node IPs: 127.0.1.1,10.0.0.2",
+                    "# and rank 0 was unreachable from its peer. Ask the node itself when that",
+                    "# happens: hostname -I on the node cannot return anyone else's loopback.",
+                    "# Expanded the scheduler-portable way: spur's SLURM_JOB_NODELIST is already a",
+                    "# comma list and it has no `scontrol show hostname[s]`.",
+                    'if [[ "$SLURM_JOB_NODELIST" != *"["* ]]; then',
+                    "    _MAD_NODES=$(echo \"$SLURM_JOB_NODELIST\" | tr ',' '\\n')",
+                    "else",
+                    '    _MAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null)',
+                    "fi",
+                    'MAD_NODE_IPS=$(echo "$_MAD_NODES" | while read -r _n; do',
+                    '    [ -n "$_n" ] || continue',
+                    "    _ip=$(getent hosts \"$_n\" | awk '{print $1}' | grep -v '^127\\.' | head -1)",
+                    '    if [ -z "$_ip" ]; then',
+                    '        _ip=$(srun --nodes=1 --ntasks=1 --nodelist="$_n" hostname -I 2>/dev/null \\',
+                    "              | awk '{print $1}')",
+                    "    fi",
+                    '    echo "$_ip"',
+                    "done | tr '\\n' ',' | sed 's/,$//')",
+                    "export MAD_NODE_IPS",
+                    'export IPADDRS="${IPADDRS:-$MAD_NODE_IPS}"',
+                    'export SGLANG_NODE_IPS="${SGLANG_NODE_IPS:-$MAD_NODE_IPS}"',
+                    'export MAD_NODE_RANK="${MAD_NODE_RANK:-${SLURM_PROCID:-0}}"',
+                    "",
+                ]
+            )
         script_lines.extend(
             [
                 "echo '=========================================='",
@@ -871,7 +1066,34 @@ class SlurmDeployment(BaseDeployment):
             and ("/" in docker_image or "." in docker_image)
         )
 
-        if is_registry_image:
+        if is_registry_image and self.IS_SPUR:
+            # spur: each array task is its own node, so pull locally (no srun fan-out).
+            script_lines.extend(
+                [
+                    "",
+                    "# Pull Docker image on this node (one array task per node).",
+                    # Same credential names as the stock srun fetch. Values arrive via
+                    # --export=ALL; only the names are written into the script.
+                    '_u="${MAD_DOCKERHUB_USER:-${MAD_DOCKER_USER:-}}"',
+                    '_p="${MAD_DOCKERHUB_PASSWORD:-${MAD_DOCKER_TOKEN:-}}"',
+                    'if [ -n "$_u" ] && [ -n "$_p" ]; then',
+                    '    printf %s "$_p" | docker login -u "$_u" --password-stdin >/dev/null 2>&1 \\',
+                    '        || echo "docker login FAILED on $(hostname); a private image will not pull" >&2',
+                    "fi",
+                    f"MAD_PULL_IMAGE={shlex.quote(docker_image)}",
+                    "echo '=========================================='",
+                    'echo "[$(hostname)] Pulling $MAD_PULL_IMAGE..."',
+                    "echo '=========================================='",
+                    'docker pull "$MAD_PULL_IMAGE"',
+                    "PULL_EXIT=$?",
+                    "if [ $PULL_EXIT -ne 0 ]; then",
+                    '    echo "[$(hostname)] Docker pull failed for $MAD_PULL_IMAGE"',
+                    "    exit $PULL_EXIT",
+                    "fi",
+                    "echo ''",
+                ]
+            )
+        elif is_registry_image:
             # Authenticate before pulling. A private repository -- rocm/mad-private, say --
             # returns "not found" to an anonymous pull, so without this the parallel pull
             # below fails on every node for an image that is plainly there.
@@ -944,9 +1166,12 @@ class SlurmDeployment(BaseDeployment):
         # tag don't collide on each other's marker files. monitor() reconstructs
         # the same path using the deployment_id returned by sbatch.
         completion_marker_dir = self.output_dir.resolve()
+        # On spur every array task pins SLURM_JOB_ID to the shared SLURM_ARRAY_JOB_ID,
+        # so the job id alone is not unique per node - add the array rank.
+        marker_rank_suffix = "_rank${SLURM_ARRAY_TASK_ID:-0}" if self.IS_SPUR else ""
         completion_marker_template = (
             completion_marker_dir
-            / f"madengine_{self._safe_name(model_info)}_${{SLURM_JOB_ID:-local}}.complete"
+            / f"madengine_{self._safe_name(model_info)}_${{SLURM_JOB_ID:-local}}{marker_rank_suffix}.complete"
         )
 
         # Disable `set -e` around the model script bash invocation below so a
@@ -959,6 +1184,31 @@ class SlurmDeployment(BaseDeployment):
                 "",
                 "# Change to script directory",
                 f"cd {model_script_path.parent}",
+            ]
+        )
+
+        # Drop a results file an earlier run left behind. This wrapper bypasses
+        # ContainerRunner, so the cleanup in run_container/_run_self_managed
+        # never reaches it: the model script appends when the file is already
+        # there, and collect_results falls back to these copies when no
+        # per-node CSV was collected. Best-effort -- `set -e` is still on here
+        # and a file the caller cannot unlink must not abort the job.
+        multiple_results = (model_info.get("multiple_results") or "").strip()
+        if multiple_results and not is_cumulative_report(multiple_results):
+            stale_paths = [shlex.quote(multiple_results)]
+            manifest_copy = str(manifest_dir / multiple_results)
+            if manifest_copy != multiple_results:
+                stale_paths.append(shlex.quote(manifest_copy))
+            script_lines.extend(
+                [
+                    "",
+                    "# Drop a results file an earlier run left behind",
+                    f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
+                ]
+            )
+
+        script_lines.extend(
+            [
                 "",
                 "# Run the model script directly on the host (with -e disabled so we",
                 "# can capture the exit code and write the completion marker even on failure).",
@@ -975,6 +1225,18 @@ class SlurmDeployment(BaseDeployment):
                 f'echo "exit_code=$SCRIPT_EXIT_CODE" > {completion_marker_template}',
                 f'echo "timestamp=$(date -Iseconds)" >> {completion_marker_template}',
                 f'echo "Completion marker written: {completion_marker_template}"',
+            ]
+        )
+        if self.IS_SPUR:
+            # Per-rank marker consumed by SpurDeployment.monitor() (spur `sacct -j`
+            # is unreliable, so completion is detected from these files).
+            script_lines.extend(
+                [
+                    'echo "$SCRIPT_EXIT_CODE" > "$_MAD_REND_DIR/done_rank${NODE_RANK}"',
+                ]
+            )
+        script_lines.extend(
+            [
                 "",
                 "exit $SCRIPT_EXIT_CODE",
             ]
@@ -1016,30 +1278,30 @@ class SlurmDeployment(BaseDeployment):
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
 
-        # Extract launcher configuration
-        launcher_type = self.distributed_config.get(
-            "launcher", "torchrun"
-        )  # Default to torchrun
-
-        # Canonicalize aliases before validity check so e.g. sglang_disagg → sglang-disagg
-        # passes through normalize_launcher instead of being mapped to "docker".
-        launcher_type = (
-            canonicalize_distributed_launcher(launcher_type) or launcher_type
+        # Same resolver as the self-managed peek in prepare(), so the path taken
+        # and the env block cannot disagree. Validation replaces the old silent
+        # rewrite to "docker": an unknown name fails here instead of running as
+        # a single process and still reporting success.
+        launcher_type = validate_launcher(
+            self._resolve_launcher(model_info),
+            source="distributed.launcher",
         )
-        # Normalize launcher based on deployment type and validity
-        launcher_type = normalize_launcher(launcher_type, "slurm")
-        # Persist the resolved launcher so downstream readers (reporting paths,
-        # later normalize_launcher calls) see the same value the template used,
-        # rather than re-deriving from the raw alias and mapping it to "docker".
+        if launcher_type is None:
+            launcher_type = "torchrun"
         self.distributed_config["launcher"] = launcher_type
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
         nproc_per_node = self.distributed_config.get(
             "nproc_per_node", resolved_gpus_per_node
         )
-        master_port = self.distributed_config.get("port", 29500)
-
-        # Apply multi-node profiling logic if tools are configured
+        # ``port`` is the SLURM key. ``master_port`` is what Kubernetes and the
+        # Hydra launcher groups write. Honor an explicit port, otherwise the
+        # master_port alias, otherwise 29500.
+        if self.distributed_config.get("port") is not None:
+            master_port = self.distributed_config["port"]
+        else:
+            master_port = self.distributed_config.get("master_port", 29500)
+            # Apply multi-node profiling logic if tools are configured
         tools = additional_context.get("tools", [])
         if nnodes > 1 and tools:
             # Configure multi-node profiling (handles rocprofv3 detection and tool upgrades)
@@ -1080,20 +1342,14 @@ class SlurmDeployment(BaseDeployment):
         )
 
         return {
-            # job.sh.j2 interpolates this straight into #SBATCH --output and --error,
-            # so it has to be ONE path segment. Discovery namespaces a card found in a
-            # nested models.json -- "sglang/pyt_sglang_kimi-k3" -- and the raw name sent
-            # --output at slurm_results/madengine-sglang/pyt_..._%j_%t.out, a directory
-            # nobody creates. sbatch cannot write there, so the job ends in seconds with
-            # no output at all: a run reported COMPLETED in 33s, madengine marked the
-            # model Failed, and the console carried nothing to explain either.
-            #
-            # The same fix was applied to the self-managed path's directives; this is the
-            # templated path, which spells it {{ model_name }} in the template and so was
-            # not caught by the same sweep.
+            # job.sh.j2 interpolates model_name into #SBATCH --output and --error,
+            # so it has to be one path segment. Discovery namespaces a nested card
+            # ("sglang/pyt_sglang_kimi-k3") and the raw name would point --output at
+            # a directory nobody creates.
             "model_name": self._safe_name(model_info),
-            # The unsanitised name where it is a LABEL rather than a path.
             "model_display_name": model_info["name"],
+            "job_tag": self.job_tag,
+            "in_place": self.runs_in_place,
             "manifest_file": os.path.abspath(self.config.manifest_file),
             "partition": self.partition,
             "nodes": self.nodes,
@@ -1134,6 +1390,9 @@ class SlurmDeployment(BaseDeployment):
             "nproc_per_node": nproc_per_node,
             # Profiling tools (processed for multi-node compatibility)
             "tools": tools,
+            # Scheduler flavor: "slurm" (default) or "spur" (job-array fan-out).
+            # SpurDeployment overrides this and adds "rendezvous_dir".
+            "scheduler": "slurm",
         }
 
     def _generate_launcher_command(
@@ -1170,7 +1429,7 @@ class SlurmDeployment(BaseDeployment):
             )
         elif launcher_type == "deepspeed":
             return self._generate_deepspeed_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             return self._generate_megatron_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "torchtitan":
             return self._generate_torchtitan_command(
@@ -1272,6 +1531,75 @@ export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE=1
 # SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
 
+    def _sglang_node_ips_script(self, nnodes: int) -> str:
+        """Bash that sets SLURM_NODE_IPS to the job's node IPs in rank order.
+
+        Resolved from the launch nodelist; schedulers whose tasks do not see the
+        whole allocation override this.
+        """
+        return f"""# Build node IP list from SLURM. Each node must resolve to a real (non-loopback)
+# address: on Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+# `getent hosts "$node"` returns the loopback for whichever node runs this loop.
+# Every node then publishes its own entry as 127.0.1.1, which poisons downstream
+# rendezvous/barrier peer lists — an all-nodes barrier can never be satisfied.
+# Skip 127.* and fall back to the primary non-loopback interface for the local node.
+# Address this node advertises when its own hostname only maps to loopback.
+# Prefer the configured cluster interface, else the source address the kernel
+# would use for outbound traffic. Deliberately not `hostname -I`: it lists every
+# interface in unspecified order and is not IPv4-only, so it can hand back a
+# docker bridge or management address that peers cannot reach.
+_MAD_LOCAL_IP=""
+if [ -n "${{NCCL_SOCKET_IFNAME:-}}" ]; then
+    _MAD_LOCAL_IP=$(ip -4 -o addr show dev "${{NCCL_SOCKET_IFNAME%%,*}}" 2>/dev/null \\
+        | awk '{{print $4}}' | cut -d/ -f1 | grep -vE '^127\\.' | head -n1)
+fi
+if [ -z "$_MAD_LOCAL_IP" ]; then
+    _MAD_LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null \\
+        | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
+fi
+
+_MAD_NODELIST="${{{self._launch_nodelist_var}}}"
+if command -v mad_expand_nodelist >/dev/null 2>&1; then
+    _MAD_NODES=$(mad_expand_nodelist "$_MAD_NODELIST")
+elif command -v scontrol >/dev/null 2>&1; then
+    _MAD_NODES=$(scontrol show hostnames "$_MAD_NODELIST" 2>/dev/null || true)
+else
+    _MAD_NODES=$(echo "$_MAD_NODELIST" | tr ',' '\\n')
+fi
+SLURM_NODE_IPS=$(echo "$_MAD_NODES" | while read node; do
+    [ -z "$node" ] && continue
+    node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
+    # Only the local node may fall back to its own address; doing this for a peer
+    # would publish this node's IP in that peer's slot. The list holds NodeName
+    # values, which may differ from the machine's hostname when the config sets
+    # NodeHostname, so ask SLURM first and keep the hostnames for when it is unset.
+    if [ -z "$node_ip" ] && {{ [ "$node" = "${{SLURMD_NODENAME:-}}" ] \\
+        || [ "$node" = "$(hostname -s)" ] || [ "$node" = "$(hostname)" ]; }}; then
+        node_ip="$_MAD_LOCAL_IP"
+    fi
+    if [ -z "$node_ip" ]; then
+        echo "UNRESOLVED:$node"
+    else
+        echo "$node_ip"
+    fi
+done | tr '\\n' ',' | sed 's/,$//')
+
+# A peer we cannot resolve must fail the job, not silently corrupt the peer list.
+# Empty first: the list is built through a pipeline, so a failing `scontrol`
+# yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
+# the barrier exactly like the loopback one did.
+if [ -z "$SLURM_NODE_IPS" ]; then
+    echo "ERROR: empty node list from '${{{self._launch_nodelist_var}}}'" >&2
+    exit 1
+fi
+case "$SLURM_NODE_IPS" in
+    *UNRESOLVED:*)
+        echo "ERROR: no non-loopback address for node(s): $(echo "$SLURM_NODE_IPS" | tr ',' '\\n' | grep '^UNRESOLVED:' | cut -d: -f2 | tr '\\n' ' ')" >&2
+        exit 1
+        ;;
+esac
+"""
+
     def _generate_sglang_disagg_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
     ) -> str:
@@ -1366,22 +1694,7 @@ export SGLANG_TP_SIZE={nproc_per_node}
 # Master coordination
 export MASTER_PORT={master_port}
 
-# Build node IP list from SLURM (scheduler-portable).
-# Stock SLURM: SLURM_JOB_NODELIST is compressed -> expand with `scontrol show
-#   hostnames`. Spur: it is already a comma-separated expanded list and
-#   `scontrol show hostname[s]` is unsupported. Prefer the mad_expand_nodelist
-#   helper defined in the job script header when available.
-if command -v mad_expand_nodelist >/dev/null 2>&1; then
-    _MAD_NODES=$(mad_expand_nodelist "${{SLURM_JOB_NODELIST}}")
-elif [[ "${{SLURM_JOB_NODELIST}}" != *"["* ]]; then
-    _MAD_NODES=$(echo "${{SLURM_JOB_NODELIST}}" | tr ',' '\\n')
-else
-    _MAD_NODES=$(scontrol show hostnames "${{SLURM_JOB_NODELIST}}" 2>/dev/null || echo "${{SLURM_JOB_NODELIST}}" | tr ',' '\\n')
-fi
-SLURM_NODE_IPS=$(echo "$_MAD_NODES" | while read node; do
-    getent hosts "$node" | awk '{{print $1}}'
-done | tr '\\n' ',' | sed 's/,$//')
-
+{self._sglang_node_ips_script(nnodes)}
 export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
 # Node rank: stock SLURM sets SLURM_PROCID per srun task. Spur leaves it empty
 # and instead provides NODE_RANK / PMI_RANK / SLURM_NODEID. Fall back in order.
@@ -1423,16 +1736,16 @@ export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
             return f'''# DeepSpeed multi-node setup
 # Generate hostfile dynamically from SLURM (scheduler-portable nodelist expansion).
 if command -v mad_expand_nodelist >/dev/null 2>&1; then
-    _MAD_DS_NODES=$(mad_expand_nodelist "$SLURM_JOB_NODELIST")
-elif [[ "$SLURM_JOB_NODELIST" != *"["* ]]; then
-    _MAD_DS_NODES=$(echo "$SLURM_JOB_NODELIST" | tr ',' '\\n')
+    _MAD_DS_NODES=$(mad_expand_nodelist "${{{self._launch_nodelist_var}}}")
+elif command -v scontrol >/dev/null 2>&1; then
+    _MAD_DS_NODES=$(scontrol show hostnames "${{{self._launch_nodelist_var}}}" 2>/dev/null || true)
 else
-    _MAD_DS_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null || echo "$SLURM_JOB_NODELIST" | tr ',' '\\n')
+    _MAD_DS_NODES=$(echo "${{{self._launch_nodelist_var}}}" | tr ',' '\\n')
 fi
-cat > /tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt << EOF
+cat > /tmp/deepspeed_hostfile_{self.job_tag}.txt << EOF
 $(echo "$_MAD_DS_NODES" | awk -v slots={nproc_per_node} 'NF{{print $1" slots="slots}}')
 EOF
-export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${{SLURM_JOB_ID}}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
+export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_{self.job_tag}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
     def _generate_megatron_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
@@ -1583,10 +1896,21 @@ export MASTER_PORT={master_port}
                 message="Script not generated. Run prepare() first.",
             )
 
-        # slurm_multi inside an existing salloc allocation: run the generated script
-        # directly with bash instead of nesting another sbatch. Non-slurm_multi launchers
-        # always fall through to the standard sbatch flow (preserves develop behavior).
-        if self.inside_allocation and getattr(self, "_is_slurm_multi", False):
+        self._job_submitted_at = time.time()
+
+        # Inside an existing salloc allocation, run the generated script directly
+        # with bash instead of nesting another sbatch, which would queue for new
+        # nodes and defeat the point of holding the allocation.
+        #
+        # Multi-node only, besides slurm_multi: the templated multi-node script
+        # dispatches the workload with srun, so it lands on the allocated nodes,
+        # while the single-node branch invokes madengine inline. Under sbatch that
+        # is the compute node; under bash in an allocation it is wherever the
+        # caller's shell is, typically a login node. Submitting a fresh sbatch is
+        # the right answer there.
+        if self.runs_in_place or (
+            self.inside_allocation and getattr(self, "_is_slurm_multi", False)
+        ):
             return self._run_inside_existing_allocation()
 
         # ==================== PREFLIGHT NODE SELECTION ====================
@@ -1594,13 +1918,24 @@ export MASTER_PORT={master_port}
         # Single-node: we still run the check so bad nodes (e.g. Docker broken) get excluded;
         # we never gate submission for nodes==1 so behavior stays backward compatible.
         # Health-check srun invocations create SLURM jobs; we cancel them after preflight.
-        enable_preflight = self.slurm_config.get("enable_node_check", True)
+        # Not applicable to spur: the check runs `srun -w <node>`, which spur
+        # executes on the head node instead of the requested one, and it pins the
+        # job to a multi-node `#SBATCH --nodelist`. Under the spur job array every
+        # task requests `--nodes=1`, so a multi-node nodelist would make each task
+        # demand every node (and, with --exclusive, deadlock the rendezvous).
+        enable_preflight = (
+            self.slurm_config.get("enable_node_check", True) and not self.IS_SPUR
+        )
         auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
         allow_submit_without_clean = self.slurm_config.get(
             "allow_submit_without_clean_nodes", False
         )
         clean_nodes: List[str] = []
         health_check_job_name: Optional[str] = None
+        if self.IS_SPUR and self.slurm_config.get("enable_node_check"):
+            self.console.print(
+                "[dim]Node health preflight is not supported on spur; skipping.[/dim]"
+            )
 
         if (
             enable_preflight
@@ -1653,7 +1988,12 @@ export MASTER_PORT={master_port}
                 # because the cluster is full. Treat that exactly like enable_node_check
                 # being off: no exclusion, no gate, no nodelist pin, and let SLURM
                 # schedule.
-                inconclusive = getattr(selector, "health_check_inconclusive", False)
+                # `is True`, not a truthiness check: a test double that fabricates
+                # attributes must not stand the gate down. Only an explicit True
+                # from SlurmNodeSelector means the probe learned nothing.
+                inconclusive = (
+                    getattr(selector, "health_check_inconclusive", False) is True
+                )
 
                 # Gate: do not submit if not enough clean nodes (multi-node only; single-node always allowed)
                 if (
@@ -1766,12 +2106,20 @@ export MASTER_PORT={master_port}
         The script will use the nodes already allocated to the current job.
         SLURM environment variables (SLURM_NODELIST, etc.) are inherited.
         """
+        # slurm_multi runs the model's own script, which builds its paths from the
+        # raw SLURM_JOB_ID, so only the templated flow carries the per-run tag.
+        run_id = (
+            self.existing_job_id
+            if getattr(self, "_is_slurm_multi", False)
+            else self.run_id
+        )
+
         # Validate node count before running
         is_valid, error_msg = self._validate_allocation_nodes()
         if not is_valid:
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=error_msg,
             )
 
@@ -1779,6 +2127,8 @@ export MASTER_PORT={master_port}
             f"\n[bold cyan]Running inside existing SLURM allocation[/bold cyan]"
         )
         self.console.print(f"  Job ID: {self.existing_job_id}")
+        if run_id != self.existing_job_id:
+            self.console.print(f"  Run ID: {run_id}")
         self.console.print(
             f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes"
         )
@@ -1788,51 +2138,111 @@ export MASTER_PORT={master_port}
 
         try:
             # Run script directly with bash (synchronous, blocks until done)
-            # Don't capture output - let it stream directly to console
-            result = subprocess.run(
-                ["bash", str(self.script_path)],
-                timeout=subprocess_timeout(self.config.timeout),
+            # Don't capture output - let it stream directly to console.
+            # Own process group, so a timeout or Ctrl-C can stop the srun step
+            # under bash too: killing bash alone leaves the step's tasks
+            # running in the caller's allocation, and cleanup() must not
+            # cancel the allocation itself.
+            timeout = self._in_place_timeout()
+            proc = subprocess.Popen(
+                ["bash", str(self.script_path)], start_new_session=True
             )
+            # os._exit on SIGINT never raises into the wait() handler below.
+            cancel_hook = lifecycle.register_cancel_hook(
+                lambda: self._signal_process_group(proc)
+            )
+            try:
+                try:
+                    proc.wait(timeout=subprocess_timeout(timeout))
+                except BaseException:
+                    self._stop_process_group(proc)
+                    raise
+                result = subprocess.CompletedProcess(proc.args, proc.returncode)
 
-            if result.returncode == 0:
-                self.console.print(
-                    f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
-                )
-                return DeploymentResult(
-                    status=DeploymentStatus.SUCCESS,
-                    deployment_id=self.existing_job_id,
-                    message=f"Completed inside existing allocation {self.existing_job_id}",
-                    logs_path=str(self.output_dir),
-                    skip_monitoring=True,  # Already ran synchronously, no need to poll
-                )
-            else:
+                if result.returncode == 0:
+                    self.console.print(
+                        f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
+                    )
+                    return DeploymentResult(
+                        status=DeploymentStatus.SUCCESS,
+                        deployment_id=run_id,
+                        message=f"Completed inside existing allocation {self.existing_job_id}",
+                        logs_path=str(self.output_dir),
+                        skip_monitoring=True,  # Already ran synchronously, no need to poll
+                    )
                 self.console.print(
                     f"\n[red]✗ Script failed with exit code {result.returncode}[/red]"
                 )
                 return DeploymentResult(
                     status=DeploymentStatus.FAILED,
-                    deployment_id=self.existing_job_id,
+                    deployment_id=run_id,
                     message=f"Script failed with exit code {result.returncode}",
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
                 )
+            finally:
+                lifecycle.unregister_cancel_hook(cancel_hook)
 
         except subprocess.TimeoutExpired:
-            self.console.print(
-                f"\n[red]✗ Script timed out after {self.config.timeout}s[/red]"
-            )
+            self.console.print(f"\n[red]✗ Script timed out after {timeout}s[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
-                message=f"Script timed out after {self.config.timeout}s",
+                deployment_id=run_id,
+                message=f"Script timed out after {timeout}s",
             )
         except Exception as e:
             self.console.print(f"\n[red]✗ Execution error: {e}[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
-                deployment_id=self.existing_job_id,
+                deployment_id=run_id,
                 message=f"Execution error: {str(e)}",
             )
+
+    def _in_place_timeout(self) -> int:
+        """Timeout for the in-place wait, resolved as the job's madengine does.
+
+        config.timeout was resolved without the model card, so it would cut a
+        run the card allows longer -- or unbounded -- off at the default, which
+        the same script under sbatch is not.
+        """
+        models = (self.manifest or {}).get("built_models") or {}
+        model_info = next(iter(models.values()), {})
+        return resolve_run_timeout(model_info, self.config.cli_timeout)
+
+    @staticmethod
+    def _signal_process_group(proc: subprocess.Popen) -> None:
+        """Stop an in-place step immediately.
+
+        The signal handler cannot wait out ``_stop_process_group``'s grace
+        period. SIGTERM lets srun relay the cancel; SIGKILL follows at once
+        for tasks that ignore it.
+        """
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, OSError):
+                return
+
+    @staticmethod
+    def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:
+        """Stop *proc* and everything in its process group.
+
+        srun relays SIGTERM to the step's tasks; SIGKILL follows for whatever
+        outlives *grace* seconds.
+        """
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 5.0)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline:
+                proc.poll()  # reap bash, or its zombie keeps the group alive
+                try:
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    return
+                time.sleep(0.2)
 
     def monitor(self, deployment_id: str) -> DeploymentResult:
         """Check SLURM job status (locally)."""
@@ -2135,7 +2545,7 @@ export MASTER_PORT={master_port}
         from madengine.utils.config_parser import ConfigParser
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
 
         run_details = {
             "model": model_info.get("name", aggregated_record.get("model", "")),
@@ -2200,7 +2610,7 @@ export MASTER_PORT={master_port}
         from madengine.reporting.update_perf_csv import flatten_tags
 
         launcher_type = self.distributed_config.get("launcher", "torchrun")
-        launcher = normalize_launcher(launcher_type, "slurm")
+        launcher = launcher_for_reporting(launcher_type, "slurm")
         total_gpus = self.nodes * self.gpus_per_node
         result = {
             "n_gpus": str(total_gpus),
@@ -2334,10 +2744,9 @@ export MASTER_PORT={master_port}
         # so collect via _collect_slurm_multi_results instead of the template-based path.
         if model_key:
             _mi = built_models_dict.get(model_key, {}) or {}
-            _launcher_type = (_mi.get("distributed") or {}).get("launcher", "")
-            if is_self_managed_launcher(_launcher_type):
+            if is_self_managed_launcher(self._resolve_launcher(_mi)):
                 return self._collect_slurm_multi_results(
-                    deployment_id, results, session_start_row
+                    deployment_id, results, session_start_row, model_info=_mi
                 )
 
         build_info = {}
@@ -2679,11 +3088,79 @@ export MASTER_PORT={master_port}
         )
         return results
 
+    def _slurm_multi_declared_result_csv(
+        self, model_info: Optional[Dict[str, Any]], deployment_id: str
+    ) -> Optional[Path]:
+        """Resolve a slurm_multi model's declared ``multiple_results`` CSV.
+
+        On the templated path ``multiple_results`` names a narrow per-run CSV that is
+        merged with common_info by update_perf_csv. A self-managed script has no
+        common_info to merge against, so it writes the full perf schema itself and the
+        file is read directly — but the model card should still be able to *name* it
+        rather than every workload having to land on one of the hardcoded paths below.
+
+        Note the difference is deliberate: routing an already-full-schema CSV through
+        handle_multiple_results() would recompute ``status`` from ``performance`` and
+        turn a legitimate zero-score FAILURE row into a SUCCESS.
+        """
+        declared = (model_info or {}).get("multiple_results")
+        if not declared:
+            return None
+
+        search_dirs: List[Path] = []
+        # Where the launcher runs: the wrapper cd's to the model script's directory,
+        # so a script writing to $(pwd) lands here.
+        scripts_rel = (model_info or {}).get("scripts", "")
+        if scripts_rel and self.config.manifest_file:
+            script_path = (
+                Path(self.config.manifest_file).parent.absolute() / scripts_rel
+            )
+            search_dirs.append(script_path.parent)
+        search_dirs.extend(
+            [
+                self.output_dir / deployment_id,
+                self.output_dir,
+                Path.cwd(),
+            ]
+        )
+
+        for directory in search_dirs:
+            candidate = directory / declared
+            try:
+                if candidate.is_file() and candidate.stat().st_size > 0:
+                    # Script directories (and cwd, for a declared "perf.csv") are
+                    # preserved between runs, so a CSV from an earlier job would
+                    # otherwise be reported as this job's result when it fails
+                    # before writing. Not deleted up front: the declared file may
+                    # be the cumulative cwd perf.csv.
+                    if (
+                        self._job_submitted_at is not None
+                        and candidate.stat().st_mtime
+                        < self._job_submitted_at - self._DECLARED_CSV_MTIME_SLACK_S
+                    ):
+                        self.console.print(
+                            f"[yellow]  Ignoring stale declared multiple_results CSV "
+                            f"(older than this job): {candidate}[/yellow]"
+                        )
+                        continue
+                    self.console.print(
+                        f"[dim]  Using declared multiple_results CSV: {candidate}[/dim]"
+                    )
+                    return candidate
+            except OSError:
+                continue
+        self.console.print(
+            f"[dim]  Declared multiple_results '{declared}' not found in "
+            f"{', '.join(str(d) for d in search_dirs)}; falling back to conventional paths.[/dim]"
+        )
+        return None
+
     def _collect_slurm_multi_results(
         self,
         deployment_id: str,
         results: Dict[str, Any],
         session_start_row: Optional[int],
+        model_info: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Collect results for slurm_multi launchers.
@@ -2698,49 +3175,19 @@ export MASTER_PORT={master_port}
         )
         results["logs"] = [str(f) for f in flat_out_files]
 
+        # A model card that names its own results CSV wins over the conventional
+        # locations below, so a workload is not forced to write to a path madengine
+        # happens to know about.
+        perf_csv_path = self._slurm_multi_declared_result_csv(model_info, deployment_id)
+
         # Look for model-generated perf.csv. Inner scripts in MAD-private write
         # to one of these locations depending on the workload:
         #   * SGLang / vLLM disagg: /shared_inference/<user>/<jobid>/perf.csv
         #   * Large EP / KV cache:  <workspace>/slurm_output/perf_csv/*<jobid>*.csv
         # Plus the legacy <cwd>/perf.csv path some flows still use.
-        # Priority: results_dir config > shared_inference NFS > slurm_output/perf_csv
-        # > <cwd>/perf.csv (with NFS-propagation retry).
-        perf_csv_path = None
-
-        # What the CARD declares, before any guessing. The templated path reads
-        # multiple_results and picks the best candidate with
-        # _select_best_multiple_results_csv; this path did neither, so a
-        # self-managed card that says where its results are was not believed and
-        # the hardcoded list below was searched instead. That list names
-        # /shared_inference, which is one site's NFS mount -- on any other cluster
-        # the declaration was the only thing that could have worked.
-        #
-        # Scoring matters as much as finding: _select_best_multiple_results_csv
-        # ranks candidates by non-empty performance rows, so a header-only CSV
-        # left by a failed run loses to a real one instead of being published as
-        # a green result with no numbers.
-        _mr = None
-        for _m in (self.manifest.get("built_models") or {}).values():
-            if _m.get("multiple_results"):
-                _mr = _m["multiple_results"]
-                break
-        if _mr:
-            _declared = [
-                c
-                for c in (
-                    list(Path.cwd().rglob(_mr)) + list(self.output_dir.rglob(_mr))
-                )
-                if c.is_file()
-            ]
-            if _declared:
-                perf_csv_path = self._select_best_multiple_results_csv(_declared)
-                if perf_csv_path:
-                    self.console.print(
-                        f"[green]✓ Using the card's declared multiple_results "
-                        f"'{_mr}': {perf_csv_path}[/green]"
-                    )
-
-        if perf_csv_path is None and self.slurm_config.get("results_dir"):
+        # Priority: declared multiple_results > results_dir config > shared_inference
+        # NFS > slurm_output/perf_csv > <cwd>/perf.csv (with NFS-propagation retry).
+        if not perf_csv_path and self.slurm_config.get("results_dir"):
             results_dir = Path(self.slurm_config["results_dir"])
             candidates = list(results_dir.glob("perf*.csv"))
             if candidates:
@@ -2799,18 +3246,29 @@ export MASTER_PORT={master_port}
 
             cwd_perf = Path("perf.csv")
             try:
-                if cwd_perf.exists():
-                    with open(perf_csv_path, "r") as src, open(cwd_perf, "a") as dst:
-                        next(
-                            src, None
-                        )  # skip per-job header so cwd CSV stays single-headed
-                        for line in src:
-                            dst.write(line)
+                # The source can legitimately resolve to the cwd perf.csv itself —
+                # via the <cwd>/perf.csv fallback below, or a model card declaring
+                # multiple_results: "perf.csv". Appending a file to itself would
+                # duplicate every row, so there is nothing to aggregate.
+                if cwd_perf.exists() and perf_csv_path.resolve() == cwd_perf.resolve():
+                    self.console.print(
+                        "[dim]Per-job perf is already the cwd perf.csv; nothing to aggregate[/dim]"
+                    )
                 else:
-                    shutil.copy(str(perf_csv_path), str(cwd_perf))
-                self.console.print(
-                    f"[green]✓ Aggregated per-job perf into {cwd_perf}[/green]"
-                )
+                    if cwd_perf.exists():
+                        with open(perf_csv_path, "r") as src, open(
+                            cwd_perf, "a"
+                        ) as dst:
+                            next(
+                                src, None
+                            )  # skip per-job header so cwd CSV stays single-headed
+                            for line in src:
+                                dst.write(line)
+                    else:
+                        shutil.copy(str(perf_csv_path), str(cwd_perf))
+                    self.console.print(
+                        f"[green]✓ Aggregated per-job perf into {cwd_perf}[/green]"
+                    )
             except Exception as e:
                 self.console.print(
                     f"[yellow]⚠ Could not aggregate per-job perf into cwd perf.csv: {e}[/yellow]"
@@ -2842,9 +3300,19 @@ export MASTER_PORT={master_port}
                 reader = csv.DictReader(f)
                 reader.fieldnames = [f.strip() for f in (reader.fieldnames or [])]
                 rows = [{k.strip(): v for k, v in row.items() if k} for row in reader]
-            if session_start_row is not None and session_start_row < len(rows):
-                rows = rows[session_start_row:]
-            elif session_start_row is not None and session_start_row >= len(rows):
+            # session_start_row counts rows already in the cwd perf.csv. A
+            # per-job or multiple_results CSV is a different file and starts at
+            # record 0; applying the cwd offset to it drops the job's own rows.
+            offset = session_start_row
+            try:
+                same_file = perf_file.resolve() == Path("perf.csv").resolve()
+            except OSError:
+                same_file = False
+            if not same_file:
+                offset = 0
+            if offset is not None and offset < len(rows):
+                rows = rows[offset:]
+            elif offset is not None and offset >= len(rows):
                 rows = []
             for row in rows:
                 run_data = {
@@ -2874,13 +3342,31 @@ export MASTER_PORT={master_port}
         best_name, best_size = None, None
         for key, info in (self.manifest.get("built_images") or {}).items():
             size = info.get("image_size_bytes")
-            if isinstance(size, int) and size > 0 and (best_size is None or size > best_size):
-                best_name = info.get("registry_image") or info.get("docker_image") or key
+            if (
+                isinstance(size, int)
+                and size > 0
+                and (best_size is None or size > best_size)
+            ):
+                best_name = (
+                    info.get("registry_image") or info.get("docker_image") or key
+                )
                 best_size = size
         return best_name, best_size
 
     def cleanup(self, deployment_id: str) -> bool:
         """Cancel SLURM job if still running (locally)."""
+        # An in-place run has no job of its own: its id is the caller's
+        # allocation or a tag derived from it, and cancelling the allocation
+        # would end every later run that shares it.
+        if self.inside_allocation and deployment_id in (
+            self.existing_job_id,
+            self.run_id,
+        ):
+            self.console.print(
+                f"[yellow]Not cancelling allocation {self.existing_job_id}: "
+                "it belongs to the caller[/yellow]"
+            )
+            return True
         try:
             subprocess.run(["scancel", deployment_id], capture_output=True, timeout=10)
             self.console.print(f"[yellow]Cancelled SLURM job: {deployment_id}[/yellow]")

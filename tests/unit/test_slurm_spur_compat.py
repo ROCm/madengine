@@ -148,7 +148,8 @@ class TestBuildOnComputeSlurmDirectives:
         orch.context = MagicMock()
         orch.context.ctx = {}
         orch.additional_context = {"slurm": dict(slurm)}
-        orch._original_user_slurm_keys = set()
+        # As if passed with --additional-context: only those keys outrank the card.
+        orch._original_user_slurm_keys = set(slurm)
         orch.credentials = {}
         model = {
             "name": "card",
@@ -202,7 +203,7 @@ class TestBuildOnComputeSlurmDirectives:
 
 class TestBuildOnComputeImageNames:
     """A namespaced card ("dir/card") must give valid Docker references: tags allow no "/".
-    The name is flattened as the regular build does, ci-<dir>_<card>_<dockerfile>."""
+    The "/" is flattened to "_"."""
 
     # Docker reference: [registry[:port]/]path[:tag]; tag = [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}
     REF = r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$"
@@ -239,13 +240,13 @@ class TestBuildOnComputeImageNames:
         import re
         manifest, script = self._manifest(tmp_path, "localhost:5000/repo", "sglang_disagg/pyt_card-x")
         img = manifest["built_models"]["sglang_disagg/pyt_card-x"]["env_vars"]["DOCKER_IMAGE_NAME"]
-        assert img == "localhost:5000/repo:ci-sglang_disagg_pyt_card-x_card"
+        assert img == "localhost:5000/repo:sglang_disagg_pyt_card-x"
         assert re.match(self.REF, img), img
-        assert "docker push localhost:5000/repo:ci-sglang_disagg_pyt_card-x_card" in script
+        assert "docker push localhost:5000/repo:sglang_disagg_pyt_card-x" in script
 
     def test_registry_without_path_also_valid(self, tmp_path):
         import re
         manifest, _ = self._manifest(tmp_path, "localhost:5000", "sglang_disagg/pyt_card-x")
         img = manifest["built_models"]["sglang_disagg/pyt_card-x"]["env_vars"]["DOCKER_IMAGE_NAME"]
-        assert img == "localhost:5000/ci-sglang_disagg_pyt_card-x_card:latest"
+        assert img == "localhost:5000/sglang_disagg_pyt_card-x:latest"
         assert re.match(self.REF, img), img

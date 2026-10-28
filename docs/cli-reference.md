@@ -12,6 +12,8 @@ Complete reference for all madengine CLI commands with detailed options and exam
   - [run](#run---execute-models)
   - [report](#report---generate-reports)
   - [database](#database---upload-to-mongodb)
+  - [cleanup](#cleanup---remove-orphaned-containers)
+  - [setup-page](#setup-page---generate-a-setup-picker)
 - [Exit Codes](#exit-codes)
 
 ## Overview
@@ -102,6 +104,7 @@ madengine build [OPTIONS]
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
+| `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
 | `--manifest-output` | `-m` | TEXT | `build_manifest.json` | Output file for build manifest |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for build summary JSON |
@@ -153,6 +156,12 @@ madengine build --tags model --use-image auto
 
 # Build on SLURM compute node and push to registry
 madengine build --tags model --build-on-compute --registry docker.io/myorg
+
+# Build with YAML config (mutually exclusive with --additional-context)
+madengine build --tags model --config +build=ci --registry docker.io/myorg
+
+# Build with user YAML file
+madengine build --config my_build.yaml --registry docker.io/myorg
 ```
 
 **Default Values:**
@@ -226,6 +235,7 @@ madengine run [OPTIONS]
 | `--timeout` | | INT | `-1` | Timeout in seconds. `-1` means "not passed" and falls through to the model card's `timeout`, or 7200s if it has none; `0` disables the timeout; a positive value overrides the model card. See [Usage — Custom Timeouts](usage.md#custom-timeouts). |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
+| `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
 | `--keep-alive` | | FLAG | `False` | Keep Docker containers alive after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--keep-model-dir` | | FLAG | `False` | Keep model directory after run (local Docker only; ignored with a warning on SLURM/K8s) |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache (full workflow) |
@@ -243,6 +253,7 @@ madengine run [OPTIONS]
 | `--disable-skip-gpu-arch` | | FLAG | `False` | Disable skipping models based on GPU architecture |
 | `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
 | `--cleanup-perf` | | FLAG | `False` | Remove intermediate perf_entry files after run (keeps perf.csv and perf_super files) |
+| `--wait-for-gpu-memory` | | INT | `None` | Before a local run, poll until every GPU reports at most 512 MB of memory in use. `0` checks once and fails if any GPU is over that threshold; a positive value is a wall-clock timeout in seconds. Ignored with a warning on SLURM/K8s. |
 
 **Examples:**
 
@@ -266,6 +277,11 @@ madengine run --manifest-file build_manifest.json
 madengine run --tags model \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}' \
   --skip-model-run
+
+# Local run: wait up to 30s for every GPU to drop to 512 MB used or less.
+# Pass 0 to fail immediately if any GPU is over the threshold.
+# The flag is ignored on SLURM and Kubernetes.
+madengine run --tags model --wait-for-gpu-memory 30
 
 # Multi-GPU with torchrun
 madengine run --tags model \
@@ -338,9 +354,23 @@ madengine run --tags model --output my_perf_results.csv
 # Clean up intermediate perf files after run
 madengine run --tags model --cleanup-perf
 
-# Using configuration file
+# Using JSON configuration file
 madengine run --tags model \
   --additional-context-file k8s-config.json
+
+# Using YAML config (mutually exclusive with --additional-context)
+madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchrun \
+  --config distributed.nnodes=4
+
+# YAML config with hardware profile
+madengine run --tags model \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug
+
+# User YAML file with overrides
+madengine run --config my_job.yaml --config distributed.nnodes=8
 ```
 
 **Execution Modes:**
@@ -351,9 +381,14 @@ madengine run --tags model \
 
 **Deployment Targets:**
 
-- **Local** - Docker containers on local machine
-- **Kubernetes** - Detected when `k8s` key present in context
-- **SLURM** - Detected when `slurm` key present in context
+Checked in this order:
+
+- **Bare metal** - `"platform": "bare_metal"`. A conda prefix on this machine. Omitted `platform` stays Docker. See [Bare metal](bare-metal.md)
+- **llm-d** - An `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
+- **Kubernetes** - A `k8s` or `kubernetes` key is present
+- **Spur** - A `slurm` block with `scheduler: spur`, or `deploy: spur` next to a `slurm` block. See [Deployment](deployment.md#spur-crusoe-scheduler)
+- **SLURM** - A `slurm` key is present, or the launcher is `slurm_multi`
+- **Local Docker** - None of the above
 
 **Performance Output:**
 
@@ -443,6 +478,86 @@ madengine report to-email --directory ./results --verbose
 
 ---
 
+##### `report tracelens` - Analyze GPU Traces
+
+Generate [TraceLens](https://github.com/AMD-AGI/TraceLens) performance reports from the trace artifacts a run left behind (`torch_profiler_output/`, `rocprof_output/`, `slurm_results/`, `k8s_results/`).
+
+Requires TraceLens: `pip install 'madengine[tracelens]'`. `--discover-only` works without it.
+
+**Usage:**
+
+```bash
+madengine report tracelens [OPTIONS]
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--root` | TEXT | `"."` | Directory searched recursively for traces |
+| `--output-dir` | TEXT | `tracelens_output` | Directory for generated reports |
+| `--mode` | TEXT | `auto` | `auto`, `pytorch`, `rocprof`, `pftrace`, or `collective` |
+| `--python` | TEXT | | Interpreter that has TraceLens installed |
+| `--gpu-arch` | TEXT | | GPU arch (e.g. `MI300X`) enabling roofline bound classification |
+| `--world-size` | INTEGER | trace count | Rank count for the collective report |
+| `--max-traces` | INTEGER | `0` | Cap traces analyzed per kind (`0` means no cap) |
+| `--discover-only` | FLAG | `False` | List discovered traces without running TraceLens |
+| `--verbose` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Analyze every trace found under the current directory
+madengine report tracelens
+
+# See what would be analyzed first
+madengine report tracelens --discover-only
+
+# Enable roofline bound classification
+madengine report tracelens --gpu-arch MI300X
+
+# Multi-rank collective analysis of a distributed run
+madengine report tracelens --root slurm_results --mode collective --world-size 8
+```
+
+**Output:** Per-trace reports in `--output-dir`, plus `tracelens_summary.csv` and `tracelens_summary.json`.
+
+See the [Profiling Guide](profiling.md#tracelens---tracelens-trace-analysis) for which trace formats map to which report.
+
+---
+
+##### `report tracelens-compare` - Diff TraceLens Reports
+
+Compare two or more TraceLens reports into a single diff workbook. The first report is the baseline; every metric gains `_diff` and `_pct` columns relative to it.
+
+**Usage:**
+
+```bash
+madengine report tracelens-compare REPORT... [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--output` | `-o` | TEXT | `tracelens_comparison.xlsx` | Output comparison workbook |
+| `--names` | | TEXT | | Display tag per report (repeat the flag) |
+| `--python` | | TEXT | | Interpreter that has TraceLens installed |
+| `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Compare a baseline against a candidate run
+madengine report tracelens-compare baseline.xlsx candidate.xlsx
+
+# Label each report and choose the output path
+madengine report tracelens-compare a.xlsx b.xlsx \
+  --names before --names after -o diff.xlsx
+```
+
+---
+
 ### `database` - Upload to MongoDB
 
 Upload CSV or JSON performance data to MongoDB (format is auto-detected).
@@ -512,6 +627,82 @@ madengine database \
 
 ---
 
+### `cleanup` - Remove Orphaned Containers
+
+Remove benchmark containers left behind when a run dies before it can clean up. By default only containers labelled `madengine.session` whose owning madengine process is gone are removed, so this is safe from an `if: always()` CI step or from cron while other benchmarks are running.
+
+**Usage:**
+
+```bash
+madengine cleanup [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--all` | | FLAG | `False` | Also remove containers whose owning madengine process is still running |
+| `--dry-run` | | FLAG | `False` | List what would be removed, remove nothing |
+
+**Exit codes:** `0` when nothing needs removing or every targeted container was removed. `1` when a container is still present and was not wedged, or when `docker ps` times out or returns an error — that is not reported as an empty host. `5` (`GPU_WEDGED`) when a container is still present after stop, kill, and remove, and the host PIDs are stuck in uninterruptible sleep or the daemon still reports the container. A `gpu_wedged.json` marker is written so CI can take the runner out of rotation.
+
+Local runs also stop themselves. Each container madengine starts runs a POSIX-shell watchdog as PID 1. The watchdog stops the container when that container's heartbeat file in the bind-mounted workspace goes stale. `--keep-alive` does not install the watchdog, and a cancel leaves that container running. Images without a shell fall back to `cat` as PID 1 and print a warning that the container is unwatched. A cancel also stops an in-place SLURM step, deletes a submitted SLURM or Kubernetes job, and uninstalls a managed llm-d stack.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MADENGINE_HEARTBEAT_INTERVAL` | Seconds between heartbeat refreshes | `15` |
+| `MADENGINE_HEARTBEAT_STALE_AFTER` | Seconds without a refresh before the watchdog stops the container | `120` |
+
+A non-integer or non-positive value falls back to the default, and the interval is kept below the staleness threshold.
+
+**Examples:**
+
+```bash
+# Sweep orphans after a cancelled CI job
+madengine cleanup
+
+# Show what would be removed
+madengine cleanup --dry-run
+
+# Also remove containers whose owner is still running
+madengine cleanup --all
+```
+
+---
+
+### `setup-page` - Generate a Setup Picker
+
+Write a self-contained HTML page from the current directory's `models.json`. The page lists models and context fields and shows the `madengine run` command to copy. It has no external assets, so it can be published as GitHub Pages. Generation fails if `models.json` is not in the current directory.
+
+**Usage:**
+
+```bash
+madengine setup-page [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--output` | `-o` | TEXT | `index.html` | Output HTML file path |
+| `--title` | | TEXT | `madengine Setup Picker` | Page title / heading |
+| `--repo-url` | | TEXT | `None` | Model repo URL used for clone instructions |
+| `--install-cmd` | | TEXT | package default | madengine install command shown on the page |
+| `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Write index.html from the MAD repo root
+madengine setup-page
+
+# Publish under a different name and title
+madengine setup-page -o site/index.html --title "MAD setup" \
+  --repo-url https://github.com/ROCm/MAD
+```
+
+---
+
 ## Exit Codes
 
 madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect success or failure:
@@ -523,6 +714,7 @@ madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect s
 | `2` | `BUILD_FAILURE` | One or more image builds failed (e.g. Docker build error) |
 | `3` | `RUN_FAILURE` | One or more model executions failed |
 | `4` | `INVALID_ARGS` | Invalid command-line arguments or configuration |
+| `5` | `GPU_WEDGED` | `madengine cleanup` could not remove a container, and the GPU looks wedged. The host needs a reboot before another benchmark |
 
 **Failure recording:** Pre-run failures (e.g. image pull, setup) and run failures are recorded in the performance table (`perf.csv`) with status `FAILURE`, so all attempted models appear in the CSV. The file is created automatically if missing.
 
@@ -554,7 +746,6 @@ For complex configurations, use JSON files with `--additional-context-file`:
   "gpu_vendor": "AMD",
   "guest_os": "UBUNTU",
   "docker_gpus": "0,1,2,3",
-  "timeout_multiplier": 2.0,
   "docker_env_vars": {
     "PYTORCH_TUNABLEOP_ENABLED": "1",
     "HSA_ENABLE_SDMA": "0",
@@ -613,6 +804,23 @@ For complex configurations, use JSON files with `--additional-context-file`:
 
 To run on specific nodes, add `"nodelist": "node01,node02"` to the `slurm` section. When set, the job runs only on those nodes and node health preflight is skipped. See [examples/slurm-configs/basic/03-multi-node-basic-nodelist.json](../examples/slurm-configs/basic/03-multi-node-basic-nodelist.json).
 
+### YAML Configuration (`--config`)
+
+As an alternative to JSON, use `--config`. After translation it is the same additional-context dict (root `slurm` / `k8s` / `distributed` keys, not a Hydra `defaults:` list):
+
+```bash
+# Config group overrides
+madengine run --tags model --config scheduler=slurm --config launcher=torchrun
+
+# User YAML file
+madengine run --config my_job.yaml
+
+# Append-only groups (profiles, tools, env presets)
+madengine run --tags model --config +profile=mi300x_8gpu --config +env=nccl_debug
+```
+
+`--config` is **mutually exclusive** with `--additional-context` / `--additional-context-file`. See [Configuration Guide — YAML Configuration](configuration.md#yaml-configuration-config) for config groups, user YAML format, and full examples.
+
 ### Run phase: log error pattern scan (optional)
 
 These keys apply to **local Docker runs** when madengine post-processes the run log. Use them when substring matches cause false `FAILURE` status (for example benign `RuntimeError:` lines). Full details: [Configuration — Run phase: log error pattern scan](configuration.md#run-phase-log-error-pattern-scan).
@@ -644,6 +852,8 @@ madengine recognizes these environment variables:
 | `MONGO_PORT` | MongoDB port for database command | `27017` |
 | `MONGO_USER` | MongoDB username | None |
 | `MONGO_PASSWORD` | MongoDB password | None |
+| `MADENGINE_HEARTBEAT_INTERVAL` | Seconds between in-container heartbeat refreshes | `15` |
+| `MADENGINE_HEARTBEAT_STALE_AFTER` | Seconds without a refresh before the watchdog stops the container | `120` |
 
 > `MAD_CONTAINER_IMAGE` is **not** an environment variable. It is an
 > `--additional-context` key that selects a pre-built image and skips the build

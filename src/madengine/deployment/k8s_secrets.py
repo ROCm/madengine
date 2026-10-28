@@ -24,11 +24,14 @@ SECRETS_STRATEGY_FROM_LOCAL = "from_local_credentials"
 SECRETS_STRATEGY_EXISTING = "existing"
 SECRETS_STRATEGY_OMIT = "omit"
 
+# Pre-created Docker Hub pull secret in the default namespace.
+DEFAULT_IMAGE_PULL_SECRET_NAMES = ["dockerhub-rocm"]
+
 
 def default_secrets_config() -> Dict[str, Any]:
     return {
         "strategy": SECRETS_STRATEGY_FROM_LOCAL,
-        "image_pull_secret_names": [],
+        "image_pull_secret_names": list(DEFAULT_IMAGE_PULL_SECRET_NAMES),
         "runtime_secret_name": None,
     }
 

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, mock_open, patch
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from madengine.deployment.base import PERFORMANCE_LOG_PATTERN
+from madengine.execution import container_runner
 from madengine.execution.container_runner import ContainerRunner
 
 
@@ -357,13 +359,11 @@ class TestResolveLocalMultiNodeRunnerEnv:
 
     @pytest.mark.parametrize(
         "launcher",
-        ["vllm", "sglang", "sglang-disagg", "sglang_disagg", "primus"],
+        ["vllm", "sglang", "sglang-disagg", "primus"],
     )
     def test_self_managed_launchers_set_empty_string(self, launcher):
         """Self-managing launchers set the var to "" (defined but empty),
-        so downstream scripts under set -u don't fail referencing it.
-        Covers the ``sglang_disagg`` underscore alias to lock in the
-        canonicalize_distributed_launcher() routing."""
+        so downstream scripts under set -u don't fail referencing it."""
         runner = self._runner(
             additional_context={"distributed": {"launcher": launcher}},
         )
@@ -438,7 +438,9 @@ class TestRunContainerSkipModelRun:
         runner.perf_csv_path = "/tmp/test_perf.csv"
         return runner
 
-    def _run_container_with_mocks(self, runner, model_info, docker_sh_calls, **kwargs):
+    def _run_container_with_mocks(
+        self, runner, model_info, docker_sh_calls, sh_side_effect=None, **kwargs
+    ):
         """Call run_container with all the infrastructure mocked away.
 
         Patches:
@@ -458,6 +460,10 @@ class TestRunContainerSkipModelRun:
         def noop_timeout(_):
             yield
 
+        def _record_sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            return "ok"
+
         with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
              patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
              patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
@@ -468,9 +474,12 @@ class TestRunContainerSkipModelRun:
              patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
+             patch("madengine.execution.container_runner.update_perf_csv"), \
+             patch("madengine.execution.container_runner.update_perf_super_json"), \
+             patch("madengine.execution.container_runner.update_perf_super_csv"), \
              patch.object(Docker, "__init__", return_value=None), \
-             patch.object(Docker, "sh",
-                          side_effect=lambda cmd, **kw: docker_sh_calls.append(cmd) or "ok"), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
+             patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
              patch.object(Docker, "__del__", return_value=None), \
              patch("builtins.open", mock_open(read_data="")):
             return runner.run_container(
@@ -523,6 +532,63 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestPostScriptsAfterWorkloadFailure:
+    """A failed model still runs every post-script, and the run stays failed."""
+
+    def _failed_model(self, fail_scripts):
+        harness = TestRunContainerSkipModelRun()
+        runner = harness._make_runner()
+        runner.context.ctx["post_scripts"] = [
+            {"path": "scripts/common/post_scripts/collect.sh"},
+            {"path": "scripts/common/post_scripts/analyze.sh"},
+        ]
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+        docker_sh_calls = []
+
+        def sh(cmd, **kw):
+            docker_sh_calls.append(cmd)
+            if "bash run.sh" in cmd:
+                raise RuntimeError("model failed: extractor exit 1")
+            script = next(
+                (name for name in fail_scripts if f"bash {name}" in cmd), None
+            )
+            if script:
+                raise RuntimeError(f"{script} failed")
+            return "ok"
+
+        result = harness._run_container_with_mocks(
+            runner, model_info, docker_sh_calls, sh_side_effect=sh
+        )
+        ran = [
+            c
+            for c in docker_sh_calls
+            if "bash collect.sh" in c or "bash analyze.sh" in c
+        ]
+        return result, ran
+
+    def test_successful_post_scripts_keep_the_model_failure(self):
+        result, ran = self._failed_model(fail_scripts=())
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
+
+    def test_one_failing_post_script_does_not_skip_the_next(self):
+        result, ran = self._failed_model(fail_scripts=("collect.sh",))
+        assert result["status"] == "FAILURE"
+        assert ran == [
+            "cd run_directory && bash collect.sh ",
+            "cd run_directory && bash analyze.sh ",
+        ]
 
 
 class TestRunModelsFromManifestDefaultTimeoutIsSentinel:
@@ -606,6 +672,7 @@ class TestRunContainerDefaultTimeoutIsSentinel:
              patch("madengine.execution.container_runner._print_run_env_table"), \
              patch("madengine.execution.container_runner.Timeout", noop_timeout), \
              patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
              patch.object(Docker, "sh",
                           side_effect=lambda cmd, **kw: docker_sh_timeouts.append(
                               (cmd, kw.get("timeout"))
@@ -920,3 +987,556 @@ class TestRequirePinnedImageLocalRun:
                 runner.run_models_from_manifest(manifest_file=manifest_path, timeout=60)
 
             mock_pull.assert_called_once_with(f"myorg/ci@{DIGEST}")
+
+
+class TestSlurmEnvPassthrough:
+    """Launcher variables must reach the container.
+
+    The SLURM job script computes the SGLang topology and peer list, but the
+    model only sees variables named in the passthrough allowlist. Dropping or
+    misspelling one silently restores the single-node fallback
+    (xP=1/yD=1, IPADDRS=localhost) with every other test still green.
+    """
+
+    SGLANG_VARS = {
+        "SGLANG_DISAGG_MODE": "enabled",
+        "SGLANG_DISAGG_PREFILL_NODES": "2",
+        "SGLANG_DISAGG_DECODE_NODES": "2",
+        "SGLANG_DISAGG_TOTAL_NODES": "4",
+        "SGLANG_NODE_IPS": "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
+        "SGLANG_NODE_RANK": "0",
+        "SGLANG_TP_SIZE": "8",
+    }
+
+    def test_allowlist_covers_sglang_disagg(self):
+        from madengine.execution.container_runner import SLURM_PASSTHROUGH_ENV_VARS
+
+        missing = [v for v in self.SGLANG_VARS if v not in SLURM_PASSTHROUGH_ENV_VARS]
+        assert not missing, f"not forwarded into the container: {missing}"
+
+    def test_shell_values_reach_docker_env(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, self.SGLANG_VARS, clear=False):
+            merged = runner._merge_slurm_env_from_shell()
+
+        docker_env = ctx.ctx["docker_env_vars"]
+        for name, value in self.SGLANG_VARS.items():
+            assert docker_env.get(name) == value, f"{name} not passed through"
+        assert merged >= len(self.SGLANG_VARS)
+
+    def test_absent_values_are_not_invented(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, {}, clear=True):
+            runner._merge_slurm_env_from_shell()
+
+        assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestGitSafeDirectory:
+    """A container without git must still run. A present git that fails must not."""
+
+    def test_missing_git_does_not_fail(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_git_config_failure_still_fails(self, tmp_path):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        git = tmp_path / "git"
+        git.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        git.chmod(0o755)
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command("/myworkspace")],
+            env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 3
+
+    def test_broken_worktree_gitdir_does_not_fail(self, tmp_path):
+        """A .git file pointing outside the mount must not abort the run."""
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").write_text(
+            "gitdir: /nonexistent/gitdir\n", encoding="utf-8"
+        )
+        home = tmp_path / "home"
+        home.mkdir()
+        result = subprocess.run(
+            ["/bin/bash", "-c", git_safe_directory_command(str(workspace))],
+            cwd=workspace,
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_path_with_a_space_is_quoted(self):
+        from madengine.execution.container_runner import git_safe_directory_command
+
+        command = git_safe_directory_command("/my workspace")
+        assert "safe.directory '/my workspace'" in command
+
+
+class TestStaleMultipleResultsIsDropped:
+    """run_container clears a results CSV an earlier run left at the workspace root.
+
+    `run_directory` is recreated per run; the directory above it is not. It is
+    the submission directory for a single-node SLURM job, a node-local
+    workspace that outlives the job on some clusters, and plain cwd for a local
+    run. Models write `multiple_results` there and append when the file is
+    already present, and `_resolve_multiple_results_path` reads that copy
+    before the one in `run_directory` -- so a leftover is reported as part of
+    this run, carrying this run's metadata.
+    """
+
+    MODEL_SCRIPT_CMD = "bash run.sh"
+
+    def _container_commands(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        sh=None,
+        perf_csv="perf.csv",
+        skip_model_run=False,
+    ):
+        """The commands run_container sends into the container, in order.
+
+        ``sh`` optionally stands in for the container shell, so a test can
+        decide what a command reports back.
+        """
+        monkeypatch.chdir(tmp_path)  # the live log is written to cwd
+
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "8"},
+            "docker_mounts": {},
+            "docker_gpus": "8",
+            "gpu_vendor": "AMD",
+            "guest_os": "UBUNTU",
+            "docker_build_arg": {},
+        }
+        runner = ContainerRunner(context=context, console=MagicMock())
+        runner.rich_console = MagicMock()
+        runner.perf_csv_path = perf_csv
+
+        model_info = {
+            "name": "m",
+            "url": "",
+            "scripts": "scripts/x/run.sh",
+            "n_gpus": "1",
+            "args": "",
+            "tags": [],
+        }
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        with patch(
+            "madengine.execution.container_runner.Docker"
+        ) as mock_docker_cls, patch(
+            "madengine.execution.container_runner._print_run_env_table"
+        ), patch(
+            "madengine.utils.rocm_path_resolver.finalize_container_rocm_path",
+            return_value="/opt/rocm",
+        ), patch.object(
+            runner, "_resolve_docker_image", return_value="img:latest"
+        ), patch.object(
+            runner, "get_gpu_arg", return_value=""
+        ):
+            docker = mock_docker_cls.return_value
+            docker.sh = MagicMock(side_effect=sh) if sh else MagicMock(return_value="")
+            runner.run_container(
+                model_info=model_info,
+                docker_image="img:latest",
+                skip_model_run=skip_model_run,
+            )
+
+        return [call.args[0] for call in docker.sh.call_args_list]
+
+    @staticmethod
+    def _index_of(commands, needle):
+        for i, cmd in enumerate(commands):
+            if needle in cmd:
+                return i
+        return None
+
+    def test_the_file_is_deleted(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        assert self._index_of(commands, "rm -f -- perf_model.csv") is not None
+
+    def test_the_deletion_precedes_the_model_script(self, tmp_path, monkeypatch):
+        """Deleting after the model wrote its results would discard this run."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletion = self._index_of(commands, "rm -f -- perf_model.csv")
+        model_run = self._index_of(commands, self.MODEL_SCRIPT_CMD)
+        assert deletion is not None and model_run is not None
+        assert deletion < model_run
+
+    def test_nothing_is_deleted_without_multiple_results(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, None)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_skip_model_run_deletes_nothing(self, tmp_path, monkeypatch):
+        """An inspection run starts no model, so nothing would replace the file."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", skip_model_run=True
+        )
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+        assert self._index_of(commands, self.MODEL_SCRIPT_CMD) is None
+
+    def test_an_empty_multiple_results_deletes_nothing(self, tmp_path, monkeypatch):
+        commands = self._container_commands(tmp_path, monkeypatch, "   ")
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    @pytest.mark.parametrize(
+        "multiple_results",
+        ["perf.csv", "./perf.csv", "perf_super.csv", "perf_super.json"],
+    )
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch, multiple_results):
+        """The workspace root is cwd, where madengine keeps every run's rows."""
+        commands = self._container_commands(tmp_path, monkeypatch, multiple_results)
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_output_csv_is_kept(self, tmp_path, monkeypatch):
+        """`--output results.csv` makes results.csv the cumulative report."""
+        commands = self._container_commands(
+            tmp_path, monkeypatch, "results.csv", perf_csv="results.csv"
+        )
+        assert [c for c in commands if c.startswith("rm -f --")] == []
+
+    def test_the_path_is_quoted(self, tmp_path, monkeypatch):
+        """multiple_results comes from models.json and reaches bash -c."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf;rm -rf /.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        assert shlex.quote("perf;rm -rf /.csv") in deletions[0]
+
+    def test_a_failure_to_delete_does_not_fail_the_run(self, tmp_path, monkeypatch):
+        """The file belongs to container root; an unlink the caller cannot do
+        must not abort the run before the model has a chance to produce data."""
+        commands = self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+        deletions = [c for c in commands if c.startswith("rm -f --")]
+        assert deletions
+        # rm's own failure is discarded and the trailing `if` exits 0 whatever
+        # rm did, so Console.sh sees a success and the run carries on.
+        assert "2>/dev/null" in deletions[0]
+        assert deletions[0].rstrip().endswith("fi")
+
+    def test_a_file_that_survives_the_deletion_is_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """Failing quietly would merge the old rows into this run's results:
+        the file is still what _resolve_multiple_results_path picks."""
+
+        def container_shell(command, *args, **kwargs):
+            if command.startswith("rm -f --"):
+                return container_runner._STALE_LEFT
+            return ""
+
+        self._container_commands(
+            tmp_path, monkeypatch, "perf_model.csv", sh=container_shell
+        )
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" in logs
+
+    def test_a_deleted_file_is_not_reported(self, tmp_path, monkeypatch):
+        """The warning has to mean something, so it must stay off the happy path."""
+        self._container_commands(tmp_path, monkeypatch, "perf_model.csv")
+
+        logs = "".join(p.read_text() for p in tmp_path.glob("*.live.log"))
+        assert "Could not delete the stale results file" not in logs
+
+
+class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
+    """A self-managed launcher needs the same cleanup, one layer out.
+
+    `run_container` returns into `_run_self_managed` before it reaches the
+    container-side deletion, so `slurm_multi` never got it. There the script
+    runs on the host in the submission directory -- reused by every run -- and
+    `slurm.collect_results` falls back to that copy when no per-node CSV was
+    collected, so a leftover is reported as this run's.
+    """
+
+    def _make_runner(self):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.context = MagicMock()
+        runner.context.ctx = {}
+        runner.console = MagicMock()
+        runner.rich_console = MagicMock()
+        runner.live_output = False
+        runner.additional_context = {}
+        runner.perf_csv_path = "perf.csv"
+        return runner
+
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        multiple_results,
+        on_script_start=None,
+        script_subdir=None,
+    ):
+        monkeypatch.chdir(tmp_path)
+        script_dir = tmp_path / script_subdir if script_subdir else tmp_path
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script = script_dir / "run.sh"
+        script.write_text("#!/bin/bash\nexit 0\n")
+
+        model_info = {"name": "dummy", "scripts": str(script), "args": ""}
+        if multiple_results is not None:
+            model_info["multiple_results"] = multiple_results
+
+        def script_run(*args, **kwargs):
+            if on_script_start:
+                on_script_start()
+            return subprocess.CompletedProcess("", 0)
+
+        with patch(
+            "madengine.execution.container_runner.subprocess.run",
+            side_effect=script_run,
+        ):
+            self._make_runner()._run_self_managed(
+                model_info=model_info,
+                build_info={},
+                log_file_path=str(tmp_path / "run.live.log"),
+                timeout=60,
+                run_results={},
+                pre_encapsulate_post_scripts={},
+                run_env={},
+            )
+
+    def test_the_file_is_gone_before_the_script_starts(self, tmp_path, monkeypatch):
+        stale = tmp_path / "perf_model.csv"
+        stale.write_text("model,perf\nold,1\n")
+        seen = {}
+
+        self._run(
+            tmp_path,
+            monkeypatch,
+            "perf_model.csv",
+            on_script_start=lambda: seen.update(exists=stale.exists()),
+        )
+
+        assert seen == {"exists": False}
+
+    def test_the_copy_in_the_script_directory_goes_too(self, tmp_path, monkeypatch):
+        """The script is launched with cwd=script_dir, so a relative
+        multiple_results lands there rather than next to the manifest."""
+        beside_script = tmp_path / "scripts" / "perf_model.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nold,1\n")
+        in_cwd = tmp_path / "perf_model.csv"
+        in_cwd.write_text("model,perf\nold,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv", script_subdir="scripts")
+
+        assert not beside_script.exists()
+        assert not in_cwd.exists()
+
+    def test_an_unrelated_file_is_left_alone(self, tmp_path, monkeypatch):
+        """Only the file the model card names may be touched."""
+        other = tmp_path / "perf_other.csv"
+        other.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert other.exists()
+
+    def test_nothing_happens_without_multiple_results(self, tmp_path, monkeypatch):
+        leftover = tmp_path / "perf_model.csv"
+        leftover.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, None)
+
+        assert leftover.exists()
+
+    def test_a_cumulative_report_is_kept(self, tmp_path, monkeypatch):
+        """cwd/perf.csv holds every earlier run's rows."""
+        in_cwd = tmp_path / "perf.csv"
+        in_cwd.write_text("model,perf\nkeep,1\n")
+        beside_script = tmp_path / "scripts" / "perf.csv"
+        beside_script.parent.mkdir(parents=True, exist_ok=True)
+        beside_script.write_text("model,perf\nkeep,1\n")
+
+        self._run(tmp_path, monkeypatch, "perf.csv", script_subdir="scripts")
+
+        assert in_cwd.exists()
+        assert beside_script.exists()
+
+    def test_a_file_that_cannot_be_deleted_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Same reason as in the container: the stale copy still wins."""
+        (tmp_path / "perf_model.csv").write_text("model,perf\nold,1\n")
+
+        with patch(
+            "madengine.execution.container_runner.os.remove",
+            side_effect=PermissionError("read-only"),
+        ):
+            self._run(tmp_path, monkeypatch, "perf_model.csv")
+
+        assert "Could not delete the stale results file" in capsys.readouterr().out
+
+
+class TestPullImageTimeout:
+    """pull_image gives the pull a timeout a real image can finish inside.
+
+    console.sh defaults to 60 seconds. A multi-gigabyte serving image never finishes inside it, so
+    the pull raised "Console script timeout" no matter how healthy the registry was -- and on a
+    SLURM compute node the fresh-pull policy had already deleted the cached copy, leaving nothing
+    to fall back to.
+    """
+
+    def _runner(self):
+        runner = ContainerRunner(context=MagicMock(), console=MagicMock())
+        runner.rich_console = MagicMock()
+        return runner
+
+    def _pull_call(self, console):
+        for call in console.sh.call_args_list:
+            if call.args and call.args[0].startswith("docker pull"):
+                return call
+        raise AssertionError(f"no docker pull issued; calls were {console.sh.call_args_list}")
+
+    def test_pull_is_not_left_on_the_60_second_default(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAD_DOCKER_PULL_TIMEOUT_SECS", None)
+            runner.pull_image("registry/ns/img:tag")
+        timeout = self._pull_call(runner.console).kwargs.get("timeout")
+        assert timeout is not None, "pull inherited console.sh's 60s default"
+        assert timeout >= 600, f"pull timeout {timeout}s is too short for a real image"
+
+    def test_pull_timeout_is_configurable(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "42"}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 42
+
+    @pytest.mark.parametrize("raw", ["nope", "30m", "0", "-1", "1800.5"])
+    def test_a_bad_timeout_still_pulls(self, raw):
+        """A mistyped knob must not be reported as a failed pull.
+
+        pull_image's caller catches every exception and falls back to the local
+        tag. int() raising, or a non-positive value reaching console.sh, skips
+        the pull -- and on a SLURM node the fresh-pull policy has already
+        deleted the cached copy by the time communicate rejects a negative
+        timeout.
+        """
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": raw}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" in printed
+        assert raw in printed
+
+    def test_an_empty_timeout_uses_the_default_quietly(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "  "}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" not in printed
+
+    def test_losing_the_cached_copy_is_reported(self):
+        """On the fresh-pull path a failed pull leaves no local image; the message must say so."""
+        runner = self._runner()
+        runner.console.sh.side_effect = [None, RuntimeError("Console script timeout")]
+        with patch.dict(os.environ,
+                        {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_IN_SLURM_JOB": "1"}):
+            with pytest.raises(RuntimeError):
+                runner.pull_image("registry/ns/img:tag")
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "attempted `docker rmi -f`" in printed
+        assert "may also be absent" in printed, (
+            "the message must not assert that no fallback exists: the removal runs with "
+            "|| true and names a different reference from the fallback tag")
+
+    def test_an_interrupted_removal_still_reports(self):
+        """The removal can raise after it has already deleted the image.
+
+        `console.sh` has its own timeout, so `docker rmi` can be cut off mid-flight. Recording the
+        attempt only on success skipped the diagnostic for exactly that case.
+        """
+        runner = self._runner()
+        runner.console.sh.side_effect = [
+            RuntimeError("Console script timeout"),   # the rmi, interrupted
+            RuntimeError("Console script timeout"),   # the pull that follows
+        ]
+        with patch.dict(os.environ,
+                        {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_IN_SLURM_JOB": "1"}):
+            with pytest.raises(RuntimeError):
+                runner.pull_image("registry/ns/img:tag")
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "attempted `docker rmi -f`" in printed
+
+
+class TestScriptsDirResolution:
+    """A model's `scripts` entry must not name a directory that holds the copy destination.
+
+    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in a container whose working
+    directory is /myworkspace. Any source equal to or containing the destination copies it into
+    itself: `cp ./. run_directory/` exits 1, while `cp /. run_directory/` does not refuse at all
+    -- it walks the filesystem, measured at 1.8 GB in two minutes.
+
+    Both sides are resolved against the working directory first, so the judgement is about which
+    directory is copied rather than how it is spelled.
+    """
+
+    DEST = "run_directory"
+
+    @pytest.mark.parametrize("entry,why", [
+        ("run.sh", "no directory at all: the source becomes /."),
+        ("", "same"),
+        ("./run.sh", "the working directory, which holds the destination"),
+        ("/run.sh", "the filesystem root"),
+        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
+        ("../run.sh", "the parent of the working directory"),
+        ("/myworkspace/run.sh", "the working directory written absolutely"),
+        ("run_directory/run.sh", "the destination itself"),
+        ("./run_directory/run.sh", "the destination, spelled differently"),
+    ])
+    def test_a_source_holding_the_destination_is_refused(self, entry, why):
+        with pytest.raises(ValueError):
+            ContainerRunner._scripts_dir(entry, self.DEST, "m")
+
+    @pytest.mark.parametrize("entry,expected", [
+        ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
+        ("scripts/m/run.py", "scripts/m"),
+        ("scripts/m/sub/run.sh", "scripts/m/sub"),
+        # Resolves to the same directory as the first case, so it must be judged the same way.
+        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
+        # Outside the workspace entirely: it cannot contain the destination.
+        ("../opt/bench/run.sh", "../opt/bench"),
+        ("/opt/bench/run.sh", "/opt/bench"),
+    ])
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+        assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
+
+    def test_the_caller_never_builds_a_self_copy(self):
+        """Stated on the command the caller builds, not on the helper's return value."""
+        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
+                      "/myworkspace/run.sh", "run_directory/run.sh"):
+            try:
+                src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
+            except ValueError:
+                continue
+            raise AssertionError(f"{entry!r} produced copy source {src + '/.'!r}")

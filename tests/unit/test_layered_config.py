@@ -243,6 +243,93 @@ class TestResolveForModel:
         )
         assert env["NIAH_WORDS"] == "10000"
 
+    def test_runtime_benchmark_script_selects_its_own_block(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            benchmark:
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+              - kind: gsm8k
+                env: {GSM_SHOTS: '5'}
+            """,
+        )
+        env, _ = resolve_for_model(
+            {"name": "x", "env_vars": {"BENCHMARK_SCRIPT": "niah"}},
+            tmp_path,
+            runtime_env={"BENCHMARK_SCRIPT": "gsm8k"},
+        )
+        assert env["BENCHMARK_SCRIPT"] == "gsm8k"
+        assert env["GSM_SHOTS"] == "5"
+        assert "NIAH_WORDS" not in env
+
+    def test_file_benchmark_script_selects_its_block(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            model:
+              env: {BENCHMARK_SCRIPT: niah}
+            benchmark:
+              - env: {SHARED: '1'}
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+            """,
+        )
+        env, _ = resolve_for_model({"name": "x"}, tmp_path)
+        assert env["BENCHMARK_SCRIPT"] == "niah"
+        assert env["NIAH_WORDS"] == "10000"
+        assert env["SHARED"] == "1"
+
+    def test_task_default_benchmark_script_selects_its_block(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            benchmark:
+              - env: {BENCHMARK_SCRIPT: niah}
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+            """,
+        )
+        env, _ = resolve_for_model({"name": "x"}, tmp_path)
+        assert env["NIAH_WORDS"] == "10000"
+
+    def test_card_benchmark_script_overrides_the_file(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            model:
+              env: {BENCHMARK_SCRIPT: niah}
+            benchmark:
+              - kind: niah
+                env: {NIAH_WORDS: '10000'}
+              - kind: gsm8k
+                env: {GSM_SHOTS: '5'}
+            """,
+        )
+        env, _ = resolve_for_model(
+            {"name": "x", "env_vars": {"BENCHMARK_SCRIPT": "gsm8k"}}, tmp_path
+        )
+        assert env["BENCHMARK_SCRIPT"] == "gsm8k"
+        assert env["GSM_SHOTS"] == "5"
+        assert "NIAH_WORDS" not in env
+
+    def test_model_serve_is_refused(self, tmp_path):
+        write(
+            tmp_path,
+            """
+            version: 1
+            model:
+              serve:
+                base: "--tp 8"
+            """,
+        )
+        with pytest.raises(LayeredConfigError, match="model.serve is not applied"):
+            resolve_for_model({"name": "x"}, tmp_path)
+
     def test_equivalence_with_hand_written_env_vars(self, tmp_path):
         """The property that makes way 4 safe to adopt.
 
@@ -657,6 +744,38 @@ class TestInconclusiveHealthCheckGatesNothing:
         sel = SlurmNodeSelector.__new__(SlurmNodeSelector)
         assert getattr(sel, "health_check_inconclusive", False) is False
 
+    def _select(self, health):
+        from unittest.mock import MagicMock
+
+        from madengine.deployment.slurm_node_selector import (
+            NodeStatus,
+            SlurmNodeSelector,
+        )
+
+        sel = SlurmNodeSelector(console=MagicMock(), auto_cleanup=False)
+        status = NodeStatus("n1", health, 80.0, 192.0, 1, error_message="busy")
+        sel.get_candidate_nodes = lambda *args, **kwargs: ["n1"]
+        sel.check_node_health = lambda *args, **kwargs: status
+        sel._display_status_table = lambda *args, **kwargs: None
+        return sel, sel.select_nodes("p", 1, exclude="kept")
+
+    def test_every_node_unreachable_stands_down(self):
+        from madengine.deployment.slurm_node_selector import NodeHealth
+
+        sel, (clean, exclude) = self._select(NodeHealth.UNREACHABLE)
+        assert clean == []
+        assert exclude == "kept"
+        assert sel.health_check_inconclusive is True
+
+    def test_measured_dirty_nodes_stay_excluded(self):
+        from madengine.deployment.slurm_node_selector import NodeHealth
+
+        sel, (clean, exclude) = self._select(NodeHealth.DIRTY)
+        assert clean == []
+        assert "n1" in exclude.split(",")
+        assert "kept" in exclude.split(",")
+        assert getattr(sel, "health_check_inconclusive", False) is False
+
 
 class TestComputeNodesCanPullAPrivateImage:
     """The generated job must be able to fetch the image it was told to run.
@@ -953,8 +1072,14 @@ class TestCleanupCanActuallyCleanTheseNodes:
         return inspect.getsource(mod)
 
     def test_cleanup_stops_containers(self):
-        """Killing host processes alone never touches a running container."""
-        assert "docker stop" in self._src()
+        """Killing host processes alone never touches a running container.
+
+        The stop is limited to containers madengine labelled. A bare
+        ``docker ps`` would stop every container on a shared node.
+        """
+        src = self._src()
+        assert "docker stop" in src
+        assert "--filter label=madengine.session" in src
 
     def test_cleanup_covers_sglang_not_only_vllm(self):
         src = self._src()
