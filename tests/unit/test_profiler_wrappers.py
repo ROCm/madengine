@@ -29,8 +29,13 @@ def _stub(bin_dir: Path, name: str, body: str) -> None:
 
 def _run(script: str, args, cwd: Path, bin_dir: Path, **env):
     full_env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **env}
-    return subprocess.run(["bash", str(TOOLS / script), *args], cwd=cwd, env=full_env,
-                          capture_output=True, text=True)
+    return subprocess.run(
+        ["bash", str(TOOLS / script), *args],
+        cwd=cwd,
+        env=full_env,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.fixture
@@ -50,13 +55,20 @@ class TestRocprofWrapperOutputDir:
         run_dir = tmp_path / "run_directory"
         run_dir.mkdir(exist_ok=True)
         out = tmp_path / "args.txt"
-        res = _run("rocprof_wrapper.sh", [*opts, "--", "bash", "-c", "cd /tmp && true"],
-                   run_dir, bin_dir, ARGS_OUT=str(out))
+        res = _run(
+            "rocprof_wrapper.sh",
+            [*opts, "--", "bash", "-c", "cd /tmp && true"],
+            run_dir,
+            bin_dir,
+            ARGS_OUT=str(out),
+        )
         assert res.returncode == 0, res.stderr
         return run_dir, out.read_text().splitlines()
 
     def test_relative_dir_made_absolute(self, tmp_path, bin_dir):
-        run_dir, args = self._args(tmp_path, bin_dir, "--kernel-trace", "-d", "./rocprof_output")
+        run_dir, args = self._args(
+            tmp_path, bin_dir, "--kernel-trace", "-d", "./rocprof_output"
+        )
         assert args[args.index("-d") + 1] == f"{run_dir}/rocprof_output"
 
     def test_long_option_with_equals(self, tmp_path, bin_dir):
@@ -69,18 +81,22 @@ class TestRocprofWrapperOutputDir:
 
     def test_application_args_untouched(self, tmp_path, bin_dir):
         _, args = self._args(tmp_path, bin_dir, "-d", "out")
-        assert args[args.index("--") + 1:] == ["bash", "-c", "cd /tmp && true"]
+        assert args[args.index("--") + 1 :] == ["bash", "-c", "cd /tmp && true"]
 
 
 def _write_rtl_db(path: Path, op_types) -> None:
     con = sqlite3.connect(path)
     con.execute("create table rocpd_string (id integer primary key, string text)")
-    con.execute("create table rocpd_op (id integer primary key, gpuId int, opType_id int)")
+    con.execute(
+        "create table rocpd_op (id integer primary key, gpuId int, opType_id int)"
+    )
     for i, t in enumerate(sorted(set(op_types)), start=1):
         con.execute("insert into rocpd_string values (?, ?)", (i, t))
     ids = {t: i for i, t in enumerate(sorted(set(op_types)), start=1)}
-    con.executemany("insert into rocpd_op (gpuId, opType_id) values (0, ?)",
-                    [(ids[t],) for t in op_types])
+    con.executemany(
+        "insert into rocpd_op (gpuId, opType_id) values (0, ?)",
+        [(ids[t],) for t in op_types],
+    )
     con.commit()
     con.close()
 
@@ -89,7 +105,10 @@ class TestRtlWrapperEmptyTrace:
     @pytest.fixture(autouse=True)
     def _rtl(self, bin_dir, tmp_path):
         # Stub `rtl trace -o DB <cmd>`: run the workload, then copy a canned DB to -o.
-        _stub(bin_dir, "rtl", """
+        _stub(
+            bin_dir,
+            "rtl",
+            """
             if [ "${1:-}" = "trace" ] && [ "${2:-}" = "--help" ]; then
                 printf '%s\\n' "${RTL_HELP-}"
                 exit "${RTL_HELP_RC:-0}"
@@ -101,7 +120,8 @@ class TestRtlWrapperEmptyTrace:
             "$@" || exit $?
             [ -n "${CANNED_DB:-}" ] && cp "$CANNED_DB" "$db"
             exit 0
-        """)
+        """,
+        )
 
     def _run_rtl(self, tmp_path, bin_dir, op_types=None, cmd=("true",), **env):
         canned = ""
@@ -110,10 +130,22 @@ class TestRtlWrapperEmptyTrace:
             _write_rtl_db(Path(canned), op_types)
         run_dir = tmp_path / "run_directory"
         run_dir.mkdir(exist_ok=True)
-        return _run("rtl_trace_wrapper.sh", list(cmd), run_dir, bin_dir, CANNED_DB=canned, **env), run_dir
+        return (
+            _run(
+                "rtl_trace_wrapper.sh",
+                list(cmd),
+                run_dir,
+                bin_dir,
+                CANNED_DB=canned,
+                **env,
+            ),
+            run_dir,
+        )
 
     def test_kernel_ops_pass(self, tmp_path, bin_dir):
-        res, run_dir = self._run_rtl(tmp_path, bin_dir, ["KernelExecution", "UserMarker"])
+        res, run_dir = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution", "UserMarker"]
+        )
         assert res.returncode == 0, res.stderr
         assert (run_dir / "rocm_trace_lite_output" / "trace.db").exists()
 
@@ -127,20 +159,31 @@ class TestRtlWrapperEmptyTrace:
         assert res.returncode == 3
 
     def test_allow_empty(self, tmp_path, bin_dir):
-        res, _ = self._run_rtl(tmp_path, bin_dir, ["UserMarker"], RTL_WRAPPER_ALLOW_EMPTY="1")
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["UserMarker"], RTL_WRAPPER_ALLOW_EMPTY="1"
+        )
         assert res.returncode == 0
         assert "captured no GPU operations" in res.stderr
 
     def test_workload_failure_propagates(self, tmp_path, bin_dir):
-        res, _ = self._run_rtl(tmp_path, bin_dir, ["KernelExecution"], cmd=("bash", "-c", "exit 7"))
+        res, _ = self._run_rtl(
+            tmp_path, bin_dir, ["KernelExecution"], cmd=("bash", "-c", "exit 7")
+        )
         assert res.returncode == 7
 
     def test_hsa_tools_lib_reaches_workers(self, tmp_path, bin_dir):
         seen = tmp_path / "seen"
         res, _ = self._run_rtl(
-            tmp_path, bin_dir, ["KernelExecution"],
-            cmd=("bash", "-c", 'printf "%s\\n%s\\n" "$HSA_TOOLS_LIB" "$HSA_TOOLS_DISABLE_REGISTER" > "$SEEN"'),
-            HSA_TOOLS_LIB="/opt/librtl.so", SEEN=str(seen),
+            tmp_path,
+            bin_dir,
+            ["KernelExecution"],
+            cmd=(
+                "bash",
+                "-c",
+                'printf "%s\\n%s\\n" "$HSA_TOOLS_LIB" "$HSA_TOOLS_DISABLE_REGISTER" > "$SEEN"',
+            ),
+            HSA_TOOLS_LIB="/opt/librtl.so",
+            SEEN=str(seen),
         )
         assert res.returncode == 0, res.stderr
         lib, disabled = seen.read_text().splitlines()
@@ -150,9 +193,17 @@ class TestRtlWrapperEmptyTrace:
     def test_keep_register_does_not_disable_it(self, tmp_path, bin_dir):
         seen = tmp_path / "seen"
         res, _ = self._run_rtl(
-            tmp_path, bin_dir, ["KernelExecution"],
-            cmd=("bash", "-c", 'printf "%s\\n" "${HSA_TOOLS_DISABLE_REGISTER-unset}" > "$SEEN"'),
-            HSA_TOOLS_LIB="/opt/librtl.so", RTL_WRAPPER_KEEP_REGISTER="1", SEEN=str(seen),
+            tmp_path,
+            bin_dir,
+            ["KernelExecution"],
+            cmd=(
+                "bash",
+                "-c",
+                'printf "%s\\n" "${HSA_TOOLS_DISABLE_REGISTER-unset}" > "$SEEN"',
+            ),
+            HSA_TOOLS_LIB="/opt/librtl.so",
+            RTL_WRAPPER_KEEP_REGISTER="1",
+            SEEN=str(seen),
         )
         assert res.returncode == 0, res.stderr
         assert seen.read_text().strip() == "unset"
@@ -161,7 +212,9 @@ class TestRtlWrapperEmptyTrace:
         custom = tmp_path / "custom" / "foo.db"
         custom.parent.mkdir()
         res, run_dir = self._run_rtl(
-            tmp_path, bin_dir, ["KernelExecution"],
+            tmp_path,
+            bin_dir,
+            ["KernelExecution"],
             RTL_WRAPPER_TRACE_DB=str(custom),
         )
         assert res.returncode == 0, res.stderr
@@ -183,14 +236,18 @@ class TestRtlWrapperEmptyTrace:
             "con.execute('insert into rocpd_op (gpuId, opType_id) values (0, 1)')\n"
             "con.commit()\n"
         )
-        res, run_dir = self._run_rtl(tmp_path, bin_dir, None, cmd=("python3", str(writer)))
+        res, run_dir = self._run_rtl(
+            tmp_path, bin_dir, None, cmd=("python3", str(writer))
+        )
         assert res.returncode == 0, res.stderr
         assert (run_dir / "rocm_trace_lite_output" / "trace_42.db").exists()
 
     def test_mode_passed_when_help_exits_nonzero(self, tmp_path, bin_dir):
         argv = tmp_path / "argv.txt"
         res, _ = self._run_rtl(
-            tmp_path, bin_dir, ["KernelExecution"],
+            tmp_path,
+            bin_dir,
+            ["KernelExecution"],
             RTL_MODE="lite",
             RTL_HELP="usage: rtl trace [-h] --mode {lite,default,full}",
             RTL_HELP_RC="1",
@@ -204,7 +261,9 @@ class TestRtlWrapperEmptyTrace:
     def test_mode_not_taken_from_model_flag(self, tmp_path, bin_dir):
         argv = tmp_path / "argv.txt"
         res, _ = self._run_rtl(
-            tmp_path, bin_dir, ["KernelExecution"],
+            tmp_path,
+            bin_dir,
+            ["KernelExecution"],
             RTL_MODE="lite",
             RTL_HELP="usage: rtl trace --model NAME",
             RTL_ARGV=str(argv),
@@ -229,7 +288,11 @@ class TestRtlWrapperEmptyTrace:
         run_dir = tmp_path / "run_directory"
         run_dir.mkdir()
         res = _run(
-            "rtl_trace_wrapper.sh", ["true"], run_dir, bin_dir, CANNED_DB=str(canned),
+            "rtl_trace_wrapper.sh",
+            ["true"],
+            run_dir,
+            bin_dir,
+            CANNED_DB=str(canned),
         )
         assert res.returncode == 3
         assert "could not read GPU ops" in res.stderr
@@ -248,9 +311,15 @@ class TestNativeLibrtlReplacesWheelCopy:
         built.write_bytes(b"NATIVE")
         _stub(bin_dir, "python3", f'printf "%s\\n" "{wheel}"\n')
         res = subprocess.run(
-            ["bash", str(PRE_SCRIPTS / "trace.sh"), "--publish-native-librtl", str(built)],
+            [
+                "bash",
+                str(PRE_SCRIPTS / "trace.sh"),
+                "--publish-native-librtl",
+                str(built),
+            ],
             env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert res.returncode == 0, res.stderr
         assert wheel.read_bytes() == b"NATIVE"
@@ -259,11 +328,17 @@ class TestNativeLibrtlReplacesWheelCopy:
         built = tmp_path / "native" / "librtl.so"
         built.parent.mkdir()
         built.write_bytes(b"NATIVE")
-        _stub(bin_dir, "python3", 'exit 1\n')
+        _stub(bin_dir, "python3", "exit 1\n")
         res = subprocess.run(
-            ["bash", str(PRE_SCRIPTS / "trace.sh"), "--publish-native-librtl", str(built)],
+            [
+                "bash",
+                str(PRE_SCRIPTS / "trace.sh"),
+                "--publish-native-librtl",
+                str(built),
+            ],
             env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert res.returncode == 0, res.stderr
         assert built.read_bytes() == b"NATIVE"
@@ -275,7 +350,8 @@ class TestNativeGitRef:
         res = subprocess.run(
             ["bash", str(PRE_SCRIPTS / "trace.sh"), "--print-native-git-ref"],
             env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **env},
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert res.returncode == 0, res.stderr
         return res.stdout.strip()
@@ -287,9 +363,12 @@ class TestNativeGitRef:
         assert self._ref(bin_dir, 'printf "%s\\n" "0.3.7+local"\n') == "v0.3.7"
 
     def test_explicit_ref_overrides_the_package(self, bin_dir):
-        assert self._ref(
-            bin_dir, 'printf "%s\\n" "0.3.3"\n', ROCM_TRACE_LITE_GIT_REF="v0.9.1"
-        ) == "v0.9.1"
+        assert (
+            self._ref(
+                bin_dir, 'printf "%s\\n" "0.3.3"\n', ROCM_TRACE_LITE_GIT_REF="v0.9.1"
+            )
+            == "v0.9.1"
+        )
 
     def test_unreadable_version_falls_back_to_the_pin(self, bin_dir):
         assert self._ref(bin_dir, "exit 1\n") == "v0.3.7"
@@ -372,7 +451,8 @@ class TestTracelensCurlInstall:
                 "PATH": str(bin_dir),
                 "TRACELENS_VENV": str(tmp_path / "tl-venv"),
             },
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert res.returncode == 0, res.stderr
         assert "curl unavailable" in res.stderr
