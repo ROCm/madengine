@@ -145,7 +145,9 @@ class Docker:
 
             # find container sha
             self.docker_sha = self._resolve_container_id(container_name)
-            lifecycle.register(self.docker_sha, container_name)
+            lifecycle.register(
+                self.docker_sha, container_name, keep_alive=self.keep_alive
+            )
         except Exception:
             # The container may already be running. close() reaps by name
             # even when the id was never resolved.

@@ -1393,3 +1393,150 @@ class TestStaleMultipleResultsIsDroppedForSelfManagedLaunchers:
             self._run(tmp_path, monkeypatch, "perf_model.csv")
 
         assert "Could not delete the stale results file" in capsys.readouterr().out
+
+
+class TestPullImageTimeout:
+    """pull_image gives the pull a timeout a real image can finish inside.
+
+    console.sh defaults to 60 seconds. A multi-gigabyte serving image never finishes inside it, so
+    the pull raised "Console script timeout" no matter how healthy the registry was -- and on a
+    SLURM compute node the fresh-pull policy had already deleted the cached copy, leaving nothing
+    to fall back to.
+    """
+
+    def _runner(self):
+        runner = ContainerRunner(context=MagicMock(), console=MagicMock())
+        runner.rich_console = MagicMock()
+        return runner
+
+    def _pull_call(self, console):
+        for call in console.sh.call_args_list:
+            if call.args and call.args[0].startswith("docker pull"):
+                return call
+        raise AssertionError(f"no docker pull issued; calls were {console.sh.call_args_list}")
+
+    def test_pull_is_not_left_on_the_60_second_default(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAD_DOCKER_PULL_TIMEOUT_SECS", None)
+            runner.pull_image("registry/ns/img:tag")
+        timeout = self._pull_call(runner.console).kwargs.get("timeout")
+        assert timeout is not None, "pull inherited console.sh's 60s default"
+        assert timeout >= 600, f"pull timeout {timeout}s is too short for a real image"
+
+    def test_pull_timeout_is_configurable(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "42"}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 42
+
+    @pytest.mark.parametrize("raw", ["nope", "30m", "0", "-1", "1800.5"])
+    def test_a_bad_timeout_still_pulls(self, raw):
+        """A mistyped knob must not be reported as a failed pull.
+
+        pull_image's caller catches every exception and falls back to the local
+        tag. int() raising, or a non-positive value reaching console.sh, skips
+        the pull -- and on a SLURM node the fresh-pull policy has already
+        deleted the cached copy by the time communicate rejects a negative
+        timeout.
+        """
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": raw}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" in printed
+        assert raw in printed
+
+    def test_an_empty_timeout_uses_the_default_quietly(self):
+        runner = self._runner()
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "  "}):
+            runner.pull_image("registry/ns/img:tag")
+        assert self._pull_call(runner.console).kwargs.get("timeout") == 1800
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "MAD_DOCKER_PULL_TIMEOUT_SECS" not in printed
+
+    def test_losing_the_cached_copy_is_reported(self):
+        """On the fresh-pull path a failed pull leaves no local image; the message must say so."""
+        runner = self._runner()
+        runner.console.sh.side_effect = [None, RuntimeError("Console script timeout")]
+        with patch.dict(os.environ,
+                        {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_IN_SLURM_JOB": "1"}):
+            with pytest.raises(RuntimeError):
+                runner.pull_image("registry/ns/img:tag")
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "attempted `docker rmi -f`" in printed
+        assert "may also be absent" in printed, (
+            "the message must not assert that no fallback exists: the removal runs with "
+            "|| true and names a different reference from the fallback tag")
+
+    def test_an_interrupted_removal_still_reports(self):
+        """The removal can raise after it has already deleted the image.
+
+        `console.sh` has its own timeout, so `docker rmi` can be cut off mid-flight. Recording the
+        attempt only on success skipped the diagnostic for exactly that case.
+        """
+        runner = self._runner()
+        runner.console.sh.side_effect = [
+            RuntimeError("Console script timeout"),   # the rmi, interrupted
+            RuntimeError("Console script timeout"),   # the pull that follows
+        ]
+        with patch.dict(os.environ,
+                        {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_IN_SLURM_JOB": "1"}):
+            with pytest.raises(RuntimeError):
+                runner.pull_image("registry/ns/img:tag")
+        printed = " ".join(str(c) for c in runner.rich_console.print.call_args_list)
+        assert "attempted `docker rmi -f`" in printed
+
+
+class TestScriptsDirResolution:
+    """A model's `scripts` entry must not name a directory that holds the copy destination.
+
+    The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in a container whose working
+    directory is /myworkspace. Any source equal to or containing the destination copies it into
+    itself: `cp ./. run_directory/` exits 1, while `cp /. run_directory/` does not refuse at all
+    -- it walks the filesystem, measured at 1.8 GB in two minutes.
+
+    Both sides are resolved against the working directory first, so the judgement is about which
+    directory is copied rather than how it is spelled.
+    """
+
+    DEST = "run_directory"
+
+    @pytest.mark.parametrize("entry,why", [
+        ("run.sh", "no directory at all: the source becomes /."),
+        ("", "same"),
+        ("./run.sh", "the working directory, which holds the destination"),
+        ("/run.sh", "the filesystem root"),
+        ("//run.sh", "POSIX normpath keeps '//', so a test against '/' alone misses it"),
+        ("../run.sh", "the parent of the working directory"),
+        ("/myworkspace/run.sh", "the working directory written absolutely"),
+        ("run_directory/run.sh", "the destination itself"),
+        ("./run_directory/run.sh", "the destination, spelled differently"),
+    ])
+    def test_a_source_holding_the_destination_is_refused(self, entry, why):
+        with pytest.raises(ValueError):
+            ContainerRunner._scripts_dir(entry, self.DEST, "m")
+
+    @pytest.mark.parametrize("entry,expected", [
+        ("scripts/sglang_disagg/run.sh", "scripts/sglang_disagg"),
+        ("scripts/m/run.py", "scripts/m"),
+        ("scripts/m/sub/run.sh", "scripts/m/sub"),
+        # Resolves to the same directory as the first case, so it must be judged the same way.
+        ("../myworkspace/scripts/sglang_disagg/run.sh", "../myworkspace/scripts/sglang_disagg"),
+        # Outside the workspace entirely: it cannot contain the destination.
+        ("../opt/bench/run.sh", "../opt/bench"),
+        ("/opt/bench/run.sh", "/opt/bench"),
+    ])
+    def test_a_source_that_cannot_hold_the_destination_is_accepted(self, entry, expected):
+        assert ContainerRunner._scripts_dir(entry, self.DEST, "m") == expected
+
+    def test_the_caller_never_builds_a_self_copy(self):
+        """Stated on the command the caller builds, not on the helper's return value."""
+        for entry in ("run.sh", "", "./run.sh", "/run.sh", "//run.sh", "../run.sh",
+                      "/myworkspace/run.sh", "run_directory/run.sh"):
+            try:
+                src = ContainerRunner._scripts_dir(entry, self.DEST, "m")
+            except ValueError:
+                continue
+            raise AssertionError(f"{entry!r} produced copy source {src + '/.'!r}")

@@ -81,10 +81,13 @@ class TestContainerRunner:
 
         mock_sh.return_value = "Pull successful"
 
-        result = runner.pull_image("localhost:5000/test:latest")
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "1800"}):
+            result = runner.pull_image("localhost:5000/test:latest")
 
         assert result == "localhost:5000/test:latest"
-        mock_sh.assert_called_with("docker pull localhost:5000/test:latest")
+        # The pull carries its own timeout: console.sh defaults to 60s, which no real image
+        # finishes inside.
+        mock_sh.assert_called_with("docker pull localhost:5000/test:latest", timeout=1800)
 
     @patch.object(Console, "sh")
     def test_pull_image_with_local_name(self, mock_sh):
@@ -93,12 +96,13 @@ class TestContainerRunner:
 
         mock_sh.return_value = "Success"
 
-        result = runner.pull_image("localhost:5000/test:latest", "local-test")
+        with patch.dict(os.environ, {"MAD_DOCKER_PULL_TIMEOUT_SECS": "1800"}):
+            result = runner.pull_image("localhost:5000/test:latest", "local-test")
 
         assert result == "local-test"
         # Should have called pull and tag
         expected_calls = [
-            unittest.mock.call("docker pull localhost:5000/test:latest"),
+            unittest.mock.call("docker pull localhost:5000/test:latest", timeout=1800),
             unittest.mock.call("docker tag localhost:5000/test:latest local-test"),
         ]
         mock_sh.assert_has_calls(expected_calls)
@@ -202,7 +206,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
@@ -256,7 +260,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 
@@ -301,7 +305,7 @@ class TestContainerRunner:
         model_info = {
             "name": "test_model",
             "n_gpus": "1",
-            "scripts": "test_script.sh",
+            "scripts": "scripts/test_model/test_script.sh",
             "args": "",
         }
 

@@ -28,6 +28,8 @@ madengine provides unified support for multiple distributed frameworks, enabling
 
 > **llm-d is not a launcher.** A launcher is a way madengine starts a workload *inside its own container*. [llm-d](llm-d.md) is a deployment target: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`, not `distributed.launcher`. Result rows record that split: `deployment_type` is `llm-d`, `launcher` is the model server (`vllm`), and `serving_mode` is `disaggregated` or `aggregated`. When the card sets `multiple_results`, that CSV is preferred over log `performance:` aggregation, same as local Docker and plain Kubernetes.
 
+> **Bare metal does not start the launcher either.** [Bare metal](bare-metal.md) runs the model script with `conda run` on this machine. Put `distributed.launcher` on the card so the result row records `torchrun` (or another workload launcher). The script reads `MAD_RUNTIME_NGPUS` and invokes that launcher itself. `platform` is `bare_metal` and `deployment_type` is `local`.
+
 ---
 
 ## Quick Start
@@ -854,8 +856,11 @@ MAD_MULTI_NODE_RUNNER="torchrun --nnodes=4 --nproc_per_node=8 ..."
 # Kubernetes
 MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus=8 --hostfile=/tmp/hostfile ..."
 
-# SLURM — the hostfile is per job, and an in-place salloc run adds a suffix
+# SLURM — one hostfile per job
 MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."
+
+# In-place salloc run — the same path plus _<YYYYMMDDHHMMSS>_<hex>
+MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}_<timestamp>_<hex>.txt ..."
 ```
 
 **Megatron-LM**:
