@@ -43,6 +43,53 @@ from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root
 
 
+def _node_pullable_image(image: Optional[str]) -> Optional[str]:
+    """Return ``image`` when a Kubernetes node can pull it.
+
+    Local builds are tagged ``ci-<model>_<dockerfile>`` and exist only on the
+    machine that built them. Model cards use angle-bracket placeholders such
+    as ``<supply-your-image>``. Neither is a registry reference.
+    """
+    candidate = (image or "").strip()
+    if not candidate or candidate.startswith("ci-"):
+        return None
+    if candidate.startswith("<") or candidate.endswith(">"):
+        return None
+    return candidate
+
+
+def _k8s_pullable_image(image_info: Dict, model_name: str) -> str:
+    """Choose the image reference the pod should pull.
+
+    ``registry_image`` wins. When it is unset and the push did not fail,
+    ``docker_image`` is used if it is a registry reference. ``--use-image``
+    writes only ``docker_image``. A failed push is never papered over with
+    the local tag.
+    """
+    if image_info.get("push_failed"):
+        chosen = None
+    else:
+        chosen = image_info.get("registry_image") or _node_pullable_image(
+            image_info.get("docker_image")
+        )
+    if chosen:
+        return chosen
+
+    detail = image_info.get("push_error") or "the image was not pushed"
+    raise ConfigurationError(
+        f"Kubernetes requires a registry image for model '{model_name}', "
+        f"but none is available: {detail}",
+        suggestions=[
+            "Fix Docker Hub credentials, or use an existing `docker login`",
+            "Set dockerhub.repository to a real namespace/repo; "
+            "template values such as your-org/your-repo are ignored",
+            "Re-run after the image push succeeds",
+            "For a prebuilt image, pass a registry reference with --use-image; "
+            "a local ci- tag cannot be pulled by the cluster",
+        ],
+    )
+
+
 class KubernetesTemplateContextMixin:
     """Template context preparation for Kubernetes manifest rendering."""
 
@@ -484,21 +531,11 @@ class KubernetesTemplateContextMixin:
         # including vLLM and SGLang. Without it, pod-0 DNS does not resolve.
         subdomain_val = self.service_name if create_headless_service else None
 
-        # A failed registry push leaves this key unset. Kubernetes nodes cannot
-        # see the local Docker image, so fail here instead of KeyError.
-        registry_image = image_info.get("registry_image")
-        if not registry_image or image_info.get("push_failed"):
-            detail = image_info.get("push_error") or "the image was not pushed"
-            raise ConfigurationError(
-                f"Kubernetes requires a registry image for model '{model_name}', "
-                f"but none is available: {detail}",
-                suggestions=[
-                    "Fix Docker Hub credentials, or use an existing `docker login`",
-                    "Set dockerhub.repository to a real namespace/repo; "
-                    "template values such as your-org/your-repo are ignored",
-                    "Re-run after the image push succeeds",
-                ],
-            )
+        # A failed push, a local ci- tag, or a placeholder cannot be pulled by
+        # a Kubernetes node. --use-image stores a prebuilt registry reference
+        # in docker_image and leaves registry_image unset; that reference is
+        # usable. registry_image wins when both are set.
+        registry_image = _k8s_pullable_image(image_info, model_name)
 
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
