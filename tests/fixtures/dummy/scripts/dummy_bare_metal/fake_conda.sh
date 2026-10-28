@@ -1,0 +1,49 @@
+#!/bin/bash
+#
+# Copyright (c) Advanced Micro Devices, Inc.
+# All rights reserved.
+#
+# Minimal fake conda for e2e-testing the bare-metal runner without a real
+# conda/mamba install. Supports the subcommands CondaEnvManager invokes:
+#   conda env create | conda env update | conda env remove
+#   conda create -p <prefix> | conda run -p <prefix> --no-capture-output <cmd...>
+# `run` execs the wrapped command with CONDA_DEFAULT_ENV set to the prefix.
+
+case "$1" in
+  env)
+    case "$2" in
+      list)
+        echo "# conda environments"
+        echo "base                  *  /tmp/fake_conda/base"
+        ;;
+      create|update) echo "fake conda env $2 ok" ;;
+      remove) echo "fake conda env remove ok" ;;
+    esac
+    ;;
+  create) echo "fake conda create ok" ;;
+  run)
+    shift
+    env_name=""
+    while [[ "$1" == -* ]]; do
+      if [[ "$1" == "-n" || "$1" == "-p" ]]; then
+        env_name="$2"
+        shift 2
+      else
+        shift
+      fi
+    done
+    export CONDA_DEFAULT_ENV="$env_name"
+    # Dependency installs are part of env setup. The shim must not run them
+    # on the host; the model script itself still executes.
+    if [[ "$1" == "pip" ]]; then
+      echo "fake conda: skip $*"
+      exit 0
+    fi
+    if [[ "$1" == "python" || "$1" == "python3" ]] && [[ "${2:-}" == "-m" && "${3:-}" == "pip" ]]; then
+      echo "fake conda: skip $*"
+      exit 0
+    fi
+    exec "$@"
+    ;;
+  *) echo "fake conda: unknown $*" ;;
+esac

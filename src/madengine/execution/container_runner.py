@@ -583,6 +583,31 @@ class ContainerRunner:
             raise_on_failure=False,
         )
 
+    def _pull_timeout_secs(self) -> int:
+        """Seconds allowed for ``docker pull``.
+
+        ``MAD_DOCKER_PULL_TIMEOUT_SECS`` overrides the 1800s default. A missing,
+        blank, non-integer, or non-positive value keeps the default and, when a
+        value was set, says so. It does not raise: the caller treats any
+        exception from :meth:`pull_image` as a failed pull.
+        """
+        default = 1800
+        raw = os.environ.get("MAD_DOCKER_PULL_TIMEOUT_SECS", "").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        self.rich_console.print(
+            "[yellow]Warning: MAD_DOCKER_PULL_TIMEOUT_SECS="
+            f"{raw!r} is not a positive number of seconds; "
+            f"using {default}.[/yellow]"
+        )
+        return default
+
     def pull_image(
         self,
         registry_image: str,
@@ -616,10 +641,31 @@ class ContainerRunner:
         deployment_type = os.environ.get("MAD_DEPLOYMENT_TYPE", "local")
         in_slurm_job = os.environ.get("MAD_IN_SLURM_JOB", "0") == "1"
 
+        # A pull is not a 60-second command. console.sh defaults to that, and a
+        # multi-gigabyte serving image never finishes inside it, so every such
+        # pull raised "Console script timeout" regardless of how healthy the
+        # registry was.
+        # A bad value must not raise. The caller catches every exception from
+        # this function and reports it as a failed pull, then falls back to the
+        # local tag. int("30m") does that before the pull starts. 0 and negative
+        # values are worse: they parse, the fresh-pull policy below deletes the
+        # cached image, and console.sh then rejects the timeout.
+        pull_timeout = self._pull_timeout_secs()
+        attempted_cache_removal = False
+
         if deployment_type == "slurm" and in_slurm_job:
             print(
-                f"🔄 Using fresh pull policy for SLURM compute node (prevents cached layer corruption)"
+                "🔄 Using fresh pull policy for SLURM compute node "
+                "(prevents cached layer corruption)"
             )
+            # Set before the call, not after. `console.sh` can raise -- its own
+            # timeout, for one -- and the removal may already have deleted the
+            # image by then; recording the attempt afterwards would skip the
+            # diagnostic for exactly the interrupted case that most needs it.
+            # The consequence outlives this function: the caller treats a failed
+            # pull as "fall back to the local image", and this path has just
+            # tried to delete the copy that fallback might have used.
+            attempted_cache_removal = True
             # Remove any existing cached image to force fresh pull
             try:
                 self.console.sh(
@@ -630,7 +676,9 @@ class ContainerRunner:
                 pass  # It's okay if image doesn't exist
 
         try:
-            self.console.sh(f"docker pull {shlex.quote(registry_image)}")
+            self.console.sh(
+                f"docker pull {shlex.quote(registry_image)}", timeout=pull_timeout
+            )
 
             if local_name:
                 self.console.sh(
@@ -653,7 +701,82 @@ class ContainerRunner:
             self.rich_console.print(
                 f"[red]❌ Failed to pull image {registry_image}: {e}[/red]"
             )
+            if attempted_cache_removal:
+                # Deliberately not "there is no fallback": `docker rmi -f` runs
+                # with `|| true` and its result is not inspected, and it names
+                # the registry reference rather than the separate local tag the
+                # caller falls back to. What is certain is that removal was
+                # attempted, which is enough for a reader to know where to look.
+                self.rich_console.print(
+                    "[red]   The fresh-pull policy attempted `docker rmi -f` on "
+                    "this reference before pulling, so a cached copy may no "
+                    "longer be on this node. The caller's fallback uses a "
+                    "separate local tag, which may also be absent. Raise "
+                    f"MAD_DOCKER_PULL_TIMEOUT_SECS (currently {pull_timeout}s) "
+                    "if the pull was still running when it was cut off.[/red]"
+                )
             raise
+
+    #: Docker is started with `--workdir /myworkspace/` (core/docker.py), so every relative path
+    #: in the copy below is relative to this.
+    CONTAINER_WORKDIR = "/myworkspace"
+
+    @classmethod
+    def _scripts_dir(cls, scripts_arg: str, model_dir: str, model_name: str = "") -> str:
+        """The directory holding a model's scripts, refusing one that contains the destination.
+
+        The caller runs `cp -vLR --preserve=all {dir}/. {model_dir}/` in the container. The one
+        property that must hold is that the source neither equals the destination nor contains
+        it, because either copies the destination into itself:
+
+        * `cp ./. run_directory/` exits 1 with "cannot copy a directory into itself".
+        * `cp /. run_directory/` does not refuse -- it walks the filesystem. Measured at 1.8 GB in
+          two minutes before it was interrupted. That is what a bare filename produced, since
+          `os.path.dirname("run.sh")` is `""`.
+
+        Both paths are resolved against the container's working directory first, so the comparison
+        is about what is copied rather than how it is spelled: `../myworkspace/scripts/m` and
+        `scripts/m` name the same directory and both pass, while `/myworkspace` and
+        `run_directory` are refused however they are written.
+
+        Lexical, not resolved: this runs on the host while the copy runs in the container, so
+        symlinks cannot be followed from here. It therefore judges paths, not inodes.
+
+        Args:
+            scripts_arg: the card's `scripts` entry.
+            model_dir: the copy destination, as passed to the same command.
+            model_name: for the message only.
+
+        Raises:
+            ValueError: the entry names no directory, or one holding the destination.
+        """
+        dir_path = os.path.dirname(scripts_arg)
+        if not dir_path:
+            raise ValueError(
+                f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, which names "
+                f"no directory, so the scripts would be copied from the filesystem root. Give a "
+                f"path to the directory holding it, e.g. "
+                f"'scripts/<model>/{os.path.basename(scripts_arg) or 'run.sh'}'."
+            )
+
+        def _under_workdir(path: str) -> str:
+            joined = os.path.normpath(os.path.join(cls.CONTAINER_WORKDIR, path))
+            # POSIX normpath keeps exactly two leading slashes, so "//" would survive as a
+            # distinct spelling of the root.
+            while joined.startswith("//"):
+                joined = joined[1:]
+            return joined
+
+        src = _under_workdir(dir_path)
+        dst = _under_workdir(model_dir)
+        if src == dst or dst.startswith(src.rstrip(os.sep) + os.sep):
+            raise ValueError(
+                f"model {model_name or '<unnamed>'}: 'scripts' is {scripts_arg!r}, whose "
+                f"directory resolves to {src!r}, which holds the destination {dst!r}. Copying it "
+                f"would copy the destination into itself. Give a path to the model's own script "
+                f"directory."
+            )
+        return dir_path
 
     def get_gpu_arg(self, requested_gpus: str) -> str:
         """Get the GPU arguments for docker run.
@@ -1831,15 +1954,21 @@ class ContainerRunner:
                             ".slurm"
                         ):
                             # Shell script specified directly (.sh or .slurm for SLURM batch scripts)
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_dir, model_info.get("name", ""))
                             script_name = "bash " + os.path.basename(scripts_arg)
                         elif scripts_arg.endswith(".py"):
                             # Python script specified directly
-                            dir_path = os.path.dirname(scripts_arg)
+                            dir_path = self._scripts_dir(scripts_arg, model_dir, model_info.get("name", ""))
                             script_name = "python3 " + os.path.basename(scripts_arg)
                         else:
-                            # Directory specified (legacy behavior)
-                            dir_path = model_info["scripts"]
+                            # Directory specified (legacy behavior). Through the same helper: an
+                            # empty entry here produced `cp ... /. run_directory/` by the same
+                            # route the filename branches did.
+                            dir_path = self._scripts_dir(
+                                os.path.join(scripts_arg, "run.sh"),
+                                model_dir,
+                                model_info.get("name", ""),
+                            )
                             script_name = "bash run.sh"
 
                         # Add script prepend command
@@ -3468,8 +3597,22 @@ class ContainerRunner:
                                 f"{pull_target} for model "
                                 f"{model_info.get('name', image_name)}: {pull_error}"
                             ) from pull_error
+                        # Named, because "using local image" reads as a recovery
+                        # and often is not one: the local tag may never have
+                        # existed on this node, and on a SLURM compute node the
+                        # fresh-pull policy will have deleted the cached copy
+                        # before the pull was attempted. The run then fails
+                        # further on with "image not found", several steps away
+                        # from the pull that caused it.
                         self.rich_console.print(
-                            f"[yellow]Warning: Could not pull from registry, using local image[/yellow]"
+                            "[yellow]Warning: could not pull "
+                            f"{pull_target}: {pull_error}[/yellow]"
+                        )
+                        self.rich_console.print(
+                            "[yellow]Falling back to local image "
+                            f"'{image_name}'. If that tag is not present on "
+                            "this node, the run will fail at container start."
+                            "[/yellow]"
                         )
                         run_image = image_name
                 else:

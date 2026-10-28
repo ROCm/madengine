@@ -13,6 +13,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -22,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from madengine.core import lifecycle
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
@@ -75,6 +77,10 @@ class SlurmDeployment(BaseDeployment):
 
     DEPLOYMENT_TYPE = "slurm"
     REQUIRED_TOOLS = ["sbatch", "squeue", "scontrol"]  # Must be available locally
+    # Set by the spur subclass. When True, multi-node fan-out is achieved with a
+    # job array (one single-node task per node) instead of `srun`, because spur's
+    # srun cannot dispatch tasks to other nodes. See SpurDeployment.
+    IS_SPUR = False
 
     # Result-file mtimes are stamped by the compute node / shared filesystem while
     # the submit time comes from the login node, so allow for clock skew.
@@ -159,7 +165,6 @@ class SlurmDeployment(BaseDeployment):
         self._run_discriminator = (
             f"_{time.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(3)}"
         )
-
         if self.inside_allocation:
             self.console.print(
                 f"[cyan]✓ Detected existing SLURM allocation: Job {self.existing_job_id}[/cyan]"
@@ -167,6 +172,38 @@ class SlurmDeployment(BaseDeployment):
             self.console.print(
                 f"  Allocation has {self.allocation_nodes} nodes available"
             )
+
+    @staticmethod
+    def _expand_nodelist(nodelist: str) -> List[str]:
+        """Expand a SLURM nodelist string into a list of hostnames.
+
+        Stock SLURM emits a compressed form (e.g. "node[01-03,05]") that needs
+        `scontrol show hostnames` to expand. Spur (Crusoe) instead already
+        exposes an expanded comma-separated form (e.g. "nodeA,nodeB") in
+        SLURM_NODELIST and does NOT implement `scontrol show hostname[s]`.
+
+        Strategy: if the string has no range/brace syntax, just split on commas
+        (works on spur). Otherwise try `scontrol show hostnames` and fall back to
+        a naive comma split if that is unavailable.
+        """
+        if not nodelist:
+            return []
+        nodelist = nodelist.strip()
+        if "[" not in nodelist:
+            return [h for h in re.split(r"[,\s]+", nodelist) if h]
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "hostnames", nodelist],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return [h for h in result.stdout.split("\n") if h.strip()]
+        except Exception:
+            pass
+        # Best-effort fallback (cannot expand ranges without scontrol).
+        return [h for h in re.split(r"[,\s]+", nodelist) if h]
 
     # Evaluated on use rather than in __init__: prepare() may still change
     # self.nodes from the model card.
@@ -251,20 +288,12 @@ class SlurmDeployment(BaseDeployment):
             except ValueError:
                 pass
 
-        # Last resort: count nodes in SLURM_NODELIST
+        # Last resort: count nodes in SLURM_NODELIST (spur-safe expansion)
         nodelist = os.environ.get("SLURM_NODELIST")
         if nodelist:
-            try:
-                result = subprocess.run(
-                    ["scontrol", "show", "hostname", nodelist],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    return len(result.stdout.strip().split("\n"))
-            except Exception:
-                pass
+            expanded = self._expand_nodelist(nodelist)
+            if expanded:
+                return len(expanded)
 
         return 0
 
@@ -823,23 +852,42 @@ class SlurmDeployment(BaseDeployment):
         script_lines = [
             "#!/bin/bash",
             f"#SBATCH --job-name=madengine-{_safe}",
-            f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%j_%t.out",
-            f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%j_%t.err",
-            f"#SBATCH --partition={self.partition}",
-            f"#SBATCH --nodes={self.nodes}",
-            f"#SBATCH --ntasks={self.nodes}",
-            # Carry the submitting environment to the compute nodes. A site can default
-            # sbatch to --export=NONE -- this file's own PATH comment says so -- and the
-            # registry credentials live in that environment and nowhere else. They are
-            # never written into this script: only variable NAMES appear below, and the
-            # values travel the same way an sbatch wrapper outside madengine sends them.
-            "#SBATCH --export=ALL",
         ]
+        if self.IS_SPUR:
+            # spur: one single-node task per node via a job array (srun cannot fan out).
+            # Log names MUST use %A (array job id, == the id sbatch returns) rather
+            # than %j (each array task's own job id), so collect_results() and
+            # _show_log_summary() can find them by deployment_id. %a is the node rank.
+            script_lines.extend(
+                [
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%A_%a.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%A_%a.err",
+                    f"#SBATCH --partition={self.partition}",
+                    "#SBATCH --nodes=1",
+                    "#SBATCH --ntasks=1",
+                    f"#SBATCH --array=0-{self.nodes - 1}",
+                ]
+            )
+        else:
+            script_lines.extend(
+                [
+                    f"#SBATCH --output={self.output_dir}/madengine-{_safe}_%j_%t.out",
+                    f"#SBATCH --error={self.output_dir}/madengine-{_safe}_%j_%t.err",
+                    f"#SBATCH --partition={self.partition}",
+                    f"#SBATCH --nodes={self.nodes}",
+                    f"#SBATCH --ntasks={self.nodes}",
+                ]
+            )
+        # Carry the submitting environment. A site can default sbatch to
+        # --export=NONE, and registry credentials live only in that environment.
+        script_lines.append("#SBATCH --export=ALL")
         if not self.skip_gpus_directive:
             script_lines.append(f"#SBATCH --gpus-per-node={self.gpus_per_node}")
-        script_lines += [
-            f"#SBATCH --time={self.time_limit}",
-        ]
+        script_lines.extend(
+            [
+                f"#SBATCH --time={self.time_limit}",
+            ]
+        )
         # Honour user-configured exclusivity (defaults to True to match the standard SLURM template).
         if self.slurm_config.get("exclusive", True):
             script_lines.append("#SBATCH --exclusive")
@@ -894,46 +942,79 @@ class SlurmDeployment(BaseDeployment):
             script_lines.append("")
 
         script_lines.append("# Environment variables")
-
         for key, value in env_vars.items():
             script_lines.append(f"export {key}={shlex.quote(str(value))}")
 
         script_lines.append("")
-        # Rank-ordered node IPs, computed the same way the sglang-disagg launcher
-        # computes them (_generate_sglang_disagg_command). A self-managed script
-        # needs this to address its peers, and madengine was the only thing that
-        # knew the allocation -- so every such workload has had to rediscover it.
-        # scripts/sglang_disagg/ip_rendezvous.py exists precisely for this: it
-        # rebuilds the list with a stdlib TCP rendezvous because "madengine
-        # forwards MASTER_ADDR/NODE_RANK/NNODES into each container but NOT the
-        # rank-ordered node IP list".
-        #
-        # Exported without overwriting: a script that already sets IPADDRS, or a
-        # card that pins it, keeps its own value.
-        script_lines.extend(
-            [
-                "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
-                "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
-                "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
-                "# with loopback FOR ITSELF -- one run published",
-                "#     Node IPs: 127.0.1.1,10.0.0.2",
-                "# and rank 0 was unreachable from its peer. Ask the node itself when that",
-                "# happens: hostname -I on the node cannot return anyone else's loopback.",
-                'MAD_NODE_IPS=$(scontrol show hostname "$SLURM_JOB_NODELIST" 2>/dev/null | while read -r _n; do',
-                "    _ip=$(getent hosts \"$_n\" | awk '{print $1}' | grep -v '^127\\.' | head -1)",
-                '    if [ -z "$_ip" ]; then',
-                '        _ip=$(srun --nodes=1 --ntasks=1 --nodelist="$_n" hostname -I 2>/dev/null \\',
-                "              | awk '{print $1}')",
-                "    fi",
-                '    echo "$_ip"',
-                "done | tr '\\n' ',' | sed 's/,$//')",
-                "export MAD_NODE_IPS",
-                'export IPADDRS="${IPADDRS:-$MAD_NODE_IPS}"',
-                'export SGLANG_NODE_IPS="${SGLANG_NODE_IPS:-$MAD_NODE_IPS}"',
-                'export MAD_NODE_RANK="${MAD_NODE_RANK:-${SLURM_PROCID:-0}}"',
-                "",
-            ]
-        )
+        if self.IS_SPUR:
+            # spur job-array rank + shared-filesystem rendezvous. Each array task
+            # is one node: SLURM_ARRAY_TASK_ID is the node rank. Pin SLURM_JOB_ID to
+            # the shared SLURM_ARRAY_JOB_ID so the launcher's rendezvous port and
+            # /run_logs/<id> dir match across nodes. rank 0 publishes its transport
+            # IP; peers read it as MASTER_ADDR (see also job.sh.j2 spur branch).
+            # Imported lazily: spur.SpurDeployment subclasses this module.
+            from .spur import DEFAULT_RENDEZVOUS_TIMEOUT, render_rendezvous_block
+
+            rendezvous_dir = getattr(
+                self,
+                "rendezvous_dir",
+                str(self.output_dir.resolve() / "spur_rendezvous"),
+            )
+            rendezvous_timeout = getattr(
+                self, "rendezvous_timeout", DEFAULT_RENDEZVOUS_TIMEOUT
+            )
+            script_lines.extend(
+                [
+                    "# --- spur job-array rank + rendezvous ---",
+                    'export NODE_RANK="${SLURM_ARRAY_TASK_ID:-0}"',
+                    'export SLURM_PROCID="${SLURM_ARRAY_TASK_ID:-0}"',
+                    f"export NNODES={self.nodes}",
+                    f"export SLURM_NNODES={self.nodes}",
+                    f"export WORLD_SIZE={self.nodes}",
+                    'export SLURM_JOB_ID="${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"',
+                    f'export SLURM_SUBMIT_DIR="${{SLURM_SUBMIT_DIR:-{manifest_dir}}}"',
+                ]
+            )
+            script_lines.extend(
+                render_rendezvous_block(rendezvous_dir, rendezvous_timeout)
+            )
+            script_lines.append("")
+        else:
+            # Rank-ordered node IPs, computed the same way the sglang-disagg launcher
+            # computes them (_generate_sglang_disagg_command). A self-managed script
+            # needs this to address its peers, and madengine was the only thing that
+            # knew the allocation -- so every such workload has had to rediscover it.
+            # scripts/sglang_disagg/ip_rendezvous.py exists precisely for this: it
+            # rebuilds the list with a stdlib TCP rendezvous because "madengine
+            # forwards MASTER_ADDR/NODE_RANK/NNODES into each container but NOT the
+            # rank-ordered node IP list".
+            #
+            # Exported without overwriting: a script that already sets IPADDRS, or a
+            # card that pins it, keeps its own value.
+            script_lines.extend(
+                [
+                    "# Rank-ordered node IPs for the allocation (see MAD_NODE_IPS/IPADDRS).",
+                    "# Reject loopback. On Debian and Ubuntu /etc/hosts maps the machine's own",
+                    "# hostname to 127.0.1.1, so `getent hosts` run on the batch node answers",
+                    "# with loopback FOR ITSELF -- one run published",
+                    "#     Node IPs: 127.0.1.1,10.0.0.2",
+                    "# and rank 0 was unreachable from its peer. Ask the node itself when that",
+                    "# happens: hostname -I on the node cannot return anyone else's loopback.",
+                    'MAD_NODE_IPS=$(scontrol show hostname "$SLURM_JOB_NODELIST" 2>/dev/null | while read -r _n; do',
+                    "    _ip=$(getent hosts \"$_n\" | awk '{print $1}' | grep -v '^127\\.' | head -1)",
+                    '    if [ -z "$_ip" ]; then',
+                    '        _ip=$(srun --nodes=1 --ntasks=1 --nodelist="$_n" hostname -I 2>/dev/null \\',
+                    "              | awk '{print $1}')",
+                    "    fi",
+                    '    echo "$_ip"',
+                    "done | tr '\\n' ',' | sed 's/,$//')",
+                    "export MAD_NODE_IPS",
+                    'export IPADDRS="${IPADDRS:-$MAD_NODE_IPS}"',
+                    'export SGLANG_NODE_IPS="${SGLANG_NODE_IPS:-$MAD_NODE_IPS}"',
+                    'export MAD_NODE_RANK="${MAD_NODE_RANK:-${SLURM_PROCID:-0}}"',
+                    "",
+                ]
+            )
         script_lines.extend(
             [
                 "echo '=========================================='",
@@ -977,7 +1058,34 @@ class SlurmDeployment(BaseDeployment):
             and ("/" in docker_image or "." in docker_image)
         )
 
-        if is_registry_image:
+        if is_registry_image and self.IS_SPUR:
+            # spur: each array task is its own node, so pull locally (no srun fan-out).
+            script_lines.extend(
+                [
+                    "",
+                    "# Pull Docker image on this node (one array task per node).",
+                    # Same credential names as the stock srun fetch. Values arrive via
+                    # --export=ALL; only the names are written into the script.
+                    '_u="${MAD_DOCKERHUB_USER:-${MAD_DOCKER_USER:-}}"',
+                    '_p="${MAD_DOCKERHUB_PASSWORD:-${MAD_DOCKER_TOKEN:-}}"',
+                    'if [ -n "$_u" ] && [ -n "$_p" ]; then',
+                    '    printf %s "$_p" | docker login -u "$_u" --password-stdin >/dev/null 2>&1 \\',
+                    '        || echo "docker login FAILED on $(hostname); a private image will not pull" >&2',
+                    "fi",
+                    f"MAD_PULL_IMAGE={shlex.quote(docker_image)}",
+                    "echo '=========================================='",
+                    'echo "[$(hostname)] Pulling $MAD_PULL_IMAGE..."',
+                    "echo '=========================================='",
+                    'docker pull "$MAD_PULL_IMAGE"',
+                    "PULL_EXIT=$?",
+                    "if [ $PULL_EXIT -ne 0 ]; then",
+                    '    echo "[$(hostname)] Docker pull failed for $MAD_PULL_IMAGE"',
+                    "    exit $PULL_EXIT",
+                    "fi",
+                    "echo ''",
+                ]
+            )
+        elif is_registry_image:
             # Authenticate before pulling. A private repository -- rocm/mad-private, say --
             # returns "not found" to an anonymous pull, so without this the parallel pull
             # below fails on every node for an image that is plainly there.
@@ -1050,9 +1158,12 @@ class SlurmDeployment(BaseDeployment):
         # tag don't collide on each other's marker files. monitor() reconstructs
         # the same path using the deployment_id returned by sbatch.
         completion_marker_dir = self.output_dir.resolve()
+        # On spur every array task pins SLURM_JOB_ID to the shared SLURM_ARRAY_JOB_ID,
+        # so the job id alone is not unique per node - add the array rank.
+        marker_rank_suffix = "_rank${SLURM_ARRAY_TASK_ID:-0}" if self.IS_SPUR else ""
         completion_marker_template = (
             completion_marker_dir
-            / f"madengine_{self._safe_name(model_info)}_${{SLURM_JOB_ID:-local}}.complete"
+            / f"madengine_{self._safe_name(model_info)}_${{SLURM_JOB_ID:-local}}{marker_rank_suffix}.complete"
         )
 
         # Disable `set -e` around the model script bash invocation below so a
@@ -1060,11 +1171,13 @@ class SlurmDeployment(BaseDeployment):
         # captured and the completion marker is written. monitor() relies on the
         # marker to distinguish 'failed' from 'still running'; without this,
         # a failed model run would look like a hang.
-        script_lines.extend([
-            "",
-            "# Change to script directory",
-            f"cd {model_script_path.parent}",
-        ])
+        script_lines.extend(
+            [
+                "",
+                "# Change to script directory",
+                f"cd {model_script_path.parent}",
+            ]
+        )
 
         # Drop a results file an earlier run left behind. This wrapper bypasses
         # ContainerRunner, so the cleanup in run_container/_run_self_managed
@@ -1078,33 +1191,49 @@ class SlurmDeployment(BaseDeployment):
             manifest_copy = str(manifest_dir / multiple_results)
             if manifest_copy != multiple_results:
                 stale_paths.append(shlex.quote(manifest_copy))
-            script_lines.extend([
-                "",
-                "# Drop a results file an earlier run left behind",
-                f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
-            ])
+            script_lines.extend(
+                [
+                    "",
+                    "# Drop a results file an earlier run left behind",
+                    f"rm -f -- {' '.join(stale_paths)} 2>/dev/null || true",
+                ]
+            )
 
-        script_lines.extend([
-            "",
-            "# Run the model script directly on the host (with -e disabled so we",
-            "# can capture the exit code and write the completion marker even on failure).",
-            f"echo 'Executing: {_bash_invocation}'",
-            "set +e",
-            _bash_invocation,
-            "SCRIPT_EXIT_CODE=$?",
-            "set -e",
-            "",
-            "echo ''",
-            "echo 'Script completed.'",
-            "",
-            "# Write completion marker for madengine to detect (job-id namespaced)",
-            f"echo \"exit_code=$SCRIPT_EXIT_CODE\" > {completion_marker_template}",
-            f"echo \"timestamp=$(date -Iseconds)\" >> {completion_marker_template}",
-            f"echo \"Completion marker written: {completion_marker_template}\"",
-            "",
-            "exit $SCRIPT_EXIT_CODE",
-        ])
-        
+        script_lines.extend(
+            [
+                "",
+                "# Run the model script directly on the host (with -e disabled so we",
+                "# can capture the exit code and write the completion marker even on failure).",
+                f"echo 'Executing: {_bash_invocation}'",
+                "set +e",
+                _bash_invocation,
+                "SCRIPT_EXIT_CODE=$?",
+                "set -e",
+                "",
+                "echo ''",
+                "echo 'Script completed.'",
+                "",
+                "# Write completion marker for madengine to detect (job-id namespaced)",
+                f'echo "exit_code=$SCRIPT_EXIT_CODE" > {completion_marker_template}',
+                f'echo "timestamp=$(date -Iseconds)" >> {completion_marker_template}',
+                f'echo "Completion marker written: {completion_marker_template}"',
+            ]
+        )
+        if self.IS_SPUR:
+            # Per-rank marker consumed by SpurDeployment.monitor() (spur `sacct -j`
+            # is unreliable, so completion is detected from these files).
+            script_lines.extend(
+                [
+                    'echo "$SCRIPT_EXIT_CODE" > "$_MAD_REND_DIR/done_rank${NODE_RANK}"',
+                ]
+            )
+        script_lines.extend(
+            [
+                "",
+                "exit $SCRIPT_EXIT_CODE",
+            ]
+        )
+
         # Store marker info for monitor() to reconstruct the path with deployment_id.
         self._completion_marker_dir = completion_marker_dir
         self._completion_marker_basename_template = (
@@ -1140,7 +1269,7 @@ class SlurmDeployment(BaseDeployment):
         additional_context = self.config.additional_context.copy()
         additional_context["slurm"] = self.slurm_config
         resolved_gpus_per_node = resolve_runtime_gpus(model_info, additional_context)
-        
+
         # Same resolver as the self-managed peek in prepare(), so the path taken
         # and the env block cannot disagree. Validation replaces the old silent
         # rewrite to "docker": an unknown name fails here instead of running as
@@ -1154,7 +1283,9 @@ class SlurmDeployment(BaseDeployment):
         self.distributed_config["launcher"] = launcher_type
 
         nnodes = self.distributed_config.get("nnodes", self.nodes)
-        nproc_per_node = self.distributed_config.get("nproc_per_node", resolved_gpus_per_node)
+        nproc_per_node = self.distributed_config.get(
+            "nproc_per_node", resolved_gpus_per_node
+        )
         # ``port`` is the SLURM key. ``master_port`` is what Kubernetes and the
         # Hydra launcher groups write. Honor an explicit port, otherwise the
         # master_port alias, otherwise 29500.
@@ -1162,8 +1293,7 @@ class SlurmDeployment(BaseDeployment):
             master_port = self.distributed_config["port"]
         else:
             master_port = self.distributed_config.get("master_port", 29500)
-        
-        # Apply multi-node profiling logic if tools are configured
+            # Apply multi-node profiling logic if tools are configured
         tools = additional_context.get("tools", [])
         if nnodes > 1 and tools:
             # Configure multi-node profiling (handles rocprofv3 detection and tool upgrades)
@@ -1252,6 +1382,9 @@ class SlurmDeployment(BaseDeployment):
             "nproc_per_node": nproc_per_node,
             # Profiling tools (processed for multi-node compatibility)
             "tools": tools,
+            # Scheduler flavor: "slurm" (default) or "spur" (job-array fan-out).
+            # SpurDeployment overrides this and adds "rendezvous_dir".
+            "scheduler": "slurm",
         }
 
     def _generate_launcher_command(
@@ -1390,6 +1523,75 @@ export SGLANG_TENSOR_PARALLEL_SIZE={nproc_per_node}
 export SGLANG_PIPELINE_PARALLEL_SIZE=1
 # SGLang handles its own process management - no MAD_MULTI_NODE_RUNNER needed"""
 
+    def _sglang_node_ips_script(self, nnodes: int) -> str:
+        """Bash that sets SLURM_NODE_IPS to the job's node IPs in rank order.
+
+        Resolved from the launch nodelist; schedulers whose tasks do not see the
+        whole allocation override this.
+        """
+        return f"""# Build node IP list from SLURM. Each node must resolve to a real (non-loopback)
+# address: on Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
+# `getent hosts "$node"` returns the loopback for whichever node runs this loop.
+# Every node then publishes its own entry as 127.0.1.1, which poisons downstream
+# rendezvous/barrier peer lists — an all-nodes barrier can never be satisfied.
+# Skip 127.* and fall back to the primary non-loopback interface for the local node.
+# Address this node advertises when its own hostname only maps to loopback.
+# Prefer the configured cluster interface, else the source address the kernel
+# would use for outbound traffic. Deliberately not `hostname -I`: it lists every
+# interface in unspecified order and is not IPv4-only, so it can hand back a
+# docker bridge or management address that peers cannot reach.
+_MAD_LOCAL_IP=""
+if [ -n "${{NCCL_SOCKET_IFNAME:-}}" ]; then
+    _MAD_LOCAL_IP=$(ip -4 -o addr show dev "${{NCCL_SOCKET_IFNAME%%,*}}" 2>/dev/null \\
+        | awk '{{print $4}}' | cut -d/ -f1 | grep -vE '^127\\.' | head -n1)
+fi
+if [ -z "$_MAD_LOCAL_IP" ]; then
+    _MAD_LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null \\
+        | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
+fi
+
+_MAD_NODELIST="${{{self._launch_nodelist_var}}}"
+if command -v mad_expand_nodelist >/dev/null 2>&1; then
+    _MAD_NODES=$(mad_expand_nodelist "$_MAD_NODELIST")
+elif command -v scontrol >/dev/null 2>&1; then
+    _MAD_NODES=$(scontrol show hostnames "$_MAD_NODELIST" 2>/dev/null || true)
+else
+    _MAD_NODES=$(echo "$_MAD_NODELIST" | tr ',' '\\n')
+fi
+SLURM_NODE_IPS=$(echo "$_MAD_NODES" | while read node; do
+    [ -z "$node" ] && continue
+    node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
+    # Only the local node may fall back to its own address; doing this for a peer
+    # would publish this node's IP in that peer's slot. The list holds NodeName
+    # values, which may differ from the machine's hostname when the config sets
+    # NodeHostname, so ask SLURM first and keep the hostnames for when it is unset.
+    if [ -z "$node_ip" ] && {{ [ "$node" = "${{SLURMD_NODENAME:-}}" ] \\
+        || [ "$node" = "$(hostname -s)" ] || [ "$node" = "$(hostname)" ]; }}; then
+        node_ip="$_MAD_LOCAL_IP"
+    fi
+    if [ -z "$node_ip" ]; then
+        echo "UNRESOLVED:$node"
+    else
+        echo "$node_ip"
+    fi
+done | tr '\\n' ',' | sed 's/,$//')
+
+# A peer we cannot resolve must fail the job, not silently corrupt the peer list.
+# Empty first: the list is built through a pipeline, so a failing `scontrol`
+# yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
+# the barrier exactly like the loopback one did.
+if [ -z "$SLURM_NODE_IPS" ]; then
+    echo "ERROR: empty node list from '${{{self._launch_nodelist_var}}}'" >&2
+    exit 1
+fi
+case "$SLURM_NODE_IPS" in
+    *UNRESOLVED:*)
+        echo "ERROR: no non-loopback address for node(s): $(echo "$SLURM_NODE_IPS" | tr ',' '\\n' | grep '^UNRESOLVED:' | cut -d: -f2 | tr '\\n' ' ')" >&2
+        exit 1
+        ;;
+esac
+"""
+
     def _generate_sglang_disagg_command(
         self, nnodes: int, nproc_per_node: int, master_port: int
     ) -> str:
@@ -1484,61 +1686,11 @@ export SGLANG_TP_SIZE={nproc_per_node}
 # Master coordination
 export MASTER_PORT={master_port}
 
-# Build node IP list from SLURM. Each node must resolve to a real (non-loopback)
-# address: on Ubuntu /etc/hosts maps the local hostname to 127.0.1.1, so a plain
-# `getent hosts "$node"` returns the loopback for whichever node runs this loop.
-# Every node then publishes its own entry as 127.0.1.1, which poisons downstream
-# rendezvous/barrier peer lists — an all-nodes barrier can never be satisfied.
-# Skip 127.* and fall back to the primary non-loopback interface for the local node.
-# Address this node advertises when its own hostname only maps to loopback.
-# Prefer the configured cluster interface, else the source address the kernel
-# would use for outbound traffic. Deliberately not `hostname -I`: it lists every
-# interface in unspecified order and is not IPv4-only, so it can hand back a
-# docker bridge or management address that peers cannot reach.
-_MAD_LOCAL_IP=""
-if [ -n "${{NCCL_SOCKET_IFNAME:-}}" ]; then
-    _MAD_LOCAL_IP=$(ip -4 -o addr show dev "${{NCCL_SOCKET_IFNAME%%,*}}" 2>/dev/null \\
-        | awk '{{print $4}}' | cut -d/ -f1 | grep -vE '^127\\.' | head -n1)
-fi
-if [ -z "$_MAD_LOCAL_IP" ]; then
-    _MAD_LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null \\
-        | awk '{{for (i=1; i<=NF; i++) if ($i == "src") {{print $(i+1); exit}}}}')
-fi
-
-SLURM_NODE_IPS=$(scontrol show hostname ${{{self._launch_nodelist_var}}} | while read node; do
-    node_ip=$(getent ahostsv4 "$node" | awk '$1 !~ /^127\\./ {{print $1; exit}}')
-    # Only the local node may fall back to its own address; doing this for a peer
-    # would publish this node's IP in that peer's slot. The list holds NodeName
-    # values, which may differ from the machine's hostname when the config sets
-    # NodeHostname, so ask SLURM first and keep the hostnames for when it is unset.
-    if [ -z "$node_ip" ] && {{ [ "$node" = "${{SLURMD_NODENAME:-}}" ] \\
-        || [ "$node" = "$(hostname -s)" ] || [ "$node" = "$(hostname)" ]; }}; then
-        node_ip="$_MAD_LOCAL_IP"
-    fi
-    if [ -z "$node_ip" ]; then
-        echo "UNRESOLVED:$node"
-    else
-        echo "$node_ip"
-    fi
-done | tr '\\n' ',' | sed 's/,$//')
-
-# A peer we cannot resolve must fail the job, not silently corrupt the peer list.
-# Empty first: the list is built through a pipeline, so a failing `scontrol`
-# yields "" rather than an UNRESOLVED marker, and an empty peer list would hang
-# the barrier exactly like the loopback one did.
-if [ -z "$SLURM_NODE_IPS" ]; then
-    echo "ERROR: empty node list from 'scontrol show hostname ${{{self._launch_nodelist_var}}}'" >&2
-    exit 1
-fi
-case "$SLURM_NODE_IPS" in
-    *UNRESOLVED:*)
-        echo "ERROR: no non-loopback address for node(s): $(echo "$SLURM_NODE_IPS" | tr ',' '\\n' | grep '^UNRESOLVED:' | cut -d: -f2 | tr '\\n' ' ')" >&2
-        exit 1
-        ;;
-esac
-
+{self._sglang_node_ips_script(nnodes)}
 export SGLANG_NODE_IPS="$SLURM_NODE_IPS"
-export SGLANG_NODE_RANK=${{SLURM_PROCID}}
+# Node rank: stock SLURM sets SLURM_PROCID per srun task. Spur leaves it empty
+# and instead provides NODE_RANK / PMI_RANK / SLURM_NODEID. Fall back in order.
+export SGLANG_NODE_RANK=${{SLURM_PROCID:-${{NODE_RANK:-${{PMI_RANK:-${{SLURM_NODEID:-0}}}}}}}}
 
 echo "=========================================="
 echo "SGLang Disaggregated Cluster Info"
@@ -1574,9 +1726,16 @@ echo "=========================================="
 export MAD_MULTI_NODE_RUNNER="deepspeed --num_gpus={nproc_per_node}"'''
         else:
             return f'''# DeepSpeed multi-node setup
-# Generate hostfile dynamically from SLURM
+# Generate hostfile dynamically from SLURM (scheduler-portable nodelist expansion).
+if command -v mad_expand_nodelist >/dev/null 2>&1; then
+    _MAD_DS_NODES=$(mad_expand_nodelist "${{{self._launch_nodelist_var}}}")
+elif command -v scontrol >/dev/null 2>&1; then
+    _MAD_DS_NODES=$(scontrol show hostnames "${{{self._launch_nodelist_var}}}" 2>/dev/null || true)
+else
+    _MAD_DS_NODES=$(echo "${{{self._launch_nodelist_var}}}" | tr ',' '\\n')
+fi
 cat > /tmp/deepspeed_hostfile_{self.job_tag}.txt << EOF
-$(scontrol show hostnames ${self._launch_nodelist_var} | awk -v slots={nproc_per_node} '{{print $1" slots="slots}}')
+$(echo "$_MAD_DS_NODES" | awk -v slots={nproc_per_node} 'NF{{print $1" slots="slots}}')
 EOF
 export MAD_MULTI_NODE_RUNNER="deepspeed --hostfile=/tmp/deepspeed_hostfile_{self.job_tag}.txt --master_addr=${{MASTER_ADDR}} --master_port={master_port}"'''
 
@@ -1751,13 +1910,24 @@ export MASTER_PORT={master_port}
         # Single-node: we still run the check so bad nodes (e.g. Docker broken) get excluded;
         # we never gate submission for nodes==1 so behavior stays backward compatible.
         # Health-check srun invocations create SLURM jobs; we cancel them after preflight.
-        enable_preflight = self.slurm_config.get("enable_node_check", True)
+        # Not applicable to spur: the check runs `srun -w <node>`, which spur
+        # executes on the head node instead of the requested one, and it pins the
+        # job to a multi-node `#SBATCH --nodelist`. Under the spur job array every
+        # task requests `--nodes=1`, so a multi-node nodelist would make each task
+        # demand every node (and, with --exclusive, deadlock the rendezvous).
+        enable_preflight = (
+            self.slurm_config.get("enable_node_check", True) and not self.IS_SPUR
+        )
         auto_cleanup = self.slurm_config.get("auto_cleanup_nodes", False)
         allow_submit_without_clean = self.slurm_config.get(
             "allow_submit_without_clean_nodes", False
         )
         clean_nodes: List[str] = []
         health_check_job_name: Optional[str] = None
+        if self.IS_SPUR and self.slurm_config.get("enable_node_check"):
+            self.console.print(
+                "[dim]Node health preflight is not supported on spur; skipping.[/dim]"
+            )
 
         if (
             enable_preflight
@@ -1810,7 +1980,12 @@ export MASTER_PORT={master_port}
                 # because the cluster is full. Treat that exactly like enable_node_check
                 # being off: no exclusion, no gate, no nodelist pin, and let SLURM
                 # schedule.
-                inconclusive = getattr(selector, "health_check_inconclusive", False)
+                # `is True`, not a truthiness check: a test double that fabricates
+                # attributes must not stand the gate down. Only an explicit True
+                # from SlurmNodeSelector means the probe learned nothing.
+                inconclusive = (
+                    getattr(selector, "health_check_inconclusive", False) is True
+                )
 
                 # Gate: do not submit if not enough clean nodes (multi-node only; single-node always allowed)
                 if (
@@ -1848,13 +2023,39 @@ export MASTER_PORT={master_port}
         # ==================== END PREFLIGHT ====================
 
         try:
-            # Submit job to SLURM (runs locally on login node)
-            result = subprocess.run(
-                ["sbatch", str(self.script_path)],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            # Submit job to SLURM (runs locally on login node).
+            # Spur compatibility: spur's control plane is Raft-based and can
+            # transiently reject submissions with "not the Raft leader" / "no
+            # leader elected yet" during leader election. Retry a few times.
+            _SUBMIT_RETRIES = 6
+            _SUBMIT_RETRY_DELAY = 5  # seconds
+            _TRANSIENT_MARKERS = (
+                "not the raft leader",
+                "no leader elected",
+                "service is currently unavailable",
+                "leader elected yet",
             )
+            result = None
+            for _attempt in range(1, _SUBMIT_RETRIES + 1):
+                result = subprocess.run(
+                    ["sbatch", str(self.script_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    break
+                _err = (result.stderr or "").lower()
+                _is_transient = any(m in _err for m in _TRANSIENT_MARKERS)
+                if _is_transient and _attempt < _SUBMIT_RETRIES:
+                    self.console.print(
+                        f"[dim yellow]sbatch transient scheduler error "
+                        f"(attempt {_attempt}/{_SUBMIT_RETRIES}), retrying in "
+                        f"{_SUBMIT_RETRY_DELAY}s...[/dim yellow]"
+                    )
+                    time.sleep(_SUBMIT_RETRY_DELAY)
+                    continue
+                break
 
             if result.returncode == 0:
                 # Parse job ID: "Submitted batch job 12345"
@@ -1920,7 +2121,9 @@ export MASTER_PORT={master_port}
         self.console.print(f"  Job ID: {self.existing_job_id}")
         if run_id != self.existing_job_id:
             self.console.print(f"  Run ID: {run_id}")
-        self.console.print(f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes")
+        self.console.print(
+            f"  Using {self.nodes} of {self.allocation_nodes} allocated nodes"
+        )
         self.console.print(f"  GPUs per node: {self.gpus_per_node}")
         self.console.print(f"  Script: {self.script_path}")
         self.console.print(f"\n[dim]Executing: bash {self.script_path}[/dim]\n")
@@ -1936,25 +2139,29 @@ export MASTER_PORT={master_port}
             proc = subprocess.Popen(
                 ["bash", str(self.script_path)], start_new_session=True
             )
+            # os._exit on SIGINT never raises into the wait() handler below.
+            cancel_hook = lifecycle.register_cancel_hook(
+                lambda: self._signal_process_group(proc)
+            )
             try:
-                proc.wait(timeout=subprocess_timeout(timeout))
-            except BaseException:
-                self._stop_process_group(proc)
-                raise
-            result = subprocess.CompletedProcess(proc.args, proc.returncode)
+                try:
+                    proc.wait(timeout=subprocess_timeout(timeout))
+                except BaseException:
+                    self._stop_process_group(proc)
+                    raise
+                result = subprocess.CompletedProcess(proc.args, proc.returncode)
 
-            if result.returncode == 0:
-                self.console.print(
-                    f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
-                )
-                return DeploymentResult(
-                    status=DeploymentStatus.SUCCESS,
-                    deployment_id=run_id,
-                    message=f"Completed inside existing allocation {self.existing_job_id}",
-                    logs_path=str(self.output_dir),
-                    skip_monitoring=True,  # Already ran synchronously, no need to poll
-                )
-            else:
+                if result.returncode == 0:
+                    self.console.print(
+                        f"\n[green]✓ Script completed successfully in allocation {self.existing_job_id}[/green]"
+                    )
+                    return DeploymentResult(
+                        status=DeploymentStatus.SUCCESS,
+                        deployment_id=run_id,
+                        message=f"Completed inside existing allocation {self.existing_job_id}",
+                        logs_path=str(self.output_dir),
+                        skip_monitoring=True,  # Already ran synchronously, no need to poll
+                    )
                 self.console.print(
                     f"\n[red]✗ Script failed with exit code {result.returncode}[/red]"
                 )
@@ -1965,11 +2172,11 @@ export MASTER_PORT={master_port}
                     logs_path=str(self.output_dir),
                     skip_monitoring=True,  # Already ran synchronously
                 )
+            finally:
+                lifecycle.unregister_cancel_hook(cancel_hook)
 
         except subprocess.TimeoutExpired:
-            self.console.print(
-                f"\n[red]✗ Script timed out after {timeout}s[/red]"
-            )
+            self.console.print(f"\n[red]✗ Script timed out after {timeout}s[/red]")
             return DeploymentResult(
                 status=DeploymentStatus.FAILED,
                 deployment_id=run_id,
@@ -1993,6 +2200,20 @@ export MASTER_PORT={master_port}
         models = (self.manifest or {}).get("built_models") or {}
         model_info = next(iter(models.values()), {})
         return resolve_run_timeout(model_info, self.config.cli_timeout)
+
+    @staticmethod
+    def _signal_process_group(proc: subprocess.Popen) -> None:
+        """Stop an in-place step immediately.
+
+        The signal handler cannot wait out ``_stop_process_group``'s grace
+        period. SIGTERM lets srun relay the cancel; SIGKILL follows at once
+        for tasks that ignore it.
+        """
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, OSError):
+                return
 
     @staticmethod
     def _stop_process_group(proc: subprocess.Popen, grace: float = 30.0) -> None:
@@ -2859,7 +3080,9 @@ export MASTER_PORT={master_port}
         # so a script writing to $(pwd) lands here.
         scripts_rel = (model_info or {}).get("scripts", "")
         if scripts_rel and self.config.manifest_file:
-            script_path = Path(self.config.manifest_file).parent.absolute() / scripts_rel
+            script_path = (
+                Path(self.config.manifest_file).parent.absolute() / scripts_rel
+            )
             search_dirs.append(script_path.parent)
         search_dirs.extend(
             [
@@ -3001,8 +3224,12 @@ export MASTER_PORT={master_port}
                     )
                 else:
                     if cwd_perf.exists():
-                        with open(perf_csv_path, "r") as src, open(cwd_perf, "a") as dst:
-                            next(src, None)  # skip per-job header so cwd CSV stays single-headed
+                        with open(perf_csv_path, "r") as src, open(
+                            cwd_perf, "a"
+                        ) as dst:
+                            next(
+                                src, None
+                            )  # skip per-job header so cwd CSV stays single-headed
                             for line in src:
                                 dst.write(line)
                     else:
@@ -3083,8 +3310,14 @@ export MASTER_PORT={master_port}
         best_name, best_size = None, None
         for key, info in (self.manifest.get("built_images") or {}).items():
             size = info.get("image_size_bytes")
-            if isinstance(size, int) and size > 0 and (best_size is None or size > best_size):
-                best_name = info.get("registry_image") or info.get("docker_image") or key
+            if (
+                isinstance(size, int)
+                and size > 0
+                and (best_size is None or size > best_size)
+            ):
+                best_name = (
+                    info.get("registry_image") or info.get("docker_image") or key
+                )
                 best_size = size
         return best_name, best_size
 

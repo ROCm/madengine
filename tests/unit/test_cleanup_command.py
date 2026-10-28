@@ -67,9 +67,17 @@ class TestListing:
         with patch.object(lifecycle, "docker", return_value=(0, "garbage")):
             assert cleanup_module._list_madengine_containers() == []
 
-    def test_silent_daemon_yields_nothing(self):
+    def test_silent_daemon_is_an_error(self):
         with patch.object(lifecycle, "docker", return_value=(None, "timed out")):
-            assert cleanup_module._list_madengine_containers() == []
+            with pytest.raises(cleanup_module.DockerUnreachable) as exc:
+                cleanup_module._list_madengine_containers()
+        assert "timed out" in str(exc.value)
+
+    def test_docker_ps_failure_is_an_error(self):
+        with patch.object(lifecycle, "docker", return_value=(1, "permission denied")):
+            with pytest.raises(cleanup_module.DockerUnreachable) as exc:
+                cleanup_module._list_madengine_containers()
+        assert "permission denied" in str(exc.value)
 
 
 class TestPidLiveness:
@@ -107,6 +115,24 @@ class TestCleanupCommand:
         assert result.exit_code == ExitCode.SUCCESS
         assert reaped == []
 
+    def test_empty_listing_is_success(self):
+        with patch.object(lifecycle, "docker", return_value=(0, "")):
+            result = runner.invoke(app, ["cleanup"])
+        assert result.exit_code == ExitCode.SUCCESS
+        assert "No madengine containers found" in result.stdout
+
+    def test_unreachable_docker_is_a_failure(self):
+        with patch.object(lifecycle, "docker", return_value=(None, "timed out")):
+            result = runner.invoke(app, ["cleanup"])
+        assert result.exit_code == ExitCode.FAILURE
+        assert "did not answer" in result.stdout
+
+    def test_docker_ps_failure_is_a_failure(self):
+        with patch.object(lifecycle, "docker", return_value=(1, "permission denied")):
+            result = runner.invoke(app, ["cleanup"])
+        assert result.exit_code == ExitCode.FAILURE
+        assert "did not answer" in result.stdout
+
     def test_reaps_containers_whose_owner_is_gone(self):
         result, reaped = self._invoke(
             [{"id": "abc", "name": "c1", "owner_pid": DEAD_PID, "state": "running"}]
@@ -139,7 +165,14 @@ class TestCleanupCommand:
 
     def test_dry_run_removes_nothing(self):
         result, reaped = self._invoke(
-            [{"id": "abcdef123456", "name": "c1", "owner_pid": DEAD_PID, "state": "running"}],
+            [
+                {
+                    "id": "abcdef123456",
+                    "name": "c1",
+                    "owner_pid": DEAD_PID,
+                    "state": "running",
+                }
+            ],
             args=["--dry-run"],
         )
         assert result.exit_code == ExitCode.SUCCESS
@@ -162,4 +195,5 @@ class TestCleanupCommand:
             reap_result={"removed": False, "wedged": False, "stuck_pids": []},
         )
         assert result.exit_code == ExitCode.FAILURE
-        assert "Removed 0" in result.stdout
+        plain = result.stdout.replace("\x1b[1m", "").replace("\x1b[0m", "")
+        assert "Removed 0" in plain
