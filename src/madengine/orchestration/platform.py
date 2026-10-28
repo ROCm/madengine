@@ -1,25 +1,28 @@
 """Resolve the execution platform from an additional_context dict.
 
 ``platform`` is a string. Omitted means Docker, which is the historical
-default. ``"bare_metal"`` selects the conda backend. Conda settings live in
+default. ``"podman"`` uses the same local container path with the Podman
+CLI. ``"bare_metal"`` selects the conda backend. Conda settings live in
 the ``conda`` object, not in a ``bare_metal`` key.
 """
 
 from typing import Any, Dict, Optional
 
+from madengine.core.container_runtime import configure_container_cli
 from madengine.core.errors import ConfigurationError
 
-SUPPORTED_CONTEXT_PLATFORMS = ("docker", "bare_metal")
+SUPPORTED_CONTEXT_PLATFORMS = ("docker", "podman", "bare_metal")
 _SCHEDULER_KEYS = ("slurm", "k8s", "kubernetes", "llm_d")
 
 
 def resolve_context_platform(config: Optional[Dict[str, Any]]) -> str:
-    """Return ``docker`` or ``bare_metal`` for this additional_context.
+    """Return ``docker``, ``podman``, or ``bare_metal`` for this context.
 
     Raises:
         ConfigurationError: The dict uses the retired ``bare_metal`` key,
-            names an unknown platform, puts a ``conda`` block on a Docker
-            run, or combines ``bare_metal`` with a scheduler block.
+            names an unknown platform, puts a ``conda`` block on a container
+            run, or combines ``bare_metal`` or ``podman`` with a scheduler
+            block.
     """
     config = config or {}
     if "bare_metal" in config:
@@ -38,8 +41,11 @@ def resolve_context_platform(config: Optional[Dict[str, Any]]) -> str:
         raw = "docker"
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigurationError(
-            'platform must be a string such as "docker" or "bare_metal".',
-            suggestions=['Example: {"platform": "bare_metal", "conda": {...}}'],
+            'platform must be a string such as "docker", "podman", or "bare_metal".',
+            suggestions=[
+                'Example: {"platform": "podman"}',
+                'Example: {"platform": "bare_metal", "conda": {...}}',
+            ],
         )
     platform = raw.strip().lower()
     if platform not in SUPPORTED_CONTEXT_PLATFORMS:
@@ -48,6 +54,11 @@ def resolve_context_platform(config: Optional[Dict[str, Any]]) -> str:
             suggestions=[
                 "Supported platforms: " + ", ".join(SUPPORTED_CONTEXT_PLATFORMS) + ".",
             ],
+        )
+    if platform == "podman" and str(config.get("gpu_vendor", "")).upper() == "NVIDIA":
+        raise ConfigurationError(
+            "platform 'podman' does not yet support NVIDIA GPU runs.",
+            suggestions=["Use platform 'docker' for NVIDIA GPUs."],
         )
 
     conda = config.get("conda")
@@ -66,15 +77,34 @@ def resolve_context_platform(config: Optional[Dict[str, Any]]) -> str:
             ],
         )
 
-    if platform == "bare_metal":
+    if platform in ("bare_metal", "podman"):
         present = [key for key in _SCHEDULER_KEYS if key in config]
         if present:
+            if platform == "bare_metal":
+                suggestion = "Remove the scheduler block to run conda on this machine."
+            else:
+                suggestion = "Remove the scheduler block to run Podman on this machine."
             raise ConfigurationError(
-                "platform 'bare_metal' cannot be combined with "
+                f"platform {platform!r} cannot be combined with "
                 + ", ".join(present)
                 + ".",
-                suggestions=[
-                    "Remove the scheduler block to run conda on this machine.",
-                ],
+                suggestions=[suggestion],
             )
+    return platform
+
+
+def apply_context_platform(config: Optional[Dict[str, Any]]) -> str:
+    """Resolve ``platform`` and configure the local Docker command path.
+
+    ``podman`` installs a process-local Docker-to-Podman shim. ``docker`` and
+    ``bare_metal`` leave the existing Docker command path unchanged.
+
+    Args:
+        config: The additional_context dict, or None.
+
+    Returns:
+        str: The resolved platform.
+    """
+    platform = resolve_context_platform(config)
+    configure_container_cli(platform)
     return platform

@@ -239,12 +239,18 @@ class BuildOrchestrator:
                 ],
             )
 
-        # Handle bare-metal (conda) build: create conda envs, no Docker build.
-        # platform "bare_metal" selects this path. Omitted platform stays Docker.
-        from madengine.orchestration.platform import resolve_context_platform
+        # platform "bare_metal" selects conda. "podman" keeps this container
+        # path and switches the CLI. Omitted platform stays Docker.
+        from madengine.orchestration.platform import apply_context_platform
 
-        if resolve_context_platform(self.additional_context) == "bare_metal":
+        platform = apply_context_platform(self.additional_context)
+        if platform == "bare_metal":
             return self._execute_bare_metal_build(manifest_output=manifest_output)
+        if platform == "podman" and build_on_compute:
+            raise ConfigurationError(
+                "platform 'podman' does not support --build-on-compute.",
+                suggestions=["Run the build locally or use platform 'docker'."],
+            )
 
         # Handle pre-built image mode
         if use_image:
