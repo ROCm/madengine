@@ -306,6 +306,25 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
             raise typer.Exit(ExitCode.INVALID_ARGS)
 
 
+def _validate_platform(context: Dict[str, Any]) -> None:
+    """Reject a platform string this branch does not run.
+
+    Omitted platform stays Docker. ``bare_metal`` selects conda. The retired
+    ``bare_metal`` object, an unknown platform, and a conda block on a Docker
+    run fail here, before a build or a scheduler submission.
+    """
+    from madengine.core.errors import ConfigurationError
+    from madengine.orchestration.platform import resolve_context_platform
+
+    try:
+        resolve_context_platform(context)
+    except ConfigurationError as exc:
+        console.print(f"❌ Invalid platform: [red]{exc}[/red]")
+        for suggestion in exc.suggestions or []:
+            console.print(f"💡 [green]{suggestion}[/green]")
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+
+
 def finalize_additional_context_dict(
     context: Dict[str, Any],
     *,
@@ -337,6 +356,7 @@ def finalize_additional_context_dict(
     _normalize_docker_build_arg_values(context)
     _validate_gpu_vendor_guest_after_defaults(context)
     _validate_launcher_after_defaults(context)
+    _validate_platform(context)
     return context
 
 
@@ -473,6 +493,13 @@ def process_batch_manifest_entries(
         if not build_new:
             # Initialize with a safe fallback so the except block can always reference it
             dockerfile_matched = "unknown"
+            # Kept outside the try so the handler below can still see what was discovered. Without
+            # it the fallback entry is built from a hardcoded field list and everything the card
+            # actually carried -- additional_docker_run_options, env_vars, multiple_results, data
+            # -- is dropped, so the run proceeds against a different configuration than the one
+            # the card describes, and says nothing about it.
+            discovered: dict = {}
+
             # Find the model configuration by discovering models with this tag
             try:
                 # Create a temporary args object to discover the model
@@ -493,6 +520,7 @@ def process_batch_manifest_entries(
 
                 for model_info in models:
                     if model_info["name"] == model_name:
+                        discovered = model_info
                         # Get dockerfile
                         dockerfile = model_info.get("dockerfile")
                         dockerfile_specified = (
@@ -574,16 +602,29 @@ def process_batch_manifest_entries(
                     "registry_image": model_registry_image or "",
                     "registry": model_registry or registry or "dockerhub",
                 }
-                build_manifest["built_models"][synthetic_image_name] = {
-                    "name": model_name,
-                    "dockerfile": f"docker/{model_name}",
-                    "scripts": f"scripts/{model_name}/run.sh",
-                    "n_gpus": "1",
-                    "owner": "",
-                    "training_precision": "",
-                    "tags": [],
-                    "args": "",
-                }
+                # Start from whatever was discovered, so a card's own fields survive the
+                # fallback. Defaults fill only what is missing.
+                fallback_entry = dict(discovered)
+                fallback_entry.setdefault("name", model_name)
+                fallback_entry.setdefault("dockerfile", f"docker/{model_name}")
+                fallback_entry.setdefault("scripts", f"scripts/{model_name}/run.sh")
+                fallback_entry.setdefault("n_gpus", "1")
+                fallback_entry.setdefault("owner", "")
+                fallback_entry.setdefault("training_precision", "")
+                fallback_entry.setdefault("tags", [])
+                fallback_entry.setdefault("args", "")
+                if not discovered:
+                    # Said plainly: the run will go ahead against defaults, and a card's docker
+                    # options, env vars and results declaration are not among them. That is a
+                    # different configuration from the one being asked for, and the only sign of
+                    # it used to be the line above.
+                    console.print(
+                        f"Warning: {model_name} was not discovered, so its manifest entry is "
+                        f"defaults only -- additional_docker_run_options, env_vars, "
+                        f"multiple_results and data are absent. The run will not match the "
+                        f"model card."
+                    )
+                build_manifest["built_models"][synthetic_image_name] = fallback_entry
 
     # Save the updated manifest
     with open(manifest_output, "w") as f:

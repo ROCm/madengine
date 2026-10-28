@@ -1,13 +1,16 @@
 # Deployment Guide
 
-Deploy madengine workloads to Kubernetes or SLURM clusters for distributed execution.
+Deploy madengine workloads to Kubernetes, SLURM, or Spur, or run them on this machine.
 
 ## Overview
 
 madengine supports these deployment backends:
 
+- **Local Docker** - Containers on this machine when no scheduler key is set
+- **Bare metal** - A conda prefix on this machine. Selected with `"platform": "bare_metal"`, checked before every scheduler key. See [bare-metal.md](bare-metal.md)
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **Spur** - Crusoe's SLURM-compatible scheduler. A `slurm` block with `scheduler: spur`, or `deploy: spur`, selects it. See [Spur](#spur-crusoe-scheduler)
 - **llm-d** - Benchmarking a Kubernetes-native distributed inference stack; see [llm-d.md](llm-d.md)
 
 Deployment is configured via `--additional-context` and happens automatically during the run phase.
@@ -18,11 +21,13 @@ Build once, then deploy the resulting manifest to any target:
 
 ```mermaid
 flowchart LR
-    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
+    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>image or conda prefix)]
     M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
     D --> T{detect target}
+    T -->|platform bare_metal| B[conda prefix on this machine]
     T -->|llm_d| I[llm-d benchmark Job]
     T -->|k8s / kubernetes| K[K8s Job]
+    T -->|slurm scheduler spur| U[Spur job array]
     T -->|slurm| S[SLURM script]
     T -->|neither| L[Local Docker]
 ```
@@ -33,14 +38,17 @@ No explicit `deploy` field is required — the target is inferred from the confi
 
 ```mermaid
 flowchart TD
-    A[additional_context] --> Q{which key?}
+    A[additional_context] --> P{platform bare_metal?}
+    P -->|yes| B[Bare metal conda]
+    P -->|no| Q{which key?}
     Q -->|llm_d| I[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
+    Q -->|slurm scheduler spur, or deploy spur| U[Spur job array]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
 
-`llm_d` is checked first: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job.
+`platform: bare_metal` is checked first. It cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. `llm_d` is checked next: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job. A `slurm` block whose `scheduler` is `spur`, or a top-level `deploy: spur` next to a `slurm` block, selects Spur at build time and at run time. Omitted `platform` stays Docker.
 
 ### Kubernetes Job naming
 
@@ -268,8 +276,51 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `reservation`: SLURM reservation name; forwarded to srun health/cleanup commands
 - `time`: Wall time limit (HH:MM:SS)
 - `exclusive`: Exclusive node access (default: `true`)
+- `scheduler`: SLURM flavor - `slurm` (default) or `spur` (see below)
+- `rendezvous_timeout`: spur only; seconds a node waits for rank 0 to publish `MASTER_ADDR` (default: 900)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
+
+### Spur (Crusoe) Scheduler
+
+Spur exposes SLURM-compatible CLI shims but `srun` cannot fan tasks out across
+nodes, so multi-node runs use a job **array** of single-node tasks instead: each
+array task runs on one node, `SLURM_ARRAY_TASK_ID` is the node rank, and the
+tasks self-form the cluster through a shared-filesystem rendezvous (rank 0
+publishes its transport IP; the other ranks read it as `MASTER_ADDR`).
+
+Select it with `slurm.scheduler`; everything else in the `slurm` block is
+unchanged:
+
+```json
+{
+  "slurm": {
+    "scheduler": "spur",
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "02:00:00"
+  }
+}
+```
+
+A job array carries no gang-scheduling guarantee, so tasks may start minutes
+apart. A node that does not see rank 0's address within `rendezvous_timeout`
+fails the run with a diagnostic rather than starting with an empty
+`MASTER_ADDR`; raise the timeout if your queue wait is longer than that.
+
+`slurm.output_dir` must be on a filesystem shared by every node - it holds the
+rendezvous files.
+
+The `srun`-based node health preflight (`enable_node_check`) is skipped on spur:
+`srun -w <node>` does not run on the requested node there, and the `--nodelist`
+it would pin conflicts with the job array, whose tasks each request one node.
+
+### Spur and `sglang-disagg`
+
+On stock SLURM, `SGLANG_NODE_IPS` is the job nodelist expanded to addresses, with `127.*` skipped (Ubuntu maps the hostname to `127.0.1.1` in `/etc/hosts`). On Spur each array task's nodelist contains only that task's node, so the same expansion is a single IP and the router starts without `--decode`.
+
+Every Spur rank publishes `ip_rank<N>` in the rendezvous directory before rank 0 writes `MASTER_ADDR`. Spur waits up to `rendezvous_timeout` and concatenates those files in rank order into `SGLANG_NODE_IPS`. The address is taken the same way as `MASTER_ADDR`: `NCCL_SOCKET_IFNAME` when it is set (default `ens3` in the task script), otherwise `hostname -I`. Stock SLURM still uses the nodelist.
 
 ### Multi-Node Training
 
@@ -382,6 +433,8 @@ scancel -u $USER
 | **Multi-node Setup** | Headless service + DNS | SLURM env vars | `InferencePool` + Endpoint Picker |
 | **Resource Management** | Declarative (YAML) | Batch script | Helm charts |
 | **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers | Benchmarking disaggregated serving |
+
+Bare metal is the local conda path and is documented in [bare-metal.md](bare-metal.md). Spur reuses the SLURM column's job model with a job array and a shared-filesystem rendezvous; see [Spur](#spur-crusoe-scheduler).
 
 ## Configuration Examples
 
@@ -541,6 +594,7 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 ## Next Steps
 
 - [Launchers Guide](launchers.md) - Distributed training and inference launchers
+- [Bare metal](bare-metal.md) - Conda execution on this machine
 - [llm-d Guide](llm-d.md) - Benchmarking the llm-d distributed inference stack
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations

@@ -21,7 +21,7 @@ PERF_CSV_HEADER = (
     "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
     "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
     "data_download_duration,build_number,additional_docker_run_options,"
-    "serving_mode"
+    "serving_mode,platform"
 )
 
 
@@ -84,12 +84,34 @@ def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
     perf_entry.to_csv("perf_entry.csv", index=False)
 
 
+def apply_result_axes(perf_entry: typing.Dict) -> None:
+    """Fill platform, and keep deployment_type as the scheduler.
+
+    ``platform`` is the machine environment (``docker`` or ``bare_metal``).
+    ``deployment_type`` is the scheduler (``local``, ``slurm``, ``kubernetes``,
+    ``llm-d``). A legacy bare-metal row that stored the platform in
+    ``deployment_type`` and ``conda`` in ``launcher`` is rewritten: conda sets
+    up the env and is not a launcher.
+    """
+    deployment = str(perf_entry.get("deployment_type") or "local")
+    if perf_entry.get("platform"):
+        return
+    if deployment == "bare_metal":
+        perf_entry["platform"] = "bare_metal"
+        perf_entry["deployment_type"] = "local"
+        if str(perf_entry.get("launcher") or "") == "conda":
+            perf_entry["launcher"] = "native"
+        return
+    perf_entry["platform"] = "docker"
+
+
 def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
     """Write the performance entry dictionary to a CSV file.
 
     Args:
         perf_entry: The performance entry dictionary.
     """
+    apply_result_axes(perf_entry)
     flatten_tags(perf_entry)
     js_df = pd.DataFrame(perf_entry, index=[0])
     perf_entry_df_to_csv(js_df)

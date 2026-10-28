@@ -12,6 +12,8 @@ Complete reference for all madengine CLI commands with detailed options and exam
   - [run](#run---execute-models)
   - [report](#report---generate-reports)
   - [database](#database---upload-to-mongodb)
+  - [cleanup](#cleanup---remove-orphaned-containers)
+  - [setup-page](#setup-page---generate-a-setup-picker)
 - [Exit Codes](#exit-codes)
 
 ## Overview
@@ -379,10 +381,14 @@ madengine run --config my_job.yaml --config distributed.nnodes=8
 
 **Deployment Targets:**
 
-- **Local** - Docker containers on local machine
-- **llm-d** - Detected when an `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
-- **Kubernetes** - Detected when `k8s` key present in context
-- **SLURM** - Detected when `slurm` key present in context
+Checked in this order:
+
+- **Bare metal** - `"platform": "bare_metal"`. A conda prefix on this machine. Omitted `platform` stays Docker. See [Bare metal](bare-metal.md)
+- **llm-d** - An `llm_d` key is present (checked before `k8s`, because an llm-d config also carries a `k8s` block). See [llm-d](llm-d.md)
+- **Kubernetes** - A `k8s` or `kubernetes` key is present
+- **Spur** - A `slurm` block with `scheduler: spur`, or `deploy: spur` next to a `slurm` block. See [Deployment](deployment.md#spur-crusoe-scheduler)
+- **SLURM** - A `slurm` key is present, or the launcher is `slurm_multi`
+- **Local Docker** - None of the above
 
 **Performance Output:**
 
@@ -621,6 +627,82 @@ madengine database \
 
 ---
 
+### `cleanup` - Remove Orphaned Containers
+
+Remove benchmark containers left behind when a run dies before it can clean up. By default only containers labelled `madengine.session` whose owning madengine process is gone are removed, so this is safe from an `if: always()` CI step or from cron while other benchmarks are running.
+
+**Usage:**
+
+```bash
+madengine cleanup [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--all` | | FLAG | `False` | Also remove containers whose owning madengine process is still running |
+| `--dry-run` | | FLAG | `False` | List what would be removed, remove nothing |
+
+**Exit codes:** `0` when nothing needs removing or every targeted container was removed. `1` when a container is still present and was not wedged, or when `docker ps` times out or returns an error — that is not reported as an empty host. `5` (`GPU_WEDGED`) when a container is still present after stop, kill, and remove, and the host PIDs are stuck in uninterruptible sleep or the daemon still reports the container. A `gpu_wedged.json` marker is written so CI can take the runner out of rotation.
+
+Local runs also stop themselves. Each container madengine starts runs a POSIX-shell watchdog as PID 1. The watchdog stops the container when that container's heartbeat file in the bind-mounted workspace goes stale. `--keep-alive` does not install the watchdog, and a cancel leaves that container running. Images without a shell fall back to `cat` as PID 1 and print a warning that the container is unwatched. A cancel also stops an in-place SLURM step, deletes a submitted SLURM or Kubernetes job, and uninstalls a managed llm-d stack.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MADENGINE_HEARTBEAT_INTERVAL` | Seconds between heartbeat refreshes | `15` |
+| `MADENGINE_HEARTBEAT_STALE_AFTER` | Seconds without a refresh before the watchdog stops the container | `120` |
+
+A non-integer or non-positive value falls back to the default, and the interval is kept below the staleness threshold.
+
+**Examples:**
+
+```bash
+# Sweep orphans after a cancelled CI job
+madengine cleanup
+
+# Show what would be removed
+madengine cleanup --dry-run
+
+# Also remove containers whose owner is still running
+madengine cleanup --all
+```
+
+---
+
+### `setup-page` - Generate a Setup Picker
+
+Write a self-contained HTML page from the current directory's `models.json`. The page lists models and context fields and shows the `madengine run` command to copy. It has no external assets, so it can be published as GitHub Pages. Generation fails if `models.json` is not in the current directory.
+
+**Usage:**
+
+```bash
+madengine setup-page [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--output` | `-o` | TEXT | `index.html` | Output HTML file path |
+| `--title` | | TEXT | `madengine Setup Picker` | Page title / heading |
+| `--repo-url` | | TEXT | `None` | Model repo URL used for clone instructions |
+| `--install-cmd` | | TEXT | package default | madengine install command shown on the page |
+| `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+
+**Examples:**
+
+```bash
+# Write index.html from the MAD repo root
+madengine setup-page
+
+# Publish under a different name and title
+madengine setup-page -o site/index.html --title "MAD setup" \
+  --repo-url https://github.com/ROCm/MAD
+```
+
+---
+
 ## Exit Codes
 
 madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect success or failure:
@@ -632,6 +714,7 @@ madengine uses standard exit codes so scripts and CI (e.g. Jenkins) can detect s
 | `2` | `BUILD_FAILURE` | One or more image builds failed (e.g. Docker build error) |
 | `3` | `RUN_FAILURE` | One or more model executions failed |
 | `4` | `INVALID_ARGS` | Invalid command-line arguments or configuration |
+| `5` | `GPU_WEDGED` | `madengine cleanup` could not remove a container, and the GPU looks wedged. The host needs a reboot before another benchmark |
 
 **Failure recording:** Pre-run failures (e.g. image pull, setup) and run failures are recorded in the performance table (`perf.csv`) with status `FAILURE`, so all attempted models appear in the CSV. The file is created automatically if missing.
 
@@ -769,6 +852,8 @@ madengine recognizes these environment variables:
 | `MONGO_PORT` | MongoDB port for database command | `27017` |
 | `MONGO_USER` | MongoDB username | None |
 | `MONGO_PASSWORD` | MongoDB password | None |
+| `MADENGINE_HEARTBEAT_INTERVAL` | Seconds between in-container heartbeat refreshes | `15` |
+| `MADENGINE_HEARTBEAT_STALE_AFTER` | Seconds without a refresh before the watchdog stops the container | `120` |
 
 > `MAD_CONTAINER_IMAGE` is **not** an environment variable. It is an
 > `--additional-context` key that selects a pre-built image and skips the build

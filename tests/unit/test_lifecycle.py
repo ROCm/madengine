@@ -284,7 +284,55 @@ class TestReapRegistered:
             lifecycle.reap_registered(verbose=False)
         assert reaped == ["name-1", "name-2"]
 
-    def test_budget_stops_the_sweep(self, state_dir):
+    def test_skips_keep_alive(self, state_dir):
+        lifecycle.register("cid-1", "name-1", keep_alive=True)
+        lifecycle.register("cid-2", "name-2")
+        reaped = []
+        with patch.object(
+            lifecycle,
+            "reap",
+            lambda ref, cid=None, verbose=True, deadline=None: reaped.append(ref)
+            or {"removed": True, "wedged": False, "stuck_pids": []},
+        ):
+            lifecycle.reap_registered(verbose=False)
+        assert reaped == ["name-2"]
+        assert [entry["id"] for entry in lifecycle.registered()] == ["cid-1"]
+
+
+class TestCancelHooks:
+    """Cluster teardown registered for the signal handler."""
+
+    def test_runs_hooks_newest_first(self):
+        seen = []
+        first = lifecycle.register_cancel_hook(lambda: seen.append("first"))
+        lifecycle.register_cancel_hook(lambda: seen.append("second"))
+        try:
+            lifecycle.run_cancel_hooks()
+        finally:
+            lifecycle.unregister_cancel_hook(first)
+            lifecycle._cancel_hooks.clear()
+        assert seen == ["second", "first"]
+
+    def test_a_failing_hook_does_not_skip_the_rest(self):
+        seen = []
+
+        def fail():
+            raise RuntimeError("helm down")
+
+        lifecycle.register_cancel_hook(lambda: seen.append("kept"))
+        lifecycle.register_cancel_hook(fail)
+        try:
+            lifecycle.run_cancel_hooks()
+        finally:
+            lifecycle._cancel_hooks.clear()
+        assert seen == ["kept"]
+
+    def test_unregistered_hook_does_not_run(self):
+        seen = []
+        token = lifecycle.register_cancel_hook(lambda: seen.append("gone"))
+        lifecycle.unregister_cancel_hook(token)
+        lifecycle.run_cancel_hooks()
+        assert seen == []
         for i in range(5):
             lifecycle.register(f"cid-{i}", f"name-{i}")
         reaped = []
@@ -494,6 +542,38 @@ time.sleep(60)
         code, out = self._run_child(tmp_path / "state", signum)
         assert code == 130, out
         assert "stopping containers" in out
+
+    def test_signal_runs_the_cancel_hook(self, tmp_path):
+        marker = tmp_path / "cancelled"
+        child = f"""
+import os, sys, time
+from madengine.core import lifecycle
+
+lifecycle.register_cancel_hook(lambda: open({str(marker)!r}, "w").write("ran"))
+lifecycle.install_signal_handlers()
+print("ready", flush=True)
+time.sleep(60)
+"""
+        env = dict(os.environ, MADENGINE_STATE_DIR=str(tmp_path / "state"))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            env=env,
+        )
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            proc.send_signal(signal.SIGINT)
+            out = proc.stdout.read()
+            proc.wait(timeout=60)
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        assert proc.returncode == 130, out
+        assert marker.read_text() == "ran"
 
     def test_registry_is_cleared_so_cleanup_does_not_chase_it(self, tmp_path):
         state = tmp_path / "state"
