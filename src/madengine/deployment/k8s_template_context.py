@@ -321,7 +321,8 @@ class KubernetesTemplateContextMixin:
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
+                model_args=model_info.get("args", ""),
             )
 
         elif launcher_type == "deepspeed":
@@ -339,7 +340,8 @@ class KubernetesTemplateContextMixin:
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
+                    model_args=model_info.get("args", ""),
                 )
             else:
                 # Python script - use DeepSpeed launcher
@@ -347,7 +349,8 @@ class KubernetesTemplateContextMixin:
                     nnodes=nnodes,
                     nproc_per_node=nproc_per_node,
                     master_port=master_port,
-                    model_script=model_script
+                    model_script=model_script,
+                    model_args=model_info.get("args", ""),
                 )
 
         elif launcher_type == "torchtitan":
@@ -360,7 +363,8 @@ class KubernetesTemplateContextMixin:
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
+                model_args=model_info.get("args", ""),
             )
 
         elif launcher_type == "vllm":
@@ -421,7 +425,8 @@ class KubernetesTemplateContextMixin:
                 nnodes=nnodes,
                 nproc_per_node=nproc_per_node,
                 master_port=master_port,
-                model_script=model_info.get("scripts", "run.sh")
+                model_script=model_info.get("scripts", "run.sh"),
+                model_args=model_info.get("args", ""),
             )
 
         elif launcher_type == "primus":

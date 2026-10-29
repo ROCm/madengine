@@ -3,9 +3,23 @@
 
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
+import shlex
 from pathlib import Path
 
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
+
+
+def _quoted_args_suffix(model_args: str) -> str:
+    """
+    Return a model card's ``args`` as a leading-space suffix for a command line.
+
+    Each word is shell-quoted, as the direct-script, local and SLURM paths do, so an
+    arg with spaces or shell metacharacters reaches the script as one argument and
+    is never evaluated. Empty ``args`` give an empty suffix.
+    """
+    if not model_args or not model_args.strip():
+        return ""
+    return " " + " ".join(shlex.quote(a) for a in shlex.split(model_args))
 
 
 class KubernetesLauncherMixin:
@@ -24,7 +38,12 @@ class KubernetesLauncherMixin:
         return sn if sn is not None else self.job_name
 
     def _generate_torchrun_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
     ) -> str:
         """
         Generate torchrun launcher command for K8s Indexed Jobs.
@@ -46,6 +65,7 @@ class KubernetesLauncherMixin:
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
+            model_args: The model card's ``args``, passed to the script.
         
         Returns:
             Complete torchrun command string
@@ -74,14 +94,14 @@ class KubernetesLauncherMixin:
             if nnodes == 1:
                 return f"""export MAD_MULTI_NODE_RUNNER="torchrun --standalone --nproc_per_node={nproc_per_node}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
-cd {script_dir} && bash {script_name}"""
+cd {script_dir} && bash {script_name}{_quoted_args_suffix(model_args)}"""
             else:
                 return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
 export MASTER_ADDR="{self.job_name}-0.{self._k8s_headless_subdomain_label}.{self.namespace}.svc.cluster.local"
 export MASTER_PORT={master_port}
 export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc_per_node} --node_rank=${{JOB_COMPLETION_INDEX}} --master_addr=${{MASTER_ADDR}} --master_port={master_port}"
 export MAD_RUNTIME_NGPUS={nproc_per_node}
-cd {script_dir} && bash {script_name}"""
+cd {script_dir} && bash {script_name}{_quoted_args_suffix(model_args)}"""
         
         # For Python scripts, invoke torchrun directly
         # For single-node, simpler standalone command
@@ -90,7 +110,7 @@ cd {script_dir} && bash {script_name}"""
     --standalone \\
     --nnodes=1 \\
     --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
         
         # Multi-node: Use headless service DNS and JOB_COMPLETION_INDEX
         return f"""# Multi-node torchrun setup (Kubernetes Indexed Job)
@@ -117,10 +137,15 @@ torchrun \\
     --rdzv_id={self.job_name} \\
     --role=worker \\
     --tee=3 \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
     
     def _generate_deepspeed_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
     ) -> str:
         """
         Generate DeepSpeed launcher command for K8s Indexed Jobs.
@@ -140,6 +165,7 @@ torchrun \\
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
+            model_args: The model card's ``args``, passed to the script.
         
         Returns:
             Complete DeepSpeed launcher command string
@@ -175,7 +201,7 @@ echo "  NUM_GPUS: {nproc_per_node}"
 # DeepSpeed launcher (single-node)
 deepspeed --num_gpus={nproc_per_node} \\
     --master_port={master_port} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
         
         # Multi-node: Use K8s headless service for coordination
         return f"""# Multi-node DeepSpeed setup (Kubernetes Indexed Job)
@@ -216,10 +242,15 @@ deepspeed --hostfile=/tmp/hostfile \\
     --master_port=$MASTER_PORT \\
     --num_nodes={nnodes} \\
     --num_gpus={nproc_per_node} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
     
     def _generate_bash_script_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
     ) -> str:
         """
         Generate command to execute a bash script directly.
@@ -235,6 +266,7 @@ deepspeed --hostfile=/tmp/hostfile \\
             nproc_per_node: GPUs per node
             master_port: Master communication port
             model_script: Path to the bash script
+            model_args: The model card's ``args``, passed to the script.
         
         Returns:
             Command to execute the bash script with environment setup
@@ -261,7 +293,7 @@ echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
 echo ""
 
 # Execute the bash script directly
-bash {model_script}"""
+bash {model_script}{_quoted_args_suffix(model_args)}"""
         
         # Multi-node: Use K8s headless service for coordination
         return f"""# Bash Script Execution (Multi-Node)
@@ -285,10 +317,15 @@ echo "  NPROC_PER_NODE: $NPROC_PER_NODE"
 echo ""
 
 # Execute the bash script directly
-bash {model_script}"""
+bash {model_script}{_quoted_args_suffix(model_args)}"""
     
     def _generate_torchtitan_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
     ) -> str:
         """
         Generate TorchTitan launcher command for K8s Indexed Jobs.
@@ -315,6 +352,7 @@ bash {model_script}"""
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port. Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
+            model_args: The model card's ``args``, passed to the script.
         
         Returns:
             Complete torchtitan launch command string with environment setup
@@ -361,7 +399,7 @@ torchrun \\
     --standalone \\
     --nnodes=1 \\
     --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
         
         # Multi-node: Use headless service DNS and enable all parallelism strategies
         return f"""# TorchTitan multi-node setup (K8s Indexed Job)
@@ -398,7 +436,7 @@ torchrun \\
     --rdzv_id={self.job_name} \\
     --role=worker \\
     --tee=3 \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
     
     def _generate_sglang_disagg_command(
         self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
@@ -597,7 +635,7 @@ echo "SGLang Disaggregated setup complete"
         # Run script from its directory so relative paths (run_vllm.py, configs/) resolve
         script_dir = str(Path(model_script).parent)
         script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = f"cd /workspace/{script_dir} && bash {script_name}{_quoted_args_suffix(model_args)}"
         
         # For single-node, simple TP setup (no Ray needed)
         if nnodes == 1:
@@ -718,7 +756,7 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
         # Run script from its directory so relative paths resolve; pass model args
         script_dir = str(Path(model_script).parent)
         script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = f"cd /workspace/{script_dir} && bash {script_name}{_quoted_args_suffix(model_args)}"
 
         # For single-node, simple TP setup
         if nnodes == 1:
@@ -777,7 +815,12 @@ echo "Starting SGLang with native multi-node launcher..."
 trap "ray stop --force 2>/dev/null || true" EXIT"""
 
     def _generate_megatron_command(
-        self, nnodes: int, nproc_per_node: int, master_port: int, model_script: str
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
     ) -> str:
         """
         Generate Megatron-LM launcher command for K8s Indexed Jobs.
@@ -801,6 +844,7 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
             nproc_per_node: GPUs per node. Must be >= 1.
             master_port: Master communication port (for NCCL). Must be 1-65535.
             model_script: Path to model's run script. Cannot be empty.
+            model_args: The model card's ``args``, passed to the script.
         
         Returns:
             Complete Megatron-LM launch setup with environment configuration
@@ -839,7 +883,7 @@ echo "  Total GPUs: {nproc_per_node}"
 torchrun \\
     --standalone \\
     --nproc_per_node={nproc_per_node} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
         
         # Multi-node: TP + PP
         else:
@@ -874,7 +918,7 @@ torchrun \\
     --node_rank=${{NODE_RANK}} \\
     --master_addr=${{MASTER_ADDR}} \\
     --master_port={master_port} \\
-    {model_script}"""
+    {model_script}{_quoted_args_suffix(model_args)}"""
 
     def _generate_primus_command(
         self,
@@ -962,11 +1006,9 @@ torchrun \\
 
         script_dir = str(Path(model_script).parent)
         script_name = str(Path(model_script).name)
-        args_tail = (model_args or "").strip()
-        if args_tail:
-            lines.append(f"cd {script_dir} && bash {script_name} {args_tail}")
-        else:
-            lines.append(f"cd {script_dir} && bash {script_name}")
+        lines.append(
+            f"cd {script_dir} && bash {script_name}{_quoted_args_suffix(model_args)}"
+        )
 
         return "\n".join(lines)
 
