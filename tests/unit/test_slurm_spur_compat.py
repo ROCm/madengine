@@ -184,12 +184,12 @@ class TestBuildOnComputeSlurmDirectives:
 
     def test_account_qos_and_gpus_reach_the_build_job(self, tmp_path):
         h = self._header(self._build_script(tmp_path, {
-            "partition": "amd-spur", "account": "amd-aifw-dev", "qos": "amd-burst-qos",
+            "partition": "spur-part", "account": "team-acct", "qos": "burst-qos",
             "build_gpus_per_node": 8,
         }))
-        assert "#SBATCH --partition=amd-spur" in h
-        assert "#SBATCH --account=amd-aifw-dev" in h
-        assert "#SBATCH --qos=amd-burst-qos" in h
+        assert "#SBATCH --partition=spur-part" in h
+        assert "#SBATCH --account=team-acct" in h
+        assert "#SBATCH --qos=burst-qos" in h
         assert "#SBATCH --gpus-per-node=8" in h
 
     def test_nothing_extra_by_default(self, tmp_path):

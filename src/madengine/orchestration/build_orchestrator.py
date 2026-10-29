@@ -963,7 +963,7 @@ class BuildOrchestrator:
         # default QoS cannot get a node, a build without them was refused while the run
         # would have been accepted. A build needs no GPUs, so it requests none unless
         # build_gpus_per_node is set -- for schedulers that refuse a job without a GPU
-        # request (Spur on crs-spur).
+        # request (e.g. Spur).
         build_directives = []
         if slurm_config.get("account"):
             build_directives.append(f"#SBATCH --account={slurm_config['account']}")

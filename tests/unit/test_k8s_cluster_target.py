@@ -61,8 +61,8 @@ class TestResolveTarget:
         assert _bare({"kubeconfig": kubeconfig, "context": "prod"})._resolve_kube_target() == (kubeconfig, "prod")
 
     def test_unknown_context_refuses_instead_of_falling_back(self, kubeconfig):
-        with pytest.raises(RuntimeError, match="'gpulab' is not in .*lab, prod.*Refusing"):
-            _bare({"kubeconfig": kubeconfig, "context": "gpulab"})._resolve_kube_target()
+        with pytest.raises(RuntimeError, match="'staging' is not in .*lab, prod.*Refusing"):
+            _bare({"kubeconfig": kubeconfig, "context": "staging"})._resolve_kube_target()
 
     def test_no_kubeconfig_anywhere_means_in_cluster(self, kubeconfig):
         assert _bare({})._resolve_kube_target() == (None, None)
