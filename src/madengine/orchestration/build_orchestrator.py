@@ -28,6 +28,7 @@ from madengine.core.errors import (
     create_error_context,
 )
 from madengine.deployment.common import is_self_managed_launcher
+from madengine.execution import image_spec
 from madengine.execution.docker_builder import DockerBuilder
 from madengine.execution.dockerfile_utils import (
     dockerfile_requires_explicit_mad_arch_build_arg,
@@ -502,6 +503,38 @@ class BuildOrchestrator:
                     "Check disk space for Docker builds",
                 ],
             ) from e
+
+    def explain(self) -> List[Dict]:
+        """Print how each selected model would be built, without building.
+
+        For an ``image_spec`` card this is the backend Dockerfile and the resolved
+        build plan; for any other card it is the hand-written Dockerfile.
+        """
+        models = DiscoverModels(args=self.args).run()
+        builder = DockerBuilder(self.context, self.console)
+        context_args = self.context.ctx.get("docker_build_arg", {})
+        rows = []
+        for model in models:
+            spec = image_spec.effective_image_spec(model, self.context.ctx)
+            for dockerfile in builder._get_dockerfiles_for_model(model):
+                row = {"model": model["name"], "dockerfile": dockerfile}
+                if spec:
+                    plan = image_spec.resolve(
+                        spec,
+                        builder._infer_gpu_vendor_from_dockerfile(dockerfile),
+                        context_args.get("MAD_SYSTEM_GPU_ARCHITECTURE"),
+                    )
+                    row["build_plan"] = plan.to_dict()
+                    card_args = model.get("docker_build_arg") or {}
+                    overridden = sorted(
+                        k for k in plan.build_args
+                        if k in context_args or k in card_args
+                    )
+                    if overridden:
+                        row["build_plan"]["overridden_args"] = overridden
+                rows.append(row)
+        self.rich_console.print_json(json.dumps(rows))
+        return rows
 
     def _execute_with_prebuilt_image(
         self,

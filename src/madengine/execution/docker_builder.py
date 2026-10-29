@@ -32,6 +32,7 @@ from madengine.execution.dockerfile_utils import (
     is_target_arch_compatible_with_variable,
     parse_dockerfile_gpu_variables,
 )
+from madengine.execution import image_spec
 from madengine.utils.ops import PythonicTee
 
 
@@ -309,6 +310,29 @@ class DockerBuilder:
                 continue
             run_build_arg[card_arg] = card_value
 
+        # image_spec args are the lowest layer: card and context docker_build_arg
+        # (and multi-arch/cred args) still win, so existing overrides keep working.
+        build_plan = None
+        overridden_args = []
+        spec = image_spec.effective_image_spec(model_info, self.context.ctx)
+        if spec:
+            gpu_arch = run_build_arg.get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            ) or self.context.ctx.get("docker_build_arg", {}).get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            )
+            build_plan = image_spec.resolve(
+                spec, self._infer_gpu_vendor_from_dockerfile(dockerfile), gpu_arch
+            )
+            for plan_arg, plan_value in build_plan.build_args.items():
+                if (
+                    plan_arg in self.context.ctx.get("docker_build_arg", {})
+                    or plan_arg in run_build_arg
+                ):
+                    overridden_args.append(plan_arg)
+                    continue
+                run_build_arg[plan_arg] = plan_value
+
         build_args = self.get_build_arg(run_build_arg)
 
         use_cache_str = "--no-cache" if clean_cache else ""
@@ -403,6 +427,18 @@ class DockerBuilder:
         image_size = self._local_image_size_bytes(docker_image)
         if image_size:
             build_info["image_size_bytes"] = image_size
+
+        if build_plan:
+            build_info["build_plan"] = build_plan.to_dict()
+            if overridden_args:
+                build_info["build_plan"]["overridden_args"] = sorted(overridden_args)
+        # Spec-built images record their stack at build time, so reading it is
+        # cheap. Hand-written Dockerfiles need a probe run, which is opt-in.
+        probe = bool(self.context.ctx.get("image_probe"))
+        if build_plan or probe:
+            info = image_spec.read_image_info(self.console, docker_image, probe)
+            if info:
+                build_info["image_info"] = info
 
         # Store built image info
         self.built_images[docker_image] = build_info
@@ -624,6 +660,12 @@ class DockerBuilder:
             "credentials_required": credentials_required,
         }
 
+        # Keep a context-level image_spec so the manifest can rebuild the same stack.
+        if image_spec.SPEC_KEY in self.context.ctx:
+            manifest["context"][image_spec.SPEC_KEY] = self.context.ctx[
+                image_spec.SPEC_KEY
+            ]
+
         # Preserve tools configuration if present in context
         if "tools" in self.context.ctx:
             manifest["context"]["tools"] = self.context.ctx["tools"]
@@ -836,9 +878,15 @@ class DockerBuilder:
 
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
         """Get dockerfiles for a model."""
+        # A card with an image_spec builds the shared backend Dockerfile. Resolve
+        # it outside the try below so a bad spec fails the build, not just warns.
+        spec = image_spec.effective_image_spec(model_info, self.context.ctx)
+        prefix = (
+            image_spec.backend_prefix(spec) if spec else model_info["dockerfile"]
+        )
         try:
             # Quote the dockerfile path to prevent shell injection
-            dockerfile_quoted = shlex.quote(model_info["dockerfile"])
+            dockerfile_quoted = shlex.quote(prefix)
             all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
             # A card's dockerfile is a prefix for its own variants:
             # <prefix>.Dockerfile, <prefix>.<os>.<vendor>.Dockerfile, or a same-card
@@ -850,7 +898,7 @@ class DockerBuilder:
             # variants are kept.
             all_dockerfiles = [
                 f for f in all_dockerfiles
-                if _is_prefix_variant(model_info["dockerfile"], f.strip())
+                if _is_prefix_variant(prefix, f.strip())
             ]
 
             dockerfiles = {}

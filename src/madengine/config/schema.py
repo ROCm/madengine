@@ -40,6 +40,8 @@ KNOWN_TOP_LEVEL_KEYS = {
     "gpus_per_node",
     "data",
     "require_pinned_image",
+    "image_spec",
+    "image_probe",
 }
 
 SUPPORTED_PLATFORMS = {"docker"}
