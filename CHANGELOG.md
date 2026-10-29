@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Spur `sglang-disagg` peer list**: Each Spur array task's nodelist contains only that task's node, so expanding it produced a one-IP `SGLANG_NODE_IPS` and the router started without `--decode`. Every rank now publishes `ip_rank<N>` in the shared rendezvous directory, and Spur builds the list in rank order within `slurm.rendezvous_timeout`. Stock SLURM still expands the job nodelist and skips `127.*` addresses.
 
+### Fixed
+
+- **GPU count with group warnings** (#123, #191): When the user was not in the `render`/`video` groups, `amd-smi` printed `WARNING:` lines before its CSV table, and the line-count GPU detection counted them as GPUs (8 GPUs plus 9 warnings was reported as 17). Detection now counts only GPU data rows (`amd-smi list --csv` rows starting with the GPU id, `rocm-smi --showid --csv` rows starting with `cardN`), so the count is the same for users inside and outside those groups. The same count is what `test_renderD_count_matches_gpu_count` compares with the render-node list.
+
 ## [2.4.0] - 2026-10-18
 
 ### Added
