@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **rocm-trace-lite defaults to v0.3.7**: The trace pre-script installed a pinned `v0.3.3` wheel. It now installs the `v0.3.7` `linux_x86_64` release wheel. `ROCM_TRACE_LITE_WHEEL_URL` still selects a specific wheel. `ROCM_TRACE_LITE_FOLLOW_LATEST=1` still resolves the latest GitHub release, and falls back to `v0.3.7` if that lookup fails.
+
 - **Spur `sglang-disagg` peer list**: Each Spur array task's nodelist contains only that task's node, so expanding it produced a one-IP `SGLANG_NODE_IPS` and the router started without `--decode`. Every rank now publishes `ip_rank<N>` in the shared rendezvous directory, and Spur builds the list in rank order within `slurm.rendezvous_timeout`. Stock SLURM still expands the job nodelist and skips `127.*` addresses.
 
 ## [2.4.0] - 2026-10-18
