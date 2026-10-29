@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **GPU count with group warnings** (#123): When the user was not in the `render`/`video` groups, `amd-smi` printed `WARNING:` lines before its CSV table, and the line-count GPU detection counted them as GPUs (e.g., 16 instead of 8 with 8 warning lines). Detection now counts only GPU data rows (`amd-smi list --csv` rows starting with the GPU id, `rocm-smi --showid --csv` rows starting with `cardN`), so the count is the same for users inside and outside those groups.
+- **GPU count with group warnings** (#123, #191): When the user was not in the `render`/`video` groups, `amd-smi` printed `WARNING:` lines before its CSV table, and the line-count GPU detection counted them as GPUs (8 GPUs plus 9 warnings was reported as 17). Detection now counts only GPU data rows (`amd-smi list --csv` rows starting with the GPU id, `rocm-smi --showid --csv` rows starting with `cardN`), so the count is the same for users inside and outside those groups. The same count is what `test_renderD_count_matches_gpu_count` compares with the render-node list.
 
 ## [2.4.0] - 2026-10-18
 

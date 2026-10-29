@@ -358,7 +358,7 @@ class ROCmToolManager(BaseGPUToolManager):
             if preferred_tool == "amd-smi":
                 # Try amd-smi list --csv. Count only GPU data rows (they start
                 # with an integer GPU id) so group warnings, the header, and
-                # blank lines are ignored (issue #123).
+                # blank lines are ignored (issues #123 and #191).
                 command = f"{self.AMD_SMI_PATH} list --csv | grep -E '^[0-9]+,' | wc -l"
                 fallback = f"{self.ROCM_SMI_PATH} --showid --csv | grep -E '^card[0-9]+,' | wc -l"
             else:
