@@ -6,6 +6,7 @@ Integration/e2e tests stay in their own modules.
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -557,6 +558,8 @@ def _k8s_template_context(
     cli_timeout=-1,
     tmp_path=None,
     launcher_type=None,
+    model_args="",
+    tools=None,
     image_info=None,
     docker_env_vars=None,
     env_vars=None,
@@ -566,7 +569,8 @@ def _k8s_template_context(
     Builds the context off the same mixin the deployment uses, so the timeout
     the template sees is the one a real render would get. Pass ``launcher_type``
     (e.g. ``"torchrun"``) to exercise the launcher branch of the job template
-    instead of the direct-script branch.
+    instead of the direct-script branch. ``model_args`` is the model card's
+    ``args`` string; ``tools`` is a list of tool configs for the tool chain.
     """
     from madengine.deployment.k8s_pvc import KubernetesPVCMixin
     from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
@@ -586,7 +590,7 @@ def _k8s_template_context(
     model_info = {
         "name": "dummy",
         "scripts": "scripts/dummy/run.sh",
-        "args": "",
+        "args": model_args,
         "n_gpus": "1",
     }
     if model_timeout is not None:
@@ -602,6 +606,8 @@ def _k8s_template_context(
 
     k8s_config = {"namespace": "ns"}
     additional_context = {"k8s": k8s_config}
+    if tools is not None:
+        additional_context["tools"] = tools
     if launcher_type is not None:
         additional_context["launcher"] = {
             "type": launcher_type,
@@ -651,6 +657,91 @@ def _render_k8s_job_script(context):
     )
     job = list(yaml.safe_load_all(rendered))[0]
     return job["spec"]["template"]["spec"]["containers"][0]["args"][0]
+
+
+class TestK8sJobScriptModelArgs:
+    """Model card ``args`` are arguments to the script, not part of its path."""
+
+    @staticmethod
+    def _render(tmp_path, model_args, tools=None):
+        ctx = _k8s_template_context(
+            model_args=model_args, tools=tools, tmp_path=tmp_path
+        )
+        return _render_k8s_job_script(ctx)
+
+    @staticmethod
+    def _command_file_body(script):
+        """The non-blank lines between the MODEL_EOF heredoc markers."""
+        lines = [l.strip() for l in script.splitlines()]
+        start = next(i for i, l in enumerate(lines) if "<< 'MODEL_EOF'" in l)
+        end = lines.index("MODEL_EOF", start)
+        return [l for l in lines[start + 1 : end] if l]
+
+    def test_existence_check_uses_the_bare_script_path(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+        assert 'scripts/dummy/run.sh --foo bar"' not in script
+
+    def test_command_passes_args_to_the_script(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert self._command_file_body(script) == [
+            "bash scripts/dummy/run.sh --foo bar"
+        ]
+
+    def test_not_found_error_names_only_the_path(self, tmp_path):
+        script = self._render(tmp_path, "--foo bar")
+        assert 'echo "ERROR: Script not found: scripts/dummy/run.sh"' in script
+
+    def test_tool_chain_keeps_the_args(self, tmp_path):
+        tools = [{"name": "demo_tool", "cmd": "demo-wrap --flag"}]
+        script = self._render(tmp_path, "--foo bar", tools=tools)
+        assert self._command_file_body(script) == [
+            "demo-wrap --flag bash scripts/dummy/run.sh --foo bar"
+        ]
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+
+    @pytest.mark.parametrize(
+        "model_args, expected",
+        [
+            ("--name 'two words'", "--name 'two words'"),
+            ('--msg "a b" --n 3', "--msg 'a b' --n 3"),
+            ("--x $(id)", "--x '$(id)'"),
+            ("--x a;b", "--x 'a;b'"),
+        ],
+    )
+    def test_args_are_shell_quoted_like_local_and_slurm(
+        self, model_args, expected, tmp_path
+    ):
+        script = self._render(tmp_path, model_args)
+        assert self._command_file_body(script) == [
+            f"bash scripts/dummy/run.sh {expected}"
+        ]
+
+    def test_quoted_args_reach_the_script_intact(self, tmp_path):
+        """Run the generated command file and check the script's argv."""
+        script = self._render(tmp_path, "--name 'two words' --n 3")
+        body = "\n".join(self._command_file_body(script))
+        target = tmp_path / "scripts" / "dummy"
+        target.mkdir(parents=True)
+        (target / "run.sh").write_text('printf "<%s>" "$@"\n')
+        result = subprocess.run(
+            ["bash", "-c", body], cwd=tmp_path, capture_output=True, text=True
+        )
+        assert result.stdout == "<--name><two words><--n><3>", result.stderr
+
+    @pytest.mark.parametrize("model_args", ["", "   "])
+    def test_empty_args_render_as_before(self, model_args, tmp_path):
+        script = self._render(tmp_path, model_args)
+        assert 'if [ -f "scripts/dummy/run.sh" ]; then' in script
+        assert self._command_file_body(script) == ["bash scripts/dummy/run.sh"]
+        assert 'echo "ERROR: Script not found: scripts/dummy/run.sh"' in script
+
+    def test_empty_args_tool_chain_is_unchanged(self, tmp_path):
+        tools = [{"name": "demo_tool", "cmd": "demo-wrap --flag"}]
+        script = self._render(tmp_path, "", tools=tools)
+        assert self._command_file_body(script) == [
+            "demo-wrap --flag bash scripts/dummy/run.sh"
+        ]
 
 
 class TestK8sRunTimeoutResolution:
@@ -847,7 +938,9 @@ class TestK8sRequirePinnedImage:
 
     DIGEST = "sha256:" + "df36ef7e" * 8
 
-    def _template_context(self, tmp_path, monkeypatch, require_pinned, image_digest):
+    def _template_context(
+        self, tmp_path, monkeypatch, require_pinned, image_digest, image_info=None
+    ):
         """Build a real template context, the way prepare() does.
 
         _prepare_template_context reads the manifest and the model's scripts
@@ -858,7 +951,8 @@ class TestK8sRequirePinnedImage:
         (tmp_path / "scripts" / "dummy").mkdir(parents=True)
         (tmp_path / "scripts" / "dummy" / "run.sh").write_text("#!/bin/bash\necho hi\n")
 
-        image_info = {"registry_image": "myorg/ci:m"}
+        if image_info is None:
+            image_info = {"registry_image": "myorg/ci:m"}
         if image_digest:
             image_info["image_digest"] = image_digest
         model_info = {
@@ -924,6 +1018,86 @@ class TestK8sRequirePinnedImage:
         with pytest.raises(ConfigurationError):
             self._template_context(
                 tmp_path, monkeypatch, require_pinned=True, image_digest=None
+            )
+
+    def test_docker_image_only_manifest_uses_docker_image(self, tmp_path, monkeypatch):
+        """--use-image manifests carry docker_image but no registry_image."""
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={"docker_image": "myorg/ci:m"},
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_none_registry_image_falls_back_to_docker_image(
+        self, tmp_path, monkeypatch
+    ):
+        """A local-image manifest sets registry_image to an explicit None."""
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={"docker_image": "myorg/ci:m", "registry_image": None},
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_docker_image_only_pinned_reference(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=True,
+            image_digest=self.DIGEST,
+            image_info={"docker_image": "myorg/ci:m"},
+        )
+        assert ctx["image"] == f"myorg/ci@{self.DIGEST}"
+
+    def test_registry_image_wins_over_docker_image(self, tmp_path, monkeypatch):
+        ctx = self._template_context(
+            tmp_path,
+            monkeypatch,
+            require_pinned=False,
+            image_digest=None,
+            image_info={
+                "docker_image": "local/ci:m",
+                "registry_image": "myorg/ci:m",
+            },
+        )
+        assert ctx["image"] == "myorg/ci:m"
+
+    def test_local_ci_tag_is_not_a_registry_image(self, tmp_path, monkeypatch):
+        with pytest.raises(ConfigurationError, match="registry image"):
+            self._template_context(
+                tmp_path,
+                monkeypatch,
+                require_pinned=False,
+                image_digest=None,
+                image_info={"docker_image": "ci-local-model"},
+            )
+
+    def test_placeholder_docker_image_is_not_pullable(self, tmp_path, monkeypatch):
+        with pytest.raises(ConfigurationError, match="registry image"):
+            self._template_context(
+                tmp_path,
+                monkeypatch,
+                require_pinned=False,
+                image_digest=None,
+                image_info={"docker_image": "<supply-your-image>"},
+            )
+
+    def test_push_failed_does_not_use_docker_image(self, tmp_path, monkeypatch):
+        with pytest.raises(ConfigurationError, match="registry image"):
+            self._template_context(
+                tmp_path,
+                monkeypatch,
+                require_pinned=False,
+                image_digest=None,
+                image_info={
+                    "docker_image": "myorg/ci:m",
+                    "push_failed": True,
+                },
             )
 
 
@@ -1339,3 +1513,143 @@ class TestLlmdResultTopology:
         record = {"gpu_architecture": "gfx942"}
         deployment._stamp_llm_d_shape(record)
         assert record["gpu_architecture"] == "gfx942"
+
+
+class TestK8sResultsKubectlKubeconfig:
+    """kubectl calls in result collection must honor ``k8s.kubeconfig``.
+
+    Job creation uses the Python client, which reads ``k8s.kubeconfig``. The
+    collection path shells out to kubectl, which otherwise falls back to
+    localhost:8080 when KUBECONFIG is unset.
+    """
+
+    KUBECONFIG = "~/.kube/custom-config"
+
+    def _deployment(self, monkeypatch, tmp_path, kubeconfig):
+        (tmp_path / "build_manifest.json").write_text(
+            json.dumps({"built_images": {}, "built_models": {}, "context": {}})
+        )
+        monkeypatch.chdir(tmp_path)
+        # The deployment pins kubectl to a kubeconfig it can read and to its
+        # context, so the "~" path is a real file under a temporary HOME.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("KUBECONFIG", raising=False)
+        if kubeconfig:
+            path = Path(os.path.expanduser(kubeconfig))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "apiVersion: v1\nkind: Config\ncurrent-context: t\n"
+                "clusters: [{name: t, cluster: {server: 'https://127.0.0.1:1'}}]\n"
+                "users: [{name: t, user: {token: x}}]\n"
+                "contexts: [{name: t, context: {cluster: t, user: t}}]\n"
+            )
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_incluster_config",
+            lambda *args, **kwargs: None,
+        )
+        k8s = {"namespace": "ns1"}
+        if kubeconfig:
+            k8s["kubeconfig"] = kubeconfig
+        cfg = DeploymentConfig(
+            target="k8s",
+            manifest_file="build_manifest.json",
+            additional_context={"k8s": k8s, "gpu_vendor": "AMD", "guest_os": "UBUNTU"},
+        )
+        deployment = KubernetesDeployment(cfg)
+        deployment.storage_v1 = MagicMock()
+        return deployment
+
+    def test_kubectl_cmd_adds_expanded_kubeconfig(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        assert d._kubectl_cmd("cp", "a", "b") == [
+            "kubectl",
+            "--kubeconfig",
+            os.path.expanduser(self.KUBECONFIG),
+            "--context",
+            "t",
+            "cp",
+            "a",
+            "b",
+        ]
+        assert "~" not in d._kubectl_cmd("get")[2]
+
+    def test_kubectl_cmd_without_kubeconfig_adds_no_flag(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, None)
+        d.k8s_config.pop("kubeconfig", None)
+        assert d._kubectl_cmd("cp", "a", "b") == ["kubectl", "cp", "a", "b"]
+
+    def test_collect_from_pvc_passes_kubeconfig_to_kubectl(self, tmp_path, monkeypatch):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        d.console = MagicMock()
+        d.core_v1 = MagicMock()
+        d.core_v1.read_namespaced_pod_status.return_value.status.phase = "Running"
+        monkeypatch.setattr(
+            "madengine.deployment.k8s_results.time.sleep", lambda s: None
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            stdout = "pod-a\n" if "exec" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("madengine.deployment.k8s_results.subprocess.run", fake_run)
+
+        d._collect_from_pvc("job1", tmp_path, {"artifacts": []})
+
+        assert len(calls) == 2
+        assert "exec" in calls[0] and "cp" in calls[1]
+        expanded = os.path.expanduser(self.KUBECONFIG)
+        for cmd in calls:
+            assert cmd[:3] == ["kubectl", "--kubeconfig", expanded]
+        assert "ns1/collector-job1:/results/pod-a" in calls[1]
+
+    def test_collect_pod_artifacts_passes_kubeconfig_to_kubectl(
+        self, tmp_path, monkeypatch
+    ):
+        d = self._deployment(monkeypatch, tmp_path, self.KUBECONFIG)
+        d.console = MagicMock()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr("madengine.deployment.k8s_results.subprocess.run", fake_run)
+
+        d._collect_pod_artifacts("pod-a", tmp_path)
+
+        assert calls
+        expanded = os.path.expanduser(self.KUBECONFIG)
+        for cmd in calls:
+            assert cmd[:6] == ["kubectl", "--kubeconfig", expanded, "--context", "t", "cp"]
+
+    def test_no_kubectl_command_is_built_outside_the_helper(self):
+        import ast
+
+        import madengine.deployment.k8s_results as mod
+
+        tree = ast.parse(Path(mod.__file__).read_text())
+        helper = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_kubectl_cmd"
+            ),
+            None,
+        )
+        assert helper is not None, "_kubectl_cmd helper is missing"
+        inside = {id(n) for n in ast.walk(helper)}
+        stray = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant)
+            and n.value == "kubectl"
+            and id(n) not in inside
+        ]
+        assert stray == [], f"kubectl built without _kubectl_cmd at lines {stray}"
