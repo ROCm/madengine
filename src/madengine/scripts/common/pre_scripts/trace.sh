@@ -25,9 +25,9 @@ if [ "${1:-}" = "--publish-native-librtl" ]; then
 fi
 
 # Git tag for the native librtl.so rebuild. An explicit ref wins. Otherwise
-# use the release tag of the wheel just installed, so FOLLOW_LATEST / WHEEL_URL
-# are not overwritten by sources from the pinned default. Fall back to that pin
-# when the package version cannot be read.
+# use the release tag of the wheel just installed, so a WHEEL_URL or
+# FOLLOW_LATEST install is rebuilt from matching sources. Fall back to the
+# pinned wheel's tag when the package version cannot be read.
 _rtl_native_git_ref() {
 	if [ -n "${ROCM_TRACE_LITE_GIT_REF:-}" ]; then
 		printf '%s\n' "${ROCM_TRACE_LITE_GIT_REF}"
@@ -48,11 +48,49 @@ for name in ("rocm-trace-lite", "rocm_trace_lite"):
 	_rtl_ver="${_rtl_ver%.dev*}"
 	case "${_rtl_ver}" in
 		[0-9]*) printf 'v%s\n' "${_rtl_ver}" ;;
-		*) printf '%s\n' 'v0.3.3' ;;
+		*) printf '%s\n' 'v0.3.7' ;;
 	esac
 }
 if [ "${1:-}" = "--print-native-git-ref" ]; then
 	_rtl_native_git_ref
+	exit 0
+fi
+
+# Wheel installed by the rocm_trace_lite pre-script. An explicit URL wins.
+# ROCM_TRACE_LITE_FOLLOW_LATEST=1 resolves the latest linux_x86_64 GitHub
+# Release wheel. Otherwise the pinned v0.3.7 wheel is the default.
+_ROTL_PINNED_WHEEL='https://github.com/sunway513/rocm-trace-lite/releases/download/v0.3.7/rocm_trace_lite-0.3.7-py3-none-linux_x86_64.whl'
+_rtl_resolve_wheel_url() {
+	if [ -n "${ROCM_TRACE_LITE_WHEEL_URL:-}" ]; then
+		printf '%s\n' "${ROCM_TRACE_LITE_WHEEL_URL}"
+		return 0
+	fi
+	if [ "${ROCM_TRACE_LITE_FOLLOW_LATEST:-}" = "1" ]; then
+		_rtl_latest=""
+		if command -v curl >/dev/null 2>&1; then
+			_rtl_latest=$(curl -fsSL 'https://api.github.com/repos/sunway513/rocm-trace-lite/releases/latest' 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    for a in d.get("assets", []):
+        n = a.get("name", "")
+        if n.endswith("-py3-none-linux_x86_64.whl"):
+            print(a["browser_download_url"])
+            break
+except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    pass
+' 2>/dev/null) || true
+		fi
+		if [ -n "$_rtl_latest" ]; then
+			printf '%s\n' "$_rtl_latest"
+			return 0
+		fi
+		echo "Warning: could not resolve the latest rocm-trace-lite release; installing the pinned wheel." >&2
+	fi
+	printf '%s\n' "$_ROTL_PINNED_WHEEL"
+}
+if [ "${1:-}" = "--print-wheel-url" ]; then
+	_rtl_resolve_wheel_url
 	exit 0
 fi
 
@@ -192,11 +230,7 @@ rpd)
 rocm_trace_lite)
 	# rocm-trace-lite ships as GitHub Release wheels (linux_x86_64), not on PyPI.
 	# https://github.com/sunway513/rocm-trace-lite#installation
-	# Wheel resolution (first match wins):
-	#   1) ROCM_TRACE_LITE_WHEEL_URL — direct .whl URL (air-gapped / custom)
-	#   2) ROCM_TRACE_LITE_FOLLOW_LATEST=1 — resolve latest linux_x86_64 wheel via GitHub API (needs curl)
-	#   3) Pinned release below — reproducible default (no API; bump when upgrading RTL)
-	_ROTL_PINNED_WHEEL='https://github.com/sunway513/rocm-trace-lite/releases/download/v0.3.3/rocm_trace_lite-0.3.3-py3-none-linux_x86_64.whl'
+	# Wheel resolution (first match wins): see _rtl_resolve_wheel_url.
 	if ! command -v python3 >/dev/null 2>&1; then
 		echo "Error: rocm_trace_lite pre-script requires python3 on PATH." >&2
 		exit 1
@@ -205,32 +239,15 @@ rocm_trace_lite)
 		echo "Error: rocm_trace_lite pre-script requires pip (python3 -m pip failed)." >&2
 		exit 1
 	fi
-	# ROCM_TRACE_LITE_WHEEL_URL may embed credentials; avoid leaking it via `set -x` and stderr.
+	# ROCM_TRACE_LITE_WHEEL_URL may embed credentials; avoid leaking it via `set -x`.
 	_rocm_trace_lite_restore_x=0
 	case $- in *x*) _rocm_trace_lite_restore_x=1 ;; esac
 	set +x
-	_rtl_wheel="${ROCM_TRACE_LITE_WHEEL_URL:-}"
-	if [ -z "$_rtl_wheel" ] && [ "${ROCM_TRACE_LITE_FOLLOW_LATEST:-}" = "1" ] && command -v curl >/dev/null 2>&1; then
-		_rtl_wheel=$(curl -fsSL 'https://api.github.com/repos/sunway513/rocm-trace-lite/releases/latest' 2>/dev/null | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    for a in d.get("assets", []):
-        n = a.get("name", "")
-        if n.endswith("-py3-none-linux_x86_64.whl"):
-            print(a["browser_download_url"])
-            break
-except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-    pass
-' 2>/dev/null) || true
-	fi
-	if [ -z "$_rtl_wheel" ]; then
-		_rtl_wheel="$_ROTL_PINNED_WHEEL"
-	fi
+	_rtl_wheel="$(_rtl_resolve_wheel_url)"
 	if ! python3 -m pip install --upgrade "$_rtl_wheel"; then
 		if ! python3 -m pip install --user --upgrade "$_rtl_wheel"; then
 			echo "Error: pip could not install rocm-trace-lite wheel (URL omitted from logs)." >&2
-			echo "Check network, pip, ROCM_TRACE_LITE_WHEEL_URL / ROCM_TRACE_LITE_FOLLOW_LATEST, and trace.sh pinned wheel." >&2
+			echo "Check network, pip, the latest GitHub release, and ROCM_TRACE_LITE_WHEEL_URL." >&2
 			[ "$_rocm_trace_lite_restore_x" -eq 1 ] && set -x
 			exit 1
 		fi
