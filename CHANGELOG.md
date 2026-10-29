@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Placeholder Docker Hub credentials no longer log in** (#192): `tests/fixtures/dummy/credential.json` shipped `your-docker-username` / `your-docker-token`. Those values are non-blank, so e2e builds ran `docker login`, failed with `unauthorized`, and then hit Docker Hub's anonymous pull rate limit. Template usernames and passwords are now ignored the same way blank ones are. A real username and password still logs in, including a username such as `your-company`.
+
 ### Added
 
 - **Bare-metal conda execution**: `"platform": "bare_metal"` runs the model on this machine inside a conda, mamba, or micromamba prefix. Omitted `platform` stays Docker. A retired top-level `bare_metal` object is rejected, and a `conda` block on a Docker run is rejected. The prefix lives under `~/.cache/madengine/envs/<name>` (override with `conda.env_root`). Build creates or updates it from the card's `environment_file`, `requirements_file`, `python_version`, `setup_script`, and optional `rocm` wheel install, and writes a manifest with an empty `docker_image`. Run enters the prefix with `conda run -p` and does not wrap the script in `torchrun`. `n_gpus: "-1"` becomes a real `MAD_RUNTIME_NGPUS`, because `torchrun --nproc_per_node` rejects `-1`. Result rows record `platform=bare_metal`, `deployment_type=local`, and the card's workload launcher. `reuse_env` (default true) keeps a prefix whose dependency stamp still matches. `cleanup_env` (default false) removes it after the run. Bare metal cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. The Hydra group `platform=bare_metal` is still rejected; pass the string through `--additional-context`. See `docs/bare-metal.md`.
