@@ -226,7 +226,7 @@ What the script needs from the cluster is pod-spec configuration, never a card c
 | `shm_size` | `/dev/shm` size (default `64Gi`) |
 | `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
 | `image_pull_policy` | default `Always`; `IfNotPresent` for images imported into the cluster |
-| `host_network` | pods on the node's network, so RoCE uses the node's NICs; one pod per node (the card's servers bind fixed ports) |
+| `host_network` | pods on the node's network, so RoCE uses the node's NICs; one host-network slurm_multi pod per node, across runs and namespaces (madengine's agent and the card's servers bind fixed ports) |
 | `pod_annotations` | e.g. `{"k8s.v1.cni.cncf.io/networks": "rdma-net"}`: a Multus secondary network giving each pod its own RDMA interface |
 | `results_access_mode` | results PVC access mode (default `ReadWriteMany` for multi-node). `ReadWriteOnce` works when every pod lands on one node, e.g. a cluster with only `local-path` storage |
 
@@ -644,6 +644,7 @@ PVC artifacts are still collected in this scenario. Only the API-based pod log r
 | `Error: required file missing: .../scripts/<dir>/...` in pod 0's log | The card's script reads a sibling directory that was not shipped. Add it to `k8s.include_script_dirs` |
 | `RuntimeError: The memory capacity is unbalanced` | The pod sees GPUs that are not its own, usually `security_context: {privileged: true}`. Remove it |
 | Pods `Pending` with `Insufficient amd.com/gpu` | `nnodes` x `gpu_count` exceeds the free GPUs, or `host_network` needs one node per pod |
+| Pods `Pending` with `didn't match pod anti-affinity rules` | `host_network`: another host-network slurm_multi run holds those nodes; this run starts when they free up |
 | Results PVC `Pending` | No storage class satisfies ReadWriteMany. Set `multi_node_results_storage_class`, or `results_access_mode: ReadWriteOnce` with every pod on one node |
 | `[mad-k8s srun] unsupported option ...` | The card's script uses an `srun` / `docker` / `scontrol` form the stand-ins do not implement; the message names it |
 

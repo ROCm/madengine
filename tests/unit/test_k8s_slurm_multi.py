@@ -193,12 +193,22 @@ class TestPodHostnames:
 
 
 class TestRdmaNetworking:
-    def test_host_network_puts_one_pod_per_node(self, tmp_path, monkeypatch):
-        d, _, pod, _ = _prepared(tmp_path, monkeypatch, k8s={"host_network": True})
+    def test_host_network_puts_one_pod_per_node_across_runs(self, tmp_path, monkeypatch):
+        # Host-network pods share the node's ports (the shim agent's and the card's
+        # own), so no two -- of this run or another run, in any namespace -- may
+        # land on one node.
+        from madengine.deployment.k8s_slurm_multi import HOST_NETWORK_LABEL
+        _, job, pod, _ = _prepared(tmp_path, monkeypatch, k8s={"host_network": True})
         assert pod["hostNetwork"] is True and pod["dnsPolicy"] == "ClusterFirstWithHostNet"
+        assert job["spec"]["template"]["metadata"]["labels"][HOST_NETWORK_LABEL] == "true"
         term = pod["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0]
-        assert term["labelSelector"]["matchLabels"] == {"job-name": d.job_label}
+        assert term["labelSelector"]["matchLabels"] == {HOST_NETWORK_LABEL: "true"}
+        assert term["namespaceSelector"] == {}
         assert term["topologyKey"] == "kubernetes.io/hostname"
+        _, other, _, _ = _prepared(tmp_path / "b", monkeypatch, card={**CARD, "name": "pyt_other_card"},
+                                   k8s={"host_network": True})
+        assert other["metadata"]["name"] != job["metadata"]["name"]
+        assert other["spec"]["template"]["metadata"]["labels"][HOST_NETWORK_LABEL] == "true"
 
     def test_pod_annotations_for_a_secondary_rdma_network(self, tmp_path, monkeypatch):
         _, job, _, _ = _prepared(tmp_path, monkeypatch, k8s={

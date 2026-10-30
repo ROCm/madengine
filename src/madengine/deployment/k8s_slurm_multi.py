@@ -20,7 +20,8 @@ the k8s config, never in the card:
   k8s.include_script_dirs      directories shipped with the card's (default: the
                                sibling "common" directory, when there is one)
   k8s.host_network             pods on the node's network (RoCE on the node's NICs);
-                               implies one pod per node -- the launchers bind fixed
+                               implies one host-network slurm_multi pod per node,
+                               across runs -- the shim and the launchers bind fixed
                                ports
   k8s.pod_annotations          e.g. a Multus `k8s.v1.cni.cncf.io/networks` entry, to
                                give each pod its own RDMA interface instead
@@ -43,6 +44,8 @@ from .k8s_secrets import image_pull_secret_refs_for_job
 
 SHIM_DIR = Path(__file__).parent / "k8s_shim"
 AGENT_PORT = 29711
+# On every host-network pod of a slurm_multi run, so any two keep to separate nodes.
+HOST_NETWORK_LABEL = "madengine-slurm-multi-host-network"
 # ConfigMaps are capped at 1 MiB in total; leave room for the object's own fields.
 BUNDLE_LIMIT_BYTES = 900 * 1024
 _DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
@@ -285,13 +288,19 @@ class KubernetesSlurmMultiMixin:
             ],
         }
         if k8s.get("host_network"):
-            # The node's NICs (and their RoCE GIDs) instead of the pod network. The
-            # card's servers bind fixed ports, so two pods of the run cannot share a
-            # node: require one per node rather than let the second fail to bind.
+            # The node's NICs (and their RoCE GIDs) instead of the pod network. On
+            # the node's network every fixed port is shared with the node: the shim
+            # agent's AGENT_PORT and the card's own servers and barriers. So no two
+            # host-network pods of slurm_multi runs -- of this run or any other --
+            # may share a node; require one per node rather than let the second
+            # fail to bind. A per-run agent port would not be enough: the card's
+            # ports are fixed by the card.
             pod_spec["hostNetwork"] = True
             pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+            pod_labels[HOST_NETWORK_LABEL] = "true"
             pod_spec["affinity"] = {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
-                {"labelSelector": {"matchLabels": {"job-name": self.job_label}},
+                {"labelSelector": {"matchLabels": {HOST_NETWORK_LABEL: "true"}},
+                 "namespaceSelector": {},
                  "topologyKey": "kubernetes.io/hostname"}]}}
         if k8s.get("node_selector"):
             pod_spec["nodeSelector"] = k8s["node_selector"]
