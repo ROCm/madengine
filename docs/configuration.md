@@ -537,6 +537,63 @@ invocation can pin different values. `--additional-context` overrides the model
 entry for the same key, so an operator can still redirect a build without editing
 `models.json`.
 
+### Declarative Image Spec (`image_spec`)
+
+Instead of pointing at a hand-written Dockerfile, a model card (or
+`--additional-context`) can describe the stack it needs. madengine resolves the
+spec against the MAD checkout's compatibility matrices (`compat/rocm.json`,
+`compat/cuda.json`) and builds the shared backend Dockerfile
+(`docker/global_univ2.ubuntu.{amd,nvidia}.Dockerfile`) with the resolved build
+args. Cards without `image_spec` build exactly as before.
+
+```json
+{
+  "name": "my_model",
+  "tags": ["my_model"],
+  "scripts": "run.sh",
+  "image_spec": {
+    "rocm": {"version": "7.2", "install": "therock"},
+    "cuda": {"version": "12.8"},
+    "torch": "2.10",
+    "components": [
+      {"name": "migraphx", "amd": {"url": "https://.../migraphx.whl"}, "sha256": "..."}
+    ],
+    "sources": [{"repo": "https://github.com/ROCm/AMDMIGraphX", "commit": "<sha>"}]
+  }
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `backend` | Dockerfile prefix the spec compiles to (default `docker/global_univ2`) |
+| `base` | `auto` (matrix default: bare OS for AMD, `nvidia/cuda` devel for NVIDIA) or an image. An AMD image that already has ROCm is detected and ROCm is not reinstalled |
+| `rocm` | `version` (a key of `compat/rocm.json`), `install` (`therock` or `legacy`), optional `index_url` |
+| `cuda` | `version`: upper bound; the build uses the CUDA that the selected torch was built for |
+| `torch` | Torch version; resolved to a wheel index per vendor |
+| `python` | Python version (NVIDIA backend) |
+| `gpu_arch` | Defaults to `MAD_SYSTEM_GPU_ARCHITECTURE`; selects the TheRock `device-<gfx>` extra (`device-all` when unset) |
+| `components` | Ordered wheels/debs. `url` applies to both vendors; `amd`/`nvidia` objects make a component vendor-specific. Optional `sha256` is verified |
+| `sources` | Repositories cloned at a pinned commit into `/workspace` |
+| `pip` | Extra pip requirements installed first |
+
+**Precedence.** Spec-derived build args are the lowest layer: the card's
+`docker_build_arg`, then `--additional-context` `docker_build_arg`, still win.
+A context `image_spec` is deep-merged over the card's, so a stack can be swapped
+for one run without editing MAD.
+
+**What gets recorded.** Each spec-built image in `build_manifest.json` carries
+`build_plan` (the spec, the resolved args, a `digest`, and any `overridden_args`)
+and `image_info` (ROCm/CUDA/Python versions and installed packages, read from
+`/opt/mad/build_info.json`, which the backend writes at build time). To rebuild a
+recorded stack, pass its `build_plan.spec` back as `image_spec`.
+
+**Hand-written Dockerfiles.** Set `"image_probe": true` to record `image_info`
+for images built from ordinary Dockerfiles as well. This runs `python3` once in
+each built image (no GPU needed); it is off by default.
+
+**Preview without building.** `madengine build --tags my_model --explain` prints
+the Dockerfile and resolved plan for each selected model.
+
 ### Mount Host Directories
 
 Mount host directories inside containers:

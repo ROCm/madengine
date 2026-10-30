@@ -101,6 +101,7 @@ madengine build [OPTIONS]
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
 | `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Pass an image name, or `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
 | `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
+| `--explain` | | FLAG | `False` | Print the Dockerfile and resolved `image_spec` build plan for each selected model, then exit without building |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |

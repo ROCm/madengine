@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import typer
 from rich.console import Console
 
+from madengine.execution.image_spec import backend_prefix, effective_image_spec
 from madengine.utils.discover_models import DiscoverModels
 from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
@@ -521,8 +522,13 @@ def process_batch_manifest_entries(
                 for model_info in models:
                     if model_info["name"] == model_name:
                         discovered = model_info
-                        # Get dockerfile
-                        dockerfile = model_info.get("dockerfile")
+                        # Get dockerfile (an image_spec card builds the backend prefix)
+                        card_spec = effective_image_spec(model_info, {})
+                        dockerfile = (
+                            backend_prefix(card_spec)
+                            if card_spec
+                            else model_info.get("dockerfile")
+                        )
                         dockerfile_specified = (
                             f"{dockerfile}.{guest_os.lower()}.{gpu_vendor.lower()}"
                         )
@@ -549,7 +555,7 @@ def process_batch_manifest_entries(
                         # Add to built_images (even though it wasn't actually built)
                         build_manifest["built_images"][synthetic_image_name] = {
                             "docker_image": synthetic_image_name,
-                            "dockerfile": model_info.get("dockerfile"),
+                            "dockerfile": dockerfile,
                             "base_docker": "",  # No base since not built
                             "docker_sha": "",  # No SHA since not built
                             "build_duration": 0,

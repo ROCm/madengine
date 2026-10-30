@@ -75,6 +75,13 @@ def build(
             help="Build Docker images on SLURM compute node instead of login node",
         ),
     ] = False,
+    explain: Annotated[
+        bool,
+        typer.Option(
+            "--explain",
+            help="Print the Dockerfile and resolved image_spec plan for each model, without building",
+        ),
+    ] = False,
     additional_context: Annotated[
         str,
         typer.Option(
@@ -286,6 +293,10 @@ def build(
             use_image=use_image,
             build_on_compute=build_on_compute,
         )
+
+        if explain:
+            BuildOrchestrator(args).explain()
+            raise typer.Exit(ExitCode.SUCCESS)
 
         # Initialize orchestrator in build-only mode
         with Progress(
