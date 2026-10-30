@@ -1124,6 +1124,16 @@ class TestK8sPodLogContainerParam:
             manifest_file="build_manifest.json",
             additional_context={"k8s": {"namespace": "default"}},
         )
+        # __init__ loads the host's kubeconfig (or in-cluster config) and fails on a
+        # machine with neither; these tests only exercise the log calls on core_v1.
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_incluster_config",
+            lambda *args, **kwargs: None,
+        )
         deployment = KubernetesDeployment(cfg)
         deployment.core_v1 = MagicMock()
         return deployment
