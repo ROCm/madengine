@@ -179,6 +179,31 @@ def resolve_image_pull_secret_refs(
     return [{"name": n} for n in names]
 
 
+def image_pull_secret_refs_for_job(
+    k8s_config: Dict[str, Any],
+    job_name: str,
+    credential_path: Path = Path("credential.json"),
+) -> List[Dict[str, str]]:
+    """pod.spec.imagePullSecrets for a job, before its Secrets exist.
+
+    Under from_local_credentials, deploy() creates "<job_name>-registry-pull" when
+    credential.json has registry auth (create_or_update_secrets_from_credentials);
+    the Job is rendered before that, so the name is previewed here from the same
+    file. job_name must be the name deploy() will use.
+    """
+    merged = merge_secrets_config(k8s_config)
+    strategy = merged.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
+    created: List[str] = []
+    if strategy == SECRETS_STRATEGY_FROM_LOCAL and credential_path.exists():
+        try:
+            parsed = json.loads(credential_path.read_text(encoding="utf-8"))
+            if build_registry_secret_data(parsed):
+                created.append(f"{job_name}-registry-pull")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return resolve_image_pull_secret_refs(strategy, merged, created)
+
+
 def resolve_runtime_secret_name(
     strategy: str,
     merged_secrets: Dict[str, Any],

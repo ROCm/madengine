@@ -39,6 +39,7 @@ from madengine.core.timeout import resolve_run_timeout
 
 from .common import is_self_managed_launcher
 from .config_loader import PRESET_ENV_KEYS, PRESET_K8S_KEYS
+from .k8s_secrets import image_pull_secret_refs_for_job
 
 SHIM_DIR = Path(__file__).parent / "k8s_shim"
 AGENT_PORT = 29711
@@ -296,8 +297,9 @@ class KubernetesSlurmMultiMixin:
             pod_spec["nodeSelector"] = k8s["node_selector"]
         if k8s.get("tolerations"):
             pod_spec["tolerations"] = k8s["tolerations"]
-        pulls = getattr(self, "_image_pull_secrets_for_pods", None) or [
-            {"name": n} for n in (k8s.get("secrets") or {}).get("image_pull_secret_names") or []]
+        # The same list the template path renders, including "<job>-registry-pull",
+        # which deploy() creates from credential.json under from_local_credentials.
+        pulls = image_pull_secret_refs_for_job(k8s, self.job_name)
         if pulls:
             pod_spec["imagePullSecrets"] = pulls
 

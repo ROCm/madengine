@@ -211,6 +211,40 @@ class TestRdmaNetworking:
         assert "annotations" not in job["spec"]["template"]["metadata"]
 
 
+class TestImagePullSecrets:
+    """The slurm_multi Job names the same pull secrets as the template path: under
+    from_local_credentials, deploy() creates "<job>-registry-pull" from credential.json
+    after the Job is rendered, so the pod spec must already name it."""
+
+    CRED = {"dockerhub": {"username": "u", "password": "p"}}
+
+    def _names(self, pod):
+        return [s["name"] for s in pod.get("imagePullSecrets") or []]
+
+    def test_registry_pull_secret_from_credential_json(self, tmp_path, monkeypatch):
+        (tmp_path).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "credential.json").write_text(json.dumps(self.CRED))
+        d, _, pod, _ = _prepared(tmp_path, monkeypatch)
+        names = self._names(pod)
+        assert names[0] == f"{d.job_name}-registry-pull"
+        # The name deploy() creates: the final (hostname-safe) job name.
+        from madengine.deployment.k8s_secrets import job_secret_names
+        assert names[0] in job_secret_names(d.job_name)
+
+    def test_no_registry_auth_no_job_secret(self, tmp_path, monkeypatch):
+        (tmp_path).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "credential.json").write_text(json.dumps({"other": {}}))
+        d, _, pod, _ = _prepared(tmp_path, monkeypatch)
+        assert f"{d.job_name}-registry-pull" not in self._names(pod)
+
+    def test_existing_strategy_uses_only_named_secrets(self, tmp_path, monkeypatch):
+        (tmp_path).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "credential.json").write_text(json.dumps(self.CRED))
+        _, _, pod, _ = _prepared(tmp_path, monkeypatch, k8s={
+            "secrets": {"strategy": "existing", "image_pull_secret_names": ["precreated"]}})
+        assert self._names(pod) == ["precreated"]
+
+
 class TestCollectOnlyThisRun:
     HEADER = "model,performance,metric,status,test_duration,gpu_architecture,deployment_type,machine_name\n"
 
