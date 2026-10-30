@@ -201,6 +201,59 @@ class TestBuildOnComputeSlurmDirectives:
         assert not [l for l in h if "--gpus" in l]
 
 
+class TestBuildOnComputeBuildArgs:
+    """The --build-on-compute docker build gets the same build args as a local build:
+    --additional-context docker_build_arg, then the card's docker_build_arg for keys the
+    context does not set. Without them a Dockerfile that picks its stack from
+    MAD_SYSTEM_GPU_ARCHITECTURE builds the wrong one."""
+
+    def _build_line(self, tmp_path, ctx_args, card_args=None):
+        import os
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock(); orch.console = MagicMock(); orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = {"docker_build_arg": ctx_args} if ctx_args is not None else {}
+        orch.additional_context = {"slurm": {"partition": "gpu"}}
+        orch._original_user_slurm_keys = set(); orch.credentials = {}
+        model = {"name": "card", "dockerfile": "docker/card", "scripts": "scripts/x/run.slurm",
+                 "n_gpus": "-1", "tags": ["card"], "slurm": {"partition": "gpu"},
+                 "distributed": {"launcher": "slurm_multi"}, "env_vars": {}}
+        if card_args is not None:
+            model["docker_build_arg"] = card_args
+        df = tmp_path / "docker" / "card.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True, exist_ok=True); df.write_text("FROM scratch\n")
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
+                dm.return_value.run.return_value = [model]
+                with patch("subprocess.run") as run:
+                    run.return_value = MagicMock(returncode=0)
+                    orch._execute_build_on_compute(registry="localhost:5000/repo",
+                                                   manifest_output=str(tmp_path / "m.json"))
+            script = (tmp_path / "madengine_build_job.sh").read_text()
+        finally:
+            os.chdir(cwd)
+        return next(l for l in script.splitlines() if l.startswith("docker build"))
+
+    def test_context_build_args_reach_docker_build(self, tmp_path):
+        line = self._build_line(tmp_path, {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx950"})
+        assert "--build-arg MAD_SYSTEM_GPU_ARCHITECTURE=gfx950" in line
+
+    def test_card_build_args_fill_in_and_context_wins(self, tmp_path):
+        line = self._build_line(tmp_path, {"A": "ctx"}, {"A": "card", "B": "card b"})
+        assert "--build-arg A=ctx" in line and "A=card" not in line
+        assert "--build-arg B='card b'" in line
+
+    def test_no_build_args_by_default(self, tmp_path):
+        assert "--build-arg" not in self._build_line(tmp_path, None)
+
+    def test_build_output_is_on_stdout(self, tmp_path):
+        # Spur's srun dropped the step's stderr, which is where docker build writes.
+        assert self._build_line(tmp_path, None).endswith("2>&1")
+
+
 class TestBuildOnComputeImageNames:
     """A namespaced card ("dir/card") must give valid Docker references: tags allow no "/".
     The "/" is flattened to "_"."""

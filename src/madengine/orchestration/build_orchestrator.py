@@ -1139,9 +1139,21 @@ class BuildOrchestrator:
                 registry_image_name = f"{registry}:{image_model_name}"
             else:
                 registry_image_name = f"{registry}/{image_model_name}:latest"
+            # Build args as the local build passes them (DockerBuilder.build_image):
+            # --additional-context docker_build_arg, then the card's own docker_build_arg
+            # for keys the context does not set.
+            build_arg = dict(self.context.ctx.get("docker_build_arg", {}) or {})
+            for card_arg, card_value in (model.get("docker_build_arg") or {}).items():
+                build_arg.setdefault(card_arg, card_value)
+            build_arg_flags = " ".join(
+                f"--build-arg {shlex.quote(str(k))}={shlex.quote(str(v))}"
+                for k, v in build_arg.items()
+            )
             self.rich_console.print(
                 f"  {model_name}: {dockerfile_path} -> {registry_image_name}"
             )
+            if build_arg:
+                self.rich_console.print(f"    build args: {build_arg_flags}")
             per_model_data.append(
                 {
                     "model": model,
@@ -1149,6 +1161,7 @@ class BuildOrchestrator:
                     "dockerfile_path": dockerfile_path,
                     "local_image_name": local_image_name,
                     "registry_image_name": registry_image_name,
+                    "build_arg_flags": build_arg_flags,
                 }
             )
         self.rich_console.print("")
@@ -1177,7 +1190,7 @@ class BuildOrchestrator:
 echo "=== Building" {model_q} "==="
 echo "Dockerfile:" {df_q}
 echo "Local image:" {local_q}
-docker build --network=host -t {local_q} {no_cache_flag} --pull -f {df_q} ./docker
+docker build --network=host -t {local_q} {no_cache_flag} {pmd["build_arg_flags"]} --pull -f {df_q} ./docker 2>&1
 BUILD_RC=$?
 if [ $BUILD_RC -ne 0 ]; then
     echo "❌ Docker build FAILED for" {model_q} "(exit $BUILD_RC)"
@@ -1187,7 +1200,7 @@ echo "✅ Build OK:" {model_q}
 echo "Tagging:" {local_q} "->" {reg_img_q}
 docker tag {local_q} {reg_img_q}
 echo "Pushing:" {reg_img_q}
-docker push {reg_img_q}
+docker push {reg_img_q} 2>&1
 PUSH_RC=$?
 if [ $PUSH_RC -ne 0 ]; then
     echo "❌ Docker push FAILED for" {model_q} "(exit $PUSH_RC)"
