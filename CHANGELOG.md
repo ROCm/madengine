@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`--build-on-compute` on clusters that need an account, QoS or GPU request**: the build job now uses the run job's `slurm.account` and `slurm.qos`, and requests GPUs when `slurm.build_gpus_per_node` is set. A Spur cluster refused the build job without them.
+- **`--build-on-compute` build args**: the build job's `docker build` passed no `--build-arg`, so `docker_build_arg` from the context and the card was dropped and a Dockerfile that selects its stack by `MAD_SYSTEM_GPU_ARCHITECTURE` built the wrong one. It now gets the same args as a local build, and Docker's build and push output reaches the job log.
+- **Results of a failed run inside an allocation**: a `slurm_multi` script that exited non-zero inside an existing allocation was reported without collecting its results, so the rows of the cells that passed were lost. They are collected as for a failed monitored job; the run stays failed.
 - **Kubernetes target pinning**: the Python client and `kubectl` used different kubeconfig/context resolution and could reach different clusters. Both now use one kubeconfig (`k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`) and one context (`k8s.context`, which must exist, else the file's current context). The preset no longer hardcodes `~/.kube/config`.
 - **Kubernetes cleanup in shared namespaces**: a rerun deleted same-named objects by name; it now deletes only objects labelled `app=madengine` and stops otherwise.
 
