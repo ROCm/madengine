@@ -1379,7 +1379,7 @@ class TestLlmdResultTopology:
             "nnodes": "4",
             "gpus_per_node": "1",
             "deployment_type": "llm-d",
-            "launcher": "vllm",
+            "launcher": "vllm-disagg",
             "serving_mode": "disaggregated",
         }
 

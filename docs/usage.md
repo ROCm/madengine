@@ -415,7 +415,7 @@ madengine run --tags my_model --live-output \
   }'
 ```
 
-The model card names the prefix, the Python version, and the requirements or setup script. `distributed.launcher` on the card is written to `perf.csv`. The script itself starts `torchrun` and should pass `MAD_RUNTIME_NGPUS` as `--nproc_per_node`. `--config platform=bare_metal` is rejected. Use `--additional-context`.
+The model card names the prefix, the Python version, and the requirements or setup script. `distributed.launcher` on the card is written to `perf.csv`. The script itself starts `torchrun` and should pass `MAD_RUNTIME_NGPUS` as `--nproc_per_node`. `--config platform=bare_metal` selects the same conda path as `--additional-context`.
 
 ### Deploy to llm-d
 

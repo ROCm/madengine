@@ -43,12 +43,15 @@ from .base import (
     create_jinja_env,
 )
 from .common import (
+    canonicalize_distributed_launcher,
     configure_multi_node_profiling,
     is_cumulative_report,
     is_self_managed_launcher,
     launcher_for_reporting,
+    resolve_disagg_topology,
     resolve_launcher_from_sources,
     resolve_node_count,
+    sglang_disagg_block,
     validate_launcher,
 )
 from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
@@ -1415,8 +1418,12 @@ class SlurmDeployment(BaseDeployment):
             return self._generate_vllm_command(nnodes, nproc_per_node, master_port)
         elif launcher_type == "sglang":
             return self._generate_sglang_command(nnodes, nproc_per_node, master_port)
-        elif launcher_type == "sglang-disagg":
+        elif canonicalize_distributed_launcher(launcher_type) == "sglang-disagg":
             return self._generate_sglang_disagg_command(
+                nnodes, nproc_per_node, master_port
+            )
+        elif canonicalize_distributed_launcher(launcher_type) == "vllm-disagg":
+            return self._generate_vllm_disagg_command(
                 nnodes, nproc_per_node, master_port
             )
         elif launcher_type == "deepspeed":
@@ -1618,53 +1625,17 @@ esac
         Raises:
             ValueError: If nnodes < 2 (minimum for disagg)
         """
-        if nnodes < 2:
-            raise ValueError(
-                f"SGLang Disaggregated requires minimum 2 nodes "
-                f"(co-located proxy + 1 prefill + 1 decode), got {nnodes}"
-            )
-
-        # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get(
-            "distributed", {}
-        ).get("sglang_disagg", {})
-        prefill_nodes = sglang_disagg_config.get("prefill_nodes")
-        decode_nodes = sglang_disagg_config.get("decode_nodes")
-
-        if prefill_nodes is not None and decode_nodes is not None:
-            # User specified custom split - validate
-            if prefill_nodes < 1 or decode_nodes < 1:
-                raise ValueError(
-                    f"SGLang Disaggregated requires at least 1 prefill and 1 decode node, "
-                    f"got prefill={prefill_nodes}, decode={decode_nodes}"
-                )
-            # Accept either a dedicated proxy node (1 + xP + yD == nnodes) or a
-            # co-located proxy/router on the first prefill node (xP + yD == nnodes),
-            # mirroring the vllm-disagg layout. The proxy is launched by the model
-            # script (not by this launcher), so both topologies are valid here.
-            if (
-                prefill_nodes + decode_nodes != nnodes
-                and prefill_nodes + decode_nodes + 1 != nnodes
-            ):
-                raise ValueError(
-                    f"Custom split validation failed: prefill_nodes ({prefill_nodes}) + "
-                    f"decode_nodes ({decode_nodes}) = {prefill_nodes + decode_nodes} must equal "
-                    f"nnodes ({nnodes}) for a co-located proxy, or nnodes-1 ({nnodes - 1}) for a "
-                    f"dedicated proxy node"
-                )
-            xP = prefill_nodes
-            yD = decode_nodes
-        elif nnodes == 2:
-            # Co-located proxy on the first prefill node: 1 prefill + 1 decode.
-            # The general default below assumes a dedicated proxy (nnodes-1 worker
-            # nodes), which would yield yD=0 for nnodes==2 and an invalid topology.
-            xP = 1
-            yD = 1
-        else:
-            # Default split: dedicated proxy + golden-ratio prefill/decode split.
-            # For N total nodes: 1 proxy + ~40% prefill + ~60% decode
-            xP = max(1, (nnodes - 1) * 2 // 5)  # ~40% of worker nodes
-            yD = nnodes - 1 - xP  # remaining nodes
+        # Co-located proxy (xP + yD == nnodes) or a dedicated proxy node.
+        # The model run.sh assigns ranks. This launcher only publishes the split.
+        sglang_disagg_config = sglang_disagg_block(self.config.additional_context)
+        xP, yD = resolve_disagg_topology(
+            nnodes,
+            sglang_disagg_config.get("prefill_nodes"),
+            sglang_disagg_config.get("decode_nodes"),
+            min_nodes=2,
+            allow_colocated_proxy=True,
+            launcher_name="SGLang Disaggregated",
+        )
 
         return f"""# SGLang Disaggregated multi-node setup
 # ============================================
@@ -1704,6 +1675,64 @@ echo "=========================================="
 
 # No MAD_MULTI_NODE_RUNNER - SGLang disagg handles process management
 # Model script should detect SGLANG_DISAGG_MODE and launch appropriately"""
+
+    def _generate_vllm_disagg_command(
+        self, nnodes: int, nproc_per_node: int, master_port: int
+    ) -> str:
+        """Publish vLLM disaggregated topology for the model script.
+
+        Same split rules as SGLang on SLURM: a co-located proxy at 2 nodes, or
+        a dedicated proxy on larger jobs. The model script reads
+        ``VLLM_DISAGG_*`` and starts prefill, decode, and the proxy. madengine
+        does not invoke vLLM itself.
+        """
+        distributed = self.config.additional_context.get("distributed") or {}
+        vllm_disagg_config = (
+            distributed.get("vllm_disagg", {}) if isinstance(distributed, dict) else {}
+        )
+        if not isinstance(vllm_disagg_config, dict):
+            vllm_disagg_config = {}
+        xP, yD = resolve_disagg_topology(
+            nnodes,
+            vllm_disagg_config.get("prefill_nodes"),
+            vllm_disagg_config.get("decode_nodes"),
+            min_nodes=2,
+            allow_colocated_proxy=True,
+            launcher_name="vLLM Disaggregated",
+        )
+        return f"""# vLLM Disaggregated multi-node setup
+# ============================================
+# Cluster Configuration:
+#   Total Nodes: {nnodes}
+#   Prefill: {xP} nodes
+#   Decode: {yD} nodes
+#   Proxy/router: dedicated node or co-located on the first prefill node
+#                 (rank-to-role assignment handled by the model run.sh)
+# ============================================
+
+export VLLM_DISAGG_MODE="enabled"
+export VLLM_DISAGG_PREFILL_NODES={xP}
+export VLLM_DISAGG_DECODE_NODES={yD}
+export VLLM_DISAGG_TOTAL_NODES={nnodes}
+export VLLM_TP_SIZE={nproc_per_node}
+
+export MASTER_PORT={master_port}
+
+{self._sglang_node_ips_script(nnodes)}
+export VLLM_NODE_IPS="$SLURM_NODE_IPS"
+export VLLM_NODE_RANK=${{SLURM_PROCID:-${{NODE_RANK:-${{PMI_RANK:-${{SLURM_NODEID:-0}}}}}}}}
+
+echo "=========================================="
+echo "vLLM Disaggregated Cluster Info"
+echo "=========================================="
+echo "Node Rank: $VLLM_NODE_RANK"
+echo "Node IPs: $VLLM_NODE_IPS"
+echo "Prefill Nodes: {xP}"
+echo "Decode Nodes: {yD}"
+echo "TP Size: {nproc_per_node}"
+echo "=========================================="
+
+# No MAD_MULTI_NODE_RUNNER - the model script launches vLLM from VLLM_DISAGG_MODE"""
 
     def _generate_deepspeed_command(
         self, nnodes: int, nproc_per_node: int, master_port: int

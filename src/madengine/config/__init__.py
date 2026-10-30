@@ -22,4 +22,7 @@ def load_config(config_args: list) -> tuple:
         raise ConfigurationError(
             "Config validation errors:\n" + "\n".join(f"  - {e}" for e in errors)
         )
-    return ConfigTranslator.to_additional_context(cfg)
+    enabled_explicit = HydraConfigLoader.distributed_enabled_is_explicit(config_args)
+    return ConfigTranslator.to_additional_context(
+        cfg, enabled_explicit=enabled_explicit
+    )

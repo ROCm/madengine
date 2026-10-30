@@ -5,6 +5,7 @@
 
 from pathlib import Path
 
+from .common import resolve_disagg_topology, sglang_disagg_block
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 
 
@@ -440,8 +441,7 @@ torchrun \\
         if not model_script or not isinstance(model_script, str):
             raise ValueError(f"model_script must be non-empty string")
         
-        # Check if custom split is specified in additional_context
-        sglang_disagg_config = self.config.additional_context.get("distributed", {}).get("sglang_disagg", {})
+        sglang_disagg_config = sglang_disagg_block(self.config.additional_context)
         prefill_nodes = sglang_disagg_config.get("prefill_nodes")
         decode_nodes = sglang_disagg_config.get("decode_nodes")
         
@@ -544,7 +544,71 @@ fi
 
 echo "SGLang Disaggregated setup complete"
 """
-    
+
+    def _generate_vllm_disagg_command(
+        self,
+        nnodes: int,
+        nproc_per_node: int,
+        master_port: int,
+        model_script: str,
+        model_args: str = "",
+    ) -> str:
+        """Export vLLM disaggregated topology and run the model script.
+
+        Kubernetes uses a dedicated proxy pod, so the minimum is 3 nodes, the
+        same rule as SGLang on Kubernetes. The model script reads
+        ``VLLM_NODE_RANK`` and starts the proxy, prefill, or decode role.
+        madengine does not call ``vllm serve`` itself.
+        """
+        if not model_script or not isinstance(model_script, str):
+            raise ValueError("model_script must be non-empty string")
+        if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
+            raise ValueError(f"nproc_per_node must be >= 1, got {nproc_per_node}")
+        distributed = self.config.additional_context.get("distributed") or {}
+        vllm_disagg_config = (
+            distributed.get("vllm_disagg", {}) if isinstance(distributed, dict) else {}
+        )
+        if not isinstance(vllm_disagg_config, dict):
+            vllm_disagg_config = {}
+        script_dir = str(Path(model_script).parent)
+        script_name = Path(model_script).name
+        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        xP, yD = resolve_disagg_topology(
+            nnodes,
+            vllm_disagg_config.get("prefill_nodes"),
+            vllm_disagg_config.get("decode_nodes"),
+            min_nodes=3,
+            allow_colocated_proxy=False,
+            launcher_name="vLLM Disaggregated",
+        )
+        return f"""# vLLM Disaggregated K8s Setup
+# Cluster: {nnodes} pods total
+#   Proxy: Pod 0
+#   Prefill: Pods 1-{xP} ({xP} nodes)
+#   Decode: Pods {xP + 1}-{nnodes - 1} ({yD} nodes)
+
+export POD_INDEX=${{JOB_COMPLETION_INDEX:-0}}
+export VLLM_DISAGG_MODE="enabled"
+export VLLM_DISAGG_PREFILL_NODES={xP}
+export VLLM_DISAGG_DECODE_NODES={yD}
+export VLLM_DISAGG_TOTAL_NODES={nnodes}
+export VLLM_TP_SIZE={nproc_per_node}
+export VLLM_NODE_RANK="$POD_INDEX"
+export MASTER_PORT={master_port}
+
+echo "=========================================="
+echo "vLLM Disaggregated Pod Info"
+echo "=========================================="
+echo "Pod Index: $POD_INDEX"
+echo "Prefill Pods: {xP}"
+echo "Decode Pods: {yD}"
+echo "TP Size: {nproc_per_node}"
+echo "=========================================="
+
+# The model script assigns proxy, prefill, and decode from VLLM_NODE_RANK.
+{run_cmd}
+"""
+
     def _generate_vllm_command(
         self,
         nnodes: int,

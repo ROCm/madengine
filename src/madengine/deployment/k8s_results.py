@@ -408,7 +408,8 @@ class KubernetesResultsMixin:
 
         The benchmark client has no distributed launcher, so an unstamped row
         would say ``kubernetes`` / ``native``. The row records the serving
-        stack instead: deployment ``llm-d``, launcher ``vllm``, and
+        stack instead: deployment ``llm-d``, launcher ``vllm`` when serving is
+        aggregated and ``vllm-disagg`` when prefill replicas run, and
         ``serving_mode`` ``disaggregated`` or ``aggregated``.
         """
         llmd = getattr(self, "llmd_config", None)
@@ -417,8 +418,11 @@ class KubernetesResultsMixin:
             if reported in ("k8s", "kubernetes"):
                 reported = "llm-d"
             record["deployment_type"] = reported
-            record["launcher"] = _LLM_D_REPORTED_LAUNCHER
-            record["serving_mode"] = llm_d_serving_mode(llmd)
+            mode = llm_d_serving_mode(llmd)
+            record["serving_mode"] = mode
+            record["launcher"] = (
+                "vllm-disagg" if mode == "disaggregated" else _LLM_D_REPORTED_LAUNCHER
+            )
         shape = self._llm_d_result_shape()
         if shape:
             record["n_gpus"] = str(shape["n_gpus"])
