@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Least-privilege Docker defaults**: Ordinary AMD and NVIDIA container runs no longer request `CAP_SYS_ADMIN` or `/dev/fuse`. MadEngine now adds both only for NAS data mounted through SSHFS; mirrored NAS uses `rsync` and remains unprivileged. Explicit per-model Docker options still opt a workload into FUSE when needed. Runs with user pre-scripts or `rocprof`/`perf` tools retain `CAP_SYS_ADMIN` for profiling access, without granting `/dev/fuse`.
+
 - **GPU count with group warnings** (#123, #191): When the user was not in the `render`/`video` groups, `amd-smi` printed `WARNING:` lines before its CSV table, and the line-count GPU detection counted them as GPUs (8 GPUs plus 9 warnings was reported as 17). Detection now counts only GPU data rows (`amd-smi list --csv` rows starting with the GPU id, `rocm-smi --showid --csv` rows starting with `cardN`), so the count is the same for users inside and outside those groups. The same count is what `test_renderD_count_matches_gpu_count` compares with the render-node list.
 
 ## [2.4.0] - 2026-10-18
