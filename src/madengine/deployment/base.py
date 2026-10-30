@@ -279,7 +279,15 @@ class BaseDeployment(ABC):
             self.console.print(f"[blue]Deploying to {self.DEPLOYMENT_TYPE}...[/blue]")
             result = self.deploy()
 
-            if not result.is_success:
+            # A deploy() that ran the workload synchronously (skip_monitoring, e.g. a
+            # slurm_multi card inside an existing allocation) and failed still left its
+            # results: a launcher exits non-zero when any cell failed, after publishing
+            # the CSV with the cells that passed. Collect them below, as the monitored
+            # path does for a failed job. Any other failed deploy() never ran.
+            ran_and_failed = (
+                not result.is_success and result.skip_monitoring and result.deployment_id
+            )
+            if not result.is_success and not ran_and_failed:
                 if self.config.cleanup_on_failure:
                     self.cleanup(result.deployment_id)
                 return result
@@ -306,6 +314,9 @@ class BaseDeployment(ABC):
                     self.console.print(f"[yellow]Warning: Could not collect results for {result.deployment_id}: {e}[/yellow]")
                     # Ensure empty metrics dict exists even if collection fails
                     result.metrics = {"successful_runs": [], "failed_runs": []}
+
+            if ran_and_failed and self.config.cleanup_on_failure:
+                self.cleanup(result.deployment_id)
 
             return result
 
