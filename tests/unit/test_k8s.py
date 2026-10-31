@@ -322,6 +322,17 @@ def test_dockerhub_registry_payload():
     assert build_registry_secret_data(creds) is not None
 
 
+def test_placeholder_dockerhub_credentials_do_not_make_a_pull_secret():
+    creds = {
+        "dockerhub": {
+            "repository": "your-org/your-repo",
+            "username": "your-docker-username",
+            "password": "your-docker-token",
+        }
+    }
+    assert build_registry_secret_data(creds) is None
+
+
 def test_estimate_configmap_payload_bytes():
     ctx = {
         "manifest_content": "x" * 100,

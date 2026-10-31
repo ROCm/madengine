@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from madengine.core.auth import _usable_credentials
+
 try:
     from kubernetes import client
     from kubernetes.client.rest import ApiException
@@ -64,13 +66,11 @@ def build_registry_secret_data(creds: Dict[str, Any]) -> Optional[bytes]:
     manifests) without creating Kubernetes Secrets.
     """
     dh = creds.get("dockerhub")
-    if not isinstance(dh, dict):
+    if not isinstance(dh, dict) or not _usable_credentials(dh):
         return None
-    user = dh.get("username")
-    pw = dh.get("password")
-    if not user or not pw:
-        return None
-    return _dockerconfig_json_for_dockerhub(str(user), str(pw)).encode("utf-8")
+    return _dockerconfig_json_for_dockerhub(
+        str(dh.get("username")), str(dh.get("password"))
+    ).encode("utf-8")
 
 
 def replace_namespaced_secret(
