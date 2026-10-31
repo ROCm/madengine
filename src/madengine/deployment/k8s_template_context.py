@@ -24,10 +24,9 @@ from .k8s_pvc import RESULTS_LAYOUT_PER_POD, SHARED_DATA_PVC_NAME
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_FROM_LOCAL,
-    build_registry_secret_data,
     estimate_configmap_payload_bytes,
+    image_pull_secret_refs_for_job,
     merge_secrets_config,
-    resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
 )
 from .primus_backend import (
@@ -494,15 +493,6 @@ class KubernetesTemplateContextMixin:
         cred_path = Path("credential.json")
         cred_exists = cred_path.exists()
 
-        created_pull_preview: List[str] = []
-        if cred_exists and strategy == SECRETS_STRATEGY_FROM_LOCAL:
-            try:
-                parsed = json.loads(cred_path.read_text(encoding="utf-8"))
-                if build_registry_secret_data(parsed):
-                    created_pull_preview.append(f"{self.job_name}-registry-pull")
-            except (json.JSONDecodeError, OSError):
-                pass
-
         if strategy == SECRETS_STRATEGY_FROM_LOCAL:
             include_credential_in_configmap = not cred_exists
         else:
@@ -517,8 +507,8 @@ class KubernetesTemplateContextMixin:
             strategy, merged_sec, created_runtime_name
         )
 
-        image_pull_secrets = resolve_image_pull_secret_refs(
-            strategy, merged_sec, created_pull_preview
+        image_pull_secrets = image_pull_secret_refs_for_job(
+            self.k8s_config, self.job_name, cred_path
         )
 
         ap_prof = self.k8s_config.get("allow_privileged_profiling")

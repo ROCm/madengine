@@ -525,7 +525,8 @@ To use an existing PVC instead of auto-creation:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `kubeconfig` | string | `~/.kube/config` | Path to kubeconfig |
+| `kubeconfig` | string | `$KUBECONFIG`, else `~/.kube/config` | Path to kubeconfig |
+| `context` | string | file's current context | Context to deploy to; must exist in the kubeconfig |
 | `namespace` | string | `"default"` | Kubernetes namespace |
 | `gpu_resource_name` | string | `"amd.com/gpu"` | GPU resource (`"nvidia.com/gpu"` for NVIDIA) |
 

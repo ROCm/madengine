@@ -188,7 +188,7 @@ madengine validates the composed config and reports errors for:
 - Conflicting scheduler selections (e.g., both `slurm` and `k8s` sections present)
 - `distributed.enabled: true` without a `distributed.launcher`
 - Invalid `distributed.nnodes` (must be a positive integer)
-- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is Kubernetes. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
+- An unknown `distributed.launcher`. Accepted names are `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (`sglang_disagg` is an alias), and `slurm_multi` (`slurm-multi` is an alias). `docker` and `native` are reporting values, not launchers. `slurm_multi` is rejected when the target is llm-d. The Hydra group `launcher=megatron` is an alias of `launcher=megatron-lm`; the string `megatron` is not a launcher name.
 - Unsupported `platform.type` in a Hydra config (currently only `docker` is supported). `"platform": "bare_metal"` on `--additional-context` is supported and is a different path. See [Bare metal](bare-metal.md)
 - Unknown top-level config keys (catches typos)
 
@@ -663,7 +663,9 @@ Automatically applies (see presets under `src/madengine/deployment/presets/k8s/`
 - `secrets.runtime_secret_name` - Required for `existing` (pre-created opaque Secret with key `credential.json`); optional for `omit` if you still mount a runtime Secret
 
 **Cluster and scheduling keys:**
-- `kubeconfig` - Path to kubeconfig (default: `~/.kube/config`)
+- `kubeconfig` - Path to kubeconfig (default: `$KUBECONFIG`, else `~/.kube/config`; in-cluster when neither exists)
+- `context` - kubeconfig context to deploy to (default: the file's current context). Must exist in the file; madengine refuses rather than fall back to another. The Python client and every `kubectl` call madengine makes use this same file and context.
+- `gpu_count`, `volumes`, `extra_resources`, `security_context`, `shm_size`, `include_script_dirs` - for `slurm_multi` cards; see [deployment.md](deployment.md#slurm_multi-cards-on-kubernetes)
 - `gpu_resource_name` - GPU resource name (default: `amd.com/gpu`; use `nvidia.com/gpu` for NVIDIA)
 - `node_selector` - Label selectors for pod placement (default: `{}`)
 - `tolerations` - Tolerations for tainted nodes (default: `[]`)
@@ -890,7 +892,7 @@ The full key reference, reliability behaviour and troubleshooting are in
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 - `sglang-disagg` - Disaggregated SGLang
-- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only)
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM, or Kubernetes: see [deployment.md](deployment.md#slurm_multi-cards-on-kubernetes))
 
 See [Launchers Guide](launchers.md) for details.
 

@@ -111,20 +111,25 @@ def validate_launcher(launcher: Optional[str], *, source: str) -> Optional[str]:
     )
 
 
+# Deployment types that cannot run a self-managed slurm_multi script.
+_NO_SLURM_MULTI_ARM = ("llm-d",)
+
+
 def ensure_launcher_allowed(
     launcher: Optional[str], deployment_type: str, *, source: str
 ) -> None:
     """Reject a launcher that has no dispatch arm on this deployment.
 
-    ``slurm_multi`` runs the model's own ``.slurm`` script through sbatch. An
-    explicit Kubernetes config wins target inference, and the Kubernetes
-    template has no arm for it, so the job would render with no launcher
-    command and still look successful.
+    ``slurm_multi`` runs the model's own ``.slurm`` script: through sbatch on
+    SLURM and Spur, and on Kubernetes as an Indexed Job running the same script
+    (``k8s_slurm_multi.py``). llm-d builds its own serving stack and has no arm
+    for it, so a job there would render with no launcher command and still
+    look successful.
     """
-    if launcher != "slurm_multi" or deployment_type not in ("k8s", "kubernetes"):
+    if launcher != "slurm_multi" or deployment_type not in _NO_SLURM_MULTI_ARM:
         return
     raise ConfigurationError(
-        f"Launcher 'slurm_multi' in {source} only runs on SLURM",
+        f"Launcher 'slurm_multi' in {source} runs on SLURM or Kubernetes, not {deployment_type}",
         context=create_error_context(
             operation="ensure_launcher_allowed",
             component="deployment.common",
@@ -135,9 +140,7 @@ def ensure_launcher_allowed(
             },
         ),
         suggestions=[
-            "Drop the k8s/kubernetes block so this job is submitted to SLURM",
-            "Or pick a Kubernetes launcher such as torchrun, megatron-lm, "
-            "vllm, or sglang",
+            "Use a slurm or k8s deployment for this card",
         ],
     )
 

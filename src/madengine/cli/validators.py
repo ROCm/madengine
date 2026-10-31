@@ -288,8 +288,8 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
     if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
         targets.append((launcher_cfg, "type"))
 
-    # An explicit k8s block wins target inference over slurm_multi, and
-    # Kubernetes has no dispatch arm for that launcher.
+    # An explicit k8s block wins target inference over slurm_multi; Kubernetes
+    # runs that launcher's script too (k8s_slurm_multi.py).
     deployment_type = (
         "k8s" if ("k8s" in context or "kubernetes" in context) else "slurm"
     )

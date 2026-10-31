@@ -65,7 +65,11 @@ the longer RFC 1123 subdomain limit (253).
 
 - Kubernetes cluster with GPU support
 - GPU device plugin installed ([AMD](https://github.com/ROCm/k8s-device-plugin) or [NVIDIA](https://github.com/NVIDIA/k8s-device-plugin))
-- Kubeconfig configured (`~/.kube/config` or in-cluster)
+- Kubeconfig configured. madengine uses `k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`
+  (in-cluster when none exists), at `k8s.context` or that file's current context. Every API call and
+  every `kubectl` call it makes uses that same file and context, and a `k8s.context` missing from the
+  file is refused rather than substituted. A rerun replaces only objects labelled `app=madengine`; a
+  same-named object without the label stops the deploy.
 - Docker registry accessible from cluster
 
 ### Quick Start
@@ -176,9 +180,84 @@ This creates:
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 - `sglang-disagg` - Disaggregated SGLang (multi-node)
-- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only, escape hatch)
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (escape hatch; on Kubernetes see [slurm_multi cards on Kubernetes](#slurm_multi-cards-on-kubernetes))
 
 See [Launchers Guide](launchers.md) for details.
+
+### slurm_multi cards on Kubernetes
+
+A `slurm_multi` card ships its own SLURM batch script, which fans out with `srun` and
+starts one container per node with `docker run`. On Kubernetes madengine runs that
+script **unchanged**:
+
+- one pod per node of the card: an Indexed Job (`completions = nnodes`, one attempt)
+  with a headless Service, so pods reach each other by hostname (`<job>-0`, `<job>-1`, ...);
+- every pod runs the card's image; pod 0 runs the card's script with the `SLURM_*`
+  variables a batch script sees, and with stand-ins for `srun`, `docker` and
+  `scontrol` first on `PATH`. `srun` sends each task to the named pod; `docker run`
+  runs its command in the pod itself (the pod is the container), applying `-e` and
+  `-v`; `docker stop/rm/ps/pull/image inspect` act on those processes and the pod's
+  image; `scontrol show hostnames` expands the node list. Any other form fails with a
+  message naming it, rather than being guessed at;
+- the card's script directory and its sibling `common` directory travel in a
+  ConfigMap (compressed, under 1 MiB);
+- results: `LOG_PATH` defaults to `/results/logs` on the run's results volume, which
+  every pod mounts (ReadWriteMany for multi-node). Pod 0 publishes the card's
+  `multiple_results` file, else `$LOG_PATH/$SLURM_JOB_ID/perf.csv`, as
+  `/results/<job>-0/perf.csv`. madengine copies the run into
+  `./k8s_results/<job>/run-<id>/`, reads exactly that file -- never an earlier run's --
+  and treats its rows the way the SLURM path does: each row's `status` decides success
+  or failure, and no file is a failed run;
+- the run is done when the Job's own `Complete` or `Failed` condition says so (not when
+  the first pod finishes), and it has one attempt: rerunning one pod of a multi-node run
+  is not a retry of the run;
+- the run's name is a DNS label with room for the pod index (dots become dashes, a long
+  name is cut and given a short hash), because the script addresses nodes by hostname.
+
+What the script needs from the cluster is pod-spec configuration, never a card change:
+
+| `k8s` key | Purpose |
+|---|---|
+| `gpu_count` | GPUs per pod (default: the card's `slurm.gpus_per_node`). Presets do not size the pod: see below |
+| `cpu`, `memory` | requests per pod; requested only when the run sets them |
+| `volumes` | `[{name, mount_path, host_path \| pvc \| nfs: {server, path}, read_only}]` — weights, caches |
+| `extra_resources` | other device-plugin resources, e.g. `{"rdma/hca": 1}` |
+| `security_context` | container `securityContext`, e.g. `{"capabilities": {"add": ["IPC_LOCK"]}}` for RDMA |
+| `shm_size` | `/dev/shm` size (default `64Gi`) |
+| `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
+| `image_pull_policy` | default `Always`; `IfNotPresent` for images imported into the cluster |
+| `host_network` | pods on the node's network, so RoCE uses the node's NICs; one host-network slurm_multi pod per node, across runs and namespaces (madengine's agent and the card's servers bind fixed ports) |
+| `pod_annotations` | e.g. `{"k8s.v1.cni.cncf.io/networks": "rdma-net"}`: a Multus secondary network giving each pod its own RDMA interface |
+| `results_access_mode` | results PVC access mode (default `ReadWriteMany` for multi-node). `ReadWriteOnce` works when every pod lands on one node, e.g. a cluster with only `local-path` storage |
+
+Host-level `docker run` options in the script (`--device`, `--network host`,
+`--privileged`, `--ulimit`, `--shm-size`, ...) are ignored; the keys above are where
+the pod gets those capabilities.
+
+RDMA for a card's KV transfer takes three things from the cluster: RDMA devices in
+the pod (an RDMA device plugin; request its resource with `extra_resources` and add
+`IPC_LOCK` with `security_context` -- not `privileged`, which also exposes every GPU
+on the node and defeats the GPU device plugin's isolation), a network the RDMA
+traffic can use (`host_network`, or a Multus/SR-IOV network via `pod_annotations`),
+and GPU memory the NIC can register (a GPU peer-memory driver or dma-buf support on
+the node, outside Kubernetes). Preset env vars (for example the AMD multi-GPU
+preset's `NCCL_IB_DISABLE=1`) are not passed to the card, as on SLURM; set them
+under `env_vars` to pass them.
+
+Presets do not size a `slurm_multi` card's pods either. They pick a profile from the run
+config alone, before the card is known, so a config that names no `gpu_count` and no
+`distributed` block gets the single-GPU profile (1 GPU, 8 CPUs, 16Gi). For these cards
+GPUs per pod come from `k8s.gpu_count` only when the run sets it, else the card, and
+`cpu` / `memory` are requested only when the run sets them. To set the node count from
+the run, give `distributed: {"launcher": "slurm_multi", "nnodes": N}`: the multi-node
+preset defaults the launcher to `torchrun`, and a run-level `nnodes` is read only for
+`slurm_multi`.
+
+MAD has a standalone counterpart that needs no madengine,
+`scripts/common/k8s/submit.py`, the Kubernetes counterpart of submitting the card's
+script with `sbatch`. It reads the same `k8s` keys and, for the same card and config,
+deploys the same Job, Service and ConfigMap (apart from names and the run id) with a
+byte-identical pod-side shim. MAD's `docs/multinode-kubernetes.md` covers both paths.
 
 ### Monitoring
 
@@ -209,6 +288,12 @@ kubectl delete job madengine-job-xxx -n your-namespace
 
 - Access to SLURM login node
 - SLURM commands available (`sbatch`, `squeue`, `scontrol`)
+- SLURM-compatible schedulers that implement part of the CLI work too. On Spur, for example,
+  `SLURM_NODELIST` is already a comma list and `scontrol show hostnames` does not exist, so
+  madengine expands node lists itself and uses `scontrol` only for the compressed form; `sacct -X`
+  is rejected, so the final state is read without it; and `sbatch` is retried when the Raft
+  control plane is electing a leader ("not the Raft leader"). The `slurm_multi` wrapper also
+  honours `slurm.account` and `slurm.qos`
 - Shared filesystem for MAD package and results
 - Module system or container runtime (Singularity/Apptainer)
 
@@ -381,6 +466,12 @@ madengine build --tags model --build-on-compute --registry docker.io/myorg
 
 The manifest generated by `--use-image` merges the model card's `distributed` and `slurm` config into `deployment_config`, so the run phase auto-detects SLURM deployment without additional `--additional-context`.
 
+The `--build-on-compute` job takes its SLURM settings from the model card's `slurm` section and `--additional-context` (`slurm` wins): `partition` (required), `time`, `reservation`, and the same `account` and `qos` as the run job, so a cluster whose default QoS cannot get a node accepts the build too. A build needs no GPUs, so the job requests none unless `slurm.build_gpus_per_node` is set, for schedulers that refuse a job without a GPU request:
+
+```json
+{"slurm": {"partition": "gpu", "account": "my-account", "qos": "my-qos", "build_gpus_per_node": 8}}
+```
+
 ### slurm_multi Launcher (Self-Managed)
 
 For workloads that orchestrate their own per-node Docker containers (e.g. SGLang Disaggregated proxy + prefill + decode topologies), use the `slurm_multi` launcher:
@@ -544,6 +635,18 @@ kubectl describe node <node-name> | grep -A5 Conditions
 ```
 
 PVC artifacts are still collected in this scenario. Only the API-based pod log retrieval fails, which means performance metrics for that node will be missing from the results table.
+
+**slurm_multi cards:**
+
+| Symptom | Cause and fix |
+|---|---|
+| `job name ... does not make valid pod hostnames` | Not expected since names are shortened automatically; report it with the card name |
+| `Error: required file missing: .../scripts/<dir>/...` in pod 0's log | The card's script reads a sibling directory that was not shipped. Add it to `k8s.include_script_dirs` |
+| `RuntimeError: The memory capacity is unbalanced` | The pod sees GPUs that are not its own, usually `security_context: {privileged: true}`. Remove it |
+| Pods `Pending` with `Insufficient amd.com/gpu` | `nnodes` x `gpu_count` exceeds the free GPUs, or `host_network` needs one node per pod |
+| Pods `Pending` with `didn't match pod anti-affinity rules` | `host_network`: another host-network slurm_multi run holds those nodes; this run starts when they free up |
+| Results PVC `Pending` | No storage class satisfies ReadWriteMany. Set `multi_node_results_storage_class`, or `results_access_mode: ReadWriteOnce` with every pod on one node |
+| `[mad-k8s srun] unsupported option ...` | The card's script uses an `srun` / `docker` / `scontrol` form the stand-ins do not implement; the message names it |
 
 **Resource Issues:**
 ```bash

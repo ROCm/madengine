@@ -18,7 +18,12 @@ from rich.console import Console as RichConsole
 from rich.panel import Panel
 
 from madengine.core.additional_context_defaults import apply_build_context_defaults
-from madengine.core.auth import has_ambient_docker_auth, load_credentials
+from madengine.core.auth import (
+    _PLACEHOLDER_CREDENTIAL_PATTERN,
+    _usable_credentials,
+    has_ambient_docker_auth,
+    load_credentials,
+)
 from madengine.core.console import Console, manifest_safe_context
 from madengine.core.context import Context
 from madengine.core.errors import (
@@ -33,6 +38,21 @@ from madengine.execution.dockerfile_utils import (
     dockerfile_requires_explicit_mad_arch_build_arg,
 )
 from madengine.utils.discover_models import DiscoverModels
+
+
+def _dockerhub_field_reader(field: str) -> str:
+    """Python one-liner that prints a dockerhub field, or empty if it is a template.
+
+    The compute-node build script runs this with the stdlib only. The pattern
+    is the same one ``is_placeholder_credential`` uses.
+    """
+    return (
+        "import json,re; "
+        "e=json.load(open('credential.json')).get('dockerhub', {}) or {}; "
+        f"v=str(e.get({field!r}) or '').strip(); "
+        "print('' if re.fullmatch("
+        f"{_PLACEHOLDER_CREDENTIAL_PATTERN!r}, v) else v)"
+    )
 
 
 class BuildOrchestrator:
@@ -958,6 +978,19 @@ class BuildOrchestrator:
 
         reservation = slurm_config.get("reservation", "")
         time_limit = slurm_config.get("time", "02:00:00")
+        # The build job is submitted under the same account and QoS as the run job (the
+        # job template and the slurm_multi wrapper both honour them): on a cluster whose
+        # default QoS cannot get a node, a build without them was refused while the run
+        # would have been accepted. A build needs no GPUs, so it requests none unless
+        # build_gpus_per_node is set -- for schedulers that refuse a job without a GPU
+        # request (e.g. Spur).
+        build_directives = []
+        if slurm_config.get("account"):
+            build_directives.append(f"#SBATCH --account={slurm_config['account']}")
+        if slurm_config.get("qos"):
+            build_directives.append(f"#SBATCH --qos={slurm_config['qos']}")
+        if slurm_config.get("build_gpus_per_node"):
+            build_directives.append(f"#SBATCH --gpus-per-node={slurm_config['build_gpus_per_node']}")
 
         self.rich_console.print(f"  Partition: {partition}")
         self.rich_console.print(f"  Time limit: {time_limit}")
@@ -980,11 +1013,11 @@ class BuildOrchestrator:
                 with open(credential_file) as f:
                     creds = json.load(f)
                     dockerhub_creds = creds.get("dockerhub", {})
-                    dockerhub_user = dockerhub_creds.get("username", "")
-                    dockerhub_password = dockerhub_creds.get("password", "")
-                    if dockerhub_user:
+                    if _usable_credentials(dockerhub_creds):
+                        dockerhub_user = str(dockerhub_creds.get("username") or "")
+                        dockerhub_password = str(dockerhub_creds.get("password") or "")
                         self.rich_console.print(
-                            f"  Credentials: Found in credential.json"
+                            "  Credentials: Found in credential.json"
                         )
             except (json.JSONDecodeError, IOError) as e:
                 self.rich_console.print(
@@ -1126,9 +1159,21 @@ class BuildOrchestrator:
                 registry_image_name = f"{registry}:{image_model_name}"
             else:
                 registry_image_name = f"{registry}/{image_model_name}:latest"
+            # Build args as the local build passes them (DockerBuilder.build_image):
+            # --additional-context docker_build_arg, then the card's own docker_build_arg
+            # for keys the context does not set.
+            build_arg = dict(self.context.ctx.get("docker_build_arg", {}) or {})
+            for card_arg, card_value in (model.get("docker_build_arg") or {}).items():
+                build_arg.setdefault(card_arg, card_value)
+            build_arg_flags = " ".join(
+                f"--build-arg {shlex.quote(str(k))}={shlex.quote(str(v))}"
+                for k, v in build_arg.items()
+            )
             self.rich_console.print(
                 f"  {model_name}: {dockerfile_path} -> {registry_image_name}"
             )
+            if build_arg:
+                self.rich_console.print(f"    build args: {build_arg_flags}")
             per_model_data.append(
                 {
                     "model": model,
@@ -1136,6 +1181,7 @@ class BuildOrchestrator:
                     "dockerfile_path": dockerfile_path,
                     "local_image_name": local_image_name,
                     "registry_image_name": registry_image_name,
+                    "build_arg_flags": build_arg_flags,
                 }
             )
         self.rich_console.print("")
@@ -1164,7 +1210,7 @@ class BuildOrchestrator:
 echo "=== Building" {model_q} "==="
 echo "Dockerfile:" {df_q}
 echo "Local image:" {local_q}
-docker build --network=host -t {local_q} {no_cache_flag} --pull -f {df_q} ./docker
+docker build --network=host -t {local_q} {no_cache_flag} {pmd["build_arg_flags"]} --pull -f {df_q} ./docker 2>&1
 BUILD_RC=$?
 if [ $BUILD_RC -ne 0 ]; then
     echo "❌ Docker build FAILED for" {model_q} "(exit $BUILD_RC)"
@@ -1174,7 +1220,7 @@ echo "✅ Build OK:" {model_q}
 echo "Tagging:" {local_q} "->" {reg_img_q}
 docker tag {local_q} {reg_img_q}
 echo "Pushing:" {reg_img_q}
-docker push {reg_img_q}
+docker push {reg_img_q} 2>&1
 PUSH_RC=$?
 if [ $PUSH_RC -ne 0 ]; then
     echo "❌ Docker push FAILED for" {model_q} "(exit $PUSH_RC)"
@@ -1184,7 +1230,11 @@ echo "✅ Push OK:" {reg_img_q}
 echo ""
 """
 
-        # Build script content — runs on 1 compute node, builds+pushes all models
+        # Build script content — runs on 1 compute node, builds+pushes all models.
+        # The node may not have madengine imported, so the template check is
+        # inlined from the same pattern _usable_credentials uses.
+        read_user = shlex.quote(_dockerhub_field_reader("username"))
+        read_pass = shlex.quote(_dockerhub_field_reader("password"))
         build_script_content = f"""#!/bin/bash
 #SBATCH --job-name=madengine-build
 #SBATCH --partition={partition}
@@ -1192,6 +1242,7 @@ echo ""
 #SBATCH --ntasks=1
 #SBATCH --time={time_limit}
 {f'#SBATCH --reservation={reservation}' if reservation else ''}
+{chr(10).join(build_directives)}
 #SBATCH --output=madengine_build_%j.out
 #SBATCH --error=madengine_build_%j.err
 
@@ -1213,8 +1264,9 @@ DOCKER_PASS="${{MAD_DOCKERHUB_PASSWORD:-}}"
 
 if [ -z "$DOCKER_USER" ] && [ -f "credential.json" ]; then
     echo "Reading credentials from credential.json..."
-    DOCKER_USER=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('username', ''))" 2>/dev/null || echo "")
-    DOCKER_PASS=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('password', ''))" 2>/dev/null || echo "")
+    # Blank and template values (your-docker-username) are not a login.
+    DOCKER_USER=$(python3 -c {read_user} 2>/dev/null || echo "")
+    DOCKER_PASS=$(python3 -c {read_pass} 2>/dev/null || echo "")
 fi
 
 if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASS" ]; then

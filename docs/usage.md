@@ -704,7 +704,7 @@ Configure distributed training:
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 - `sglang-disagg` - Disaggregated prefill/decode
-- `slurm_multi` - Self-managed per-node containers (SLURM only)
+- `slurm_multi` - Self-managed per-node containers (SLURM, or Kubernetes: see [deployment](deployment.md#slurm_multi-cards-on-kubernetes))
 
 See [Launchers Guide](launchers.md) for details.
 
