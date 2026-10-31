@@ -18,7 +18,12 @@ from rich.console import Console as RichConsole
 from rich.panel import Panel
 
 from madengine.core.additional_context_defaults import apply_build_context_defaults
-from madengine.core.auth import has_ambient_docker_auth, load_credentials
+from madengine.core.auth import (
+    _PLACEHOLDER_CREDENTIAL_PATTERN,
+    _usable_credentials,
+    has_ambient_docker_auth,
+    load_credentials,
+)
 from madengine.core.console import Console, manifest_safe_context
 from madengine.core.context import Context
 from madengine.core.errors import (
@@ -33,6 +38,21 @@ from madengine.execution.dockerfile_utils import (
     dockerfile_requires_explicit_mad_arch_build_arg,
 )
 from madengine.utils.discover_models import DiscoverModels
+
+
+def _dockerhub_field_reader(field: str) -> str:
+    """Python one-liner that prints a dockerhub field, or empty if it is a template.
+
+    The compute-node build script runs this with the stdlib only. The pattern
+    is the same one ``is_placeholder_credential`` uses.
+    """
+    return (
+        "import json,re; "
+        "e=json.load(open('credential.json')).get('dockerhub', {}) or {}; "
+        f"v=str(e.get({field!r}) or '').strip(); "
+        "print('' if re.fullmatch("
+        f"{_PLACEHOLDER_CREDENTIAL_PATTERN!r}, v) else v)"
+    )
 
 
 class BuildOrchestrator:
@@ -993,11 +1013,11 @@ class BuildOrchestrator:
                 with open(credential_file) as f:
                     creds = json.load(f)
                     dockerhub_creds = creds.get("dockerhub", {})
-                    dockerhub_user = dockerhub_creds.get("username", "")
-                    dockerhub_password = dockerhub_creds.get("password", "")
-                    if dockerhub_user:
+                    if _usable_credentials(dockerhub_creds):
+                        dockerhub_user = str(dockerhub_creds.get("username") or "")
+                        dockerhub_password = str(dockerhub_creds.get("password") or "")
                         self.rich_console.print(
-                            f"  Credentials: Found in credential.json"
+                            "  Credentials: Found in credential.json"
                         )
             except (json.JSONDecodeError, IOError) as e:
                 self.rich_console.print(
@@ -1210,7 +1230,11 @@ echo "✅ Push OK:" {reg_img_q}
 echo ""
 """
 
-        # Build script content — runs on 1 compute node, builds+pushes all models
+        # Build script content — runs on 1 compute node, builds+pushes all models.
+        # The node may not have madengine imported, so the template check is
+        # inlined from the same pattern _usable_credentials uses.
+        read_user = shlex.quote(_dockerhub_field_reader("username"))
+        read_pass = shlex.quote(_dockerhub_field_reader("password"))
         build_script_content = f"""#!/bin/bash
 #SBATCH --job-name=madengine-build
 #SBATCH --partition={partition}
@@ -1240,8 +1264,9 @@ DOCKER_PASS="${{MAD_DOCKERHUB_PASSWORD:-}}"
 
 if [ -z "$DOCKER_USER" ] && [ -f "credential.json" ]; then
     echo "Reading credentials from credential.json..."
-    DOCKER_USER=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('username', ''))" 2>/dev/null || echo "")
-    DOCKER_PASS=$(python3 -c "import json; print(json.load(open('credential.json')).get('dockerhub', {{}}).get('password', ''))" 2>/dev/null || echo "")
+    # Blank and template values (your-docker-username) are not a login.
+    DOCKER_USER=$(python3 -c {read_user} 2>/dev/null || echo "")
+    DOCKER_PASS=$(python3 -c {read_pass} 2>/dev/null || echo "")
 fi
 
 if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PASS" ]; then

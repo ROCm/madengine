@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Placeholder Docker Hub credentials no longer log in** (#192): `tests/fixtures/dummy/credential.json` shipped `your-docker-username` / `your-docker-token`. Those values are non-blank, so e2e builds ran `docker login`, failed with `unauthorized`, and then hit Docker Hub's anonymous pull rate limit. Template usernames and passwords are now ignored the same way blank ones are. A real username and password still logs in, including a username such as `your-company`.
+
 ### Added
 
 - **slurm_multi cards on Kubernetes**: a card's own SLURM launcher runs unchanged across one pod per node (an Indexed Job with a headless Service). Pod 0 runs the script with the `SLURM_*` variables and stand-ins for `srun`, `docker` and `scontrol` (`deployment/k8s_shim/`); results are read from the `perf.csv` pod 0 publishes, as on SLURM. New `k8s` keys: `gpu_count` (default: the card's `slurm.gpus_per_node`), `volumes`, `extra_resources`, `security_context`, `shm_size`, `include_script_dirs`, `host_network`, `pod_annotations`, `results_access_mode`, `context`.
@@ -14,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bare-metal conda execution**: `"platform": "bare_metal"` runs the model on this machine inside a conda, mamba, or micromamba prefix. Omitted `platform` stays Docker. A retired top-level `bare_metal` object is rejected, and a `conda` block on a Docker run is rejected. The prefix lives under `~/.cache/madengine/envs/<name>` (override with `conda.env_root`). Build creates or updates it from the card's `environment_file`, `requirements_file`, `python_version`, `setup_script`, and optional `rocm` wheel install, and writes a manifest with an empty `docker_image`. Run enters the prefix with `conda run -p` and does not wrap the script in `torchrun`. `n_gpus: "-1"` becomes a real `MAD_RUNTIME_NGPUS`, because `torchrun --nproc_per_node` rejects `-1`. Result rows record `platform=bare_metal`, `deployment_type=local`, and the card's workload launcher. `reuse_env` (default true) keeps a prefix whose dependency stamp still matches. `cleanup_env` (default false) removes it after the run. Bare metal cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. The Hydra group `platform=bare_metal` is still rejected; pass the string through `--additional-context`. See `docs/bare-metal.md`.
 
 ### Changed
+
+- **rocm-trace-lite defaults to v0.3.7**: The trace pre-script installed a pinned `v0.3.3` wheel. It now installs the `v0.3.7` `linux_x86_64` release wheel. `ROCM_TRACE_LITE_WHEEL_URL` still selects a specific wheel. `ROCM_TRACE_LITE_FOLLOW_LATEST=1` still resolves the latest GitHub release, and falls back to `v0.3.7` if that lookup fails.
 
 - **Spur `sglang-disagg` peer list**: Each Spur array task's nodelist contains only that task's node, so expanding it produced a one-IP `SGLANG_NODE_IPS` and the router started without `--decode`. Every rank now publishes `ip_rank<N>` in the shared rendezvous directory, and Spur builds the list in rank order within `slurm.rendezvous_timeout`. Stock SLURM still expands the job nodelist and skips `127.*` addresses.
 
@@ -24,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Results of a failed run inside an allocation**: a `slurm_multi` script that exited non-zero inside an existing allocation was reported without collecting its results, so the rows of the cells that passed were lost. They are collected as for a failed monitored job; the run stays failed.
 - **Kubernetes target pinning**: the Python client and `kubectl` used different kubeconfig/context resolution and could reach different clusters. Both now use one kubeconfig (`k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`) and one context (`k8s.context`, which must exist, else the file's current context). The preset no longer hardcodes `~/.kube/config`.
 - **Kubernetes cleanup in shared namespaces**: a rerun deleted same-named objects by name; it now deletes only objects labelled `app=madengine` and stops otherwise.
+- **GPU count with group warnings** (#123, #191): When the user was not in the `render`/`video` groups, `amd-smi` printed `WARNING:` lines before its CSV table, and the line-count GPU detection counted them as GPUs (8 GPUs plus 9 warnings was reported as 17). Detection now counts only GPU data rows (`amd-smi list --csv` rows starting with the GPU id, `rocm-smi --showid --csv` rows starting with `cardN`), so the count is the same for users inside and outside those groups. The same count is what `test_renderD_count_matches_gpu_count` compares with the render-node list.
 
 ## [2.4.0] - 2026-10-18
 
