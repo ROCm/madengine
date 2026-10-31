@@ -449,6 +449,7 @@ class ContainerRunner:
             "deployment_type": os.environ.get(
                 "MAD_DEPLOYMENT_TYPE", "local"
             ),  # local, slurm, etc.
+            "platform": (self.additional_context or {}).get("platform", "docker"),
             "launcher": launcher,  # Distributed launcher: torchrun, vllm, sglang, deepspeed, etc.
             "gpu_architecture": (
                 (self.context.ctx.get("docker_env_vars") or {}).get(
@@ -528,6 +529,7 @@ class ContainerRunner:
             "git_commit": "",
             "machine_name": machine_name,
             "deployment_type": os.environ.get("MAD_DEPLOYMENT_TYPE", "local"),
+            "platform": (self.additional_context or {}).get("platform", "docker"),
             "launcher": "",
             "gpu_architecture": (
                 self.context.ctx.get("docker_env_vars", {}).get(

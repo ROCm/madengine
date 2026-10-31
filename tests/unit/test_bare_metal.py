@@ -88,12 +88,16 @@ class TestBareMetalInference:
         with pytest.raises(ConfigurationError, match="conda"):
             orch._infer_deployment_target({"conda": {"conda_env": "e"}})
 
+    def test_platform_podman_selects_local_container_path(self):
+        orch = self._make_orch()
+        assert orch._infer_deployment_target({"platform": "podman"}) == "local"
+
     def test_unknown_platform_is_rejected(self):
         from madengine.core.errors import ConfigurationError
 
         orch = self._make_orch()
-        with pytest.raises(ConfigurationError, match="podman"):
-            orch._infer_deployment_target({"platform": "podman"})
+        with pytest.raises(ConfigurationError, match="containerd"):
+            orch._infer_deployment_target({"platform": "containerd"})
 
 
 class TestBareMetalResultAxes:

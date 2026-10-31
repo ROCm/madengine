@@ -586,6 +586,36 @@ class TestBareMetalExecution:
                 pytest.fail("dummy_bare_metal not found in perf.csv")
 
 
+@pytest.mark.skipif(
+    os.environ.get("MADENGINE_PODMAN_E2E") != "1",
+    reason="set MADENGINE_PODMAN_E2E=1 on a rootful Podman GPU host",
+)
+@requires_gpu("Podman end-to-end validation requires an AMD GPU")
+class TestPodmanExecution:
+    """Exercise the Docker command path through the Podman compatibility shim."""
+
+    @pytest.mark.parametrize(
+        "clean_test_temp_files",
+        [DEFAULT_CLEAN_FILES],
+        indirect=True,
+    )
+    def test_dummy_podman_run_succeeds(self, global_data, clean_test_temp_files):
+        global_data["console"].sh(
+            build_run_command("dummy_podman", additional_context={"platform": "podman"})
+        )
+
+        perf_csv = os.path.join(BASE_DIR, "perf.csv")
+        assert_model_in_perf_csv(perf_csv, "dummy_podman", status="SUCCESS")
+        with open(perf_csv, newline="") as csv_file:
+            row = next(
+                row
+                for row in csv.DictReader(csv_file)
+                if row["model"] == "dummy_podman"
+            )
+        assert row["platform"] == "podman"
+        assert row["deployment_type"] == "local"
+
+
 def _docker_container_ids():
     """Return ``docker ps -aq`` output, or None when the daemon is unreachable."""
     try:
