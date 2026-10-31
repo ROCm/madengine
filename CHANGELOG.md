@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Least-privilege Docker defaults**: Ordinary AMD and NVIDIA container runs no longer request `CAP_SYS_ADMIN` or `/dev/fuse`. MadEngine now adds both only for NAS data mounted through SSHFS; mirrored NAS uses `rsync` and remains unprivileged. Explicit per-model Docker options still opt a workload into FUSE when needed. Runs with user pre-scripts or `rocprof`/`perf` tools retain `CAP_SYS_ADMIN` for profiling access, without granting `/dev/fuse`.
 - **`--build-on-compute` on clusters that need an account, QoS or GPU request**: the build job now uses the run job's `slurm.account` and `slurm.qos`, and requests GPUs when `slurm.build_gpus_per_node` is set. A Spur cluster refused the build job without them.
 - **`--build-on-compute` build args**: the build job's `docker build` passed no `--build-arg`, so `docker_build_arg` from the context and the card was dropped and a Dockerfile that selects its stack by `MAD_SYSTEM_GPU_ARCHITECTURE` built the wrong one. It now gets the same args as a local build, and Docker's build and push output reaches the job log.
 - **Results of a failed run inside an allocation**: a `slurm_multi` script that exited non-zero inside an existing allocation was reported without collecting its results, so the rows of the cells that passed were lost. They are collected as for a failed monitored job; the run stays failed.
