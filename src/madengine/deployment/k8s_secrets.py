@@ -113,7 +113,7 @@ def create_or_update_secrets_from_credentials(
     if reg_data:
         reg_name = f"{job_name}-registry-pull"
         reg_body = client.V1Secret(
-            metadata=client.V1ObjectMeta(name=reg_name, namespace=namespace),
+            metadata=client.V1ObjectMeta(name=reg_name, namespace=namespace, labels=dict(MADENGINE_LABELS)),
             type="kubernetes.io/dockerconfigjson",
             data={".dockerconfigjson": base64.b64encode(reg_data).decode("ascii")},
         )
@@ -122,13 +122,21 @@ def create_or_update_secrets_from_credentials(
 
     runtime_name = f"{job_name}-runtime"
     runtime_body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=runtime_name, namespace=namespace),
+        metadata=client.V1ObjectMeta(name=runtime_name, namespace=namespace, labels=dict(MADENGINE_LABELS)),
         type="Opaque",
         string_data={"credential.json": raw},
     )
     replace_namespaced_secret(core_v1, namespace, runtime_name, runtime_body)
 
     return pull_names, runtime_name
+
+
+def job_secret_names(job_name: str) -> List[str]:
+    """Names of the Secrets create_or_update_secrets_from_credentials makes for a job."""
+    return [f"{job_name}-registry-pull", f"{job_name}-runtime"]
+
+
+MADENGINE_LABELS = {"app": "madengine"}
 
 
 def delete_job_secrets_if_exist(
@@ -169,6 +177,31 @@ def resolve_image_pull_secret_refs(
         extra = merged_secrets.get("image_pull_secret_names") or []
         names.extend(str(n) for n in extra if n)
     return [{"name": n} for n in names]
+
+
+def image_pull_secret_refs_for_job(
+    k8s_config: Dict[str, Any],
+    job_name: str,
+    credential_path: Path = Path("credential.json"),
+) -> List[Dict[str, str]]:
+    """pod.spec.imagePullSecrets for a job, before its Secrets exist.
+
+    Under from_local_credentials, deploy() creates "<job_name>-registry-pull" when
+    credential.json has registry auth (create_or_update_secrets_from_credentials);
+    the Job is rendered before that, so the name is previewed here from the same
+    file. job_name must be the name deploy() will use.
+    """
+    merged = merge_secrets_config(k8s_config)
+    strategy = merged.get("strategy", SECRETS_STRATEGY_FROM_LOCAL)
+    created: List[str] = []
+    if strategy == SECRETS_STRATEGY_FROM_LOCAL and credential_path.exists():
+        try:
+            parsed = json.loads(credential_path.read_text(encoding="utf-8"))
+            if build_registry_secret_data(parsed):
+                created.append(f"{job_name}-registry-pull")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return resolve_image_pull_secret_refs(strategy, merged, created)
 
 
 def resolve_runtime_secret_name(

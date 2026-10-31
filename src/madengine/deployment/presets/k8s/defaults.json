@@ -5,7 +5,6 @@
   "debug": false,
   
   "k8s": {
-    "kubeconfig": "~/.kube/config",
     "namespace": "default",
     "image_pull_policy": "Always",
     "backoff_limit": 3,

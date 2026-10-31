@@ -38,6 +38,9 @@ def apply_deployment_config(
 # Key under which load_slurm_config records the env_vars keys that came only
 # from a preset (defaults.json / profiles/*.json), not from the user.
 PRESET_ENV_KEYS = "_preset_env_keys"
+# Likewise for the "k8s" block: keys only a preset set, so a self-managed card is sized
+# by itself rather than by a profile guessed from the run config (see load_k8s_config).
+PRESET_K8S_KEYS = "_preset_k8s_keys"
 
 
 class ConfigLoader:
@@ -194,7 +197,25 @@ class ConfigLoader:
             config = cls.deep_merge(config, profile_preset)
 
         # Layer 5: User configuration (highest priority)
+        preset_env = dict(config.get("env_vars") or {})
+        preset_k8s = dict(config.get("k8s") or {})
         config = cls.deep_merge(config, user_config)
+        # The profile is picked from the run config alone (gpu_count / distributed), before
+        # the card is known: a run that states neither is sized as single-GPU (gpu_count 1,
+        # cpu 8, memory 16Gi) even for a card that is 2 nodes x 8 GPUs. Record which k8s
+        # keys only a preset set, so the slurm_multi path can size the pod from the card.
+        user_k8s = user_config.get("k8s") or user_config.get("kubernetes") or {}
+        config[PRESET_K8S_KEYS] = sorted(
+            k for k in preset_k8s if k not in user_k8s or k in set(user_config.get(PRESET_K8S_KEYS) or [])
+        )
+        # As load_slurm_config does: record which env_vars keys ONLY a preset set,
+        # so a self-managed (slurm_multi) card, which owns its environment, is not
+        # handed them -- e.g. amd-multi-gpu's NCCL_IB_DISABLE=1, NCCL_SOCKET_IFNAME=eth0.
+        user_env = user_config.get("env_vars") or {}
+        carried = set(user_config.get(PRESET_ENV_KEYS) or [])
+        config[PRESET_ENV_KEYS] = sorted(
+            k for k in preset_env if k not in user_env or k in carried
+        )
 
         return config
 

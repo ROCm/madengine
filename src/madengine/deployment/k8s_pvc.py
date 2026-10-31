@@ -243,7 +243,12 @@ class KubernetesPVCMixin:
         ReadWriteMany.
         """
         pvc_name = f"{self.job_name}-results"
-        access_mode = "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
+        # k8s.results_access_mode overrides: a cluster with no ReadWriteMany class
+        # (e.g. only local-path) can still run several pods on ONE node with
+        # ReadWriteOnce, which is per node, not per pod.
+        access_mode = self.k8s_config.get("results_access_mode") or (
+            "ReadWriteMany" if nnodes > 1 else "ReadWriteOnce"
+        )
         storage_class = self._k8s_results_storage_class(nnodes)
 
         template_dir = Path(__file__).parent / "templates" / "kubernetes"

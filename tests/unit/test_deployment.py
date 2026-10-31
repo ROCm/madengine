@@ -351,6 +351,43 @@ class TestCancelHook:
         assert cleaned == ["job-9"]
 
 
+class TestFailedRunStillCollects:
+    """A workload that ran and failed still published results: a slurm_multi launcher
+    exits non-zero when any cell failed, after writing the CSV with the cells that
+    passed. Whether it ran synchronously (inside an allocation) or was monitored, the
+    results are collected and the run stays FAILED."""
+
+    def _dep(self, result):
+        dep = _make_deployment()
+        dep.validate = lambda: True
+        dep.prepare = lambda: True
+        dep.deploy = lambda: result
+        dep.calls = []
+        dep.collect_results = lambda deployment_id: dep.calls.append(("collect", deployment_id)) or {
+            "successful_runs": ["cell-a"], "failed_runs": ["cell-b"]}
+        dep.cleanup = lambda deployment_id: dep.calls.append(("cleanup", deployment_id)) or True
+        dep.config.monitor = True
+        dep.config.cleanup_on_failure = True
+        return dep
+
+    def test_synchronous_run_that_failed_is_collected(self):
+        dep = self._dep(DeploymentResult(status=DeploymentStatus.FAILED, deployment_id="run-1",
+                                         message="Script failed with exit code 1",
+                                         skip_monitoring=True))
+        result = dep.execute()
+        assert result.status == DeploymentStatus.FAILED
+        assert result.metrics == {"successful_runs": ["cell-a"], "failed_runs": ["cell-b"]}
+        assert dep.calls == [("collect", "run-1"), ("cleanup", "run-1")]
+
+    def test_failed_submission_is_not_collected(self):
+        # Nothing ran: no results to collect.
+        dep = self._dep(DeploymentResult(status=DeploymentStatus.FAILED, deployment_id="",
+                                         message="sbatch failed"))
+        result = dep.execute()
+        assert result.status == DeploymentStatus.FAILED and result.metrics is None
+        assert not [c for c in dep.calls if c[0] == "collect"]
+
+
 class TestParsePerformanceFromLog:
     """_parse_performance_from_log handles all accepted log formats consistently."""
 
