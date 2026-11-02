@@ -695,8 +695,8 @@ class TestDockerBuilder:
         credentials = {
             "dockerhub": {
                 "repository": "example-org/ci",
-                "username": "your-dockerhub-username",
-                "password": "your-dockerhub-password-or-token",
+                "username": "dockerhub-user",
+                "password": "dockerhub-token",
             }
         }
 
@@ -748,8 +748,8 @@ class TestDockerBuilder:
         credentials = {
             "localhost:5000": {
                 "repository": "your-repository",
-                "username": "your-local-registry-username",
-                "password": "your-local-registry-password",
+                "username": "local-registry-user",
+                "password": "local-registry-pass",
             }
         }
 
@@ -801,8 +801,8 @@ class TestDockerBuilder:
         registry = "dockerhub"
         credentials = {
             "dockerhub": {
-                "username": "your-dockerhub-username",
-                "password": "your-dockerhub-password-or-token",
+                "username": "dockerhub-user",
+                "password": "dockerhub-token",
             }
         }
 
@@ -845,8 +845,8 @@ class TestDockerBuilder:
         registry = "localhost:5000"
         credentials = {
             "localhost:5000": {
-                "username": "your-local-registry-username",
-                "password": "your-local-registry-password",
+                "username": "local-registry-user",
+                "password": "local-registry-pass",
             }
         }
 

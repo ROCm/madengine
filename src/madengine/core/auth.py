@@ -10,6 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -195,6 +196,30 @@ def is_placeholder_repository(repository: Optional[str]) -> bool:
     )
 
 
+# credential.json examples end in one of these words. A real secret such as
+# "your-company" or "your-token-123" does not, so it still logs in.
+# The compute-node build script inlines this same pattern (stdlib only).
+_PLACEHOLDER_CREDENTIAL_PATTERN = (
+    r"(?i)^your[-_](?:[a-z0-9]+[-_])*(?:username|password|token|credential)"
+    r"(?:[-_]or[-_](?:token|password))?$"
+)
+_PLACEHOLDER_CREDENTIAL_RE = re.compile(_PLACEHOLDER_CREDENTIAL_PATTERN)
+
+
+def is_placeholder_credential(value: Optional[str]) -> bool:
+    """Return True when a username or password is a shipped template value.
+
+    Matches the examples in ``credential.json`` and the login error text,
+    such as ``your-docker-username`` and ``your-dockerhub-password-or-token``.
+    """
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    return _PLACEHOLDER_CREDENTIAL_RE.fullmatch(text) is not None
+
+
 def docker_cli_username() -> Optional[str]:
     """Return the Docker CLI's logged-in Hub username, if ``docker info`` has one.
 
@@ -242,17 +267,22 @@ def resolve_dockerhub_repository(credentials: Optional[Dict]) -> Optional[str]:
 
 
 def _usable_credentials(creds: object) -> bool:
-    """Report whether a credential entry carries a non-blank username and password.
+    """Report whether a credential entry carries a real username and password.
 
-    Placeholder entries such as ``{"username": "", "password": ""}`` are treated
-    as "not configured" rather than as credentials, matching
+    Blank entries and shipped template values (``your-docker-username``,
+    ``your-docker-token``) are not credentials. A real username such as
+    ``your-company`` with a real password still is. Matches
     :func:`madengine.deployment.k8s_secrets.build_registry_secret_data`.
     """
     if not isinstance(creds, dict):
         return False
-    return bool(str(creds.get("username") or "").strip()) and bool(
-        str(creds.get("password") or "").strip()
-    )
+    username = str(creds.get("username") or "").strip()
+    password = str(creds.get("password") or "").strip()
+    if not username or not password:
+        return False
+    if is_placeholder_credential(username) or is_placeholder_credential(password):
+        return False
+    return True
 
 
 def _registry_from_image(image: Optional[str]) -> Optional[str]:
@@ -367,9 +397,10 @@ def login_to_registry(
             to fall back to pulling public images.
 
     Precedence: explicit credentials (``credential.json`` / ``MAD_DOCKERHUB_*``)
-    win when they carry a non-blank username and password. Otherwise an existing
+    win when they carry a real username and password. Blank values and shipped
+    templates (``your-docker-username``) do not. Otherwise an existing
     ``docker login`` on this machine is reused and no login is attempted, so a
-    blank placeholder credential entry never overrides working ambient auth.
+    blank or template credential entry never overrides working ambient auth.
     If those explicit credentials are rejected and this machine already has a
     docker login, that login is used instead of failing the push.
     Set ``MAD_SKIP_DOCKER_LOGIN=1`` to always defer to ambient credentials.

@@ -25,7 +25,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Disaggregated prefill/decode. Not a local run | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
 | **vLLM Disaggregated** | Inference | Disaggregated prefill/decode. Not a local run | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
-| **slurm_multi** | Self-managed | The model's own script and containers. SLURM or Spur | ❌ | ✅ | ✅ |
+| **slurm_multi** | Self-managed | The model's own script and containers. SLURM, Spur, or Kubernetes | ✅ (see [deployment](deployment.md#slurm_multi-cards-on-kubernetes)) | ✅ | ✅ |
 
 > **llm-d is not a value of `distributed.launcher`.** [llm-d](llm-d.md) is a deployment: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`. Result rows record `deployment_type=llm-d`. Aggregated serving records `launcher=vllm`. Disaggregated serving records `launcher=vllm-disagg`. `serving_mode` is `aggregated` or `disaggregated`. When the card sets `multiple_results`, that CSV is preferred over log `performance:` aggregation, same as local Docker and plain Kubernetes.
 
@@ -925,7 +925,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```text
 Unknown launcher 'xyz' in distributed.launcher
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus` (local single node), `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `vllm-disagg` (or `vllm_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM or Spur. `vllm-disagg` and `sglang-disagg` need a cluster. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus` (local single node), `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `vllm-disagg` (or `vllm_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM, Spur, and Kubernetes, not llm-d. `vllm-disagg` and `sglang-disagg` need a cluster. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
 
 **2. Multi-Node Communication Fails**
 ```bash

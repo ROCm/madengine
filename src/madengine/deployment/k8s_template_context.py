@@ -10,6 +10,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,10 +24,9 @@ from .k8s_pvc import RESULTS_LAYOUT_PER_POD, SHARED_DATA_PVC_NAME
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_FROM_LOCAL,
-    build_registry_secret_data,
     estimate_configmap_payload_bytes,
+    image_pull_secret_refs_for_job,
     merge_secrets_config,
-    resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
 )
 from .primus_backend import (
@@ -40,6 +40,53 @@ from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root
+
+
+def _node_pullable_image(image: Optional[str]) -> Optional[str]:
+    """Return ``image`` when a Kubernetes node can pull it.
+
+    Local builds are tagged ``ci-<model>_<dockerfile>`` and exist only on the
+    machine that built them. Model cards use angle-bracket placeholders such
+    as ``<supply-your-image>``. Neither is a registry reference.
+    """
+    candidate = (image or "").strip()
+    if not candidate or candidate.startswith("ci-"):
+        return None
+    if candidate.startswith("<") or candidate.endswith(">"):
+        return None
+    return candidate
+
+
+def _k8s_pullable_image(image_info: Dict, model_name: str) -> str:
+    """Choose the image reference the pod should pull.
+
+    ``registry_image`` wins. When it is unset and the push did not fail,
+    ``docker_image`` is used if it is a registry reference. ``--use-image``
+    writes only ``docker_image``. A failed push is never papered over with
+    the local tag.
+    """
+    if image_info.get("push_failed"):
+        chosen = None
+    else:
+        chosen = image_info.get("registry_image") or _node_pullable_image(
+            image_info.get("docker_image")
+        )
+    if chosen:
+        return chosen
+
+    detail = image_info.get("push_error") or "the image was not pushed"
+    raise ConfigurationError(
+        f"Kubernetes requires a registry image for model '{model_name}', "
+        f"but none is available: {detail}",
+        suggestions=[
+            "Fix Docker Hub credentials, or use an existing `docker login`",
+            "Set dockerhub.repository to a real namespace/repo; "
+            "template values such as your-org/your-repo are ignored",
+            "Re-run after the image push succeeds",
+            "For a prebuilt image, pass a registry reference with --use-image; "
+            "a local ci- tag cannot be pulled by the cluster",
+        ],
+    )
 
 
 class KubernetesTemplateContextMixin:
@@ -464,15 +511,6 @@ class KubernetesTemplateContextMixin:
         cred_path = Path("credential.json")
         cred_exists = cred_path.exists()
 
-        created_pull_preview: List[str] = []
-        if cred_exists and strategy == SECRETS_STRATEGY_FROM_LOCAL:
-            try:
-                parsed = json.loads(cred_path.read_text(encoding="utf-8"))
-                if build_registry_secret_data(parsed):
-                    created_pull_preview.append(f"{self.job_name}-registry-pull")
-            except (json.JSONDecodeError, OSError):
-                pass
-
         if strategy == SECRETS_STRATEGY_FROM_LOCAL:
             include_credential_in_configmap = not cred_exists
         else:
@@ -487,8 +525,8 @@ class KubernetesTemplateContextMixin:
             strategy, merged_sec, created_runtime_name
         )
 
-        image_pull_secrets = resolve_image_pull_secret_refs(
-            strategy, merged_sec, created_pull_preview
+        image_pull_secrets = image_pull_secret_refs_for_job(
+            self.k8s_config, self.job_name, cred_path
         )
 
         ap_prof = self.k8s_config.get("allow_privileged_profiling")
@@ -501,21 +539,11 @@ class KubernetesTemplateContextMixin:
         # including vLLM and SGLang. Without it, pod-0 DNS does not resolve.
         subdomain_val = self.service_name if create_headless_service else None
 
-        # A failed registry push leaves this key unset. Kubernetes nodes cannot
-        # see the local Docker image, so fail here instead of KeyError.
-        registry_image = image_info.get("registry_image")
-        if not registry_image or image_info.get("push_failed"):
-            detail = image_info.get("push_error") or "the image was not pushed"
-            raise ConfigurationError(
-                f"Kubernetes requires a registry image for model '{model_name}', "
-                f"but none is available: {detail}",
-                suggestions=[
-                    "Fix Docker Hub credentials, or use an existing `docker login`",
-                    "Set dockerhub.repository to a real namespace/repo; "
-                    "template values such as your-org/your-repo are ignored",
-                    "Re-run after the image push succeeds",
-                ],
-            )
+        # A failed push, a local ci- tag, or a placeholder cannot be pulled by
+        # a Kubernetes node. --use-image stores a prebuilt registry reference
+        # in docker_image and leaves registry_image unset; that reference is
+        # usable. registry_image wins when both are set.
+        registry_image = _k8s_pullable_image(image_info, model_name)
 
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
@@ -582,7 +610,8 @@ class KubernetesTemplateContextMixin:
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
-            "model_script": f"{model_info.get('scripts', 'run.sh')} {model_info.get('args', '')}".strip(),
+            "model_script": model_info.get("scripts", "run.sh"),
+            "model_command": self._build_model_command(model_info),
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
             "nnodes": nnodes,
@@ -620,7 +649,7 @@ class KubernetesTemplateContextMixin:
                 self._get_tools_config(), "bash /tmp/run_launcher.sh"
             ) if launcher_command else None,
             "direct_script_tool_chain": self._build_tool_command_chain(
-                self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
+                self._get_tools_config(), self._build_model_command(model_info)
             ),
             # Pre/Post scripts - includes rocEnvTool and any user-defined scripts
             "pre_scripts": pre_scripts,
@@ -703,6 +732,20 @@ class KubernetesTemplateContextMixin:
         # Cache the result for subsequent calls
         self._cached_tools_config = result
         return result
+
+    @staticmethod
+    def _build_model_command(model_info: Dict) -> str:
+        """
+        Build the ``bash <script> <args>`` command for the direct-script branch.
+
+        The card's ``args`` are shell-quoted one word at a time, as the local and
+        SLURM paths do, so an arg with spaces or shell metacharacters reaches the
+        script as a single argument and is never evaluated.
+        """
+        script = model_info.get("scripts", "run.sh")
+        args = model_info.get("args", "")
+        args_q = " ".join(shlex.quote(a) for a in shlex.split(args)) if args else ""
+        return f"bash {script} {args_q}".rstrip()
 
     def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
         """

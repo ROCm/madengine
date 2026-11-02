@@ -280,6 +280,15 @@ class KubernetesResultsMixin:
         "serving_mode,platform"
     )
 
+    def _kubectl_cmd(self, *args: str) -> List[str]:
+        """Build a kubectl command pinned to the deployment's kubeconfig and context.
+
+        Job creation uses the Python client, which reads them. Result collection
+        shells out to kubectl, which otherwise falls back to localhost:8080 when
+        ``KUBECONFIG`` is unset, or to a different current context.
+        """
+        return self.kubectl_cmd(*args)
+
     def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:
         """Same launcher resolution the job template uses."""
         return resolve_distributed_launch(
@@ -444,6 +453,9 @@ class KubernetesResultsMixin:
             "successful_runs": [],
             "failed_runs": [],
         }
+
+        if getattr(self, "_slurm_multi", False):
+            return self._collect_slurm_multi_results(deployment_id, results)
 
         # Create results directory for this deployment
         results_dir = Path(f"./k8s_results/{deployment_id}")
@@ -960,11 +972,11 @@ class KubernetesResultsMixin:
 
                     for filename in specific_files:
                         local_path = dest_dir / filename
-                        cp_cmd = [
-                            "kubectl", "cp",
+                        cp_cmd = self._kubectl_cmd(
+                            "cp",
                             f"{self.namespace}/{pod_name}:/workspace/{filename}",
-                            str(local_path)
-                        ]
+                            str(local_path),
+                        )
 
                         cp_result = subprocess.run(
                             cp_cmd, capture_output=True, text=True, timeout=30
@@ -989,11 +1001,11 @@ class KubernetesResultsMixin:
                 else:
                     # Direct file - try to copy it
                     local_path = dest_dir / pattern
-                    cp_cmd = [
-                        "kubectl", "cp",
+                    cp_cmd = self._kubectl_cmd(
+                        "cp",
                         f"{self.namespace}/{pod_name}:/workspace/{pattern}",
-                        str(local_path)
-                    ]
+                        str(local_path),
+                    )
 
                     cp_result = subprocess.run(
                         cp_cmd, capture_output=True, text=True, timeout=30
@@ -1033,11 +1045,11 @@ class KubernetesResultsMixin:
         for dir_name in output_directories:
             try:
                 local_dir = dest_dir / dir_name
-                cp_cmd = [
-                    "kubectl", "cp",
+                cp_cmd = self._kubectl_cmd(
+                    "cp",
                     f"{self.namespace}/{pod_name}:/workspace/{dir_name}",
-                    str(local_dir)
-                ]
+                    str(local_dir),
+                )
 
                 cp_result = subprocess.run(
                     cp_cmd, capture_output=True, text=True, timeout=60
@@ -1123,7 +1135,7 @@ class KubernetesResultsMixin:
             collector_pod_spec = {
                 "apiVersion": "v1",
                 "kind": "Pod",
-                "metadata": {"name": coll_pod_name, "namespace": self.namespace},
+                "metadata": {"name": coll_pod_name, "namespace": self.namespace, "labels": {"app": "madengine", "madengine-collector": "true"}},
                 "spec": collector_spec,
             }
 
@@ -1160,8 +1172,7 @@ class KubernetesResultsMixin:
             time.sleep(2)
 
             # List pod result directories in PVC (retry: NFS can lag right after Job completion)
-            list_cmd = [
-                "kubectl",
+            list_cmd = self._kubectl_cmd(
                 "exec",
                 coll_pod_name,
                 "-n",
@@ -1172,7 +1183,7 @@ class KubernetesResultsMixin:
                 "ls",
                 "-1",
                 "/results/",
-            ]
+            )
             list_result = subprocess.CompletedProcess(
                 args=list_cmd, returncode=-1, stdout="", stderr=""
             )
@@ -1216,14 +1227,13 @@ class KubernetesResultsMixin:
 
                     local_pod_dir.mkdir(parents=True, exist_ok=True)
 
-                    cp_cmd = [
-                        "kubectl",
+                    cp_cmd = self._kubectl_cmd(
                         "cp",
                         "-c",
                         "collector",
                         f"{self.namespace}/{coll_pod_name}:/results/{pod_dir_name}",
                         str(local_pod_dir),
-                    ]
+                    )
 
                     cp_result = subprocess.run(cp_cmd, capture_output=True, text=True, timeout=60)
 

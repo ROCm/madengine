@@ -668,13 +668,10 @@ class TestNodePreflight:
     #SBATCH --nodelist would make each task demand all of them."""
 
     @pytest.fixture(autouse=True)
-    def _submission_cli_present(self):
-        """prepare() checks that madengine is on PATH. These tests cover the
-        nodelist, not that install check, and must pass when the venv bin
-        directory is not on PATH."""
-        with patch.object(
-            SlurmDeployment, "_validate_cli_availability", return_value=True
-        ):
+    def _madengine_on_path(self):
+        # prepare() runs `madengine --version` on the submit host; whether the test
+        # runner has the CLI on PATH has nothing to do with the preflight.
+        with patch.object(SlurmDeployment, "_validate_cli_availability", return_value=True):
             yield
 
     @staticmethod

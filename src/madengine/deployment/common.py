@@ -43,8 +43,11 @@ _LAUNCHER_ALIASES: Dict[str, str] = {
 
 # Where each contract may run. ``local`` is this machine (Docker or bare metal).
 # ``slurm_multi`` is also accepted on ``local`` here: a card that names it and
-# has no scheduler block is promoted to a SLURM deployment at run time.
-_SELF_MANAGED_TARGETS = frozenset({"slurm", "spur", "local", "docker"})
+# has no scheduler block is promoted to a SLURM deployment at run time. On
+# Kubernetes it runs the same script as an Indexed Job (k8s_slurm_multi.py).
+_SELF_MANAGED_TARGETS = frozenset(
+    {"slurm", "spur", "k8s", "kubernetes", "local", "docker"}
+)
 _LOCAL_TARGETS = frozenset({"local", "docker", "bare_metal"})
 _CLUSTER_TARGETS = frozenset({"slurm", "spur", "k8s", "kubernetes", "llm-d"})
 DISAGG_LAUNCHERS = frozenset({"sglang-disagg", "vllm-disagg"})
@@ -157,8 +160,10 @@ def ensure_launcher_allowed(
     * Templated names (``torchrun``, ``vllm``, ``vllm-disagg``, …) are rendered
       by the SLURM, Spur, and Kubernetes templates. Disaggregated names need a
       cluster. ``vllm-disagg`` is also the llm-d serving name.
-    * ``slurm_multi`` runs the model's own script. Kubernetes and llm-d have
-      no arm for it.
+    * ``slurm_multi`` runs the model's own ``.slurm`` script: through sbatch
+      on SLURM and Spur, and on Kubernetes as an Indexed Job running the same
+      script (``k8s_slurm_multi.py``). llm-d builds its own serving stack and
+      has no arm for it.
     * ``primus`` is a local single-node runner. Cluster templates must not
       claim to start it.
     """
@@ -182,9 +187,10 @@ def ensure_launcher_allowed(
 
     if launcher == "slurm_multi" and deployment_type not in _SELF_MANAGED_TARGETS:
         _reject(
-            f"Launcher 'slurm_multi' in {source} only runs on SLURM or Spur",
+            f"Launcher 'slurm_multi' in {source} runs on SLURM, Spur, or "
+            f"Kubernetes, not {deployment_type}",
             [
-                "Drop the k8s/kubernetes/llm_d block so this job is submitted to SLURM",
+                "Use a slurm or k8s deployment for this card",
                 "Or pick a templated launcher such as torchrun, megatron-lm, "
                 "vllm, or sglang",
             ],

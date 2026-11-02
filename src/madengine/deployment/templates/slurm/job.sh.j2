@@ -141,7 +141,8 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 {%- if in_place %}
 # The step launched below may cover only part of this allocation, so the
 # rendezvous host and world size come from the hosts it is pinned to.
-STEP_NODELIST=$(scontrol show hostnames "{{ nodelist or '$SLURM_JOB_NODELIST' }}" | head -n {{ nodes }} | paste -sd, -)
+# mad_expand_nodelist: Spur lists hosts already expanded and has no scontrol show hostnames.
+STEP_NODELIST=$(mad_expand_nodelist "{{ nodelist or '$SLURM_JOB_NODELIST' }}" | head -n {{ nodes }} | paste -sd, -)
 export MASTER_ADDR=${STEP_NODELIST%%,*}
 export WORLD_SIZE={{ nodes }}
 {%- endif %}
