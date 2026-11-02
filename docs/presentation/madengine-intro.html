@@ -1,0 +1,2258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>madengine: a complete introduction</title>
+<meta name="description" content="A complete introduction to madengine: overview, architecture, features, hands-on examples with real MAD models from one GPU to many nodes on SLURM, Spur, Kubernetes and llm-d, additional_context recipes, profilers, and launcher best practices.">
+<style>
+/* ──────────────────────────────────────────────────────────────
+   Design tokens. Palette and type scale follow the claude.dev
+   "unreasonable effectiveness of HTML" post: warm paper / near-black
+   ink, one terracotta accent, mono labels, 1px rules, square corners.
+   ────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#faf9f5; --ink:#141413; --ink-2:#4c4b45; --ink-3:#7b7a72; --ink-4:#5e5d59;
+  --line:#14141338; --line-soft:#1414131c; --panel:#ece9e0; --raised:#f1efe8;
+  --accent:#c15f3c; --accent-deep:#a94e2f; --hover-row:#1414130d;
+  --ok:#3e7a3e; --warn:#a2761f; --bad:#a04545; --blue:#2c6fa8; --violet:#7d5a9b;
+  --syn-k:#2c6fa8; --syn-s:#3e7a3e; --syn-n:#a2761f; --syn-c:#8a8880; --syn-f:#7d5a9b;
+  --sans:ui-sans-serif,-apple-system,"Segoe UI","Helvetica Neue",Inter,Roboto,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,"JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  --gutter:clamp(20px,4vw,56px); --nav-h:46px; --foot-h:34px;
+  --ease:cubic-bezier(.19,1,.22,1);
+  color-scheme:light;
+}
+:root[data-scheme=dark]{
+  --bg:#141413; --ink:#faf9f5; --ink-2:#b0aea5; --ink-3:#87867f; --ink-4:#a8a69d;
+  --line:#faf9f529; --line-soft:#faf9f517; --panel:#1e1d1b; --raised:#1a1a18;
+  --accent:#d97757; --accent-deep:#c15f3c; --hover-row:#faf9f50b;
+  --ok:#9ac29a; --warn:#d9b45f; --bad:#c29a9a; --blue:#7fb3e6; --violet:#c39be0;
+  --syn-k:#7fb3e6; --syn-s:#9ac29a; --syn-n:#d9b45f; --syn-c:#6b6a64; --syn-f:#c39be0;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-scheme=light]){
+    --bg:#141413; --ink:#faf9f5; --ink-2:#b0aea5; --ink-3:#87867f; --ink-4:#a8a69d;
+    --line:#faf9f529; --line-soft:#faf9f517; --panel:#1e1d1b; --raised:#1a1a18;
+    --accent:#d97757; --accent-deep:#c15f3c; --hover-row:#faf9f50b;
+    --ok:#9ac29a; --warn:#d9b45f; --bad:#c29a9a; --blue:#7fb3e6; --violet:#c39be0;
+    --syn-k:#7fb3e6; --syn-s:#9ac29a; --syn-n:#d9b45f; --syn-c:#6b6a64; --syn-f:#c39be0;
+    color-scheme:dark;
+  }
+}
+
+*{box-sizing:border-box}
+html{scroll-snap-type:y proximity;scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:1rem;line-height:1.6;
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+a{color:var(--accent-deep);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+a:hover{text-decoration-color:currentColor}
+::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+code,kbd,samp{font-family:var(--mono);font-size:.86em}
+p{margin:0 0 .9em;text-wrap:pretty}
+b,strong{font-weight:600}
+
+@media (max-height:820px){html{font-size:15px}}
+@media (max-height:740px){html{font-size:13.5px}}
+/* ── Chrome: top nav, progress, footer ───────────────────────── */
+.nav{position:fixed;inset:0 0 auto 0;height:var(--nav-h);z-index:50;display:flex;align-items:center;gap:20px;
+  padding:0 var(--gutter);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:.72rem;letter-spacing:.02em;color:var(--ink-3)}
+.nav .brand{color:var(--ink);font-weight:600;text-decoration:none;white-space:nowrap}
+.nav .brand i{color:var(--accent);font-style:normal}
+.nav .chips{display:flex;gap:2px;flex:1;overflow-x:auto;scrollbar-width:none}
+.nav .chips::-webkit-scrollbar{display:none}
+.nav button,.nav a.chip{all:unset;cursor:pointer;padding:4px 8px;text-transform:uppercase;white-space:nowrap;color:var(--ink-3)}
+.nav button:hover,.nav a.chip:hover{color:var(--ink)}
+.nav a.chip.on{color:var(--accent-deep);box-shadow:inset 0 -1px 0 var(--accent)}
+.nav kbd{color:var(--ink-4);margin-right:4px}
+.nav .tools{display:flex;gap:2px}
+.bar{position:fixed;top:var(--nav-h);left:0;height:2px;width:0;background:var(--accent);z-index:51;transition:width .15s linear}
+.foot{position:fixed;inset:auto 0 0 0;height:var(--foot-h);z-index:50;display:flex;align-items:center;justify-content:space-between;
+  padding:0 var(--gutter);font-family:var(--mono);font-size:.68rem;color:var(--ink-3);letter-spacing:.03em;
+  background:linear-gradient(to top,var(--bg) 55%,transparent);pointer-events:none}
+.foot .asc{color:var(--accent)}
+.foot .hint{opacity:.8}
+
+/* ── Slides ──────────────────────────────────────────────────── */
+.slide{position:relative;min-height:100vh;min-height:100dvh;scroll-snap-align:start;scroll-margin-top:0;
+  padding:calc(var(--nav-h) + 44px) var(--gutter) calc(var(--foot-h) + 22px);
+  display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--line-soft)}
+.wrap{width:100%;max-width:1180px;margin:0 auto}
+.slide[data-top]{justify-content:flex-start;padding-top:calc(var(--nav-h) + 64px)}
+.sh{position:absolute;top:calc(var(--nav-h) + 16px);left:var(--gutter);right:var(--gutter);display:flex;justify-content:space-between;
+  max-width:1180px;margin:0 auto}
+.lb{font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);line-height:1.3}
+.lb.acc{color:var(--accent-deep)}
+h1,h2,h3,h4{font-family:var(--sans);font-weight:500;margin:0;text-wrap:balance;letter-spacing:-.015em}
+h1{font-size:clamp(2.3rem,5.4vw,4.5rem);line-height:1.04;letter-spacing:-.028em}
+h2{font-size:clamp(1.75rem,3.3vw,2.75rem);line-height:1.1;margin-bottom:.35em}
+h3{font-size:1.15rem;line-height:1.3;margin-bottom:.35em;letter-spacing:-.005em}
+h4{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:500;margin-bottom:.6em}
+.sf{font-size:clamp(1rem,1.45vw,1.25rem);line-height:1.5;color:var(--ink-2);max-width:66ch;margin:.45em 0 1.1em}
+.muted{color:var(--ink-3)} .sm{font-size:.88rem} .xs{font-size:.78rem}
+.mt{margin-top:1.1rem} .mt2{margin-top:1.6rem} .mb0{margin-bottom:0}
+
+/* grid helpers */
+.g{display:grid;gap:clamp(16px,2.4vw,32px)}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g5{grid-template-columns:repeat(5,minmax(0,1fr))}
+.g-7-5{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+.g-5-7{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+.g-6-6{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.g-4-8{grid-template-columns:minmax(0,4fr) minmax(0,8fr)}
+.g-5-7b{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+.top{align-items:start} .mid{align-items:center}
+@media (max-width:900px){.g2,.g3,.g4,.g5,.g-7-5,.g-5-7,.g-6-6,.g-4-8,.g-5-7b{grid-template-columns:minmax(0,1fr)}}
+
+/* cards / callouts / tags */
+.card{border:1px solid var(--line);background:var(--raised);padding:16px 18px}
+.card h3{margin-bottom:.3em}
+.card p{margin:0;color:var(--ink-2);font-size:.92rem}
+.card .lb{display:block;margin-bottom:8px}
+.card.hl{border-color:var(--accent)}
+.call{border-left:2px solid var(--accent);background:var(--raised);padding:12px 16px;margin:1rem 0;font-size:.93rem;color:var(--ink-2)}
+.call b{color:var(--ink)}
+.call.warn{border-left-color:var(--warn)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.64rem;letter-spacing:.05em;text-transform:uppercase;border:1px solid var(--line);
+  padding:1px 6px;color:var(--ink-3);vertical-align:middle;white-space:nowrap}
+.tag.acc{border-color:var(--accent);color:var(--accent-deep)}
+.tag.new{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+ul.l,ol.l{margin:0 0 1em;padding-left:1.1em;color:var(--ink-2)}
+ul.l li,ol.l li{margin:.28em 0}
+ul.l li::marker,ol.l li::marker{color:var(--accent)}
+ul.l.tight li{margin:.12em 0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:.9rem;margin:0}
+.kv dt{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);padding-top:.25em}
+.kv dd{margin:0;color:var(--ink-2)}
+kbd{border:1px solid var(--line);padding:0 5px;background:var(--raised);font-size:.75rem}
+
+/* tables */
+table.t{width:100%;border-collapse:collapse;font-size:.88rem}
+table.t th{font-family:var(--mono);font-size:.66rem;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);
+  text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:bottom}
+table.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--ink-2)}
+table.t td:first-child{color:var(--ink);font-weight:500}
+table.t tbody tr:hover{background:var(--hover-row)}
+table.t.dense td{padding:5px 9px;font-size:.8rem;line-height:1.4} table.t.dense th{padding:6px 9px}
+table.t.c td,table.t.c th{text-align:center} table.t.c td:first-child,table.t.c th:first-child{text-align:left}
+table.t code{color:var(--ink)}
+.y{color:var(--accent-deep);font-weight:600} .n{color:var(--ink-3)}
+td.a{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--ink)}
+td.m{background:color-mix(in srgb,var(--accent) 9%,transparent);color:var(--ink-2)}
+td.x{color:var(--ink-3)}
+
+/* figures */
+figure.fig{margin:0;border:1px solid var(--line-soft);padding:16px 16px 0}
+figure.fig .fl{display:flex;justify-content:space-between;margin-bottom:10px}
+figure.fig figcaption{border-top:1px solid var(--line-soft);margin:14px -16px 0;padding:9px 16px;font-size:.78rem;color:var(--ink-3)}
+figure.fig svg{display:block;width:100%;height:auto}
+svg .bx{fill:var(--raised);stroke:var(--line);stroke-width:1}
+svg .bx.a{stroke:var(--accent);stroke-width:1.4}
+svg .bx.f{fill:color-mix(in srgb,var(--accent) 16%,var(--raised));stroke:var(--accent)}
+svg .bx.d{stroke-dasharray:4 3}
+svg .ln{stroke:var(--ink-3);stroke-width:1.1;fill:none}
+svg .ln.a{stroke:var(--accent)} svg .ln.d{stroke-dasharray:4 3}
+svg text{font-family:var(--sans);fill:var(--ink);font-size:12.5px}
+svg text.m{font-family:var(--mono);font-size:10.5px;fill:var(--ink-3);letter-spacing:.03em}
+svg text.s{font-size:11px;fill:var(--ink-2)}
+svg text.t{font-weight:600;font-size:13.5px}
+svg text.ac{fill:var(--accent-deep)}
+svg text.c{text-anchor:middle}
+svg .ah{fill:var(--ink-3)} svg .aha{fill:var(--accent)}
+
+/* code */
+.code{border:1px solid var(--line);background:var(--raised);margin:0 0 1rem;min-width:0}
+.code .ch{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line-soft);
+  padding:5px 10px;font-family:var(--mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+.code .ch button{all:unset;cursor:pointer;color:var(--ink-3);padding:0 4px}
+.code .ch button:hover{color:var(--accent-deep)}
+.code pre{margin:0;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:.76rem;line-height:1.7;color:var(--ink-2);tab-size:2;white-space:pre-wrap;overflow-wrap:anywhere}
+.code pre .k{color:var(--syn-k)} .code pre .s{color:var(--syn-s)} .code pre .n{color:var(--syn-n)}
+.code pre .c{color:var(--syn-c);font-style:italic} .code pre .f{color:var(--syn-f)} .code pre .p{color:var(--accent)}
+.code.sm pre{font-size:.7rem;line-height:1.62}
+.code.lg pre{font-size:.82rem}
+
+/* tabs */
+.tab-bar{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+.tab-bar button{all:unset;cursor:pointer;font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;
+  padding:8px 14px;color:var(--ink-3);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab-bar button:hover{color:var(--ink)}
+.tab-bar button.on{color:var(--accent-deep);border-bottom-color:var(--accent)}
+.tab-p{display:none} .tab-p.on{display:block}
+
+/* flow / ladder / layers */
+.flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+.flow .st{flex:1 1 150px;border:1px solid var(--line);background:var(--raised);padding:12px 14px;position:relative;margin-right:22px;min-width:140px}
+.flow .st:last-child{margin-right:0}
+.flow .st:not(:last-child)::after{content:"→";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:var(--accent);font-family:var(--mono)}
+.flow .st b{display:block;font-family:var(--mono);font-size:.85rem;color:var(--accent-deep);font-weight:600}
+.flow .st span{font-size:.8rem;color:var(--ink-3);display:block;margin-top:2px}
+.layers{border:1px solid var(--line)}
+.layer{display:grid;grid-template-columns:150px 1fr;border-bottom:1px solid var(--line-soft);background:var(--raised)}
+.layer:last-child{border-bottom:0}
+.layer .nm{padding:10px 14px;border-right:1px solid var(--line-soft);font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--accent-deep)}
+.layer .nm small{display:block;color:var(--ink-3);text-transform:none;letter-spacing:0;font-size:.68rem;margin-top:2px}
+.layer .it{padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip2{font-family:var(--mono);font-size:.7rem;border:1px solid var(--line);background:var(--bg);padding:2px 8px;color:var(--ink-2)}
+.chip2.a{border-color:var(--accent);color:var(--accent-deep)}
+@media (max-width:700px){.layer{grid-template-columns:1fr}.layer .nm{border-right:0;border-bottom:1px solid var(--line-soft)}}
+.ladder{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border:1px solid var(--line)}
+.ladder>div{padding:16px 16px 14px;border-right:1px solid var(--line-soft);background:var(--raised);position:relative}
+.ladder>div:last-child{border-right:0}
+.ladder .big{font-size:2.4rem;font-weight:500;letter-spacing:-.03em;line-height:1;color:var(--ink)}
+.ladder .big small{font-size:.9rem;color:var(--ink-3);font-weight:400;letter-spacing:0;margin-left:4px}
+.ladder ul{list-style:none;margin:10px 0 0;padding:0;font-size:.82rem;color:var(--ink-2)}
+.ladder li{padding:3px 0;border-top:1px solid var(--line-soft)}
+.ladder code{color:var(--ink)}
+@media (max-width:900px){.ladder{grid-template-columns:1fr 1fr}}
+.ladder2{display:block}
+.rung{display:flex;gap:10px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+.rung:first-child{border-top:1px solid var(--line)}
+.rung .n{font-family:var(--mono);font-size:.7rem;color:var(--accent-deep);min-width:2.2em}
+.rung b{font-weight:600}
+.rung span.d{color:var(--ink-2);font-size:.9rem}
+.bars{display:grid;gap:7px}
+.bar-r{display:grid;grid-template-columns:270px 1fr 36px;gap:10px;align-items:center;font-size:.84rem}
+.bar-r .tr{height:14px;background:var(--panel);position:relative}
+.bar-r .tr i{position:absolute;inset:0 auto 0 0;background:var(--accent)}
+.bar-r:nth-child(n+2) .tr i{background:color-mix(in srgb,var(--accent) 78%,var(--bg))}
+.bar-r:nth-child(n+4) .tr i{background:color-mix(in srgb,var(--accent) 58%,var(--bg))}
+.bar-r:nth-child(n+6) .tr i{background:color-mix(in srgb,var(--accent) 40%,var(--bg))}
+.bar-r b{font-family:var(--mono);font-size:.8rem;text-align:right}
+@media (max-width:700px){.bar-r{grid-template-columns:120px 1fr 30px}}
+.stat{border-top:1px solid var(--line);padding-top:10px}
+.stat b{display:block;font-size:2.5rem;font-weight:500;letter-spacing:-.03em;line-height:1}
+.stat span{font-size:.82rem;color:var(--ink-3)}
+.dec{border:1px solid var(--line)}
+.dec .r{display:grid;grid-template-columns:44px minmax(0,1fr) 28px minmax(0,1.1fr);gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--raised)}
+.dec .r:last-child{border-bottom:0}
+.dec .r .no{font-family:var(--mono);font-size:.7rem;color:var(--ink-3)}
+.dec .r .ar{font-family:var(--mono);color:var(--accent)}
+.dec .r .res{font-weight:600}
+.dec .r .res small{display:block;font-weight:400;color:var(--ink-3);font-size:.76rem}
+.agenda a{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:16px;padding:11px 0;border-bottom:1px solid var(--line-soft);
+  text-decoration:none;color:var(--ink);align-items:baseline}
+.agenda a:first-child{border-top:1px solid var(--line)}
+.agenda a:hover{background:var(--hover-row)}
+.agenda .no{font-family:var(--mono);font-size:.74rem;color:var(--accent-deep)}
+.agenda b{font-weight:500;font-size:1.15rem}
+.agenda span.d{display:block;color:var(--ink-3);font-size:.86rem;margin-top:1px}
+.agenda .rg{font-family:var(--mono);font-size:.7rem;color:var(--ink-3)}
+.meta{display:flex;flex-wrap:wrap;gap:12px 36px;margin:2rem 0 0;padding-top:14px;border-top:1px solid var(--line)}
+.meta div{min-width:120px} .meta dt{font-family:var(--mono);font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+.meta dd{margin:2px 0 0;font-size:.9rem}
+.secnum{font-size:clamp(5rem,16vw,12rem);font-weight:500;line-height:.85;letter-spacing:-.05em;color:var(--accent);margin:0 0 .15em}
+.divider h2{font-size:clamp(2rem,4.6vw,3.6rem)}
+
+/* reveal */
+.js .rv{opacity:0;transform:translateY(10px);transition:opacity .7s var(--ease),transform .7s var(--ease);transition-delay:calc(var(--d,0)*70ms)}
+.js .slide.in .rv{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+
+/* outline overlay */
+#outline{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(6px);display:none;overflow:auto;
+  padding:calc(var(--nav-h) + 30px) var(--gutter) 60px}
+#outline.open{display:block}
+#outline .cols{max-width:1180px;margin:0 auto;columns:3 300px;column-gap:40px}
+#outline section{break-inside:avoid;margin-bottom:22px}
+#outline a{display:flex;gap:10px;padding:3px 0;text-decoration:none;color:var(--ink-2);font-size:.88rem;border-bottom:1px solid var(--line-soft)}
+#outline a:hover{color:var(--accent-deep)} #outline a i{font-style:normal;font-family:var(--mono);font-size:.7rem;color:var(--ink-3);min-width:2em}
+#outline a.cur{color:var(--accent-deep)}
+
+/* cover */
+.cover h1{max-width:15ch} .cover .sf{max-width:58ch}
+.cover .wrap{padding-top:2vh}
+
+@media print{
+  @page{size:A4 landscape;margin:0}
+  html{scroll-snap-type:none}
+  .nav,.bar,.foot,#outline{display:none!important}
+  .slide{min-height:0;height:calc(100vh - 2px);overflow:hidden;page-break-after:always;break-after:page;border:0;padding:44px 48px 28px;scroll-snap-align:none}
+  .js .rv{opacity:1;transform:none}
+  .sh{top:16px}
+  .wrap{zoom:.8}
+  .slide:last-of-type{break-after:auto;page-break-after:auto}
+  .slide[data-top]{padding-top:44px}
+}
+</style>
+</head>
+<body>
+
+<!-- shared SVG defs -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+    <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="aha" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+</svg>
+
+<nav class="nav" aria-label="Deck navigation">
+  <a class="brand" href="#s01">madengine<i>/</i>intro</a>
+  <div class="chips" id="chips"></div>
+  <div class="tools">
+    <button id="bOutline" title="Outline (O)"><kbd>O</kbd>Outline</button>
+    <button id="bTheme" title="Toggle light/dark (T)"><kbd>T</kbd>Theme</button>
+    <button id="bPrint" title="Print / save as PDF (P)"><kbd>P</kbd>PDF</button>
+  </div>
+</nav>
+<div class="bar" id="bar"></div>
+<div class="foot"><span class="asc" id="asc">░░░░░░░░░░░░░░░░░░░░░░░░ 00%</span><span class="hint">← → move · 1–7 sections · O outline · T theme</span></div>
+<div id="outline" role="dialog" aria-label="Outline"><div class="cols" id="outlineCols"></div></div>
+
+<main id="deck">
+
+<!-- ═══════════ COVER ═══════════ -->
+<section class="slide cover" data-noheader data-title="madengine: a complete introduction">
+  <div class="wrap">
+    <div class="lb acc rv">AMD ROCm · MAD ecosystem · Introduction deck</div>
+    <h1 class="rv" style="--d:1;margin-top:.35em">madengine: run any MAD model, anywhere, with the same command</h1>
+    <p class="sf rv" style="--d:2">One CLI that takes a model from a catalog entry to a benchmark number: on one GPU in Docker, eight GPUs in a conda prefix, or many nodes on SLURM, Spur and Kubernetes, or behind an llm-d gateway.</p>
+    <dl class="meta rv" style="--d:3">
+      <div><dt>Audience</dt><dd>Model engineers, benchmark owners, cluster operators</dd></div>
+      <div><dt>Covers</dt><dd>madengine 2.4, unreleased develop, and the 3.0 preview</dd></div>
+      <div><dt>Format</dt><dd><span data-total></span> slides · about 50 minutes</dd></div>
+      <div><dt>Source</dt><dd><a href="https://github.com/ROCm/madengine">github.com/ROCm/madengine</a></dd></div>
+    </dl>
+    <p class="lb rv" style="--d:4;margin-top:2.2rem">Press → to begin · O for the outline · T to switch theme · P to save as PDF</p>
+  </div>
+</section>
+
+<!-- ═══════════ AGENDA ═══════════ -->
+<section class="slide" data-sec="Agenda" data-nochip data-title="What we will cover">
+  <div class="wrap">
+    <h2 class="rv">What we will cover</h2>
+    <p class="sf rv" style="--d:1">Seven parts. The middle one is the longest: real MAD models, run the same way from one GPU up to a multi-node cluster.</p>
+    <div class="agenda rv" style="--d:2">
+      <a data-sec-link="Overview"><span class="no">01</span><span><b>Overview</b><span class="d">What madengine is, how it fits with MAD, and the build → run → report pipeline</span></span><span class="rg" data-rg="Overview"></span></a>
+      <a data-sec-link="Architecture"><span class="no">02</span><span><b>Architecture</b><span class="d">Layers, the Context, target inference, deployments, lifecycle and reliability</span></span><span class="rg" data-rg="Architecture"></span></a>
+      <a data-sec-link="Features"><span class="no">03</span><span><b>Features</b><span class="d">Launchers, parallel strategies, best practices, results and reporting</span></span><span class="rg" data-rg="Features"></span></a>
+      <a data-sec-link="Hands-on"><span class="no">04</span><span><b>Hands-on with real MAD models</b><span class="d">Single GPU, one node with eight GPUs, SLURM, Spur, Kubernetes and llm-d</span></span><span class="rg" data-rg="Hands-on"></span></a>
+      <a data-sec-link="Context"><span class="no">05</span><span><b>additional_context cookbook</b><span class="d">Base image override, build args, env, mounts, scripts, profilers</span></span><span class="rg" data-rg="Context"></span></a>
+      <a data-sec-link="Launchers"><span class="no">06</span><span><b>Launchers and parallel strategies</b><span class="d">What each launcher parallelizes, sizing rules, disaggregated tuning, gotchas</span></span><span class="rg" data-rg="Launchers"></span></a>
+      <a data-sec-link="Close"><span class="no">07</span><span><b>Close</b><span class="d">Cheat sheet and where to go next</span></span><span class="rg" data-rg="Close"></span></a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 01 OVERVIEW ═══════════ -->
+<section class="slide" data-sec="Overview" data-title="The same model, five ways to run it">
+  <div class="wrap g g-6-6 mid">
+    <div>
+      <div class="lb acc rv">The problem</div>
+      <h2 class="rv" style="--d:1">The same model, five different ways to run it</h2>
+      <p class="sf rv" style="--d:2">A benchmark that works on a workstation rarely survives a move to a cluster. Image names, launchers, schedulers and result formats all change, and the number you report stops meaning the same thing.</p>
+      <div class="ladder2 rv" style="--d:3">
+        <div class="rung"><span class="n">01</span><span><b>docker run</b> <span class="d">by hand: device flags, mounts, environment</span></span></div>
+        <div class="rung"><span class="n">02</span><span><b>sbatch scripts</b> <span class="d">per cluster: modules, srun fan-out, rank variables</span></span></div>
+        <div class="rung"><span class="n">03</span><span><b>Kubernetes manifests</b> <span class="d">Jobs, PVCs, secrets, GPU resource names</span></span></div>
+        <div class="rung"><span class="n">04</span><span><b>Serving stacks</b> <span class="d">helm releases and gateways, as with llm-d</span></span></div>
+        <div class="rung"><span class="n">05</span><span><b>Result formats</b> <span class="d">every harness prints something different</span></span></div>
+      </div>
+    </div>
+    <div class="rv" style="--d:2">
+      <h4>With madengine: one model card, one flag changes</h4>
+      <div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash"># local Docker
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8
+
+# SLURM: add a slurm block
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --additional-context '{"slurm": {"partition": "gpu"}}'
+
+# Kubernetes: add a k8s block
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --additional-context '{"k8s": {"gpu_count": 1}}'
+
+# llm-d: add an llm_d block
+madengine run --tags pyt_vllm_qwen3-32b \
+  --additional-context-file \
+    examples/llm-d-configs/01-attach-existing-stack.json</pre></div>
+      <div class="call"><b>Same model card. Same perf.csv.</b> The context decides where it runs, and no code changes between targets.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="A catalog, a runner, and a contract">
+  <div class="wrap">
+    <div class="lb acc rv">What it is</div>
+    <h2 class="rv" style="--d:1">A catalog, a runner, and a contract</h2>
+    <div class="g g3 top mt rv" style="--d:2">
+      <div class="card"><span class="lb">MAD · the catalog</span><h3>What to run</h3><p>Model cards, Dockerfiles and per-model scripts, picked by name or tag.</p></div>
+      <div class="card hl"><span class="lb">madengine · the runner</span><h3>How and where to run it</h3><p>Builds images, picks the target from the config, starts the launcher, watches the run.</p></div>
+      <div class="card"><span class="lb">perf.csv · the contract</span><h3>What came out</h3><p>One result schema for every target, failed runs included.</p></div>
+    </div>
+    <figure class="fig mt rv" style="--d:3">
+      <div class="fl"><span class="lb">FIG 01</span><span class="lb">Ecosystem</span></div>
+      <svg viewBox="0 0 980 322" role="img" aria-label="MAD catalog feeds madengine, which runs on six targets and writes perf.csv">
+        <rect class="bx" x="12" y="40" width="230" height="182"/>
+        <text class="m" x="28" y="62">MAD · CATALOG</text>
+        <text class="s" x="28" y="90">models.json</text>
+        <text class="s" x="28" y="108">get_models_json.py</text>
+        <text class="s" x="28" y="134">docker/*.Dockerfile</text>
+        <text class="s" x="28" y="160">scripts/&lt;model&gt;/run.sh</text>
+        <text class="s" x="28" y="178">scripts/&lt;model&gt;/*.slurm</text>
+        <text class="m" x="28" y="208">121 static + ~470 generated</text>
+        <line class="ln a" x1="242" y1="130" x2="306" y2="130" marker-end="url(#aha)"/>
+        <rect class="bx a" x="308" y="8" width="368" height="252"/>
+        <text class="m" x="326" y="28">MADENGINE</text>
+        <rect class="bx" x="326" y="38" width="332" height="40"/><text class="t" x="342" y="56">CLI</text><text class="s" x="342" y="71">discover · build · run · report · database</text>
+        <rect class="bx" x="326" y="86" width="332" height="40"/><text class="t" x="342" y="104">Orchestrators</text><text class="s" x="342" y="119">BuildOrchestrator · RunOrchestrator · manifest</text>
+        <rect class="bx f" x="326" y="134" width="332" height="40"/><text class="t" x="342" y="152">Context</text><text class="s" x="342" y="167">one dict: host facts + additional_context</text>
+        <rect class="bx" x="326" y="182" width="332" height="40"/><text class="t" x="342" y="200">Runners and deployments</text><text class="s" x="342" y="215">Docker · conda · SLURM · Spur · K8s · llm-d</text>
+        <text class="m" x="326" y="245">launchers: torchrun · vllm · sglang · …</text>
+        <path class="ln a" d="M676 130H716M716 30V240"/>
+        <g>
+          <line class="ln a" x1="716" y1="30" x2="750" y2="30" marker-end="url(#aha)"/><rect class="bx" x="752" y="14" width="216" height="32"/><text class="t" x="766" y="35">Local Docker</text>
+          <line class="ln a" x1="716" y1="72" x2="750" y2="72" marker-end="url(#aha)"/><rect class="bx" x="752" y="56" width="216" height="32"/><text class="t" x="766" y="77">Bare metal (conda)</text>
+          <line class="ln a" x1="716" y1="114" x2="750" y2="114" marker-end="url(#aha)"/><rect class="bx" x="752" y="98" width="216" height="32"/><text class="t" x="766" y="119">SLURM</text>
+          <line class="ln a" x1="716" y1="156" x2="750" y2="156" marker-end="url(#aha)"/><rect class="bx" x="752" y="140" width="216" height="32"/><text class="t" x="766" y="161">Spur</text>
+          <line class="ln a" x1="716" y1="198" x2="750" y2="198" marker-end="url(#aha)"/><rect class="bx" x="752" y="182" width="216" height="32"/><text class="t" x="766" y="203">Kubernetes</text>
+          <line class="ln a" x1="716" y1="240" x2="750" y2="240" marker-end="url(#aha)"/><rect class="bx" x="752" y="224" width="216" height="32"/><text class="t" x="766" y="245">llm-d</text>
+        </g>
+        <line class="ln" x1="860" y1="256" x2="860" y2="276" marker-end="url(#ah)"/>
+        <rect class="bx" x="12" y="278" width="956" height="34"/>
+        <text class="m" x="28" y="299">OUTPUT</text>
+        <text class="s" x="110" y="299">perf.csv  →  report to-html / to-email  →  database (MongoDB)  →  MAD recipes dashboard</text>
+      </svg>
+      <figcaption>The catalog says what a model is. The context says where it runs. The result schema does not change.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="The catalog at a glance">
+  <div class="wrap g g-7-5 top">
+    <div>
+      <div class="lb acc rv">By the numbers</div>
+      <h2 class="rv" style="--d:1">The catalog at a glance</h2>
+      <p class="sf rv" style="--d:2">MAD ships 121 model cards in static registries, and generates several hundred more for Primus and JAX training. Inference serving dominates the static set, and most multi-node cards are disaggregated prefill/decode or communication benchmarks.</p>
+      <div class="bars rv" style="--d:3">
+        <div class="bar-r"><span>vLLM serving</span><span class="tr"><i style="width:100%"></i></span><b>42</b></div>
+        <div class="bar-r"><span>SGLang disaggregated P/D</span><span class="tr"><i style="width:42.8%"></i></span><b>18</b></div>
+        <div class="bar-r"><span>vLLM disaggregated P/D</span><span class="tr"><i style="width:38%"></i></span><b>16</b></div>
+        <div class="bar-r"><span>xDiT diffusion inference</span><span class="tr"><i style="width:33.3%"></i></span><b>14</b></div>
+        <div class="bar-r"><span>KV-cache and large-EP benchmarks</span><span class="tr"><i style="width:26.2%"></i></span><b>11</b></div>
+        <div class="bar-r"><span>Other (BERT, GPT-2, Chai-1, Mochi…)</span><span class="tr"><i style="width:26.2%"></i></span><b>11</b></div>
+        <div class="bar-r"><span>PyTorch training (Flux, SDXL, DLRM, video)</span><span class="tr"><i style="width:14.3%"></i></span><b>6</b></div>
+        <div class="bar-r"><span>SGLang serving</span><span class="tr"><i style="width:7.1%"></i></span><b>3</b></div>
+      </div>
+      <h4 class="mt rv" style="--d:4">Generated on top, one card per Primus YAML</h4>
+      <table class="t dense rv" style="--d:4">
+        <thead><tr><th>Family</th><th>Cards</th><th>Image</th></tr></thead>
+        <tbody>
+          <tr><td>Primus <span class="muted">(Megatron, TorchTitan, Megatron-Bridge, diffusion, NeMo, MoE)</span></td><td>399</td><td><code>rocm/primus</code></td></tr>
+          <tr><td>JAX MaxText</td><td>62</td><td rowspan="2"><code>rocm/jax-training</code></td></tr>
+          <tr><td>JAX MaxDiffusion</td><td>6</td></tr>
+        </tbody>
+      </table>
+      <p class="xs muted mt">Static counts are from <code>scripts/*/models.json</code> in a MAD checkout (Nov 2026). Generated counts come from <code>get_models_json.py</code> run against the Primus checkout in the MAD tree (<code>v26.7.0</code> plus 84 commits), with the JAX host-SKU filter off. Generated counts move with the Primus revision. A real host sees only its own SKU's JAX configs, and multi-node-only MaxText models are hidden by default.</p>
+    </div>
+    <div class="g g2 rv" style="--d:3">
+      <div class="stat"><b>7</b><span>CLI commands</span></div>
+      <div class="stat"><b>6</b><span>execution targets: Docker, conda, SLURM, Spur, Kubernetes, llm-d</span></div>
+      <div class="stat"><b>10</b><span>launcher names, from torchrun to vllm-disagg</span></div>
+      <div class="stat"><b>30</b><span>profiling and tracing tool presets in tools.json, stackable</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="Quick start">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Quick start</div>
+      <h2 class="rv" style="--d:1">Four commands to a first number</h2>
+      <p class="sf rv" style="--d:2">Install madengine, clone MAD, find a model, run it. The container, the log scan and the result row come with it.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · from your MAD checkout</span><button data-copy>copy</button></div><pre data-lang="bash">pip install git+https://github.com/ROCm/madengine.git
+git clone https://github.com/ROCm/MAD.git &amp;&amp; cd MAD
+
+madengine discover --tags pyt_vllm_llama-3.1-8b_fp8
+
+export MAD_SECRETS_HFTOKEN="&lt;your Hugging Face token&gt;"
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --keep-model-dir --live-output</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>What happens</h4>
+      <ol class="l">
+        <li><b>Discover</b> finds the card by name or tag in the catalog.</li>
+        <li><b>Build</b> makes the image from the card's Dockerfile. For a build, <code>gpu_vendor</code> defaults to AMD and <code>guest_os</code> to UBUNTU.</li>
+        <li><b>Run</b> starts a container named <code>container_ci-pyt_vllm_llama-3.1-8b_fp8</code>, with a watchdog as PID 1.</li>
+        <li><b>Results</b> land in <code>perf.csv</code>. This card also leaves <code>perf_Llama-3.1-8B-Instruct-FP8-KV.csv</code>. Failed runs are recorded as <code>FAILURE</code>, so every attempt appears.</li>
+      </ol>
+      <div class="call"><b>Prerequisites:</b> Docker, Python 3.9+, and ROCm or CUDA drivers. If ROCm is not auto-detected, set <code>MAD_ROCM_PATH</code>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="Seven commands">
+  <div class="wrap">
+    <div class="lb acc rv">The CLI</div>
+    <h2 class="rv" style="--d:1">Seven commands, one workflow</h2>
+    <table class="t mt rv" style="--d:2">
+      <thead><tr><th>Command</th><th>What it does</th><th>Typical use</th></tr></thead>
+      <tbody>
+        <tr><td><code>discover</code></td><td>Lists models matching <code>--tags</code></td><td>Check a tag before spending GPU time</td></tr>
+        <tr><td><code>build</code></td><td>Builds images (or conda prefixes), writes <code>build_manifest.json</code></td><td>CI, or once per registry push</td></tr>
+        <tr><td><code>run</code></td><td>Builds if needed, infers the target, runs, writes <code>perf.csv</code></td><td>Everything from a laptop to a cluster</td></tr>
+        <tr><td><code>report</code></td><td><code>to-html</code> and <code>to-email</code> from a CSV</td><td>Share a result table</td></tr>
+        <tr><td><code>database</code></td><td>Uploads a CSV to MongoDB</td><td>Dashboards and history</td></tr>
+        <tr><td><code>cleanup</code></td><td>Removes containers left by cancelled runs</td><td><code>if: always()</code> in CI, shared runners</td></tr>
+        <tr><td><code>setup-page</code></td><td>Writes a self-contained HTML model picker</td><td>Publishing a model catalog page</td></tr>
+      </tbody>
+    </table>
+    <div class="g g3 mt2 rv" style="--d:3">
+      <div class="card"><span class="lb">Output control</span><p><code>--live-output</code> streams logs. <code>--verbose</code> adds detail. <code>--timeout 0</code> disables the timeout, <code>-1</code> defers to the card.</p></div>
+      <div class="card"><span class="lb">Debugging</span><p><code>--keep-alive</code> leaves the container up. <code>--skip-model-run</code> runs only setup and pre-scripts, so you can <code>docker exec</code> in.</p></div>
+      <div class="card"><span class="lb">Shared machines</span><p><code>--wait-for-gpu-memory 30</code> waits up to 30 s until every GPU reports at most 512 MB in use. Local runs only.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="Build once, run anywhere">
+  <div class="wrap">
+    <div class="lb acc rv">The pipeline</div>
+    <h2 class="rv" style="--d:1">Build once, run anywhere</h2>
+    <p class="sf rv" style="--d:2">Build and run can be separate steps. The manifest carries the image and the Context that built it, so the same artifact runs on a workstation, a SLURM login node, or a cluster that only pulls from a registry.</p>
+    <figure class="fig mt rv" style="--d:3">
+      <div class="fl"><span class="lb">FIG 02</span><span class="lb">Pipeline</span></div>
+      <div class="flow" style="margin-bottom:16px">
+        <div class="st"><b>discover</b><span>find models by tag</span></div>
+        <div class="st"><b>build</b><span>image per model</span></div>
+        <div class="st"><b>manifest</b><span>build_manifest.json</span></div>
+        <div class="st"><b>run</b><span>infer target, execute</span></div>
+        <div class="st"><b>perf.csv</b><span>one row per result</span></div>
+        <div class="st"><b>report</b><span>HTML · email · MongoDB</span></div>
+      </div>
+      <figcaption>The manifest records one Image for each selected model and the Context from that build.</figcaption>
+    </figure>
+    <div class="g g2 mt2 top">
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · split workflow</span><button data-copy>copy</button></div><pre data-lang="bash"># CI or laptop: build and push
+madengine build --tags pyt_vllm_llama-3.3-70b \
+  --registry docker.io/myorg
+
+# any target: run from the manifest
+madengine run --manifest-file build_manifest.json</pre></div>
+      <ul class="l rv" style="--d:4">
+        <li><b>Pre-built images:</b> <code>--use-image &lt;ref&gt;</code> or <code>MAD_CONTAINER_IMAGE</code> skips the build entirely.</li>
+        <li><b>Build on compute:</b> <code>--build-on-compute --registry …</code> builds inside a SLURM job and pushes.</li>
+        <li><b>Pinned digests:</b> every push records <code>image_digest</code>. <code>--require-pinned-image</code> pulls <code>repo@sha256:…</code> and fails instead of running a moved tag.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 02 ARCHITECTURE ═══════════ -->
+<section class="slide divider" data-sec="Architecture" data-title="02 · Architecture" data-first>
+  <div class="wrap">
+    <div class="secnum rv">02</div>
+    <h2 class="rv" style="--d:1">Architecture</h2>
+    <p class="sf rv" style="--d:2">Layers, the Context that drives them, how a target is chosen, and how runs stay safe on shared machines.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Architecture" data-title="Layers">
+  <div class="wrap">
+    <div class="lb acc rv">Layer structure</div>
+    <h2 class="rv" style="--d:1">Seven layers, each with one job</h2>
+    <div class="layers mt rv" style="--d:2">
+      <div class="layer"><div class="nm">CLI<small>Typer + Rich</small></div><div class="it"><span class="chip2 a">discover</span><span class="chip2 a">build</span><span class="chip2 a">run</span><span class="chip2">report</span><span class="chip2">database</span><span class="chip2">cleanup</span><span class="chip2">setup-page</span></div></div>
+      <div class="layer"><div class="nm">Orchestration<small>what happens, in order</small></div><div class="it"><span class="chip2">DiscoverModels</span><span class="chip2">BuildOrchestrator</span><span class="chip2">RunOrchestrator</span><span class="chip2 a">build_manifest.json</span></div></div>
+      <div class="layer"><div class="nm">Core<small>shared services</small></div><div class="it"><span class="chip2 a">Context</span><span class="chip2">Console</span><span class="chip2">Docker wrapper</span><span class="chip2">lifecycle: heartbeat · reap · cleanup</span></div></div>
+      <div class="layer"><div class="nm">Execution<small>this machine</small></div><div class="it"><span class="chip2">ContainerRunner</span><span class="chip2">BareMetalRunner (conda)</span><span class="chip2">DockerBuilder</span></div></div>
+      <div class="layer"><div class="nm">Deployment<small>a cluster</small></div><div class="it"><span class="chip2 a">DeploymentFactory</span><span class="chip2">SlurmDeployment</span><span class="chip2">SpurDeployment</span><span class="chip2">KubernetesDeployment</span><span class="chip2">LlmdDeployment</span><span class="chip2">presets/ + config_loader</span></div></div>
+      <div class="layer"><div class="nm">Launchers<small>inside the job</small></div><div class="it"><span class="chip2">torchrun</span><span class="chip2">deepspeed</span><span class="chip2">megatron-lm</span><span class="chip2">torchtitan</span><span class="chip2">primus</span><span class="chip2">vllm</span><span class="chip2">sglang</span><span class="chip2">sglang-disagg</span><span class="chip2">vllm-disagg</span><span class="chip2">slurm_multi</span></div></div>
+      <div class="layer"><div class="nm">Reporting<small>after the run</small></div><div class="it"><span class="chip2">update_perf_csv</span><span class="chip2">csv_to_html</span><span class="chip2">csv_to_email</span><span class="chip2">MongoDB upload</span></div></div>
+    </div>
+    <p class="xs muted mt">Entry point: <code>madengine.cli.app:cli_main</code>. About 47k lines of Python under <code>src/madengine</code>.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Architecture" data-title="One Context drives everything" data-top>
+  <div class="wrap g g-5-7 top">
+    <div>
+      <div class="lb acc rv">The Context <span class="tag new">3.0 preview</span></div>
+      <h2 class="rv" style="--d:1">One Context drives everything</h2>
+      <p class="sf rv" style="--d:2">Every setting for an invocation lives in one dictionary. It is merged from several sources and stored with the images, so build and run agree.</p>
+      <dl class="kv rv" style="--d:3">
+        <dt>Host facts</dt><dd>GPU vendor and architecture, OS, ROCm path, detected at start</dd>
+        <dt>Inline</dt><dd><code>--additional-context '{…}'</code>: JSON first, then a Python literal</dd>
+        <dt>File</dt><dd><code>--additional-context-file</code>. File and inline are deep-merged, inline wins key by key</dd>
+        <dt>YAML</dt><dd><code>--config</code>: Hydra groups plus a user file. Mutually exclusive with the two above</dd>
+        <dt>Presets</dt><dd>Minimal K8s, SLURM and llm-d configs are merged with JSON presets automatically</dd>
+      </dl>
+      <div class="call">YAML priority, highest first: <b>inline overrides</b> › <b>user YAML</b> › <b>config groups</b> › <b>base defaults</b>.</div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>The same job, three ways</h4>
+      <div class="tabs">
+        <div class="tab-bar"><button class="on" data-t="j">JSON</button><button data-t="y">YAML file</button><button data-t="g">Config groups</button></div>
+        <div class="tab-p on" data-t="j"><div class="code"><div class="ch"><span>--additional-context-file job.json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "slurm": { "partition": "gpu", "nodes": 4, "gpus_per_node": 8 },
+  "distributed": {
+    "launcher": "torchtitan",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  }
+}</pre></div></div>
+        <div class="tab-p" data-t="y"><div class="code"><div class="ch"><span>--config my_job.yaml</span><button data-copy>copy</button></div><pre data-lang="yaml">slurm:
+  partition: gpu
+  nodes: 4
+  gpus_per_node: 8
+distributed:
+  launcher: torchtitan
+  nnodes: 4
+  nproc_per_node: 8</pre></div></div>
+        <div class="tab-p" data-t="g"><div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine run --tags model \
+  --config scheduler=slurm \
+  --config launcher=torchtitan \
+  --config distributed.nnodes=4 \
+  --config +profile=mi300x_8gpu \
+  --config +env=nccl_debug</pre></div>
+          <p class="xs muted">Groups: <code>platform</code> <code>scheduler</code> <code>hardware</code> <code>launcher</code>. Append-only: <code>+profile</code> <code>+env</code> <code>+tools</code> <code>+data</code> <code>+build</code>.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Architecture" data-title="Target inference">
+  <div class="wrap g g-7-5 top">
+    <div>
+      <div class="lb acc rv">Convention over configuration</div>
+      <h2 class="rv" style="--d:1">The target is inferred from the keys you wrote</h2>
+      <p class="sf rv" style="--d:2">There is no <code>deploy</code> flag to set. The first rule that matches wins, so the order matters.</p>
+      <figure class="fig rv" style="--d:3">
+        <div class="fl"><span class="lb">FIG 03</span><span class="lb">Decision ladder</span></div>
+        <div class="dec" style="margin-bottom:0">
+          <div class="r"><span class="no">1</span><code>"platform": "bare_metal"</code><span class="ar">→</span><span class="res">Bare metal<small>conda prefix on this machine</small></span></div>
+          <div class="r"><span class="no">2</span><code>"llm_d": {…}</code><span class="ar">→</span><span class="res">llm-d<small>checked before k8s: llm-d configs carry both</small></span></div>
+          <div class="r"><span class="no">3</span><span><code>"k8s"</code> or <code>"kubernetes"</code></span><span class="ar">→</span><span class="res">Kubernetes<small>Indexed Job, headless Service</small></span></div>
+          <div class="r"><span class="no">4</span><code>"slurm": {"scheduler": "spur"}</code><span class="ar">→</span><span class="res">Spur<small>or <code>"deploy": "spur"</code></small></span></div>
+          <div class="r"><span class="no">5</span><code>"slurm": {…}</code><span class="ar">→</span><span class="res">SLURM<small>sbatch, or in place inside salloc</small></span></div>
+          <div class="r"><span class="no">6</span><span class="muted">none of the above</span><span class="ar">→</span><span class="res">Local Docker<small>ContainerRunner</small></span></div>
+        </div>
+        <figcaption>Omitted <code>platform</code> stays Docker. A <code>slurm_multi</code> card with no scheduler block is promoted to SLURM at run time.</figcaption>
+      </figure>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Why this is nice</h4>
+      <ul class="l">
+        <li>Moving a job between clusters is a diff of one block, not a new script.</li>
+        <li>Conflicting blocks are rejected at validation, for example <code>slurm</code> together with <code>k8s</code>.</li>
+        <li>Unknown top-level keys are reported, which catches typos like <code>slrum</code>.</li>
+      </ul>
+      <div class="call warn"><b>Bare metal cannot be combined</b> with <code>slurm</code>, <code>k8s</code>, <code>kubernetes</code> or <code>llm_d</code>. See <code>docs/bare-metal.md</code>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Architecture" data-title="Deployment layer">
+  <div class="wrap">
+    <div class="lb acc rv">Deployment layer</div>
+    <h2 class="rv" style="--d:1">Every cluster target follows the same lifecycle</h2>
+    <p class="sf rv" style="--d:2"><code>BaseDeployment</code> defines six steps. Each target implements them, and everything after <code>collect</code> is shared.</p>
+    <div class="flow rv" style="--d:3">
+      <div class="st"><b>validate</b><span>tools, access, config</span></div>
+      <div class="st"><b>prepare</b><span>scripts, manifests, values</span></div>
+      <div class="st"><b>deploy</b><span>submit job or release</span></div>
+      <div class="st"><b>monitor</b><span>poll until done</span></div>
+      <div class="st"><b>collect_results</b><span>logs, CSVs, metrics</span></div>
+      <div class="st"><b>cleanup</b><span>delete only our objects</span></div>
+    </div>
+    <div class="g g4 mt2 rv" style="--d:4">
+      <div class="card"><span class="lb">Local</span><h3>ContainerRunner</h3><p>docker run with GPUs, mounts, env, a PID 1 watchdog and tool wrappers. <code>BareMetalRunner</code> does the same in a conda prefix.</p></div>
+      <div class="card"><span class="lb">SLURM · Spur</span><h3>SlurmDeployment</h3><p>Renders an sbatch script. <code>SpurDeployment</code> subclasses it and swaps <code>srun</code> fan-out for a job array with a shared-filesystem rendezvous.</p></div>
+      <div class="card"><span class="lb">Kubernetes</span><h3>KubernetesDeployment</h3><p>Job or Indexed Job, a headless Service for multi-node, ConfigMap with scripts, optional PVCs and secrets.</p></div>
+      <div class="card"><span class="lb">llm-d</span><h3>LlmdDeployment</h3><p>Subclasses Kubernetes: the benchmark client is an ordinary one-pod Job. <code>LlmdStack</code> drives helm in managed mode.</p></div>
+    </div>
+    <p class="xs muted mt">Presets live in <code>deployment/presets/</code> and are merged with a minimal user config by <code>config_loader.py</code>, so <code>{"k8s": {"gpu_count": 2}}</code> is a complete configuration.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Architecture" data-title="Reliability on shared machines">
+  <div class="wrap">
+    <div class="lb acc rv">Lifecycle and reliability</div>
+    <h2 class="rv" style="--d:1">A cancelled run should not hold your GPU</h2>
+    <p class="sf rv" style="--d:2">CI runners kill the step's shell and nothing else. Containers started with <code>docker run -d</code> used to survive that and pin the GPU until a reboot. Three layers now cover it.</p>
+    <div class="g g3 rv" style="--d:3">
+      <div class="card hl"><span class="lb">Layer 1 · survives SIGKILL</span><h3>In-container watchdog</h3><p>PID 1 is a POSIX-shell watchdog. It stops the container when its heartbeat file in the bind-mounted workspace goes stale. Tune with <code>MADENGINE_HEARTBEAT_INTERVAL</code> (15 s) and <code>MADENGINE_HEARTBEAT_STALE_AFTER</code> (120 s).</p></div>
+      <div class="card"><span class="lb">Layer 2 · SIGINT · SIGTERM · SIGHUP</span><h3>Signal handlers</h3><p>Drop the heartbeats, tear down registered containers within a 6 s budget, exit 130. A cancel also deletes a submitted SLURM or Kubernetes job and uninstalls a managed llm-d stack.</p></div>
+      <div class="card"><span class="lb">Layer 3 · after the fact</span><h3>madengine cleanup</h3><p>Sweeps containers whose owning process is gone. Safe from <code>if: always()</code> or cron. <code>--dry-run</code> reports only, <code>--all</code> ignores ownership.</p></div>
+    </div>
+    <div class="g g-7-5 mt2 top">
+      <div class="rv" style="--d:4">
+        <h4>Exit codes for CI</h4>
+        <table class="t"><tbody>
+          <tr><td><code>0</code></td><td>SUCCESS</td><td><code>3</code></td><td>RUN_FAILURE</td></tr>
+          <tr><td><code>1</code></td><td>FAILURE</td><td><code>4</code></td><td>INVALID_ARGS</td></tr>
+          <tr><td><code>2</code></td><td>BUILD_FAILURE</td><td><code>5</code></td><td>GPU_WEDGED (cleanup)</td></tr>
+        </tbody></table>
+      </div>
+      <div class="rv" style="--d:5"><div class="call"><b>A wedged GPU is claimed only on evidence.</b> D-state PIDs, or a container the daemon still lists after two removals. Then <code>gpu_wedged.json</code> is written and <code>cleanup</code> exits 5, so CI can pull the runner out of rotation.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 03 FEATURES ═══════════ -->
+<section class="slide divider" data-sec="Features" data-title="03 · Features">
+  <div class="wrap">
+    <div class="secnum rv">03</div>
+    <h2 class="rv" style="--d:1">Features</h2>
+    <p class="sf rv" style="--d:2">What madengine does for you once a model card exists, and how to choose between launchers.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Feature overview">
+  <div class="wrap">
+    <div class="lb acc rv">Feature overview</div>
+    <h2 class="rv" style="--d:1">What you get without writing glue</h2>
+    <div class="g g4 mt rv" style="--d:2">
+      <div class="card"><span class="lb">Execution</span><h3>Container-native</h3><p>Docker with ROCm and CUDA device handling, mounts, GPU and CPU pinning, least-privilege defaults.</p></div>
+      <div class="card"><span class="lb">Execution</span><h3>Bare metal</h3><p><code>"platform": "bare_metal"</code> runs in a conda, mamba or micromamba prefix. <code>n_gpus: -1</code> becomes a real <code>MAD_RUNTIME_NGPUS</code>.</p></div>
+      <div class="card"><span class="lb">Clusters</span><h3>SLURM, Spur, K8s, llm-d</h3><p>Add a block and the target follows. Presets fill in the rest.</p></div>
+      <div class="card"><span class="lb">Clusters</span><h3>Interactive allocations</h3><p>Inside <code>salloc</code>, multi-node runs execute in place instead of nesting another <code>sbatch</code>.</p></div>
+      <div class="card"><span class="lb">Config</span><h3>Hydra YAML</h3><p>Composable groups for hardware, scheduler, launcher, profile, env, tools, data and build.</p></div>
+      <div class="card"><span class="lb">Parallelism</span><h3>Ten launcher names</h3><p>Training and inference, templated or self-managed, with per-launcher environment contracts.</p></div>
+      <div class="card"><span class="lb">Analysis</span><h3>Profilers</h3><p>rocprof and rocprofv3 presets, rocm-trace-lite, Kineto traces with TraceLens, power, VRAM, library traces.</p></div>
+      <div class="card"><span class="lb">Supply chain</span><h3>Pinned images</h3><p>Digests recorded on every push. <code>--require-pinned-image</code> refuses a tag that moved.</p></div>
+      <div class="card"><span class="lb">Data</span><h3>Data providers</h3><p>Local, NAS (with optional <code>mirrorlocal</code>), MinIO, S3 and AWS, configured in <code>data.json</code>.</p></div>
+      <div class="card"><span class="lb">Hygiene</span><h3>Environment capture</h3><p>rocEnvTool records the system environment, lite by default or full on request.</p></div>
+      <div class="card"><span class="lb">Safety</span><h3>Log error scan</h3><p>Failure patterns in the log set <code>has_errors</code>, so a quiet crash does not report SUCCESS.</p></div>
+      <div class="card"><span class="lb">Output</span><h3>Reports and history</h3><p>HTML and email from CSV, MongoDB upload, and a <code>setup-page</code> picker for catalogs.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Launchers and where they run">
+  <div class="wrap">
+    <div class="lb acc rv">Launchers</div>
+    <h2 class="rv" style="--d:1">Three launcher contracts, ten names</h2>
+    <p class="sf rv" style="--d:2">A launcher is how a workload starts inside its own container, not the scheduler or the platform. Validation rejects a launcher on a target with no arm for it.</p>
+    <div class="g g3 rv" style="--d:3">
+      <div class="card"><span class="lb">Contract 1</span><h3>Templated</h3><p><code>torchrun</code> <code>deepspeed</code> <code>megatron-lm</code> <code>torchtitan</code> <code>vllm</code> <code>sglang</code> <code>sglang-disagg</code> <code>vllm-disagg</code>. The deployment templates render the start command.</p></div>
+      <div class="card"><span class="lb">Contract 2</span><h3>Self-managed</h3><p><code>slurm_multi</code>. The card's own <code>.slurm</code> script starts its containers. Used by MAD's disaggregated and communication benchmarks.</p></div>
+      <div class="card"><span class="lb">Contract 3</span><h3>Primus</h3><p><code>primus</code>. A local single-node run. The model script starts Primus. A cluster block is rejected.</p></div>
+    </div>
+    <table class="t c dense mt rv" style="--d:4">
+      <thead><tr><th>Launcher</th><th>Local Docker</th><th>SLURM</th><th>Spur</th><th>Kubernetes</th><th>llm-d</th></tr></thead>
+      <tbody>
+        <tr><td><code>torchrun</code> · <code>deepspeed</code> · <code>megatron-lm</code> · <code>torchtitan</code></td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="x">—</td></tr>
+        <tr><td><code>vllm</code></td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="m">stamped</td></tr>
+        <tr><td><code>sglang</code></td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="x">—</td></tr>
+        <tr><td><code>sglang-disagg</code></td><td class="x">—</td><td class="a">✓ min 2</td><td class="a">✓</td><td class="a">✓ min 3</td><td class="x">—</td></tr>
+        <tr><td><code>vllm-disagg</code> <span class="tag new">3.0</span></td><td class="x">—</td><td class="a">✓ min 2</td><td class="a">✓</td><td class="a">✓ min 3</td><td class="m">stamped</td></tr>
+        <tr><td><code>slurm_multi</code></td><td class="x">—</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="x">—</td></tr>
+        <tr><td><code>primus</code></td><td class="a">✓</td><td class="x">—</td><td class="x">—</td><td class="x">—</td><td class="x">—</td></tr>
+      </tbody>
+    </table>
+    <p class="xs muted" style="margin-top:8px">Local means one node. <b>stamped</b>: llm-d is a deployment, not a launcher value. Its result rows record <code>launcher=vllm</code>, or <code>vllm-disagg</code> when prefill replicas run.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Parallel strategies by launcher">
+  <div class="wrap">
+    <div class="lb acc rv">Parallelism</div>
+    <h2 class="rv" style="--d:1">Which launcher parallelizes what</h2>
+    <p class="sf rv" style="--d:2"><b>Auto</b> means madengine configures it. <b>Manual</b> means the launcher supports it, but your model script or config sets the degrees.</p>
+    <table class="t c rv" style="--d:3">
+      <thead><tr><th>Launcher</th><th>TP</th><th>PP</th><th>DP</th><th>CP</th><th>FSDP · ZeRO</th><th>EP</th><th>Primary use</th></tr></thead>
+      <tbody>
+        <tr><td><code>torchrun</code></td><td class="m">Manual</td><td class="x">—</td><td class="m">Manual (DDP)</td><td class="x">—</td><td class="m">Manual (FSDP)</td><td class="x">—</td><td style="text-align:left">General distributed training</td></tr>
+        <tr><td><code>torchtitan</code></td><td class="a">Auto</td><td class="a">Auto</td><td class="a">Auto (FSDP2)</td><td class="m">Manual</td><td class="a">Auto (FSDP2)</td><td class="x">—</td><td style="text-align:left">Large-scale LLM pre-training</td></tr>
+        <tr><td><code>deepspeed</code></td><td class="m">Manual</td><td class="m">Manual</td><td class="a">Auto (ZeRO)</td><td class="x">—</td><td class="a">Auto (ZeRO)</td><td class="x">—</td><td style="text-align:left">Memory-efficient training</td></tr>
+        <tr><td><code>megatron-lm</code></td><td class="a">Auto</td><td class="a">Auto</td><td class="a">Implicit</td><td class="a">Auto</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">Very large transformers</td></tr>
+        <tr><td><code>primus</code></td><td class="m">Manual</td><td class="m">Manual</td><td class="m">Manual</td><td class="m">Manual</td><td class="m">Manual</td><td class="x">—</td><td style="text-align:left">Experiment YAML, backend-specific</td></tr>
+        <tr><td><code>vllm</code></td><td class="a">Auto</td><td class="m">SLURM auto · K8s off</td><td class="a">Auto (replicas)</td><td class="x">—</td><td class="x">—</td><td class="m">Manual</td><td style="text-align:left">High-throughput serving</td></tr>
+        <tr><td><code>sglang</code></td><td class="a">Auto</td><td class="m">SLURM auto · K8s off</td><td class="m">Limited</td><td class="x">—</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">Serving with structured generation</td></tr>
+        <tr><td><code>sglang-disagg</code></td><td class="a">Auto</td><td class="x">—</td><td class="a">Role-based</td><td class="x">—</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">Prefill/decode specialization</td></tr>
+      </tbody>
+    </table>
+    <div class="call mt">Expert parallelism and DP attention for MoE models such as DeepSeek-V3 live in the model's own disaggregated scripts (<code>DP_MODE=1</code>, MoRI-EP, DeepEP), run through <code>slurm_multi</code>. See the hands-on section.</div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Choosing a launcher">
+  <div class="wrap g g2 top">
+    <div>
+      <div class="lb acc rv">Best practice</div>
+      <h2 class="rv" style="--d:1">Choosing a launcher</h2>
+      <h4 class="mt rv" style="--d:2">Training</h4>
+      <table class="t rv" style="--d:2"><tbody>
+        <tr><td>Under 1B parameters</td><td><code>torchrun</code></td></tr>
+        <tr><td>1B to 10B</td><td><code>deepspeed</code> or <code>torchrun</code></td></tr>
+        <tr><td>10B to 70B</td><td><code>torchtitan</code> or <code>megatron-lm</code></td></tr>
+        <tr><td>70B and above</td><td><code>torchtitan</code> with full parallelism</td></tr>
+      </tbody></table>
+      <h4 class="mt rv" style="--d:3">Inference</h4>
+      <table class="t rv" style="--d:3"><tbody>
+        <tr><td>High throughput</td><td><code>vllm</code> or a disaggregated launcher</td></tr>
+        <tr><td>Structured generation</td><td><code>sglang</code></td></tr>
+        <tr><td>Memory constrained</td><td><code>vllm</code> (PagedAttention)</td></tr>
+        <tr><td>Large clusters, tunable P:D ratio</td><td><code>sglang-disagg</code></td></tr>
+        <tr><td>Gateway-routed serving</td><td>llm-d, a deployment target</td></tr>
+        <tr><td>A topology the templates do not cover</td><td><code>slurm_multi</code></td></tr>
+      </tbody></table>
+    </div>
+    <div>
+      <h4 class="rv" style="--d:2">Sizing rules</h4>
+      <div class="code rv" style="--d:3"><div class="ch"><span>json · keep the numbers aligned</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "k8s": { "gpu_count": 8 },
+  "distributed": {
+    "nnodes": 4,
+    "nproc_per_node": 8
+  }
+}
+// 4 nodes x 8 GPUs = 32 ranks.
+// k8s.gpu_count equals nproc_per_node.</pre></div>
+      <h4 class="rv" style="--d:4">Memory per GPU, as a floor</h4>
+      <table class="t rv" style="--d:4"><tbody>
+        <tr><td><code>torchrun</code></td><td>16 GB</td></tr>
+        <tr><td><code>deepspeed</code> (ZeRO-3)</td><td>32 GB</td></tr>
+        <tr><td><code>vllm</code></td><td>32 GB, depends on the model</td></tr>
+        <tr><td><code>torchtitan</code>, large models</td><td>64 GB or more</td></tr>
+      </tbody></table>
+      <div class="call rv" style="--d:5">Multi-node on <b>Kubernetes</b> gives you an Indexed Job, a headless Service and rank from <code>JOB_COMPLETION_INDEX</code>. On <b>SLURM</b> it reads the SLURM variables and uses <code>$SLURM_PROCID</code>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Results and reporting">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Results</div>
+      <h2 class="rv" style="--d:1">One schema for every target</h2>
+      <p class="sf rv" style="--d:2">Each run appends rows to <code>perf.csv</code>. A card that names <code>multiple_results</code> appends one row per row of that file, so a concurrency sweep becomes a table.</p>
+      <ul class="l rv" style="--d:3">
+        <li><b>Failures are rows.</b> Pre-run and run failures are written with status <code>FAILURE</code>.</li>
+        <li><b>Stale files are removed.</b> A normal run deletes a leftover <code>multiple_results</code> file first, so an appending script cannot report the previous run.</li>
+        <li><b>llm-d rows record the serving stack:</b> <code>deployment_type=llm-d</code>, <code>launcher</code> <code>vllm</code> or <code>vllm-disagg</code>, and <code>serving_mode</code>.</li>
+        <li><b>Bare-metal rows</b> record <code>platform=bare_metal</code> and <code>deployment_type=local</code>.</li>
+      </ul>
+      <div class="code rv" style="--d:4"><div class="ch"><span>bash · after the run</span><button data-copy>copy</button></div><pre data-lang="bash">madengine report to-html  --csv-file-path perf_entry.csv
+madengine report to-email --directory ./results
+madengine database --file perf_entry.csv \
+  --db mydb --collection results</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>perf.csv header, in order</h4>
+      <div class="code sm"><div class="ch"><span>src/madengine/reporting/update_perf_csv.py</span></div><pre data-lang="plain">model, n_gpus, nnodes, gpus_per_node, training_precision,
+pipeline, args, tags, docker_file, base_docker, docker_sha,
+docker_image, git_commit, machine_name, deployment_type,
+launcher, gpu_architecture, performance, metric,
+relative_change, status, build_duration, test_duration,
+dataname, data_provider_type, data_size,
+data_download_duration, build_number,
+additional_docker_run_options, serving_mode, platform</pre></div>
+      <div class="call">The MAD team also publishes <b>MAD Recipes</b>, a dashboard generated from the same <code>models.json</code> and Dockerfiles. Each model page shows the <code>madengine run</code> command and a no-madengine fallback with <code>docker</code> or <code>sbatch</code>.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 04 HANDS-ON ═══════════ -->
+<section class="slide divider" data-sec="Hands-on" data-title="04 · Hands-on with real MAD models">
+  <div class="wrap">
+    <div class="secnum rv">04</div>
+    <h2 class="rv" style="--d:1">Hands-on with real MAD models</h2>
+    <p class="sf rv" style="--d:2">Ten examples that climb from one GPU to many nodes. Every model name below is a card in a MAD checkout, and every command is built from the repo's READMEs and example configs.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="The ladder">
+  <div class="wrap">
+    <div class="lb acc rv">The ladder</div>
+    <h2 class="rv" style="--d:1">Four rungs, the same tool</h2>
+    <div class="ladder mt rv" style="--d:2">
+      <div><span class="lb">Rung 1 · local Docker</span><div class="big">1<small>GPU</small></div>
+        <ul><li><code>pyt_vllm_llama-3.1-8b_fp8</code></li><li><code>pyt_clip_inference</code></li><li><code>pyt_huggingface_gpt2</code></li></ul></div>
+      <div><span class="lb">Rung 2 · local Docker · K8s</span><div class="big">8<small>GPUs, 1 node</small></div>
+        <ul><li><code>pyt_vllm_kimi-k3</code></li><li><code>pyt_xdit_flux</code></li><li><code>primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain</code></li></ul></div>
+      <div><span class="lb">Rung 3 · SLURM · Spur · K8s</span><div class="big">2<small>nodes</small></div>
+        <ul><li><code>pyt_kvcache_transfer_bench_all</code></li><li><code>pyt_sglang_disagg_mori_io_llama-3.1-8b</code></li><li><code>pyt_vllm_disagg_nixl_gpt-oss-120b</code></li></ul></div>
+      <div><span class="lb">Rung 4 · all clusters · llm-d</span><div class="big">N<small>nodes</small></div>
+        <ul><li><code>pyt_sglang_disagg_mori_dp_deepseek-v3</code></li><li><code>pyt_vllm_disagg_mori_deepseek-r1</code></li><li><code>pyt_vllm_deepseek-r1</code> via llm-d</li></ul></div>
+    </div>
+    <div class="g g3 mt2 rv" style="--d:3">
+      <div class="card"><span class="lb">Constant</span><p>The model card, the tag, the <code>perf.csv</code> schema, and the build-then-run split.</p></div>
+      <div class="card"><span class="lb">Changes</span><p>One block in the Context: <code>docker_gpus</code>, <code>slurm</code>, <code>k8s</code> or <code>llm_d</code>, plus the launcher and node counts.</p></div>
+      <div class="card"><span class="lb">Honest note</span><p>MAD's own multi-node cards ride the self-managed <code>slurm_multi</code> contract. The templated launchers are shown with the repo's example configs.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 1 · one GPU">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 1 · local Docker · 1 GPU</div>
+      <h2 class="rv" style="--d:1">vLLM on Llama 3.1 8B, FP8</h2>
+      <p class="sf rv" style="--d:2">A model card is a few fields. madengine supplies the container, the environment and the result collection around it.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>scripts/vllm/models.json · pyt_vllm_llama-3.1-8b (abridged)</span></div><pre data-lang="json">{
+  "name": "pyt_vllm_llama-3.1-8b",
+  "dockerfile": "../../docker/pyt_vllm",
+  "scripts": "run.sh",
+  "data": "huggingface",
+  "n_gpus": "-1",
+  "multiple_results": "perf_Llama-3.1-8B-Instruct.csv",
+  "tags": ["pyt", "vllm", "vllm_extended", "inference"],
+  "timeout": -1,
+  "args": "--model_repo meta-llama/Llama-3.1-8B-Instruct --config configs/extended.yaml"
+}</pre></div>
+      <p class="xs muted">The FP8 card differs only in <code>--model_repo amd/Llama-3.1-8B-Instruct-FP8-KV</code> and its CSV name. <code>n_gpus: "-1"</code> means every visible GPU.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Run it</h4>
+      <div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">export MAD_SECRETS_HFTOKEN="&lt;token for gated models&gt;"
+
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --keep-model-dir --live-output</pre></div>
+      <h4>What you can check afterwards</h4>
+      <ul class="l">
+        <li>Container <code>container_ci-pyt_vllm_llama-3.1-8b_fp8</code> ran with a watchdog as PID 1.</li>
+        <li><code>perf_Llama-3.1-8B-Instruct-FP8-KV.csv</code> holds the sweep. <code>perf.csv</code> has one row per line of it, merged with image, GPU architecture and status.</li>
+        <li><code>MAD_SECRETS_HFTOKEN</code> is mapped to <code>HF_TOKEN</code> inside the container.</li>
+        <li><code>--keep-model-dir</code> keeps downloaded weights, so the second run starts fast.</li>
+      </ul>
+      <div class="call">Same card, same CSV, on any target. The next examples only change the Context.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 2 · 8 GPUs inference">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 2 · local Docker · 8 GPUs</div>
+      <h2 class="rv" style="--d:1">Kimi-K3 at TP8, three engines</h2>
+      <p class="sf rv" style="--d:2">A 2.8T-parameter model on 8× MI350X or MI355X. One tag per framework, the same command shape.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash"># vLLM, SGLang and ATOM on the same hardware
+madengine run --tags pyt_vllm_kimi-k3   --keep-model-dir --live-output
+madengine run --tags pyt_sglang_kimi-k3 --keep-model-dir --live-output
+madengine run --tags pyt_atom_kimi-k3   --keep-model-dir --live-output
+
+# the checkpoint is about 1.56 TB: reuse weights you already have
+madengine run --tags pyt_vllm_kimi-k3 --keep-model-dir --live-output \
+  --additional-context '{
+    "docker_mounts":   {"/model_weights": "/path/to/Kimi-K3"},
+    "docker_env_vars": {"MAD_DATAHOME": "/model_weights"}
+  }'</pre></div>
+      <p class="xs muted">Each tag brings its own image and config: vLLM <code>configs/default.yaml</code>, SGLang <code>configs/kimi_k3.yaml</code>, ATOM <code>configs/default.yaml</code>.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Pick the GPUs, or run a diffusion model that needs all eight</h4>
+      <div class="code"><div class="ch"><span>bash · xDiT, n_gpus: 8</span><button data-copy>copy</button></div><pre data-lang="bash">MAD_SECRETS_HFTOKEN=hf_xxx \
+  madengine run --tags pyt_xdit_flux --live-output
+# latencies land in results.csv (multiple_results)
+
+# restrict a local run to a subset of GPUs and CPUs
+madengine run --tags pyt_vllm_llama-3.3-70b \
+  --additional-context '{
+    "docker_gpus": "0,1,2,3",
+    "docker_cpus": "0-31"
+  }'</pre></div>
+      <ul class="l">
+        <li><code>docker_gpus</code> takes a list with ranges, like <code>"0,2-4,7"</code>.</li>
+        <li>MAD ships 14 xDiT cards: FLUX.1, FLUX.2, Wan 2.1 and 2.2, HunyuanVideo, Qwen-Image, SD 3.5 and more. All use <code>n_gpus: 8</code>.</li>
+        <li>On a shared host add <code>--wait-for-gpu-memory 60</code> so a neighbour's job does not skew the run.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 3 · single-node training">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 3 · local Docker · training</div>
+      <h2 class="rv" style="--d:1">Primus pretraining on one node</h2>
+      <p class="sf rv" style="--d:2">Llama 3.1 8B in BF16 on MI300X, through Megatron or TorchTitan. Primus configs are discovered from the Primus submodule, so the tag encodes backend, GPU and config. Backends: <code>megatron</code>, <code>torchtitan</code>, <code>megatron_bridge</code>, <code>nemo_automodel</code>, <code>diffusion</code>, <code>moe_package</code>. GPUs: MI300X, MI325X, MI355X, MI455X.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">cd /path/to/MAD
+git submodule update --init --recursive scripts/Primus   # first time only
+
+# tag = primus_train/&lt;backend&gt;_&lt;GPU_ARCH&gt;_&lt;MODEL_CONFIG&gt;
+madengine build --tags primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain
+madengine run   --tags primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain \
+  --live-output
+
+# same config on TorchTitan
+madengine run --tags primus_train/torchtitan_MI300X_llama3.1_8B-BF16-pretrain \
+  --live-output
+
+madengine discover --tags primus      # all 399 Primus cards
+madengine discover --tags torchtitan  # one backend
+madengine discover --tags MI300X      # one GPU</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Override the environment without editing the card</h4>
+      <div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine run \
+  --tags primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain \
+  --live-output \
+  --additional-context '{"docker_env_vars": {
+    "MAD_SECRETS_HFTOKEN": "&lt;token&gt;",
+    "HSA_NO_SCRATCH_RECLAIM": "1"
+  }}'</pre></div>
+      <ul class="l">
+        <li><code>MAD_SECRETS_HFTOKEN</code> is needed only with real data. The default configs use mock data.</li>
+        <li>On the local Docker path a card's own <code>env</code> block is <b>not</b> read. Use <code>docker_env_vars</code>.</li>
+        <li>The image is <code>rocm/primus</code>, set by <code>BASE_DOCKER</code> in <code>docker/primus.ubuntu.amd.Dockerfile</code>. Each card runs 8 GPUs with a 24-hour timeout.</li>
+        <li>JAX MaxText and MaxDiffusion have their own cards and image. See the next slide. The six <code>pyt_train_*</code> cards (Flux, SDXL, DLRM, Mochi, Hunyuan, Wan) use <code>docker/pytorch_train</code>.</li>
+      </ul>
+      <div class="call warn"><b>Primus is a local single-node launcher.</b> Adding a <code>slurm</code> or <code>k8s</code> block to a <code>primus</code> run is rejected at validation. For multi-node training, use a templated launcher.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 3b · JAX MaxText and MaxDiffusion">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 3b · local Docker · JAX training</div>
+      <h2 class="rv" style="--d:1">JAX MaxText and MaxDiffusion on one node</h2>
+      <p class="sf rv" style="--d:2">Both run through Primus on a JAX image. One card is generated per Primus YAML, so new configs appear without a MAD change.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · from your MAD checkout</span><button data-copy>copy</button></div><pre data-lang="bash"># Primus must exist at scripts/Primus before discovery
+bash tools/fetch_primus.sh
+export MAD_SECRETS_HFTOKEN="&lt;your Hugging Face token&gt;"
+
+madengine discover --tags jax         # MaxText + MaxDiffusion
+
+# one card: jax-maxtext/maxtext_&lt;GPU&gt;_&lt;config&gt;
+madengine run \
+  --tags jax-maxtext/maxtext_MI300X_llama2_7B-bf16-pretrain \
+  --keep-model-dir --live-output --timeout 28800
+
+madengine run \
+  --tags jax-maxdiffusion/maxdiffusion_MI300X_flux_dev-pretrain \
+  --keep-model-dir --live-output --timeout 28800
+
+# smoke test, pinned to one config
+madengine run --tags jax-maxtext/default --live-output</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>What discovery gives you</h4>
+      <table class="t dense">
+        <thead><tr><th></th><th>MaxText</th><th>MaxDiffusion</th></tr></thead>
+        <tbody>
+          <tr><td>Models</td><td>Llama 2/3/3.3, Mixtral 8x7B, Qwen3, DeepSeek-V2, Gemma 4</td><td>FLUX dev, WAN 2.1 (1.3B, 14B)</td></tr>
+          <tr><td>Cards</td><td>62 single-node, across MI300X, MI325X, MI355X</td><td>6, across MI300X and MI355X</td></tr>
+          <tr><td>Precision tags</td><td colspan="2"><code>bf16</code> · <code>fp8</code> · <code>nanoo_fp8</code>, from the file name</td></tr>
+          <tr><td>Image</td><td colspan="2"><code>rocm/jax-training:maxtext-v26.7</code></td></tr>
+        </tbody>
+      </table>
+      <ul class="l mt">
+        <li><b>The host's own SKU only.</b> Discovery reads the <code>rocminfo</code> name and registers only that Primus directory, because MI300X and MI325X share an ISA but not batch sizes. Override with <code>JAX_HOST_DEVICE=MI325X</code> or <code>all</code>.</li>
+        <li><b>Multi-node-only models are hidden:</b> Llama 3.1 405B, Grok-1 and Mixtral 8x22B. <code>JAX_MAXTEXT_INCLUDE_MULTINODE=1</code> adds them.</li>
+        <li><b>No Primus checkout, no JAX cards.</b> Discovery prints a warning and finds none. In CI, <code>MAD_AUTO_FETCH_PRIMUS=1</code> fetches it.</li>
+      </ul>
+      <div class="call warn"><b><code>--tags maxtext</code> is a sweep.</b> It runs every MaxText card for the host's SKU, one after another. Name one card unless you mean it.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 4 · SLURM two nodes">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 4 · SLURM · 2 nodes</div>
+      <h2 class="rv" style="--d:1">A KV-cache transfer sweep across two nodes</h2>
+      <p class="sf rv" style="--d:2">Compares NIXL, MoRI and Mooncake between a node pair. Build the image inside a SLURM job, push it, then run on a separate 2-node allocation.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · from the MAD repo root</span><button data-copy>copy</button></div><pre data-lang="bash">export MAD_DOCKERHUB_USER=...   MAD_DOCKERHUB_PASSWORD=...
+
+madengine build --tags pyt_kvcache_transfer_bench_all \
+  --registry &lt;namespace&gt;/&lt;repo&gt; --build-on-compute \
+  --additional-context '{"slurm": {"partition": "&lt;your-partition&gt;"}}'
+
+madengine run --tags pyt_kvcache_transfer_bench_all \
+  --manifest-file build_manifest.json
+
+# already pushed? regenerate the manifest only
+madengine build --tags pyt_kvcache_transfer_bench_all \
+  --use-image docker.io/&lt;ns&gt;/&lt;repo&gt;:kvcache_transfer_bench_pyt_kvcache_transfer_bench_all</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>What the card says</h4>
+      <div class="code sm"><div class="ch"><span>scripts/kvcache_transfer_bench/models.json (abridged)</span></div><pre data-lang="json">{
+  "name": "pyt_kvcache_transfer_bench_all",
+  "scripts": "scripts/run.slurm",
+  "distributed": { "launcher": "slurm_multi" },
+  "slurm": { "nodes": 2, "gpus_per_node": 8, "time": "04:00:00" },
+  "env_vars": {
+    "BENCH_BACKENDS": "all",
+    "START_SIZE": "4096",
+    "STOP_SIZE": "1073741824",
+    "IBDEVICE": "mlx5_0"
+  }
+}</pre></div>
+      <ul class="l tight">
+        <li>Tags pick backends: <code>kvcache_nixl</code>, <code>kvcache_mooncake</code>, <code>mori_py</code>, <code>mori_cpp</code>.</li>
+        <li>Override one run's sweep with <code>{"env_vars": {"STOP_SIZE": "4294967296"}}</code>.</li>
+        <li>The registry carries the image from the build job to the run job.</li>
+      </ul>
+      <div class="call warn"><b>Merge rule:</b> on <code>build</code>, your <code>slurm</code> block is merged with the card's. On <code>run</code>, a <code>slurm</code> block <b>replaces</b> the card's block entirely.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 5 · disaggregated prefill/decode">
+  <div class="wrap">
+    <div class="lb acc rv">Example 5 · SLURM · xP + yD nodes</div>
+    <h2 class="rv" style="--d:1">Disaggregated prefill/decode with SGLang and vLLM</h2>
+    <div class="g g-6-6 top mt">
+      <figure class="fig rv" style="--d:2">
+        <div class="fl"><span class="lb">FIG 04</span><span class="lb">P/D topology</span></div>
+        <svg viewBox="0 0 570 270" role="img" aria-label="Client to proxy, then prefill nodes, KV transfer to decode nodes">
+          <rect class="bx" x="8" y="96" width="76" height="52"/><text class="s c" x="46" y="119">client</text><text class="m c" x="46" y="135">benchmark</text>
+          <line class="ln" x1="84" y1="122" x2="112" y2="122" marker-end="url(#ah)"/>
+          <rect class="bx a" x="114" y="86" width="104" height="72"/><text class="t c" x="166" y="116">proxy</text><text class="m c" x="166" y="134">router</text>
+          <line class="ln a" x1="218" y1="110" x2="262" y2="86" marker-end="url(#aha)"/>
+          <rect class="bx d" x="264" y="14" width="136" height="168"/><text class="m" x="276" y="32">xP PREFILL NODES</text>
+          <rect class="bx" x="278" y="44" width="108" height="56"/><text class="s c" x="332" y="68">node 1</text><text class="m c" x="332" y="84">TP8 · KV out</text>
+          <rect class="bx" x="278" y="110" width="108" height="56"/><text class="s c" x="332" y="134">node xP</text><text class="m c" x="332" y="150">TP8 · KV out</text>
+          <rect class="bx d" x="430" y="14" width="132" height="168"/><text class="m" x="442" y="32">yD DECODE NODES</text>
+          <rect class="bx" x="444" y="44" width="104" height="56"/><text class="s c" x="496" y="68">node 1</text><text class="m c" x="496" y="84">TP8 · KV in</text>
+          <rect class="bx" x="444" y="110" width="104" height="56"/><text class="s c" x="496" y="134">node yD</text><text class="m c" x="496" y="150">TP8 · KV in</text>
+          <line class="ln a d" x1="400" y1="100" x2="428" y2="100" marker-end="url(#aha)"/>
+          <text class="m ac c" x="414" y="198">KV cache</text>
+          <path class="ln d" d="M166 158V214H496V184" marker-end="url(#ah)"/>
+          <text class="m c" x="330" y="230">decode requests</text>
+        </svg>
+        <figcaption>KV transfer backends in MAD cards: MoRI IO, Mooncake, NIXL. Nodes: <code>xP + yD</code> with the proxy on the first prefill node, or <code>1 + xP + yD</code> with a dedicated proxy.</figcaption>
+      </figure>
+      <div class="rv" style="--d:3">
+        <div class="code"><div class="ch"><span>bash · 1 prefill + 1 decode on 2 nodes</span><button data-copy>copy</button></div><pre data-lang="bash"># card placeholder image is rejected: pass a real one
+madengine build --tags pyt_sglang_disagg_mori_io_llama-3.1-8b \
+  --use-image &lt;registry&gt;/&lt;sglang-mori-image&gt;:&lt;tag&gt;
+
+madengine run --tags pyt_sglang_disagg_mori_io_llama-3.1-8b \
+  --manifest-file build_manifest.json \
+  --additional-context '{
+    "slurm": {"partition": "&lt;p&gt;", "nodes": 2,
+              "gpus_per_node": 8, "time": "04:00:00"}
+  }'</pre></div>
+        <div class="code"><div class="ch"><span>json · scale to 4 nodes (2P + 2D)</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "slurm": { "nodes": 4, "gpus_per_node": 8, "time": "04:00:00" },
+  "env_vars": { "xP": "2", "yD": "2" }
+}</pre></div>
+      </div>
+    </div>
+    <div class="g g3 mt rv" style="--d:4">
+      <div class="card"><span class="lb">Cards</span><p>18 SGLang and 16 vLLM disaggregated cards: Llama 3.1 8B and 405B FP8, Llama 3.3 70B FP8, Qwen3 32B, Mixtral 8x7B, DeepSeek-V3 and R1, gpt-oss-120b, GLM-5.1.</p></div>
+      <div class="card"><span class="lb">Knobs in the card</span><p><code>env_vars</code>: <code>MODEL_NAME</code>, <code>xP</code>, <code>yD</code>, <code>RUN_MORI</code>, <code>DP_MODE</code> (WideEP, DeepSeek only), <code>BENCHMARK_COMBINATIONS</code>.</p></div>
+      <div class="card hl"><span class="lb">Gotcha</span><p><code>"args": "-N 2 -n 2"</code> is <b>not</b> forwarded to sbatch. It does not request nodes. Size the job with <code>slurm.nodes</code> or <code>distributed.nnodes</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 6 · templated launchers on SLURM" data-top>
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 6 · SLURM · templated launchers</div>
+      <h2 class="rv" style="--d:1">torchrun and vLLM across nodes</h2>
+      <p class="sf rv" style="--d:2">When a model script reads the launcher contract, madengine renders the start command. Two repo example configs show the shape.</p>
+      <div class="tabs rv" style="--d:3">
+        <div class="tab-bar"><button class="on" data-t="t">torchrun · 2×8</button><button data-t="v">vLLM · data parallel</button></div>
+        <div class="tab-p on" data-t="t"><div class="code sm"><div class="ch"><span>examples/slurm-configs/basic/03-multi-node-basic.json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "gpu_vendor": "AMD", "guest_os": "UBUNTU",
+  "slurm": {
+    "partition": "amd-rccl", "nodes": 2, "gpus_per_node": 8,
+    "time": "24:00:00", "output_dir": "./slurm_results",
+    "exclusive": true, "network_interface": "eth0"
+  },
+  "distributed": {
+    "launcher": "torchrun", "backend": "nccl",
+    "port": 29500, "nnodes": 2, "nproc_per_node": 8
+  },
+  "env_vars": {
+    "NCCL_DEBUG": "WARN", "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0", "HSA_ENABLE_SDMA": "0"
+  }
+}</pre></div></div>
+        <div class="tab-p" data-t="v"><div class="code sm"><div class="ch"><span>examples/slurm-configs/basic/06-vllm-multi-node.json (abridged)</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "slurm": {
+    "partition": "amd-rccl", "nodes": 2, "gpus_per_node": 4,
+    "time": "00:45:00", "exclusive": true,
+    "enable_node_check": true
+  },
+  "distributed": {
+    "launcher": "vllm", "nnodes": 2, "nproc_per_node": 4
+  },
+  "env_vars": {
+    "VLLM_KV_CACHE_SIZE": "0.8",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "NCCL_IB_DISABLE": "1", "NCCL_SOCKET_IFNAME": "eth0"
+  }
+}</pre></div>
+        <p class="xs muted">Multi-node vLLM on SLURM is <b>data parallel</b>: one <code>vllm serve</code> per node, tensor parallel only inside the node, no shared Ray cluster.</p></div>
+      </div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>What the job exports to your script</h4>
+      <table class="t sm">
+        <thead><tr><th>Launcher</th><th>Contract</th></tr></thead>
+        <tbody>
+          <tr><td><code>torchrun</code> · <code>deepspeed</code> · <code>megatron-lm</code> · <code>torchtitan</code></td><td><code>MAD_MULTI_NODE_RUNNER</code> holds the ready launch command. Plus <code>NNODES</code>, <code>NPROC_PER_NODE</code>, <code>NODE_RANK</code>, <code>MASTER_ADDR</code>, <code>MASTER_PORT</code>.</td></tr>
+          <tr><td><code>vllm</code></td><td>No runner. <code>VLLM_TENSOR_PARALLEL_SIZE</code>. vLLM manages its processes.</td></tr>
+          <tr><td><code>sglang</code></td><td>No runner. <code>SGLANG_TENSOR_PARALLEL_SIZE</code>, <code>NCCL_INIT_ADDR</code>.</td></tr>
+          <tr><td><code>sglang-disagg</code></td><td>No runner. <code>SGLANG_DISAGG_*</code> prefill, decode and total node counts.</td></tr>
+        </tbody>
+      </table>
+      <div class="code sm mt"><div class="ch"><span>bash · in a model script</span></div><pre data-lang="bash">$MAD_MULTI_NODE_RUNNER train.py --config conf.yaml</pre></div>
+      <p class="xs muted">madengine's own fixtures (<code>dummy_torchrun</code>, <code>dummy_deepspeed</code>, <code>dummy_megatron_lm</code>, <code>dummy_torchtitan</code>, <code>dummy_vllm</code>, <code>dummy_sglang</code>, <code>dummy_sglang_disagg</code>) are minimal references for each contract.</p>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 7 · Spur">
+  <div class="wrap">
+    <div class="lb acc rv">Example 7 · Spur · same card, one key different</div>
+    <h2 class="rv" style="--d:1">Spur: SLURM's CLI, a different way to fan out</h2>
+    <figure class="fig mt rv" style="--d:2">
+      <div class="fl"><span class="lb">FIG 05</span><span class="lb">SLURM vs Spur</span></div>
+      <svg viewBox="0 0 980 238" role="img" aria-label="SLURM uses one job with srun fan-out; Spur uses a job array with a shared rendezvous directory">
+        <text class="m" x="12" y="16">SLURM · ONE JOB, SRUN FANS OUT</text>
+        <rect class="bx a" x="150" y="26" width="180" height="34"/><text class="t c" x="240" y="48">sbatch -N 4</text>
+        <line class="ln a" x1="240" y1="60" x2="240" y2="78" marker-end="url(#aha)"/>
+        <rect class="bx" x="170" y="80" width="140" height="28"/><text class="s c" x="240" y="99">srun, one task per node</text>
+        <path class="ln" d="M240 108V122M60 122H420M60 122V136M170 122V136M310 122V136M420 122V136"/>
+        <g><rect class="bx" x="14" y="136" width="92" height="46"/><text class="s c" x="60" y="155">node 0</text><text class="m c" x="60" y="171">rank 0</text>
+        <rect class="bx" x="124" y="136" width="92" height="46"/><text class="s c" x="170" y="155">node 1</text><text class="m c" x="170" y="171">rank 1</text>
+        <rect class="bx" x="264" y="136" width="92" height="46"/><text class="s c" x="310" y="155">node 2</text><text class="m c" x="310" y="171">rank 2</text>
+        <rect class="bx" x="374" y="136" width="92" height="46"/><text class="s c" x="420" y="155">node 3</text><text class="m c" x="420" y="171">rank 3</text></g>
+        <text class="m" x="14" y="206">rank = SLURM_PROCID</text>
+        <text class="s" x="14" y="224">Gang-scheduled: all nodes start together.</text>
+        <line class="ln d" x1="490" y1="8" x2="490" y2="232"/>
+        <text class="m" x="514" y="16">SPUR · JOB ARRAY OF SINGLE-NODE TASKS</text>
+        <rect class="bx a" x="620" y="26" width="220" height="34"/><text class="t c" x="730" y="48">job array, tasks 0 to 3</text>
+        <path class="ln a" d="M730 60V76M550 76H910M550 76V90M660 76V90M800 76V90M910 76V90"/>
+        <g><rect class="bx" x="504" y="90" width="92" height="46"/><text class="s c" x="550" y="109">task 0</text><text class="m c" x="550" y="125">rank 0</text>
+        <rect class="bx" x="614" y="90" width="92" height="46"/><text class="s c" x="660" y="109">task 1</text><text class="m c" x="660" y="125">rank 1</text>
+        <rect class="bx" x="754" y="90" width="92" height="46"/><text class="s c" x="800" y="109">task 2</text><text class="m c" x="800" y="125">rank 2</text>
+        <rect class="bx" x="864" y="90" width="92" height="46"/><text class="s c" x="910" y="109">task 3</text><text class="m c" x="910" y="125">rank 3</text></g>
+        <rect class="bx f" x="504" y="168" width="452" height="34"/><text class="s" x="518" y="189">shared filesystem · rendezvous dir (slurm.output_dir)</text>
+        <line class="ln a" x1="550" y1="136" x2="550" y2="166" marker-end="url(#aha)"/><text class="m ac" x="558" y="156">publish MASTER_ADDR</text>
+        <line class="ln a d" x1="830" y1="168" x2="830" y2="138" marker-end="url(#aha)"/><text class="m ac" x="738" y="156">others read it</text>
+        <text class="m" x="504" y="224">rank = SLURM_ARRAY_TASK_ID · tasks may start minutes apart</text>
+      </svg>
+      <figcaption>Spur's <code>srun</code> cannot fan tasks out across nodes, so each array task is one node and the ranks self-form the cluster.</figcaption>
+    </figure>
+    <div class="g g-6-6 top mt2">
+      <div class="code rv" style="--d:3"><div class="ch"><span>json · the only change from SLURM</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "slurm": {
+    "scheduler": "spur",
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "rendezvous_timeout": 1800
+  }
+}</pre></div>
+      <ul class="l rv" style="--d:4">
+        <li><code>slurm.output_dir</code> must be on a filesystem every node shares: it holds the rendezvous files.</li>
+        <li>A node that never sees rank 0's address within <code>rendezvous_timeout</code> (default 900 s) <b>fails with a diagnostic</b>, not an empty <code>MASTER_ADDR</code>.</li>
+        <li>No <code>srun</code> preflight. Completion comes from per-rank marker files. <code>slurm_multi</code> cards also run on Spur.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 8 · Kubernetes">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Example 8 · Kubernetes · 1 node and N nodes</div>
+      <h2 class="rv" style="--d:1">Indexed Job, headless Service, registry image</h2>
+      <p class="sf rv" style="--d:2">The cluster must be able to pull the image. A local <code>ci-…</code> tag is not visible to it, and a failed push is never papered over with the local tag.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · single node, 4 GPUs</span><button data-copy>copy</button></div><pre data-lang="bash">madengine build --tags pyt_vllm_llama-3.1-8b \
+  --registry docker.io/myorg \
+  --additional-context '{"k8s": {"gpu_count": 4, "namespace": "bench"}}'
+
+madengine run --manifest-file build_manifest.json
+
+# watch it
+kubectl -n bench get pods,jobs
+kubectl -n bench logs -f job/&lt;job-name&gt;</pre></div>
+      <div class="code sm rv" style="--d:4"><div class="ch"><span>examples/k8s-configs/basic/03-torchrun-multi-node-basic.json (abridged)</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "k8s": { "namespace": "default", "gpu_count": 2,
+           "memory": "64Gi", "cpu": "16", "host_ipc": true },
+  "distributed": {
+    "enabled": true, "launcher": "torchrun", "backend": "nccl",
+    "nnodes": 2, "nproc_per_node": 2, "master_port": 29500
+  },
+  "env_vars": { "NCCL_IB_DISABLE": "1", "NCCL_SOCKET_IFNAME": "eth0" }
+}</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <figure class="fig" style="margin-bottom:16px">
+        <div class="fl"><span class="lb">FIG 06</span><span class="lb">Multi-node on Kubernetes</span></div>
+        <svg viewBox="0 0 480 250" role="img" aria-label="Registry image pulled by an Indexed Job's pods connected through a headless service, writing to a results volume">
+          <rect class="bx" x="8" y="10" width="140" height="40"/><text class="s c" x="78" y="35">registry image</text>
+          <line class="ln" x1="148" y1="30" x2="186" y2="30" marker-end="url(#ah)"/>
+          <rect class="bx d" x="188" y="8" width="284" height="170"/><text class="m" x="200" y="26">INDEXED JOB · completions = nnodes</text>
+          <rect class="bx" x="202" y="40" width="76" height="62"/><text class="s c" x="240" y="62">pod 0</text><text class="m c" x="240" y="78">index 0</text><text class="m c" x="240" y="92">torchrun</text>
+          <rect class="bx" x="292" y="40" width="76" height="62"/><text class="s c" x="330" y="62">pod 1</text><text class="m c" x="330" y="78">index 1</text><text class="m c" x="330" y="92">torchrun</text>
+          <rect class="bx" x="382" y="40" width="76" height="62"/><text class="s c" x="420" y="62">pod N-1</text><text class="m c" x="420" y="78">index N-1</text><text class="m c" x="420" y="92">torchrun</text>
+          <rect class="bx f" x="202" y="116" width="256" height="30"/><text class="s" x="214" y="136">headless Service · DNS per pod</text>
+          <text class="m" x="202" y="168">rank = JOB_COMPLETION_INDEX</text>
+          <line class="ln" x1="330" y1="178" x2="330" y2="206" marker-end="url(#ah)"/>
+          <rect class="bx" x="188" y="208" width="284" height="34"/><text class="s" x="200" y="230">results · logs and perf.csv collected</text>
+        </svg>
+        <figcaption>The job name is a DNS label capped at 63 characters, equal to the pod <code>job-name</code> label.</figcaption>
+      </figure>
+      <ul class="l tight">
+        <li>One cluster, one context: <code>k8s.kubeconfig</code> and <code>k8s.context</code> are used by the client and every <code>kubectl</code> call.</li>
+        <li>A rerun deletes only objects labelled <code>app=madengine</code>.</li>
+        <li><code>gpu_resource_name</code> defaults to <code>amd.com/gpu</code>. Use <code>nvidia.com/gpu</code> on NVIDIA.</li>
+        <li>Disaggregated launchers need at least <b>3</b> nodes here: a dedicated proxy, one prefill, one decode.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 9 · slurm_multi on Kubernetes">
+  <div class="wrap">
+    <div class="lb acc rv">Example 9 · Kubernetes · self-managed cards</div>
+    <h2 class="rv" style="--d:1">A card's SLURM script, unchanged, on Kubernetes</h2>
+    <p class="sf rv" style="--d:2">MAD's disaggregated cards fan out with <code>srun</code> and start containers with <code>docker run</code>. madengine runs that same script across one pod per node, with stand-ins for the SLURM tools.</p>
+    <div class="g g-7-5 top mt">
+      <figure class="fig rv" style="--d:3">
+        <div class="fl"><span class="lb">FIG 07</span><span class="lb">The shim</span></div>
+        <svg viewBox="0 0 640 270" role="img" aria-label="Pod 0 runs the card script with srun, docker and scontrol stand-ins that talk to agents in the other pods">
+          <rect class="bx" x="10" y="8" width="150" height="36"/><text class="s c" x="85" y="31">ConfigMap bundle</text>
+          <line class="ln" x1="160" y1="26" x2="200" y2="26" marker-end="url(#ah)"/>
+          <rect class="bx a" x="202" y="8" width="214" height="170"/><text class="m ac" x="214" y="26">POD 0</text>
+          <rect class="bx" x="216" y="36" width="186" height="42"/><text class="t" x="228" y="55">card .slurm script</text><text class="m" x="228" y="70">SLURM_* variables set</text>
+          <rect class="bx f" x="216" y="90" width="186" height="76"/><text class="m ac" x="228" y="106">STAND-INS FIRST ON PATH</text>
+          <text class="s" x="228" y="126">srun → agent per pod</text><text class="s" x="228" y="142">docker run → in this pod</text><text class="s" x="228" y="158">scontrol show hostnames</text>
+          <path class="ln a" d="M416 112H462" marker-end="url(#aha)"/><path class="ln a" d="M416 142H440V212H462" marker-end="url(#aha)"/>
+          <rect class="bx" x="464" y="86" width="166" height="52"/><text class="s c" x="547" y="108">pod 1 · agent</text><text class="m c" x="547" y="124">runs its task</text>
+          <rect class="bx" x="464" y="186" width="166" height="52"/><text class="s c" x="547" y="208">pod N-1 · agent</text><text class="m c" x="547" y="224">runs its task</text>
+          <rect class="bx" x="202" y="204" width="214" height="34"/><text class="s" x="214" y="226">/results · pod 0 publishes perf.csv</text>
+          <line class="ln" x1="309" y1="178" x2="309" y2="202" marker-end="url(#ah)"/>
+        </svg>
+        <figcaption>Any other <code>srun</code> or <code>docker</code> form fails with a message naming it, instead of being guessed at.</figcaption>
+      </figure>
+      <div class="rv" style="--d:4">
+        <div class="code sm"><div class="ch"><span>json · pod-spec needs are k8s config, never a card edit</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "k8s": {
+    "namespace": "bench",
+    "gpu_count": 8,
+    "host_network": true,
+    "extra_resources": { "rdma/hca": 1 },
+    "security_context": {
+      "capabilities": { "add": ["IPC_LOCK"] }
+    },
+    "shm_size": "64Gi"
+  },
+  "distributed": { "launcher": "slurm_multi", "nnodes": 2 }
+}</pre></div>
+        <ul class="l tight">
+          <li>The run ends on the Job's own <b>Complete</b> or <b>Failed</b> condition, with one attempt.</li>
+          <li>Results are read from exactly the <code>perf.csv</code> pod 0 published, never an earlier run's.</li>
+          <li>RDMA needs a device plugin, a usable network, and GPU memory the NIC can register.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="Example 10 · llm-d" data-top>
+  <div class="wrap">
+    <div class="lb acc rv">Example 10 · llm-d · gateway-routed serving</div>
+    <h2 class="rv" style="--d:1">Benchmark a disaggregated serving stack</h2>
+    <p class="sf rv" style="--d:2;max-width:100ch">The GPUs belong to the llm-d model servers. madengine runs a one-pod, CPU-only benchmark client against the gateway.</p>
+    <div class="g g-6-6 top">
+      <figure class="fig rv" style="--d:3">
+        <div class="fl"><span class="lb">FIG 08</span><span class="lb">llm-d</span></div>
+        <svg viewBox="0 0 560 250" role="img" aria-label="Benchmark job calls a gateway that routes to prefill and decode pods">
+          <rect class="bx a" x="8" y="84" width="130" height="62"/><text class="t c" x="73" y="108">benchmark Job</text><text class="m c" x="73" y="126">1 pod · no GPU</text>
+          <line class="ln a" x1="138" y1="115" x2="176" y2="115" marker-end="url(#aha)"/><text class="m c" x="157" y="104">HTTP</text>
+          <rect class="bx" x="178" y="70" width="132" height="90"/><text class="t c" x="244" y="96">Gateway</text><text class="s c" x="244" y="114">InferencePool</text><text class="s c" x="244" y="130">Endpoint Picker</text><text class="m c" x="244" y="148">cache-aware routing</text>
+          <line class="ln" x1="310" y1="92" x2="360" y2="52" marker-end="url(#ah)"/><line class="ln" x1="310" y1="138" x2="360" y2="180" marker-end="url(#ah)"/>
+          <rect class="bx f" x="362" y="14" width="190" height="66"/><text class="t" x="376" y="38">prefill pods (GPU)</text><text class="m" x="376" y="56">replicas 2 · TP8</text>
+          <rect class="bx f" x="362" y="150" width="190" height="66"/><text class="t" x="376" y="174">decode pods (GPU)</text><text class="m" x="376" y="192">replicas 1 · TP8</text>
+          <line class="ln a d" x1="457" y1="82" x2="457" y2="148" marker-end="url(#aha)"/><text class="m ac" x="466" y="120">KV transfer</text>
+          <line class="ln" x1="73" y1="146" x2="73" y2="228"/><line class="ln" x1="73" y1="228" x2="120" y2="228" marker-end="url(#ah)"/><text class="s" x="126" y="232">perf.csv</text>
+        </svg>
+        <figcaption>Two modes: <b>attach</b> benchmarks a stack you run, installs nothing, deletes nothing. <b>managed</b> installs three helm releases and removes them on the way out.</figcaption>
+      </figure>
+      <div class="rv" style="--d:4">
+        <div class="tabs">
+          <div class="tab-bar"><button class="on" data-t="a">Attach</button><button data-t="m">Managed, disaggregated</button><button data-t="d">Dry run first</button></div>
+          <div class="tab-p on" data-t="a"><div class="code sm"><div class="ch"><span>bash · Qwen3-32B behind an existing gateway</span><button data-copy>copy</button></div><pre data-lang="bash">madengine run --tags pyt_vllm_qwen3-32b \
+  --additional-context-file \
+    examples/llm-d-configs/01-attach-existing-stack.json</pre></div>
+<div class="code sm"><div class="ch"><span>01-attach-existing-stack.json</span></div><pre data-lang="json">{
+  "k8s": { "namespace": "llm-d-bench", "gpu_count": 0 },
+  "llm_d": {
+    "endpoint_url": "http://llm-d-inference-gateway.llm-d-bench.svc.cluster.local:80",
+    "model": { "name": "Qwen/Qwen3-32B" }
+  }
+}</pre></div></div>
+          <div class="tab-p" data-t="m"><div class="code sm"><div class="ch"><span>03-managed-disaggregated.json (abridged)</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "k8s": { "namespace": "llm-d-bench", "gpu_count": 0 },
+  "llm_d": {
+    "model": { "hf_repo": "deepseek-ai/DeepSeek-R1-0528",
+               "name": "deepseek-ai/DeepSeek-R1-0528",
+               "cache_pvc": "madengine-shared-data",
+               "hf_token_secret": "hf-token" },
+    "prefill": { "replicas": 2, "tensor_parallel": 8, "gpu_count": 8 },
+    "decode":  { "replicas": 1, "tensor_parallel": 8, "gpu_count": 8 },
+    "charts": { "infra": {"version": "&lt;pin&gt;"},
+                "gaie": {"version": "&lt;pin&gt;"},
+                "modelservice": {"version": "&lt;pin&gt;"} }
+  }
+}</pre></div>
+            <p class="xs muted">The same repo as MAD's <code>pyt_vllm_deepseek-r1</code> card, served through llm-d. Replace every <code>&lt;pin&gt;</code>: managed mode refuses floating chart versions.</p></div>
+          <div class="tab-p" data-t="d"><div class="code sm"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine run --tags pyt_vllm_qwen3-32b \
+  --additional-context-file \
+    examples/llm-d-configs/02-managed-dry-run.json
+# renders values and runs `helm template`; installs nothing
+# read ./k8s_manifests/llm-d-*-values.yaml before a real run</pre></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="g g4 mt rv" style="--d:5">
+      <div class="card"><span class="lb">Prereq</span><p>The namespace must exist. madengine never creates or deletes one.</p></div>
+      <div class="card"><span class="lb">Prereq</span><p>Managed mode needs <code>helm</code> and the Gateway API CRDs, which a cluster admin installs.</p></div>
+      <div class="card"><span class="lb">Identity</span><p><code>model.name</code> must equal the card's <code>--model_repo</code>. It is filled in when unset.</p></div>
+      <div class="card hl"><span class="lb">Result rows</span><p><code>deployment_type=llm-d</code>, <code>launcher=vllm-disagg</code>, <code>serving_mode=disaggregated</code>. Aggregated: <code>prefill.replicas: 0</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Hands-on" data-title="One card, six targets">
+  <div class="wrap">
+    <div class="lb acc rv">Recap</div>
+    <h2 class="rv" style="--d:1">One card, six targets: what you add</h2>
+    <table class="t mt rv" style="--d:2">
+      <thead><tr><th>Target</th><th>What you add to the Context</th><th>How ranks start</th><th>What it needs</th></tr></thead>
+      <tbody>
+        <tr><td>Local Docker</td><td>Nothing. Optionally <code>docker_gpus</code>, <code>docker_env_vars</code></td><td><code>docker run</code>, watchdog as PID 1</td><td>Docker and a GPU</td></tr>
+        <tr><td>Bare metal</td><td><code>"platform": "bare_metal"</code> and the card's <code>conda</code> block</td><td><code>conda run -p</code>, script calls the launcher</td><td>conda, mamba or micromamba</td></tr>
+        <tr><td>SLURM</td><td><code>"slurm": {partition, nodes, gpus_per_node, time}</code></td><td><code>sbatch</code> then <code>srun</code>, rank from <code>SLURM_PROCID</code></td><td>Login node, shared filesystem</td></tr>
+        <tr><td>Spur</td><td><code>"slurm": {"scheduler": "spur", …}</code></td><td>Job array, rank from <code>SLURM_ARRAY_TASK_ID</code></td><td>Shared <code>output_dir</code> for rendezvous</td></tr>
+        <tr><td>Kubernetes</td><td><code>"k8s": {gpu_count, namespace, …}</code></td><td>Indexed Job, rank from <code>JOB_COMPLETION_INDEX</code></td><td>Registry image, kubeconfig</td></tr>
+        <tr><td>llm-d</td><td><code>"llm_d": {…}</code> and <code>"k8s": {"gpu_count": 0}</code></td><td>HTTP benchmark client to a gateway</td><td>Cluster, <code>helm</code> (managed), CRDs</td></tr>
+      </tbody>
+    </table>
+    <div class="call mt2 rv" style="--d:3">Whatever the target, you get <b>validation before submission</b>, <b>the same <code>perf.csv</code></b>, and <b>cleanup of only what madengine created</b>.</div>
+  </div>
+</section>
+
+<!-- ═══════════ 05 CONTEXT COOKBOOK ═══════════ -->
+<section class="slide divider" data-sec="Context" data-title="05 · additional_context cookbook">
+  <div class="wrap">
+    <div class="secnum rv">05</div>
+    <h2 class="rv" style="--d:1">The additional_context cookbook</h2>
+    <p class="sf rv" style="--d:2">Most customization needs no edit to a model card or a Dockerfile. These are the recipes people reach for first: images, build args, environment, scripts and profilers.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Key map">
+  <div class="wrap">
+    <div class="lb acc rv">Quick lookup</div>
+    <h2 class="rv" style="--d:1">I want to… so I add…</h2>
+    <table class="t dense mt rv" style="--d:2">
+      <thead><tr><th>I want to</th><th>Add to the Context</th><th>Applies</th></tr></thead>
+      <tbody>
+        <tr><td>Build the card's Dockerfile on a different base image</td><td><code>"docker_build_arg": {"BASE_DOCKER": "…"}</code></td><td>build</td></tr>
+        <tr><td>Skip the build and run an image I already have</td><td><code>"MAD_CONTAINER_IMAGE": "repo:tag"</code> or <code>--use-image</code></td><td>build, run</td></tr>
+        <tr><td>Pass any other Dockerfile <code>ARG</code></td><td><code>"docker_build_arg": {"ROCM_VERSION": "6.1"}</code></td><td>build</td></tr>
+        <tr><td>Set environment variables in the container, local Docker</td><td><code>"docker_env_vars": {"HSA_ENABLE_SDMA": "0"}</code></td><td>run, local</td></tr>
+        <tr><td>Set environment variables on a cluster</td><td><code>"env_vars": {"NCCL_DEBUG": "INFO"}</code></td><td>run, SLURM · Spur · K8s</td></tr>
+        <tr><td>Mount host directories (weights, datasets)</td><td><code>"docker_mounts": {"/inside": "/on/host"}</code></td><td>run, local</td></tr>
+        <tr><td>Use a subset of GPUs or CPUs</td><td><code>"docker_gpus": "0,2-4,7"</code>, <code>"docker_cpus": "0-15"</code></td><td>run, local</td></tr>
+        <tr><td>Profile or trace the run</td><td><code>"tools": [{"name": "rocprofv3_lightweight"}]</code></td><td>run</td></tr>
+        <tr><td>Run a script before or after the model</td><td><code>"pre_scripts"</code>, <code>"post_scripts"</code>, <code>"encapsulate_script"</code></td><td>run</td></tr>
+        <tr><td>Refuse a tag that moved</td><td><code>"require_pinned_image": true</code> or <code>--require-pinned-image</code></td><td>run</td></tr>
+        <tr><td>Target NVIDIA, or another OS</td><td><code>"gpu_vendor": "NVIDIA"</code>, <code>"guest_os": "CENTOS"</code></td><td>build, run</td></tr>
+        <tr><td>Point at a non-default ROCm install</td><td><code>"MAD_ROCM_PATH"</code> for the host, <code>"docker_env_vars": {"MAD_ROCM_PATH": …}</code> in the container</td><td>run</td></tr>
+        <tr><td>Choose how it is parallelized</td><td><code>"distributed": {"launcher": …, "nnodes": …}</code></td><td>run, cluster</td></tr>
+      </tbody>
+    </table>
+    <p class="xs muted mt">Inline context is parsed as JSON first, then as a Python literal. Prefer a JSON file for anything with booleans or nesting, and remember <code>--config</code> cannot be combined with <code>--additional-context</code>.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Image control" data-top>
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Recipe · images</div>
+      <h2 class="rv" style="--d:1">Base image override and friends</h2>
+      <p class="sf rv" style="--d:2">Many MAD Dockerfiles start with <code>ARG BASE_DOCKER=…</code>. That one line is the lever for a newer ROCm, vLLM or SGLang image, with no Dockerfile edit.</p>
+      <div class="dec rv" style="--d:3">
+        <div class="r"><span class="no">A</span><span>I have the image already</span><span class="ar">→</span><span class="res"><code>MAD_CONTAINER_IMAGE</code><small>build is skipped, the image is pulled if missing</small></span></div>
+        <div class="r"><span class="no">B</span><span>Same recipe, different base</span><span class="ar">→</span><span class="res"><code>docker_build_arg BASE_DOCKER</code><small>normal build, new <code>FROM</code></small></span></div>
+        <div class="r"><span class="no">C</span><span>Only some build knobs</span><span class="ar">→</span><span class="res"><code>docker_build_arg</code> per key<small>for example INSTALL_MORI, GPU_ARCH</small></span></div>
+        <div class="r"><span class="no">D</span><span>No Docker on the login node</span><span class="ar">→</span><span class="res"><code>--build-on-compute</code><small>build in a SLURM job, push to a registry</small></span></div>
+        <div class="r"><span class="no">E</span><span>Exact bytes, every time</span><span class="ar">→</span><span class="res"><code>--require-pinned-image</code><small>pull by digest, never by tag</small></span></div>
+      </div>
+    </div>
+    <div class="rv" style="--d:3">
+      <div class="tabs">
+        <div class="tab-bar"><button class="on" data-t="b">Base image</button><button data-t="a">Build args</button><button data-t="p">Pre-built image</button></div>
+        <div class="tab-p on" data-t="b"><div class="code"><div class="ch"><span>bash · the card's Dockerfile, a newer base</span><button data-copy>copy</button></div><pre data-lang="bash"># docker/pyt_vllm.ubuntu.amd.Dockerfile
+#   ARG BASE_DOCKER=vllm/vllm-openai-rocm:v0.29.0
+madengine build --tags pyt_vllm_llama-3.3-70b \
+  --additional-context '{
+    "docker_build_arg": {
+      "BASE_DOCKER": "vllm/vllm-openai-rocm:&lt;newer-tag&gt;"
+    }
+  }'</pre></div>
+          <p class="xs muted">The same works for xDiT (<code>rocm/pytorch-xdit</code>), SGLang disaggregated (<code>lmsysorg/sglang</code>) Primus (<code>rocm/primus</code>) and JAX (<code>rocm/jax-training</code>) cards, since each Dockerfile declares <code>BASE_DOCKER</code>.</p></div>
+        <div class="tab-p" data-t="a"><div class="code"><div class="ch"><span>json · SGLang disagg: Mooncake only, no MoRI</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "docker_build_arg": {
+    "INSTALL_MORI": "0",
+    "GPU_ARCH": "gfx942"
+  }
+}</pre></div>
+          <p class="xs muted">A card can also carry its own <code>docker_build_arg</code> (for example pinning a <code>VLLM_REF</code> commit). Each model's args apply only to its own build, and the Context overrides the card for the same key.</p></div>
+        <div class="tab-p" data-t="p"><div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash"># run an image you have; --tags is required
+madengine run --tags pyt_vllm_llama-3.1-8b \
+  --additional-context "{'MAD_CONTAINER_IMAGE': 'rocm/vllm:custom'}"
+
+# on a cluster, point build at an image and run from the manifest
+madengine build --tags &lt;card&gt; --use-image &lt;registry&gt;/&lt;image&gt;:&lt;tag&gt;
+madengine build --tags &lt;card&gt; --use-image auto   # card's DOCKER_IMAGE_NAME</pre></div>
+          <div class="call warn"><code>MAD_CONTAINER_IMAGE</code> is a Context key, not an environment variable. On Kubernetes it is what the cluster pulls, so a local-only tag will not work. Placeholder values like <code>&lt;supply-your-image&gt;</code> are rejected at submit time.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Environment, mounts and run controls">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Recipe · environment and runtime</div>
+      <h2 class="rv" style="--d:1">Environment, mounts and run controls</h2>
+      <div class="code rv" style="--d:2"><div class="ch"><span>json · local Docker</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "docker_env_vars": {
+    "HSA_ENABLE_SDMA": "0",
+    "PYTORCH_TUNABLEOP_ENABLED": "1",
+    "MAD_SECRETS_HFTOKEN": "&lt;token&gt;"
+  },
+  "docker_mounts": { "/models": "/home/user/models" },
+  "docker_gpus": "0,2-4,7",
+  "docker_cpus": "0-15,32-47"
+}</pre></div>
+      <div class="code rv" style="--d:3"><div class="ch"><span>json · SLURM, Spur or Kubernetes</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "env_vars": {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "eth0"
+  }
+}</pre></div>
+      <div class="call rv" style="--d:4">The <b>AMD multi-GPU preset</b> sets <code>NCCL_IB_DISABLE=1</code> and <code>NCCL_SOCKET_IFNAME=eth0</code>. They are <b>not</b> passed to a <code>slurm_multi</code> card. Set them under <code>env_vars</code> if you want them.</div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Run controls</h4>
+      <table class="t sm">
+        <tbody>
+          <tr><td><code>--timeout N</code></td><td>Seconds. <code>-1</code> defers to the card, then 7200 s. <code>0</code> means none.</td></tr>
+          <tr><td><code>--keep-alive</code></td><td>Leave the container running. No watchdog, local only.</td></tr>
+          <tr><td><code>--skip-model-run</code></td><td>Start the container and run pre-scripts only, then <code>docker exec</code> in.</td></tr>
+          <tr><td><code>--clean-docker-cache</code></td><td>Rebuild without cache. Also <code>+build=ci</code>.</td></tr>
+          <tr><td><code>--target-archs gfx942</code></td><td>Build for specific GPU architectures. <code>+build=multi_arch</code> sets gfx90a and gfx942.</td></tr>
+          <tr><td><code>--disable-skip-gpu-arch</code></td><td>Run cards that <code>skip_gpu_arch</code> would skip.</td></tr>
+          <tr><td><code>--wait-for-gpu-memory N</code></td><td>Wait up to N s for GPUs to be nearly idle. Local only.</td></tr>
+        </tbody>
+      </table>
+      <h4 class="mt">System environment capture</h4>
+      <p class="sm muted">rocEnvTool records the host in <b>lite</b> mode by default, which works in any ROCm or CUDA base image. A full mode adds hardware, BIOS, dmesg and amdgpu modinfo. It can be skipped for GPU-binding smoke tests.</p>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Pre and post scripts, error scan">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Recipe · scripts</div>
+      <h2 class="rv" style="--d:1">Run something before and after the model</h2>
+      <p class="sf rv" style="--d:2">Pre-scripts prepare the container, post-scripts collect or clean up, and an encapsulating script can wrap the model command itself. Profilers are built on exactly these hooks.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "pre_scripts": [
+    { "path": "scripts/common/pre_scripts/setup.sh", "args": "-v" }
+  ],
+  "encapsulate_script": "scripts/common/wrapper.sh",
+  "post_scripts": [
+    { "path": "scripts/common/post_scripts/cleanup.sh", "args": "-r" }
+  ]
+}</pre></div>
+      <p class="xs muted">During a run, <code>scripts/common/</code> is populated from the madengine package (pre_scripts, post_scripts, tools) and removed afterwards. The MAD project's own <code>scripts/</code> and <code>docker/</code> are left alone.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Privileges are added only where a run needs them</h4>
+      <table class="t sm">
+        <thead><tr><th>Local Docker run</th><th>Extra options</th></tr></thead>
+        <tbody>
+          <tr><td>NAS data over SSHFS, no <code>mirrorlocal</code></td><td><code>--cap-add SYS_ADMIN --device /dev/fuse</code></td></tr>
+          <tr><td>User <code>pre_scripts</code>, or a <code>rocprof*</code> or <code>perf*</code> tool</td><td><code>--cap-add SYS_ADMIN</code></td></tr>
+          <tr><td>Everything else</td><td>neither</td></tr>
+        </tbody>
+      </table>
+      <h4 class="mt">The log error scan</h4>
+      <p class="sm muted">After the run, madengine greps the log for failure patterns and sets <code>has_errors</code>, which feeds status. This keeps a model that printed a number and then crashed from reporting SUCCESS. It does not change how the performance metric is extracted.</p>
+      <div class="call">Credentials with template values such as <code>your-docker-username</code> are ignored like blank ones, so a copied <code>credential.json</code> no longer triggers a doomed <code>docker login</code>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Profilers: the catalog">
+  <div class="wrap">
+    <div class="lb acc rv">Recipe · profilers</div>
+    <h2 class="rv" style="--d:1">Profilers are one list in the Context</h2>
+    <div class="g g-4-8 top mt">
+      <div class="rv" style="--d:2">
+        <div class="code"><div class="ch"><span>json · stack tools, first is innermost</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "tools": [
+    { "name": "rocprofv3_lightweight" },
+    { "name": "gpu_info_power_profiler",
+      "env_vars": { "POWER_SAMPLING_RATE": "0.5" } },
+    { "name": "gpu_info_vram_profiler" }
+  ]
+}</pre></div>
+        <p class="sm muted">Setup runs outermost first and teardown unwinds in reverse. A tool can override <code>cmd</code> and <code>env_vars</code>. In YAML: <code>--config +tools=rocprofv3_lightweight</code>.</p>
+        <div class="call warn"><b>Pick one GPU profiler.</b> Do not wrap one workload with both <code>rocprof*</code> and <code>rocm_trace_lite</code>. Profile one model tag at a time.</div>
+      </div>
+      <div class="rv" style="--d:3">
+        <table class="t sm dense">
+          <thead><tr><th>Tool</th><th>What you get</th><th>Output</th></tr></thead>
+          <tbody>
+            <tr><td><code>rocprof</code> · <code>rpd</code></td><td>Kernel and HIP API traces; RPD database</td><td><code>rocprof_output/</code>, <code>rpd_output/</code></td></tr>
+            <tr><td><code>rocprofv3_lightweight</code></td><td>HIP and kernel traces, minimal overhead</td><td>compact JSON</td></tr>
+            <tr><td><code>rocprofv3_compute</code> · <code>_memory</code> · <code>_communication</code> · <code>_full</code></td><td>Counters for ALU, memory, RCCL, or everything</td><td>Perfetto trace</td></tr>
+            <tr><td><code>rocprofv3_perfetto</code> · <code>_pc_sampling</code> · <code>_agent</code></td><td>Timeline view, PC sampling, agent data</td><td>.pftrace and more</td></tr>
+            <tr><td><code>rocm_trace_lite</code> · <code>_default</code></td><td>Low-overhead dispatch timeline via HSA interception</td><td><code>rocm_trace_lite_output/trace.db</code></td></tr>
+            <tr><td><code>torch_profiler_dynolog</code></td><td>On-demand Kineto traces, no script edit</td><td><code>torch_profiler_output/*.json</code></td></tr>
+            <tr><td><code>tracelens</code></td><td>Operator, kernel, roofline and collective reports</td><td><code>tracelens_output/</code></td></tr>
+            <tr><td><code>rocblas_trace</code> · <code>miopen_trace</code> · <code>tensile_trace</code> · <code>hipblaslt_trace</code></td><td>Library call and configuration traces</td><td><code>library_trace.csv</code></td></tr>
+            <tr><td><code>rccl_trace</code></td><td>Collective communication logs</td><td>trace logs</td></tr>
+            <tr><td><code>gpu_info_power_profiler</code> · <code>_vram_profiler</code></td><td>Power and memory over time, ROCm and CUDA</td><td><code>gpu_info_*_output.csv</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Context" data-title="Profiler workflows">
+  <div class="wrap">
+    <div class="lb acc rv">Recipe · profiler workflows</div>
+    <h2 class="rv" style="--d:1">Four profiling recipes that work</h2>
+    <div class="g g2 top mt">
+      <div class="rv" style="--d:2">
+        <h3>1 · A cheap kernel timeline</h3>
+        <div class="code sm"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{ "tools": [ { "name": "rocm_trace_lite" } ] }</pre></div>
+        <p class="sm muted">Lite mode skips dispatches that already carry a completion signal. Use <code>rocm_trace_lite_default</code> for broader coverage at higher overhead. A trace with no kernel dispatches fails the run (exit 3).</p>
+        <h3 class="mt">2 · Deep dive plus reports</h3>
+        <div class="code sm"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{ "tools": [ { "name": "rocprofv3_lightweight" },
+             { "name": "tracelens" } ] }</pre></div>
+        <p class="sm muted">Put <code>tracelens</code> <b>after</b> a profiler. It reads traces other tools produce, and it cannot read rocprofv3's default SQLite or RPD files.</p>
+      </div>
+      <div class="rv" style="--d:3">
+        <h3>3 · PyTorch traces, analyzed on the host</h3>
+        <div class="code sm"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine run --tags &lt;pytorch-card&gt; --additional-context \
+  '{"tools": [{"name": "torch_profiler_dynolog"}]}'
+
+pip install 'madengine[tracelens]'
+madengine report tracelens --gpu-arch MI300X
+madengine report tracelens --root slurm_results \
+  --mode collective --world-size 8</pre></div>
+        <p class="sm muted">One Kineto trace per rank. Pure inference should set <code>TORCH_PROFILE_ITERATIONS=0</code>, because iteration counting waits for <code>optimizer.step()</code>.</p>
+        <h3 class="mt">4 · Multi-node communication and power</h3>
+        <div class="code sm"><div class="ch"><span>examples/profiling-configs/rocprofv3_multi_node.json (abridged)</span></div><pre data-lang="json">{ "slurm": { "partition": "amd-rccl", "nodes": 2,
+            "gpus_per_node": 4 },
+  "distributed": { "launcher": "torchrun", "nnodes": 2,
+                   "nproc_per_node": 4 },
+  "tools": [
+    { "name": "rocprofv3_communication",
+      "env_vars": { "RCCL_DEBUG": "INFO" } },
+    { "name": "gpu_info_power_profiler" },
+    { "name": "gpu_info_vram_profiler" } ] }</pre></div>
+      </div>
+    </div>
+    <div class="call mt rv" style="--d:4"><b>Measure twice:</b> keep a baseline run with no tools and compare it with the profiled run, because tools add overhead. On multi-node runs, <code>rocprof</code> is upgraded to <code>rocprofv3</code> when available and dropped when it is not, while <code>rocm_trace_lite</code> keeps working without it.</div>
+  </div>
+</section>
+
+<!-- ═══════════ 06 LAUNCHERS ═══════════ -->
+<section class="slide divider" data-sec="Launchers" data-title="06 · Launchers and parallel strategies">
+  <div class="wrap">
+    <div class="secnum rv">06</div>
+    <h2 class="rv" style="--d:1">Launchers and parallel strategies</h2>
+    <p class="sf rv" style="--d:2">What each launcher actually parallelizes, the settings that matter, and the practices that keep multi-node runs boring.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Launchers" data-title="Training launchers" data-top>
+  <div class="wrap">
+    <div class="lb acc rv">Training</div>
+    <h2 class="rv" style="--d:1">Training launchers and their parallel strategies</h2>
+    <div class="tabs mt rv" style="--d:2">
+      <div class="tab-bar"><button class="on" data-t="tr">torchrun</button><button data-t="ds">DeepSpeed</button><button data-t="mg">Megatron-LM</button><button data-t="tt">TorchTitan</button><button data-t="pr">Primus</button></div>
+
+      <div class="tab-p on" data-t="tr"><div class="g g-6-6 top">
+        <div>
+          <h3>DDP and FSDP, the default workhorse</h3>
+          <ul class="l"><li><b>Use when:</b> small to medium PyTorch models, standard data-parallel patterns.</li>
+            <li><b>Parallelism:</b> data parallel (DDP) and FSDP, both set up in your script. No built-in TP or PP.</li>
+            <li><b>Gives you:</b> automatic rank assignment, NCCL, elastic training support.</li>
+            <li><b>Master port:</b> <code>distributed.port</code> or <code>master_port</code>, default 29500. On SLURM <code>port</code> wins if both are set.</li></ul>
+          <div class="call"><b>Practice:</b> keep <code>nproc_per_node</code> equal to GPUs per node, and <code>k8s.gpu_count</code> equal to it.</div></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "torchrun",
+    "nnodes": 2,
+    "nproc_per_node": 8,
+    "port": 29500
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>bash · in the model script</span></div><pre data-lang="bash">$MAD_MULTI_NODE_RUNNER train.py ...
+# → torchrun --nnodes=2 --nproc_per_node=8 ... train.py</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="ds"><div class="g g-6-6 top">
+        <div>
+          <h3>ZeRO when the model does not fit</h3>
+          <ul class="l"><li><b>Use when:</b> models that exceed a single GPU's memory, ZeRO-1/2/3, gradient accumulation, mixed precision.</li>
+            <li><b>Parallelism:</b> data parallel with ZeRO partitioning (auto). Pipeline and tensor degrees are manual.</li>
+            <li><b>How:</b> its own launcher, not torchrun. madengine writes a hostfile: one per SLURM job, and in place inside <code>salloc</code> with a unique suffix.</li>
+            <li><b>Needs:</b> a DeepSpeed config file referenced by your model script.</li></ul>
+          <div class="call"><b>Practice:</b> plan for about 32 GB per GPU with ZeRO-3.</div></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "deepspeed",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>exported on SLURM</span></div><pre data-lang="bash">MAD_MULTI_NODE_RUNNER="deepspeed \
+  --hostfile=/tmp/deepspeed_hostfile_${SLURM_JOB_ID}.txt ..."</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="mg"><div class="g g-6-6 top">
+        <div>
+          <h3>Tensor inside a node, pipeline across nodes</h3>
+          <ul class="l"><li><b>Use when:</b> GPT, BERT, T5-style transformers, 70B and up.</li>
+            <li><b>Parallelism:</b> TP, PP and CP configured automatically. DP is implicit.</li>
+            <li><b>Single node:</b> TP only, PP = 1. <b>Multi-node:</b> TP across the GPUs of a node, PP across nodes.</li>
+            <li><b>Built on:</b> torchrun, so <code>MAD_MULTI_NODE_RUNNER</code> applies.</li></ul>
+          <div class="call"><b>Practice:</b> keep tensor parallel within the fastest interconnect, which is inside the node, and let pipeline stages cross the network.</div></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "megatron-lm",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>set by the launcher</span></div><pre data-lang="bash">TENSOR_MODEL_PARALLEL_SIZE=8     # GPUs per node
+PIPELINE_MODEL_PARALLEL_SIZE=4   # typically = nnodes
+CONTEXT_PARALLEL_SIZE=1</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="tt"><div class="g g-6-6 top">
+        <div>
+          <h3>FSDP2 + TP + PP + CP in one launcher</h3>
+          <ul class="l"><li><b>Use when:</b> Llama 3.1 8B to 405B pre-training and other production-scale LLM runs.</li>
+            <li><b>Parallelism:</b> FSDP2, TP and PP automatic. CP is manual.</li>
+            <li><b>Single node:</b> TP only. <b>Multi-node:</b> TP + PP + FSDP2 together.</li>
+            <li><b>Also:</b> TOML-configured, Float8 and MXFP8, distributed checkpointing. Uses torchrun underneath.</li></ul>
+          <div class="call"><b>Practice:</b> budget 64 GB or more per GPU for large models.</div></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "torchtitan",
+    "nnodes": 4,
+    "nproc_per_node": 8
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>model config · TOML</span></div><pre data-lang="yaml">[model]
+name = "llama3"
+flavor = "8B"
+[training]
+tensor_parallel_degree = 8
+pipeline_parallel_degree = 1
+seq_len = 8192</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="pr"><div class="g g-6-6 top">
+        <div>
+          <h3>One entry point for Megatron, TorchTitan and MaxText</h3>
+          <ul class="l"><li><b>Use when:</b> running Primus experiment YAMLs, such as MAD's <code>primus_train/…</code> cards.</li>
+            <li><b>Parallelism:</b> every degree is set in the Primus config, so all manual.</li>
+            <li><b>Scope:</b> a <b>local single-node</b> run. A slurm, spur, k8s or llm_d block is rejected.</li>
+            <li><b>Env:</b> <code>PRIMUS_ROOT</code>, <code>PRIMUS_CONFIG_PATH</code>, optional <code>PRIMUS_CLI_EXTRA</code> and <code>BACKEND</code>. No <code>MAD_MULTI_NODE_RUNNER</code>.</li></ul>
+          <div class="call warn">For multi-node pre-training through madengine, use <code>torchtitan</code> or <code>megatron-lm</code>.</div></div>
+        <div><div class="code"><div class="ch"><span>json · local only</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "primus",
+    "primus": {
+      "config_path": "examples/megatron/configs/MI300X/deepseek_v2_lite-BF16-pretrain.yaml",
+      "backend": "megatron"
+    }
+  }
+}</pre></div></div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Launchers" data-title="Inference launchers" data-top>
+  <div class="wrap">
+    <div class="lb acc rv">Inference</div>
+    <h2 class="rv" style="--d:1">Inference launchers and how they scale</h2>
+    <div class="tabs mt rv" style="--d:2">
+      <div class="tab-bar"><button class="on" data-t="vl">vLLM</button><button data-t="sg">SGLang</button><button data-t="dg">Disaggregated</button><button data-t="sm">slurm_multi</button></div>
+
+      <div class="tab-p on" data-t="vl"><div class="g g-6-6 top">
+        <div>
+          <h3>Tensor parallel in a node, replicas across nodes</h3>
+          <ul class="l"><li><b>Single node:</b> TP across the GPUs, no Ray.</li>
+            <li><b>Kubernetes, multi-node:</b> data parallel, independent replicas per pod.</li>
+            <li><b>SLURM, multi-node:</b> data parallel, one <code>vllm serve</code> per node, TP only inside that node, no shared Ray cluster.</li>
+            <li><b>Faster startup, easier failure:</b> nodes are independent, so one bad node does not stall the rest.</li></ul>
+          <div class="call"><b>Practice:</b> for MoE and very large dense models, use a card or a disaggregated setup that sets expert parallelism, because the launcher itself only sets TP and replicas.</div></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "vllm",
+    "nnodes": 2,
+    "nproc_per_node": 4
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>exported</span></div><pre data-lang="bash">VLLM_TENSOR_PARALLEL_SIZE=4
+VLLM_DISTRIBUTED_BACKEND="auto"   # "none" for SLURM multi-node DP</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="sg"><div class="g g-6-6 top">
+        <div>
+          <h3>RadixAttention and structured generation</h3>
+          <ul class="l"><li><b>Native launcher:</b> <code>sglang.launch_server</code>, no torchrun.</li>
+            <li><b>Prefix caching:</b> RadixAttention reuses shared prefixes, which helps agentic and multi-turn traffic.</li>
+            <li><b>Parallelism:</b> TP automatic. Multi-node uses native support with Ray. DP is limited.</li>
+            <li><b>Structured generation</b> is a first-class feature.</li></ul></div>
+        <div><div class="code"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "sglang",
+    "nnodes": 2,
+    "nproc_per_node": 4
+  }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>exported</span></div><pre data-lang="bash">SGLANG_TENSOR_PARALLEL_SIZE=4
+NCCL_INIT_ADDR="master:29500"</pre></div></div>
+      </div></div>
+
+      <div class="tab-p" data-t="dg"><div class="g g-6-6 top">
+        <div>
+          <h3>Separate the prompt phase from the token phase</h3>
+          <ul class="l"><li><b>Roles:</b> a proxy, xP prefill nodes that build the KV cache, and yD decode nodes that generate tokens.</li>
+            <li><b>Why:</b> prefill is compute-bound and decode is memory-bound, so each pool can be sized and tuned on its own.</li>
+            <li><b>Names:</b> <code>sglang-disagg</code> (Mooncake) and <code>vllm-disagg</code> <span class="tag new">3.0</span>. Cluster only: min 2 nodes on SLURM and Spur, 3 on Kubernetes.</li>
+            <li><b>MAD's cards</b> (MoRI IO, Mooncake, NIXL, DeepEP) run through <code>slurm_multi</code> with <code>xP</code> and <code>yD</code> in <code>env_vars</code>.</li></ul></div>
+        <div><div class="code"><div class="ch"><span>json · templated launcher, 5 nodes</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 5,
+    "nproc_per_node": 8,
+    "sglang_disagg": {
+      "prefill_nodes": 2,
+      "decode_nodes": 2
+    }
+  }
+}</pre></div>
+          <p class="xs muted">1 proxy + 2 prefill + 2 decode = 5 nodes.</p></div>
+      </div></div>
+
+      <div class="tab-p" data-t="sm"><div class="g g-6-6 top">
+        <div>
+          <h3>The escape hatch for topologies the templates cannot express</h3>
+          <ul class="l"><li><b>What:</b> the card's own <code>.slurm</code> script runs on the head node and starts per-node containers itself with <code>srun</code>.</li>
+            <li><b>madengine adds:</b> a wrapper sbatch that exports the card's <code>env_vars</code>, parallel <code>docker pull</code> on all nodes, and a completion marker.</li>
+            <li><b>Inside <code>salloc</code>:</b> runs synchronously with <code>bash</code> instead of nesting another sbatch.</li>
+            <li><b>Targets:</b> SLURM, Spur and Kubernetes. Not llm-d.</li>
+            <li><b>Not a peer of the templated launchers.</b> Use those for standard workloads.</li></ul></div>
+        <div><div class="code"><div class="ch"><span>examples/slurm-configs/minimal/slurm-multi-minimal.json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "deploy": "slurm",
+  "slurm": { "partition": "gpu", "nodes": 3,
+             "gpus_per_node": 8, "time": "04:00:00",
+             "exclusive": true },
+  "distributed": { "launcher": "slurm_multi",
+                   "nnodes": 3, "nproc_per_node": 8 }
+}</pre></div>
+          <div class="code sm"><div class="ch"><span>bash · inside an allocation</span></div><pre data-lang="bash">salloc --nodes=3 --gpus-per-node=8 --partition=gpu
+madengine run --manifest-file build_manifest.json</pre></div></div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Launchers" data-title="Sizing a disaggregated deployment">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Best practice · disaggregated serving</div>
+      <h2 class="rv" style="--d:1">Sizing prefill and decode</h2>
+      <p class="sf rv" style="--d:2">The automatic split gives prefill about 40% of the worker nodes and decode about 60%, after setting aside one proxy node. Treat it as a starting point and tune from measurements.</p>
+      <table class="t c rv" style="--d:3">
+        <thead><tr><th>Total nodes</th><th>Proxy</th><th>Prefill</th><th>Decode</th></tr></thead>
+        <tbody>
+          <tr><td>2 · SLURM and Spur</td><td>co-located</td><td>1</td><td>1</td></tr>
+          <tr><td>3</td><td>1</td><td>1</td><td>1</td></tr>
+          <tr><td>5</td><td>1</td><td>1</td><td>3</td></tr>
+          <tr><td>7</td><td>1</td><td>2</td><td>4</td></tr>
+          <tr><td>11</td><td>1</td><td>4</td><td>6</td></tr>
+        </tbody>
+      </table>
+      <p class="xs muted mt">Formula: <code>prefill = max(1, (nnodes − 1) × 2 // 5)</code>, <code>decode = nnodes − 1 − prefill</code>. Two nodes are special-cased, because the formula would leave no decode node.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>The tuning loop</h4>
+      <ol class="l">
+        <li><b>Start automatic.</b> Run the default split and record prefill latency and decode throughput.</li>
+        <li><b>Find the bottleneck.</b> Prefill latency high: add prefill nodes. Decode throughput low: add decode nodes.</li>
+        <li><b>Pin the split</b> and rerun. Compare results against the baseline row.</li>
+      </ol>
+      <div class="code sm"><div class="ch"><span>json · custom 4P + 2D on 7 nodes</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "distributed": {
+    "launcher": "sglang-disagg",
+    "nnodes": 7,
+    "nproc_per_node": 8,
+    "sglang_disagg": { "prefill_nodes": 4, "decode_nodes": 2 }
+  }
+}</pre></div>
+      <div class="call"><b>Validation rules.</b> On Kubernetes, <code>prefill + decode + 1</code> must equal <code>nnodes</code> (dedicated proxy). On SLURM and Spur, the sum may equal <code>nnodes</code> (co-located proxy) or <code>nnodes − 1</code> (dedicated). Each side needs at least one node.</div>
+      <p class="xs muted">For MAD's own disaggregated cards, set <code>xP</code> and <code>yD</code> in <code>env_vars</code> and size the allocation with <code>slurm.nodes</code> to match.</p>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Launchers" data-title="Network and cluster practices">
+  <div class="wrap">
+    <div class="lb acc rv">Best practice · cluster</div>
+    <h2 class="rv" style="--d:1">Settings that keep multi-node runs boring</h2>
+    <p class="sf rv" style="--d:2">These values come from the repo's example configs. Treat them as starting points and tune for your fabric.</p>
+    <div class="g g-6-6 top">
+      <div class="rv" style="--d:3">
+        <h4>Fabric</h4>
+        <table class="t sm">
+          <thead><tr><th>Setting</th><th>Ethernet cluster</th><th>InfiniBand cluster</th></tr></thead>
+          <tbody>
+            <tr><td><code>NCCL_IB_DISABLE</code></td><td>1</td><td>0</td></tr>
+            <tr><td><code>NCCL_SOCKET_IFNAME</code></td><td>eth0</td><td>ib0</td></tr>
+            <tr><td><code>NCCL_IB_HCA</code></td><td>unset</td><td>mlx5_0</td></tr>
+            <tr><td><code>NCCL_MIN_NCHANNELS</code></td><td>unset</td><td>16, ignored below 8 GPUs</td></tr>
+          </tbody>
+        </table>
+        <h4 class="mt">AMD knobs used across the examples</h4>
+        <table class="t sm"><tbody>
+          <tr><td><code>HSA_ENABLE_SDMA=0</code></td><td>Disables the SDMA copy engines</td></tr>
+          <tr><td><code>GPU_MAX_HW_QUEUES=2</code></td><td>Caps hardware queues per GPU</td></tr>
+          <tr><td><code>TORCH_NCCL_HIGH_PRIORITY=1</code></td><td>High-priority streams for collectives</td></tr>
+          <tr><td><code>TORCH_NCCL_ASYNC_ERROR_HANDLING=1</code></td><td>Abort on collective errors instead of hanging</td></tr>
+          <tr><td><code>NCCL_TIMEOUT=600</code></td><td>The vLLM data-parallel example uses 300</td></tr>
+          <tr><td><code>MIOPEN_USER_DB_PATH=/tmp/.miopen</code></td><td>A writable MIOpen cache location</td></tr>
+        </tbody></table>
+      </div>
+      <div class="rv" style="--d:4">
+        <h4>Scheduler</h4>
+        <ul class="l">
+          <li><b>SLURM:</b> <code>exclusive: true</code> for benchmarks. <code>enable_node_check: true</code> runs a GPU health preflight that avoids OOM from stale processes. Setting <code>nodelist</code> skips the preflight.</li>
+          <li><b>Interactive:</b> inside <code>salloc</code>, multi-node runs execute in place on the first <code>nodes</code> hosts.</li>
+          <li><b>Spur:</b> put <code>output_dir</code> on shared storage and raise <code>rendezvous_timeout</code> if queue waits are long.</li>
+        </ul>
+        <h4>Kubernetes</h4>
+        <ul class="l">
+          <li><code>host_ipc: true</code> and a generous <code>shm_size</code> for NCCL. Request <code>memory</code> and <code>cpu</code> explicitly.</li>
+          <li>Multi-node needs a headless Service, which madengine creates. Results need a volume every pod can mount, ReadWriteMany for multi-node.</li>
+          <li>RDMA: a device plugin, <code>IPC_LOCK</code> rather than <code>privileged</code>, and <code>host_network</code> or a Multus network.</li>
+        </ul>
+        <div class="call"><b>Pin what you compare.</b> Same image digest, same driver stack, same node type. Then a change in <code>perf.csv</code> means something.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Launchers" data-title="Gotchas and FAQ">
+  <div class="wrap">
+    <div class="lb acc rv">FAQ for the skeptical</div>
+    <h2 class="rv" style="--d:1">Things that surprise people once</h2>
+    <div class="g g2 top mt">
+      <div class="rv" style="--d:2">
+        <h3>"I set <code>-N 4</code> in args, but I got one node."</h3>
+        <p class="sm muted">For <code>slurm_multi</code>, <code>args</code> is appended to the script, not forwarded to sbatch. Size the job with <code>slurm.nodes</code> or <code>distributed.nnodes</code>.</p>
+        <h3>"My <code>slurm</code> block on run lost the card's node count."</h3>
+        <p class="sm muted">On <code>build</code>, your block merges with the card's. On <code>run</code>, it replaces the card's block entirely. Restate nodes, GPUs and time.</p>
+        <h3>"Kubernetes cannot pull my image."</h3>
+        <p class="sm muted">The cluster needs a registry reference. A local <code>ci-…</code> tag exists only on the build host. Use <code>--registry</code>, or <code>--use-image</code> with a pushed image.</p>
+        <h3>"The card says <code>&lt;supply-your-image&gt;</code>."</h3>
+        <p class="sm muted">That is a placeholder, and madengine rejects it at submit time. Pass <code>--use-image &lt;ref&gt;</code> when you build.</p>
+      </div>
+      <div class="rv" style="--d:3">
+        <h3>"My env var did nothing on local Docker."</h3>
+        <p class="sm muted">Local runs read <code>docker_env_vars</code>. A card's own <code>env</code> or <code>env_vars</code> block is not read on that path.</p>
+        <h3>"Primus was rejected on SLURM."</h3>
+        <p class="sm muted">It is a local single-node launcher by contract. Use <code>torchtitan</code> or <code>megatron-lm</code> for cluster pre-training.</p>
+        <h3>"My failed run is missing from the report."</h3>
+        <p class="sm muted">It should not be. Failures are written to <code>perf.csv</code> with status <code>FAILURE</code>. If a run died before that, check <code>madengine cleanup --dry-run</code> for leftovers.</p>
+        <h3>"Two profilers gave odd results."</h3>
+        <p class="sm muted">Do not combine <code>rocprof*</code> with <code>rocm_trace_lite</code>. Run a baseline, then one profiler at a time.</p>
+        <div class="call">The deck's slides are built from the repo's docs and examples. When in doubt, <code>docs/launchers.md</code> and <code>docs/deployment.md</code> are the source of truth.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 07 CLOSE ═══════════ -->
+<section class="slide" data-sec="Close" data-title="Cheat sheet">
+  <div class="wrap">
+    <div class="lb acc rv">Cheat sheet</div>
+    <h2 class="rv" style="--d:1">Everything on one page</h2>
+    <div class="g g3 top mt">
+      <div class="rv" style="--d:2">
+        <h4>Commands</h4>
+        <div class="code sm"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine discover --tags &lt;tag&gt;
+madengine build --tags &lt;tag&gt; --registry &lt;r&gt;
+madengine build --tags &lt;tag&gt; --use-image &lt;ref&gt;
+madengine build --tags &lt;tag&gt; --build-on-compute --registry &lt;r&gt;
+madengine run --tags &lt;tag&gt; --live-output
+madengine run --manifest-file build_manifest.json
+madengine run ... --require-pinned-image
+madengine report to-html --csv-file-path perf_entry.csv
+madengine report tracelens --root slurm_results
+madengine database --file perf_entry.csv --db d --collection c
+madengine cleanup --dry-run</pre></div>
+      </div>
+      <div class="rv" style="--d:3">
+        <h4>Context keys</h4>
+        <table class="t sm"><tbody>
+          <tr><td><code>slurm</code> · <code>k8s</code> · <code>llm_d</code></td><td>pick the target</td></tr>
+          <tr><td><code>distributed</code></td><td>launcher, nnodes, nproc_per_node</td></tr>
+          <tr><td><code>env_vars</code> · <code>docker_env_vars</code></td><td>cluster · local environment</td></tr>
+          <tr><td><code>docker_build_arg</code></td><td>BASE_DOCKER and other ARGs</td></tr>
+          <tr><td><code>MAD_CONTAINER_IMAGE</code></td><td>skip the build</td></tr>
+          <tr><td><code>docker_mounts</code> · <code>docker_gpus</code></td><td>local mounts · GPU subset</td></tr>
+          <tr><td><code>tools</code></td><td>profilers, stackable</td></tr>
+          <tr><td><code>pre_scripts</code> · <code>post_scripts</code></td><td>hooks around the model</td></tr>
+          <tr><td><code>platform</code></td><td><code>bare_metal</code> for conda</td></tr>
+        </tbody></table>
+      </div>
+      <div class="rv" style="--d:4">
+        <h4>Rules of thumb</h4>
+        <ul class="l tight">
+          <li>Build once, run many times from the manifest.</li>
+          <li>Add one block to change the target, not a new script.</li>
+          <li>Dry-run llm-d managed configs first.</li>
+          <li>Pick one GPU profiler, and keep a baseline.</li>
+          <li><code>nproc_per_node</code> equals GPUs per node equals <code>k8s.gpu_count</code>.</li>
+          <li>Disaggregated: min 2 nodes on SLURM, 3 on Kubernetes.</li>
+          <li>Size slurm_multi jobs with <code>nodes</code>, never <code>args</code>.</li>
+          <li>Pin digests when comparing.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Close" data-title="Where to go next">
+  <div class="wrap">
+    <div class="lb acc rv">Next steps</div>
+    <h1 class="rv" style="--d:1;font-size:clamp(2rem,4.4vw,3.6rem);max-width:20ch">Pick a model, add one block, compare the numbers</h1>
+    <div class="g g3 top mt2">
+      <div class="rv" style="--d:2">
+        <h4>Read</h4>
+        <ul class="l tight">
+          <li><code>docs/usage.md</code> · commands and workflows</li>
+          <li><code>docs/configuration.md</code> · every context key</li>
+          <li><code>docs/launchers.md</code> · the launcher guide</li>
+          <li><code>docs/deployment.md</code> · SLURM, Spur, K8s</li>
+          <li><code>docs/llm-d.md</code> · gateway serving</li>
+          <li><code>docs/profiling.md</code> · tools and TraceLens</li>
+          <li><code>docs/bare-metal.md</code> · conda runs</li>
+        </ul>
+      </div>
+      <div class="rv" style="--d:3">
+        <h4>Copy</h4>
+        <ul class="l tight">
+          <li><code>examples/slurm-configs/</code> · basic and minimal</li>
+          <li><code>examples/k8s-configs/</code> · basic and minimal</li>
+          <li><code>examples/llm-d-configs/</code> · 01 to 06</li>
+          <li><code>examples/profiling-configs/</code> · rocprofv3, RTL, TraceLens</li>
+          <li><code>examples/configs/</code> · Hydra YAML templates</li>
+        </ul>
+        <h4 class="mt">Browse</h4>
+        <ul class="l tight">
+          <li>MAD recipes site: every model with its run commands</li>
+          <li>MAD <code>benchmark/*</code> READMEs: vLLM, SGLang, xDiT, PyTorch inference, Kimi-K3, Primus, JAX MaxText and MaxDiffusion</li>
+        </ul>
+      </div>
+      <div class="rv" style="--d:4">
+        <h4>Contribute</h4>
+        <div class="code sm"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">pip install -e .
+pre-commit install
+pytest tests/unit -v
+black src/ tests/ &amp;&amp; isort src/ tests/</pre></div>
+        <p class="sm muted">Conventional commits: <code>feat:</code> <code>fix:</code> <code>docs:</code> <code>test:</code>. Code is Black at 88 columns with Google-style docstrings.</p>
+        <div class="call"><b>Questions?</b> Open an issue on <a href="https://github.com/ROCm/madengine">ROCm/madengine</a>. Press <kbd>O</kbd> to jump back to any slide.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  document.documentElement.classList.add('js');
+
+  /* ── theme ─────────────────────────────────────────────── */
+  const root = document.documentElement;
+  const saved = localStorage.getItem('deck-scheme');
+  if (saved) root.dataset.scheme = saved;
+  const toggleTheme = () => {
+    const dark = root.dataset.scheme ? root.dataset.scheme === 'dark'
+      : matchMedia('(prefers-color-scheme:dark)').matches;
+    root.dataset.scheme = dark ? 'light' : 'dark';
+    localStorage.setItem('deck-scheme', root.dataset.scheme);
+  };
+
+  /* ── slides, headers, ids ──────────────────────────────── */
+  const slides = $$('.slide');
+  const total = slides.length;
+  const pad = n => String(n).padStart(2, '0');
+  slides.forEach((s, i) => {
+    s.id = 's' + pad(i + 1);
+    if (!s.hasAttribute('data-noheader')) {
+      const h = document.createElement('div');
+      h.className = 'sh';
+      h.innerHTML = `<span class="lb">${s.dataset.sec || ''}</span><span class="lb">${pad(i + 1)} / ${total}</span>`;
+      s.prepend(h);
+    }
+  });
+  $$('[data-total]').forEach(e => e.textContent = total);
+
+  /* ── sections ──────────────────────────────────────────── */
+  const sections = [];
+  slides.forEach((s, i) => {
+    const n = s.dataset.sec;
+    if (!n || s.hasAttribute('data-nochip')) return;
+    let sec = sections.find(x => x.name === n);
+    if (!sec) { sec = { name: n, first: i, last: i }; sections.push(sec); }
+    sec.last = i;
+  });
+  const chips = $('#chips');
+  sections.forEach((sec, k) => {
+    const a = document.createElement('a');
+    a.className = 'chip'; a.href = '#' + slides[sec.first].id; a.dataset.sec = sec.name;
+    a.innerHTML = `<kbd>${k + 1}</kbd>${sec.name}`;
+    chips.appendChild(a);
+  });
+  $$('[data-sec-link]').forEach(a => {
+    const sec = sections.find(x => x.name === a.dataset.secLink);
+    if (sec) a.href = '#' + slides[sec.first].id;
+  });
+  $$('[data-rg]').forEach(e => {
+    const sec = sections.find(x => x.name === e.dataset.rg);
+    if (sec) e.textContent = sec.first === sec.last ? `slide ${sec.first + 1}` : `slides ${sec.first + 1}–${sec.last + 1}`;
+  });
+
+  /* ── outline ───────────────────────────────────────────── */
+  const outline = $('#outline'), oc = $('#outlineCols');
+  [{ name: 'Start', idx: slides.map((s, i) => i).filter(i => !slides[i].dataset.sec || slides[i].dataset.sec === 'Agenda') },
+   ...sections.map(sec => ({ name: sec.name, idx: slides.map((s, i) => i).filter(i => slides[i].dataset.sec === sec.name) }))
+  ].forEach(g => {
+    const el = document.createElement('section');
+    el.innerHTML = `<h4>${g.name}</h4>` + g.idx.map(i =>
+      `<a href="#${slides[i].id}" data-i="${i}"><i>${pad(i + 1)}</i>${slides[i].dataset.title || ''}</a>`).join('');
+    oc.appendChild(el);
+  });
+  const setOutline = open => outline.classList.toggle('open', open);
+  outline.addEventListener('click', e => { if (e.target.closest('a') || e.target === outline) setOutline(false); });
+
+  /* ── navigation ────────────────────────────────────────── */
+  let cur = 0;
+  const go = i => {
+    i = Math.max(0, Math.min(total - 1, i));
+    slides[i].scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  };
+  const bar = $('#bar'), asc = $('#asc');
+  const update = () => {
+    const mid = innerHeight * 0.45;
+    let k = 0;
+    for (let i = 0; i < total; i++) if (slides[i].getBoundingClientRect().top <= mid) k = i;
+    if (k !== cur || !update.init) {
+      cur = k; update.init = true;
+      history.replaceState(null, '', '#' + slides[k].id);
+      const sec = slides[k].dataset.sec;
+      $$('.chip').forEach(c => c.classList.toggle('on', c.dataset.sec === sec));
+      $$('#outline a').forEach(a => a.classList.toggle('cur', +a.dataset.i === k));
+    }
+    const max = document.documentElement.scrollHeight - innerHeight;
+    const p = max > 0 ? Math.min(1, scrollY / max) : 0;
+    bar.style.width = (p * 100).toFixed(1) + '%';
+    const n = Math.round(p * 24);
+    asc.textContent = '█'.repeat(n) + '░'.repeat(24 - n) + ' ' + pad(Math.round(p * 100)) + '%';
+  };
+  addEventListener('scroll', () => requestAnimationFrame(update), { passive: true });
+  addEventListener('resize', update);
+
+  addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest && e.target.closest('input,textarea,[contenteditable]')) return;
+    const k = e.key;
+    if (k === 'Escape') { setOutline(false); return; }
+    if (outline.classList.contains('open') && k !== 'o' && k !== 'O') return;
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'j'].includes(k)) { e.preventDefault(); go(cur + 1); }
+    else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'k'].includes(k)) { e.preventDefault(); go(cur - 1); }
+    else if (k === 'Home') { e.preventDefault(); go(0); }
+    else if (k === 'End') { e.preventDefault(); go(total - 1); }
+    else if (/^[1-9]$/.test(k) && sections[+k - 1]) go(sections[+k - 1].first);
+    else if (k === 'o' || k === 'O') setOutline(!outline.classList.contains('open'));
+    else if (k === 't' || k === 'T') toggleTheme();
+    else if (k === 'p' || k === 'P') window.print();
+  });
+  $('#bOutline').onclick = () => setOutline(true);
+  $('#bTheme').onclick = toggleTheme;
+  $('#bPrint').onclick = () => window.print();
+
+  let tx = 0, ty = 0;
+  addEventListener('touchstart', e => { tx = e.touches[0].clientX; ty = e.touches[0].clientY; }, { passive: true });
+  addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2) go(cur + (dx < 0 ? 1 : -1));
+  }, { passive: true });
+
+  /* ── reveal on enter ───────────────────────────────────── */
+  const io = new IntersectionObserver(es => es.forEach(en => { if (en.isIntersecting) en.target.classList.add('in'); }),
+    { threshold: 0.12 });
+  slides.forEach(s => io.observe(s));
+
+  /* ── tabs ──────────────────────────────────────────────── */
+  $$('.tabs').forEach(t => {
+    $$(':scope > .tab-bar button', t).forEach(b => b.addEventListener('click', () => {
+      $$(':scope > .tab-bar button', t).forEach(x => x.classList.toggle('on', x === b));
+      $$(':scope > .tab-p', t).forEach(p => p.classList.toggle('on', p.dataset.t === b.dataset.t));
+    }));
+  });
+
+  /* ── code: highlight + copy ────────────────────────────── */
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const hl = {
+    json: s => esc(s).replace(/(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")(\s*:)?|\b(true|false|null|-?\d+(?:\.\d+)?)\b/g,
+      (m, c, str, colon, n) => c ? `<span class="c">${c}</span>` : str ? (colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`) : `<span class="n">${n}</span>`),
+    bash: s => esc(s).replace(/(#[^\n]*)|(&quot;[^\n]*?&quot;|"[^"\n]*"|'[^']*')|(^|\s)(--?[a-zA-Z][\w-]*)/gm,
+      (m, c, str, sp, fl) => c ? `<span class="c">${c}</span>` : str ? `<span class="s">${str}</span>` : `${sp}<span class="f">${fl}</span>`),
+    yaml: s => esc(s).replace(/(#[^\n]*)|^(\s*-?\s*)([\w.-]+)(:)/gm,
+      (m, c, ind, key, col) => c ? `<span class="c">${c}</span>` : `${ind}<span class="k">${key}</span>${col}`),
+    plain: s => esc(s)
+  };
+  $$('pre[data-lang]').forEach(pre => {
+    const src = pre.textContent;
+    pre.dataset.src = src;
+    pre.innerHTML = (hl[pre.dataset.lang] || hl.plain)(src);
+  });
+  $$('[data-copy]').forEach(b => b.addEventListener('click', () => {
+    const pre = b.closest('.code').querySelector('pre');
+    navigator.clipboard?.writeText(pre.dataset.src ?? pre.textContent).then(() => {
+      const t = b.textContent; b.textContent = 'copied'; setTimeout(() => b.textContent = t, 1200);
+    });
+  }));
+
+  /* ── start ─────────────────────────────────────────────── */
+  const start = location.hash && $(location.hash);
+  if (start && start.classList.contains('slide')) start.scrollIntoView({ block: 'start', behavior: 'instant' });
+  update();
+})();
+</script>
+</body>
+</html>
