@@ -472,6 +472,8 @@ The `--build-on-compute` job takes its SLURM settings from the model card's `slu
 {"slurm": {"partition": "gpu", "account": "my-account", "qos": "my-qos", "build_gpus_per_node": 8}}
 ```
 
+The build job's `docker build` gets the same `--build-arg` set as a local build: `docker_build_arg` from `--additional-context` first, then the card's for keys the context does not set (see [Configuration — Build Arguments](configuration.md#build-arguments)). A Dockerfile that picks its stack from `MAD_SYSTEM_GPU_ARCHITECTURE` therefore builds the right one. `docker build` and `docker push` write to stdout, so their output reaches the job log on schedulers that drop a step's stderr.
+
 ### slurm_multi Launcher (Self-Managed)
 
 For workloads that orchestrate their own per-node Docker containers (e.g. SGLang Disaggregated proxy + prefill + decode topologies), use the `slurm_multi` launcher:
@@ -495,6 +497,8 @@ Unlike templated launchers, slurm_multi runs the model's `.slurm` script directl
 ### Running Inside salloc
 
 When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated launchers do the same for multi-node runs: the job script runs in place and starts its tasks with `srun` on the first `nodes` hosts of the allocation (or on `slurm.nodelist`, when set). Each run gets its own paths, so several runs can share one allocation. Single-node runs still submit their own `sbatch`, because in place their script would run on the submitting host.
+
+A `slurm_multi` script that exits non-zero in place is still collected, as a failed `sbatch` job is: the launcher publishes the CSV with the cells that passed before it exits, so those rows reach `perf.csv`. The run stays failed.
 
 Those paths are job-scoped directories, not the SLURM submission directory. A single-node job uses `$SLURM_TMPDIR/madengine_job_<job id>` when that directory is writable, otherwise `/tmp/madengine_job_<job id>`. A multi-node task appends `_node_<rank>`, and an in-place run also appends a per-run suffix so two runs in one allocation do not share a directory. A multi-node task removes its workspace only after the task exits 0 and every artifact has been copied out; a failure, or a copy that did not finish, keeps the directory. A later job from the same user deletes `madengine_job_*` directories older than 7 days under that scratch root when `squeue -u` lists this user's jobs and the directory's job id is not among them. An unanswered `squeue` deletes nothing.
 

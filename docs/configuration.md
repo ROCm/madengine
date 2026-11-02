@@ -563,6 +563,18 @@ Specify GPU and CPU subsets:
 
 Format: Comma-separated list with hyphen ranges.
 
+### Container Privileges
+
+A local Docker run starts without `CAP_SYS_ADMIN` and without `/dev/fuse`. madengine adds them only where the run needs them:
+
+| Run | Added options |
+|-----|---------------|
+| Data from a `nas` provider **without** `mirrorlocal` (mounted through SSHFS) | `--cap-add SYS_ADMIN --device /dev/fuse` |
+| User `pre_scripts`, or a `rocprof*` / `perf*` tool in `tools` | `--cap-add SYS_ADMIN` (no `/dev/fuse`) |
+| Everything else, including mirrored NAS (`rsync`), local, and object-store data | neither |
+
+A model that needs FUSE for another reason can still pass the options itself in its `additional_docker_run_options`. SLURM and Kubernetes deployments are not affected by this table.
+
 ## Performance Configuration
 
 ### Timeout Settings
