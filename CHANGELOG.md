@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **slurm_multi cards on Kubernetes run per pod**: when the card's scripts reach their nodes through MAD's `dispatch.sh`, every pod runs the card's script as its own node (`MAD_DISPATCH=k8s-indexed`) and pod 0 makes the verdict; the `srun` stand-in and the agent are only used for older MAD scripts.
+- **slurm_multi cards on Kubernetes run per pod only**: every pod runs the card's script as its own node (`MAD_DISPATCH=k8s-indexed`, MAD's `dispatch.sh`) and pod 0 makes the verdict. The `srun` stand-in and the per-pod agent that carried a script's steps from pod 0 to the others are removed, with the agent port on the pods and the Service; a card whose scripts predate `dispatch.sh` (an older MAD checkout) now stops on every pod with exit status 2 and a message to update MAD.
 
 ### Fixed
 
